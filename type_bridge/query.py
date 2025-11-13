@@ -15,6 +15,7 @@ class Query:
         self._fetch_specs: dict[str, list[str]] = {}  # var -> [attributes]
         self._delete_clauses: list[str] = []
         self._insert_clauses: list[str] = []
+        self._put_clauses: list[str] = []
         self._sort_clauses: list[tuple[str, str]] = []  # [(variable, direction)]
         self._limit: int | None = None
         self._offset: int | None = None
@@ -72,6 +73,18 @@ class Query:
             Self for chaining
         """
         self._insert_clauses.append(pattern)
+        return self
+
+    def put(self, pattern: str) -> "Query":
+        """Add a put clause (insert if does not exist).
+
+        Args:
+            pattern: TypeQL put pattern
+
+        Returns:
+            Self for chaining
+        """
+        self._put_clauses.append(pattern)
         return self
 
     def limit(self, limit: int) -> "Query":
@@ -138,6 +151,11 @@ class Query:
         if self._insert_clauses:
             insert_body = "; ".join(self._insert_clauses)
             parts.append(f"insert\n{insert_body};")
+
+        # Put clause
+        if self._put_clauses:
+            put_body = "; ".join(self._put_clauses)
+            parts.append(f"put\n{put_body};")
 
         # Sort, limit and offset modifiers (must come BEFORE fetch in TypeQL 3.x)
         if self._sort_clauses:
@@ -212,6 +230,22 @@ class QueryBuilder:
         query = Query()
         insert_pattern = instance.to_insert_query(var)
         query.insert(insert_pattern)
+        return query
+
+    @staticmethod
+    def put_entity(instance: Entity, var: str = "$e") -> Query:
+        """Create a put query for an entity instance (insert if does not exist).
+
+        Args:
+            instance: Entity instance
+            var: Variable name to use
+
+        Returns:
+            Query object
+        """
+        query = Query()
+        put_pattern = instance.to_insert_query(var)
+        query.put(put_pattern)
         return query
 
     @staticmethod

@@ -52,6 +52,7 @@ uv run python examples/basic/crud_01_define.py  # Schema definition and basic us
 uv run python examples/basic/crud_02_insert.py  # Bulk insertion
 uv run python examples/basic/crud_03_read.py    # Fetching API: get(), filter(), all()
 uv run python examples/basic/crud_04_update.py  # Update API for single and multi-value attrs
+uv run python examples/basic/crud_05_put.py     # Put API (insert if does not exist)
 
 # Advanced examples
 uv run python examples/advanced/schema_01_manager.py     # Schema operations
@@ -93,7 +94,8 @@ examples/
 │   ├── crud_01_define.py         # Schema definition and basic usage
 │   ├── crud_02_insert.py         # Bulk insertion
 │   ├── crud_03_read.py           # Fetching API: get(), filter(), all()
-│   └── crud_04_update.py         # Update API for single and multi-value attrs
+│   ├── crud_04_update.py         # Update API for single and multi-value attrs
+│   └── crud_05_put.py            # Put API (insert if does not exist)
 └── advanced/                     # Advanced features
     ├── schema_01_manager.py      # Schema operations
     ├── schema_02_comparison.py   # Schema diff and comparison
@@ -414,6 +416,28 @@ count = person_manager.filter(age=30).count()
 deleted_count = person_manager.delete(name="Alice")
 ```
 
+**Put entities (insert if does not exist)**:
+```python
+# Single put - idempotent insert
+alice = Person(name=Name("Alice"), age=Age(30))
+person_manager.put(alice)
+person_manager.put(alice)  # Running again won't create duplicates
+
+# Bulk put
+persons = [
+    Person(name=Name("Bob"), age=Age(25)),
+    Person(name=Name("Charlie"), age=Age(35)),
+]
+person_manager.put_many(persons)
+person_manager.put_many(persons)  # Running again won't create duplicates
+```
+
+**TypeDB put semantics**:
+- **Match-first approach**: TypeDB tries to match the entire pattern first
+- **All-or-nothing**: If complete match found, nothing happens; if any part fails, entire pattern is inserted
+- **Idempotent**: Safe to run multiple times with the same data
+- **Use cases**: Data loading, ensuring data exists without duplicates, working with @key attributes
+
 **Update entities**:
 ```python
 # Fetch entity
@@ -478,6 +502,17 @@ employment = Employment(
     position=Position("Engineer")
 )
 employment_manager.insert(employment)
+
+# Put relation (insert if does not exist) - idempotent
+employment_manager.put(employment)
+employment_manager.put(employment)  # Running again won't create duplicates
+
+# Bulk put
+employments = [
+    Employment(employee=alice, employer=techcorp, position=Position("Engineer")),
+    Employment(employee=bob, employer=techcorp, position=Position("Manager")),
+]
+employment_manager.put_many(employments)
 
 # Get relations by attribute filter
 engineers = employment_manager.get(position="Engineer")
