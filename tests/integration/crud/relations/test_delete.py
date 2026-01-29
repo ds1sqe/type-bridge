@@ -208,7 +208,7 @@ def test_delete_relation_missing_role_player_raises(db_with_schema):
     emp = Employment(employee=alice, employer=techcorp, position=Position("Engineer"))
 
     # Manually remove the role player to simulate a corrupt/incomplete relation
-    emp.__dict__["employer"] = None
+    emp.__dict__["employer"] = None  # type: ignore[index]
 
     # Act & Assert
     with pytest.raises(ValueError, match="Role player 'employer' is required for delete"):

@@ -5,11 +5,39 @@ and role names don't conflict with TypeQL reserved words/keywords.
 """
 
 import logging
+import unicodedata
 from typing import Literal
 
 from type_bridge.reserved_words import is_reserved_word
 
 logger = logging.getLogger(__name__)
+
+
+def _is_xid_start(char: str) -> bool:
+    """Check if character is valid as identifier start (XID_Start).
+
+    XID_Start includes Unicode letters (Lu, Ll, Lt, Lm, Lo, Nl) and underscore.
+    This matches TypeQL 3.8.0's XID_START character class.
+    """
+    if char == "_":
+        return True
+    category = unicodedata.category(char)
+    return category in ("Lu", "Ll", "Lt", "Lm", "Lo", "Nl")
+
+
+def _is_xid_continue(char: str) -> bool:
+    """Check if character is valid in identifier body (XID_Continue).
+
+    XID_Continue includes XID_Start plus combining marks (Mn, Mc), digits (Nd),
+    and connector punctuation (Pc). TypeQL also allows hyphens.
+    This matches TypeQL 3.8.0's identifier rules.
+    """
+    if char == "-":  # TypeQL allows hyphens in identifiers
+        return True
+    if _is_xid_start(char):
+        return True
+    category = unicodedata.category(char)
+    return category in ("Mn", "Mc", "Nd", "Pc")
 
 
 class ValidationError(ValueError):
@@ -143,19 +171,24 @@ def validate_type_name(
         logger.warning(f"Reserved word used as {context} name: {name}")
         raise ReservedWordError(name, context)
 
-    # TypeQL identifiers must start with a letter and contain only letters, numbers,
-    # underscores, and hyphens
-    if not name[0].isalpha():
-        logger.warning(f"{context.capitalize()} name '{name}' does not start with a letter")
-        raise ValidationError(f"{context.capitalize()} name '{name}' must start with a letter")
+    # TypeQL 3.8.0 uses XID_START and XID_CONTINUE for identifier validation
+    # XID_START: Unicode letters (Lu, Ll, Lt, Lm, Lo, Nl) and underscore
+    # XID_CONTINUE: XID_START + combining marks (Mn, Mc), digits (Nd), connector (Pc), hyphen
+    if not _is_xid_start(name[0]):
+        logger.warning(
+            f"{context.capitalize()} name '{name}' does not start with a valid character"
+        )
+        raise ValidationError(
+            f"{context.capitalize()} name '{name}' must start with a letter or underscore"
+        )
 
-    # Check for invalid characters
-    for char in name:
-        if not (char.isalnum() or char in {"_", "-"}):
+    # Check remaining characters
+    for char in name[1:]:
+        if not _is_xid_continue(char):
             logger.warning(
                 f"{context.capitalize()} name '{name}' contains invalid character: {char}"
             )
             raise ValidationError(
                 f"{context.capitalize()} name '{name}' contains invalid character '{char}'. "
-                f"Only letters, numbers, underscores, and hyphens are allowed."
+                f"Only letters, numbers, underscores, hyphens, and combining marks are allowed."
             )

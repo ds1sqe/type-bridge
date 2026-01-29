@@ -3,11 +3,33 @@
 import os
 import subprocess
 import time
+from contextlib import contextmanager
 
 import pytest
 from typedb.driver import DriverOptions
 
 from type_bridge import Credentials, Database, TypeDB
+
+
+@contextmanager
+def suppress_stderr():
+    """Suppress stderr at the file descriptor level.
+
+    This is needed to silence the TypeDB driver's Rust logging initialization
+    warning which writes directly to fd 2, bypassing Python's sys.stderr.
+    """
+    # Always use fd 2 directly (actual stderr) since Rust writes there
+    stderr_fd = 2
+    saved_stderr = os.dup(stderr_fd)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, stderr_fd)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(saved_stderr, stderr_fd)
+        os.close(saved_stderr)
+
 
 # Container tool selection (docker|podman or explicit binary)
 CONTAINER_TOOL = os.getenv("CONTAINER_TOOL", "docker")
@@ -99,11 +121,12 @@ def typedb_driver(docker_typedb):
         ConnectionError: If TypeDB server is not running
     """
     try:
-        driver = TypeDB.driver(
-            address=TEST_DB_ADDRESS,
-            credentials=Credentials(username="admin", password="password"),
-            driver_options=DriverOptions(is_tls_enabled=False),
-        )
+        with suppress_stderr():
+            driver = TypeDB.driver(
+                address=TEST_DB_ADDRESS,
+                credentials=Credentials(username="admin", password="password"),
+                driver_options=DriverOptions(is_tls_enabled=False),
+            )
         yield driver
         driver.close()
     except Exception as e:

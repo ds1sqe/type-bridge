@@ -293,7 +293,9 @@ class FieldDescriptor[T: "Attribute"]:
             value: Attribute value to set
         """
         # Delegate to Pydantic's field validation and storage
-        instance.__dict__[self.field_name] = value
+        # Use cast to satisfy pyright (instance.__dict__ is always a writable dict at runtime)
+        inst_dict: dict[str, Any] = instance.__dict__  # type: ignore[assignment]
+        inst_dict[self.field_name] = value
         # Trigger Pydantic validation if needed
         if hasattr(instance, "__pydantic_validator__"):
             instance.__pydantic_validator__.validate_assignment(instance, self.field_name, value)

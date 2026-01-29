@@ -21,3 +21,6 @@ packages/typescript/dist/
 
 # Temporary
 tmp/
+
+# Reference repos
+typeql-ref/

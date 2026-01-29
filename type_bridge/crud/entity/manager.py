@@ -14,7 +14,11 @@ from type_bridge.session import Connection, ConnectionExecutor
 
 from ..base import E
 from ..exceptions import EntityNotFoundError, KeyAttributeError, NotUniqueError
-from ..utils import format_value, is_multi_value_attribute, resolve_entity_class
+from ..utils import (
+    format_value,
+    is_multi_value_attribute,
+    resolve_entity_class,
+)
 
 if TYPE_CHECKING:
     from .group_by import GroupByQuery
@@ -353,19 +357,35 @@ class EntityManager[E: Entity]:
         if not iid or not iid.startswith("0x"):
             raise ValueError(f"Invalid IID format: {iid}. Expected hex string like '0x1e00...'")
 
-        # First, get the actual type via select query
-        type_query = f"match\n$e isa {self.model_class.get_type_name()}, iid {iid};\nselect $e;"
+        # Two queries: one for type (using label() on type variable), one for attributes
+        # TypeQL's label() works on TYPE variables, so we bind the exact type with isa!
+        # TypeQL doesn't allow mixing "key": value entries with $e.* in fetch
+
+        # Query 1: Get type name using label($t) where $t is bound via isa!
+        base_type = self.model_class.get_type_name()
+        type_query = (
+            f"match\n$e isa! $t, iid {iid}; $t sub {base_type};\n"
+            f'fetch {{\n  "_type": label($t)\n}};'
+        )
+        logger.debug(f"Type lookup query: {type_query}")
         type_results = self._execute(type_query, TransactionType.READ)
 
         if not type_results:
             logger.debug(f"No entity found with IID {iid}")
             return None
 
-        # Extract actual type name
-        type_name = None
-        type_result = type_results[0]
-        if "e" in type_result and isinstance(type_result["e"], dict):
-            type_name = type_result["e"].get("_type")
+        type_name = type_results[0].get("_type")
+
+        # Query 2: Fetch all attributes
+        fetch_query = f"match\n$e isa {base_type}, iid {iid};\nfetch {{ $e.* }};"
+        logger.debug(f"Get by IID attributes query: {fetch_query}")
+        results = self._execute(fetch_query, TransactionType.READ)
+
+        if not results:
+            logger.debug(f"No entity found with IID {iid}")
+            return None
+
+        result = results[0]
 
         # Resolve the correct class
         entity_class: type[E] = (
@@ -374,25 +394,12 @@ class EntityManager[E: Entity]:
             else self.model_class
         )
 
-        # Fetch attributes
-        fetch_query = (
-            f"match\n$e isa {self.model_class.get_type_name()}, iid {iid};\nfetch {{\n  $e.*\n}};"
-        )
-        logger.debug(f"Get by IID query: {fetch_query}")
-        results = self._execute(fetch_query, TransactionType.READ)
-
-        if not results:
-            logger.debug(f"No entity found with IID {iid}")
-            return None
-
-        # Convert result to entity instance with correct class
-        result = results[0]
-        # Use resolved class for attribute extraction (includes subtype attributes)
+        # Extract attributes using the resolved class (includes subtype attributes)
         attrs = self._extract_attributes(result, entity_class)
         entity = entity_class(**attrs)
 
-        # Set the IID directly since we know it
-        object.__setattr__(entity, "_iid", iid)
+        # Set the IID (from iid($e) in fetch or from input parameter)
+        object.__setattr__(entity, "_iid", result.get("_iid", iid))
 
         logger.info(f"Retrieved entity by IID: {entity_class.__name__}")
         return entity
@@ -1207,9 +1214,9 @@ class EntityManager[E: Entity]:
     ) -> dict[tuple[tuple[str, Any], ...], tuple[str, str]]:
         """Get IIDs and type names for entities matching filters.
 
-        Performs a select query to get entity IIDs and types.
-        When filters contain key attribute values, uses those for the map key.
-        Otherwise, uses a fetch query to get key attribute values.
+        Uses a single fetch query with iid() and label() functions to get
+        entity IIDs and types. Key attributes are also fetched to build
+        the lookup map.
 
         Args:
             **filters: Attribute filters (same as get())
@@ -1225,105 +1232,77 @@ class EntityManager[E: Entity]:
             if attr_info.flags.is_key
         }
 
-        # Build match query with filters
+        # Build match query with filters, adding type variable for label()
+        # TypeQL's label() function works on TYPE variables, not instance variables
+        # So we use: $e isa! $t (exact type match) then label($t)
         query = QueryBuilder.match_entity(self.model_class, **filters)
         match_str = query.build().rstrip().rstrip(";")
 
+        # Modify match to bind exact type:
+        # Original: "$e isa person, has Name X"
+        # Changed:  "$e isa! $t, has Name X; $t sub person"
+        type_name = self.model_class.get_type_name()
+        match_str = match_str.replace(f"$e isa {type_name}", "$e isa! $t")
+        match_str = f"{match_str}; $t sub {type_name}"
+
         # Track key values we already know from filters
         known_key_values: dict[str, Any] = {}
-        need_key_fetch = False
+        for field_name, attr_info in key_attrs.items():
+            attr_name = attr_info.typ.get_attribute_name()
+            if field_name in filters:
+                filter_value = filters[field_name]
+                if hasattr(filter_value, "value"):
+                    filter_value = filter_value.value
+                known_key_values[attr_name] = filter_value
 
-        if key_attrs:
-            for field_name, attr_info in key_attrs.items():
-                attr_name = attr_info.typ.get_attribute_name()
-                if field_name in filters:
-                    # We already know the value from the filter
-                    filter_value = filters[field_name]
-                    if hasattr(filter_value, "value"):
-                        filter_value = filter_value.value
-                    known_key_values[attr_name] = filter_value
-                else:
-                    need_key_fetch = True
+        # Build fetch items: iid, label (on type var), and key attributes
+        # TypeQL doesn't allow mixing "key": value entries with $e.*, so we
+        # explicitly list the items we need
+        # Note: label($t) works because $t is a TYPE variable bound via isa!
+        fetch_items = ['"_iid": iid($e)', '"_type": label($t)']
 
-        # If we have all key values from filters, use simple select
-        if not need_key_fetch and known_key_values:
-            query_str = f"{match_str};\nselect $e;"
-            logger.debug(f"IID/type query (simple): {query_str}")
-            results = self._execute(query_str, TransactionType.READ)
+        # Add key attributes to fetch (only if not all known from filters)
+        key_attr_names = [attr_info.typ.get_attribute_name() for attr_info in key_attrs.values()]
+        if not (known_key_values and len(known_key_values) == len(key_attrs)):
+            for attr_name in key_attr_names:
+                fetch_items.append(f'"{attr_name}": $e.{attr_name}')
 
-            iid_type_map: dict[tuple[tuple[str, Any], ...], tuple[str, str]] = {}
-            for result in results:
-                if "e" not in result or not isinstance(result["e"], dict):
-                    continue
-                iid = result["e"].get("_iid")
-                type_name = result["e"].get("_type")
-                if iid and type_name:
-                    # All results have the same key values (from filters)
-                    map_key = tuple(sorted(known_key_values.items()))
-                    iid_type_map[map_key] = (iid, type_name)
-
-            logger.debug(f"Found {len(iid_type_map)} IID/type mappings (filter-based)")
-            return iid_type_map
-
-        # Need to fetch key attribute values
-        if key_attrs and need_key_fetch:
-            # Do two queries: fetch for attributes, select for IID/type
-            # Query 1: Fetch to get key attribute values
-            fetch_query = f"{match_str};\nfetch {{\n  $e.*\n}};"
-            logger.debug(f"IID/type query (fetch for keys): {fetch_query}")
-            fetch_results = self._execute(fetch_query, TransactionType.READ)
-
-            # Query 2: Select to get IID/type
-            select_query = f"{match_str};\nselect $e;"
-            logger.debug(f"IID/type query (select for IID): {select_query}")
-            select_results = self._execute(select_query, TransactionType.READ)
-
-            # Get key attribute names for extraction
-            key_attr_names = [
-                attr_info.typ.get_attribute_name() for attr_info in key_attrs.values()
-            ]
-
-            # Correlate by position (both queries have same match clause)
-            iid_type_map = {}
-            for fetch_result, select_result in zip(fetch_results, select_results):
-                # Get IID/type from select result
-                if "e" not in select_result or not isinstance(select_result["e"], dict):
-                    continue
-                iid = select_result["e"].get("_iid")
-                type_name = select_result["e"].get("_type")
-                if not iid or not type_name:
-                    continue
-
-                # Extract key values from fetch result
-                key_values: list[tuple[str, Any]] = []
-                for attr_name in key_attr_names:
-                    if attr_name in fetch_result:
-                        val = fetch_result[attr_name]
-                        key_values.append((attr_name, val))
-
-                if key_values:
-                    map_key = tuple(sorted(key_values))
-                    iid_type_map[map_key] = (iid, type_name)
-
-            logger.debug(f"Found {len(iid_type_map)} IID/type mappings (dual-query)")
-            return iid_type_map
-
-        # Fallback: no key attributes, use IID-based map
-        query_str = f"{match_str};\nselect $e;"
-        logger.debug(f"IID/type query (fallback): {query_str}")
+        fetch_clause = f"fetch {{\n  {', '.join(fetch_items)}\n}}"
+        query_str = f"{match_str};\n{fetch_clause};"
+        logger.debug(f"IID/type query: {query_str}")
         results = self._execute(query_str, TransactionType.READ)
 
-        iid_type_map = {}
-        for result in results:
-            if "e" not in result or not isinstance(result["e"], dict):
-                continue
-            iid = result["e"].get("_iid")
-            type_name = result["e"].get("_type")
-            if iid and type_name:
-                map_key = (("_iid", iid),)
-                iid_type_map[map_key] = (iid, type_name)
+        iid_type_map: dict[tuple[tuple[str, Any], ...], tuple[str, str]] = {}
 
-        logger.debug(f"Found {len(iid_type_map)} IID/type mappings (IID-based)")
+        for result in results:
+            # Get IID/type from fetch result (provided by iid($e) and label($e))
+            iid = result.get("_iid")
+            type_name = result.get("_type")
+            if not iid or not type_name:
+                continue
+
+            # Build map key from key attributes or known values
+            if key_attrs:
+                if known_key_values and len(known_key_values) == len(key_attrs):
+                    # All key values known from filters
+                    map_key = tuple(sorted(known_key_values.items()))
+                else:
+                    # Extract key values from fetch result
+                    key_values: list[tuple[str, Any]] = []
+                    for attr_name in key_attr_names:
+                        if attr_name in result:
+                            val = result[attr_name]
+                            key_values.append((attr_name, val))
+                    if not key_values:
+                        continue
+                    map_key = tuple(sorted(key_values))
+            else:
+                # No key attributes, use IID as the map key
+                map_key = (("_iid", iid),)
+
+            iid_type_map[map_key] = (iid, type_name)
+
+        logger.debug(f"Found {len(iid_type_map)} IID/type mappings")
         return iid_type_map
 
     def _match_entity_type(
@@ -1391,10 +1370,8 @@ class EntityManager[E: Entity]:
     def _populate_iids(self, entities: list[E]) -> None:
         """Populate _iid field on entities by querying TypeDB.
 
-        Since fetch queries cannot return IIDs, this method uses a single
-        batched disjunctive query to get IIDs for all entities at once.
-
-        Optimized to use O(1) queries instead of O(N) queries.
+        Uses a single batched fetch query with iid() to get IIDs for all
+        entities at once. Optimized to use O(1) queries instead of O(N) queries.
 
         Args:
             entities: List of entities to populate IIDs for
@@ -1432,8 +1409,15 @@ class EntityManager[E: Entity]:
         if not or_clauses:
             return
 
-        # Single disjunctive query for all entities
-        query_str = f"match\n{' or '.join(or_clauses)};\nselect $e;"
+        # Build fetch items: iid and key attributes (for matching)
+        # TypeQL doesn't allow mixing "key": value entries with $e.*
+        key_attr_names = [attr_info.typ.get_attribute_name() for attr_info in key_attrs.values()]
+        fetch_items = ['"_iid": iid($e)']
+        for attr_name in key_attr_names:
+            fetch_items.append(f'"{attr_name}": $e.{attr_name}')
+        fetch_clause = f"fetch {{\n  {', '.join(fetch_items)}\n}}"
+
+        query_str = f"match\n{' or '.join(or_clauses)};\n{fetch_clause};"
         logger.debug(f"Batched IID lookup query: {query_str}")
 
         results = self._execute(query_str, TransactionType.READ)
@@ -1441,27 +1425,19 @@ class EntityManager[E: Entity]:
         if not results:
             return
 
-        # Build key attribute names list
-        key_attr_names = [attr_info.typ.get_attribute_name() for attr_info in key_attrs.values()]
         iid_map: dict[tuple[tuple[str, Any], ...], str] = {}
 
-        # Fetch query for key values correlation
-        fetch_query = f"match\n{' or '.join(or_clauses)};\nfetch {{\n  $e.*\n}};"
-        fetch_results = self._execute(fetch_query, TransactionType.READ)
-
-        # Correlate by position (fetch and select return results in same order)
-        for fetch_result, select_result in zip(fetch_results, results):
-            if "e" not in select_result or not isinstance(select_result["e"], dict):
-                continue
-            iid = select_result["e"].get("_iid")
+        # Extract IID and key values from single fetch result
+        for result in results:
+            iid = result.get("_iid")
             if not iid:
                 continue
 
-            # Extract key attribute values from fetch result
+            # Extract key attribute values
             key_values: list[tuple[str, Any]] = []
             for attr_name in key_attr_names:
-                if attr_name in fetch_result:
-                    key_values.append((attr_name, fetch_result[attr_name]))
+                if attr_name in result:
+                    key_values.append((attr_name, result[attr_name]))
             if key_values:
                 iid_map[tuple(sorted(key_values))] = iid
 

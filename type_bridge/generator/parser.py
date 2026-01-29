@@ -265,18 +265,22 @@ class SchemaTransformer(Transformer):
         return {"cascade": True}
 
     def subkey_annotation(self, items: list[Any]) -> dict[str, str]:
-        import re
+        from type_bridge.validation import _is_xid_continue, _is_xid_start
 
         identifier = str(items[0])
 
-        # Validate: must be a valid TypeDB identifier
-        # TypeDB identifiers: start with letter/underscore, contain letters/digits/underscores/hyphens
-        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_-]*$", identifier):
+        # Validate: must be a valid TypeDB identifier using XID rules (TypeQL 3.8.0+)
+        if not identifier or not _is_xid_start(identifier[0]):
             raise ValueError(
                 f"Invalid @subkey identifier: '{identifier}'. "
-                "Must be a valid identifier (start with letter or underscore, "
-                "contain only letters, digits, underscores, and hyphens)."
+                "Must start with a letter or underscore."
             )
+        for char in identifier[1:]:
+            if not _is_xid_continue(char):
+                raise ValueError(
+                    f"Invalid @subkey identifier: '{identifier}'. "
+                    f"Contains invalid character '{char}'."
+                )
 
         return {"subkey": identifier}
 

@@ -139,6 +139,33 @@ def resolve_entity_class(
     return subclass_map.get(type_name, base_class)
 
 
+def build_metadata_fetch(var: str) -> str:
+    """Build a fetch clause that retrieves only IID and type metadata.
+
+    Uses TypeQL 3.8.0 built-in functions iid() and label() to fetch
+    the internal ID and type label. This is used for queries that need
+    to identify entities/relations without fetching all attributes.
+
+    Note: TypeQL grammar doesn't allow mixing "key": value entries with $e.*
+    in the same fetch clause, so metadata-only fetch is separate from
+    attribute fetch.
+
+    Args:
+        var: Variable name (with or without $)
+
+    Returns:
+        Fetch clause string like 'fetch { "_iid": iid($e), "_type": label($e) }'
+
+    Example:
+        >>> build_metadata_fetch("e")
+        'fetch {\\n  "_iid": iid($e), "_type": label($e)\\n}'
+    """
+    if not var.startswith("$"):
+        var = f"${var}"
+
+    return f'fetch {{\n  "_iid": iid({var}), "_type": label({var})\n}}'
+
+
 def _build_subclass_map(base_class: type["Entity"]) -> dict[str, type["Entity"]]:
     """Build a mapping from TypeDB type names to entity classes.
 

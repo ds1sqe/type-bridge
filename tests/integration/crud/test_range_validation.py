@@ -73,7 +73,9 @@ class Task(Entity):
 @pytest.fixture
 def db():
     """Create a test database with range-constrained schema."""
-    database = Database(address="localhost:1729", database="test_range_validation")
+    from tests.integration.conftest import TEST_DB_ADDRESS
+
+    database = Database(address=TEST_DB_ADDRESS, database="test_range_validation")
     database.connect()
 
     # Clean up if exists
