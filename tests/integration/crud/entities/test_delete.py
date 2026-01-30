@@ -93,7 +93,7 @@ def test_delete_entity_with_none_key_raises(db_with_schema):
 
     # Create valid entity then set key to None to simulate corrupt state
     person = Person(name=Name("Test"))
-    person.__dict__["name"] = None
+    person.__dict__["name"] = None  # type: ignore[index]
 
     with pytest.raises(
         KeyAttributeError, match="Cannot delete Person: key attribute 'name' is None"

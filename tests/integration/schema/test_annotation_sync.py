@@ -74,7 +74,9 @@ class User(Entity):
 @pytest.fixture
 def db():
     """Create a test database for annotation sync tests."""
-    database = Database(address="localhost:1729", database="test_annotation_sync")
+    from tests.integration.conftest import TEST_DB_ADDRESS
+
+    database = Database(address=TEST_DB_ADDRESS, database="test_annotation_sync")
     database.connect()
 
     # Clean up if exists

@@ -604,8 +604,11 @@ class RelationManager[R: Relation]:
             role_parts.append(f"{role.role_name}: {role_var}")
             role_info[role_name] = (role_var, role.player_entity_types)
 
+        # Build match clause with inline role players
+        # Use isa! to bind exact type to $t for label() function
         roles_str = ", ".join(role_parts)
-        match_clauses = [f"$r isa {self.model_class.get_type_name()} ({roles_str})"]
+        base_type = self.model_class.get_type_name()
+        match_clauses = [f"$r isa! $t ({roles_str})", f"$t sub {base_type}"]
 
         # Add attribute filter clauses
         for field_name, value in attr_filters.items():
@@ -636,7 +639,8 @@ class RelationManager[R: Relation]:
         match_str = ";\n".join(match_clauses) + ";"
 
         # Build fetch clause with nested structure for role players
-        fetch_items = []
+        # Use label($t) where $t is a TYPE variable bound via isa!
+        fetch_items = ['"_iid": iid($r)', '"_type": label($t)']
 
         # Add relation attributes (including inherited)
         for field_name, attr_info in all_attrs.items():
@@ -789,11 +793,14 @@ class RelationManager[R: Relation]:
             role_parts.append(f"{role.role_name}: {role_var}")
             role_info[role_name] = (role_var, role.player_entity_types)
 
+        # Use isa! to bind exact type to $t for label() function
         roles_str = ", ".join(role_parts)
-        match_clause = f"$r isa {self.model_class.get_type_name()} ({roles_str}), iid {iid};"
+        base_type = self.model_class.get_type_name()
+        match_clause = f"$r isa! $t ({roles_str}), iid {iid};\n$t sub {base_type};"
 
         # Build fetch clause with nested structure for role players
-        fetch_items = []
+        # Use label($t) where $t is a TYPE variable bound via isa!
+        fetch_items = ['"_iid": iid($r)', '"_type": label($t)']
 
         # Add relation attributes (including inherited)
         for field_name, attr_info in all_attrs.items():

@@ -234,7 +234,7 @@ generate_models("schema.tql", "./myapp/models/")
 
 This generates a complete Python package:
 
-```
+```text
 myapp/models/
 ├── __init__.py      # Package exports, SCHEMA_VERSION, schema_text()
 ├── attributes.py    # Attribute class definitions
@@ -245,6 +245,7 @@ myapp/models/
 ```
 
 The generator supports:
+
 - Entity/relation/attribute inheritance (`sub` keyword)
 - `@key`, `@unique`, `@card` constraints (including on `plays` and `relates`)
 - `@regex` and `@values` constraints
@@ -265,6 +266,7 @@ See [docs/api/generator.md](docs/api/generator.md) for full documentation.
 - **[docs/TYPEDB.md](docs/TYPEDB.md)** - TypeDB concepts, driver API, and TypeQL syntax
 - **[docs/ABSTRACT_TYPES.md](docs/ABSTRACT_TYPES.md)** - Abstract types and interface hierarchies in TypeDB
 - **[docs/INTERNALS.md](docs/INTERNALS.md)** - Internal type system and architecture
+- **[docs/SKILL.md](docs/SKILL.md)** - AI assistant skill for using type-bridge (for Claude, GPT, etc.)
 
 ### API Reference
 
@@ -371,17 +373,6 @@ uv run pytest -m "" -v                    # Run all tests
 - lark>=1.1.9 (for schema parsing)
 - jinja2>=3.1.0 (for code generation)
 - typer>=0.15.0 (for CLI)
-
-## What's New in v1.2.2 (2025-12-25)
-
-**Critical Bug Fixes:**
-- 🐛 **Fixed RelationManager IID correlation** (Issue #78) - `RelationManager.all()` now correctly assigns unique IIDs to role players instead of duplicating the same IIDs across all relations
-- 🐛 **Fixed stack overflow in `__in` lookups** (Issue #76) - Large `__in` queries (75+ values) now work reliably without causing TypeDB query planner crashes
-
-**Previous Releases:**
-- v1.2.0 - TypeDB 3.0 Structs Support & Batch Query Optimizations
-- v1.1.0 - Polymorphic Entity Instantiation
-- v1.0.0 - Initial stable release
 
 ## Release Notes
 

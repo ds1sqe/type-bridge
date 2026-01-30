@@ -1,7 +1,8 @@
 """Session and transaction management for TypeDB."""
 
 import logging
-import re
+import os
+from contextlib import contextmanager
 from typing import Any, overload
 
 from typedb.driver import (
@@ -18,6 +19,29 @@ from typedb.driver import (
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
+def _suppress_stderr():
+    """Suppress stderr at the file descriptor level.
+
+    This silences the TypeDB driver's Rust logging initialization warning
+    which writes directly to fd 2, bypassing Python's sys.stderr.
+
+    Note: Always use fd 2 directly since Rust code writes to the actual
+    stderr file descriptor, not Python's sys.stderr wrapper.
+    """
+    # Always use fd 2 directly (actual stderr) since Rust writes there
+    stderr_fd = 2
+    saved_stderr = os.dup(stderr_fd)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, stderr_fd)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(saved_stderr, stderr_fd)
+        os.close(saved_stderr)
+
+
 def _tx_type_name(tx_type: TransactionType) -> str:
     """Get string name for transaction type (pyright-safe)."""
     names = {
@@ -28,50 +52,58 @@ def _tx_type_name(tx_type: TransactionType) -> str:
     return names.get(tx_type, "UNKNOWN")
 
 
-def _extract_iid_from_string(s: str) -> str | None:
-    """Extract IID from TypeDB string representation.
-
-    TypeDB returns entity/relation strings like:
-    'Entity(person: 0x1e00000000000000000000)'
-    'Relation(employment: 0x1e00000000000000000001)'
+def _extract_values_from_dict(raw_dict: dict[str, Any]) -> dict[str, Any]:
+    """Extract actual values from concept objects in a dictionary.
 
     Args:
-        s: String representation of a TypeDB concept
+        raw_dict: Dictionary from as_dict() with potential concept objects
 
     Returns:
-        IID hex string (e.g., '0x1e00000000000000000000') or None if not found
+        Dictionary with concept objects replaced by their values
     """
-    match = re.search(r"(0x[0-9a-fA-F]+)", s)
-    if match:
-        return match.group(1)
-    return None
+    result: dict[str, Any] = {}
+    for key, concept in raw_dict.items():
+        clean_key = key.lstrip("$")
+        # Try to extract value from different concept types
+        if hasattr(concept, "get_value"):
+            # Attribute concept
+            try:
+                result[clean_key] = {"value": concept.get_value()}
+                continue
+            except Exception:
+                pass
+        # _Value concept (from aggregations) - use .get() not .as_value()
+        if hasattr(concept, "is_value") and concept.is_value():
+            try:
+                result[clean_key] = {"value": concept.get()}
+                continue
+            except Exception:
+                pass
+        # Fallback: keep as-is (may be a nested structure or primitive)
+        result[clean_key] = concept
+    return result
 
 
 def _extract_concept_row(item: Any) -> dict[str, Any]:
-    """Extract concept data including IID from a ConceptRow.
+    """Extract concept data from a ConceptRow (legacy SELECT query results).
 
-    Attempts to extract IID from concepts in the row. For each variable:
-    - If the concept has get_iid(), use it directly
-    - Otherwise, parse the IID from the string representation
-
-    For rows without any IID/type data (e.g., aggregation results),
-    falls back to string representation format for compatibility.
+    Note: With TypeQL 3.8.0+, FETCH queries include iid() and label() directly,
+    so this function is primarily used for edge cases and backward compatibility.
 
     Args:
         item: A ConceptRow object from TypeDB driver
 
     Returns:
-        Dictionary with variable names as keys, containing concept data and IID,
+        Dictionary with variable names as keys, containing concept data,
         or {"result": str(item)} for aggregation/reduce query results
     """
     result: dict[str, Any] = {}
-    has_iid_data = False
+    has_concept_data = False
 
     # Try to get column names
     try:
         column_names = list(item.column_names())
     except Exception:
-        # Fallback to string representation
         return {"result": str(item)}
 
     for var_name in column_names:
@@ -79,48 +111,51 @@ def _extract_concept_row(item: Any) -> dict[str, Any]:
             concept = item.get(var_name)
             concept_data: dict[str, Any] = {}
 
-            # Try to get IID
+            # Try to get IID via driver method
             if hasattr(concept, "get_iid"):
                 try:
                     iid = concept.get_iid()
                     if iid is not None:
                         concept_data["_iid"] = str(iid)
-                        has_iid_data = True
+                        has_concept_data = True
                 except Exception:
                     pass
 
-            # Try to get type label
+            # Try to get type label via driver method
             if hasattr(concept, "get_type"):
                 try:
                     type_obj = concept.get_type()
                     if hasattr(type_obj, "get_label"):
                         label = type_obj.get_label()
-                        # Label can be a string directly or an object with .name
                         if isinstance(label, str):
                             concept_data["_type"] = label
                         elif hasattr(label, "name"):
                             concept_data["_type"] = label.name
+                        has_concept_data = True
                 except Exception:
                     pass
 
-            # Try to get value (for attribute concepts used in correlation queries)
+            # Try to get value (for attribute concepts)
             if hasattr(concept, "get_value"):
                 try:
                     value = concept.get_value()
                     if value is not None:
                         concept_data["value"] = value
+                        has_concept_data = True
                 except Exception:
                     pass
 
-            # If we couldn't get IID directly, try parsing from string
-            if "_iid" not in concept_data:
-                concept_str = str(concept)
-                iid = _extract_iid_from_string(concept_str)
-                if iid:
-                    concept_data["_iid"] = iid
-                    has_iid_data = True
+            # Try to get value (for _Value concepts from aggregations)
+            # Note: _Value.as_value() returns another _Value, use .get() instead
+            if hasattr(concept, "is_value") and concept.is_value():
+                try:
+                    value = concept.get()
+                    if value is not None:
+                        concept_data["value"] = value
+                        has_concept_data = True
+                except Exception:
+                    pass
 
-            # Store concept data under variable name (without $)
             clean_var_name = var_name.lstrip("$")
             result[clean_var_name] = concept_data
 
@@ -128,9 +163,8 @@ def _extract_concept_row(item: Any) -> dict[str, Any]:
             logger.debug(f"Error extracting concept for {var_name}: {e}")
             continue
 
-    # If no IID data was found (e.g., aggregation results), fall back to string format
-    # This is needed for reduce/aggregate queries that expect {"result": str(item)}
-    if not has_iid_data:
+    # If no concept data was found, fall back to string format
+    if not has_concept_data:
         return {"result": str(item)}
 
     return result
@@ -186,17 +220,18 @@ class Database:
             driver_options = DriverOptions(is_tls_enabled=is_tls_enabled)
             logger.debug(f"TLS enabled: {is_tls_enabled}")
 
-            # Connect to TypeDB
+            # Connect to TypeDB (suppress Rust logging warning)
             try:
-                if credentials:
-                    logger.debug("Using provided credentials for authentication")
-                    self._driver = TypeDB.driver(self.address, credentials, driver_options)
-                else:
-                    # For local TypeDB Core without authentication
-                    logger.debug("Using default credentials for local connection")
-                    self._driver = TypeDB.driver(
-                        self.address, Credentials("admin", "password"), driver_options
-                    )
+                with _suppress_stderr():
+                    if credentials:
+                        logger.debug("Using provided credentials for authentication")
+                        self._driver = TypeDB.driver(self.address, credentials, driver_options)
+                    else:
+                        # For local TypeDB Core without authentication
+                        logger.debug("Using default credentials for local connection")
+                        self._driver = TypeDB.driver(
+                            self.address, Credentials("admin", "password"), driver_options
+                        )
                 self._owns_driver = True
                 logger.info(f"Connected to TypeDB at {self.address}")
             except Exception as e:
@@ -356,8 +391,9 @@ class Transaction:
         if hasattr(answer, "__iter__"):
             for item in answer:
                 if hasattr(item, "as_dict"):
-                    # ConceptRow with as_dict method
-                    results.append(dict(item.as_dict()))
+                    # ConceptRow with as_dict method - extract values from concepts
+                    raw_dict = dict(item.as_dict())
+                    results.append(_extract_values_from_dict(raw_dict))
                 elif hasattr(item, "as_json"):
                     # Document with as_json method
                     results.append(item.as_json())

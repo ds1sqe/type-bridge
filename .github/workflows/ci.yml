@@ -105,12 +105,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        test-group: [crud, queries, schema]
+        test-group: [crud, queries, schema, expressions]
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
       typedb:
-        image: typedb/typedb:3.7.0-rc0
+        image: typedb/typedb:3.8.0-rc0
         ports:
           - 1729:1729
 
