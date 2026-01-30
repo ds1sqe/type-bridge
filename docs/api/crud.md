@@ -95,6 +95,7 @@ with db.transaction(TransactionType.WRITE) as tx:
 ```
 
 Notes:
+
 - `Database.transaction` returns a context manager; pass the returned context or its `transaction` to managers/queries.
 - Entity/Relation managers and queries automatically reuse the provided transaction instead of opening new ones.
 - READ transactions are never rolled back (no writes); WRITE/SCHEMA auto-commit on success and rollback on exception.
@@ -144,10 +145,10 @@ Both `insert()` and `insert_many()` run in a single write transaction when a tra
 
 PUT operations are idempotent - they insert only if the pattern doesn't exist, making them safe to run multiple times.
 
-| Operation | Behavior |
-|-----------|----------|
-| **INSERT** | Always creates new instances |
-| **PUT** | Idempotent - inserts only if doesn't exist |
+| Operation  | Behavior                                   |
+| ---------- | ------------------------------------------ |
+| **INSERT** | Always creates new instances               |
+| **PUT**    | Idempotent - inserts only if doesn't exist |
 
 ```python
 # Single PUT
@@ -211,6 +212,13 @@ first_person = person_manager.filter(name="Alice").first()
 
 if first_person:
     print(f"Found: {first_person.name}")
+else:
+    print("Not found")
+
+# Count matching entities
+count = person_manager.filter(age=30).count()
+print(f"Found {count} persons aged 30")
+```
 
 ### Django-style lookup suffixes
 
@@ -262,17 +270,11 @@ present_age = person_manager.filter(age__isnull=False)
 ```
 
 Rules and validation:
+
 - Attribute names cannot contain `__` when using lookups.
 - `__in` requires a non-empty iterable; mixed raw values and Attribute instances are allowed.
 - String lookups (`contains`, `startswith`, `endswith`, `regex`) require `String` attributes.
 - `__isnull` requires a boolean.
-else:
-    print("Not found")
-
-# Count matching entities
-count = person_manager.filter(age=30).count()
-print(f"Found {count} persons aged 30")
-```
 
 ### EntityQuery Methods
 
@@ -350,6 +352,7 @@ results = employment_manager.filter().order_by('employee__age', '-salary').execu
 ## Update Operations
 
 The update API supports two patterns:
+
 1. **Instance-based**: fetch → modify → update (traditional ORM pattern)
 2. **Bulk functional**: filter → update_with function (efficient bulk updates)
 
@@ -411,7 +414,7 @@ class Document(Entity):
     title: Title
 ```
 
-See [Exception Handling](#exception-handling-v072) for details on handling `KeyAttributeError`.
+See [Exception Handling](#exception-handling) for details on handling `KeyAttributeError`.
 
 ### Update Single-Value Attributes
 
@@ -463,7 +466,7 @@ person_manager.update(charlie)
 
 ### Bulk Update with Function
 
-**New in v0.6.0**: Update multiple entities efficiently using `update_with()`:
+Update multiple entities efficiently using `update_with()`:
 
 ```python
 # Increment age for all persons over 30
@@ -512,6 +515,7 @@ person_manager.update_many(people)
 `update_many()` reuses a provided transaction/context; otherwise it opens exactly one write transaction for the batch.
 
 **How `update_with()` works**:
+
 1. Fetches all entities matching the filter
 2. Applies the function to each entity in-place
 3. Updates all entities in a single atomic transaction
@@ -526,9 +530,11 @@ person_manager.update_many(people)
 The update method generates different TypeQL based on cardinality:
 
 **Single-value attributes** (`@card(0..1)` or `@card(1..1)`):
+
 - Uses TypeQL `update` clause for efficient in-place updates
 
 **Multi-value attributes** (e.g., `@card(1..)`, `@card(2..5)`):
+
 - Deletes all old values
 - Inserts new values
 
@@ -550,11 +556,8 @@ $e has status "active";
 
 ## Delete Operations
 
-**Changed in v0.7.1**: Delete API refactored to instance-based pattern for consistency with `insert()` and `update()`.
-
-**Changed in v0.7.2**: New exceptions for delete operations - `EntityNotFoundError`, `RelationNotFoundError`, `NotUniqueError`.
-
 TypeBridge supports two delete patterns:
+
 1. **Instance delete**: `manager.delete(entity)` - delete by entity instance (recommended)
 2. **Filter delete**: `manager.filter(...).delete()` - delete matching entities by filter
 
@@ -575,10 +578,11 @@ alice.delete(db)  # Returns alice for chaining
 ```
 
 **How instance delete works**:
+
 - Uses `@key` attributes to identify the entity (same as `update()`)
 - Returns the deleted entity instance (not a count)
 - Raises `ValueError` if key attribute is None
-- Raises `EntityNotFoundError` if entity doesn't exist in database (v0.7.2+)
+- Raises `EntityNotFoundError` if entity doesn't exist in database
 
 ### Delete Entities Without @key
 
@@ -600,10 +604,11 @@ manager.delete(counter)  # Error: found 2 matches
 ```
 
 **Behavior**:
+
 - Matches by ALL non-None attributes
 - Only deletes if exactly 1 match found
-- Raises `EntityNotFoundError` if 0 matches (v0.7.2+)
-- Raises `NotUniqueError` if >1 matches (v0.7.2+)
+- Raises `EntityNotFoundError` if 0 matches
+- Raises `NotUniqueError` if >1 matches
 
 ### Batch Delete with `delete_many`
 
@@ -623,7 +628,7 @@ deleted = person_manager.delete_many([])
 assert deleted == []
 ```
 
-**Idempotent by default** (v1.2.0+): Missing entities are silently ignored:
+**Idempotent by default**: Missing entities are silently ignored:
 
 ```python
 # Create entity that doesn't exist in DB
@@ -675,13 +680,14 @@ assert count == 0
 ```
 
 **How filter delete works**:
+
 - Builds TypeQL delete query from all filters
 - Executes in single atomic transaction
 - Returns count of deleted entities (int)
 
 ### Instance Delete Method
 
-**New in v0.7.1**: Entities can delete themselves:
+Entities can delete themselves:
 
 ```python
 # Create and insert entity
@@ -697,7 +703,7 @@ Person(name=Name("Temp")).insert(db).delete(db)
 
 **Warning**: Delete operations are permanent and cannot be undone!
 
-### Exception Handling (v0.7.2+)
+### Exception Handling
 
 Delete and update operations raise specific exceptions for better error handling:
 
@@ -717,7 +723,7 @@ except NotUniqueError:
     # Use filter().delete() for bulk deletion instead
     count = manager.filter(value=keyless_entity.value).delete()
 
-# Handle @key validation failures (v0.9.2+)
+# Handle @key validation failures
 try:
     manager.update(entity_with_none_key)
 except KeyAttributeError as e:
@@ -729,15 +735,16 @@ except KeyAttributeError as e:
 ```
 
 **Exception hierarchy**:
+
 - `EntityNotFoundError(LookupError)` - Entity not found in database
 - `NotUniqueError(ValueError)` - Multiple matches for keyless entity
-- `KeyAttributeError(ValueError)` - @key attribute is None or no @key defined (v0.9.2+)
+- `KeyAttributeError(ValueError)` - @key attribute is None or no @key defined
 
 ## RelationManager
 
 Type-safe manager for relation CRUD operations.
 
-### Creating a Manager
+### Creating a Relation Manager
 
 ```python
 from type_bridge import Relation, TypeFlags, Role
@@ -794,12 +801,12 @@ class RelationManager[R: Relation]:
 class Relation:
     @classmethod
     def get_roles(cls) -> dict[str, Role]:
-        """Get all roles defined on this relation. New in v0.9.0."""
+        """Get all roles defined on this relation."""
 ```
 
 ### Accessing Relation Roles
 
-**New in v0.9.0**: Use `get_roles()` to introspect relation roles:
+Use `get_roles()` to introspect relation roles:
 
 ```python
 # Get all roles for a relation
@@ -811,6 +818,38 @@ employee_role = Employment.get_roles()['employee']
 print(employee_role.role_name)  # 'employee'
 print(employee_role.player_entity_types)  # (Person,)
 ```
+
+### Role Player Matching
+
+When performing relation CRUD operations (`insert`, `put`, `update`, `delete`), TypeBridge needs to identify the role player entities in the database. It uses an **IID-preferring** matching strategy:
+
+1. **IID (preferred)**: If the entity has `_iid` set (from being fetched from the database), uses fast IID-based matching
+2. **Key attributes (fallback)**: If no IID, uses the entity's `@key` attributes to identify it
+3. **Error**: If neither is available, raises `ValueError` with clear guidance
+
+```python
+# Pattern 1: Fetch entities first (uses IID matching - faster, more precise)
+alice = person_manager.filter(name=Name("Alice")).first()  # alice._iid is set
+company = company_manager.filter(name=Name("TechCorp")).first()  # company._iid is set
+emp = Employment(employee=alice, employer=company, position=Position("Engineer"))
+emp_manager.insert(emp)  # Uses IIDs for matching
+
+# Pattern 2: Create stub entities (uses key attribute matching)
+alice = Person(name=Name("Alice"))  # No _iid - just the key attribute
+company = Company(name=Name("TechCorp"))
+emp = Employment(employee=alice, employer=company, position=Position("Engineer"))
+emp_manager.insert(emp)  # Uses name (@key) for matching
+
+# Pattern 3: Entity without IID or @key - raises error
+# class NoKeyEntity(Entity):
+#     flags = TypeFlags(name="no_key")
+#     value: Value  # No @key attribute
+# no_key = NoKeyEntity(value=Value(42))
+# emp = SomeRelation(player=no_key)
+# relation_manager.insert(emp)  # ValueError: cannot identify role player
+```
+
+**Best practice**: Fetch entities from the database when you need to use them as role players. This populates `_iid` and enables faster, more precise matching.
 
 ### Insert Relations
 
@@ -861,7 +900,7 @@ for employment in all_employments:
     print(f"{employment.employee.name}: {employment.position}")
 ```
 
-#### Get with Filters
+#### Get Relations with Filters
 
 Filter by both attributes and role players:
 
@@ -886,9 +925,9 @@ specific_employment = employment_manager.get(
 )
 ```
 
-#### Chainable Queries
+#### Chainable Relation Queries
 
-**New in v0.6.0**: RelationManager now supports the same chainable query API as EntityManager:
+RelationManager now supports the same chainable query API as EntityManager:
 
 ```python
 # Basic query
@@ -913,9 +952,9 @@ print(f"Found {count} engineers")
 
 #### RelationQuery Methods
 
-**New in v0.6.0**: Complete API parity with EntityQuery.
+Complete API parity with EntityQuery.
 
-**New in v0.9.0**: Type-safe role player expressions and `**kwargs` support in chained `filter()`.
+Type-safe role player expressions and `**kwargs` support in chained `filter()`.
 
 ```python
 class RelationQuery[R: Relation]:
@@ -955,7 +994,7 @@ class RelationQuery[R: Relation]:
 
 #### Type-Safe Role Player Expressions
 
-**New in v0.9.0**: Filter relations using type-safe role player field access:
+Filter relations using type-safe role player field access:
 
 ```python
 # Type-safe role player expressions
@@ -988,10 +1027,11 @@ See [Queries - Type-Safe Role Player Expressions](queries.md#type-safe-role-play
 ### Update Relations
 
 The update API supports two patterns (same as EntityManager):
+
 1. **Instance-based**: fetch → modify → update (traditional ORM pattern)
 2. **Bulk functional**: filter → update_with function (efficient bulk updates)
 
-#### Basic Update
+#### Basic Relation Update
 
 ```python
 # Step 1: Fetch relation
@@ -1005,7 +1045,7 @@ employment.salary = Salary(150000)
 employment_manager.update(employment)
 ```
 
-#### Update Single-Value Attributes
+#### Update Relation Single-Value Attributes
 
 ```python
 # Fetch relation
@@ -1020,7 +1060,7 @@ employment.start_date = StartDate("2024-01-01")
 employment_manager.update(employment)
 ```
 
-#### Update Multi-Value Attributes
+#### Update Relation Multi-Value Attributes
 
 ```python
 # Fetch relation
@@ -1041,9 +1081,9 @@ employment.responsibilities = []
 employment_manager.update(employment)
 ```
 
-#### Bulk Update with Function
+#### Bulk Relation Update with Function
 
-**New in v0.6.0**: Update multiple relations efficiently using `update_with()`:
+Update multiple relations efficiently using `update_with()`:
 
 ```python
 # Give all engineers a 10% raise
@@ -1072,6 +1112,7 @@ print(f"Promoted {len(promoted)} employments")
 ```
 
 **How `update_with()` works for relations**:
+
 1. Fetches all relations matching the filter
 2. Stores original attribute values (needed to uniquely identify relations)
 3. Applies the function to each relation in-place
@@ -1086,15 +1127,16 @@ print(f"Promoted {len(promoted)} employments")
 
 ### Delete Relations
 
-**Changed in v0.7.1**: Delete API refactored to instance-based pattern.
+Delete API refactored to instance-based pattern.
 
-**Changed in v0.7.2**: Raises `RelationNotFoundError` when relation doesn't exist.
+Raises `RelationNotFoundError` when relation doesn't exist.
 
 TypeBridge supports two delete patterns for relations:
+
 1. **Instance delete**: `manager.delete(relation)` - delete by relation instance (recommended)
 2. **Filter delete**: `manager.filter(...).delete()` - delete matching relations by filter
 
-#### Instance Delete (Recommended)
+#### Relation Instance Delete (Recommended)
 
 Delete relations by instance, using role players' `@key` attributes:
 
@@ -1111,12 +1153,13 @@ employment.delete(db)  # Returns employment for chaining
 ```
 
 **How instance delete works**:
+
 - Uses role players' `@key` attributes to identify the relation
 - Returns the deleted relation instance (not a count)
 - Raises `ValueError` if role player is missing or has None key
-- Raises `RelationNotFoundError` if relation doesn't exist (v0.7.2+)
+- Raises `RelationNotFoundError` if relation doesn't exist
 
-#### Batch Delete with `delete_many`
+#### Relation Batch Delete with `delete_many`
 
 Delete multiple relation instances in a single transaction:
 
@@ -1134,7 +1177,7 @@ deleted = employment_manager.delete_many([])
 assert deleted == []
 ```
 
-#### Filter-Based Delete
+#### Relation Filter-Based Delete
 
 For bulk deletion by criteria, use `filter().delete()`:
 
@@ -1160,13 +1203,14 @@ assert count == 0
 ```
 
 **How filter delete works**:
+
 - Builds TypeQL delete query from all filters
 - Executes in single atomic transaction
 - Returns count of deleted relations (int)
 
-#### Instance Delete Method
+#### Relation Instance Delete Method
 
-**New in v0.7.1**: Relations can delete themselves:
+Relations can delete themselves:
 
 ```python
 # Create and insert relation
@@ -1179,7 +1223,7 @@ emp.delete(db)  # Returns emp for chaining
 
 **Warning**: Delete operations are permanent and cannot be undone!
 
-#### Exception Handling (v0.7.2+)
+#### Relation Exception Handling
 
 Relation delete operations raise `RelationNotFoundError` when the relation doesn't exist:
 
@@ -1366,7 +1410,7 @@ alice = user_manager.get(age=30)[0]  # May return multiple results
 Delete entities by instance, not by filter:
 
 ```python
-# ✅ GOOD: Instance-based delete (v0.7.1+)
+# ✅ GOOD: Instance-based delete
 alice = user_manager.get(user_id="u1")[0]
 deleted = user_manager.delete(alice)  # Returns alice
 print(f"Deleted {deleted.username.value}")
@@ -1377,7 +1421,7 @@ alice.delete(db)
 # ✅ GOOD: Filter-based for bulk operations
 count = user_manager.filter(Age.gt(Age(65))).delete()  # Returns count
 
-# ⚠️ NOTE: Old filter-based manager.delete(**filters) removed in v0.7.1
+# Use filter().delete() for filter-based deletion
 # Use filter().delete() instead for filter-based deletion
 ```
 
@@ -1444,6 +1488,7 @@ driver.close()
 ```
 
 **Ownership semantics:**
+
 - `driver=None` (default): `Database` creates and owns the driver, `close()` closes it
 - `driver=<Driver>`: `Database` uses but doesn't own it, `close()` only clears the reference
 
