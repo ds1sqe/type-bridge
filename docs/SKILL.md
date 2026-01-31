@@ -455,7 +455,24 @@ class Person(Entity):
 
 5. **Schema sync before data**: Always sync schema before inserting data
 
-6. **Transaction types**:
+6. **Role player matching**: Relation CRUD operations identify role players using:
+   - **IID (preferred)**: If the entity has `_iid` set (from being fetched from DB), uses fast IID matching
+   - **Key attributes (fallback)**: If no IID, uses `Flag(Key)` attributes to identify the entity
+   - **Error**: If neither is available, raises `ValueError` with clear guidance
+
+   ```python
+   # Pattern 1: Fetch entities first (uses IID matching - faster)
+   alice = person_manager.filter(name=Name("Alice")).first()  # alice._iid is set
+   emp = Employment(employee=alice, employer=company)
+   emp_manager.insert(emp)  # Uses alice._iid for matching
+
+   # Pattern 2: Create stub entities (uses key attribute matching)
+   alice = Person(name=Name("Alice"))  # No _iid
+   emp = Employment(employee=alice, employer=company)
+   emp_manager.insert(emp)  # Uses name (key attr) for matching
+   ```
+
+7. **Transaction types**:
    - `"read"`: For queries (no commit needed)
    - `"write"`: For insert/update/delete (auto-commits)
    - `"schema"`: For schema changes (auto-commits)

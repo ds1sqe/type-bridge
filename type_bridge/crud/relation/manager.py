@@ -37,6 +37,106 @@ class RelationManager[R: Relation]:
         self._executor = ConnectionExecutor(connection)
         self.model_class = model_class
 
+    def _build_role_player_match(self, role_name: str, entity: Any, entity_type_name: str) -> str:
+        """Build a match clause for a role player entity.
+
+        Prefers IID-based matching when available (more precise and faster),
+        falls back to key attribute matching, and raises a clear error if
+        neither is available.
+
+        Args:
+            role_name: The role name (used as variable name)
+            entity: The entity instance
+            entity_type_name: The TypeDB type name for the entity
+
+        Returns:
+            A TypeQL match clause string like "$role_name isa type, iid 0x..."
+            or "$role_name isa type, has key_attr value"
+
+        Raises:
+            ValueError: If entity has neither _iid nor key attributes
+        """
+        # Prefer IID-based matching when available (more precise and faster)
+        entity_iid = getattr(entity, "_iid", None)
+        if entity_iid:
+            return f"${role_name} isa {entity_type_name}, iid {entity_iid}"
+
+        # Fall back to key attribute matching
+        key_attrs = {
+            field_name: attr_info
+            for field_name, attr_info in entity.__class__.get_all_attributes().items()
+            if attr_info.flags.is_key
+        }
+
+        for field_name, attr_info in key_attrs.items():
+            value = getattr(entity, field_name)
+            if value is not None:
+                attr_class = attr_info.typ
+                attr_name = attr_class.get_attribute_name()
+                formatted_value = format_value(value)
+                return f"${role_name} isa {entity_type_name}, has {attr_name} {formatted_value}"
+
+        # Neither IID nor key attributes available
+        raise ValueError(
+            f"Role player '{role_name}' ({entity.__class__.__name__}) cannot be identified: "
+            f"no _iid set and no @key attributes defined. Either fetch the entity from the "
+            f"database first (to populate _iid) or add Flag(Key) to an attribute."
+        )
+
+    def _build_player_key_and_match(
+        self, player_entity: Any
+    ) -> tuple[tuple[str, Any], str, list[str]]:
+        """Build a unique key and match clause parts for a role player entity.
+
+        Used by insert_many/put_many to deduplicate role players across relations.
+        Prefers IID-based matching when available.
+
+        Args:
+            player_entity: The entity instance
+
+        Returns:
+            Tuple of (player_key, player_type, match_parts) where:
+            - player_key: Tuple for deduplication (either ("iid", iid) or key attr values)
+            - player_type: The TypeDB type name
+            - match_parts: List of match clause parts like ["isa type", "iid 0x..."]
+
+        Raises:
+            ValueError: If entity has neither _iid nor key attributes
+        """
+        player_type = player_entity.get_type_name()
+
+        # Prefer IID-based matching when available
+        entity_iid = getattr(player_entity, "_iid", None)
+        if entity_iid:
+            player_key: tuple[str, Any] = ("iid", entity_iid)
+            match_parts = [f"isa {player_type}", f"iid {entity_iid}"]
+            return (player_key, player_type, match_parts)
+
+        # Fall back to key attribute matching
+        owned_attrs = player_entity.get_all_attributes()
+        key_values: list[tuple[str, Any]] = []
+        for field_name, attr_info in owned_attrs.items():
+            if attr_info.flags.is_key:
+                value = getattr(player_entity, field_name, None)
+                if value is not None:
+                    attr_name = attr_info.typ.get_attribute_name()
+                    key_values.append((attr_name, value))
+
+        if key_values:
+            player_key = ("keys", tuple(sorted(key_values)))
+            match_parts = [f"isa {player_type}"]
+            for attr_name, value in key_values:
+                formatted_value = format_value(value)
+                match_parts.append(f"has {attr_name} {formatted_value}")
+            return (player_key, player_type, match_parts)
+
+        # Neither IID nor key attributes available
+        raise ValueError(
+            f"Role player ({player_entity.__class__.__name__}) cannot be identified: "
+            f"no _iid set and no @key attributes defined. Either fetch the entity from the "
+            f"database first (to populate _iid) or add Flag(Key) to an attribute."
+        )
+
     def insert(self, relation: R) -> R:
         """Insert a typed relation instance into the database.
 
@@ -65,27 +165,11 @@ class RelationManager[R: Relation]:
             if entity is not None:
                 role_players[role_name] = entity
 
-        # Build match clause for role players
+        # Build match clause for role players (IID-preferring)
         match_parts = []
         for role_name, entity in role_players.items():
-            # Get key attributes from the entity (including inherited attributes)
             entity_type_name = entity.__class__.get_type_name()
-            key_attrs = {
-                field_name: attr_info
-                for field_name, attr_info in entity.__class__.get_all_attributes().items()
-                if attr_info.flags.is_key
-            }
-
-            # Match entity by its key attribute
-            for field_name, attr_info in key_attrs.items():
-                value = getattr(entity, field_name)
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-                formatted_value = format_value(value)
-                match_parts.append(
-                    f"${role_name} isa {entity_type_name}, has {attr_name} {formatted_value}"
-                )
-                break  # Only use first key attribute
+            match_parts.append(self._build_role_player_match(role_name, entity, entity_type_name))
 
         # Build insert clause
         relation_type_name = self.model_class.get_type_name()
@@ -170,27 +254,11 @@ class RelationManager[R: Relation]:
             if entity is not None:
                 role_players[role_name] = entity
 
-        # Build match clause for role players
+        # Build match clause for role players (IID-preferring)
         match_parts = []
         for role_name, entity in role_players.items():
-            # Get key attributes from the entity (including inherited attributes)
             entity_type_name = entity.__class__.get_type_name()
-            key_attrs = {
-                field_name: attr_info
-                for field_name, attr_info in entity.__class__.get_all_attributes().items()
-                if attr_info.flags.is_key
-            }
-
-            # Match entity by its key attribute
-            for field_name, attr_info in key_attrs.items():
-                value = getattr(entity, field_name)
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-                formatted_value = format_value(value)
-                match_parts.append(
-                    f"${role_name} isa {entity_type_name}, has {attr_name} {formatted_value}"
-                )
-                break  # Only use first key attribute
+            match_parts.append(self._build_role_player_match(role_name, entity, entity_type_name))
 
         # Build put clause (same as insert clause but with "put" keyword)
         relation_type_name = self.model_class.get_type_name()
@@ -280,30 +348,22 @@ class RelationManager[R: Relation]:
         # Build query
         query = Query()
 
-        # Collect all unique role players to match
-        all_players = {}  # key: (entity_type, key_attr_values) -> player_var
+        # Collect all unique role players to match (IID-preferring)
+        all_players: dict[tuple[str, tuple[str, Any]], str] = {}  # player_key -> player_var
         player_counter = 0
 
         # First pass: collect all unique players from all relation instances
         for relation in relations:
             # Extract role players from instance
-            for role_name, role in self.model_class._roles.items():
+            for role_name in self.model_class._roles:
                 player_entity = relation.__dict__.get(role_name)
                 if player_entity is None:
                     continue
-                # Create unique key for this player based on key attributes (including inherited)
-                player_type = player_entity.get_type_name()
-                owned_attrs = player_entity.get_all_attributes()
 
-                key_values = []
-                for field_name, attr_info in owned_attrs.items():
-                    if attr_info.flags.is_key:
-                        value = getattr(player_entity, field_name, None)
-                        if value is not None:
-                            attr_name = attr_info.typ.get_attribute_name()
-                            key_values.append((attr_name, value))
-
-                player_key = (player_type, tuple(sorted(key_values)))
+                # Build player key and match clause (IID-preferring)
+                player_key, player_type, match_parts = self._build_player_key_and_match(
+                    player_entity
+                )
 
                 if player_key not in all_players:
                     player_var = f"$player{player_counter}"
@@ -311,17 +371,12 @@ class RelationManager[R: Relation]:
                     all_players[player_key] = player_var
 
                     # Build match clause for this player
-                    match_parts = [f"{player_var} isa {player_type}"]
-                    for attr_name, value in key_values:
-                        formatted_value = format_value(value)
-                        match_parts.append(f"has {attr_name} {formatted_value}")
-
-                    query.match(", ".join(match_parts))
+                    query.match(f"{player_var} " + ", ".join(match_parts))
 
         # Second pass: build put patterns for relations (same as insert_many but with "put")
         put_patterns = []
 
-        for i, relation in enumerate(relations):
+        for relation in relations:
             # Map role players to their variables
             role_var_map = {}
             for role_name, role in self.model_class._roles.items():
@@ -329,19 +384,8 @@ class RelationManager[R: Relation]:
                 if player_entity is None:
                     raise ValueError(f"Missing role player for role: {role_name}")
 
-                # Find the player variable (including inherited attributes)
-                player_type = player_entity.get_type_name()
-                owned_attrs = player_entity.get_all_attributes()
-
-                key_values = []
-                for field_name, attr_info in owned_attrs.items():
-                    if attr_info.flags.is_key:
-                        value = getattr(player_entity, field_name, None)
-                        if value is not None:
-                            attr_name = attr_info.typ.get_attribute_name()
-                            key_values.append((attr_name, value))
-
-                player_key = (player_type, tuple(sorted(key_values)))
+                # Find the player variable using the same key logic
+                player_key, _, _ = self._build_player_key_and_match(player_entity)
                 player_var = all_players[player_key]
                 role_var_map[role_name] = (player_var, role.role_name)
 
@@ -439,30 +483,22 @@ class RelationManager[R: Relation]:
         # Build query
         query = Query()
 
-        # Collect all unique role players to match
-        all_players = {}  # key: (entity_type, key_attr_values) -> player_var
+        # Collect all unique role players to match (IID-preferring)
+        all_players: dict[tuple[str, tuple[str, Any]], str] = {}  # player_key -> player_var
         player_counter = 0
 
         # First pass: collect all unique players from all relation instances
         for relation in relations:
             # Extract role players from instance
-            for role_name, role in self.model_class._roles.items():
+            for role_name in self.model_class._roles:
                 player_entity = relation.__dict__.get(role_name)
                 if player_entity is None:
                     continue
-                # Create unique key for this player based on key attributes (including inherited)
-                player_type = player_entity.get_type_name()
-                owned_attrs = player_entity.get_all_attributes()
 
-                key_values = []
-                for field_name, attr_info in owned_attrs.items():
-                    if attr_info.flags.is_key:
-                        value = getattr(player_entity, field_name, None)
-                        if value is not None:
-                            attr_name = attr_info.typ.get_attribute_name()
-                            key_values.append((attr_name, value))
-
-                player_key = (player_type, tuple(sorted(key_values)))
+                # Build player key and match clause (IID-preferring)
+                player_key, player_type, match_parts = self._build_player_key_and_match(
+                    player_entity
+                )
 
                 if player_key not in all_players:
                     player_var = f"$player{player_counter}"
@@ -470,17 +506,12 @@ class RelationManager[R: Relation]:
                     all_players[player_key] = player_var
 
                     # Build match clause for this player
-                    match_parts = [f"{player_var} isa {player_type}"]
-                    for attr_name, value in key_values:
-                        formatted_value = format_value(value)
-                        match_parts.append(f"has {attr_name} {formatted_value}")
-
-                    query.match(", ".join(match_parts))
+                    query.match(f"{player_var} " + ", ".join(match_parts))
 
         # Second pass: build insert patterns for relations
         insert_patterns = []
 
-        for i, relation in enumerate(relations):
+        for relation in relations:
             # Map role players to their variables
             role_var_map = {}
             for role_name, role in self.model_class._roles.items():
@@ -488,19 +519,8 @@ class RelationManager[R: Relation]:
                 if player_entity is None:
                     raise ValueError(f"Missing role player for role: {role_name}")
 
-                # Find the player variable (including inherited attributes)
-                player_type = player_entity.get_type_name()
-                owned_attrs = player_entity.get_all_attributes()
-
-                key_values = []
-                for field_name, attr_info in owned_attrs.items():
-                    if attr_info.flags.is_key:
-                        value = getattr(player_entity, field_name, None)
-                        if value is not None:
-                            attr_name = attr_info.typ.get_attribute_name()
-                            key_values.append((attr_name, value))
-
-                player_key = (player_type, tuple(sorted(key_values)))
+                # Find the player variable using the same key logic
+                player_key, _, _ = self._build_player_key_and_match(player_entity)
                 player_var = all_players[player_key]
                 role_var_map[role_name] = (player_var, role.role_name)
 
@@ -1013,7 +1033,7 @@ class RelationManager[R: Relation]:
                         # Optional attribute set to None - needs to be deleted
                         single_value_deletes.add(attr_name)
 
-        # Build match clause with role players
+        # Build match clause with role players (IID-preferring)
         role_parts = []
         match_statements = []
 
@@ -1022,20 +1042,10 @@ class RelationManager[R: Relation]:
             role = roles[role_name]
             role_parts.append(f"{role.role_name}: {role_var}")
 
-            # Match the role player by their key attributes (including inherited)
-            entity_class = entity.__class__
-            player_owned_attrs = entity_class.get_all_attributes()
-            for field_name, attr_info in player_owned_attrs.items():
-                if attr_info.flags.is_key:
-                    key_value = getattr(entity, field_name, None)
-                    if key_value is not None:
-                        attr_name = attr_info.typ.get_attribute_name()
-                        # Extract value from Attribute instance if needed
-                        if hasattr(key_value, "value"):
-                            key_value = key_value.value
-                        formatted_value = format_value(key_value)
-                        match_statements.append(f"{role_var} has {attr_name} {formatted_value};")
-                        break
+            # Match the role player using IID-preferring logic
+            entity_type_name = entity.__class__.get_type_name()
+            match_clause = self._build_role_player_match(role_name, entity, entity_type_name)
+            match_statements.append(f"{match_clause};")
 
         roles_str = ", ".join(role_parts)
         relation_match = f"$r isa {self.model_class.get_type_name()} ({roles_str});"
@@ -1142,7 +1152,7 @@ class RelationManager[R: Relation]:
                 raise ValueError(f"Role player '{role_name}' is required for delete")
             role_players[role_name] = entity
 
-        # Build match clause with role players
+        # Build match clause with role players (IID-preferring)
         role_parts = []
         match_statements = []
 
@@ -1151,18 +1161,10 @@ class RelationManager[R: Relation]:
             role = roles[role_name]
             role_parts.append(f"{role.role_name}: {role_var}")
 
-            # Match role player by their @key attribute (including inherited)
-            player_attrs = entity.__class__.get_all_attributes()
-            for field_name, attr_info in player_attrs.items():
-                if attr_info.flags.is_key:
-                    key_value = getattr(entity, field_name, None)
-                    if key_value is not None:
-                        attr_name = attr_info.typ.get_attribute_name()
-                        if hasattr(key_value, "value"):
-                            key_value = key_value.value
-                        formatted_value = format_value(key_value)
-                        match_statements.append(f"{role_var} has {attr_name} {formatted_value}")
-                        break
+            # Match the role player using IID-preferring logic
+            entity_type_name = entity.__class__.get_type_name()
+            match_clause = self._build_role_player_match(role_name, entity, entity_type_name)
+            match_statements.append(match_clause)
 
         roles_str = ", ".join(role_parts)
         relation_match = f"$r isa {self.model_class.get_type_name()} ({roles_str})"
@@ -1223,7 +1225,7 @@ class RelationManager[R: Relation]:
         roles = self.model_class._roles
         role_names = list(roles.keys())
 
-        # Build disjunctive check query to see which relations exist
+        # Build disjunctive check query to see which relations exist (IID-preferring)
         # Use shared variable names across all branches for TypeQL compatibility
         check_clauses = []
         relation_keys: list[tuple[tuple[str, Any], ...]] = []
@@ -1242,19 +1244,26 @@ class RelationManager[R: Relation]:
                 role = roles[role_name]
                 role_parts.append(f"{role.role_name}: {role_var}")
 
-                # Match role player by their @key attribute
-                player_attrs = entity.__class__.get_all_attributes()
-                for field_name, attr_info in player_attrs.items():
-                    if attr_info.flags.is_key:
-                        key_value = getattr(entity, field_name, None)
-                        if key_value is not None:
-                            attr_name = attr_info.typ.get_attribute_name()
-                            if hasattr(key_value, "value"):
-                                key_value = key_value.value
-                            formatted_value = format_value(key_value)
-                            match_statements.append(f"{role_var} has {attr_name} {formatted_value}")
-                            key_parts.append((f"{role_name}:{attr_name}", key_value))
-                            break
+                # Match role player using IID-preferring logic
+                entity_type_name = entity.__class__.get_type_name()
+                match_clause = self._build_role_player_match(role_name, entity, entity_type_name)
+                match_statements.append(match_clause)
+
+                # Build key for deduplication (use IID if available, else key attrs)
+                entity_iid = getattr(entity, "_iid", None)
+                if entity_iid:
+                    key_parts.append((f"{role_name}:iid", entity_iid))
+                else:
+                    player_attrs = entity.__class__.get_all_attributes()
+                    for field_name, attr_info in player_attrs.items():
+                        if attr_info.flags.is_key:
+                            key_value = getattr(entity, field_name, None)
+                            if key_value is not None:
+                                attr_name = attr_info.typ.get_attribute_name()
+                                if hasattr(key_value, "value"):
+                                    key_value = key_value.value
+                                key_parts.append((f"{role_name}:{attr_name}", key_value))
+                                break
 
             if not role_parts:
                 continue
@@ -1313,7 +1322,7 @@ class RelationManager[R: Relation]:
             logger.info("No relations to delete (none exist)")
             return []
 
-        # Build batched delete query for existing relations
+        # Build batched delete query for existing relations (IID-preferring)
         # Reuse the same clause-building logic with shared variable names
         delete_clauses = []
         for relation in existing_relations:
@@ -1328,18 +1337,10 @@ class RelationManager[R: Relation]:
                 role = roles[role_name]
                 role_parts.append(f"{role.role_name}: {role_var}")
 
-                # Match role player by their @key attribute
-                player_attrs = entity.__class__.get_all_attributes()
-                for field_name, attr_info in player_attrs.items():
-                    if attr_info.flags.is_key:
-                        key_value = getattr(entity, field_name, None)
-                        if key_value is not None:
-                            attr_name = attr_info.typ.get_attribute_name()
-                            if hasattr(key_value, "value"):
-                                key_value = key_value.value
-                            formatted_value = format_value(key_value)
-                            match_statements.append(f"{role_var} has {attr_name} {formatted_value}")
-                            break
+                # Match role player using IID-preferring logic
+                entity_type_name = entity.__class__.get_type_name()
+                match_clause = self._build_role_player_match(role_name, entity, entity_type_name)
+                match_statements.append(match_clause)
 
             roles_str = ", ".join(role_parts)
             relation_match = f"$r isa {self.model_class.get_type_name()} ({roles_str})"
