@@ -2,6 +2,23 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [1.2.5] - 2026-01-31
+
+### New Features
+
+#### IID-preferring Role Player Matching (PR #91)
+- **RelationManager now prefers IID for role player matching**
+  - Uses IID for precise matching when available
+  - Falls back to key attribute matching when IID not set
+  - Raises clear `ValueError` when neither IID nor key attributes available
+  - Location: `type_bridge/crud/relation/manager.py`
+
+**Affected Methods:** `insert()`, `put()`, `update()`, `delete()` and `*_many` variants
+
+### Documentation
+
+- Updated role player matching docs in `docs/SKILL.md` and `docs/api/crud.md`
+
 ## [1.2.4] - 2026-01-30
 
 ### New Features
