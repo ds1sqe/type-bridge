@@ -2,6 +2,91 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [1.2.5] - 2026-01-31
+
+### New Features
+
+#### IID-preferring Role Player Matching (PR #91)
+- **RelationManager now prefers IID for role player matching**
+  - Uses IID for precise matching when available
+  - Falls back to key attribute matching when IID not set
+  - Raises clear `ValueError` when neither IID nor key attributes available
+  - Location: `type_bridge/crud/relation/manager.py`
+
+**Affected Methods:** `insert()`, `put()`, `update()`, `delete()` and `*_many` variants
+
+### Documentation
+
+- Updated role player matching docs in `docs/SKILL.md` and `docs/api/crud.md`
+
+## [1.2.4] - 2026-01-30
+
+### New Features
+
+#### TypeDB 3.8.0 Built-in Functions (PR #88)
+- **Added support for TypeDB 3.8.0 built-in functions**
+  - Identity functions: `iid()`, `label()`
+  - Math functions: `abs_()`, `ceil()`, `floor()`, `round_()`
+  - Collection functions: `len_()`, `max_()`, `min_()`
+  - Location: `type_bridge/expressions/builtins.py`
+
+**Usage Example:**
+```python
+from type_bridge.expressions import iid, label, abs_, ceil, floor
+
+# Get entity IID
+query = Person.manager(db).filter(iid() == "0x1a2b3c").execute()
+
+# Use math functions
+query = Person.manager(db).filter(abs_(Age.value) > 18).execute()
+```
+
+#### Unicode XID Identifier Validation (PR #88)
+- **Added Unicode identifier validation for TypeDB 3.8.0 compatibility**
+  - Validates identifiers follow Unicode XID_Start/XID_Continue rules
+  - Ensures TypeQL identifiers are compatible with TypeDB 3.8.0
+  - Clear error messages for invalid identifiers
+  - Location: `type_bridge/validation.py`
+
+### Bug Fixes
+
+#### Value Extraction Fix (PR #88)
+- **Fixed value extraction for `_Value` concepts**
+  - Changed from `.as_value()` to `.get()` for proper value extraction
+  - Fixes issues with function return values and aggregations
+  - Location: `type_bridge/session.py`
+
+#### Driver Initialization Warning Fix (PR #88)
+- **Fixed "Failed to initialize logging" warning**
+  - Suppresses fd 2 (stderr) during TypeDB driver initialization
+  - Eliminates spurious warning messages on startup
+  - Location: `type_bridge/typedb_driver.py`
+
+### Documentation
+
+- **Added AI Assistant Skill Documentation** (`docs/SKILL.md`)
+  - Guidelines for using TypeBridge with AI code assistants
+
+### Testing
+
+- 32 new unit tests for builtin expressions
+- 7 new integration tests for `iid()` and `label()` functions
+- All existing tests pass with TypeDB 3.8.0-rc0
+- Fixed hardcoded port 1729 in tests to use TEST_DB_ADDRESS
+
+### CI/CD
+
+- **Updated CI to TypeDB 3.8.0-rc0**
+  - All tests now run against TypeDB 3.8.0-rc0
+
+### Key Files Modified
+
+- `type_bridge/expressions/builtins.py` - New built-in function expressions
+- `type_bridge/session.py` - Value extraction fix
+- `type_bridge/typedb_driver.py` - Driver initialization fix
+- `type_bridge/validation.py` - Unicode identifier validation
+- `docs/SKILL.md` - New AI assistant documentation
+
 ## [1.2.3] - 2025-12-28
 
 ### New Features
