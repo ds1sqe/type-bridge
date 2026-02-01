@@ -29,6 +29,34 @@ logger = logging.getLogger(__name__)
 GRAMMAR_PATH = Path(__file__).parent / "typeql.lark"
 
 
+def _unquote_string(raw: str) -> str:
+    """Safely parse a quoted string literal.
+
+    Uses ast.literal_eval for safe parsing that handles:
+    - Both single and double quotes
+    - Escape sequences (\\n, \\t, \\\\, etc.)
+    - Unicode escapes
+
+    Args:
+        raw: Raw string literal (e.g., '"hello"' or "'hello\\nworld'")
+
+    Returns:
+        Unquoted string content with escapes processed
+
+    Raises:
+        ValueError: If string is not a valid string literal
+    """
+    import ast
+
+    try:
+        result = ast.literal_eval(raw)
+        if not isinstance(result, str):
+            raise ValueError(f"Expected string literal, got {type(result).__name__}")
+        return result
+    except (ValueError, SyntaxError) as e:
+        raise ValueError(f"Invalid string literal: {raw!r}. Error: {e}") from e
+
+
 class SchemaTransformer(Transformer):
     """Transform Lark parse tree into TypeBridge schema models."""
 
@@ -102,7 +130,10 @@ class SchemaTransformer(Transformer):
         import re
 
         raw = str(items[0])
-        pattern = raw[1:-1]  # Strip quotes
+        try:
+            pattern = _unquote_string(raw)
+        except ValueError as e:
+            raise ValueError(f"Invalid @regex annotation: {e}") from e
 
         # Validate: must be a valid regex pattern
         try:
@@ -111,7 +142,7 @@ class SchemaTransformer(Transformer):
             raise ValueError(
                 f"Invalid @regex pattern: '{pattern}'. "
                 f"Must be a valid regular expression. Error: {e}"
-            )
+            ) from e
 
         return {"regex": pattern}
 
@@ -164,7 +195,7 @@ class SchemaTransformer(Transformer):
         return {"range_min": range_min, "range_max": range_max}
 
     def string_list(self, items: list[Any]) -> list[str]:
-        return [str(item)[1:-1] for item in items]
+        return [_unquote_string(str(item)) for item in items]
 
     def value_type(self, items: list[Any]) -> str:
         return str(items[0])
