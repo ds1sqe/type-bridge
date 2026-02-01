@@ -1,13 +1,11 @@
 """Entity CRUD operations manager."""
 
 import logging
-import re
 from typing import TYPE_CHECKING, Any, cast
 
 from typedb.driver import TransactionType
 
-from type_bridge.attribute.string import String
-from type_bridge.expressions import AttributeExistsExpr, BooleanExpr, Expression
+from type_bridge.expressions import BooleanExpr, Expression
 from type_bridge.models import Entity
 from type_bridge.query import QueryBuilder
 
@@ -343,6 +341,7 @@ class EntityManager[E: Entity](ModelManager[E]):
 
     def _parse_lookup_filters(self, filters: dict[str, Any]) -> tuple[dict[str, Any], list[Any]]:
         """Parse Django-style lookup filters into base filters and expressions."""
+        from type_bridge.crud.lookup import build_lookup_expression
         from type_bridge.expressions.iid import IidExpr
 
         owned_attrs = self.model_class.get_all_attributes()
@@ -387,65 +386,14 @@ class EntityManager[E: Entity](ModelManager[E]):
             attr_info = owned_attrs[field_name]
             attr_type = attr_info.typ
 
-            # Normalize raw_value into Attribute instance for comparison/string ops
-            def _wrap(value: Any):
-                if isinstance(value, attr_type):
-                    return value
-                return attr_type(value)
-
+            # Handle exact/eq as base filter for efficiency (simple equality match)
             if lookup in ("exact", "eq"):
                 base_filters[field_name] = raw_value
                 continue
 
-            if lookup in ("gt", "gte", "lt", "lte"):
-                if not hasattr(attr_type, lookup):
-                    raise ValueError(f"Lookup '{lookup}' not supported for {attr_type.__name__}")
-                wrapped = _wrap(raw_value)
-                expressions.append(getattr(attr_type, lookup)(wrapped))
-                continue
-
-            if lookup == "in":
-                if not isinstance(raw_value, (list, tuple, set)):
-                    raise ValueError("__in lookup requires an iterable of values")
-                values = list(raw_value)
-                if not values:
-                    raise ValueError("__in lookup requires a non-empty iterable")
-                eq_exprs: list[Expression] = [attr_type.eq(_wrap(v)) for v in values]
-                # Create flat OR disjunction (avoids nested binary tree that causes
-                # TypeDB query planner stack overflow with many values)
-                if len(eq_exprs) == 1:
-                    expressions.append(eq_exprs[0])
-                else:
-                    expressions.append(BooleanExpr("or", eq_exprs))
-                continue
-
-            if lookup == "isnull":
-                if not isinstance(raw_value, bool):
-                    raise ValueError("__isnull lookup expects a boolean")
-                expressions.append(AttributeExistsExpr(attr_type, present=not raw_value))
-                continue
-
-            if lookup in ("contains", "startswith", "endswith", "regex"):
-                if not issubclass(attr_type, String):
-                    raise ValueError(
-                        f"String lookup '{lookup}' requires a String attribute (got {attr_type.__name__})"
-                    )
-                # Normalize to raw string
-                raw_str = str(unwrap_attribute(raw_value))
-
-                if lookup == "contains":
-                    expressions.append(attr_type.contains(attr_type(raw_str)))
-                elif lookup == "regex":
-                    expressions.append(attr_type.regex(attr_type(raw_str)))
-                elif lookup == "startswith":
-                    pattern = f"^{re.escape(raw_str)}.*"
-                    expressions.append(attr_type.regex(attr_type(pattern)))
-                elif lookup == "endswith":
-                    pattern = f".*{re.escape(raw_str)}$"
-                    expressions.append(attr_type.regex(attr_type(pattern)))
-                continue
-
-            raise ValueError(f"Unsupported lookup operator '{lookup}'")
+            # Use shared lookup builder for other lookups
+            expr = build_lookup_expression(attr_type, lookup, raw_value)
+            expressions.append(expr)
 
         return base_filters, expressions
 

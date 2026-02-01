@@ -9,13 +9,10 @@ Example:
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Any
 
-from type_bridge.attribute.string import String
-from type_bridge.crud.utils import unwrap_attribute
+from type_bridge.crud.lookup import build_lookup_expression
 from type_bridge.expressions import (
-    AttributeExistsExpr,
     BooleanExpr,
     Expression,
     IidExpr,
@@ -121,7 +118,7 @@ def parse_role_lookup_filters(
             attr_info = owned_attrs[first_part]
             attr_type = attr_info.typ
 
-            expr = _build_lookup_expression(attr_type, lookup, raw_value)
+            expr = build_lookup_expression(attr_type, lookup, raw_value)
             attr_expressions.append(expr)
         else:
             raise ValueError(
@@ -205,7 +202,7 @@ def _parse_role_attribute_lookup(
     attr_type, attr_info = all_player_attrs[field_name]
 
     # Build inner expression based on lookup type
-    inner_expr = _build_lookup_expression(attr_type, lookup, value)
+    inner_expr = build_lookup_expression(attr_type, lookup, value)
 
     # Wrap in type-safe RolePlayerExpr
     return RolePlayerExpr(
@@ -213,82 +210,3 @@ def _parse_role_attribute_lookup(
         inner_expr=inner_expr,
         player_types=player_types,
     )
-
-
-def _build_lookup_expression(
-    attr_type: type[Attribute],
-    lookup: str,
-    value: Any,
-) -> Expression:
-    """Build an Expression for the given lookup operator.
-
-    Args:
-        attr_type: The attribute type class
-        lookup: Lookup operator (exact, gt, gte, lt, lte, in, isnull, contains, etc.)
-        value: The filter value
-
-    Returns:
-        Expression object
-
-    Raises:
-        ValueError: If unsupported lookup or type mismatch
-    """
-
-    def _wrap(v: Any) -> Any:
-        """Wrap raw value in attribute type if needed."""
-        if isinstance(v, attr_type):
-            return v
-        return attr_type(v)
-
-    # Exact match
-    if lookup in ("exact", "eq"):
-        wrapped = _wrap(value)
-        return attr_type.eq(wrapped)
-
-    # Comparison operators
-    if lookup in ("gt", "gte", "lt", "lte"):
-        if not hasattr(attr_type, lookup):
-            raise ValueError(f"Lookup '{lookup}' not supported for {attr_type.__name__}")
-        wrapped = _wrap(value)
-        return getattr(attr_type, lookup)(wrapped)
-
-    # Membership test
-    if lookup == "in":
-        if not isinstance(value, (list, tuple, set)):
-            raise ValueError("__in lookup requires an iterable of values")
-        values = list(value)
-        if not values:
-            raise ValueError("__in lookup requires a non-empty iterable")
-        eq_exprs: list[Expression] = [attr_type.eq(_wrap(v)) for v in values]
-        # Create flat OR disjunction (avoids nested binary tree that causes
-        # TypeDB query planner stack overflow with many values)
-        if len(eq_exprs) == 1:
-            return eq_exprs[0]
-        return BooleanExpr("or", eq_exprs)
-
-    # Null check
-    if lookup == "isnull":
-        if not isinstance(value, bool):
-            raise ValueError("__isnull lookup expects a boolean")
-        return AttributeExistsExpr(attr_type, present=not value)
-
-    # String operations
-    if lookup in ("contains", "startswith", "endswith", "regex"):
-        if not issubclass(attr_type, String):
-            raise ValueError(
-                f"String lookup '{lookup}' requires a String attribute (got {attr_type.__name__})"
-            )
-        raw_str = str(unwrap_attribute(value))
-
-        if lookup == "contains":
-            return attr_type.contains(attr_type(raw_str))
-        elif lookup == "regex":
-            return attr_type.regex(attr_type(raw_str))
-        elif lookup == "startswith":
-            pattern = f"^{re.escape(raw_str)}.*"
-            return attr_type.regex(attr_type(pattern))
-        elif lookup == "endswith":
-            pattern = f".*{re.escape(raw_str)}$"
-            return attr_type.regex(attr_type(pattern))
-
-    raise ValueError(f"Unsupported lookup operator '{lookup}'")

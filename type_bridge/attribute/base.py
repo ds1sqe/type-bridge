@@ -10,7 +10,7 @@ from type_bridge.validation import validate_type_name as validate_reserved_word
 
 if TYPE_CHECKING:
     from type_bridge.attribute.flags import TypeNameCase
-    from type_bridge.expressions import AggregateExpr, ComparisonExpr
+    from type_bridge.expressions import AggregateExpr, ComparisonExpr, Expression
 
 # TypeDB built-in type names that cannot be used for attributes
 TYPEDB_BUILTIN_TYPES = {"thing", "entity", "relation", "attribute"}
@@ -585,3 +585,64 @@ class Attribute(ABC):
     def __class_getitem__(cls, item: object) -> type[Self]:
         """Allow generic subscription for type checking (e.g., Integer[int])."""
         return cls
+
+    # ========================================================================
+    # Lookup Builder (Unified API for Managers)
+    # ========================================================================
+
+    @classmethod
+    def build_lookup(cls, lookup: str, value: Any) -> "Expression":
+        """Build an expression for a lookup operator.
+
+        This method centralizes the logic for converting lookup names (e.g., 'gt', 'in')
+        into TypeQL expressions. Subclasses (like String) should override this to
+        handle type-specific lookups.
+
+        Args:
+            lookup: The lookup operator name (e.g., 'exact', 'gt', 'contains')
+            value: The value to filter by
+
+        Returns:
+            Expression object representing the filter
+
+        Raises:
+            ValueError: If the lookup operator is not supported by this attribute type
+        """
+        from type_bridge.expressions import AttributeExistsExpr, BooleanExpr, Expression
+
+        def _wrap(v: Any) -> Any:
+            """Wrap raw value in attribute instance if needed."""
+            if isinstance(v, cls):
+                return v
+            return cls(v)
+
+        # Exact match
+        if lookup in ("exact", "eq"):
+            return cls.eq(_wrap(value))
+
+        # Comparison operators
+        if lookup in ("gt", "gte", "lt", "lte"):
+            if not hasattr(cls, lookup):
+                raise ValueError(f"Lookup '{lookup}' not supported for {cls.__name__}")
+            return getattr(cls, lookup)(_wrap(value))
+
+        # Membership test
+        if lookup == "in":
+            if not isinstance(value, (list, tuple, set)):
+                raise ValueError(f"'{lookup}' lookup requires an iterable of values")
+            values = list(value)
+            if not values:
+                raise ValueError(f"'{lookup}' lookup requires a non-empty iterable")
+
+            eq_exprs: list[Expression] = [cls.eq(_wrap(v)) for v in values]
+            if len(eq_exprs) == 1:
+                return eq_exprs[0]
+            return BooleanExpr("or", eq_exprs)
+
+        # Null check
+        if lookup == "isnull":
+            if not isinstance(value, bool):
+                raise ValueError(f"'{lookup}' lookup expects a boolean")
+            return AttributeExistsExpr(cls, present=not value)
+
+        raise ValueError(f"Unsupported lookup operator '{lookup}' for {cls.__name__}")

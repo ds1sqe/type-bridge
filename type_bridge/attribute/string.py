@@ -1,5 +1,4 @@
-"""String attribute type for TypeDB."""
-
+import re
 from typing import TYPE_CHECKING, Any, ClassVar, Self, TypeVar
 
 from pydantic_core import core_schema
@@ -7,7 +6,7 @@ from pydantic_core import core_schema
 from type_bridge.attribute.base import Attribute
 
 if TYPE_CHECKING:
-    from type_bridge.expressions import StringExpr
+    from type_bridge.expressions import Expression, StringExpr
 
 # TypeVar for proper type checking
 StrValue = TypeVar("StrValue", bound=str)
@@ -157,3 +156,56 @@ class String(Attribute):
         from type_bridge.expressions import StringExpr
 
         return StringExpr(attr_type=cls, operation="regex", pattern=pattern)
+
+    @classmethod
+    def startswith(cls, prefix: "String") -> "StringExpr":
+        """Create startswith string expression.
+
+        Args:
+            prefix: Prefix string to check for
+
+        Returns:
+            StringExpr for attr like "^prefix.*"
+        """
+        # Unwrap if it's an Attribute instance to get the raw string for regex construction
+        # Note: Type-safe signature says "String", but we need the raw value
+        raw_prefix = prefix.value if isinstance(prefix, String) else str(prefix)
+        pattern = f"^{re.escape(raw_prefix)}.*"
+        return cls.regex(cls(pattern))
+
+    @classmethod
+    def endswith(cls, suffix: "String") -> "StringExpr":
+        """Create endswith string expression.
+
+        Args:
+            suffix: Suffix string to check for
+
+        Returns:
+            StringExpr for attr like ".*suffix$"
+        """
+        # Unwrap if it's an Attribute instance to get the raw string for regex construction
+        raw_suffix = suffix.value if isinstance(suffix, String) else str(suffix)
+        pattern = f".*{re.escape(raw_suffix)}$"
+        return cls.regex(cls(pattern))
+
+    @classmethod
+    def build_lookup(cls, lookup: str, value: Any) -> "Expression":
+        """Build an expression for string-specific lookups.
+
+        Overrides base method to handle contains, regex, startswith, endswith.
+        """
+        if lookup in ("contains", "regex", "startswith", "endswith", "like"):
+            # Ensure value is wrapped in String for method calls
+            wrapped_val = value if isinstance(value, cls) else cls(str(value))
+
+            if lookup == "contains":
+                return cls.contains(wrapped_val)
+            elif lookup == "regex" or lookup == "like":
+                return cls.regex(wrapped_val)
+            elif lookup == "startswith":
+                return cls.startswith(wrapped_val)
+            elif lookup == "endswith":
+                return cls.endswith(wrapped_val)
+
+        # Delegate to base for standard operators (eq, in, isnull, etc.)
+        return super().build_lookup(lookup, value)
