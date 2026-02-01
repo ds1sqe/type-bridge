@@ -915,6 +915,8 @@ authorships = Authorship.manager(db).all()
 
 for auth in authorships:
     # author is resolved to Person or Organization, NOT abstract Profile
+    # Use isinstance() for instance checks, issubclass() for class checks
+    assert issubclass(type(auth.author), Profile)  # Always true
     if isinstance(auth.author, Person):
         print(f"Person email: {auth.author.email}")  # Person-specific attr
     elif isinstance(auth.author, Organization):

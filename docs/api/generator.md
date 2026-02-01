@@ -268,7 +268,7 @@ class Employment(Relation):
 
 class Friendship(SocialRelation):
     flags = TypeFlags(name="friendship")
-    # Role with cardinality constraint - exactly 2 players
+    # Symmetric role - multiple friends allowed per friendship
     friend: Role[entities.Person] = Role("friend", entities.Person, cardinality=Card(0, 1000))
 
 class Parentship(Relation):
