@@ -129,11 +129,20 @@ class IsaStatement(Statement):
 
 @dataclass
 class RelationStatement(Statement):
-    """Statement defining a relation and its role players."""
+    """Statement defining a relation and its role players.
+
+    For TypeDB 3.x inserts, relations don't use a variable prefix.
+    Set include_variable=False for insert statements.
+
+    Attributes can be included inline for insert statements where the variable
+    is not used (TypeDB 3.x: (role: $player) isa relation, has attr value;).
+    """
 
     variable: str
     type_name: str
     role_players: list[RolePlayer]
+    include_variable: bool = True  # False for insert statements in TypeDB 3.x
+    attributes: list[HasStatement] = field(default_factory=list)  # Inline attributes for insert
 
 
 @dataclass

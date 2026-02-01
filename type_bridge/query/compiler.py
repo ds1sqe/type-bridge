@@ -101,9 +101,13 @@ class QueryCompiler:
             return ", ".join(parts)
 
         elif isinstance(pattern, RelationPattern):
-            role_parts = [f"{rp.role}: {rp.player_var}" for rp in pattern.role_players]
-            roles_str = f"({', '.join(role_parts)})"
-            parts = [f"{pattern.variable} {roles_str} isa {pattern.type_name}"]
+            # Only include role players if there are any (IID-based matching doesn't need them)
+            if pattern.role_players:
+                role_parts = [f"{rp.role}: {rp.player_var}" for rp in pattern.role_players]
+                roles_str = f"({', '.join(role_parts)})"
+                parts = [f"{pattern.variable} {roles_str} isa {pattern.type_name}"]
+            else:
+                parts = [f"{pattern.variable} isa {pattern.type_name}"]
             for constraint in pattern.constraints:
                 parts.append(self._compile_constraint(constraint))
             return ", ".join(parts)
@@ -131,7 +135,20 @@ class QueryCompiler:
         elif isinstance(stmt, RelationStatement):
             role_parts = [f"{rp.role}: {rp.player_var}" for rp in stmt.role_players]
             roles_str = f"({', '.join(role_parts)})"
-            return f"{stmt.variable} {roles_str} isa {stmt.type_name}"
+            # TypeDB 3.x insert doesn't use variable prefix for relations
+            if stmt.include_variable:
+                base = f"{stmt.variable} {roles_str} isa {stmt.type_name}"
+            else:
+                base = f"{roles_str} isa {stmt.type_name}"
+
+            # Add inline attributes (for insert statements without variable)
+            if stmt.attributes:
+                attr_parts = []
+                for attr in stmt.attributes:
+                    val_str = self._compile_value(attr.value)
+                    attr_parts.append(f"has {attr.attr_name} {val_str}")
+                return f"{base}, {', '.join(attr_parts)}"
+            return base
 
         elif isinstance(stmt, DeleteThingStatement):
             return f"{stmt.variable}"

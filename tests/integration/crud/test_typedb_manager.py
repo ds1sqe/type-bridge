@@ -6,8 +6,64 @@ before switching it to be the default manager.
 
 import pytest
 
-from type_bridge import Card, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
+from type_bridge import (
+    Card,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    Relation,
+    Role,
+    SchemaManager,
+    String,
+    TypeFlags,
+)
 from type_bridge.crud import TypeDBManager
+
+# ============================================================================
+# Fixtures
+# ============================================================================
+
+
+@pytest.fixture(scope="function")
+def db_with_extended_schema(clean_db):
+    """Provide a database with extended schema for TypeDBManager tests.
+
+    Includes additional types beyond the basic db_with_extended_schema fixture:
+    - Tag attribute for multi-value testing
+    - Friendship relation for relation tests
+    """
+
+    class Name(String):
+        pass
+
+    class Age(Integer):
+        pass
+
+    class Tag(String):
+        pass
+
+    class Since(String):
+        pass
+
+    class Person(Entity):
+        flags = TypeFlags(name="person")
+        name: Name = Flag(Key)
+        age: Age | None = None
+        tags: list[Tag] = Flag(Card(min=0))
+
+    class Friendship(Relation):
+        flags = TypeFlags(name="friendship")
+        friend1: Role[Person] = Role("friend1", Person)
+        friend2: Role[Person] = Role("friend2", Person)
+        since: Since | None = None
+
+    # Create schema
+    schema_manager = SchemaManager(clean_db)
+    schema_manager.register(Person, Friendship)
+    schema_manager.sync_schema(force=True)
+
+    yield clean_db
 
 
 # ============================================================================
@@ -17,7 +73,7 @@ from type_bridge.crud import TypeDBManager
 
 @pytest.mark.integration
 @pytest.mark.order(500)  # Run after basic tests
-def test_typedb_manager_entity_insert(db_with_schema):
+def test_typedb_manager_entity_insert(db_with_extended_schema):
     """Test TypeDBManager can insert entities."""
 
     class Name(String):
@@ -31,7 +87,7 @@ def test_typedb_manager_entity_insert(db_with_schema):
         name: Name = Flag(Key)
         age: Age | None = None
 
-    manager = TypeDBManager(db_with_schema, Person)
+    manager = TypeDBManager(db_with_extended_schema, Person)
 
     # Insert entity
     alice = Person(name=Name("Alice"), age=Age(30))
@@ -42,7 +98,7 @@ def test_typedb_manager_entity_insert(db_with_schema):
 
 @pytest.mark.integration
 @pytest.mark.order(501)
-def test_typedb_manager_entity_get(db_with_schema):
+def test_typedb_manager_entity_get(db_with_extended_schema):
     """Test TypeDBManager can fetch entities."""
 
     class Name(String):
@@ -56,7 +112,7 @@ def test_typedb_manager_entity_get(db_with_schema):
         name: Name = Flag(Key)
         age: Age | None = None
 
-    manager = TypeDBManager(db_with_schema, Person)
+    manager = TypeDBManager(db_with_extended_schema, Person)
 
     # Insert some entities
     manager.insert(Person(name=Name("Bob"), age=Age(25)))
@@ -70,7 +126,7 @@ def test_typedb_manager_entity_get(db_with_schema):
 
 @pytest.mark.integration
 @pytest.mark.order(502)
-def test_typedb_manager_entity_update(db_with_schema):
+def test_typedb_manager_entity_update(db_with_extended_schema):
     """Test TypeDBManager can update entities."""
 
     class Name(String):
@@ -84,7 +140,7 @@ def test_typedb_manager_entity_update(db_with_schema):
         name: Name = Flag(Key)
         age: Age | None = None
 
-    manager = TypeDBManager(db_with_schema, Person)
+    manager = TypeDBManager(db_with_extended_schema, Person)
 
     # Insert entity
     diana = Person(name=Name("Diana"), age=Age(28))
@@ -107,7 +163,7 @@ def test_typedb_manager_entity_update(db_with_schema):
 
 @pytest.mark.integration
 @pytest.mark.order(503)
-def test_typedb_manager_entity_delete(db_with_schema):
+def test_typedb_manager_entity_delete(db_with_extended_schema):
     """Test TypeDBManager can delete entities."""
 
     class Name(String):
@@ -117,7 +173,7 @@ def test_typedb_manager_entity_delete(db_with_schema):
         flags = TypeFlags(name="person")
         name: Name = Flag(Key)
 
-    manager = TypeDBManager(db_with_schema, Person)
+    manager = TypeDBManager(db_with_extended_schema, Person)
 
     # Insert entity
     eve = Person(name=Name("Eve"))
@@ -143,7 +199,7 @@ def test_typedb_manager_entity_delete(db_with_schema):
 
 @pytest.mark.integration
 @pytest.mark.order(510)
-def test_typedb_manager_multi_value_update(db_with_schema):
+def test_typedb_manager_multi_value_update(db_with_extended_schema):
     """Test TypeDBManager handles multi-value attribute updates with guards."""
 
     class Name(String):
@@ -157,7 +213,7 @@ def test_typedb_manager_multi_value_update(db_with_schema):
         name: Name = Flag(Key)
         tags: list[Tag] = Flag(Card(min=0))
 
-    manager = TypeDBManager(db_with_schema, Person)
+    manager = TypeDBManager(db_with_extended_schema, Person)
 
     # Insert entity with tags
     frank = Person(name=Name("Frank"), tags=[Tag("developer"), Tag("python")])
@@ -188,7 +244,7 @@ def test_typedb_manager_multi_value_update(db_with_schema):
 
 @pytest.mark.integration
 @pytest.mark.order(520)
-def test_typedb_manager_relation_insert(db_with_schema):
+def test_typedb_manager_relation_insert(db_with_extended_schema):
     """Test TypeDBManager can insert relations."""
 
     class Name(String):
@@ -208,7 +264,7 @@ def test_typedb_manager_relation_insert(db_with_schema):
         since: Since | None = None
 
     # Insert persons first
-    person_mgr = TypeDBManager(db_with_schema, Person)
+    person_mgr = TypeDBManager(db_with_extended_schema, Person)
     greg = Person(name=Name("Greg"))
     helen = Person(name=Name("Helen"))
     person_mgr.insert(greg)
@@ -219,7 +275,7 @@ def test_typedb_manager_relation_insert(db_with_schema):
     helen_fetched = person_mgr.get(name="Helen")[0]
 
     # Insert relation
-    relation_mgr = TypeDBManager(db_with_schema, Friendship)
+    relation_mgr = TypeDBManager(db_with_extended_schema, Friendship)
     friendship = Friendship(
         friend1=greg_fetched,
         friend2=helen_fetched,
@@ -232,7 +288,7 @@ def test_typedb_manager_relation_insert(db_with_schema):
 
 @pytest.mark.integration
 @pytest.mark.order(521)
-def test_typedb_manager_relation_delete_with_iid(db_with_schema):
+def test_typedb_manager_relation_delete_with_iid(db_with_extended_schema):
     """Test TypeDBManager can delete relations using IID."""
 
     class Name(String):
@@ -248,7 +304,7 @@ def test_typedb_manager_relation_delete_with_iid(db_with_schema):
         friend2: Role[Person] = Role("friend2", Person)
 
     # Insert persons
-    person_mgr = TypeDBManager(db_with_schema, Person)
+    person_mgr = TypeDBManager(db_with_extended_schema, Person)
     ivan = Person(name=Name("Ivan"))
     julia = Person(name=Name("Julia"))
     person_mgr.insert(ivan)
@@ -259,14 +315,14 @@ def test_typedb_manager_relation_delete_with_iid(db_with_schema):
     julia_fetched = person_mgr.get(name="Julia")[0]
 
     # Insert relation
-    relation_mgr = TypeDBManager(db_with_schema, Friendship)
+    relation_mgr = TypeDBManager(db_with_extended_schema, Friendship)
     friendship = Friendship(friend1=ivan_fetched, friend2=julia_fetched)
     relation_mgr.insert(friendship)
 
     # Fetch relation to get IID (using legacy manager for now since get() needs work)
     from type_bridge.crud import RelationManager
 
-    legacy_mgr = RelationManager(db_with_schema, Friendship)
+    legacy_mgr = RelationManager(db_with_extended_schema, Friendship)
     friendships = legacy_mgr.all()
     assert len(friendships) >= 1
 

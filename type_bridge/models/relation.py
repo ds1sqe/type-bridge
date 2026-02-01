@@ -152,11 +152,8 @@ class Relation(TypeDBType):
                         AstRolePlayer(role=role.role_name, player_var=player_var)
                     )
 
-        statements = [
-            RelationStatement(variable=var, type_name=type_name, role_players=role_players_ast)
-        ]
-
-        # Add attribute ownerships
+        # Collect attribute ownerships inline (for TypeDB 3.x insert without variable)
+        inline_attributes = []
         for field_name, attr_info in self._owned_attrs.items():
             value = getattr(self, field_name, None)
             if value is not None:
@@ -186,13 +183,23 @@ class Relation(TypeDBType):
                     elif ast_type == "string" and isinstance(raw_val, (int, float)):
                         ast_type = "double" if isinstance(raw_val, float) else "long"
 
-                    statements.append(
+                    inline_attributes.append(
                         HasStatement(
                             subject_var=var,
                             attr_name=attr_name,
                             value=LiteralValue(value=raw_val, value_type=ast_type),
                         )
                     )
+
+        statements = [
+            RelationStatement(
+                variable=var,
+                type_name=type_name,
+                role_players=role_players_ast,
+                include_variable=False,  # TypeDB 3.x insert doesn't use variable for relations
+                attributes=inline_attributes,
+            )
+        ]
 
         return InsertClause(statements=statements)
 
