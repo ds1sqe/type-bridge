@@ -193,3 +193,98 @@ def test_entity_update_without_iid_or_key_raises():
 
     with pytest.raises(KeyAttributeError):
         mgr.update(item)
+
+
+# ============================================================================
+# Delete IID-based matching tests
+# ============================================================================
+
+
+def test_entity_delete_uses_iid_when_available():
+    """delete() should use IID-based matching when _iid is set.
+
+    Regression test: delete() should prefer IID matching for efficiency.
+    """
+
+    class ItemTitle(String):
+        pass
+
+    # Entity WITHOUT @key attributes
+    class Item(Entity):
+        flags = TypeFlags(name="item3")
+        title: ItemTitle
+
+    item = Item(title=ItemTitle("test"))
+    # Simulate a fetched entity with _iid set
+    object.__setattr__(item, "_iid", "0x1234567890abcdef")
+
+    mgr = _RecordingEntityManager(Item)
+    mgr.delete(item)
+
+    query = mgr.queries[-1]
+    # Should use IID matching
+    assert "iid 0x1234567890abcdef" in query
+    # Should NOT have attribute matching
+    assert "has ItemTitle" not in query
+
+
+def test_entity_delete_falls_back_to_key_when_no_iid():
+    """delete() should use @key attributes when _iid is not available."""
+
+    class Name(String):
+        pass
+
+    class Person(Entity):
+        flags = TypeFlags(name="person3")
+        name: Name = Flag(Key)
+
+    person = Person(name=Name("Alice"))
+    # No _iid set - should fall back to key attributes
+
+    # Mock filter().count() to return 1 (entity exists)
+    class _MockEntityManager(_RecordingEntityManager):
+        def filter(self, **kwargs):  # noqa: ARG002
+            class _MockQuery:
+                def count(self):
+                    return 1
+
+            return _MockQuery()
+
+    mgr = _MockEntityManager(Person)
+    mgr.delete(person)
+
+    query = mgr.queries[-1]
+    # Should use key attribute matching
+    assert 'has Name "Alice"' in query
+    # Should NOT have iid
+    assert "iid 0x" not in query
+
+
+def test_relation_delete_uses_iid_when_available():
+    """RelationManager.delete() should use IID-based matching when _iid is set."""
+
+    class Doc(String):
+        pass
+
+    class User(Entity):
+        flags = TypeFlags(name="user2")
+        doc: Doc = Flag(Key)
+
+    class Link(Relation):
+        flags = TypeFlags(name="link")
+        source: Role[User] = Role("source", User)
+        target: Role[User] = Role("target", User)
+
+    link = Link(source=User(doc=Doc("a")), target=User(doc=Doc("b")))
+    # Simulate a fetched relation with _iid set
+    object.__setattr__(link, "_iid", "0xabcdef1234567890")
+
+    mgr = _RecordingRelationManager(Link)
+    mgr.delete(link)
+
+    query = mgr.queries[-1]
+    # Should use IID matching
+    assert "iid 0xabcdef1234567890" in query
+    # Should NOT have role player matching
+    assert "source:" not in query
+    assert "target:" not in query

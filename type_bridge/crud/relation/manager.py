@@ -276,7 +276,74 @@ class RelationManager[R: Relation]:
         self._execute(query, TransactionType.WRITE)
 
         logger.info(f"Relation inserted: {self.model_class.__name__}")
+
+        # Try to populate _iid by fetching the relation back
+        self._populate_iid_after_insert(relation, role_players)
+
         return relation
+
+    def _populate_iid_after_insert(self, relation: R, role_players: dict[str, Any]) -> None:
+        """Populate _iid on relation by querying it back using role players and attributes.
+
+        This allows relations without attributes to be identified and used in
+        subsequent operations like update or delete.
+        """
+        roles = self.model_class._roles
+
+        # Build match clause for role players
+        normalized_players, role_var_mapping = normalize_role_players(role_players)
+        match_parts = []
+
+        for role_name, entities in normalized_players.items():
+            for i, entity in enumerate(entities):
+                var_name = role_var_mapping[role_name][i]
+                entity_type_name = entity.__class__.get_type_name()
+                match_parts.append(
+                    self._build_role_player_match(var_name, entity, entity_type_name)
+                )
+
+        # Build relation match with role players
+        relation_type_name = self.model_class.get_type_name()
+        role_parts = []
+        for role_name in role_players.keys():
+            typedb_role_name = roles[role_name].role_name
+            for var_name in role_var_mapping[role_name]:
+                role_parts.append(f"{typedb_role_name}: ${var_name}")
+        relation_pattern = f"$r isa {relation_type_name} ({', '.join(role_parts)})"
+        match_parts.insert(0, relation_pattern)
+
+        # Add attribute constraints for uniqueness
+        for field_name, attr_info in self.model_class.get_all_attributes().items():
+            value = getattr(relation, field_name, None)
+            if value is not None:
+                attr_name = attr_info.typ.get_attribute_name()
+                # Handle lists (multi-value attributes)
+                if isinstance(value, list):
+                    for item in value:
+                        formatted = format_value(item)
+                        match_parts.append(f"$r has {attr_name} {formatted}")
+                else:
+                    formatted = format_value(value)
+                    match_parts.append(f"$r has {attr_name} {formatted}")
+
+        match_clause = ";\n".join(match_parts)
+        query_str = f'match\n{match_clause};\nfetch {{ "_iid": iid($r) }};'
+        logger.debug(f"Fetch relation IID query: {query_str}")
+
+        try:
+            results = self._execute(query_str, TransactionType.READ)
+            if results and len(results) == 1:
+                iid = results[0].get("_iid")
+                if iid:
+                    object.__setattr__(relation, "_iid", iid)
+                    logger.debug(f"Populated _iid {iid} for {self.model_class.__name__}")
+            elif results and len(results) > 1:
+                logger.warning(
+                    f"Multiple relations match after insert for {self.model_class.__name__}, "
+                    f"_iid not populated."
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch relation _iid after insert: {e}")
 
     def put(self, relation: R) -> R:
         """Put a typed relation instance into the database (insert if not exists).
@@ -1107,16 +1174,17 @@ class RelationManager[R: Relation]:
     def delete(self, relation: R) -> R:
         """Delete a relation instance from the database.
 
-        Uses role players' @key attributes to identify the relation (same as update).
+        Prefers IID-based matching when _iid is set on the relation.
+        Falls back to role players' @key attributes to identify the relation.
 
         Args:
-            relation: Relation instance to delete (must have all role players set)
+            relation: Relation instance to delete (must have _iid or all role players set)
 
         Returns:
             The deleted relation instance
 
         Raises:
-            ValueError: If any role player is missing
+            ValueError: If any role player is missing (when no IID)
             RelationNotFoundError: If relation does not exist in database
 
         Example:
@@ -1127,7 +1195,20 @@ class RelationManager[R: Relation]:
             deleted = employment_manager.delete(employment)
         """
         logger.debug(f"Deleting relation: {self.model_class.__name__}")
-        # Extract role players from relation instance for matching
+
+        # Prefer IID-based matching when available (most efficient)
+        relation_iid = getattr(relation, "_iid", None)
+        if relation_iid:
+            query_str = (
+                f"match\n$r isa {self.model_class.get_type_name()}, "
+                f"iid {relation_iid};\ndelete\n$r;"
+            )
+            logger.debug(f"Delete query (IID): {query_str}")
+            self._execute(query_str, TransactionType.WRITE)
+            logger.info(f"Relation deleted by IID: {self.model_class.__name__}")
+            return relation
+
+        # Fall back to role player matching
         roles = self.model_class._roles
         role_players = {}
 

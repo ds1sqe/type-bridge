@@ -17,6 +17,7 @@ from ..utils import (
     build_role_player_fetch_items,
     extract_entity_key,
     format_value,
+    hydrate_attributes,
     is_multi_value_attribute,
     resolve_entity_class_from_label,
     unwrap_attribute,
@@ -462,17 +463,37 @@ class RelationQuery[R: Relation](BaseQuery[R]):
         results = self._execute(query_str, TransactionType.READ)
         logger.debug(f"Query returned {len(results)} results")
 
-        # Convert results to relation instances
+        # Group results by relation IID to handle multi-player roles correctly
+        # TypeDB returns one row per role player combination, so we need to merge rows
+        # with the same relation IID into a single relation instance
+        grouped_results: dict[str, list[dict[str, Any]]] = {}
+        for result in results:
+            iid = result.get("_iid")
+            if iid:
+                if iid not in grouped_results:
+                    grouped_results[iid] = []
+                grouped_results[iid].append(result)
+
+        # Check which roles have multi-player cardinality
+        multi_player_roles = set()
+        for role_name, role in self.model_class._roles.items():
+            if role.is_multi_player:
+                multi_player_roles.add(role_name)
+
+        # Convert grouped results to relation instances
         relations = []
 
-        for result in results:
+        for iid, result_group in grouped_results.items():
+            # Use first result for relation attributes (same across all rows)
+            first_result = result_group[0]
+
             # Extract relation attributes (including inherited)
             attrs: dict[str, Any] = {}
             for field_name, attr_info in all_attrs.items():
                 attr_class = attr_info.typ
                 attr_name = attr_class.get_attribute_name()
-                if attr_name in result:
-                    raw_value = result[attr_name]
+                if attr_name in first_result:
+                    raw_value = first_result[attr_name]
                     # Multi-value attributes need explicit conversion from list of raw values
                     if is_multi_value_attribute(attr_info.flags) and isinstance(raw_value, list):
                         # Convert each raw value to Attribute instance
@@ -491,62 +512,53 @@ class RelationQuery[R: Relation](BaseQuery[R]):
             # Create relation instance
             relation = self.model_class(**attrs)
 
-            # Set relation IID (now available from fetch)
-            relation_iid = result.get("_iid")
-            if relation_iid:
-                object.__setattr__(relation, "_iid", relation_iid)
+            # Set relation IID
+            object.__setattr__(relation, "_iid", iid)
 
-            # Extract role players from nested objects in result
+            # Extract role players from all results in the group
+            # For multi-player roles, collect all unique players into a list
             for role_name, (role_var, allowed_entity_classes) in role_info.items():
-                if role_name in result and isinstance(result[role_name], dict):
-                    player_data = result[role_name]
+                is_multi = role_name in multi_player_roles
+                collected_players: list[Any] = []
+                seen_player_keys: set[tuple[Any, ...]] = set()
 
-                    # Get the actual type label from TypeDB (fetched via label())
-                    type_label = result.get(f"{role_name}_type")
+                for result in result_group:
+                    if role_name in result and isinstance(result[role_name], dict):
+                        player_data = result[role_name]
 
-                    # Resolve entity class from type label for polymorphic support
-                    entity_class = resolve_entity_class_from_label(
-                        type_label, allowed_entity_classes
-                    )
+                        # Get the actual type label from TypeDB (fetched via label())
+                        type_label = result.get(f"{role_name}_type")
 
-                    # Extract player attributes (including inherited)
-                    player_attrs: dict[str, Any] = {}
-                    for field_name, attr_info in entity_class.get_all_attributes().items():
-                        attr_class = attr_info.typ
-                        attr_name = attr_class.get_attribute_name()
-                        if attr_name in player_data:
-                            raw_value = player_data[attr_name]
-                            # Check if multi-value attribute using shared utility
-                            is_multi = is_multi_value_attribute(attr_info.flags)
-                            if is_multi and isinstance(raw_value, list):
-                                # Convert each raw value to Attribute instance
-                                player_attrs[field_name] = [attr_class(v) for v in raw_value]
-                            else:
-                                # Single value - let Pydantic handle conversion
-                                player_attrs[field_name] = raw_value
-                        else:
-                            # For list fields (has_explicit_card), default to empty list
-                            # For other optional fields, explicitly set to None
-                            if attr_info.flags.has_explicit_card:
-                                player_attrs[field_name] = []
-                            else:
-                                player_attrs[field_name] = None
+                        # Resolve entity class from type label for polymorphic support
+                        entity_class = resolve_entity_class_from_label(
+                            type_label, allowed_entity_classes
+                        )
 
-                    # Create entity instance and assign to role
-                    # Note: Relations as role players may have no owned attributes,
-                    # so we also create if player_attrs is empty (valid for relations)
-                    if player_attrs == {} or any(v is not None for v in player_attrs.values()):
-                        player_entity = entity_class(**player_attrs)
-                        # Set IID on player if available
+                        # Hydrate player entity using shared utility
                         player_iid = result.get(f"{role_name}_iid")
-                        if player_iid:
-                            object.__setattr__(player_entity, "_iid", player_iid)
-                        setattr(relation, role_name, player_entity)
+                        player_attrs, key_values = hydrate_attributes(
+                            entity_class, player_data, wrap_values=True
+                        )
+
+                        # Create entity instance if we have any non-None attributes
+                        # Note: Relations as role players may have no owned attributes
+                        if player_attrs == {} or any(v is not None for v in player_attrs.values()):
+                            # Deduplicate players based on their attribute values
+                            if key_values not in seen_player_keys:
+                                seen_player_keys.add(key_values)
+                                player_entity = entity_class(**player_attrs)
+                                if player_iid:
+                                    object.__setattr__(player_entity, "_iid", player_iid)
+                                collected_players.append(player_entity)
+
+                # Assign collected players to role
+                if collected_players:
+                    if is_multi:
+                        setattr(relation, role_name, collected_players)
+                    else:
+                        setattr(relation, role_name, collected_players[0])
 
             relations.append(relation)
-
-        # Set IIDs on relations (now available from fetch)
-        # Note: We no longer need _populate_iids since IIDs are fetched with the query
 
         logger.info(f"RelationQuery executed: {len(relations)} relations returned")
         return relations

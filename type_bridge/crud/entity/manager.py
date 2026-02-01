@@ -676,12 +676,11 @@ class EntityManager[E: Entity]:
     def delete(self, entity: E) -> E:
         """Delete an entity instance from the database.
 
-        Uses @key attributes to identify the entity (same as update).
-        If no @key attributes exist, matches by ALL attributes and only
-        deletes if exactly 1 match is found.
+        Prefers IID-based matching when _iid is set on the entity.
+        Falls back to @key attributes, or ALL attributes if no keys exist.
 
         Args:
-            entity: Entity instance to delete (must have key attributes set,
+            entity: Entity instance to delete (must have _iid, key attributes,
                     or match exactly one record if no keys)
 
         Returns:
@@ -700,6 +699,19 @@ class EntityManager[E: Entity]:
             deleted = person_manager.delete(alice)
         """
         logger.debug(f"Deleting entity: {self.model_class.__name__}")
+
+        # Prefer IID-based matching when available (most efficient)
+        entity_iid = getattr(entity, "_iid", None)
+        if entity_iid:
+            query_str = (
+                f"match\n$e isa {self.model_class.get_type_name()}, iid {entity_iid};\ndelete\n$e;"
+            )
+            logger.debug(f"Delete query (IID): {query_str}")
+            self._execute(query_str, TransactionType.WRITE)
+            logger.info(f"Entity deleted by IID: {self.model_class.__name__}")
+            return entity
+
+        # Fall back to key/attribute matching
         owned_attrs = self.model_class.get_all_attributes()
 
         # Extract key attributes from entity for matching (same pattern as update)
