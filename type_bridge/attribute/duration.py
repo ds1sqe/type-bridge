@@ -1,17 +1,13 @@
 """Duration attribute type for TypeDB."""
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 
 import isodate
 from isodate import Duration as IsodateDuration
-from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
 from type_bridge.attribute.base import Attribute
-
-if TYPE_CHECKING:
-    pass
 
 # TypeVar for proper type checking
 DurationValue = TypeVar("DurationValue", bound=timedelta | IsodateDuration)
@@ -205,42 +201,34 @@ class Duration(Attribute):
             return Duration(result)
         return NotImplemented
 
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source_type: type[DurationValue], handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        """Pydantic validation: accept duration values or attribute instances."""
-
-        # Serializer to extract value from attribute instances
-        def serialize_duration(value: Any) -> IsodateDuration:
-            if isinstance(value, cls):
-                return value._value if value._value is not None else IsodateDuration()
-            if isinstance(value, IsodateDuration):
-                return value
-            if isinstance(value, timedelta):
-                return _timedelta_to_duration(value)
-            # Try to parse ISO string
-            return isodate.parse_duration(str(value))
-
-        # Validator: accept various duration formats, always return attribute instance
-        def validate_duration(value: Any) -> "Duration":
-            if isinstance(value, cls):
-                return value  # Return attribute instance as-is
-            # Wrap duration value in attribute instance
-            if isinstance(value, (IsodateDuration, timedelta)):
-                return cls(value)
-            # Try to parse ISO string
-            return cls(isodate.parse_duration(str(value)))
-
-        return core_schema.with_info_plain_validator_function(
-            lambda v, _: validate_duration(v),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                serialize_duration,
-                return_schema=core_schema.timedelta_schema(),
-            ),
-        )
+    # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
 
     @classmethod
-    def __class_getitem__(cls, item: object) -> type["Duration"]:
-        """Allow generic subscription for type checking (e.g., Duration[timedelta])."""
-        return cls
+    def _get_default_value(cls) -> IsodateDuration:
+        """Default value for Duration is empty duration."""
+        return IsodateDuration()
+
+    @classmethod
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Return schema for timedelta serialization."""
+        return core_schema.timedelta_schema()
+
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> IsodateDuration:
+        """Serialize Duration to raw IsodateDuration value."""
+        if isinstance(value, cls):
+            return value._value if value._value is not None else IsodateDuration()
+        if isinstance(value, IsodateDuration):
+            return value
+        if isinstance(value, timedelta):
+            return _timedelta_to_duration(value)
+        return isodate.parse_duration(str(value))
+
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap value in Duration instance."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, (IsodateDuration, timedelta)):
+            return cls(value)
+        return cls(isodate.parse_duration(str(value)))

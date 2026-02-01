@@ -1,26 +1,13 @@
 """String-specific expressions for text filtering.
 
-TypeDB 3.x Variable Scoping:
-    TypeDB uses variable bindings to create implicit equality constraints.
-    If the same variable is used twice in a match clause, both bindings
-    must have the same value.
-
-    Wrong approach:
-        $actor has name $name;    -- $name binds to actor's name
-        $target has name $name;   -- CONSTRAINT: target's name must EQUAL actor's name!
-
-    Correct approach (unique variables):
-        $actor has name $actor_name;    -- $actor_name binds to actor's name
-        $target has name $target_name;  -- $target_name binds to target's name (independent)
-
-    This is why expressions generate ${var_prefix}_${attr_name} patterns.
-    For example, when var="$actor" and attr="name":
-        Generated: $actor has name $actor_name; $actor_name contains "value"
+See :mod:`type_bridge.expressions.utils` for documentation on TypeDB 3.x
+variable scoping and why we generate unique attribute variables.
 """
 
 from typing import TYPE_CHECKING, Literal
 
 from type_bridge.expressions.base import Expression
+from type_bridge.expressions.utils import generate_has_pattern
 
 if TYPE_CHECKING:
     from type_bridge.attribute.string import String
@@ -63,13 +50,8 @@ class StringExpr[T: "String"](Expression):
         Returns:
             TypeQL pattern string (without trailing semicolon)
         """
-        # Get attribute type name for schema
-        attr_type_name = self.attr_type.get_attribute_name()
-
-        # Generate unique attribute variable name by combining entity var and attr name
-        # This prevents collisions when filtering multiple entities by same attribute type
-        var_prefix = var.lstrip("$")
-        attr_var = f"${var_prefix}_{attr_type_name.lower()}"
+        # Generate unique attribute variable and 'has' pattern
+        attr_var, has_pattern = generate_has_pattern(var, self.attr_type)
 
         # Escape and quote the pattern
         escaped_pattern = self.pattern.value.replace("\\", "\\\\").replace('"', '\\"')
@@ -83,7 +65,5 @@ class StringExpr[T: "String"](Expression):
         else:
             typeql_op = self.operation
 
-        # Generate pattern (no trailing semicolon - QueryBuilder adds those)
-        pattern = f"{var} has {attr_type_name} {attr_var}; {attr_var} {typeql_op} {quoted_pattern}"
-
-        return pattern
+        # Generate full pattern (no trailing semicolon - QueryBuilder adds those)
+        return f"{has_pattern}; {attr_var} {typeql_op} {quoted_pattern}"

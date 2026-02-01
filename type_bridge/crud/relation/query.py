@@ -7,9 +7,9 @@ from typedb.driver import TransactionType
 
 from type_bridge.models import Relation
 from type_bridge.query import Query
-from type_bridge.session import Connection, ConnectionExecutor
+from type_bridge.session import Connection
 
-from ..base import R
+from ..base import BaseQuery, R, parse_aggregate_results
 from ..utils import (
     assign_relation_iids,
     build_relation_iid_query,
@@ -26,12 +26,15 @@ if TYPE_CHECKING:
     from .group_by import RelationGroupByQuery
 
 
-class RelationQuery[R: Relation]:
+class RelationQuery[R: Relation](BaseQuery[R]):
     """Chainable query for relations.
 
     Type-safe query builder that preserves relation type information.
     Supports both dictionary filters (exact match) and expression-based filters.
     """
+
+    _role_player_expressions: dict[str, list[Any]]
+    _order_by_fields: list[tuple[str, str, str | None]]
 
     def __init__(
         self,
@@ -46,16 +49,10 @@ class RelationQuery[R: Relation]:
             model_class: Relation model class
             filters: Attribute and role player filters (exact match) - optional
         """
-        self._connection = connection
-        self._executor = ConnectionExecutor(connection)
-        self.model_class = model_class
-        self.filters = filters or {}
-        self._expressions: list[Any] = []  # Store Expression objects
-        self._role_player_expressions: dict[str, list[Any]] = {}  # role_name -> expressions
-        self._limit_value: int | None = None
-        self._offset_value: int | None = None
+        super().__init__(connection, model_class, filters)
+        self._role_player_expressions = {}  # role_name -> expressions
         # [(field_name, direction, role_name or None)]
-        self._order_by_fields: list[tuple[str, str, str | None]] = []
+        self._order_by_fields = []
 
     def filter(self, *expressions: Any, **filters: Any) -> "RelationQuery[R]":
         """Add filters to the query.
@@ -182,7 +179,7 @@ class RelationQuery[R: Relation]:
         Returns:
             Self for chaining
         """
-        self._limit_value = limit
+        super().limit(limit)
         return self
 
     def offset(self, offset: int) -> "RelationQuery[R]":
@@ -197,7 +194,7 @@ class RelationQuery[R: Relation]:
         Returns:
             Self for chaining
         """
-        self._offset_value = offset
+        super().offset(offset)
         return self
 
     def order_by(self, *fields: str) -> "RelationQuery[R]":
@@ -573,23 +570,6 @@ class RelationQuery[R: Relation]:
         # Build result map and assign IIDs
         result_map = build_relation_result_map(results, role_key_info)
         assign_relation_iids(relations, result_map, role_key_info, role_names)
-
-    def first(self) -> R | None:
-        """Get first matching relation.
-
-        Returns:
-            First relation or None
-        """
-        results = self.limit(1).execute()
-        return results[0] if results else None
-
-    def count(self) -> int:
-        """Count matching relations.
-
-        Returns:
-            Number of matching relations
-        """
-        return len(self.execute())
 
     def delete(self) -> int:
         """Delete all relations matching the current filters.
@@ -1073,42 +1053,8 @@ class RelationQuery[R: Relation]:
 
         results = self._execute(reduce_query, TransactionType.READ)
 
-        # Parse aggregation results
-        if not results:
-            return {}
-
-        result = results[0] if results else {}
-
-        # TypeDB reduce returns results as a formatted string in 'result' key
-        import re
-
-        output = {}
-        if "result" in result:
-            result_str = result["result"]
-            # Parse variable names and values from the formatted string
-            # Pattern: $variable_name: Value(type: actual_value)
-            pattern = r"\$([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*Value\([^:]+:\s*([^)]+)\)"
-            matches = re.findall(pattern, result_str)
-
-            for var_name, value_str in matches:
-                # Try to convert the value to appropriate Python type
-                try:
-                    # Try float first (covers both int and float)
-                    if "." in value_str:
-                        value = float(value_str)
-                    else:
-                        value = int(value_str)
-                except ValueError:
-                    # Keep as string if conversion fails
-                    value = value_str.strip()
-
-                output[var_name] = value
-
-        return output
-
-    def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
-        """Execute a query using an existing transaction if available."""
-        return self._executor.execute(query, tx_type)
+        # Parse aggregation results using shared utility
+        return parse_aggregate_results(results)
 
     def group_by(self, *fields: Any) -> "RelationGroupByQuery[R]":
         """Group relations by field values.

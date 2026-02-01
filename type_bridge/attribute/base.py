@@ -1,7 +1,10 @@
 """Base Attribute class for TypeDB attribute types."""
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_origin
+
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import core_schema
 
 from type_bridge.validation import validate_type_name as validate_reserved_word
 
@@ -468,3 +471,117 @@ class Attribute(ABC):
         from type_bridge.expressions import AggregateExpr
 
         return AggregateExpr(attr_type=cls, function="std")
+
+    # ========================================================================
+    # Pydantic Integration (Base Implementation with Hooks)
+    # ========================================================================
+
+    @classmethod
+    def _get_default_value(cls) -> Any:
+        """Get the default value for this attribute type when _value is None.
+
+        Subclasses should override this to return the appropriate default
+        (e.g., 0 for Integer, "" for String, False for Boolean).
+
+        Returns:
+            The default value for this attribute type
+        """
+        return None
+
+    @classmethod
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Get the Pydantic return schema for serialization.
+
+        Subclasses should override this to return the appropriate schema
+        (e.g., core_schema.str_schema(), core_schema.int_schema()).
+
+        Returns:
+            The Pydantic core schema for the raw value type
+        """
+        return core_schema.any_schema()
+
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> Any:
+        """Serialize an attribute value for Pydantic.
+
+        This handles the common case of extracting _value from an attribute
+        instance. Subclasses can override for type-specific serialization.
+
+        Args:
+            value: The attribute instance or raw value to serialize
+
+        Returns:
+            The serialized raw value
+        """
+        if isinstance(value, cls):
+            return value._value if value._value is not None else cls._get_default_value()
+        return value
+
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap a value in an attribute instance.
+
+        This handles the common case of wrapping raw values. Subclasses
+        can override for type-specific validation (e.g., range constraints).
+
+        Args:
+            value: The raw value or attribute instance to validate
+
+        Returns:
+            The validated attribute instance
+        """
+        if isinstance(value, cls):
+            return value  # Already an instance, return as-is
+        return cls(value)  # Wrap raw value in attribute instance
+
+    @classmethod
+    def _supports_literal_types(cls) -> bool:
+        """Whether this attribute type supports Literal type annotations.
+
+        Subclasses that support Literal types (String, Integer) should
+        override this to return True.
+
+        Returns:
+            True if this type supports Literal annotations
+        """
+        return False
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source_type: type[Any], handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        """Unified Pydantic schema generation for all attribute types.
+
+        This base implementation handles the common patterns:
+        - Serialization: extract _value from attribute instances
+        - Validation: wrap raw values in attribute instances
+        - Literal type support (for types that enable it)
+
+        Subclasses can override for completely custom behavior, or override
+        the helper methods (_pydantic_serialize, _pydantic_validate, etc.)
+        for targeted customization.
+        """
+        # Check if this is a Literal type and the attribute supports it
+        if cls._supports_literal_types() and get_origin(source_type) is Literal:
+            # For Literal types, extract the raw value for constraint checking
+            return core_schema.with_info_plain_validator_function(
+                lambda v, _: v._value if isinstance(v, cls) else v,
+                serialization=core_schema.plain_serializer_function_ser_schema(
+                    cls._pydantic_serialize,
+                    return_schema=cls._get_pydantic_return_schema(),
+                ),
+            )
+
+        # Default: validate and wrap values in attribute instances
+        return core_schema.with_info_plain_validator_function(
+            lambda v, _: cls._pydantic_validate(v),
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                cls._pydantic_serialize,
+                return_schema=cls._get_pydantic_return_schema(),
+            ),
+        )
+
+    @classmethod
+    def __class_getitem__(cls, item: object) -> type[Self]:
+        """Allow generic subscription for type checking (e.g., Integer[int])."""
+        return cls

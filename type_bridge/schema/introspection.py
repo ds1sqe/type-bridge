@@ -10,6 +10,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from type_bridge.schema.utils import type_exists
+
 if TYPE_CHECKING:
     from type_bridge.models import Entity, Relation
     from type_bridge.session import Database
@@ -154,7 +156,7 @@ class SchemaIntrospector:
         # Check each attribute type
         for attr_type in attr_types:
             attr_name = attr_type.get_attribute_name()
-            if self._type_exists(attr_name):
+            if type_exists(self.db,attr_name):
                 schema.attributes[attr_name] = IntrospectedAttribute(
                     name=attr_name,
                     value_type=getattr(attr_type, "_value_type", "string"),
@@ -166,7 +168,7 @@ class SchemaIntrospector:
             type_name = model.get_type_name()
 
             if issubclass(model, Entity) and model is not Entity:
-                if self._type_exists(type_name):
+                if type_exists(self.db,type_name):
                     schema.entities[type_name] = IntrospectedEntity(name=type_name)
                     logger.debug(f"Found existing entity: {type_name}")
 
@@ -174,7 +176,7 @@ class SchemaIntrospector:
                     self._introspect_ownerships_for_type(schema, type_name, model)
 
             elif issubclass(model, Relation) and model is not Relation:
-                if self._type_exists(type_name):
+                if type_exists(self.db,type_name):
                     schema.relations[type_name] = IntrospectedRelation(name=type_name)
                     logger.debug(f"Found existing relation: {type_name}")
 
@@ -188,30 +190,6 @@ class SchemaIntrospector:
         )
 
         return schema
-
-    def _type_exists(self, type_name: str) -> bool:
-        """Check if a specific type exists in the database schema.
-
-        Args:
-            type_name: Name of the type to check
-
-        Returns:
-            True if type exists
-        """
-        # Try to match any instance - if type doesn't exist, query fails
-        query = f"""
-        match $t isa {type_name};
-        fetch {{ $t.* }};
-        """
-
-        try:
-            with self.db.transaction("read") as tx:
-                # If type exists, query succeeds (even with 0 results)
-                # If type doesn't exist, query raises an error
-                list(tx.execute(query))
-                return True
-        except Exception:
-            return False
 
     def _introspect_ownerships_for_type(
         self,
@@ -254,7 +232,7 @@ class SchemaIntrospector:
             if model and hasattr(model, "get_owned_attributes"):
                 for attr_name, attr_info in model.get_owned_attributes().items():
                     attr_type_name = attr_info.typ.get_attribute_name()
-                    if self._type_exists(attr_type_name):
+                    if type_exists(self.db,attr_type_name):
                         schema.ownerships.append(
                             IntrospectedOwnership(
                                 owner_name=type_name,

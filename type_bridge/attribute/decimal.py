@@ -1,18 +1,17 @@
 """Decimal attribute type for TypeDB."""
 
 from decimal import Decimal as DecimalType
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 
-from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
-from type_bridge.attribute.base import Attribute
+from type_bridge.attribute.numeric import NumericAttribute
 
 # TypeVar for proper type checking
 DecimalValue = TypeVar("DecimalValue", bound=DecimalType)
 
 
-class Decimal(Attribute):
+class Decimal(NumericAttribute):
     """Decimal attribute type that accepts fixed-point decimal values.
 
     This maps to TypeDB's 'decimal' type, which is a fixed-point signed decimal number
@@ -36,6 +35,7 @@ class Decimal(Attribute):
     """
 
     value_type: ClassVar[str] = "decimal"
+    _accepted_types: ClassVar[tuple[type, ...]] = (DecimalType, int, float, str)
 
     def __init__(self, value: DecimalType | str | int | float):
         """Initialize Decimal attribute with a decimal value.
@@ -62,49 +62,54 @@ class Decimal(Attribute):
             value = DecimalType(str(value))
         super().__init__(value)
 
+    def _coerce_value(self, value: Any) -> DecimalType:
+        """Coerce value to DecimalType."""
+        if isinstance(value, DecimalType):
+            return value
+        return DecimalType(str(value))
+
     @property
     def value(self) -> DecimalType:
         """Get the stored decimal value."""
         return self._value if self._value is not None else DecimalType("0")
 
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source_type: type[DecimalValue], handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        """Pydantic validation: accept decimal values or attribute instances."""
+    # Note: Arithmetic operators (__add__, __sub__, __mul__, etc.) are inherited
+    # from NumericAttribute base class
 
-        # Serializer to extract value from attribute instances
-        def serialize_decimal(value: Any) -> DecimalType:
-            if isinstance(value, cls):
-                return value._value if value._value is not None else DecimalType("0")
-            if isinstance(value, DecimalType):
-                return value
-            # Convert from string, int, or float
-            return DecimalType(str(value))
-
-        # Validator: accept decimal or attribute instance, always return attribute instance
-        def validate_decimal(value: Any) -> "Decimal":
-            if isinstance(value, cls):
-                return value  # Return attribute instance as-is
-            # Wrap decimal value in attribute instance
-            if isinstance(value, DecimalType):
-                return cls(value)
-            # Try to parse from string, int, or float
-            # Strip 'dec' suffix if present (TypeDB returns decimals with 'dec' suffix)
-            value_str = str(value)
-            if value_str.endswith("dec"):
-                value_str = value_str[:-3]  # Remove 'dec' suffix
-            return cls(DecimalType(value_str))
-
-        return core_schema.with_info_plain_validator_function(
-            lambda v, _: validate_decimal(v),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                serialize_decimal,
-                return_schema=core_schema.decimal_schema(),
-            ),
-        )
+    # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
 
     @classmethod
-    def __class_getitem__(cls, item: object) -> type["Decimal"]:
-        """Allow generic subscription for type checking (e.g., Decimal[decimal.Decimal])."""
-        return cls
+    def _get_default_value(cls) -> DecimalType:
+        """Default value for Decimal is 0."""
+        return DecimalType("0")
+
+    @classmethod
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Return schema for Decimal serialization."""
+        return core_schema.decimal_schema()
+
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> DecimalType:
+        """Serialize Decimal to raw DecimalType value."""
+        if isinstance(value, cls):
+            return value._value if value._value is not None else DecimalType("0")
+        if isinstance(value, DecimalType):
+            return value
+        return DecimalType(str(value))
+
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap value in Decimal instance.
+
+        Handles TypeDB's 'dec' suffix stripping.
+        """
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, DecimalType):
+            return cls(value)
+        # Try to parse from string, int, or float
+        # Strip 'dec' suffix if present (TypeDB returns decimals with 'dec' suffix)
+        value_str = str(value)
+        if value_str.endswith("dec"):
+            value_str = value_str[:-3]  # Remove 'dec' suffix
+        return cls(DecimalType(value_str))

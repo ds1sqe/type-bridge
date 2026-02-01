@@ -5,6 +5,7 @@ import logging
 from type_bridge.models import Entity, Relation
 from type_bridge.schema.exceptions import SchemaConflictError
 from type_bridge.schema.info import SchemaInfo
+from type_bridge.schema.utils import type_exists
 from type_bridge.session import Database
 
 logger = logging.getLogger(__name__)
@@ -99,12 +100,12 @@ class SchemaManager:
         for model in self.registered_models:
             if issubclass(model, Entity) and model is not Entity:
                 type_name = model.get_type_name()
-                if self._type_exists(type_name, "entity"):
+                if type_exists(self.db, type_name):
                     logger.debug(f"Found existing entity type: {type_name}")
                     return True
             elif issubclass(model, Relation) and model is not Relation:
                 type_name = model.get_type_name()
-                if self._type_exists(type_name, "relation"):
+                if type_exists(self.db, type_name):
                     logger.debug(f"Found existing relation type: {type_name}")
                     return True
 
@@ -180,11 +181,11 @@ class SchemaManager:
             for model in self.registered_models:
                 if issubclass(model, Entity) and model is not Entity:
                     type_name = model.get_type_name()
-                    if self._type_exists(type_name, "entity"):
+                    if type_exists(self.db, type_name):
                         existing_types.append(f"entity '{type_name}'")
                 elif issubclass(model, Relation) and model is not Relation:
                     type_name = model.get_type_name()
-                    if self._type_exists(type_name, "relation"):
+                    if type_exists(self.db, type_name):
                         existing_types.append(f"relation '{type_name}'")
 
             if existing_types:
@@ -245,7 +246,7 @@ class SchemaManager:
             if issubclass(model, Entity) and model is not Entity:
                 type_name = model.get_type_name()
                 # Check if this entity type exists in database
-                if self._type_exists(type_name, "entity"):
+                if type_exists(self.db, type_name):
                     # Get attributes owned in database
                     db_attrs = self._get_owned_attributes(type_name, "entity")
                     # Get attributes from model
@@ -263,7 +264,7 @@ class SchemaManager:
             elif issubclass(model, Relation) and model is not Relation:
                 type_name = model.get_type_name()
                 # Check if this relation type exists in database
-                if self._type_exists(type_name, "relation"):
+                if type_exists(self.db, type_name):
                     # Get attributes owned in database
                     db_attrs = self._get_owned_attributes(type_name, "relation")
                     # Get attributes from model
@@ -279,35 +280,6 @@ class SchemaManager:
                         )
 
         return "\n".join(conflicts)
-
-    def _type_exists(self, type_name: str, category: str) -> bool:
-        """Check if a type exists in the database schema.
-
-        Args:
-            type_name: Name of the type to check
-            category: Category of type ("entity" or "relation")
-
-        Returns:
-            True if type exists in schema, False otherwise
-        """
-        # Try to match any instance of this type
-        query = f"""
-        match
-        $t isa {type_name};
-        fetch {{
-          $t.*
-        }};
-        """
-
-        try:
-            with self.db.transaction("read") as tx:
-                # If type exists, query will succeed (even with 0 results)
-                # If type doesn't exist, query will raise an error
-                list(tx.execute(query))
-                return True
-        except Exception:
-            # Type doesn't exist in schema
-            return False
 
     def _get_owned_attributes(self, type_name: str, category: str) -> set[str]:
         """Get attributes owned by a type in the database schema.

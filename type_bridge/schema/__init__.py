@@ -35,6 +35,7 @@ from type_bridge.schema.introspection import (
 )
 from type_bridge.schema.manager import SchemaManager
 from type_bridge.schema.migration import MigrationManager
+from type_bridge.schema.utils import type_exists
 
 __all__ = [
     # Diff classes
@@ -64,4 +65,6 @@ __all__ = [
     # Exceptions
     "SchemaConflictError",
     "SchemaValidationError",
+    # Utils
+    "type_exists",
 ]

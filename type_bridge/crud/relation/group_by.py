@@ -8,6 +8,7 @@ from typedb.driver import TransactionType
 from type_bridge.models import Relation
 from type_bridge.session import Connection, ConnectionExecutor
 
+from ..base import parse_grouped_aggregate_results
 from ..utils import extract_entity_key, format_value
 
 logger = logging.getLogger(__name__)
@@ -152,62 +153,8 @@ class RelationGroupByQuery[R: Relation]:
         results = self._execute(reduce_query, TransactionType.READ)
         logger.debug(f"RelationGroupBy query returned {len(results)} results")
 
-        # Parse grouped results
-        import re
-
-        output = {}
-        for result in results:
-            # Result is a dict with 'result' key containing formatted string
-            if "result" not in result:
-                continue
-
-            result_str = result["result"]
-
-            # Parse both Value(...) and Attribute(...) formats
-            value_pattern = r"\$([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*Value\([^:]+:\s*([^)]+)\)"
-            attr_pattern = r'\$([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*Attribute\([^:]+:\s*"([^"]+)"\)'
-
-            value_matches = re.findall(value_pattern, result_str)
-            attr_matches = re.findall(attr_pattern, result_str)
-
-            # Combine all matches
-            all_matches = [(name, val) for name, val in value_matches] + [
-                (name, val) for name, val in attr_matches
-            ]
-
-            # Separate group keys from aggregation values
-            group_keys = []
-            group_aggs = {}
-
-            for var_name, value_str in all_matches:
-                # Convert value to appropriate type
-                try:
-                    if "." in value_str:
-                        value = float(value_str)
-                    else:
-                        value = int(value_str)
-                except ValueError:
-                    value = value_str.strip().strip('"')
-
-                # Check if this is a group variable
-                is_group_var = False
-                for group_var in group_vars:
-                    if group_var.lstrip("$") == var_name:
-                        group_keys.append(value)
-                        is_group_var = True
-                        break
-
-                if not is_group_var:
-                    # This is an aggregation result
-                    group_aggs[var_name] = value
-
-            # Create group key (single value or tuple)
-            if len(group_keys) == 1:
-                group_key = group_keys[0]
-            else:
-                group_key = tuple(group_keys)
-
-            output[group_key] = group_aggs
+        # Parse grouped results using shared utility
+        output = parse_grouped_aggregate_results(results, group_vars)
 
         logger.info(f"RelationGroupBy aggregation complete: {len(output)} groups")
         return output

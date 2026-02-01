@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..naming import to_python_name
+from ..utils import topological_sort
 from .template_loader import get_template
 
 if TYPE_CHECKING:
@@ -66,24 +67,7 @@ def _render_attr_field(
 
 def _topological_sort_entities(schema: ParsedSchema) -> list[str]:
     """Sort entities so parents come before children."""
-    result: list[str] = []
-    visited: set[str] = set()
-
-    def visit(name: str) -> None:
-        if name in visited or name not in schema.entities:
-            return
-        visited.add(name)
-
-        entity = schema.entities[name]
-        if entity.parent and entity.parent in schema.entities:
-            visit(entity.parent)
-
-        result.append(name)
-
-    for name in schema.entities:
-        visit(name)
-
-    return result
+    return topological_sort(schema.entities, lambda entity: entity.parent)
 
 
 def _needs_card_import(schema: ParsedSchema) -> bool:

@@ -184,7 +184,18 @@ class TypeDBType(BaseModel, ABC):
         return format_type_name(cls.__name__, cls._flags.case)
 
     @classmethod
-    @abstractmethod
+    def _get_base_type_class(cls) -> type[TypeDBType]:
+        """Get the root base class for this type hierarchy.
+
+        Override in subclasses to return Entity or Relation.
+        Used by get_supertype() to correctly identify inheritance boundaries.
+
+        Returns:
+            The base type class (Entity or Relation)
+        """
+        return TypeDBType
+
+    @classmethod
     def get_supertype(cls) -> str | None:
         """Get the supertype from Python inheritance, skipping base classes.
 
@@ -194,7 +205,15 @@ class TypeDBType(BaseModel, ABC):
         Returns:
             Type name of the parent class, or None if direct subclass
         """
-        ...
+        base_class = cls._get_base_type_class()
+        for base in cls.__bases__:
+            if base is not base_class and issubclass(base, base_class):
+                # Skip base classes - they don't appear in TypeDB schema
+                if base.is_base():
+                    # Recursively find the first non-base parent
+                    return base.get_supertype()
+                return base.get_type_name()
+        return None
 
     @classmethod
     def is_abstract(cls) -> bool:
@@ -234,6 +253,29 @@ class TypeDBType(BaseModel, ABC):
                 all_attrs.update(base._owned_attrs)
 
         return all_attrs
+
+    @classmethod
+    def _build_owns_lines(cls) -> list[str]:
+        """Build TypeQL 'owns' lines for schema definition.
+
+        This is a shared helper used by both Entity and Relation to generate
+        the attribute ownership part of their schema definitions.
+
+        Returns:
+            List of TypeQL 'owns' lines with proper formatting
+        """
+        lines = []
+        for _field_name, attr_info in cls._owned_attrs.items():
+            attr_class = attr_info.typ
+            flags = attr_info.flags
+            attr_name = attr_class.get_attribute_name()
+
+            ownership = f"    owns {attr_name}"
+            annotations = flags.to_typeql_annotations()
+            if annotations:
+                ownership += " " + " ".join(annotations)
+            lines.append(ownership)
+        return lines
 
     @classmethod
     @abstractmethod

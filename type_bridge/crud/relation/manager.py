@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from typedb.driver import TransactionType
 
-from type_bridge.models import Relation
+from type_bridge.models import Entity, Relation
 from type_bridge.query import Query
 from type_bridge.session import Connection, ConnectionExecutor
 
@@ -153,8 +153,8 @@ class RelationManager[R: Relation]:
         )
 
     def _resolve_entity_class_from_label(
-        self, type_label: str | None, allowed_entity_classes: tuple[type, ...]
-    ) -> type:
+        self, type_label: str | None, allowed_entity_classes: tuple[type[Entity], ...]
+    ) -> type[Entity]:
         """Resolve the correct Python entity class from a TypeDB type label.
 
         Used for polymorphic role players where the declared role type is abstract
@@ -172,11 +172,11 @@ class RelationManager[R: Relation]:
             return allowed_entity_classes[0]
 
         # Build a mapping of type names to classes, including subclasses
-        type_name_to_class: dict[str, type] = {}
+        type_name_to_class: dict[str, type[Entity]] = {}
 
-        def collect_subclasses(cls: type) -> None:
+        def collect_subclasses(cls: type[Entity]) -> None:
             """Recursively collect all subclasses and their type names."""
-            type_name = cls.get_type_name() if hasattr(cls, "get_type_name") else None
+            type_name = cls.get_type_name()
             if type_name:
                 type_name_to_class[type_name] = cls
             for subclass in cls.__subclasses__():

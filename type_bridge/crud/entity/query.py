@@ -1,16 +1,15 @@
 """Chainable query operations for entities."""
 
 import logging
-import re
 from typing import TYPE_CHECKING, Any, cast
 
 from typedb.driver import TransactionType
 
 from type_bridge.models import Entity
 from type_bridge.query import Query, QueryBuilder
-from type_bridge.session import Connection, ConnectionExecutor
+from type_bridge.session import Connection
 
-from ..base import E
+from ..base import BaseQuery, E, parse_aggregate_results
 from ..exceptions import KeyAttributeError
 from ..utils import (
     assign_entity_iids,
@@ -34,12 +33,14 @@ if TYPE_CHECKING:
     from .group_by import GroupByQuery
 
 
-class EntityQuery[E: Entity]:
+class EntityQuery[E: Entity](BaseQuery[E]):
     """Chainable query for entities.
 
     Type-safe query builder that preserves entity type information.
     Supports both dictionary filters (exact match) and expression-based filters.
     """
+
+    _order_by_fields: list[tuple[str, str]]
 
     def __init__(
         self,
@@ -54,14 +55,8 @@ class EntityQuery[E: Entity]:
             model_class: Entity model class
             filters: Attribute filters (exact match) - optional, defaults to empty dict
         """
-        self._connection = connection
-        self._executor = ConnectionExecutor(connection)
-        self.model_class = model_class
-        self.filters = filters or {}
-        self._expressions: list[Any] = []  # Store Expression objects
-        self._limit_value: int | None = None
-        self._offset_value: int | None = None
-        self._order_by_fields: list[tuple[str, str]] = []  # [(field_name, direction)]
+        super().__init__(connection, model_class, filters)
+        self._order_by_fields = []  # [(field_name, direction)]
 
     def filter(self, *expressions: Any) -> "EntityQuery[E]":
         """Add expression-based filters to the query.
@@ -110,7 +105,7 @@ class EntityQuery[E: Entity]:
         Returns:
             Self for chaining
         """
-        self._limit_value = limit
+        super().limit(limit)
         return self
 
     def offset(self, offset: int) -> "EntityQuery[E]":
@@ -122,7 +117,7 @@ class EntityQuery[E: Entity]:
         Returns:
             Self for chaining
         """
-        self._offset_value = offset
+        super().offset(offset)
         return self
 
     def order_by(self, *fields: str) -> "EntityQuery[E]":
@@ -393,23 +388,6 @@ class EntityQuery[E: Entity]:
         # Build IID map and assign to entities
         iid_map = build_entity_iid_map(results, key_attr_names)
         assign_entity_iids(entities, iid_map, key_attrs)
-
-    def first(self) -> E | None:
-        """Get first matching entity.
-
-        Returns:
-            First entity or None
-        """
-        results = self.limit(1).execute()
-        return results[0] if results else None
-
-    def count(self) -> int:
-        """Count matching entities.
-
-        Returns:
-            Number of matching entities
-        """
-        return len(self.execute())
 
     def delete(self) -> int:
         """Delete all entities matching the current filters.
@@ -739,52 +717,8 @@ class EntityQuery[E: Entity]:
 
         results = self._execute(reduce_query, TransactionType.READ)
 
-        # Parse aggregation results
-        # TypeDB 3.x reduce operator returns results as formatted strings
-        if not results:
-            return {}
-
-        result = results[0] if results else {}
-
-        output = {}
-        if "result" in result:
-            # Legacy format: TypeDB reduce returns results as a formatted string
-            # Format: '|  $var_name: Value(type: value)  |'
-            result_str = result["result"]
-            # Parse variable names and values from the formatted string
-            # Pattern: $variable_name: Value(type: actual_value)
-            pattern = r"\$([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*Value\([^:]+:\s*([^)]+)\)"
-            matches = re.findall(pattern, result_str)
-
-            for var_name, value_str in matches:
-                # Try to convert the value to appropriate Python type
-                try:
-                    # Try float first (covers both int and float)
-                    if "." in value_str:
-                        value = float(value_str)
-                    else:
-                        value = int(value_str)
-                except ValueError:
-                    # Keep as string if conversion fails
-                    value = value_str.strip()
-
-                output[var_name] = value
-        else:
-            # New format (TypeDB 3.8.0+): results are proper dicts with extracted values
-            # Format: {"var_name": {"value": actual_value}, ...}
-            for var_name, concept_data in result.items():
-                if isinstance(concept_data, dict):
-                    value = concept_data.get("value")
-                else:
-                    # Direct value
-                    value = concept_data
-                output[var_name] = value
-
-        return output
-
-    def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
-        """Execute a query using an existing transaction if available."""
-        return self._executor.execute(query, tx_type)
+        # Parse aggregation results using shared utility
+        return parse_aggregate_results(results)
 
     def group_by(self, *fields: Any) -> "GroupByQuery[E]":
         """Group entities by field values.

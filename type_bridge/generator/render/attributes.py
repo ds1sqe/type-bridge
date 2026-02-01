@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..utils import TYPEDB_TO_BRIDGE, topological_sort
 from .template_loader import get_template
 
 if TYPE_CHECKING:
@@ -14,19 +14,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Mapping from TypeDB value types to type-bridge attribute classes
-VALUE_TYPE_MAP: Mapping[str, str] = {
-    "string": "String",
-    "integer": "Integer",
-    "long": "Integer",  # TypeDB long maps to type-bridge Integer
-    "double": "Double",
-    "datetime": "DateTime",
-    "datetime-tz": "DateTimeTZ",
-    "date": "Date",
-    "duration": "Duration",
-    "boolean": "Boolean",
-    "decimal": "Decimal",
-}
+# Re-export for backward compatibility
+VALUE_TYPE_MAP = TYPEDB_TO_BRIDGE
 
 
 @dataclass
@@ -105,24 +94,7 @@ def _get_required_imports(schema: ParsedSchema, class_names: dict[str, str]) -> 
 
 def _topological_sort_attributes(schema: ParsedSchema) -> list[str]:
     """Sort attributes so parents come before children."""
-    result: list[str] = []
-    visited: set[str] = set()
-
-    def visit(name: str) -> None:
-        if name in visited or name not in schema.attributes:
-            return
-        visited.add(name)
-
-        attr = schema.attributes[name]
-        if attr.parent and attr.parent in schema.attributes:
-            visit(attr.parent)
-
-        result.append(name)
-
-    for name in schema.attributes:
-        visit(name)
-
-    return result
+    return topological_sort(schema.attributes, lambda attr: attr.parent)
 
 
 def _build_attribute_context(

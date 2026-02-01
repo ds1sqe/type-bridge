@@ -1,26 +1,13 @@
 """Comparison expressions for value-based filtering.
 
-TypeDB 3.x Variable Scoping:
-    TypeDB uses variable bindings to create implicit equality constraints.
-    If the same variable is used twice in a match clause, both bindings
-    must have the same value.
-
-    Wrong approach:
-        $actor has name $name;    -- $name binds to actor's name
-        $target has name $name;   -- CONSTRAINT: target's name must EQUAL actor's name!
-
-    Correct approach (unique variables):
-        $actor has name $actor_name;    -- $actor_name binds to actor's name
-        $target has name $target_name;  -- $target_name binds to target's name (independent)
-
-    This is why expressions generate ${var_prefix}_${attr_name} patterns.
-    For example, when var="$actor" and attr="name":
-        Generated: $actor has name $actor_name; $actor_name > "value"
+See :mod:`type_bridge.expressions.utils` for documentation on TypeDB 3.x
+variable scoping and why we generate unique attribute variables.
 """
 
 from typing import TYPE_CHECKING, Literal
 
 from type_bridge.expressions.base import Expression
+from type_bridge.expressions.utils import generate_has_pattern
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
@@ -68,21 +55,11 @@ class ComparisonExpr[T: "Attribute"](Expression):
         # Format the value for TypeQL
         formatted_value = format_value(self.value.value)
 
-        # Get attribute type name for schema
-        attr_type_name = self.attr_type.get_attribute_name()
+        # Generate unique attribute variable and 'has' pattern
+        attr_var, has_pattern = generate_has_pattern(var, self.attr_type)
 
-        # Generate unique attribute variable name by combining entity var and attr name
-        # This prevents collisions when filtering multiple entities by same attribute type
-        # e.g., $actor -> $actor_name, $target -> $target_name
-        var_prefix = var.lstrip("$")
-        attr_var = f"${var_prefix}_{attr_type_name.lower()}"
-
-        # Generate pattern (no trailing semicolon - QueryBuilder adds those)
-        pattern = (
-            f"{var} has {attr_type_name} {attr_var}; {attr_var} {self.operator} {formatted_value}"
-        )
-
-        return pattern
+        # Generate full pattern (no trailing semicolon - QueryBuilder adds those)
+        return f"{has_pattern}; {attr_var} {self.operator} {formatted_value}"
 
 
 class AttributeExistsExpr[T: "Attribute"](Expression):
@@ -93,12 +70,10 @@ class AttributeExistsExpr[T: "Attribute"](Expression):
         self.present = present
 
     def to_typeql(self, var: str) -> str:
-        attr_type_name = self.attr_type.get_attribute_name()
-        # Generate unique attribute variable name by combining entity var and attr name
-        var_prefix = var.lstrip("$")
-        attr_var = f"${var_prefix}_{attr_type_name.lower()}"
+        # Generate unique attribute variable and 'has' pattern
+        attr_var, has_pattern = generate_has_pattern(var, self.attr_type)
 
         # Presence: simple has clause; Absence: negate a has clause block
         if self.present:
-            return f"{var} has {attr_type_name} {attr_var}"
-        return f"not {{ {var} has {attr_type_name} {attr_var}; }}"
+            return has_pattern
+        return f"not {{ {has_pattern}; }}"

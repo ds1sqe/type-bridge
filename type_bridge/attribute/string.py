@@ -1,8 +1,7 @@
 """String attribute type for TypeDB."""
 
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Self, TypeVar
 
-from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
 from type_bridge.attribute.base import Attribute
@@ -69,42 +68,36 @@ class String(Attribute):
         else:
             return NotImplemented
 
+    # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
+
     @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source_type: type[StrValue], handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        """Pydantic validation: accept str values, Literal types, or attribute instances."""
+    def _get_default_value(cls) -> str:
+        """Default value for String is empty string."""
+        return ""
 
-        # Serializer to extract value from attribute instances
-        def serialize_string(value: Any) -> str:
-            if isinstance(value, cls):
-                return str(value._value) if value._value is not None else ""
-            return str(value)
+    @classmethod
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Return schema for string serialization."""
+        return core_schema.str_schema()
 
-        # Check if source_type is a Literal type
-        if get_origin(source_type) is Literal:
-            # Convert tuple to list for literal_schema
-            return core_schema.with_info_plain_validator_function(
-                lambda v, _: v._value if isinstance(v, cls) else v,
-                serialization=core_schema.plain_serializer_function_ser_schema(
-                    serialize_string,
-                    return_schema=core_schema.str_schema(),
-                ),
-            )
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> str:
+        """Serialize String to raw str value."""
+        if isinstance(value, cls):
+            return str(value._value) if value._value is not None else ""
+        return str(value)
 
-        # Default: accept str or attribute instance, always return attribute instance
-        def validate_string(value: Any) -> "String":
-            if isinstance(value, cls):
-                return value  # Return attribute instance as-is
-            return cls(str(value))  # Wrap raw str in attribute instance
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap value in String instance."""
+        if isinstance(value, cls):
+            return value
+        return cls(str(value))
 
-        return core_schema.with_info_plain_validator_function(
-            lambda v, _: validate_string(v),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                serialize_string,
-                return_schema=core_schema.str_schema(),
-            ),
-        )
+    @classmethod
+    def _supports_literal_types(cls) -> bool:
+        """String supports Literal type annotations."""
+        return True
 
     # ========================================================================
     # String Query Expression Class Methods (Type-Safe API)

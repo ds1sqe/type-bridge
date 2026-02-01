@@ -286,23 +286,9 @@ class Relation(TypeDBType, metaclass=RelationMeta):
         cls._owned_attrs = owned_attrs
 
     @classmethod
-    def get_supertype(cls) -> str | None:
-        """Get the supertype from Python inheritance, skipping base classes.
-
-        Base classes (with base=True) are Python-only and don't appear in TypeDB schema.
-        This method skips them when determining the TypeDB supertype.
-
-        Returns:
-            Type name of the parent Relation class, or None if direct Relation subclass
-        """
-        for base in cls.__bases__:
-            if base is not Relation and issubclass(base, Relation):
-                # Skip base classes - they don't appear in TypeDB schema
-                if base.is_base():
-                    # Recursively find the first non-base parent
-                    return base.get_supertype()
-                return base.get_type_name()
-        return None
+    def _get_base_type_class(cls) -> type[Relation]:
+        """Return Relation as the base type class for supertype resolution."""
+        return Relation
 
     @classmethod
     def get_roles(cls) -> dict[str, Role]:
@@ -466,7 +452,7 @@ class Relation(TypeDBType, metaclass=RelationMeta):
         lines.append(relation_def)
 
         # Add roles with optional cardinality constraints
-        for _role_name, role in cls._roles.items():
+        for role in cls._roles.values():
             role_def = f"    relates {role.role_name}"
             # Add cardinality annotation if not default (1..1)
             if role.cardinality is not None:
@@ -477,17 +463,8 @@ class Relation(TypeDBType, metaclass=RelationMeta):
                     role_def += f" @card({card.min}..{card.max})"
             lines.append(role_def)
 
-        # Add attribute ownerships
-        for _field_name, attr_info in cls._owned_attrs.items():
-            attr_class = attr_info.typ
-            flags = attr_info.flags
-            attr_name = attr_class.get_attribute_name()
-
-            ownership = f"    owns {attr_name}"
-            annotations = flags.to_typeql_annotations()
-            if annotations:
-                ownership += " " + " ".join(annotations)
-            lines.append(ownership)
+        # Add attribute ownerships using shared helper
+        lines.extend(cls._build_owns_lines())
 
         # Join with commas, but end with semicolon (no comma before semicolon)
         return ",\n".join(lines) + ";"

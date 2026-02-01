@@ -275,23 +275,9 @@ class Entity(TypeDBType, metaclass=EntityMeta):
                     type.__setattr__(cls, field_name, Field(default=None))
 
     @classmethod
-    def get_supertype(cls) -> str | None:
-        """Get the supertype from Python inheritance, skipping base classes.
-
-        Base classes (with base=True) are Python-only and don't appear in TypeDB schema.
-        This method skips them when determining the TypeDB supertype.
-
-        Returns:
-            Type name of the parent Entity class, or None if direct Entity subclass
-        """
-        for base in cls.__bases__:
-            if base is not Entity and issubclass(base, Entity):
-                # Skip base classes - they don't appear in TypeDB schema
-                if base.is_base():
-                    # Recursively find the first non-base parent
-                    return base.get_supertype()
-                return base.get_type_name()
-        return None
+    def _get_base_type_class(cls) -> type[Entity]:
+        """Return Entity as the base type class for supertype resolution."""
+        return Entity
 
     @classmethod
     def manager(
@@ -385,17 +371,8 @@ class Entity(TypeDBType, metaclass=EntityMeta):
 
         lines.append(entity_def)
 
-        # Add attribute ownerships
-        for _field_name, attr_info in cls._owned_attrs.items():
-            attr_class = attr_info.typ
-            flags = attr_info.flags
-            attr_name = attr_class.get_attribute_name()
-
-            ownership = f"    owns {attr_name}"
-            annotations = flags.to_typeql_annotations()
-            if annotations:
-                ownership += " " + " ".join(annotations)
-            lines.append(ownership)
+        # Add attribute ownerships using shared helper
+        lines.extend(cls._build_owns_lines())
 
         # Join with commas, but end with semicolon (no comma before semicolon)
         return ",\n".join(lines) + ";"

@@ -10,7 +10,7 @@ from isodate import Duration as IsodateDuration
 from type_bridge.attribute import AttributeFlags
 
 if TYPE_CHECKING:
-    from type_bridge.models import Entity
+    from type_bridge.models import Entity, Relation
 
 # Cache for subclass maps (keyed by class name for hashability)
 _subclass_map_cache: dict[str, dict[str, type["Entity"]]] = {}
@@ -312,7 +312,7 @@ def build_metadata_fetch(var: str) -> str:
 
 
 def hydrate_attributes(
-    entity_class: type,
+    entity_class: type["Entity"],
     raw_data: dict[str, Any],
     wrap_values: bool = False,
 ) -> tuple[dict[str, Any], tuple[tuple[str, Any], ...]]:
@@ -458,7 +458,7 @@ def process_iid_type_results(
 
 
 def get_key_attrs(
-    model_class: type,
+    model_class: type["Entity"],
 ) -> tuple[dict[str, Any], list[str]]:
     """Get key attributes and their TypeDB names from a model class.
 
@@ -531,9 +531,9 @@ def build_iid_type_fetch_clause(
 def match_entity_type(
     attrs: dict[str, Any],
     iid_type_map: dict[tuple[tuple[str, Any], ...], tuple[str, str]],
-    model_class: type,
+    model_class: type["Entity"],
     owned_attrs: dict[str, Any] | None = None,
-) -> tuple[type, str | None]:
+) -> tuple[type["Entity"], str | None]:
     """Match entity attributes to IID/type and resolve the correct class.
 
     Uses key attributes to look up the corresponding IID/type from the map
@@ -620,7 +620,7 @@ def modify_match_for_type_binding(match_str: str, type_name: str) -> str:
 
 def build_entity_iid_query(
     entities: list[Any],
-    model_class: type,
+    model_class: type["Entity"],
     key_attrs: dict[str, Any],
 ) -> tuple[str, list[str]] | None:
     """Build batched IID lookup query for entities.
@@ -740,7 +740,7 @@ def assign_entity_iids(
 
 def build_relation_iid_query(
     relations: list[Any],
-    model_class: type,
+    model_class: type["Relation"],
     roles: dict[str, Any],
 ) -> (
     tuple[str, list[str], dict[str, tuple[str, str]], list[dict[str, tuple[str, Any, Any]]]] | None
