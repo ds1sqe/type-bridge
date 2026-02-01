@@ -21,7 +21,6 @@ from type_bridge.expressions.builtin import (
 )
 from type_bridge.expressions.comparison import AttributeExistsExpr, ComparisonExpr
 from type_bridge.expressions.functions import (
-    FunctionCall,
     FunctionCallExpr,
     FunctionQuery,
     ReturnType,
@@ -38,7 +37,6 @@ __all__ = [
     "BooleanExpr",
     "AggregateExpr",
     "FunctionCallExpr",
-    "FunctionCall",
     "FunctionQuery",
     "ReturnType",
     "IidExpr",

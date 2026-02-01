@@ -305,7 +305,3 @@ class FunctionQuery[T]:
             args=new_args,
             docstring=self.docstring,
         )
-
-
-# Type alias for backwards compatibility
-FunctionCall = FunctionQuery

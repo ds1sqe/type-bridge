@@ -12,7 +12,6 @@ from typing import (
 )
 
 from pydantic import ConfigDict
-from pydantic._internal._model_construction import ModelMetaclass
 
 from type_bridge.attribute import AttributeFlags, TypeFlags
 from type_bridge.crud.utils import extract_entity_key, unwrap_attribute
@@ -25,7 +24,6 @@ from type_bridge.models.utils import (
 
 if TYPE_CHECKING:
     from type_bridge.crud import RelationManager
-    from type_bridge.session import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -33,66 +31,8 @@ logger = logging.getLogger(__name__)
 R = TypeVar("R", bound="Relation")
 
 
-class RelationMeta(ModelMetaclass):
-    """
-    Metaclass for Relation.
-
-    Handles Pydantic initialization, warning suppression, and field/role access.
-    Provides backward-compatible attribute access that delegates to FieldsAccessor.
-    """
-
-    def __new__(
-        mcs, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs: Any
-    ) -> type:
-        """
-        Create a new Relation class.
-
-        Removes any non-default field values from namespace before Pydantic processes it.
-        This prevents Pydantic from capturing spurious defaults.
-        """
-        import warnings
-
-        # Now call parent __new__ (ModelMetaclass)
-        # Suppress Pydantic's field shadowing warnings - field shadowing is intentional
-        # in TypeBridge when child relations override parent attributes
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", message=".*shadows an attribute.*", category=UserWarning
-            )
-            return super().__new__(mcs, name, bases, namespace, **kwargs)
-
-    def __getattribute__(cls, name: str) -> Any:
-        """
-        Intercept class-level attribute access for backward compatibility.
-
-        For owned attributes and roles AFTER initialization is complete,
-        delegates to FieldsAccessor (cls.c) to return FieldRef/RoleRef instances.
-        This maintains backward compatibility with Employment.employee syntax
-        while the preferred explicit syntax is Employment.c.employee.
-        """
-        # Check if this is a field/role and if we should return FieldRef/RoleRef
-        try:
-            owned_attrs = super().__getattribute__("_owned_attrs")
-            roles = super().__getattribute__("_roles")
-            pydantic_complete = super().__getattribute__("__pydantic_complete__")
-
-            # Only delegate to FieldsAccessor if:
-            # 1. Field is in owned_attrs or roles
-            # 2. Pydantic setup is complete (__pydantic_complete__ is True)
-            if (name in owned_attrs or name in roles) and pydantic_complete:
-                # Delegate to FieldsAccessor for consistent behavior
-                fields_accessor = super().__getattribute__("c")
-                return getattr(fields_accessor, name)
-        except AttributeError:
-            # _owned_attrs, _roles, __pydantic_complete__, or c not defined yet
-            pass
-
-        # For all other cases, use normal access
-        return super().__getattribute__(name)
-
-
 @dataclass_transform(kw_only_default=True, field_specifiers=(AttributeFlags,))
-class Relation(TypeDBType, metaclass=RelationMeta):
+class Relation(TypeDBType):
     """Base class for TypeDB relations with Pydantic validation.
 
     Relations can own attributes and have role players.
@@ -132,6 +72,7 @@ class Relation(TypeDBType, metaclass=RelationMeta):
     )
 
     # Relation-specific metadata
+    _type_context = "relation"
     _roles: ClassVar[dict[str, Role]] = {}
 
     def __init_subclass__(cls) -> None:
@@ -151,6 +92,12 @@ class Relation(TypeDBType, metaclass=RelationMeta):
         return Relation
 
     @classmethod
+    def _get_manager_class(cls) -> type[RelationManager]:
+        from type_bridge.crud import RelationManager
+
+        return RelationManager
+
+    @classmethod
     def get_roles(cls) -> dict[str, Role]:
         """Get all roles defined on this relation.
 
@@ -158,37 +105,6 @@ class Relation(TypeDBType, metaclass=RelationMeta):
             Dictionary mapping role names to Role instances
         """
         return cls._roles
-
-    @classmethod
-    def manager(cls: type[R], connection: Connection) -> RelationManager[R]:
-        """Create a RelationManager for this relation type.
-
-        Args:
-            connection: Database, Transaction, or TransactionContext
-
-        Returns:
-            RelationManager instance for this relation type with proper type information
-
-        Example:
-            from type_bridge import Database
-
-            db = Database()
-            db.connect()
-
-            # Create typed relation instance
-            employment = Employment(
-                employee=person,
-                employer=company,
-                position=Position("Engineer")
-            )
-
-            # Insert using manager - with full type safety!
-            Employment.manager(db).insert(employment)
-            # employment is inferred as Employment type by type checkers
-        """
-        from type_bridge.crud import RelationManager
-
-        return RelationManager(connection, cls)
 
     def to_insert_query(self, var: str = "$r") -> str:
         """Generate TypeQL insert query for this relation instance.
@@ -470,51 +386,6 @@ class Relation(TypeDBType, metaclass=RelationMeta):
             return f"{match_section}\n{write_section}"
         else:
             return f"{keyword}\n" + ";\n".join(write_patterns) + ";"
-
-    def insert(self: R, connection: Connection) -> R:
-        """Insert this relation instance into the database.
-
-        Args:
-            connection: Database, Transaction, or TransactionContext
-
-        Returns:
-            Self for chaining
-
-        Example:
-            employment = Employment(
-                position=Position("Engineer"),
-                salary=Salary(100000),
-                employee=person,
-                employer=company
-            )
-            employment.insert(db)
-        """
-        manager = self.__class__.manager(connection)
-        manager.insert(self)
-        return self
-
-    def delete(self: R, connection: Connection) -> R:
-        """Delete this relation instance from the database.
-
-        Args:
-            connection: Database, Transaction, or TransactionContext
-
-        Returns:
-            Self for chaining
-
-        Example:
-            employment = Employment(
-                position=Position("Engineer"),
-                salary=Salary(100000),
-                employee=person,
-                employer=company
-            )
-            employment.insert(db)
-            employment.delete(db)
-        """
-        manager = self.__class__.manager(connection)
-        manager.delete(self)
-        return self
 
     @classmethod
     def to_schema_definition(cls) -> str | None:

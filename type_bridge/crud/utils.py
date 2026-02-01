@@ -1,7 +1,7 @@
 """Shared utilities for CRUD operations.
 
-This module re-exports functions from focused submodules for backward compatibility.
-New code should import directly from the submodules:
+This module re-exports functions from focused submodules for convenience.
+You can also import directly from the submodules:
 
 - type_bridge.crud.formatting: format_value, unwrap_attribute
 - type_bridge.crud.patterns: build_entity_match_pattern, build_relation_match_pattern, normalize_role_players

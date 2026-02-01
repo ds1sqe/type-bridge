@@ -12,7 +12,6 @@ from typing import (
 )
 
 from pydantic import ConfigDict
-from pydantic._internal._model_construction import ModelMetaclass
 
 from type_bridge.attribute import Attribute, AttributeFlags, TypeFlags
 from type_bridge.crud.utils import unwrap_attribute
@@ -25,7 +24,6 @@ from type_bridge.models.utils import (
 
 if TYPE_CHECKING:
     from type_bridge.crud import EntityManager
-    from type_bridge.session import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -33,65 +31,8 @@ logger = logging.getLogger(__name__)
 E = TypeVar("E", bound="Entity")
 
 
-class EntityMeta(ModelMetaclass):
-    """
-    Metaclass for Entity.
-
-    Handles Pydantic initialization, warning suppression, and field access.
-    Provides backward-compatible attribute access that delegates to FieldsAccessor.
-    """
-
-    def __new__(
-        mcs, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs: Any
-    ) -> type:
-        """
-        Create a new Entity class.
-
-        Removes any non-default field values from namespace before Pydantic processes it.
-        This prevents Pydantic from capturing spurious defaults.
-        """
-        import warnings
-
-        # Now call parent __new__ (ModelMetaclass)
-        # Suppress Pydantic's field shadowing warnings - field shadowing is intentional
-        # in TypeBridge when child entities override parent attributes
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", message=".*shadows an attribute.*", category=UserWarning
-            )
-            return super().__new__(mcs, name, bases, namespace, **kwargs)
-
-    def __getattribute__(cls, name: str) -> Any:
-        """
-        Intercept class-level attribute access for backward compatibility.
-
-        For owned attributes AFTER initialization is complete, delegates to
-        FieldsAccessor (cls.c) to return FieldRef instances.
-        This maintains backward compatibility with Person.age syntax while
-        the preferred explicit syntax is Person.c.age.
-        """
-        # Check if this is a field and if we should return FieldRef
-        try:
-            owned_attrs = super().__getattribute__("_owned_attrs")
-            pydantic_complete = super().__getattribute__("__pydantic_complete__")
-
-            # Only delegate to FieldsAccessor if:
-            # 1. Field is in owned_attrs (it's one of our fields)
-            # 2. Pydantic setup is complete (__pydantic_complete__ is True)
-            if name in owned_attrs and pydantic_complete:
-                # Delegate to FieldsAccessor for consistent behavior
-                fields_accessor = super().__getattribute__("c")
-                return getattr(fields_accessor, name)
-        except AttributeError:
-            # _owned_attrs, __pydantic_complete__, or c not defined yet
-            pass
-
-        # For all other cases, use normal access
-        return super().__getattribute__(name)
-
-
 @dataclass_transform(kw_only_default=True, field_specifiers=(AttributeFlags,))
-class Entity(TypeDBType, metaclass=EntityMeta):
+class Entity(TypeDBType):
     """Base class for TypeDB entities with Pydantic validation.
 
     Entities own attributes defined as Attribute subclasses.
@@ -135,6 +76,8 @@ class Entity(TypeDBType, metaclass=EntityMeta):
         revalidate_instances="always",
     )
 
+    _type_context = "entity"
+
     def __init_subclass__(cls) -> None:
         """Called when Entity subclass is created."""
         super().__init_subclass__()
@@ -151,69 +94,10 @@ class Entity(TypeDBType, metaclass=EntityMeta):
         return Entity
 
     @classmethod
-    def manager(
-        cls: type[E],
-        connection: Connection,
-    ) -> EntityManager[E]:
-        """Create an EntityManager for this entity type.
-
-        Args:
-            connection: Database, Transaction, or TransactionContext
-
-        Returns:
-            EntityManager instance for this entity type with proper type information
-
-        Example:
-            from type_bridge import Database
-
-            db = Database()
-            db.connect()
-
-            # Create typed entity instance
-            person = Person(name=Name("Alice"), age=Age(30))
-
-            # Insert using manager - with full type safety!
-            Person.manager(db).insert(person)
-            # person is inferred as Person type by type checkers
-        """
+    def _get_manager_class(cls) -> type[EntityManager]:
         from type_bridge.crud import EntityManager
 
-        return EntityManager(connection, cls)
-
-    def insert(self: E, connection: Connection) -> E:
-        """Insert this entity instance into the database.
-
-        Args:
-            connection: Database, Transaction, or TransactionContext
-
-        Returns:
-            Self for chaining
-
-        Example:
-            person = Person(name=Name("Alice"), age=Age(30))
-            person.insert(db)
-        """
-        manager = self.__class__.manager(connection)
-        manager.insert(self)
-        return self
-
-    def delete(self: E, connection: Connection) -> E:
-        """Delete this entity instance from the database.
-
-        Args:
-            connection: Database, Transaction, or TransactionContext
-
-        Returns:
-            Self for chaining
-
-        Example:
-            person = Person(name=Name("Alice"), age=Age(30))
-            person.insert(db)
-            person.delete(db)
-        """
-        manager = self.__class__.manager(connection)
-        manager.delete(self)
-        return self
+        return EntityManager
 
     @classmethod
     def to_schema_definition(cls) -> str | None:

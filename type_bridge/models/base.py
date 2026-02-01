@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Any, ClassVar, dataclass_transform
+from typing import TYPE_CHECKING, Any, ClassVar, Self, dataclass_transform
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -17,6 +17,10 @@ from type_bridge.models.utils import (
     WriteQueryInfo,
     validate_type_name,
 )
+
+if TYPE_CHECKING:
+    from type_bridge.crud.manager import BaseManager
+    from type_bridge.session import Connection
 
 
 @dataclass_transform(kw_only_default=True, field_specifiers=(AttributeFlags, TypeFlags))
@@ -48,6 +52,49 @@ class TypeDBType(BaseModel, ABC):
     # Fields accessor for query building
     c: ClassVar[Any]  # Any to avoid circular import in type hint
 
+    @classmethod
+    @abstractmethod
+    def _get_manager_class(cls) -> type[BaseManager]:
+        """Get the CRUD manager class for this type."""
+        ...
+
+    @classmethod
+    def manager(cls, connection: Connection) -> BaseManager:
+        """Create a CRUD manager for this type.
+
+        Args:
+            connection: Database, Transaction, or TransactionContext
+
+        Returns:
+            Manager instance for this type
+        """
+        manager_class = cls._get_manager_class()
+        return manager_class(connection, cls)
+
+    def insert(self, connection: Connection) -> Self:
+        """Insert this instance into the database.
+
+        Args:
+            connection: Database, Transaction, or TransactionContext
+
+        Returns:
+            Self for chaining
+        """
+        self.manager(connection).insert(self)
+        return self
+
+    def delete(self, connection: Connection) -> Self:
+        """Delete this instance from the database.
+
+        Args:
+            connection: Database, Transaction, or TransactionContext
+
+        Returns:
+            Self for chaining
+        """
+        self.manager(connection).delete(self)
+        return self
+
     def __setattr__(self, name: str, value: Any) -> None:
         """Override setattr to preserve _iid during attribute assignment.
 
@@ -72,6 +119,9 @@ class TypeDBType(BaseModel, ABC):
                 new_iid = None
             if new_iid is None:
                 object.__setattr__(self, "_iid", current_iid)
+
+    # Type context for name validation (entity, relation, etc.)
+    _type_context: ClassVar[str] = "entity"
 
     def __init_subclass__(cls) -> None:
         """Called when a TypeDBType subclass is created."""
@@ -103,22 +153,7 @@ class TypeDBType(BaseModel, ABC):
         )
         if not cls._flags.base and not is_base_entity_or_relation:
             type_name = cls._flags.name or format_type_name(cls.__name__, cls._flags.case)
-
-            # Determine context based on class hierarchy
-            from typing import Literal
-
-            from type_bridge.models.entity import Entity
-            from type_bridge.models.relation import Relation
-
-            if issubclass(cls, Relation):
-                context: Literal["relation", "entity", "attribute", "role"] = "relation"
-            elif issubclass(cls, Entity):
-                context = "entity"
-            else:
-                # Default for TypeDBType subclasses
-                context = "entity"
-
-            validate_type_name(type_name, cls.__name__, context)
+            validate_type_name(type_name, cls.__name__, cls._type_context)
 
     @model_validator(mode="wrap")
     @classmethod

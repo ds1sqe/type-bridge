@@ -1,7 +1,6 @@
 """Flag system for TypeDB attribute annotations."""
 
 import re
-import warnings
 from dataclasses import dataclass
 from enum import Enum
 from typing import Annotated, Any, TypeVar
@@ -127,7 +126,6 @@ class TypeFlags:
         abstract: bool = False,
         base: bool = False,
         case: TypeNameCase = TypeNameCase.CLASS_NAME,
-        type_name: str | None = None,  # Backward compatibility
     ):
         """Initialize TypeFlags.
 
@@ -136,19 +134,8 @@ class TypeFlags:
             abstract: Whether this is an abstract type
             base: Whether this is a Python base class that should not appear in TypeDB schema
             case: Case formatting for auto-generated type names (default: CLASS_NAME)
-            type_name: (Deprecated) Use 'name' instead. Kept for backward compatibility.
         """
-        # Handle backward compatibility: type_name takes precedence if provided
-        if type_name is not None:
-            warnings.warn(
-                "The 'type_name' parameter is deprecated and will be removed in a future version. "
-                "Use 'name' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.name = type_name
-        else:
-            self.name = name
+        self.name = name
         self.abstract = abstract
         self.base = base
         self.case = case

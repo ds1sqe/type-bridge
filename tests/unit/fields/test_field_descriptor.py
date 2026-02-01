@@ -61,7 +61,7 @@ class TestFieldRefTypeSelection:
             flags = TypeFlags(name="test_entity_str")
             name: Name = Flag(Key)
 
-        ref = TestEntity.name
+        ref = TestEntity.c.name
         assert isinstance(ref, StringFieldRef)
         assert ref.field_name == "name"
         assert ref.attr_type is Name
@@ -74,7 +74,7 @@ class TestFieldRefTypeSelection:
             name: Name = Flag(Key)
             age: Age
 
-        ref = TestEntity.age
+        ref = TestEntity.c.age
         assert isinstance(ref, NumericFieldRef)
         assert ref.field_name == "age"
         assert ref.attr_type is Age
@@ -87,7 +87,7 @@ class TestFieldRefTypeSelection:
             name: Name = Flag(Key)
             score: Score
 
-        ref = TestEntity.score
+        ref = TestEntity.c.score
         assert isinstance(ref, NumericFieldRef)
         assert ref.attr_type is Score
 
@@ -99,7 +99,7 @@ class TestFieldRefTypeSelection:
             name: Name = Flag(Key)
             price: Price
 
-        ref = TestEntity.price
+        ref = TestEntity.c.price
         assert isinstance(ref, NumericFieldRef)
         assert ref.attr_type is Price
 
@@ -111,7 +111,7 @@ class TestFieldRefTypeSelection:
             name: Name = Flag(Key)
             is_active: IsActive
 
-        ref = TestEntity.is_active
+        ref = TestEntity.c.is_active
         # Boolean returns base FieldRef, not StringFieldRef or NumericFieldRef
         assert isinstance(ref, FieldRef)
         assert not isinstance(ref, StringFieldRef)
@@ -126,7 +126,7 @@ class TestFieldRefTypeSelection:
             name: Name = Flag(Key)
             created_at: CreatedAt
 
-        ref = TestEntity.created_at
+        ref = TestEntity.c.created_at
         assert isinstance(ref, FieldRef)
         assert not isinstance(ref, StringFieldRef)
         assert not isinstance(ref, NumericFieldRef)
@@ -143,7 +143,7 @@ class TestFieldRefEntityType:
             flags = TypeFlags(name="person_ref")
             name: Name = Flag(Key)
 
-        ref = Person.name
+        ref = Person.c.name
         # entity_type stores the class or metaclass depending on implementation
         assert isinstance(ref, FieldRef)
         assert ref.entity_type is not None
@@ -157,11 +157,11 @@ class TestFieldRefEntityType:
             age: Age
 
         # Check own fields
-        name_ref = Employee.name
+        name_ref = Employee.c.name
         assert isinstance(name_ref, StringFieldRef)
         assert name_ref.field_name == "name"
 
-        age_ref = Employee.age
+        age_ref = Employee.c.age
         assert isinstance(age_ref, NumericFieldRef)
         assert age_ref.field_name == "age"
 
@@ -179,7 +179,7 @@ class TestFieldRefComparisons:
 
         from type_bridge.expressions import ComparisonExpr
 
-        expr = TestEntity.age.lt(Age(30))
+        expr = TestEntity.c.age.lt(Age(30))
         assert isinstance(expr, ComparisonExpr)
         assert expr.operator == "<"
         assert expr.attr_type is Age
@@ -194,7 +194,7 @@ class TestFieldRefComparisons:
 
         from type_bridge.expressions import ComparisonExpr
 
-        expr = TestEntity.age.gt(Age(18))
+        expr = TestEntity.c.age.gt(Age(18))
         assert isinstance(expr, ComparisonExpr)
         assert expr.operator == ">"
 
@@ -208,7 +208,7 @@ class TestFieldRefComparisons:
 
         from type_bridge.expressions import ComparisonExpr
 
-        expr = TestEntity.age.lte(Age(65))
+        expr = TestEntity.c.age.lte(Age(65))
         assert isinstance(expr, ComparisonExpr)
         assert expr.operator == "<="
 
@@ -222,7 +222,7 @@ class TestFieldRefComparisons:
 
         from type_bridge.expressions import ComparisonExpr
 
-        expr = TestEntity.age.gte(Age(18))
+        expr = TestEntity.c.age.gte(Age(18))
         assert isinstance(expr, ComparisonExpr)
         assert expr.operator == ">="
 
@@ -236,7 +236,7 @@ class TestFieldRefComparisons:
 
         from type_bridge.expressions import ComparisonExpr
 
-        expr = TestEntity.age.eq(Age(30))
+        expr = TestEntity.c.age.eq(Age(30))
         assert isinstance(expr, ComparisonExpr)
         assert expr.operator == "=="
 
@@ -250,7 +250,7 @@ class TestFieldRefComparisons:
 
         from type_bridge.expressions import ComparisonExpr
 
-        expr = TestEntity.age.neq(Age(0))
+        expr = TestEntity.c.age.neq(Age(0))
         assert isinstance(expr, ComparisonExpr)
         assert expr.operator == "!="
 
@@ -267,7 +267,7 @@ class TestStringFieldRefOperations:
 
         from type_bridge.expressions import StringExpr
 
-        expr = TestEntity.name.contains(Name("test"))
+        expr = TestEntity.c.name.contains(Name("test"))
         assert isinstance(expr, StringExpr)
         assert expr.operation == "contains"
         assert expr.attr_type is Name
@@ -281,7 +281,7 @@ class TestStringFieldRefOperations:
 
         from type_bridge.expressions import StringExpr
 
-        expr = TestEntity.name.like(Name("A.*"))
+        expr = TestEntity.c.name.like(Name("A.*"))
         assert isinstance(expr, StringExpr)
         assert expr.operation == "like"
 
@@ -294,7 +294,7 @@ class TestStringFieldRefOperations:
 
         from type_bridge.expressions import StringExpr
 
-        expr = TestEntity.name.regex(Name("^test"))
+        expr = TestEntity.c.name.regex(Name("^test"))
         assert isinstance(expr, StringExpr)
         assert expr.operation == "regex"
 
@@ -312,7 +312,7 @@ class TestNumericFieldRefOperations:
 
         from type_bridge.expressions import AggregateExpr
 
-        expr = TestEntity.age.sum()
+        expr = TestEntity.c.age.sum()
         assert isinstance(expr, AggregateExpr)
         assert expr.function == "sum"
         assert expr.attr_type is Age
@@ -328,7 +328,7 @@ class TestNumericFieldRefOperations:
 
         from type_bridge.expressions import AggregateExpr
 
-        expr = TestEntity.score.avg()
+        expr = TestEntity.c.score.avg()
         assert isinstance(expr, AggregateExpr)
         assert expr.function == "mean"  # TypeDB uses 'mean' not 'avg'
         assert expr.attr_type is Score
@@ -343,7 +343,7 @@ class TestNumericFieldRefOperations:
 
         from type_bridge.expressions import AggregateExpr
 
-        expr = TestEntity.age.max()
+        expr = TestEntity.c.age.max()
         assert isinstance(expr, AggregateExpr)
         assert expr.function == "max"
 
@@ -357,7 +357,7 @@ class TestNumericFieldRefOperations:
 
         from type_bridge.expressions import AggregateExpr
 
-        expr = TestEntity.age.min()
+        expr = TestEntity.c.age.min()
         assert isinstance(expr, AggregateExpr)
         assert expr.function == "min"
 
@@ -371,7 +371,7 @@ class TestNumericFieldRefOperations:
 
         from type_bridge.expressions import AggregateExpr
 
-        expr = TestEntity.age.median()
+        expr = TestEntity.c.age.median()
         assert isinstance(expr, AggregateExpr)
         assert expr.function == "median"
 
@@ -385,7 +385,7 @@ class TestNumericFieldRefOperations:
 
         from type_bridge.expressions import AggregateExpr
 
-        expr = TestEntity.score.std()
+        expr = TestEntity.c.score.std()
         assert isinstance(expr, AggregateExpr)
         assert expr.function == "std"
 

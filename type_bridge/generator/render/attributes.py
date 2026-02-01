@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Re-export for backward compatibility
+# Alias for internal use
 VALUE_TYPE_MAP = TYPEDB_TO_BRIDGE
 
 

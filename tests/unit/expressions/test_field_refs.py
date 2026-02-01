@@ -34,18 +34,18 @@ class TestFieldReferences:
     def test_class_level_access_returns_field_ref(self):
         """Class-level access should return FieldRef."""
         # String field returns StringFieldRef
-        assert isinstance(Person.name, StringFieldRef)
-        assert Person.name.field_name == "name"
-        assert Person.name.attr_type is Name
+        assert isinstance(Person.c.name, StringFieldRef)
+        assert Person.c.name.field_name == "name"
+        assert Person.c.name.attr_type is Name
 
         # Numeric fields return NumericFieldRef
-        assert isinstance(Person.age, NumericFieldRef)
-        assert Person.age.field_name == "age"
-        assert Person.age.attr_type is Age
+        assert isinstance(Person.c.age, NumericFieldRef)
+        assert Person.c.age.field_name == "age"
+        assert Person.c.age.attr_type is Age
 
-        assert isinstance(Person.score, NumericFieldRef)
-        assert Person.score.field_name == "score"
-        assert Person.score.attr_type is Score
+        assert isinstance(Person.c.score, NumericFieldRef)
+        assert Person.c.score.field_name == "score"
+        assert Person.c.score.attr_type is Score
 
     def test_instance_level_access_returns_value(self):
         """Instance-level access should return attribute value."""
@@ -68,103 +68,103 @@ class TestFieldReferences:
     def test_comparison_methods_return_typed_expressions(self):
         """Comparison methods should return ComparisonExpr with correct types."""
         # Greater than
-        expr_gt = Person.age.gt(Age(30))
+        expr_gt = Person.c.age.gt(Age(30))
         assert isinstance(expr_gt, ComparisonExpr)
         assert expr_gt.attr_type is Age
         assert expr_gt.operator == ">"
         assert expr_gt.value.value == 30
 
         # Less than
-        expr_lt = Person.score.lt(Score(90.0))
+        expr_lt = Person.c.score.lt(Score(90.0))
         assert isinstance(expr_lt, ComparisonExpr)
         assert expr_lt.operator == "<"
 
         # Greater than or equal
-        expr_gte = Person.age.gte(Age(18))
+        expr_gte = Person.c.age.gte(Age(18))
         assert isinstance(expr_gte, ComparisonExpr)
         assert expr_gte.operator == ">="
 
         # Less than or equal
-        expr_lte = Person.age.lte(Age(65))
+        expr_lte = Person.c.age.lte(Age(65))
         assert isinstance(expr_lte, ComparisonExpr)
         assert expr_lte.operator == "<="
 
         # Equal
-        expr_eq = Person.age.eq(Age(30))
+        expr_eq = Person.c.age.eq(Age(30))
         assert isinstance(expr_eq, ComparisonExpr)
         assert expr_eq.operator == "=="
 
         # Not equal
-        expr_neq = Person.age.neq(Age(30))
+        expr_neq = Person.c.age.neq(Age(30))
         assert isinstance(expr_neq, ComparisonExpr)
         assert expr_neq.operator == "!="
 
     def test_string_methods_return_string_expressions(self):
         """String field methods should return StringExpr."""
         # Contains
-        expr_contains = Person.name.contains(Name("Alice"))
+        expr_contains = Person.c.name.contains(Name("Alice"))
         assert isinstance(expr_contains, StringExpr)
         assert expr_contains.attr_type is Name
         assert expr_contains.operation == "contains"
         assert expr_contains.pattern.value == "Alice"
 
         # Like (regex)
-        expr_like = Person.name.like(Name("A.*"))
+        expr_like = Person.c.name.like(Name("A.*"))
         assert isinstance(expr_like, StringExpr)
         assert expr_like.operation == "like"
 
         # Regex (alias for like)
-        expr_regex = Person.name.regex(Name("^A"))
+        expr_regex = Person.c.name.regex(Name("^A"))
         assert isinstance(expr_regex, StringExpr)
         assert expr_regex.operation == "regex"
 
     def test_numeric_aggregation_methods(self):
         """Numeric field aggregation methods should return AggregateExpr."""
         # Sum
-        expr_sum = Person.age.sum()
+        expr_sum = Person.c.age.sum()
         assert isinstance(expr_sum, AggregateExpr)
         assert expr_sum.attr_type is Age
         assert expr_sum.function == "sum"
 
         # Average (internally uses 'mean' to match TypeDB 3.x)
-        expr_avg = Person.score.avg()
+        expr_avg = Person.c.score.avg()
         assert isinstance(expr_avg, AggregateExpr)
         assert expr_avg.function == "mean"
 
         # Max
-        expr_max = Person.age.max()
+        expr_max = Person.c.age.max()
         assert isinstance(expr_max, AggregateExpr)
         assert expr_max.function == "max"
 
         # Min
-        expr_min = Person.score.min()
+        expr_min = Person.c.score.min()
         assert isinstance(expr_min, AggregateExpr)
         assert expr_min.function == "min"
 
         # Median
-        expr_median = Person.age.median()
+        expr_median = Person.c.age.median()
         assert isinstance(expr_median, AggregateExpr)
         assert expr_median.function == "median"
 
         # Standard deviation
-        expr_std = Person.score.std()
+        expr_std = Person.c.score.std()
         assert isinstance(expr_std, AggregateExpr)
         assert expr_std.function == "std"
 
     def test_string_field_does_not_have_numeric_methods(self):
         """String fields should not have numeric aggregation methods."""
         # String fields don't have sum, avg, etc.
-        assert not hasattr(Person.name, "sum")
-        assert not hasattr(Person.name, "avg")
+        assert not hasattr(Person.c.name, "sum")
+        assert not hasattr(Person.c.name, "avg")
 
     def test_numeric_field_does_not_have_string_methods(self):
         """Numeric fields should not have string-specific methods."""
         # Numeric fields don't have contains, like, regex
         # (they have the base FieldRef type, not StringFieldRef)
         # Note: They're NumericFieldRef, which doesn't add these methods
-        assert not hasattr(Person.age, "contains")
-        assert not hasattr(Person.age, "like")
-        assert not hasattr(Person.age, "regex")
+        assert not hasattr(Person.c.age, "contains")
+        assert not hasattr(Person.c.age, "like")
+        assert not hasattr(Person.c.age, "regex")
 
 
 class TestExpressionChaining:
@@ -172,8 +172,8 @@ class TestExpressionChaining:
 
     def test_and_chaining(self):
         """Test AND composition of expressions."""
-        expr1 = Person.age.gt(Age(18))
-        expr2 = Person.age.lt(Age(65))
+        expr1 = Person.c.age.gt(Age(18))
+        expr2 = Person.c.age.lt(Age(65))
         combined = expr1.and_(expr2)
 
         from type_bridge.expressions import BooleanExpr
@@ -186,8 +186,8 @@ class TestExpressionChaining:
 
     def test_or_chaining(self):
         """Test OR composition of expressions."""
-        expr1 = Person.age.lt(Age(20))
-        expr2 = Person.age.gt(Age(40))
+        expr1 = Person.c.age.lt(Age(20))
+        expr2 = Person.c.age.gt(Age(40))
         combined = expr1.or_(expr2)
 
         from type_bridge.expressions import BooleanExpr
@@ -198,7 +198,7 @@ class TestExpressionChaining:
 
     def test_not_negation(self):
         """Test NOT negation of expressions."""
-        expr = Person.age.eq(Age(30))
+        expr = Person.c.age.eq(Age(30))
         negated = expr.not_()
 
         from type_bridge.expressions import BooleanExpr
@@ -211,8 +211,8 @@ class TestExpressionChaining:
     def test_complex_boolean_composition(self):
         """Test complex boolean expressions."""
         # (age > 18 AND age < 65) OR score > 90
-        expr1 = Person.age.gt(Age(18)).and_(Person.age.lt(Age(65)))
-        expr2 = Person.score.gt(Score(90.0))
+        expr1 = Person.c.age.gt(Age(18)).and_(Person.c.age.lt(Age(65)))
+        expr2 = Person.c.score.gt(Score(90.0))
         complex_expr = expr1.or_(expr2)
 
         from type_bridge.expressions import BooleanExpr
@@ -225,11 +225,11 @@ class TestExpressionChaining:
 
 
 class TestExpressionToTypeQL:
-    """Test TypeQL pattern generation from expressions."""
+    """Tests for TypeQL generation from expressions."""
 
     def test_comparison_to_typeql(self):
         """Test comparison expression TypeQL generation."""
-        expr = Person.age.gt(Age(30))
+        expr = Person.c.age.gt(Age(30))
         pattern = expr.to_typeql("$p")
 
         # Variable names include entity prefix to avoid collisions
@@ -238,7 +238,7 @@ class TestExpressionToTypeQL:
 
     def test_string_contains_to_typeql(self):
         """Test string contains TypeQL generation."""
-        expr = Person.name.contains(Name("Alice"))
+        expr = Person.c.name.contains(Name("Alice"))
         pattern = expr.to_typeql("$p")
 
         # Variable names include entity prefix to avoid collisions
@@ -247,7 +247,7 @@ class TestExpressionToTypeQL:
 
     def test_string_like_to_typeql(self):
         """Test string like (regex) TypeQL generation."""
-        expr = Person.name.like(Name("A.*"))
+        expr = Person.c.name.like(Name("A.*"))
         pattern = expr.to_typeql("$p")
 
         # Variable names include entity prefix to avoid collisions
@@ -256,7 +256,7 @@ class TestExpressionToTypeQL:
 
     def test_boolean_and_to_typeql(self):
         """Test AND expression TypeQL generation."""
-        expr = Person.age.gt(Age(18)).and_(Person.age.lt(Age(65)))
+        expr = Person.c.age.gt(Age(18)).and_(Person.c.age.lt(Age(65)))
         pattern = expr.to_typeql("$p")
 
         # AND just concatenates patterns; variable names include entity prefix
@@ -266,7 +266,7 @@ class TestExpressionToTypeQL:
 
     def test_boolean_or_to_typeql(self):
         """Test OR expression TypeQL generation."""
-        expr = Person.age.lt(Age(20)).or_(Person.age.gt(Age(40)))
+        expr = Person.c.age.lt(Age(20)).or_(Person.c.age.gt(Age(40)))
         pattern = expr.to_typeql("$p")
 
         # OR creates disjunction blocks (with newlines for TypeDB compatibility)
@@ -278,7 +278,7 @@ class TestExpressionToTypeQL:
 
     def test_boolean_not_to_typeql(self):
         """Test NOT expression TypeQL generation."""
-        expr = Person.age.eq(Age(30)).not_()
+        expr = Person.c.age.eq(Age(30)).not_()
         pattern = expr.to_typeql("$p")
 
         # NOT creates negation block; variable names include entity prefix
@@ -288,11 +288,11 @@ class TestExpressionToTypeQL:
 
     def test_aggregate_to_typeql(self):
         """Test aggregate expression TypeQL generation."""
-        expr = Person.age.avg()
+        expr = Person.c.age.avg()
         pattern = expr.to_typeql("$p")
 
         # TypeDB 3.x uses 'mean' instead of 'avg'
-        assert "mean($age)" in pattern
+        assert "mean($p_age)" in pattern
 
         # Count doesn't need attr_type
         from type_bridge.expressions import AggregateExpr

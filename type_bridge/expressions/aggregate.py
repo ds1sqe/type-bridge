@@ -47,7 +47,7 @@ class AggregateExpr[T: "Attribute"](Expression):
 
         This is used in fetch clauses, not match clauses.
 
-        Example output: "mean($age)"
+        Example output: "mean($p_age)"
 
         Args:
             var: Entity variable name (used to reference attributes)
@@ -61,8 +61,9 @@ class AggregateExpr[T: "Attribute"](Expression):
 
         # Other aggregations need attribute reference
         assert self.attr_type is not None
-        attr_type_name = self.attr_type.get_attribute_name()
-        attr_var = f"${attr_type_name.lower()}"
+        from type_bridge.expressions.utils import generate_attr_var
+
+        attr_var = generate_attr_var(var, self.attr_type)
         return f"{self.function}({attr_var})"
 
     def get_fetch_key(self) -> str:

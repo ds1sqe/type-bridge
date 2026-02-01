@@ -1,8 +1,6 @@
 """Session and transaction management for TypeDB."""
 
 import logging
-import os
-from contextlib import contextmanager
 from typing import Any, overload
 
 from typedb.driver import (
@@ -17,29 +15,6 @@ from typedb.driver import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def _suppress_stderr():
-    """Suppress stderr at the file descriptor level.
-
-    This silences the TypeDB driver's Rust logging initialization warning
-    which writes directly to fd 2, bypassing Python's sys.stderr.
-
-    Note: Always use fd 2 directly since Rust code writes to the actual
-    stderr file descriptor, not Python's sys.stderr wrapper.
-    """
-    # Always use fd 2 directly (actual stderr) since Rust writes there
-    stderr_fd = 2
-    saved_stderr = os.dup(stderr_fd)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull, stderr_fd)
-    os.close(devnull)
-    try:
-        yield
-    finally:
-        os.dup2(saved_stderr, stderr_fd)
-        os.close(saved_stderr)
 
 
 def _tx_type_name(tx_type: TransactionType) -> str:
@@ -223,16 +198,15 @@ class Database:
 
             # Connect to TypeDB (suppress Rust logging warning)
             try:
-                with _suppress_stderr():
-                    if credentials:
-                        logger.debug("Using provided credentials for authentication")
-                        self._driver = TypeDB.driver(self.address, credentials, driver_options)
-                    else:
-                        # For local TypeDB Core without authentication
-                        logger.debug("Using default credentials for local connection")
-                        self._driver = TypeDB.driver(
-                            self.address, Credentials("admin", "password"), driver_options
-                        )
+                if credentials:
+                    logger.debug("Using provided credentials for authentication")
+                    self._driver = TypeDB.driver(self.address, credentials, driver_options)
+                else:
+                    # For local TypeDB Core without authentication
+                    logger.debug("Using default credentials for local connection")
+                    self._driver = TypeDB.driver(
+                        self.address, Credentials("admin", "password"), driver_options
+                    )
                 self._owns_driver = True
                 logger.info(f"Connected to TypeDB at {self.address}")
             except Exception as e:

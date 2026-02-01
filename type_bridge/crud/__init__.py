@@ -11,7 +11,7 @@ The module is organized into submodules:
 - base: Base type definitions
 """
 
-# Re-export for backward compatibility
+# Public API re-exports
 from .entity import EntityManager, EntityQuery, GroupByQuery
 from .exceptions import (
     EntityNotFoundError,
