@@ -10,21 +10,19 @@ from type_bridge.query import Query, QueryBuilder
 from type_bridge.session import Connection
 
 from ..base import BaseQuery, E, parse_aggregate_results
-from ..exceptions import KeyAttributeError
 from ..utils import (
     assign_entity_iids,
     build_entity_iid_map,
     build_entity_iid_query,
+    build_entity_update_query_parts,
     build_iid_type_fetch_clause,
     build_known_key_values,
-    extract_update_values,
     format_value,
     get_key_attrs,
     is_multi_value_attribute,
     match_entity_type,
     modify_match_for_type_binding,
     process_iid_type_results,
-    unwrap_attribute,
 )
 
 logger = logging.getLogger(__name__)
@@ -556,103 +554,12 @@ class EntityQuery[E: Entity](BaseQuery[E]):
     ) -> tuple[str, str, str, str]:
         """Build the TypeQL query parts for updating an entity.
 
+        Delegates to shared utility function that handles IID-based and key-based matching.
+
         Returns:
             Tuple of (match_clause, delete_clause, insert_clause, update_clause)
         """
-        owned_attrs = self.model_class.get_all_attributes()
-
-        # Extract key attributes for matching
-        match_filters = {}
-        for field_name, attr_info in owned_attrs.items():
-            if attr_info.flags.is_key:
-                key_value = getattr(entity, field_name, None)
-                if key_value is None:
-                    raise KeyAttributeError(
-                        entity_type=self.model_class.__name__,
-                        operation="update",
-                        field_name=field_name,
-                    )
-                key_value = unwrap_attribute(key_value)
-                attr_name = attr_info.typ.get_attribute_name()
-                match_filters[attr_name] = key_value
-
-        if not match_filters:
-            raise KeyAttributeError(
-                entity_type=self.model_class.__name__,
-                operation="update",
-                all_fields=list(owned_attrs.keys()),
-            )
-
-        # Extract single/multi-value updates using shared utility
-        single_value_updates, single_value_deletes, multi_value_updates = extract_update_values(
-            entity, owned_attrs, skip_key_attrs=True
-        )
-
-        # Build Match Clause
-        match_statements = []
-        entity_match_parts = [f"{var_name} isa {self.model_class.get_type_name()}"]
-        for attr_name, attr_value in match_filters.items():
-            formatted_value = format_value(attr_value)
-            entity_match_parts.append(f"has {attr_name} {formatted_value}")
-        match_statements.append(", ".join(entity_match_parts) + ";")
-
-        # Add match for multi-value attributes with guards
-        if multi_value_updates:
-            for attr_name, values in multi_value_updates.items():
-                keep_literals = [format_value(v) for v in dict.fromkeys(values)]
-                attr_var = f"${attr_name}_{var_name.replace('$', '')}"
-                guard_lines = [f"not {{ {attr_var} == {literal}; }};" for literal in keep_literals]
-                try_block = "\n".join(
-                    [
-                        "try {",
-                        f"  {var_name} has {attr_name} {attr_var};",
-                        *[f"  {g}" for g in guard_lines],
-                        "};",
-                    ]
-                )
-                match_statements.append(try_block)
-
-        # Add match for single-value deletes
-        if single_value_deletes:
-            for attr_name in single_value_deletes:
-                attr_var = f"${attr_name}_{var_name.replace('$', '')}"
-                match_statements.append(f"try {{ {var_name} has {attr_name} {attr_var}; }};")
-
-        match_clause = "\n".join(match_statements)
-
-        # Build Delete Clause
-        delete_parts = []
-        if multi_value_updates:
-            for attr_name in multi_value_updates:
-                attr_var = f"${attr_name}_{var_name.replace('$', '')}"
-                delete_parts.append(f"try {{ {attr_var} of {var_name}; }};")
-
-        if single_value_deletes:
-            for attr_name in single_value_deletes:
-                attr_var = f"${attr_name}_{var_name.replace('$', '')}"
-                delete_parts.append(f"try {{ {attr_var} of {var_name}; }};")
-
-        delete_clause = "\n".join(delete_parts)
-
-        # Build Insert Clause
-        insert_parts = []
-        for attr_name, values in multi_value_updates.items():
-            for value in values:
-                formatted_value = format_value(value)
-                insert_parts.append(f"{var_name} has {attr_name} {formatted_value};")
-
-        insert_clause = "\n".join(insert_parts)
-
-        # Build Update Clause
-        update_parts = []
-        if single_value_updates:
-            for attr_name, value in single_value_updates.items():
-                formatted_value = format_value(value)
-                update_parts.append(f"{var_name} has {attr_name} {formatted_value};")
-
-        update_clause = "\n".join(update_parts)
-
-        return match_clause, delete_clause, insert_clause, update_clause
+        return build_entity_update_query_parts(entity, self.model_class, var_name)
 
     def aggregate(self, *aggregates: Any) -> dict[str, Any]:
         """Execute aggregation queries.

@@ -8,6 +8,7 @@ import isodate
 from isodate import Duration as IsodateDuration
 
 from type_bridge.attribute import AttributeFlags
+from type_bridge.crud.exceptions import KeyAttributeError
 
 if TYPE_CHECKING:
     from type_bridge.models import Entity, Relation
@@ -1131,3 +1132,130 @@ def build_update_insert_clause(
         insert_parts.append(f"{var_name} has {attr_name} {formatted_value};")
 
     return "\n".join(insert_parts)
+
+
+def build_entity_update_query_parts(
+    entity: Any,
+    model_class: type["Entity"],
+    var_name: str = "$e",
+) -> tuple[str, str, str, str]:
+    """Build the TypeQL query parts for updating an entity.
+
+    Shared implementation used by both EntityManager and EntityQuery.
+    Prefers IID-based matching when available, falls back to key attributes.
+
+    Args:
+        entity: The entity instance to update
+        model_class: The entity's model class
+        var_name: Variable name for the entity in the query
+
+    Returns:
+        Tuple of (match_clause, delete_clause, insert_clause, update_clause)
+
+    Raises:
+        KeyAttributeError: If entity has no _iid and no key attributes
+    """
+    owned_attrs = model_class.get_all_attributes()
+
+    # Prefer IID-based matching when available (like relation CRUD)
+    entity_iid = getattr(entity, "_iid", None)
+    use_iid_matching = entity_iid is not None
+
+    # Fall back to key attributes if no IID
+    match_filters: dict[str, Any] = {}
+    if not use_iid_matching:
+        for field_name, attr_info in owned_attrs.items():
+            if attr_info.flags.is_key:
+                key_value = getattr(entity, field_name, None)
+                if key_value is None:
+                    raise KeyAttributeError(
+                        entity_type=model_class.__name__,
+                        operation="update",
+                        field_name=field_name,
+                    )
+                key_value = unwrap_attribute(key_value)
+                attr_name = attr_info.typ.get_attribute_name()
+                match_filters[attr_name] = key_value
+
+        if not match_filters:
+            raise KeyAttributeError(
+                entity_type=model_class.__name__,
+                operation="update",
+                all_fields=list(owned_attrs.keys()),
+            )
+
+    # Extract single/multi-value updates
+    single_value_updates, single_value_deletes, multi_value_updates = extract_update_values(
+        entity, owned_attrs, skip_key_attrs=True
+    )
+
+    # Build Match Clause
+    match_statements = []
+    entity_match_parts = [f"{var_name} isa {model_class.get_type_name()}"]
+    if use_iid_matching:
+        # Use IID for precise matching
+        entity_match_parts.append(f"iid {entity_iid}")
+    else:
+        # Use key attributes for matching
+        for attr_name, attr_value in match_filters.items():
+            formatted_value = format_value(attr_value)
+            entity_match_parts.append(f"has {attr_name} {formatted_value}")
+    match_statements.append(", ".join(entity_match_parts) + ";")
+
+    # Add match for multi-value attributes with guards
+    if multi_value_updates:
+        for attr_name, values in multi_value_updates.items():
+            keep_literals = [format_value(v) for v in dict.fromkeys(values)]
+            attr_var = f"${attr_name}_{var_name.replace('$', '')}"
+            guard_lines = [f"not {{ {attr_var} == {literal}; }};" for literal in keep_literals]
+            try_block = "\n".join(
+                [
+                    "try {",
+                    f"  {var_name} has {attr_name} {attr_var};",
+                    *[f"  {g}" for g in guard_lines],
+                    "};",
+                ]
+            )
+            match_statements.append(try_block)
+
+    # Add match for single-value deletes
+    if single_value_deletes:
+        for attr_name in single_value_deletes:
+            attr_var = f"${attr_name}_{var_name.replace('$', '')}"
+            match_statements.append(f"try {{ {var_name} has {attr_name} {attr_var}; }};")
+
+    match_clause = "\n".join(match_statements)
+
+    # Build Delete Clause
+    delete_parts = []
+    if multi_value_updates:
+        for attr_name in multi_value_updates:
+            attr_var = f"${attr_name}_{var_name.replace('$', '')}"
+            delete_parts.append(f"try {{ {attr_var} of {var_name}; }};")
+
+    if single_value_deletes:
+        for attr_name in single_value_deletes:
+            attr_var = f"${attr_name}_{var_name.replace('$', '')}"
+            delete_parts.append(f"try {{ {attr_var} of {var_name}; }};")
+
+    delete_clause = "\n".join(delete_parts)
+
+    # Build Insert Clause (for multi-value attributes)
+    insert_parts = []
+    for attr_name, values in multi_value_updates.items():
+        for value in values:
+            formatted_value = format_value(value)
+            insert_parts.append(f"{var_name} has {attr_name} {formatted_value};")
+
+    insert_clause = "\n".join(insert_parts)
+
+    # Build Update Clause (for single-value attributes)
+    update_parts = []
+    if single_value_updates:
+        for attr_name, value in single_value_updates.items():
+            formatted_value = format_value(value)
+            update_parts.append(f"{var_name} has {attr_name} {formatted_value};")
+
+    update_clause = "\n".join(update_parts)
+
+    return match_clause, delete_clause, insert_clause, update_clause

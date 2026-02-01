@@ -18,9 +18,9 @@ from ..utils import (
     assign_entity_iids,
     build_entity_iid_map,
     build_entity_iid_query,
+    build_entity_update_query_parts,
     build_iid_type_fetch_clause,
     build_known_key_values,
-    extract_update_values,
     format_value,
     get_key_attrs,
     hydrate_attributes,
@@ -1086,123 +1086,12 @@ class EntityManager[E: Entity]:
     ) -> tuple[str, str, str, str]:
         """Build the TypeQL query parts for updating an entity.
 
+        Delegates to shared utility function that handles IID-based and key-based matching.
+
         Returns:
-            Tuple of (match_clause, delete_clause, insert_clause, update_clause) structures
-            containing the partial queries (without the keywords 'match', 'delete', etc.)
+            Tuple of (match_clause, delete_clause, insert_clause, update_clause)
         """
-        # Get all attributes (including inherited) to determine cardinality
-        owned_attrs = self.model_class.get_all_attributes()
-
-        # Prefer IID-based matching when available (like relation CRUD)
-        entity_iid = getattr(entity, "_iid", None)
-        use_iid_matching = entity_iid is not None
-
-        # Fall back to key attributes if no IID
-        match_filters = {}
-        if not use_iid_matching:
-            for field_name, attr_info in owned_attrs.items():
-                if attr_info.flags.is_key:
-                    key_value = getattr(entity, field_name, None)
-                    if key_value is None:
-                        raise KeyAttributeError(
-                            entity_type=self.model_class.__name__,
-                            operation="update",
-                            field_name=field_name,
-                        )
-                    # Extract value from Attribute instance if needed
-                    key_value = unwrap_attribute(key_value)
-                    attr_name = attr_info.typ.get_attribute_name()
-                    match_filters[attr_name] = key_value
-
-            if not match_filters:
-                raise KeyAttributeError(
-                    entity_type=self.model_class.__name__,
-                    operation="update",
-                    all_fields=list(owned_attrs.keys()),
-                )
-
-        # Extract single/multi-value updates using shared utility
-        single_value_updates, single_value_deletes, multi_value_updates = extract_update_values(
-            entity, owned_attrs, skip_key_attrs=True
-        )
-
-        # Build Match Clause
-        match_statements = []
-        entity_match_parts = [f"{var_name} isa {self.model_class.get_type_name()}"]
-        if use_iid_matching:
-            # Use IID for precise matching
-            entity_match_parts.append(f"iid {entity_iid}")
-        else:
-            # Use key attributes for matching
-            for attr_name, attr_value in match_filters.items():
-                formatted_value = format_value(attr_value)
-                entity_match_parts.append(f"has {attr_name} {formatted_value}")
-        match_statements.append(", ".join(entity_match_parts) + ";")
-
-        # Add match statements to bind multi-value attributes for deletion with optional guards
-        if multi_value_updates:
-            for attr_name, values in multi_value_updates.items():
-                keep_literals = [format_value(v) for v in dict.fromkeys(values)]
-                # Use scoped variables for guards to avoid conflicts in batch queries
-                # (Variables inside not {} or try {} are local scope in TypeQL generally,
-                # but to be safe we use unique names if needed. Here we use literals so it's fine)
-                guard_lines = [
-                    f"not {{ ${attr_name} == {literal}; }};" for literal in keep_literals
-                ]
-                # Use variable name derived from entity var to be unique across batch
-                attr_var = f"${attr_name}_{var_name.replace('$', '')}"
-
-                try_block = "\n".join(
-                    [
-                        "try {",
-                        f"  {var_name} has {attr_name} {attr_var};",
-                        *[f"  {g.replace(f'${attr_name}', attr_var)}" for g in guard_lines],
-                        "};",
-                    ]
-                )
-                match_statements.append(try_block)
-
-        # Add match statements to bind single-value attributes for deletion
-        if single_value_deletes:
-            for attr_name in single_value_deletes:
-                attr_var = f"${attr_name}_{var_name.replace('$', '')}"
-                match_statements.append(f"try {{ {var_name} has {attr_name} {attr_var}; }};")
-
-        match_clause = "\n".join(match_statements)
-
-        # Build Delete Clause
-        delete_parts = []
-        if multi_value_updates:
-            for attr_name in multi_value_updates:
-                attr_var = f"${attr_name}_{var_name.replace('$', '')}"
-                delete_parts.append(f"try {{ {attr_var} of {var_name}; }};")
-
-        if single_value_deletes:
-            for attr_name in single_value_deletes:
-                attr_var = f"${attr_name}_{var_name.replace('$', '')}"
-                delete_parts.append(f"try {{ {attr_var} of {var_name}; }};")
-
-        delete_clause = "\n".join(delete_parts)
-
-        # Build Insert Clause (for multi-value attributes)
-        insert_parts = []
-        for attr_name, values in multi_value_updates.items():
-            for value in values:
-                formatted_value = format_value(value)
-                insert_parts.append(f"{var_name} has {attr_name} {formatted_value};")
-
-        insert_clause = "\n".join(insert_parts)
-
-        # Build Update Clause (for single-value attributes)
-        update_parts = []
-        if single_value_updates:
-            for attr_name, value in single_value_updates.items():
-                formatted_value = format_value(value)
-                update_parts.append(f"{var_name} has {attr_name} {formatted_value};")
-
-        update_clause = "\n".join(update_parts)
-
-        return match_clause, delete_clause, insert_clause, update_clause
+        return build_entity_update_query_parts(entity, self.model_class, var_name)
 
     def _extract_attributes(
         self, result: dict[str, Any], entity_class: type[E] | None = None
