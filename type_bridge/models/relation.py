@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -13,7 +14,7 @@ from typing import (
 
 from pydantic import ConfigDict
 
-from type_bridge.attribute import AttributeFlags, TypeFlags
+from type_bridge.attribute import Attribute, AttributeFlags, TypeFlags
 from type_bridge.crud.utils import extract_entity_key, unwrap_attribute
 from type_bridge.models.base import TypeDBType
 from type_bridge.models.role import Role
@@ -24,6 +25,7 @@ from type_bridge.models.utils import (
 
 if TYPE_CHECKING:
     from type_bridge.crud import RelationManager
+    from type_bridge.query.ast import InsertClause
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,94 @@ class Relation(TypeDBType):
             Dictionary mapping role names to Role instances
         """
         return cls._roles
+
+    def to_ast(self, var: str = "$r") -> InsertClause:
+        """Generate AST InsertClause for this relation instance.
+
+        Args:
+            var: Variable name to use
+
+        Returns:
+            InsertClause containing statements
+        """
+        from type_bridge.models.utils import get_base_type_for_attribute
+        from type_bridge.query.ast import (
+            HasStatement,
+            InsertClause,
+            LiteralValue,
+            RelationStatement,
+        )
+        from type_bridge.query.ast import RolePlayer as AstRolePlayer
+
+        type_name = self.get_type_name()
+
+        # Build role players
+        role_players_ast = []
+        for role_name, role in self.__class__._roles.items():
+            # Get the entity from the instance
+            entity_or_list = self.__dict__.get(role_name)
+            if entity_or_list is not None:
+                # Normalize to list for uniform handling
+                entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+                for i, entity in enumerate(entities):
+                    # Generate unique variable name for each player
+                    # Note: This assumes the manager will bind these variables in a match clause
+                    # or they are already bound. For now, we generate the usage.
+                    var_name = f"{role_name}_{i}" if len(entities) > 1 else role_name
+
+                    # We assume variables are passed in or coordinated.
+                    # Since to_ast is called on the instance, we need a convention.
+                    # This implies the Manager/Compiler must coordinate variable names between Match and Insert.
+                    # For now, let's use a standard derived name format that the Manager can also replicate.
+                    player_var = f"${var_name}"
+
+                    role_players_ast.append(
+                        AstRolePlayer(role=role.role_name, player_var=player_var)
+                    )
+
+        statements = [
+            RelationStatement(variable=var, type_name=type_name, role_players=role_players_ast)
+        ]
+
+        # Add attribute ownerships
+        for field_name, attr_info in self._owned_attrs.items():
+            value = getattr(self, field_name, None)
+            if value is not None:
+                attr_class = attr_info.typ
+                attr_name = attr_class.get_attribute_name()
+
+                # Determine value type for AST
+                py_type = get_base_type_for_attribute(attr_class)
+                val_type_map = {
+                    str: "string",
+                    int: "long",
+                    float: "double",
+                    bool: "boolean",
+                    datetime: "datetime",
+                }
+                ast_type = val_type_map.get(py_type, "string")
+
+                # Handle lists (multi-value attributes)
+                values = value if isinstance(value, list) else [value]
+
+                for item in values:
+                    # Unwrap attribute value
+                    raw_val = item.value if isinstance(item, Attribute) else item
+
+                    if ast_type == "string" and isinstance(raw_val, bool):
+                        ast_type = "boolean"
+                    elif ast_type == "string" and isinstance(raw_val, (int, float)):
+                        ast_type = "double" if isinstance(raw_val, float) else "long"
+
+                    statements.append(
+                        HasStatement(
+                            subject_var=var,
+                            attr_name=attr_name,
+                            value=LiteralValue(value=raw_val, value_type=ast_type),
+                        )
+                    )
+
+        return InsertClause(statements=statements)
 
     def to_insert_query(self, var: str = "$r") -> str:
         """Generate TypeQL insert query for this relation instance.

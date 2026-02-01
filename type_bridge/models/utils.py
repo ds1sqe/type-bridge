@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime as datetime_type
-from typing import Literal, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
+
+from pydantic import BeforeValidator
 
 from type_bridge.attribute import (
     Attribute,
@@ -16,6 +18,26 @@ from type_bridge.attribute import (
     String,
 )
 from type_bridge.validation import validate_type_name as validate_reserved_word
+
+
+def attribute_wrapper(attr_class: type[Attribute]):
+    """Create a validator that wraps raw values in the attribute class.
+
+    Returns a Pydantic BeforeValidator that converts raw values (str, int, etc.)
+    into instances of the specified Attribute class.
+    """
+
+    def wrap(v: Any) -> Any:
+        # If it's already an Attribute instance, return as is
+        if isinstance(v, attr_class):
+            return v
+        # If None, return None (Pydantic handles Optional separately)
+        if v is None:
+            return None
+        # Wrap the raw value
+        return attr_class(v)
+
+    return BeforeValidator(wrap)
 
 
 @dataclass

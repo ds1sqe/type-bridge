@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -24,6 +25,7 @@ from type_bridge.models.utils import (
 
 if TYPE_CHECKING:
     from type_bridge.crud import EntityManager
+    from type_bridge.query.ast import InsertClause
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,67 @@ class Entity(TypeDBType):
 
         # Join with commas, but end with semicolon (no comma before semicolon)
         return ",\n".join(lines) + ";"
+
+    def to_ast(self, var: str = "$e") -> InsertClause:
+        """Generate AST InsertClause for this instance.
+
+        Args:
+            var: Variable name to use
+
+        Returns:
+            InsertClause containing statements
+        """
+        from type_bridge.models.utils import get_base_type_for_attribute
+        from type_bridge.query.ast import HasStatement, InsertClause, IsaStatement, LiteralValue
+
+        type_name = self.get_type_name()
+        statements = [IsaStatement(variable=var, type_name=type_name)]
+
+        # Use get_all_attributes to include inherited attributes
+        for field_name, attr_info in self.get_all_attributes().items():
+            value = getattr(self, field_name, None)
+            if value is not None:
+                attr_class = attr_info.typ
+                attr_name = attr_class.get_attribute_name()
+
+                # Determine value type for AST
+                py_type = get_base_type_for_attribute(attr_class)
+                val_type_map = {
+                    str: "string",
+                    int: "long",
+                    float: "double",
+                    bool: "boolean",
+                    datetime: "datetime",
+                }
+                # Default to string if unknown (shouldn't happen with standard attrs)
+                # Note: get_base_type_for_attribute might return None for custom attrs
+                # that don't inherit directly from standard ones in MRO order checked.
+                # Ideally, we should check isinstance on value or Attribute instance.
+
+                ast_type = val_type_map.get(py_type, "string")
+
+                # Handle lists (multi-value attributes)
+                values = value if isinstance(value, list) else [value]
+
+                for item in values:
+                    # Unwrap attribute value
+                    raw_val = item.value if isinstance(item, Attribute) else item
+
+                    # Refine type based on actual value if needed
+                    if ast_type == "string" and isinstance(raw_val, bool):
+                        ast_type = "boolean"
+                    elif ast_type == "string" and isinstance(raw_val, (int, float)):
+                        ast_type = "double" if isinstance(raw_val, float) else "long"
+
+                    statements.append(
+                        HasStatement(
+                            subject_var=var,
+                            attr_name=attr_name,
+                            value=LiteralValue(value=raw_val, value_type=ast_type),
+                        )
+                    )
+
+        return InsertClause(statements=statements)
 
     def to_insert_query(self, var: str = "$e") -> str:
         """Generate TypeQL insert query for this instance.

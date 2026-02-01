@@ -6,11 +6,12 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Self, dataclass_transform
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
 from type_bridge.attribute import AttributeFlags, TypeFlags
 from type_bridge.attribute.flags import format_type_name
 from type_bridge.crud.utils import format_value as _format_value_impl
+from type_bridge.models.registry import ModelRegistry
 from type_bridge.models.utils import (
     MatchClauseInfo,
     ModelAttrInfo,
@@ -47,7 +48,9 @@ class TypeDBType(BaseModel, ABC):
     # Internal metadata (class-level)
     _flags: ClassVar[TypeFlags] = TypeFlags()
     _owned_attrs: ClassVar[dict[str, ModelAttrInfo]] = {}
-    _iid: str | None = None  # TypeDB internal ID
+
+    # TypeDB internal ID - treated as private attribute by Pydantic
+    _iid: str | None = PrivateAttr(default=None)
 
     # Fields accessor for query building
     c: ClassVar[Any]  # Any to avoid circular import in type hint
@@ -95,31 +98,6 @@ class TypeDBType(BaseModel, ABC):
         self.manager(connection).delete(self)
         return self
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        """Override setattr to preserve _iid during attribute assignment.
-
-        Pydantic's validate_assignment=True can reset private attributes like _iid
-        when modifying model fields. This override captures and restores _iid.
-        """
-        # Capture current _iid before Pydantic's setattr might reset it
-        # Use object.__getattribute__ to avoid any descriptor magic
-        try:
-            current_iid = object.__getattribute__(self, "_iid")
-        except AttributeError:
-            current_iid = None
-
-        # Let Pydantic handle the actual attribute assignment
-        super().__setattr__(name, value)
-
-        # Restore _iid if it was set and got cleared (but not if we're setting _iid itself)
-        if name != "_iid" and current_iid is not None:
-            try:
-                new_iid = object.__getattribute__(self, "_iid")
-            except AttributeError:
-                new_iid = None
-            if new_iid is None:
-                object.__setattr__(self, "_iid", current_iid)
-
     # Type context for name validation (entity, relation, etc.)
     _type_context: ClassVar[str] = "entity"
 
@@ -154,6 +132,9 @@ class TypeDBType(BaseModel, ABC):
         if not cls._flags.base and not is_base_entity_or_relation:
             type_name = cls._flags.name or format_type_name(cls.__name__, cls._flags.case)
             validate_type_name(type_name, cls.__name__, cls._type_context)
+
+        # Register model in the central registry
+        ModelRegistry.register(cls)
 
     @model_validator(mode="wrap")
     @classmethod
