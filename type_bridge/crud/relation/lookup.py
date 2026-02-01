@@ -13,6 +13,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from type_bridge.attribute.string import String
+from type_bridge.crud.utils import unwrap_attribute
 from type_bridge.expressions import (
     AttributeExistsExpr,
     BooleanExpr,
@@ -277,7 +278,7 @@ def _build_lookup_expression(
             raise ValueError(
                 f"String lookup '{lookup}' requires a String attribute (got {attr_type.__name__})"
             )
-        raw_str = value.value if hasattr(value, "value") else str(value)
+        raw_str = str(unwrap_attribute(value))
 
         if lookup == "contains":
             return attr_type.contains(attr_type(raw_str))

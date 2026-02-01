@@ -8,7 +8,7 @@ from typedb.driver import TransactionType
 from type_bridge.models import Relation
 from type_bridge.session import Connection, ConnectionExecutor
 
-from ..utils import format_value
+from ..utils import extract_entity_key, format_value
 
 logger = logging.getLogger(__name__)
 
@@ -104,19 +104,11 @@ class RelationGroupByQuery[R: Relation]:
         # Add role player filter clauses
         for role_name, player_entity in role_player_filters.items():
             role_var = f"${role_name}"
-            entity_class = player_entity.__class__
-
-            player_owned_attrs = entity_class.get_all_attributes()
-            for field_name, attr_info in player_owned_attrs.items():
-                if attr_info.flags.is_key:
-                    key_value = getattr(player_entity, field_name, None)
-                    if key_value is not None:
-                        attr_name = attr_info.typ.get_attribute_name()
-                        if hasattr(key_value, "value"):
-                            key_value = key_value.value
-                        formatted_value = format_value(key_value)
-                        match_clauses.append(f"{role_var} has {attr_name} {formatted_value}")
-                        break
+            key_info = extract_entity_key(player_entity)
+            if key_info:
+                _, attr_name, raw_value = key_info
+                formatted_value = format_value(raw_value)
+                match_clauses.append(f"{role_var} has {attr_name} {formatted_value}")
 
         # Apply expression filters
         for expr in self._expressions:

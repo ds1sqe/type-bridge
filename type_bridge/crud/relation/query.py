@@ -10,7 +10,15 @@ from type_bridge.query import Query
 from type_bridge.session import Connection, ConnectionExecutor
 
 from ..base import R
-from ..utils import format_value, is_multi_value_attribute
+from ..utils import (
+    assign_relation_iids,
+    build_relation_iid_query,
+    build_relation_result_map,
+    extract_entity_key,
+    format_value,
+    is_multi_value_attribute,
+    unwrap_attribute,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -333,21 +341,12 @@ class RelationQuery[R: Relation]:
         # Add role player filter clauses
         for role_name, player_entity in role_player_filters.items():
             role_var = f"${role_name}"
-            entity_class = player_entity.__class__
-
-            # Match the role player by their key attributes (including inherited)
-            player_owned_attrs = entity_class.get_all_attributes()
-            for field_name, attr_info in player_owned_attrs.items():
-                if attr_info.flags.is_key:
-                    key_value = getattr(player_entity, field_name, None)
-                    if key_value is not None:
-                        attr_name = attr_info.typ.get_attribute_name()
-                        # Extract value from Attribute instance if needed
-                        if hasattr(key_value, "value"):
-                            key_value = key_value.value
-                        formatted_value = format_value(key_value)
-                        match_clauses.append(f"{role_var} has {attr_name} {formatted_value}")
-                        break
+            # Match the role player by their key attribute
+            key_info = extract_entity_key(player_entity)
+            if key_info:
+                _, attr_name, raw_value = key_info
+                formatted_value = format_value(raw_value)
+                match_clauses.append(f"{role_var} has {attr_name} {formatted_value}")
 
         # Apply expression-based filters
         for expr in self._expressions:
@@ -558,116 +557,22 @@ class RelationQuery[R: Relation]:
             return
 
         roles = self.model_class._roles
-        role_names = list(roles.keys())
 
-        # Build batched disjunctive query for all relations
-        # Use shared variable names across all branches for TypeQL compatibility
-        or_clauses = []
-        # Track relation key info for correlation
-        relation_key_data: list[dict[str, tuple[str, Any, Any]]] = []
-
-        for relation in relations:
-            # Build match clause with role players using shared variable names
-            role_parts = []
-            match_statements = []
-            role_key_info: dict[
-                str, tuple[str, Any, Any]
-            ] = {}  # role_name -> (attr_name, value, entity)
-
-            for role_name, role in roles.items():
-                entity = getattr(relation, role_name, None)
-                if entity is None:
-                    logger.debug(f"Skipping role {role_name} for relation without role player")
-                    continue
-
-                # Validate entity is a TypeDBType instance (Entity or Relation)
-                # This guards against accessing RoleRef or other invalid objects
-                entity_class = entity.__class__
-                if not hasattr(entity_class, "get_all_attributes"):
-                    logger.debug(f"Skipping role {role_name}: player is not a valid TypeDBType")
-                    continue
-
-                role_var = f"${role_name}"
-                role_parts.append(f"{role.role_name}: {role_var}")
-
-                # Match the role player by their key attributes
-                player_owned_attrs = entity_class.get_all_attributes()
-                for field_name, attr_info in player_owned_attrs.items():
-                    if attr_info.flags.is_key:
-                        key_value = getattr(entity, field_name, None)
-                        if key_value is not None:
-                            attr_name = attr_info.typ.get_attribute_name()
-                            if hasattr(key_value, "value"):
-                                key_value = key_value.value
-                            formatted_value = format_value(key_value)
-                            match_statements.append(f"{role_var} has {attr_name} {formatted_value}")
-                            role_key_info[role_name] = (attr_name, key_value, entity)
-                            break
-
-            if not role_parts:
-                continue
-
-            roles_str = ", ".join(role_parts)
-            relation_match = f"$r isa {self.model_class.get_type_name()} ({roles_str})"
-
-            # Build clause for this relation
-            query_parts = [relation_match] + match_statements
-            or_clauses.append(f"{{ {'; '.join(query_parts)}; }}")
-
-            relation_key_data.append(role_key_info)
-
-        if not or_clauses:
+        # Build batched IID lookup query
+        query_result = build_relation_iid_query(relations, self.model_class, roles)
+        if not query_result:
             return
 
-        # Build select variables - shared across all branches
-        select_vars = ["$r"] + [f"${role_name}" for role_name in role_names]
-
-        # Single disjunctive query for all relations
-        query_str = f"match\n{' or '.join(or_clauses)};\nselect {', '.join(select_vars)};"
+        query_str, role_names, role_key_info, _ = query_result
         logger.debug(f"Batched IID lookup query: {query_str}")
 
         results = self._execute(query_str, TransactionType.READ)
-
         if not results:
             return
 
-        # Build a map from role player key values to (relation, role_key_info) for correlation
-        # Key: tuple of sorted (role_name, attr_name, value) tuples
-        key_to_relation: dict[tuple[tuple[str, str, Any], ...], tuple[Any, dict]] = {}
-        for relation, role_key_info in zip(relations, relation_key_data):
-            key_parts: list[tuple[str, str, Any]] = []
-            for role_name, (attr_name, value, _) in role_key_info.items():
-                key_parts.append((role_name, attr_name, value))
-            if key_parts:
-                map_key = tuple(sorted(key_parts))
-                key_to_relation[map_key] = (relation, role_key_info)
-
-        # Process results - results come back in the same order as or_clauses
-        # Each result corresponds to one relation
-        for idx, result in enumerate(results):
-            if idx >= len(relation_key_data):
-                break
-
-            relation = relations[idx]
-            role_key_info = relation_key_data[idx]
-
-            # Extract relation IID
-            if "r" in result and isinstance(result["r"], dict):
-                relation_iid = result["r"].get("_iid")
-                if relation_iid:
-                    object.__setattr__(relation, "_iid", relation_iid)
-                    logger.debug(f"Set IID {relation_iid} for relation {self.model_class.__name__}")
-
-            # Extract role player IIDs
-            for role_name, (_, _, entity) in role_key_info.items():
-                if role_name in result and isinstance(result[role_name], dict):
-                    player_iid = result[role_name].get("_iid")
-                    if player_iid:
-                        object.__setattr__(entity, "_iid", player_iid)
-                        logger.debug(
-                            f"Set IID {player_iid} for role player {role_name} "
-                            f"({entity.__class__.__name__})"
-                        )
+        # Build result map and assign IIDs
+        result_map = build_relation_result_map(results, role_key_info)
+        assign_relation_iids(relations, result_map, role_key_info, role_names)
 
     def first(self) -> R | None:
         """Get first matching relation.
@@ -762,19 +667,12 @@ class RelationQuery[R: Relation]:
                     f"Role '{role_name}' expects types ({allowed_names}), got {entity_class.__name__}"
                 )
 
-            # Match the role player by their key attributes (including inherited)
-            player_owned_attrs = entity_class.get_all_attributes()
-            for field_name, attr_info in player_owned_attrs.items():
-                if attr_info.flags.is_key:
-                    key_value = getattr(player_entity, field_name, None)
-                    if key_value is not None:
-                        attr_name = attr_info.typ.get_attribute_name()
-                        # Extract value from Attribute instance if needed
-                        if hasattr(key_value, "value"):
-                            key_value = key_value.value
-                        formatted_value = format_value(key_value)
-                        query.match(f"{role_var} has {attr_name} {formatted_value}")
-                        break
+            # Match the role player by their key attribute
+            key_info = extract_entity_key(player_entity)
+            if key_info:
+                _, attr_name, raw_value = key_info
+                formatted_value = format_value(raw_value)
+                query.match(f"{role_var} has {attr_name} {formatted_value}")
 
         # Add expression-based filters
         for expr in self._expressions:
@@ -981,28 +879,16 @@ class RelationQuery[R: Relation]:
             # Extract raw values from Attribute instances (for NEW values)
             if new_value is not None:
                 if isinstance(new_value, list):
-                    raw_values = []
-                    for item in new_value:
-                        if hasattr(item, "value"):
-                            raw_values.append(item.value)
-                        else:
-                            raw_values.append(item)
-                    new_value = raw_values
-                elif hasattr(new_value, "value"):
-                    new_value = new_value.value
+                    new_value = [unwrap_attribute(item) for item in new_value]
+                else:
+                    new_value = unwrap_attribute(new_value)
 
             # Extract raw values from Attribute instances (for ORIGINAL values)
             if orig_value is not None:
                 if isinstance(orig_value, list):
-                    raw_orig_values = []
-                    for item in orig_value:
-                        if hasattr(item, "value"):
-                            raw_orig_values.append(item.value)
-                        else:
-                            raw_orig_values.append(item)
-                    orig_value = raw_orig_values
-                elif hasattr(orig_value, "value"):
-                    orig_value = orig_value.value
+                    orig_value = [unwrap_attribute(item) for item in orig_value]
+                else:
+                    orig_value = unwrap_attribute(orig_value)
 
             # Determine if multi-value
             if is_multi_value_attribute(flags):
@@ -1029,20 +915,12 @@ class RelationQuery[R: Relation]:
             role = roles[role_name]
             role_parts.append(f"{role.role_name}: {role_var}")
 
-            # Match the role player by their key attributes (including inherited)
-            entity_class = entity.__class__
-            player_owned_attrs = entity_class.get_all_attributes()
-            for field_name, attr_info in player_owned_attrs.items():
-                if attr_info.flags.is_key:
-                    key_value = getattr(entity, field_name, None)
-                    if key_value is not None:
-                        attr_name = attr_info.typ.get_attribute_name()
-                        # Extract value from Attribute instance if needed
-                        if hasattr(key_value, "value"):
-                            key_value = key_value.value
-                        formatted_value = format_value(key_value)
-                        match_statements.append(f"{role_var} has {attr_name} {formatted_value};")
-                        break
+            # Match the role player by their key attribute
+            key_info = extract_entity_key(entity)
+            if key_info:
+                _, attr_name, raw_value = key_info
+                formatted_value = format_value(raw_value)
+                match_statements.append(f"{role_var} has {attr_name} {formatted_value};")
 
         roles_str = ", ".join(role_parts)
         relation_match_parts = [f"{var_name} isa {self.model_class.get_type_name()} ({roles_str})"]
@@ -1160,19 +1038,11 @@ class RelationQuery[R: Relation]:
         # Add role player filter clauses
         for role_name, player_entity in role_player_filters.items():
             role_var = f"${role_name}"
-            entity_class = role_info[role_name][1]
-
-            player_owned_attrs = entity_class.get_all_attributes()
-            for field_name, attr_info in player_owned_attrs.items():
-                if attr_info.flags.is_key:
-                    key_value = getattr(player_entity, field_name, None)
-                    if key_value is not None:
-                        attr_name = attr_info.typ.get_attribute_name()
-                        if hasattr(key_value, "value"):
-                            key_value = key_value.value
-                        formatted_value = format_value(key_value)
-                        match_clauses.append(f"{role_var} has {attr_name} {formatted_value}")
-                        break
+            key_info = extract_entity_key(player_entity)
+            if key_info:
+                _, attr_name, raw_value = key_info
+                formatted_value = format_value(raw_value)
+                match_clauses.append(f"{role_var} has {attr_name} {formatted_value}")
 
         # Apply expression-based filters
         for expr in self._expressions:

@@ -12,8 +12,14 @@ from type_bridge.session import Connection, ConnectionExecutor
 from ..base import R
 from ..exceptions import RelationNotFoundError
 from ..utils import (
+    assign_relation_iids,
+    build_relation_iid_query,
+    build_relation_result_map,
     build_role_player_match,
+    extract_entity_key,
+    extract_update_values,
     format_value,
+    hydrate_attributes,
     is_multi_value_attribute,
     normalize_role_players,
 )
@@ -205,32 +211,8 @@ class RelationManager[R: Relation]:
         Returns:
             Tuple of (entity instance or None, key values tuple for deduplication)
         """
-        player_attrs: dict[str, Any] = {}
-        key_values: list[tuple[str, Any]] = []
-
-        for field_name, attr_info in entity_class.get_all_attributes().items():
-            attr_class = attr_info.typ
-            attr_name = attr_class.get_attribute_name()
-
-            if attr_name in player_data:
-                raw_value = player_data[attr_name]
-                # Check if multi-value attribute using shared utility
-                is_multi = is_multi_value_attribute(attr_info.flags)
-
-                if is_multi and isinstance(raw_value, list):
-                    player_attrs[field_name] = [attr_class(v) for v in raw_value]
-                else:
-                    player_attrs[field_name] = raw_value
-
-                # Collect key for deduplication (convert lists to tuples for hashability)
-                hashable_value = tuple(raw_value) if isinstance(raw_value, list) else raw_value
-                key_values.append((attr_name, hashable_value))
-            else:
-                # Default for missing attributes
-                if attr_info.flags.has_explicit_card:
-                    player_attrs[field_name] = []
-                else:
-                    player_attrs[field_name] = None
+        # Use shared hydration utility with value wrapping for multi-value attributes
+        player_attrs, key_values = hydrate_attributes(entity_class, player_data, wrap_values=True)
 
         # Create entity instance if we have any non-None attributes
         # Note: Relations as role players may have no owned attributes,
@@ -239,7 +221,7 @@ class RelationManager[R: Relation]:
             player_entity = entity_class(**player_attrs)
             if player_iid:
                 object.__setattr__(player_entity, "_iid", player_iid)
-            return player_entity, tuple(sorted(key_values))
+            return player_entity, key_values
 
         return None, tuple()
 
@@ -302,19 +284,12 @@ class RelationManager[R: Relation]:
                 attr_name = attr_class.get_attribute_name()
 
                 # Handle lists (multi-value attributes)
+                # Note: format_value already unwraps Attribute instances
                 if isinstance(value, list):
                     for item in value:
-                        # Extract value from Attribute instance
-                        if hasattr(item, "value"):
-                            item = item.value
-                        # Use format_value to ensure proper escaping
                         formatted = format_value(item)
                         attr_parts.append(f"has {attr_name} {formatted}")
                 else:
-                    # Extract value from Attribute instance
-                    if hasattr(value, "value"):
-                        value = value.value
-                    # Use format_value to ensure proper escaping
                     formatted = format_value(value)
                     attr_parts.append(f"has {attr_name} {formatted}")
 
@@ -400,19 +375,12 @@ class RelationManager[R: Relation]:
                 attr_name = attr_class.get_attribute_name()
 
                 # Handle lists (multi-value attributes)
+                # Note: format_value already unwraps Attribute instances
                 if isinstance(value, list):
                     for item in value:
-                        # Extract value from Attribute instance
-                        if hasattr(item, "value"):
-                            item = item.value
-                        # Use format_value to ensure proper escaping
                         formatted = format_value(item)
                         attr_parts.append(f"has {attr_name} {formatted}")
                 else:
-                    # Extract value from Attribute instance
-                    if hasattr(value, "value"):
-                        value = value.value
-                    # Use format_value to ensure proper escaping
                     formatted = format_value(value)
                     attr_parts.append(f"has {attr_name} {formatted}")
 
@@ -531,19 +499,12 @@ class RelationManager[R: Relation]:
                     typeql_attr_name = attr_info.typ.get_attribute_name()
 
                     # Handle multi-value attributes (lists)
+                    # Note: format_value already unwraps Attribute instances
                     if isinstance(attr_value, list):
-                        # Extract raw values from each Attribute instance in the list
                         for item in attr_value:
-                            if hasattr(item, "value"):
-                                raw_value = item.value
-                            else:
-                                raw_value = item
-                            formatted_value = format_value(raw_value)
+                            formatted_value = format_value(item)
                             attr_parts.append(f"has {typeql_attr_name} {formatted_value}")
                     else:
-                        # Single-value attribute - extract raw value from Attribute instance
-                        if hasattr(attr_value, "value"):
-                            attr_value = attr_value.value
                         formatted_value = format_value(attr_value)
                         attr_parts.append(f"has {typeql_attr_name} {formatted_value}")
 
@@ -666,19 +627,12 @@ class RelationManager[R: Relation]:
                     typeql_attr_name = attr_info.typ.get_attribute_name()
 
                     # Handle multi-value attributes (lists)
+                    # Note: format_value already unwraps Attribute instances
                     if isinstance(attr_value, list):
-                        # Extract raw values from each Attribute instance in the list
                         for item in attr_value:
-                            if hasattr(item, "value"):
-                                raw_value = item.value
-                            else:
-                                raw_value = item
-                            formatted_value = format_value(raw_value)
+                            formatted_value = format_value(item)
                             attr_parts.append(f"has {typeql_attr_name} {formatted_value}")
                     else:
-                        # Single-value attribute - extract raw value from Attribute instance
-                        if hasattr(attr_value, "value"):
-                            attr_value = attr_value.value
                         formatted_value = format_value(attr_value)
                         attr_parts.append(f"has {typeql_attr_name} {formatted_value}")
 
@@ -770,21 +724,12 @@ class RelationManager[R: Relation]:
         # Add role player filter clauses
         for role_name, player_entity in role_player_filters.items():
             role_var = f"${role_name}"
-            entity_class = player_entity.__class__
-
-            # Match the role player by their key attributes (including inherited)
-            player_owned_attrs = entity_class.get_all_attributes()
-            for field_name, attr_info in player_owned_attrs.items():
-                if attr_info.flags.is_key:
-                    key_value = getattr(player_entity, field_name, None)
-                    if key_value is not None:
-                        attr_name = attr_info.typ.get_attribute_name()
-                        # Extract value from Attribute instance if needed
-                        if hasattr(key_value, "value"):
-                            key_value = key_value.value
-                        formatted_value = format_value(key_value)
-                        match_clauses.append(f"{role_var} has {attr_name} {formatted_value}")
-                        break
+            # Match the role player by their key attribute
+            key_info = extract_entity_key(player_entity)
+            if key_info:
+                _, attr_name, raw_value = key_info
+                formatted_value = format_value(raw_value)
+                match_clauses.append(f"{role_var} has {attr_name} {formatted_value}")
 
         match_str = ";\n".join(match_clauses) + ";"
 
@@ -1090,49 +1035,11 @@ class RelationManager[R: Relation]:
                 raise ValueError(f"Role player '{role_name}' is required for update")
             role_players[role_name] = entity
 
-        # Separate single-value and multi-value updates from relation state
-        single_value_updates = {}
-        single_value_deletes = set()  # Track single-value attributes to delete
-        multi_value_updates = {}
-
-        for field_name, attr_info in all_attrs.items():
-            attr_class = attr_info.typ
-            attr_name = attr_class.get_attribute_name()
-            flags = attr_info.flags
-
-            # Get current value from relation
-            current_value = getattr(relation, field_name, None)
-
-            # Extract raw values from Attribute instances
-            if current_value is not None:
-                if isinstance(current_value, list):
-                    # Multi-value: extract value from each Attribute in list
-                    raw_values = []
-                    for item in current_value:
-                        if hasattr(item, "value"):
-                            raw_values.append(item.value)
-                        else:
-                            raw_values.append(item)
-                    current_value = raw_values
-                elif hasattr(current_value, "value"):
-                    # Single-value: extract value from Attribute
-                    current_value = current_value.value
-
-            # Determine if multi-value
-            if is_multi_value_attribute(flags):
-                # Multi-value: store as list (even if empty)
-                if current_value is None:
-                    current_value = []
-                multi_value_updates[attr_name] = current_value
-            else:
-                # Single-value: handle updates and deletions
-                if current_value is not None:
-                    single_value_updates[attr_name] = current_value
-                else:
-                    # Check if attribute is optional (card_min == 0)
-                    if flags.card_min == 0:
-                        # Optional attribute set to None - needs to be deleted
-                        single_value_deletes.add(attr_name)
+        # Extract single/multi-value updates using shared utility
+        # Relations don't have key attrs, so skip_key_attrs=False
+        single_value_updates, single_value_deletes, multi_value_updates = extract_update_values(
+            relation, all_attrs, skip_key_attrs=False
+        )
 
         # Build match clause with role players (IID-preferring)
         role_parts = []
@@ -1364,16 +1271,10 @@ class RelationManager[R: Relation]:
                 if entity_iid:
                     key_parts.append((f"{role_name}:iid", entity_iid))
                 else:
-                    player_attrs = entity.__class__.get_all_attributes()
-                    for field_name, attr_info in player_attrs.items():
-                        if attr_info.flags.is_key:
-                            key_value = getattr(entity, field_name, None)
-                            if key_value is not None:
-                                attr_name = attr_info.typ.get_attribute_name()
-                                if hasattr(key_value, "value"):
-                                    key_value = key_value.value
-                                key_parts.append((f"{role_name}:{attr_name}", key_value))
-                                break
+                    key_info = extract_entity_key(entity)
+                    if key_info:
+                        _, attr_name, raw_value = key_info
+                        key_parts.append((f"{role_name}:{attr_name}", raw_value))
 
             if not role_parts:
                 continue
@@ -1593,134 +1494,22 @@ class RelationManager[R: Relation]:
             return
 
         roles = self.model_class._roles
-        role_names = list(roles.keys())
 
-        # Track which roles have key attributes and their attribute names
-        # Maps role_name -> (key_var_name, attr_name)
-        role_key_info: dict[str, tuple[str, str]] = {}
-
-        # Build a single query matching all relations using shared variable names
-        # Capture key attribute values as variables for result correlation
-        shared_or_clauses = []
-        for relation in relations:
-            role_parts = []
-            match_statements = []
-
-            for role_name, role in roles.items():
-                entity = getattr(relation, role_name, None)
-                if entity is None:
-                    continue
-
-                role_var = f"${role_name}"
-                role_parts.append(f"{role.role_name}: {role_var}")
-
-                entity_class = entity.__class__
-                player_owned_attrs = entity_class.get_all_attributes()
-                for field_name, attr_info in player_owned_attrs.items():
-                    if attr_info.flags.is_key:
-                        key_value = getattr(entity, field_name, None)
-                        if key_value is not None:
-                            attr_name = attr_info.typ.get_attribute_name()
-                            if hasattr(key_value, "value"):
-                                key_value = key_value.value
-                            formatted_value = format_value(key_value)
-                            # Use a variable for the key attribute to capture its value
-                            key_var = f"${role_name}_key"
-                            match_statements.append(
-                                f"{role_var} has {attr_name} {key_var}; {key_var} == {formatted_value}"
-                            )
-                            # Track the key variable for this role
-                            if role_name not in role_key_info:
-                                role_key_info[role_name] = (f"{role_name}_key", attr_name)
-                            break
-
-            if not role_parts:
-                continue
-
-            roles_str = ", ".join(role_parts)
-            relation_match = f"$r isa {self.model_class.get_type_name()} ({roles_str})"
-            clause_parts = [relation_match] + match_statements
-            shared_or_clauses.append(f"{{ {'; '.join(clause_parts)}; }}")
-
-        if not shared_or_clauses:
+        # Build batched IID lookup query
+        query_result = build_relation_iid_query(relations, self.model_class, roles)
+        if not query_result:
             return
 
-        # Build the query with OR clauses, including key attribute variables in select
-        select_vars = ["$r"] + [f"${role_name}" for role_name in role_names]
-        for key_var_name, _ in role_key_info.values():
-            select_vars.append(f"${key_var_name}")
-
-        query_str = f"match\n{' or '.join(shared_or_clauses)};\nselect {', '.join(select_vars)};"
+        query_str, role_names, role_key_info, _ = query_result
         logger.debug(f"Batched IID lookup query: {query_str[:200]}...")
 
         results = self._execute(query_str, TransactionType.READ)
-
         if not results:
             return
 
-        # Build a lookup map from key attribute values to results
-        # This allows proper correlation: each relation maps to exactly one result
-        result_map: dict[tuple[tuple[str, Any], ...], dict[str, Any]] = {}
-        for result in results:
-            key_parts: list[tuple[str, Any]] = []
-            for role_name, (key_var_name, _) in role_key_info.items():
-                if key_var_name in result:
-                    key_val = result[key_var_name]
-                    # Extract value from concept data dict
-                    if isinstance(key_val, dict):
-                        key_val = key_val.get("value", key_val.get("result"))
-                    key_parts.append((role_name, key_val))
-            if key_parts:
-                result_map[tuple(sorted(key_parts))] = result
-
-        # For each relation, find its corresponding result by key attribute values
-        for relation in relations:
-            # Build the key for this relation from its role players' key attributes
-            relation_key_parts: list[tuple[str, Any]] = []
-            role_var_to_entity: dict[str, Any] = {}
-
-            for role_name in role_names:
-                entity = getattr(relation, role_name, None)
-                if entity is not None:
-                    role_var_to_entity[role_name] = entity
-
-                    # Get the key attribute value for this role player
-                    if role_name in role_key_info:
-                        entity_class = entity.__class__
-                        player_owned_attrs = entity_class.get_all_attributes()
-                        for field_name, attr_info in player_owned_attrs.items():
-                            if attr_info.flags.is_key:
-                                key_value = getattr(entity, field_name, None)
-                                if key_value is not None:
-                                    if hasattr(key_value, "value"):
-                                        key_value = key_value.value
-                                    relation_key_parts.append((role_name, key_value))
-                                break
-
-            # Look up the result by key values
-            relation_key = tuple(sorted(relation_key_parts))
-            matched_result = result_map.get(relation_key)
-
-            if matched_result:
-                # Extract relation IID
-                if "r" in matched_result and isinstance(matched_result["r"], dict):
-                    relation_iid = matched_result["r"].get("_iid")
-                    if relation_iid:
-                        object.__setattr__(relation, "_iid", relation_iid)
-                        logger.debug(
-                            f"Set IID {relation_iid} for relation {self.model_class.__name__}"
-                        )
-
-                # Extract role player IIDs
-                for role_name, entity in role_var_to_entity.items():
-                    if role_name in matched_result and isinstance(matched_result[role_name], dict):
-                        player_iid = matched_result[role_name].get("_iid")
-                        if player_iid:
-                            object.__setattr__(entity, "_iid", player_iid)
-                            logger.debug(
-                                f"Set IID {player_iid} for role player {role_name} "
-                                f"({entity.__class__.__name__})"
-                            )
+        # Build result map and assign IIDs
+        result_map = build_relation_result_map(results, role_key_info)
+        assign_relation_iids(relations, result_map, role_key_info, role_names)
 
     def group_by(self, *fields: Any) -> "RelationGroupByQuery[R]":
         """Create a group-by query for aggregating by field values.

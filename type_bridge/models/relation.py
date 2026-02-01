@@ -17,6 +17,7 @@ from pydantic import ConfigDict
 from pydantic._internal._model_construction import ModelMetaclass
 
 from type_bridge.attribute import AttributeFlags, TypeFlags
+from type_bridge.crud.utils import extract_entity_key, unwrap_attribute
 from type_bridge.models.base import TypeDBType
 from type_bridge.models.role import Role
 from type_bridge.models.utils import ModelAttrInfo, extract_metadata
@@ -517,19 +518,10 @@ class Relation(TypeDBType, metaclass=RelationMeta):
             # Only show role players that are actual entity instances (have _owned_attrs)
             if player is not None and hasattr(player, "_owned_attrs"):
                 # Get a simple representation of the player (their key attribute)
-                player_str = None
-                for field_name, attr_info in player._owned_attrs.items():
-                    if attr_info.flags.is_key:
-                        key_value = getattr(player, field_name, None)
-                        if key_value is not None:
-                            if hasattr(key_value, "value"):
-                                player_str = str(key_value.value)
-                            else:
-                                player_str = str(key_value)
-                            break
-
-                if player_str:
-                    role_parts.append(f"{role_name}={player_str}")
+                key_info = extract_entity_key(player)
+                if key_info:
+                    _, _, raw_value = key_info
+                    role_parts.append(f"{role_name}={raw_value}")
 
         if role_parts:
             parts.append("(" + ", ".join(role_parts) + ")")
@@ -542,10 +534,7 @@ class Relation(TypeDBType, metaclass=RelationMeta):
                 continue
 
             # Extract actual value from Attribute instance
-            if hasattr(value, "value"):
-                display_value = value.value
-            else:
-                display_value = value
+            display_value = unwrap_attribute(value)
 
             attr_parts.append(f"{field_name}={display_value}")
 

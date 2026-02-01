@@ -15,9 +15,20 @@ from type_bridge.session import Connection, ConnectionExecutor
 from ..base import E
 from ..exceptions import EntityNotFoundError, KeyAttributeError, NotUniqueError
 from ..utils import (
+    assign_entity_iids,
+    build_entity_iid_map,
+    build_entity_iid_query,
+    build_iid_type_fetch_clause,
+    build_known_key_values,
+    extract_update_values,
     format_value,
-    is_multi_value_attribute,
+    get_key_attrs,
+    hydrate_attributes,
+    match_entity_type,
+    modify_match_for_type_binding,
+    process_iid_type_results,
     resolve_entity_class,
+    unwrap_attribute,
 )
 
 if TYPE_CHECKING:
@@ -99,15 +110,12 @@ class EntityManager[E: Entity]:
             if value is not None:
                 attr_name = attr_info.typ.get_attribute_name()
                 # Handle lists (multi-value attributes)
+                # format_value already unwraps Attribute instances
                 if isinstance(value, list):
                     for item in value:
-                        if hasattr(item, "value"):
-                            item = item.value
                         formatted = format_value(item)
                         match_parts.append(f"has {attr_name} {formatted}")
                 else:
-                    if hasattr(value, "value"):
-                        value = value.value
                     formatted = format_value(value)
                     match_parts.append(f"has {attr_name} {formatted}")
 
@@ -638,7 +646,7 @@ class EntityManager[E: Entity]:
                         f"String lookup '{lookup}' requires a String attribute (got {attr_type.__name__})"
                     )
                 # Normalize to raw string
-                raw_str = raw_value.value if hasattr(raw_value, "value") else str(raw_value)
+                raw_str = str(unwrap_attribute(raw_value))
 
                 if lookup == "contains":
                     expressions.append(attr_type.contains(attr_type(raw_str)))
@@ -706,8 +714,7 @@ class EntityManager[E: Entity]:
                         field_name=field_name,
                     )
                 # Extract value from Attribute instance if needed
-                if hasattr(key_value, "value"):
-                    key_value = key_value.value
+                key_value = unwrap_attribute(key_value)
                 attr_name = attr_info.typ.get_attribute_name()
                 match_filters[attr_name] = key_value
 
@@ -721,8 +728,7 @@ class EntityManager[E: Entity]:
                     # Store field_name -> attribute value for filter()
                     filter_kwargs[field_name] = value
                     # Store attr_name -> raw value for TypeQL query
-                    if hasattr(value, "value"):
-                        value = value.value
+                    value = unwrap_attribute(value)
                     attr_name = attr_info.typ.get_attribute_name()
                     all_filters[attr_name] = value
 
@@ -922,8 +928,7 @@ class EntityManager[E: Entity]:
                         field_name=field_name,
                     )
                 # Extract value from Attribute instance if needed
-                if hasattr(key_value, "value"):
-                    key_value = key_value.value
+                key_value = unwrap_attribute(key_value)
                 attr_name = attr_info.typ.get_attribute_name()
                 match_filters[attr_name] = key_value
 
@@ -958,8 +963,7 @@ class EntityManager[E: Entity]:
         for field_name, attr_info in key_attrs.items():
             value = getattr(entity, field_name, None)
             if value is not None:
-                if hasattr(value, "value"):
-                    value = value.value
+                value = unwrap_attribute(value)
                 attr_name = attr_info.typ.get_attribute_name()
                 key_values.append((attr_name, value))
         return tuple(sorted(key_values))
@@ -991,8 +995,7 @@ class EntityManager[E: Entity]:
             for field_name, attr_info in key_attrs.items():
                 value = getattr(entity, field_name, None)
                 if value is not None:
-                    if hasattr(value, "value"):
-                        value = value.value
+                    value = unwrap_attribute(value)
                     attr_name = attr_info.typ.get_attribute_name()
                     parts.append(f"has {attr_name} {format_value(value)}")
 
@@ -1098,8 +1101,7 @@ class EntityManager[E: Entity]:
                         field_name=field_name,
                     )
                 # Extract value from Attribute instance if needed
-                if hasattr(key_value, "value"):
-                    key_value = key_value.value
+                key_value = unwrap_attribute(key_value)
                 attr_name = attr_info.typ.get_attribute_name()
                 match_filters[attr_name] = key_value
 
@@ -1110,55 +1112,10 @@ class EntityManager[E: Entity]:
                 all_fields=list(owned_attrs.keys()),
             )
 
-        # Separate single-value and multi-value updates from entity state
-        single_value_updates = {}
-        single_value_deletes = set()  # Track single-value attributes to delete
-        multi_value_updates = {}
-
-        for field_name, attr_info in owned_attrs.items():
-            # Skip key attributes (they're used for matching)
-            if attr_info.flags.is_key:
-                continue
-
-            attr_class = attr_info.typ
-            attr_name = attr_class.get_attribute_name()
-            flags = attr_info.flags
-
-            # Get current value from entity
-            current_value = getattr(entity, field_name, None)
-
-            # Extract raw values from Attribute instances
-            if current_value is not None:
-                if isinstance(current_value, list):
-                    # Multi-value: extract value from each Attribute in list
-                    raw_values = []
-                    for item in current_value:
-                        if hasattr(item, "value"):
-                            raw_values.append(item.value)
-                        else:
-                            raw_values.append(item)
-                    current_value = raw_values
-                elif hasattr(current_value, "value"):
-                    # Single-value: extract value from Attribute
-                    current_value = current_value.value
-
-            # Determine if multi-value
-            is_multi_value = is_multi_value_attribute(flags)
-
-            if is_multi_value:
-                # Multi-value: store as list (even if empty)
-                if current_value is None:
-                    current_value = []
-                multi_value_updates[attr_name] = current_value
-            else:
-                # Single-value: handle updates and deletions
-                if current_value is not None:
-                    single_value_updates[attr_name] = current_value
-                else:
-                    # Check if attribute is optional (card_min == 0)
-                    if flags.card_min == 0:
-                        # Optional attribute set to None - needs to be deleted
-                        single_value_deletes.add(attr_name)
+        # Extract single/multi-value updates using shared utility
+        single_value_updates, single_value_deletes, multi_value_updates = extract_update_values(
+            entity, owned_attrs, skip_key_attrs=True
+        )
 
         # Build Match Clause
         match_statements = []
@@ -1247,20 +1204,10 @@ class EntityManager[E: Entity]:
         Returns:
             Dictionary of attributes
         """
-        attrs = {}
         # Use provided class or default to model_class
         target_class = entity_class if entity_class is not None else self.model_class
-        # Extract attributes from all attribute classes (including inherited)
-        all_attrs = target_class.get_all_attributes()
-        for field_name, attr_info in all_attrs.items():
-            attr_class = attr_info.typ
-            attr_name = attr_class.get_attribute_name()
-            if attr_name in result:
-                attrs[field_name] = result[attr_name]
-            else:
-                # For multi-value attributes, use empty list; for optional, use None
-                is_multi_value = is_multi_value_attribute(attr_info.flags)
-                attrs[field_name] = [] if is_multi_value else None
+        # Use shared hydration utility (ignore key values for entity extraction)
+        attrs, _ = hydrate_attributes(target_class, result)
         return attrs
 
     def _get_iids_and_types(
@@ -1278,83 +1225,30 @@ class EntityManager[E: Entity]:
         Returns:
             Dictionary mapping key_values_tuple to (iid, type_name) tuple
         """
-        # Get key attributes for building the lookup key
-        owned_attrs = self.model_class.get_all_attributes()
-        key_attrs = {
-            field_name: attr_info
-            for field_name, attr_info in owned_attrs.items()
-            if attr_info.flags.is_key
-        }
+        # Get key attributes using shared utility
+        key_attrs, key_attr_names = get_key_attrs(self.model_class)
 
-        # Build match query with filters, adding type variable for label()
-        # TypeQL's label() function works on TYPE variables, not instance variables
-        # So we use: $e isa! $t (exact type match) then label($t)
+        # Build match query with filters
         query = QueryBuilder.match_entity(self.model_class, **filters)
         match_str = query.build().rstrip().rstrip(";")
 
-        # Modify match to bind exact type:
-        # Original: "$e isa person, has Name X"
-        # Changed:  "$e isa! $t, has Name X; $t sub person"
+        # Modify match to bind exact type for label() retrieval
         type_name = self.model_class.get_type_name()
-        match_str = match_str.replace(f"$e isa {type_name}", "$e isa! $t")
-        match_str = f"{match_str}; $t sub {type_name}"
+        match_str = modify_match_for_type_binding(match_str, type_name)
 
         # Track key values we already know from filters
-        known_key_values: dict[str, Any] = {}
-        for field_name, attr_info in key_attrs.items():
-            attr_name = attr_info.typ.get_attribute_name()
-            if field_name in filters:
-                filter_value = filters[field_name]
-                if hasattr(filter_value, "value"):
-                    filter_value = filter_value.value
-                known_key_values[attr_name] = filter_value
+        known_key_values = build_known_key_values(key_attrs, filters)
 
-        # Build fetch items: iid, label (on type var), and key attributes
-        # TypeQL doesn't allow mixing "key": value entries with $e.*, so we
-        # explicitly list the items we need
-        # Note: label($t) works because $t is a TYPE variable bound via isa!
-        fetch_items = ['"_iid": iid($e)', '"_type": label($t)']
-
-        # Add key attributes to fetch (only if not all known from filters)
-        key_attr_names = [attr_info.typ.get_attribute_name() for attr_info in key_attrs.values()]
-        if not (known_key_values and len(known_key_values) == len(key_attrs)):
-            for attr_name in key_attr_names:
-                fetch_items.append(f'"{attr_name}": $e.{attr_name}')
-
-        fetch_clause = f"fetch {{\n  {', '.join(fetch_items)}\n}}"
+        # Build fetch clause
+        fetch_clause = build_iid_type_fetch_clause(key_attr_names, known_key_values, key_attrs)
         query_str = f"{match_str};\n{fetch_clause};"
         logger.debug(f"IID/type query: {query_str}")
         results = self._execute(query_str, TransactionType.READ)
 
-        iid_type_map: dict[tuple[tuple[str, Any], ...], tuple[str, str]] = {}
-
-        for result in results:
-            # Get IID/type from fetch result (provided by iid($e) and label($e))
-            iid = result.get("_iid")
-            type_name = result.get("_type")
-            if not iid or not type_name:
-                continue
-
-            # Build map key from key attributes or known values
-            if key_attrs:
-                if known_key_values and len(known_key_values) == len(key_attrs):
-                    # All key values known from filters
-                    map_key = tuple(sorted(known_key_values.items()))
-                else:
-                    # Extract key values from fetch result
-                    key_values: list[tuple[str, Any]] = []
-                    for attr_name in key_attr_names:
-                        if attr_name in result:
-                            val = result[attr_name]
-                            key_values.append((attr_name, val))
-                    if not key_values:
-                        continue
-                    map_key = tuple(sorted(key_values))
-            else:
-                # No key attributes, use IID as the map key
-                map_key = (("_iid", iid),)
-
-            iid_type_map[map_key] = (iid, type_name)
+        # Process results using shared utility
+        iid_type_map = process_iid_type_results(
+            results, key_attrs, key_attr_names, known_key_values
+        )
 
         logger.debug(f"Found {len(iid_type_map)} IID/type mappings")
         return iid_type_map
@@ -1378,48 +1272,8 @@ class EntityManager[E: Entity]:
             Tuple of (resolved_class, iid) where resolved_class is the
             concrete subclass if found, otherwise self.model_class
         """
-        # If no type info available, use model_class
-        if not iid_type_map:
-            return self.model_class, None
-
-        # Get key attributes for matching
-        owned_attrs = self.model_class.get_all_attributes()
-        key_attrs = {
-            field_name: attr_info
-            for field_name, attr_info in owned_attrs.items()
-            if attr_info.flags.is_key
-        }
-
-        if not key_attrs:
-            # No key attributes - can't match reliably, use first available
-            if iid_type_map:
-                iid, type_name = next(iter(iid_type_map.values()))
-                resolved_class = cast(type[E], resolve_entity_class(self.model_class, type_name))
-                return resolved_class, iid
-            return self.model_class, None
-
-        # Build key signature from attrs for in-memory lookup
-        key_values: list[tuple[str, Any]] = []
-        for field_name, attr_info in key_attrs.items():
-            value = attrs.get(field_name)
-            if value is not None:
-                if hasattr(value, "value"):
-                    value = value.value
-                attr_name = attr_info.typ.get_attribute_name()
-                key_values.append((attr_name, value))
-
-        if not key_values:
-            # No key values found, use model_class
-            return self.model_class, None
-
-        # Look up in the map using key values (no database query!)
-        map_key = tuple(sorted(key_values))
-        if map_key in iid_type_map:
-            iid, type_name = iid_type_map[map_key]
-            resolved_class = cast(type[E], resolve_entity_class(self.model_class, type_name))
-            return resolved_class, iid
-
-        return self.model_class, None
+        resolved_class, iid = match_entity_type(attrs, iid_type_map, self.model_class)
+        return cast(type[E], resolved_class), iid
 
     def _populate_iids(self, entities: list[E]) -> None:
         """Populate _iid field on entities by querying TypeDB.
@@ -1434,84 +1288,27 @@ class EntityManager[E: Entity]:
             return
 
         # Get key attributes for matching
-        owned_attrs = self.model_class.get_all_attributes()
-        key_attrs = {
-            field_name: attr_info
-            for field_name, attr_info in owned_attrs.items()
-            if attr_info.flags.is_key
-        }
+        key_attrs, _ = get_key_attrs(self.model_class)
 
         if not key_attrs:
-            # No key attributes - cannot reliably match IIDs to entities
             logger.debug("No key attributes found, skipping IID population")
             return
 
-        # Build batched disjunctive query for all entities
-        or_clauses = []
-        for entity in entities:
-            match_parts = [f"$e isa {self.model_class.get_type_name()}"]
-            for field_name, attr_info in key_attrs.items():
-                value = getattr(entity, field_name, None)
-                if value is not None:
-                    if hasattr(value, "value"):
-                        value = value.value
-                    attr_name = attr_info.typ.get_attribute_name()
-                    formatted_value = format_value(value)
-                    match_parts.append(f"has {attr_name} {formatted_value}")
-            or_clauses.append(f"{{ {', '.join(match_parts)}; }}")
-
-        if not or_clauses:
+        # Build batched IID lookup query
+        query_result = build_entity_iid_query(entities, self.model_class, key_attrs)
+        if not query_result:
             return
 
-        # Build fetch items: iid and key attributes (for matching)
-        # TypeQL doesn't allow mixing "key": value entries with $e.*
-        key_attr_names = [attr_info.typ.get_attribute_name() for attr_info in key_attrs.values()]
-        fetch_items = ['"_iid": iid($e)']
-        for attr_name in key_attr_names:
-            fetch_items.append(f'"{attr_name}": $e.{attr_name}')
-        fetch_clause = f"fetch {{\n  {', '.join(fetch_items)}\n}}"
-
-        query_str = f"match\n{' or '.join(or_clauses)};\n{fetch_clause};"
+        query_str, key_attr_names = query_result
         logger.debug(f"Batched IID lookup query: {query_str}")
 
         results = self._execute(query_str, TransactionType.READ)
-
         if not results:
             return
 
-        iid_map: dict[tuple[tuple[str, Any], ...], str] = {}
-
-        # Extract IID and key values from single fetch result
-        for result in results:
-            iid = result.get("_iid")
-            if not iid:
-                continue
-
-            # Extract key attribute values
-            key_values: list[tuple[str, Any]] = []
-            for attr_name in key_attr_names:
-                if attr_name in result:
-                    key_values.append((attr_name, result[attr_name]))
-            if key_values:
-                iid_map[tuple(sorted(key_values))] = iid
-
-        # Assign IIDs to entities using in-memory lookup
-        for entity in entities:
-            key_values = []
-            for field_name, attr_info in key_attrs.items():
-                value = getattr(entity, field_name, None)
-                if value is not None:
-                    if hasattr(value, "value"):
-                        value = value.value
-                    attr_name = attr_info.typ.get_attribute_name()
-                    key_values.append((attr_name, value))
-            if key_values:
-                map_key = tuple(sorted(key_values))
-                if map_key in iid_map:
-                    object.__setattr__(entity, "_iid", iid_map[map_key])
-                    logger.debug(
-                        f"Set IID {iid_map[map_key]} for entity {self.model_class.__name__}"
-                    )
+        # Build IID map and assign to entities
+        iid_map = build_entity_iid_map(results, key_attr_names)
+        assign_entity_iids(entities, iid_map, key_attrs)
 
     def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
         """Execute a query using existing transaction if provided."""

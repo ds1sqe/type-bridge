@@ -17,6 +17,7 @@ from pydantic import ConfigDict
 from pydantic._internal._model_construction import ModelMetaclass
 
 from type_bridge.attribute import Attribute, AttributeFlags, TypeFlags
+from type_bridge.crud.utils import unwrap_attribute
 from type_bridge.models.base import TypeDBType
 from type_bridge.models.utils import ModelAttrInfo, extract_metadata
 
@@ -566,10 +567,7 @@ class Entity(TypeDBType, metaclass=EntityMeta):
                 continue
 
             # Extract actual value from Attribute instance
-            if hasattr(value, "value"):
-                display_value = value.value
-            else:
-                display_value = value
+            display_value = unwrap_attribute(value)
 
             # Format the field
             field_str = f"{field_name}={display_value}"
