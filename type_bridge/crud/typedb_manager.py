@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from typedb.driver import TransactionType
 
@@ -20,10 +20,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T", bound="TypeDBType")
 
-
-class TypeDBManager(Generic[T]):
+class TypeDBManager[T: "TypeDBType"]:
     """Unified CRUD manager for TypeDB entities and relations."""
 
     def __init__(self, connection: Connection, model_class: type[T]):
