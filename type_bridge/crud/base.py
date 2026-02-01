@@ -1,6 +1,8 @@
 """Base types and classes for CRUD operations."""
 
+import logging
 import re
+import warnings
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -8,6 +10,8 @@ from typedb.driver import TransactionType
 
 from type_bridge.models import Entity, Relation
 from type_bridge.session import Connection, ConnectionExecutor
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from type_bridge.models.base import TypeDBType
@@ -133,6 +137,14 @@ def parse_aggregate_results(
     if "result" in result:
         # Legacy format: TypeDB reduce returns results as a formatted string
         # Format: '|  $var_name: Value(type: value)  |'
+        # DEPRECATED: This path is for pre-3.8.0 TypeDB compatibility
+        warnings.warn(
+            "Legacy string-based aggregate result parsing is deprecated. "
+            "Consider upgrading to TypeDB 3.8.0+ for structured results.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        logger.debug("Using legacy regex parsing for aggregate results")
         result_str = result["result"]
         # Parse variable names and values from the formatted string
         # Pattern: $variable_name: Value(type: actual_value)
@@ -187,6 +199,15 @@ def parse_grouped_aggregate_results(
         # Handle both old string format and new dict format
         if "result" in result:
             # Legacy string parsing (fallback)
+            # DEPRECATED: This path is for pre-3.8.0 TypeDB compatibility
+            if results.index(result) == 0:  # Only warn once per call
+                warnings.warn(
+                    "Legacy string-based grouped aggregate parsing is deprecated. "
+                    "Consider upgrading to TypeDB 3.8.0+ for structured results.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                logger.debug("Using legacy regex parsing for grouped aggregate results")
             result_str = result["result"]
 
             # Parse both Value(...) and Attribute(...) formats
