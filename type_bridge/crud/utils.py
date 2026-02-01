@@ -108,6 +108,82 @@ def unwrap_attribute(value: Any) -> Any:
     return value
 
 
+def build_entity_match_pattern(
+    model_class: type["Entity"],
+    var: str = "$e",
+    filters: dict[str, Any] | None = None,
+) -> str:
+    """Build a TypeQL match pattern for an entity.
+
+    This is the single source of truth for entity match pattern generation,
+    used by both QueryBuilder and CRUD managers.
+
+    Args:
+        model_class: The entity model class
+        var: Variable name to use (default: "$e")
+        filters: Attribute filters as field_name -> value
+
+    Returns:
+        TypeQL match pattern string like "$e isa person, has name \"Alice\""
+
+    Examples:
+        >>> build_entity_match_pattern(Person, filters={"name": "Alice"})
+        '$e isa person, has name "Alice"'
+    """
+    pattern_parts = [f"{var} isa {model_class.get_type_name()}"]
+
+    if filters:
+        owned_attrs = model_class.get_all_attributes()
+        for field_name, field_value in filters.items():
+            if field_name in owned_attrs:
+                attr_info = owned_attrs[field_name]
+                attr_name = attr_info.typ.get_attribute_name()
+                formatted_value = format_value(field_value)
+                pattern_parts.append(f"has {attr_name} {formatted_value}")
+
+    return ", ".join(pattern_parts)
+
+
+def build_relation_match_pattern(
+    model_class: type["Relation"],
+    var: str = "$r",
+    role_players: dict[str, str] | None = None,
+) -> str:
+    """Build a TypeQL match pattern for a relation.
+
+    This is the single source of truth for relation match pattern generation,
+    used by both QueryBuilder and CRUD managers.
+
+    Args:
+        model_class: The relation model class
+        var: Variable name to use (default: "$r")
+        role_players: Dict mapping role names to player variable names
+
+    Returns:
+        TypeQL match pattern string
+
+    Raises:
+        ValueError: If a role name is not defined in the model
+
+    Examples:
+        >>> build_relation_match_pattern(Employment, role_players={"employee": "$p"})
+        '$r isa employment, (employee: $p)'
+    """
+    pattern_parts = [f"{var} isa {model_class.get_type_name()}"]
+
+    if role_players:
+        defined_roles = model_class._roles
+        for role_name, player_var in role_players.items():
+            if role_name not in defined_roles:
+                raise ValueError(
+                    f"Unknown role '{role_name}' for relation {model_class.__name__}. "
+                    f"Available roles: {list(defined_roles.keys())}"
+                )
+            pattern_parts.append(f"({role_name}: {player_var})")
+
+    return ", ".join(pattern_parts)
+
+
 def normalize_role_players(
     role_players: dict[str, Any],
 ) -> tuple[dict[str, list[Any]], dict[str, list[str]]]:

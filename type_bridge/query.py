@@ -2,7 +2,10 @@
 
 import logging
 
-from type_bridge.crud.utils import format_value
+from type_bridge.crud.utils import (
+    build_entity_match_pattern,
+    build_relation_match_pattern,
+)
 from type_bridge.models import Entity, Relation
 
 logger = logging.getLogger(__name__)
@@ -190,22 +193,8 @@ class QueryBuilder:
             f"QueryBuilder.match_entity: {model_class.__name__}, var={var}, filters={filters}"
         )
         query = Query()
-
-        # Basic entity match
-        pattern_parts = [f"{var} isa {model_class.get_type_name()}"]
-
-        # Add attribute filters (including inherited attributes)
-        owned_attrs = model_class.get_all_attributes()
-        for field_name, field_value in filters.items():
-            if field_name in owned_attrs:
-                attr_info = owned_attrs[field_name]
-                attr_name = attr_info.typ.get_attribute_name()
-                formatted_value = format_value(field_value)
-                pattern_parts.append(f"has {attr_name} {formatted_value}")
-
-        pattern = ", ".join(pattern_parts)
+        pattern = build_entity_match_pattern(model_class, var, filters or None)
         query.match(pattern)
-
         return query
 
     @staticmethod
@@ -247,23 +236,6 @@ class QueryBuilder:
             f"role_players={role_players}"
         )
         query = Query()
-
-        # Basic relation match
-        pattern_parts = [f"{var} isa {model_class.get_type_name()}"]
-
-        # Add role players
-        if role_players:
-            # Validate roles against model definition to prevent injection
-            defined_roles = model_class._roles
-            for role_name, player_var in role_players.items():
-                if role_name not in defined_roles:
-                    raise ValueError(
-                        f"Unknown role '{role_name}' for relation {model_class.__name__}. "
-                        f"Available roles: {list(defined_roles.keys())}"
-                    )
-                pattern_parts.append(f"({role_name}: {player_var})")
-
-        pattern = ", ".join(pattern_parts)
+        pattern = build_relation_match_pattern(model_class, var, role_players)
         query.match(pattern)
-
         return query
