@@ -90,7 +90,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "examples/*.py" = ["F841", "E402"]
   # Allow unused variables, Function level import in examples for demonstration
-"tests/*.py" = ["F841"]  # Allow unused variables in tests
+"tests/*.py" = ["F841", "N806"]  # Allow unused variables and PascalCase class types in tests
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

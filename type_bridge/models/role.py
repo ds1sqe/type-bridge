@@ -89,10 +89,6 @@ class Role[T: "TypeDBType"]:
         Raises:
             TypeError: If typ is Entity, Relation, or TypeDBType base class
         """
-        # Import here to avoid circular import
-        from type_bridge.models.entity import Entity
-        from type_bridge.models.relation import Relation
-
         # Check if this is a library base class (not a user-defined subclass)
         # We check module to distinguish library classes from user classes
         library_modules = (
@@ -102,14 +98,18 @@ class Role[T: "TypeDBType"]:
             "type_bridge.models.relation",
         )
 
-        if typ.__module__ in library_modules and typ.__name__ in ("Entity", "Relation", "TypeDBType"):
+        if typ.__module__ in library_modules and typ.__name__ in (
+            "Entity",
+            "Relation",
+            "TypeDBType",
+        ):
             raise TypeError(
                 f"Cannot use library base class '{typ.__name__}' as role player type. "
                 f"TypeDB doesn't have a built-in '{typ.__name__}' type. "
                 f"Define your own abstract type instead:\n\n"
                 f"  class Subject(Entity):\n"
                 f"      flags = TypeFlags(abstract=True)\n\n"
-                f"Then use: Role(\"{self.role_name}\", Subject)"
+                f'Then use: Role("{self.role_name}", Subject)'
             )
 
     @property
@@ -268,9 +268,7 @@ class Role[T: "TypeDBType"]:
             else:
                 # Single entity
                 if not is_allowed_type(value):
-                    raise ValueError(
-                        f"Expected one of {allowed_names}, got {type(value).__name__}"
-                    )
+                    raise ValueError(f"Expected one of {allowed_names}, got {type(value).__name__}")
                 return value
 
         return core_schema.no_info_plain_validator_function(validate_role_player)

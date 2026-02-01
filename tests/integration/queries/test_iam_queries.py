@@ -6,28 +6,27 @@ Based on TypeDB IAM example schema.
 """
 
 import pytest
-from datetime import datetime
 
 from type_bridge import (
+    Boolean,
+    Card,
     Database,
+    DateTime,
     Entity,
     Flag,
     Integer,
     Key,
     Relation,
     Role,
-    Card,
     SchemaManager,
     String,
-    Boolean,
-    DateTime,
     TypeFlags,
 )
-
 
 # =============================================================================
 # Shared Attribute Types
 # =============================================================================
+
 
 class Credential(String):
     pass
@@ -35,11 +34,13 @@ class Credential(String):
 
 class IamName(String):
     """Name attribute for IAM entities."""
+
     pass
 
 
 class IamEmail(String):
     """Email attribute - can have 1-2 values per entity."""
+
     pass
 
 
@@ -108,10 +109,7 @@ class TestRelationInheritance:
             group_member: Role[Subject] = Role("group_member", Subject)
 
         schema_manager = SchemaManager(clean_db)
-        schema_manager.register(
-            Subject, User, Employee, UserGroup,
-            GroupMembership
-        )
+        schema_manager.register(Subject, User, Employee, UserGroup, GroupMembership)
         schema_manager.sync_schema(force=True)
 
         return clean_db, Subject, User, Employee, UserGroup, GroupMembership
@@ -161,9 +159,7 @@ class TestRelationInheritance:
         Employee.manager(db).insert(bob)
 
         # Add employee to engineering group
-        GroupMembership.manager(db).insert(
-            GroupMembership(user_group=eng_group, group_member=bob)
-        )
+        GroupMembership.manager(db).insert(GroupMembership(user_group=eng_group, group_member=bob))
 
         # Add engineering group to admins group (group as member)
         eng_fetched = UserGroup.manager(db).get(name="Engineering")[0]
@@ -275,15 +271,18 @@ class TestAttributeInheritance:
         # Base ID type (abstract concept)
         class ResourceId(String):
             """Base resource identifier."""
+
             flags = AttributeFlags(name="resource_id_iam")
 
         # Specialized IDs
         class FileId(String):
             """File path identifier."""
+
             flags = AttributeFlags(name="file_id_iam")
 
         class RecordId(String):
             """Database record identifier."""
+
             flags = AttributeFlags(name="record_id_iam")
 
         # Entities using different ID types
@@ -384,11 +383,22 @@ class TestRelationsAsRolePlayers:
         schema_manager.register(Resource, Action, Access, SubjectEntity, Permission)
         schema_manager.sync_schema(force=True)
 
-        return clean_db, Resource, Action, Access, SubjectEntity, Permission, ResourceName, ActionName
+        return (
+            clean_db,
+            Resource,
+            Action,
+            Access,
+            SubjectEntity,
+            Permission,
+            ResourceName,
+            ActionName,
+        )
 
     def test_insert_relation_with_relation_as_player(self, schema_with_relation_as_player):
         """Insert a relation where one role player is itself a relation."""
-        db, Resource, Action, Access, SubjectEntity, Permission, ResourceName, ActionName = schema_with_relation_as_player
+        db, Resource, Action, Access, SubjectEntity, Permission, ResourceName, ActionName = (
+            schema_with_relation_as_player
+        )
 
         # Create entities
         file = Resource(name=ResourceName("secret.txt"))
@@ -424,7 +434,9 @@ class TestRelationsAsRolePlayers:
 
     def test_query_permission_chain(self, schema_with_relation_as_player):
         """Query through the permission chain: subject -> access -> resource."""
-        db, Resource, Action, Access, SubjectEntity, Permission, ResourceName, ActionName = schema_with_relation_as_player
+        db, Resource, Action, Access, SubjectEntity, Permission, ResourceName, ActionName = (
+            schema_with_relation_as_player
+        )
 
         # Setup: Create multiple resources and permissions
         Resource.manager(db).insert(Resource(name=ResourceName("doc1.txt")))
@@ -473,6 +485,7 @@ class TestRoleCardinalityConstraints:
 
         class ActionCardName(String):
             """Action name attribute for cardinality tests."""
+
             pass
 
         class ActionItem(Entity):
@@ -603,16 +616,32 @@ class TestDeepEntityInheritance:
             pass
 
         schema_manager = SchemaManager(clean_db)
-        schema_manager.register(
-            BaseSubject, AbstractUser, InternalUser, ExternalUser, AdminUser
-        )
+        schema_manager.register(BaseSubject, AbstractUser, InternalUser, ExternalUser, AdminUser)
         schema_manager.sync_schema(force=True)
 
-        return clean_db, BaseSubject, AbstractUser, InternalUser, ExternalUser, AdminUser, BaseId, SpecialField
+        return (
+            clean_db,
+            BaseSubject,
+            AbstractUser,
+            InternalUser,
+            ExternalUser,
+            AdminUser,
+            BaseId,
+            SpecialField,
+        )
 
     def test_query_deep_subtype_has_all_inherited_attrs(self, schema_with_deep_inheritance):
         """Deepest subtype has all inherited attributes accessible."""
-        db, _BaseSubject, _AbstractUser, _InternalUser, _ExternalUser, AdminUser, BaseId, _SpecialField = schema_with_deep_inheritance
+        (
+            db,
+            _BaseSubject,
+            _AbstractUser,
+            _InternalUser,
+            _ExternalUser,
+            AdminUser,
+            BaseId,
+            _SpecialField,
+        ) = schema_with_deep_inheritance
 
         # Insert admin user (level 4)
         admin = AdminUser(
@@ -630,7 +659,16 @@ class TestDeepEntityInheritance:
 
     def test_sibling_types_have_different_attrs(self, schema_with_deep_inheritance):
         """Sibling types at same level have different specific attributes."""
-        db, _BaseSubject, _AbstractUser, InternalUser, ExternalUser, _AdminUser, BaseId, SpecialField = schema_with_deep_inheritance
+        (
+            db,
+            _BaseSubject,
+            _AbstractUser,
+            InternalUser,
+            ExternalUser,
+            _AdminUser,
+            BaseId,
+            SpecialField,
+        ) = schema_with_deep_inheritance
 
         # Insert internal user
         internal = InternalUser(
@@ -659,19 +697,32 @@ class TestDeepEntityInheritance:
 
     def test_filter_on_inherited_attribute(self, schema_with_deep_inheritance):
         """Filter deepest subtype by inherited attribute."""
-        db, _BaseSubject, _AbstractUser, _InternalUser, _ExternalUser, AdminUser, BaseId, _SpecialField = schema_with_deep_inheritance
+        (
+            db,
+            _BaseSubject,
+            _AbstractUser,
+            _InternalUser,
+            _ExternalUser,
+            AdminUser,
+            BaseId,
+            _SpecialField,
+        ) = schema_with_deep_inheritance
 
         # Insert multiple admins
-        AdminUser.manager(db).insert(AdminUser(
-            base_id=BaseId("admin-a"),
-            credential=Credential("token-a"),
-            full_name=FullName("Admin A"),
-        ))
-        AdminUser.manager(db).insert(AdminUser(
-            base_id=BaseId("admin-b"),
-            credential=Credential("token-b"),
-            full_name=FullName("Admin B"),
-        ))
+        AdminUser.manager(db).insert(
+            AdminUser(
+                base_id=BaseId("admin-a"),
+                credential=Credential("token-a"),
+                full_name=FullName("Admin A"),
+            )
+        )
+        AdminUser.manager(db).insert(
+            AdminUser(
+                base_id=BaseId("admin-b"),
+                credential=Credential("token-b"),
+                full_name=FullName("Admin B"),
+            )
+        )
 
         # Filter by inherited attribute (credential from level 2)
         result = AdminUser.manager(db).filter(credential="token-a").execute()

@@ -8,21 +8,20 @@ Based on TypeDB Drug Discovery example schema.
 import pytest
 
 from type_bridge import (
+    AttributeFlags,
+    Card,
     Database,
+    Double,
     Entity,
     Flag,
     Integer,
-    Double,
     Key,
     Relation,
     Role,
-    Card,
     SchemaManager,
     String,
     TypeFlags,
-    AttributeFlags,
 )
-
 
 # =============================================================================
 # Test: Deep Attribute Inheritance (4+ levels)
@@ -247,7 +246,13 @@ class TestAbstractRelationHierarchies:
 
         schema_manager = SchemaManager(clean_db)
         schema_manager.register(
-            BioGene, Transcript, Protein, Disease, Transcription, Translation, DiseaseGeneInteraction
+            BioGene,
+            Transcript,
+            Protein,
+            Disease,
+            Transcription,
+            Translation,
+            DiseaseGeneInteraction,
         )
         schema_manager.sync_schema(force=True)
 
@@ -842,15 +847,11 @@ class TestChainedRelationTraversal:
         pubs = {p.pub_id.value: p for p in Publication.manager(db).all()}
 
         # Create mentions - one publication mentions both interactions
-        Mention.manager(db).insert(
-            Mention(publication=pubs["PMC001"], interaction=tp53_mdm2)
-        )
+        Mention.manager(db).insert(Mention(publication=pubs["PMC001"], interaction=tp53_mdm2))
         Mention.manager(db).insert(
             Mention(publication=pubs["PMC001"], interaction=brca_interaction)
         )
-        Mention.manager(db).insert(
-            Mention(publication=pubs["PMC002"], interaction=tp53_mdm2)
-        )
+        Mention.manager(db).insert(Mention(publication=pubs["PMC002"], interaction=tp53_mdm2))
 
         # Query: Find all mentions and traverse to genes
         mentions = Mention.manager(db).all()
@@ -971,15 +972,17 @@ class TestSelfReferentialAggregations:
             )
 
         # Filter by high confidence (> 0.8)
-        high_conf = ScoredInteraction.manager(db).filter(
-            ConfidenceScore.gt(ConfidenceScore(0.8))
-        ).execute()
+        high_conf = (
+            ScoredInteraction.manager(db).filter(ConfidenceScore.gt(ConfidenceScore(0.8))).execute()
+        )
         assert len(high_conf) == 2  # A (0.95), B (0.85)
 
         # Filter by low confidence (<= 0.5)
-        low_conf = ScoredInteraction.manager(db).filter(
-            ConfidenceScore.lte(ConfidenceScore(0.5))
-        ).execute()
+        low_conf = (
+            ScoredInteraction.manager(db)
+            .filter(ConfidenceScore.lte(ConfidenceScore(0.5)))
+            .execute()
+        )
         assert len(low_conf) == 2  # D (0.50), E (0.30)
 
     def test_order_interactions_by_score(self, schema_with_scored_interactions):

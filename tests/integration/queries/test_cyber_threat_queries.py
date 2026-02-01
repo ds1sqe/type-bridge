@@ -5,25 +5,25 @@ multi-role relations, entity hierarchies, and complex threat modeling patterns.
 Based on TypeDB Cyber Threat Intelligence example schema (STIX 2.1).
 """
 
+from datetime import UTC, datetime
+
 import pytest
-from datetime import datetime, timezone
 
 from type_bridge import (
+    AttributeFlags,
+    Card,
     Database,
+    DateTimeTZ,
     Entity,
     Flag,
     Integer,
     Key,
     Relation,
     Role,
-    Card,
     SchemaManager,
     String,
-    DateTimeTZ,
     TypeFlags,
-    AttributeFlags,
 )
-
 
 # =============================================================================
 # Test: STIX Domain Object Hierarchy
@@ -101,9 +101,7 @@ class TestStixDomainObjectHierarchy:
             pattern: StixDescription  # Simplified - STIX has specific pattern syntax
 
         schema_manager = SchemaManager(clean_db)
-        schema_manager.register(
-            StixDomainObject, AttackPattern, Campaign, ThreatActor, Indicator
-        )
+        schema_manager.register(StixDomainObject, AttackPattern, Campaign, ThreatActor, Indicator)
         schema_manager.sync_schema(force=True)
 
         return (
@@ -140,7 +138,7 @@ class TestStixDomainObjectHierarchy:
             StixAlias,
         ) = schema_with_stix_hierarchy
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         attack = AttackPattern(
             stix_id=StixId("attack-pattern--abc123"),
             stix_type=StixType("attack-pattern"),
@@ -175,7 +173,7 @@ class TestStixDomainObjectHierarchy:
             StixAlias,
         ) = schema_with_stix_hierarchy
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Attack pattern
         AttackPattern.manager(db).insert(
@@ -499,7 +497,7 @@ class TestSightingPattern:
         observed_f = SightObservedData.manager(db).get(stix_id="observed-data--log-entry")[0]
         location_f = SightIdentity.manager(db).get(stix_id="identity--org-a")[0]
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         sighting = Sighting(
             sighting_of=indicator_f,
             observed_data=observed_f,
@@ -574,9 +572,7 @@ class TestCyberObservables:
             resolved_target: Role[Ipv4Address] = Role("resolved_target", Ipv4Address)
 
         schema_manager = SchemaManager(clean_db)
-        schema_manager.register(
-            CyberObservable, Ipv4Address, DomainName, FileObject, ResolvesTo
-        )
+        schema_manager.register(CyberObservable, Ipv4Address, DomainName, FileObject, ResolvesTo)
         schema_manager.sync_schema(force=True)
 
         return (
@@ -680,9 +676,7 @@ class TestCyberObservables:
         ip_f = Ipv4Address.manager(db).get(stix_id="ipv4-addr--evil-ip")[0]
 
         # Create relationship
-        ResolvesTo.manager(db).insert(
-            ResolvesTo(resolving_source=domain_f, resolved_target=ip_f)
-        )
+        ResolvesTo.manager(db).insert(ResolvesTo(resolving_source=domain_f, resolved_target=ip_f))
 
         # Verify
         resolutions = ResolvesTo.manager(db).all()
@@ -811,9 +805,7 @@ class TestMarkingDefinitions:
         marking_f = MarkingDefinition.manager(db).get(stix_id="marking-definition--tlp-amber")[0]
         obj_f = MarkedObject.manager(db).get(stix_id="indicator--sensitive")[0]
 
-        ObjectMarking.manager(db).insert(
-            ObjectMarking(marked_object=obj_f, marking=marking_f)
-        )
+        ObjectMarking.manager(db).insert(ObjectMarking(marked_object=obj_f, marking=marking_f))
 
         # Verify
         markings = ObjectMarking.manager(db).all()
@@ -981,7 +973,7 @@ class TestThreatIntelligenceAggregations:
         apt29 = ThreatActor.manager(db).get(stix_id="threat-actor--apt29")[0]
         script_kiddie = ThreatActor.manager(db).get(stix_id="threat-actor--script-kiddie")[0]
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # APT28 runs many campaigns
         for i in range(5):
@@ -1061,17 +1053,17 @@ class TestThreatIntelligenceAggregations:
             )
 
         # Filter by high severity (>= 7)
-        high_severity = AttackPattern.manager(db).filter(
-            SeverityLevel.gte(SeverityLevel(7))
-        ).execute()
+        high_severity = (
+            AttackPattern.manager(db).filter(SeverityLevel.gte(SeverityLevel(7))).execute()
+        )
         assert len(high_severity) == 2
         high_severity_names = {p.name.value for p in high_severity}
         assert high_severity_names == {"Zero Day Exploit", "Supply Chain Attack"}
 
         # Filter by low severity (< 5)
-        low_severity = AttackPattern.manager(db).filter(
-            SeverityLevel.lt(SeverityLevel(5))
-        ).execute()
+        low_severity = (
+            AttackPattern.manager(db).filter(SeverityLevel.lt(SeverityLevel(5))).execute()
+        )
         assert len(low_severity) == 2
         low_severity_names = {p.name.value for p in low_severity}
         assert low_severity_names == {"Phishing", "Credential Stuffing"}
@@ -1216,15 +1208,13 @@ class TestComplexStixRelationships:
                 stix_id=f"attack-pattern--{pattern_name.lower().replace(' ', '-')}"
             )[0]
 
-            phase = next(
-                p for p in KillChainPhase.manager(db).all() if p.name.value == phase_name
-            )
+            phase = next(p for p in KillChainPhase.manager(db).all() if p.name.value == phase_name)
             PhaseMapping.manager(db).insert(PhaseMapping(attack_pattern=pattern, phase=phase))
 
         # Query patterns in "Delivery" phase
-        delivery_phase = KillChainPhase.manager(db).filter(
-            StixName.eq(StixName("Delivery"))
-        ).execute()[0]
+        delivery_phase = (
+            KillChainPhase.manager(db).filter(StixName.eq(StixName("Delivery"))).execute()[0]
+        )
 
         delivery_mappings = PhaseMapping.manager(db).filter(phase=delivery_phase).execute()
         assert len(delivery_mappings) == 3
@@ -1271,10 +1261,10 @@ class TestComplexStixRelationships:
 
         # Verify counts per phase
         for phase_name, expected_count in pattern_counts.items():
-            actual_count = PhaseMapping.manager(db).filter(
-                phase=phases[phase_name]
-            ).count()
-            assert actual_count == expected_count, f"Phase {phase_name}: expected {expected_count}, got {actual_count}"
+            actual_count = PhaseMapping.manager(db).filter(phase=phases[phase_name]).count()
+            assert actual_count == expected_count, (
+                f"Phase {phase_name}: expected {expected_count}, got {actual_count}"
+            )
 
     def test_order_phases_and_paginate(self, schema_with_attack_chain):
         """Order kill chain phases and use pagination."""

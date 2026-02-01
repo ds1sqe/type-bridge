@@ -39,7 +39,7 @@ class RolePlayerFieldRef[T: "Attribute"]:
         role_name: str,
         field_name: str,
         attr_type: type[T],
-        player_types: tuple[type[Entity], ...],
+        player_types: tuple[type[TypeDBType], ...],
     ):
         """Create a role-player field reference.
 

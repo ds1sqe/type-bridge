@@ -6,27 +6,23 @@ Based on TypeDB Bookstore example schema.
 """
 
 import pytest
-from datetime import datetime
 
 from type_bridge import (
+    AttributeFlags,
     Database,
+    DateTime,
+    Double,
     Entity,
     Flag,
     Integer,
-    Double,
     Key,
-    Unique,
     Relation,
     Role,
-    Card,
     SchemaManager,
     String,
-    Boolean,
-    DateTime,
     TypeFlags,
-    AttributeFlags,
+    Unique,
 )
-
 
 # =============================================================================
 # Test: Abstract Attribute Inheritance
@@ -1130,16 +1126,12 @@ class TestComplexRelationFilters:
             )
 
         # Filter by stock level > 50
-        high_stock = Inventory.manager(db).filter(
-            StockLevel.gt(StockLevel(50))
-        ).execute()
+        high_stock = Inventory.manager(db).filter(StockLevel.gt(StockLevel(50))).execute()
         assert len(high_stock) == 2
         assert all(inv.stock_level.value > 50 for inv in high_stock)
 
         # Filter by stock level <= 50
-        low_stock = Inventory.manager(db).filter(
-            StockLevel.lte(StockLevel(50))
-        ).execute()
+        low_stock = Inventory.manager(db).filter(StockLevel.lte(StockLevel(50))).execute()
         assert len(low_stock) == 2
         assert all(inv.stock_level.value <= 50 for inv in low_stock)
 
@@ -1183,11 +1175,12 @@ class TestComplexRelationFilters:
         )
 
         # Filter: Product A with stock > 50
-        result = Inventory.manager(db).filter(
-            product=product_a
-        ).filter(
-            StockLevel.gt(StockLevel(50))
-        ).execute()
+        result = (
+            Inventory.manager(db)
+            .filter(product=product_a)
+            .filter(StockLevel.gt(StockLevel(50)))
+            .execute()
+        )
 
         assert len(result) == 1
         assert result[0].warehouse.name.value == "Main Warehouse"
