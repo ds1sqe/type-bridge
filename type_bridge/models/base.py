@@ -40,6 +40,31 @@ class TypeDBType(BaseModel, ABC):
     _owned_attrs: ClassVar[dict[str, ModelAttrInfo]] = {}
     _iid: str | None = None  # TypeDB internal ID
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Override setattr to preserve _iid during attribute assignment.
+
+        Pydantic's validate_assignment=True can reset private attributes like _iid
+        when modifying model fields. This override captures and restores _iid.
+        """
+        # Capture current _iid before Pydantic's setattr might reset it
+        # Use object.__getattribute__ to avoid any descriptor magic
+        try:
+            current_iid = object.__getattribute__(self, "_iid")
+        except AttributeError:
+            current_iid = None
+
+        # Let Pydantic handle the actual attribute assignment
+        super().__setattr__(name, value)
+
+        # Restore _iid if it was set and got cleared (but not if we're setting _iid itself)
+        if name != "_iid" and current_iid is not None:
+            try:
+                new_iid = object.__getattribute__(self, "_iid")
+            except AttributeError:
+                new_iid = None
+            if new_iid is None:
+                object.__setattr__(self, "_iid", current_iid)
+
     def __init_subclass__(cls) -> None:
         """Called when a TypeDBType subclass is created."""
         super().__init_subclass__()

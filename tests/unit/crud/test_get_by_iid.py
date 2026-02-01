@@ -127,3 +127,32 @@ class TestGetByIidValidation:
         # The _iid should be the input parameter, not None
         assert result is not None
         assert getattr(result, "_iid", None) == iid
+
+    def test_iid_persists_after_attribute_modification(self):
+        """Verify _iid survives attribute changes on entity.
+
+        Regression test: Pydantic's validate_assignment=True can reset private
+        attributes like _iid when modifying model fields. The __setattr__ override
+        in TypeDBType should preserve _iid during attribute assignment.
+        """
+        entity = TestPerson(name=Name("test"), age=Age(25))
+        object.__setattr__(entity, "_iid", "0x123")
+
+        # Modify an attribute - this used to clear _iid
+        entity.name = Name("modified")
+
+        # _iid should still be there
+        assert getattr(entity, "_iid", None) == "0x123"
+
+    def test_iid_persists_after_multiple_attribute_modifications(self):
+        """Verify _iid survives multiple consecutive attribute changes."""
+        entity = TestPerson(name=Name("test"), age=Age(25))
+        object.__setattr__(entity, "_iid", "0x456789")
+
+        # Multiple modifications
+        entity.name = Name("first change")
+        entity.age = Age(30)
+        entity.name = Name("second change")
+
+        # _iid should still be there
+        assert getattr(entity, "_iid", None) == "0x456789"
