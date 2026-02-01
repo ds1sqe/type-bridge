@@ -12,7 +12,7 @@ from type_bridge.models import Entity
 from type_bridge.query import QueryBuilder
 
 from ..base import E
-from ..exceptions import EntityNotFoundError, KeyAttributeError, NotUniqueError
+from ..exceptions import EntityNotFoundError, KeyAttributeError
 from ..model_manager import ModelManager
 from ..utils import (
     assign_entity_iids,
@@ -536,121 +536,6 @@ class EntityManager[E: Entity](ModelManager[E]):
 
         return base_filters, expressions
 
-    def delete(self, entity: E) -> E:
-        """Delete an entity instance from the database.
-
-        Prefers IID-based matching when _iid is set on the entity.
-        Falls back to @key attributes, or ALL attributes if no keys exist.
-
-        Args:
-            entity: Entity instance to delete (must have _iid, key attributes,
-                    or match exactly one record if no keys)
-
-        Returns:
-            The deleted entity instance
-
-        Raises:
-            ValueError: If key attribute value is None
-            EntityNotFoundError: If entity does not exist in database
-            NotUniqueError: If no @key and multiple matches found
-
-        Example:
-            alice = Person(name=Name("Alice"), age=Age(30))
-            person_manager.insert(alice)
-
-            # Delete using the instance
-            deleted = person_manager.delete(alice)
-        """
-        logger.debug(f"Deleting entity: {self.model_class.__name__}")
-
-        # Prefer IID-based matching when available (most efficient)
-        entity_iid = getattr(entity, "_iid", None)
-        if entity_iid:
-            query_str = (
-                f"match\n$e isa {self.model_class.get_type_name()}, iid {entity_iid};\ndelete\n$e;"
-            )
-            logger.debug(f"Delete query (IID): {query_str}")
-            self._execute(query_str, TransactionType.WRITE)
-            logger.info(f"Entity deleted by IID: {self.model_class.__name__}")
-            return entity
-
-        # Fall back to key/attribute matching
-        owned_attrs = self.model_class.get_all_attributes()
-
-        # Extract key attributes from entity for matching (same pattern as update)
-        match_filters: dict[str, Any] = {}
-        for field_name, attr_info in owned_attrs.items():
-            if attr_info.flags.is_key:
-                key_value = getattr(entity, field_name, None)
-                if key_value is None:
-                    raise KeyAttributeError(
-                        entity_type=self.model_class.__name__,
-                        operation="delete",
-                        field_name=field_name,
-                    )
-                # Extract value from Attribute instance if needed
-                key_value = unwrap_attribute(key_value)
-                attr_name = attr_info.typ.get_attribute_name()
-                match_filters[attr_name] = key_value
-
-        # Fallback: no @key attributes - match by ALL attributes
-        if not match_filters:
-            all_filters: dict[str, Any] = {}
-            filter_kwargs: dict[str, Any] = {}
-            for field_name, attr_info in owned_attrs.items():
-                value = getattr(entity, field_name, None)
-                if value is not None:
-                    # Store field_name -> attribute value for filter()
-                    filter_kwargs[field_name] = value
-                    # Store attr_name -> raw value for TypeQL query
-                    value = unwrap_attribute(value)
-                    attr_name = attr_info.typ.get_attribute_name()
-                    all_filters[attr_name] = value
-
-            # Count matches first - only delete if exactly 1
-            # Use existing filter().count() mechanism
-            count = self.filter(**filter_kwargs).count()
-
-            if count == 0:
-                raise EntityNotFoundError(
-                    f"Cannot delete: entity '{self.model_class.get_type_name()}' "
-                    "not found with given attributes."
-                )
-            if count > 1:
-                raise NotUniqueError(
-                    f"Cannot delete: found {count} matches. "
-                    "Entity without @key must match exactly 1 record. "
-                    "Use filter().delete() for bulk deletion."
-                )
-            match_filters = all_filters
-        else:
-            # For keyed entities, check existence before delete
-            filter_kwargs: dict[str, Any] = {}
-            for field_name, attr_info in owned_attrs.items():
-                if attr_info.flags.is_key:
-                    value = getattr(entity, field_name, None)
-                    if value is not None:
-                        filter_kwargs[field_name] = value
-
-            count = self.filter(**filter_kwargs).count()
-            if count == 0:
-                raise EntityNotFoundError(
-                    f"Cannot delete: entity '{self.model_class.get_type_name()}' "
-                    "not found with given key attributes."
-                )
-
-        # Build TypeQL: match $e isa type, has key value; delete $e;
-        parts = [f"$e isa {self.model_class.get_type_name()}"]
-        for attr_name, attr_value in match_filters.items():
-            parts.append(f"has {attr_name} {format_value(attr_value)}")
-
-        query_str = f"match\n{', '.join(parts)};\ndelete\n$e;"
-        logger.debug(f"Delete query: {query_str}")
-        self._execute(query_str, TransactionType.WRITE)
-
-        logger.info(f"Entity deleted: {self.model_class.__name__}")
-        return entity
-
     def delete_many(self, entities: list[E], *, strict: bool = False) -> list[E]:
         """Delete multiple entities within a single transaction.
 
@@ -899,62 +784,6 @@ class EntityManager[E: Entity](ModelManager[E]):
 
         logger.debug(f"Found {len(existing_keys)} existing entities out of {len(entities)}")
         return existing_keys
-
-    def update(self, entity: E) -> E:
-        """Update an entity in the database based on its current state.
-
-        Reads all attribute values from the entity instance and persists them to the database.
-        Uses IID for matching when available (from fetched entities), otherwise falls back
-        to key attributes.
-
-        For single-value attributes (@card(0..1) or @card(1..1)), uses TypeQL update clause.
-        For multi-value attributes (e.g., @card(0..5), @card(2..)), deletes old values
-        and inserts new ones.
-
-        Args:
-            entity: The entity instance to update (must have _iid set or key attributes)
-
-        Returns:
-            The same entity instance
-
-        Raises:
-            KeyAttributeError: If entity has no _iid and no key attributes defined
-
-        Example:
-            # Fetch entity (populates _iid automatically)
-            alice = person_manager.get(name="Alice")[0]
-
-            # Modify attributes directly
-            alice.age = 31
-            alice.tags = ["python", "typedb", "ai"]
-
-            # Update in database (uses _iid for matching)
-            person_manager.update(alice)
-        """
-        logger.debug(f"Updating entity: {self.model_class.__name__}")
-
-        match_clause, delete_clause, insert_clause, update_clause = self._build_update_query_parts(
-            entity
-        )
-
-        # Combine and execute
-        query_parts = []
-        if match_clause:
-            query_parts.append(f"match\n{match_clause}")
-        if delete_clause:
-            query_parts.append(f"delete\n{delete_clause}")
-        if insert_clause:
-            query_parts.append(f"insert\n{insert_clause}")
-        if update_clause:
-            query_parts.append(f"update\n{update_clause}")
-
-        full_query = "\n".join(query_parts)
-        logger.debug(f"Update query: {full_query}")
-
-        self._execute(full_query, TransactionType.WRITE)
-
-        logger.info(f"Entity updated: {self.model_class.__name__}")
-        return entity
 
     def _build_update_query_parts(
         self, entity: E, var_name: str = "$e"

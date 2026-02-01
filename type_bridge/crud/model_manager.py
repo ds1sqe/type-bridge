@@ -233,8 +233,12 @@ class ModelManager[T: "TypeDBType"](BaseManager[T]):
             else:
                 single_value_updates[attr_name] = value
 
-        # Build query
-        match_parts = [match_info.main_clause] + match_info.extra_clauses
+        # Build match clause - join base clauses with semicolons
+        base_clauses = [match_info.main_clause] + match_info.extra_clauses
+        base_match = ";\n".join(base_clauses)
+
+        # Collect try blocks (already have trailing semicolons)
+        try_blocks: list[str] = []
 
         # Add bindings for multi-value attributes with guards
         for attr_name, values in multi_value_updates.items():
@@ -246,17 +250,21 @@ class ModelManager[T: "TypeDBType"](BaseManager[T]):
                 *[f"  {g}" for g in guard_lines],
                 "};",
             ])
-            match_parts.append(try_block)
+            try_blocks.append(try_block)
 
         # Add bindings for single-value updates (delete old + insert new)
         for attr_name in single_value_updates:
-            match_parts.append(f"try {{ $x has {attr_name} $old_{attr_name}; }};")
+            try_blocks.append(f"try {{ $x has {attr_name} $old_{attr_name}; }};")
 
         # Add bindings for single-value deletes
         for attr_name in single_value_deletes:
-            match_parts.append(f"try {{ $x has {attr_name} ${attr_name}; }};")
+            try_blocks.append(f"try {{ $x has {attr_name} ${attr_name}; }};")
 
-        match_clause = "\n".join(match_parts)
+        # Combine base match with try blocks
+        if try_blocks:
+            match_clause = base_match + ";\n" + "\n".join(try_blocks)
+        else:
+            match_clause = base_match
         query_parts = [f"match\n{match_clause}"]
 
         # Build delete clause

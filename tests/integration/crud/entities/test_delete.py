@@ -8,8 +8,6 @@ from type_bridge import (
     Flag,
     Integer,
     Key,
-    KeyAttributeError,
-    NotUniqueError,
     String,
     TypeFlags,
 )
@@ -96,7 +94,7 @@ def test_delete_entity_with_none_key_raises(db_with_schema):
     person.__dict__["name"] = None  # type: ignore[index]
 
     with pytest.raises(
-        KeyAttributeError, match="Cannot delete Person: key attribute 'name' is None"
+        ValueError, match="Cannot identify Person: key attribute 'name' is None"
     ):
         manager.delete(person)
 
@@ -260,8 +258,12 @@ def test_delete_entity_without_key_single_match(db_with_schema):
 
 @pytest.mark.integration
 @pytest.mark.order(27)
-def test_delete_entity_without_key_multiple_matches_raises(db_with_schema):
-    """Test that deleting entity without @key raises NotUniqueError when multiple matches exist."""
+def test_delete_entity_without_key_and_no_iid_raises(db_with_schema):
+    """Test that deleting entity without @key and no IID raises ValueError.
+
+    The unified ModelManager requires either IID or @key attributes to identify
+    the entity for deletion.
+    """
 
     class CounterValue(Integer):
         pass
@@ -282,15 +284,18 @@ def test_delete_entity_without_key_multiple_matches_raises(db_with_schema):
     counter2 = Counter(counter_value=CounterValue(42))
     manager.insert_many([counter1, counter2])
 
-    # Should raise NotUniqueError since multiple matches
-    with pytest.raises(NotUniqueError, match="Cannot delete: found 2 matches"):
+    # Should raise ValueError since no @key and no IID
+    with pytest.raises(ValueError, match="no _iid set and no @key attributes defined"):
         manager.delete(counter1)
 
 
 @pytest.mark.integration
 @pytest.mark.order(28)
-def test_delete_entity_without_key_no_match_raises(db_with_schema):
-    """Test that deleting entity without @key raises EntityNotFoundError when no matches exist."""
+def test_delete_entity_without_key_and_no_iid_raises_even_if_not_in_db(db_with_schema):
+    """Test that deleting entity without @key and no IID raises ValueError.
+
+    Even if entity doesn't exist in DB, we still need IID or @key to identify it.
+    """
 
     class CounterValue(Integer):
         pass
@@ -309,15 +314,20 @@ def test_delete_entity_without_key_no_match_raises(db_with_schema):
     # Create entity but don't insert it (not in DB)
     counter = Counter(counter_value=CounterValue(999))
 
-    # Should raise EntityNotFoundError since 0 matches
-    with pytest.raises(EntityNotFoundError, match="not found with given attributes"):
+    # Should raise ValueError since no @key and no IID
+    with pytest.raises(ValueError, match="no _iid set and no @key attributes defined"):
         manager.delete(counter)
 
 
 @pytest.mark.integration
 @pytest.mark.order(29)
-def test_delete_nonexistent_entity_with_key_raises(db_with_schema):
-    """Test that deleting entity with @key that doesn't exist raises EntityNotFoundError."""
+def test_delete_nonexistent_entity_with_key_is_idempotent(db_with_schema):
+    """Test that deleting entity with @key that doesn't exist is idempotent (no error).
+
+    The unified ModelManager.delete() doesn't validate existence before deletion.
+    Delete is idempotent - if you try to delete something that doesn't exist,
+    the query succeeds but deletes nothing.
+    """
 
     class Name(String):
         pass
@@ -331,9 +341,11 @@ def test_delete_nonexistent_entity_with_key_raises(db_with_schema):
     # Create entity but don't insert it (not in DB)
     nonexistent = Person(name=Name("NonExistent"))
 
-    # Should raise EntityNotFoundError since entity not in DB
-    with pytest.raises(EntityNotFoundError, match="not found with given key attributes"):
-        manager.delete(nonexistent)
+    # Act - Delete should succeed (idempotent, no error)
+    result = manager.delete(nonexistent)
+
+    # Assert - Returns the instance (same as when actually deleted)
+    assert result is nonexistent
 
 
 @pytest.mark.integration

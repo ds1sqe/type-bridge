@@ -474,12 +474,14 @@ class Relation(TypeDBType, metaclass=RelationMeta):
         match_clause = ";\n".join(match_parts) if match_parts else None
 
         # Build write pattern
+        # Note: In TypeDB 3.x insert, relations don't get a variable binding
+        # (the var_name is ignored for the write pattern)
         type_name = self.get_type_name()
         roles_str = ", ".join(role_parts)
-        write_parts = [f"{var_name} ({roles_str}) isa {type_name}"]
+        write_parts = [f"({roles_str}) isa {type_name}"]
 
-        # Add attributes
-        for field_name, attr_info in self._owned_attrs.items():
+        # Add attributes (including inherited)
+        for field_name, attr_info in self.get_all_attributes().items():
             value = getattr(self, field_name, None)
             if value is not None:
                 attr_class = attr_info.typ

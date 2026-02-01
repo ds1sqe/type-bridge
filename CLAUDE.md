@@ -39,7 +39,7 @@ uv run pyright tests/            # Type check tests
 
 ## Project Structure
 
-```
+```text
 type_bridge/
 ├── __init__.py           # Main package exports
 ├── query.py              # TypeQL query builder
@@ -268,5 +268,23 @@ persons = person_manager.all()
 7. **TransactionContext** - Share transactions across operations with `db.transaction()`
 8. **Connection type** - Managers accept `Database`, `Transaction`, or `TransactionContext`
 9. **Dict helpers** - Use `to_dict()` and `from_dict()` for serialization
+
+## Claude Code Instructions
+
+### Always Fix Issues
+
+**CRITICAL**: When encountering bugs, test failures, or issues during development:
+
+- ALWAYS fix issues, regardless of whether they appear to be "pre-existing"
+- Never dismiss bugs as "not related to current changes" - if you found it, fix it
+- Complete the work fully; don't leave partial implementations
+- If a refactor is done, it should be COMPLETE - no dead code, no overridden methods that defeat the purpose
+
+### Code Quality Standards
+
+- Run linting (`uv run ruff check --fix`) before committing
+- Run both unit tests (`uv run pytest tests/unit/`) and integration tests (`./test-integration.sh`) before PRs
+- When unifying code (e.g., EntityManager + RelationManager), remove ALL duplicated methods from subclasses
+- Delete dead code completely - no backwards-compatibility hacks, no `_unused` variables, no `# removed` comments
 
 For detailed documentation, see the links above.

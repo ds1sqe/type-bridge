@@ -445,9 +445,13 @@ class Entity(TypeDBType, metaclass=EntityMeta):
             parts = [f"{var_name} isa {type_name}"]
             for field_name, attr_info in key_attrs.items():
                 value = getattr(self, field_name, None)
-                if value is not None:
-                    attr_name = attr_info.typ.get_attribute_name()
-                    parts.append(f"has {attr_name} {self._format_value(value)}")
+                if value is None:
+                    raise ValueError(
+                        f"Cannot identify {self.__class__.__name__}: "
+                        f"key attribute '{field_name}' is None"
+                    )
+                attr_name = attr_info.typ.get_attribute_name()
+                parts.append(f"has {attr_name} {self._format_value(value)}")
             main_clause = ", ".join(parts)
             return MatchClauseInfo(main_clause=main_clause, extra_clauses=[], var_name=var_name)
 

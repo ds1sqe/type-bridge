@@ -64,11 +64,11 @@ def test_entity_update_multi_value_uses_guards():
 
     query = mgr.queries[-1]
     attr_name = Tag.get_attribute_name()
-    # Variable name includes entity var suffix for batch query compatibility
-    attr_var = f"${attr_name}_e"
+    # Unified ModelManager uses $x and simple attribute variable names
+    attr_var = f"${attr_name}"
     expected_try = (
         "try {\n"
-        f"  $e has {attr_name} {attr_var};\n"
+        f"  $x has {attr_name} {attr_var};\n"
         f'  not {{ {attr_var} == "keep"; }};\n'
         f'  not {{ {attr_var} == "drop"; }};\n'
         "};"
@@ -101,10 +101,11 @@ def test_relation_update_multi_value_uses_guards():
 
     query = mgr.queries[-1]
     attr_name = Note.get_attribute_name()
+    # Unified ModelManager uses $x and simple attribute variable names
     attr_var = f"${attr_name}"
     expected_try = (
         "try {\n"
-        f"  $r has {attr_name} {attr_var};\n"
+        f"  $x has {attr_name} {attr_var};\n"
         f'  not {{ {attr_var} == "keep"; }};\n'
         f'  not {{ {attr_var} == "old"; }};\n'
         "};"
@@ -139,10 +140,11 @@ def test_entity_update_uses_iid_when_available():
     mgr.update(item)
 
     query = mgr.queries[-1]
-    # Should use IID matching, not key attributes
+    # Should use IID matching in the main match clause
     assert "iid 0x1234567890abcdef" in query
-    # Should NOT try to match by non-existent key attributes
-    assert "has ItemTitle" not in query.split("match")[1].split("update")[0]
+    # The main match clause should use IID, not key attributes
+    # (attribute bindings in try blocks for replace logic are OK)
+    assert "$x isa item, iid 0x1234567890abcdef" in query
 
 
 def test_entity_update_falls_back_to_key_when_no_iid():
@@ -173,10 +175,8 @@ def test_entity_update_falls_back_to_key_when_no_iid():
 
 
 def test_entity_update_without_iid_or_key_raises():
-    """update() should raise KeyAttributeError when entity has no _iid and no @key."""
+    """update() should raise ValueError when entity has no _iid and no @key."""
     import pytest
-
-    from type_bridge.crud.exceptions import KeyAttributeError
 
     class ItemTitle(String):
         pass
@@ -191,7 +191,7 @@ def test_entity_update_without_iid_or_key_raises():
 
     mgr = _RecordingEntityManager(Item)
 
-    with pytest.raises(KeyAttributeError):
+    with pytest.raises(ValueError, match="cannot be identified"):
         mgr.update(item)
 
 
