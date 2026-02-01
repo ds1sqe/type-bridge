@@ -437,6 +437,7 @@ class RelationManager[R: Relation]:
         self._execute(query, TransactionType.WRITE)
 
         logger.info(f"Relation put: {self.model_class.__name__}")
+        self._populate_iid_after_insert(relation, role_players)
         return relation
 
     def put_many(self, relations: list[R]) -> list[R]:
@@ -491,7 +492,7 @@ class RelationManager[R: Relation]:
                     continue
 
                 # Build player key and match clause (IID-preferring)
-                player_key, player_type, match_parts = self._build_player_key_and_match(
+                player_key, _, match_parts = self._build_player_key_and_match(
                     player_entity
                 )
 
@@ -619,7 +620,7 @@ class RelationManager[R: Relation]:
                     continue
 
                 # Build player key and match clause (IID-preferring)
-                player_key, player_type, match_parts = self._build_player_key_and_match(
+                player_key, _, match_parts = self._build_player_key_and_match(
                     player_entity
                 )
 

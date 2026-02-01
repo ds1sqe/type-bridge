@@ -238,6 +238,9 @@ class QueryBuilder:
 
         Returns:
             Query object
+
+        Raises:
+            ValueError: If a role name is not defined in the model
         """
         logger.debug(
             f"QueryBuilder.match_relation: {model_class.__name__}, var={var}, "
@@ -250,7 +253,14 @@ class QueryBuilder:
 
         # Add role players
         if role_players:
+            # Validate roles against model definition to prevent injection
+            defined_roles = model_class._roles
             for role_name, player_var in role_players.items():
+                if role_name not in defined_roles:
+                    raise ValueError(
+                        f"Unknown role '{role_name}' for relation {model_class.__name__}. "
+                        f"Available roles: {list(defined_roles.keys())}"
+                    )
                 pattern_parts.append(f"({role_name}: {player_var})")
 
         pattern = ", ".join(pattern_parts)

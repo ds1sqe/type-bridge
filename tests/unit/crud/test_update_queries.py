@@ -288,3 +288,50 @@ def test_relation_delete_uses_iid_when_available():
     # Should NOT have role player matching
     assert "source:" not in query
     assert "target:" not in query
+
+
+# ============================================================================
+# Put IID population tests
+# ============================================================================
+
+
+def test_relation_put_populates_iid():
+    """RelationManager.put() should populate _iid after insertion."""
+
+    class Doc(String):
+        pass
+
+    class User(Entity):
+        flags = TypeFlags(name="user4")
+        doc: Doc = Flag(Key)
+
+    class Link(Relation):
+        flags = TypeFlags(name="link2")
+        source: Role[User] = Role("source", User)
+        target: Role[User] = Role("target", User)
+
+    class _IidPopulatingRelationManager(_RecordingRelationManager):
+        """Relation manager that returns IID from fetch query."""
+
+        def _execute(
+            self, query: str, tx_type: TransactionType
+        ) -> list[dict[str, Any]]:
+            del tx_type  # unused
+            self.queries.append(query)
+            # If this is a fetch query for IID, return one
+            if "fetch" in query and "_iid" in query:
+                return [{"_iid": "0xput1234567890"}]
+            return []
+
+    link = Link(source=User(doc=Doc("a")), target=User(doc=Doc("b")))
+    # Verify no _iid before put
+    assert getattr(link, "_iid", None) is None
+
+    mgr = _IidPopulatingRelationManager(Link)
+    result = mgr.put(link)
+
+    # Should have _iid populated after put
+    assert getattr(result, "_iid", None) == "0xput1234567890"
+    # Should have executed both the put query and the IID fetch query
+    assert any("put" in q for q in mgr.queries)
+    assert any("fetch" in q and "_iid" in q for q in mgr.queries)
