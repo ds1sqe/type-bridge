@@ -108,7 +108,7 @@ def start_typedb_container():
         time.sleep(1)
     else:
         raise RuntimeError("TypeDB container failed to become healthy")
-    
+
     return True
 
 

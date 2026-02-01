@@ -5,7 +5,6 @@ and multi-value attribute operations.
 """
 
 import pytest
-from typedb.driver import TypeDBException
 
 from type_bridge import (
     Card,

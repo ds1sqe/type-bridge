@@ -112,7 +112,7 @@ class EntityManager[E: Entity]:
                     match_parts.append(f"has {attr_name} {formatted}")
 
         match_clause = ", ".join(match_parts)
-        query_str = f"match {match_clause}; fetch {{ \"_iid\": iid($e) }};"
+        query_str = f'match {match_clause}; fetch {{ "_iid": iid($e) }};'
         logger.debug(f"Fetch IID query: {query_str}")
 
         try:

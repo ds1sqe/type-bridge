@@ -62,7 +62,9 @@ def _render_role_field(
 
     if len(player_classes) == 1:
         player = player_classes[0]
-        return f'{py_name}: Role[entities.{player}] = Role("{role_name}", entities.{player}{card_arg})'
+        return (
+            f'{py_name}: Role[entities.{player}] = Role("{role_name}", entities.{player}{card_arg})'
+        )
 
     primary, *rest = player_classes
     extras = ", ".join(f"entities.{p}" for p in rest)
@@ -174,10 +176,7 @@ def _build_relation_context(
     distinct_roles = [r.name for r in relation.roles if r.distinct]
 
     # Collect custom annotations (excluding internal ones like _docstring)
-    annotations = {
-        k: v for k, v in relation.annotations.items()
-        if not k.startswith("_")
-    }
+    annotations = {k: v for k, v in relation.annotations.items() if not k.startswith("_")}
 
     return RelationContext(
         class_name=cls_name,

@@ -29,7 +29,6 @@ from type_bridge import (
     Unique,
 )
 
-
 # =============================================================================
 # Shared Attribute Types
 # =============================================================================
@@ -575,7 +574,7 @@ class TestPolymorphicRolePlayers:
         # not the abstract declared type (Profile)
         author = authorings[0].author
         assert isinstance(author, Person), f"Expected Person, got {type(author).__name__}"
-        assert not type(author) == Profile  # Should NOT be the abstract type
+        assert type(author) is not Profile  # Should NOT be the abstract type
 
         # Inherited attributes from Profile are accessible
         assert str(author.profile_id) == "alice"
@@ -616,7 +615,7 @@ class TestPolymorphicRolePlayers:
         assert isinstance(author, Organization), (
             f"Expected Organization, got {type(author).__name__}"
         )
-        assert not type(author) == Profile
+        assert type(author) is not Profile
 
         # Inherited attributes from Profile
         assert str(author.profile_id) == "techcorp"

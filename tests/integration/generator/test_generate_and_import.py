@@ -439,7 +439,9 @@ class TestRoleCardinalitySchema:
         assert reviewer_role.cardinality.min == 1
         assert reviewer_role.cardinality.max == 3
 
-    def test_create_relation_with_list_players(self, generated_package: dict[str, ModuleType]) -> None:
+    def test_create_relation_with_list_players(
+        self, generated_package: dict[str, ModuleType]
+    ) -> None:
         """Create relation instance with list of role players."""
         entities = generated_package["entities"]
         relations = generated_package["relations"]
@@ -447,18 +449,15 @@ class TestRoleCardinalitySchema:
 
         # Create two memory instances
         memory1 = entities.Memory(
-            name=attributes.Name("Memory 1"),
-            content=attributes.Content("First memory content")
+            name=attributes.Name("Memory 1"), content=attributes.Content("First memory content")
         )
         memory2 = entities.Memory(
-            name=attributes.Name("Memory 2"),
-            content=attributes.Content("Second memory content")
+            name=attributes.Name("Memory 2"), content=attributes.Content("Second memory content")
         )
 
         # Create similarity relation with list of players
         similarity = relations.Is_similar_to(
-            similar_memory=[memory1, memory2],
-            score=attributes.Score(0.95)
+            similar_memory=[memory1, memory2], score=attributes.Score(0.95)
         )
 
         assert similarity.similar_memory == [memory1, memory2]
@@ -480,7 +479,9 @@ class TestRoleCardinalitySchema:
         assert alice in friendship.friend
         assert bob in friendship.friend
 
-    def test_unbounded_role_with_multiple_players(self, generated_package: dict[str, ModuleType]) -> None:
+    def test_unbounded_role_with_multiple_players(
+        self, generated_package: dict[str, ModuleType]
+    ) -> None:
         """Group membership with 3+ members."""
         entities = generated_package["entities"]
         relations = generated_package["relations"]
@@ -491,10 +492,7 @@ class TestRoleCardinalitySchema:
         member2 = entities.Person(name=attributes.Name("Member 2"))
         member3 = entities.Person(name=attributes.Name("Member 3"))
 
-        membership = relations.Group_membership(
-            group=group,
-            member=[member1, member2, member3]
-        )
+        membership = relations.Group_membership(group=group, member=[member1, member2, member3])
 
         assert membership.group == group
         assert len(membership.member) == 3

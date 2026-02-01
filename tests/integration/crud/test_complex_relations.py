@@ -188,9 +188,13 @@ class TestThreeRoleRelations:
         Location.manager(db).insert(store)
 
         # Multiple purchases at same store
-        Purchase.manager(db).insert(Purchase(buyer=alice, item=laptop, store=store, amount=Amount(1)))
+        Purchase.manager(db).insert(
+            Purchase(buyer=alice, item=laptop, store=store, amount=Amount(1))
+        )
         Purchase.manager(db).insert(Purchase(buyer=bob, item=phone, store=store, amount=Amount(2)))
-        Purchase.manager(db).insert(Purchase(buyer=alice, item=phone, store=store, amount=Amount(1)))
+        Purchase.manager(db).insert(
+            Purchase(buyer=alice, item=phone, store=store, amount=Amount(1))
+        )
 
         purchases = Purchase.manager(db).all()
         assert len(purchases) == 3

@@ -12,7 +12,7 @@ def assert_entity_exists(db: Database, entity_type: type[Entity], **attrs) -> En
 def assert_entity_count(db: Database, entity_type: type[Entity], expected: int) -> None:
     """Assert the count of entities matches expected."""
     manager = entity_type.manager(db)
-    actual = manager.count()
+    actual = len(manager.all())
     assert actual == expected, f"Expected {expected} {entity_type.__name__}, got {actual}"
 
 
@@ -27,5 +27,5 @@ def assert_relation_exists(db: Database, relation_type: type[Relation], **role_p
 def assert_relation_count(db: Database, relation_type: type[Relation], expected: int) -> None:
     """Assert the count of relations matches expected."""
     manager = relation_type.manager(db)
-    actual = manager.count()
+    actual = len(manager.all())
     assert actual == expected, f"Expected {expected} {relation_type.__name__}, got {actual}"

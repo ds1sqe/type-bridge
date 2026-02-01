@@ -26,6 +26,7 @@ def make_email(name: str | None = None) -> str:
 def make_isbn() -> str:
     """Generate a fake ISBN-13."""
     import random
+
     # Generate 12 random digits
     digits = [random.randint(0, 9) for _ in range(12)]
     # Calculate check digit (simplified)

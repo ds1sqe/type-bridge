@@ -545,7 +545,10 @@ class TestComingSoonAnnotationStubs:
         source = render_relations(schema, attr_names, entity_names, relation_names)
 
         # Role with @card(2..2) should include cardinality=Card(2, 2)
-        assert 'similar_memory: Role[entities.Memory] = Role("similar_memory", entities.Memory, cardinality=Card(2, 2))' in source
+        assert (
+            'similar_memory: Role[entities.Memory] = Role("similar_memory", entities.Memory, cardinality=Card(2, 2))'
+            in source
+        )
         assert "Card" in source
 
     def test_role_cardinality_unbounded(self) -> None:
@@ -565,7 +568,10 @@ class TestComingSoonAnnotationStubs:
         source = render_relations(schema, attr_names, entity_names, relation_names)
 
         # Role with @card(2..) should include cardinality=Card(2) (unbounded)
-        assert 'member: Role[entities.Person] = Role("member", entities.Person, cardinality=Card(2))' in source
+        assert (
+            'member: Role[entities.Person] = Role("member", entities.Person, cardinality=Card(2))'
+            in source
+        )
 
     def test_role_cardinality_bounded(self) -> None:
         """Render relation with bounded role cardinality (@card(1..3))."""
@@ -587,7 +593,10 @@ class TestComingSoonAnnotationStubs:
         source = render_relations(schema, attr_names, entity_names, relation_names)
 
         # Role with @card(1..3) should include cardinality=Card(1, 3)
-        assert 'reviewer: Role[entities.Reviewer] = Role("reviewer", entities.Reviewer, cardinality=Card(1, 3))' in source
+        assert (
+            'reviewer: Role[entities.Reviewer] = Role("reviewer", entities.Reviewer, cardinality=Card(1, 3))'
+            in source
+        )
         # Role with @card(1) is default, should not include Card
         assert 'document: Role[entities.Document] = Role("document", entities.Document)' in source
 

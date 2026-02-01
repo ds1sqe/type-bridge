@@ -86,7 +86,9 @@ class TestGeneratorInsertQueryCycle:
         return _import_generated_package(output)
 
     @pytest.fixture
-    def db_with_generated_schema(self, clean_db: Database, generated_package: dict[str, ModuleType]):
+    def db_with_generated_schema(
+        self, clean_db: Database, generated_package: dict[str, ModuleType]
+    ):
         """Set up database with generated schema."""
         entities = generated_package["entities"]
         relations = generated_package["relations"]
@@ -297,7 +299,9 @@ class TestGeneratorInsertQueryCycle:
 
 
 @pytest.mark.integration
-@pytest.mark.skip(reason="Bookstore schema has @card constraints that need SchemaManager investigation")
+@pytest.mark.skip(
+    reason="Bookstore schema has @card constraints that need SchemaManager investigation"
+)
 class TestGeneratorBookstoreE2E:
     """Test bookstore schema end-to-end with various attribute types."""
 
@@ -311,7 +315,9 @@ class TestGeneratorBookstoreE2E:
         return _import_generated_package(output)
 
     @pytest.fixture
-    def db_with_bookstore_schema(self, clean_db: Database, generated_package: dict[str, ModuleType]):
+    def db_with_bookstore_schema(
+        self, clean_db: Database, generated_package: dict[str, ModuleType]
+    ):
         """Set up database with bookstore schema."""
         entities = generated_package["entities"]
         relations = generated_package["relations"]

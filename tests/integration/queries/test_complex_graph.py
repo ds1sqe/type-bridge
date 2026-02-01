@@ -274,9 +274,17 @@ class TestAggregationWithFilters:
         manager = Employee.manager(db)
 
         # Insert employees in different departments
-        manager.insert(Employee(name=Name("Alice"), salary=Salary(100000), department=Department("Engineering")))
-        manager.insert(Employee(name=Name("Bob"), salary=Salary(90000), department=Department("Engineering")))
-        manager.insert(Employee(name=Name("Carol"), salary=Salary(80000), department=Department("Marketing")))
+        manager.insert(
+            Employee(
+                name=Name("Alice"), salary=Salary(100000), department=Department("Engineering")
+            )
+        )
+        manager.insert(
+            Employee(name=Name("Bob"), salary=Salary(90000), department=Department("Engineering"))
+        )
+        manager.insert(
+            Employee(name=Name("Carol"), salary=Salary(80000), department=Department("Marketing"))
+        )
 
         # Count engineering employees
         eng_count = manager.filter(department="Engineering").count()
@@ -292,9 +300,17 @@ class TestAggregationWithFilters:
 
         manager = Employee.manager(db)
 
-        manager.insert(Employee(name=Name("Alice"), salary=Salary(100000), department=Department("Engineering")))
-        manager.insert(Employee(name=Name("Bob"), salary=Salary(60000), department=Department("Engineering")))
-        manager.insert(Employee(name=Name("Carol"), salary=Salary(90000), department=Department("Marketing")))
+        manager.insert(
+            Employee(
+                name=Name("Alice"), salary=Salary(100000), department=Department("Engineering")
+            )
+        )
+        manager.insert(
+            Employee(name=Name("Bob"), salary=Salary(60000), department=Department("Engineering"))
+        )
+        manager.insert(
+            Employee(name=Name("Carol"), salary=Salary(90000), department=Department("Marketing"))
+        )
 
         # All employees - use filter() to get a Query that has count()
         all_count = manager.filter().count()

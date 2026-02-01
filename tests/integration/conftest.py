@@ -3,14 +3,14 @@
 import pytest
 from typedb.driver import DriverOptions
 
-from type_bridge import Credentials, Database, TypeDB
 from tests.utils.typedb_lifecycle import (
-    suppress_stderr,
+    TEST_DB_ADDRESS,
+    TEST_DB_NAME,
     start_typedb_container,
     stop_typedb_container,
-    TEST_DB_NAME,
-    TEST_DB_ADDRESS,
+    suppress_stderr,
 )
+from type_bridge import Credentials, Database, TypeDB
 
 
 @pytest.fixture(scope="session")
