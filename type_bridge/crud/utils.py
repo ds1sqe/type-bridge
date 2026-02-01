@@ -735,6 +735,85 @@ def assign_entity_iids(
 
 
 # ============================================================================
+# Polymorphic Role Player Utilities
+# ============================================================================
+
+
+def resolve_entity_class_from_label(
+    type_label: str | None,
+    allowed_entity_classes: tuple[type["Entity"], ...],
+) -> type["Entity"]:
+    """Resolve the correct Python entity class from a TypeDB type label.
+
+    Used for polymorphic role players where the declared role type is abstract
+    but the actual entity is a concrete subtype.
+
+    Args:
+        type_label: The TypeDB type label (from label() function), e.g., "person"
+        allowed_entity_classes: Tuple of allowed entity classes for this role
+
+    Returns:
+        The matching Python entity class, or the first allowed class as fallback
+    """
+    if not type_label:
+        # Fallback to first allowed class if no type label
+        return allowed_entity_classes[0]
+
+    # Build a mapping of type names to classes, including subclasses
+    type_name_to_class: dict[str, type[Entity]] = {}
+
+    def collect_subclasses(cls: type["Entity"]) -> None:
+        """Recursively collect all subclasses and their type names."""
+        type_name = cls.get_type_name()
+        if type_name:
+            type_name_to_class[type_name] = cls
+        for subclass in cls.__subclasses__():
+            collect_subclasses(subclass)
+
+    for cls in allowed_entity_classes:
+        collect_subclasses(cls)
+
+    # Look up the class by type label
+    if type_label in type_name_to_class:
+        return type_name_to_class[type_label]
+
+    # Fallback to first allowed class
+    return allowed_entity_classes[0]
+
+
+def build_role_player_fetch_items(
+    role_info: dict[str, tuple[str, tuple[type["Entity"], ...]]],
+) -> list[str]:
+    """Build fetch items for role players with their IIDs and type labels.
+
+    TypeQL 3.x doesn't allow mixing iid() with .* in the same nested block,
+    so we fetch the IID as a separate key alongside the nested attributes.
+    We also fetch the type label to correctly identify polymorphic role players.
+
+    Args:
+        role_info: Dict mapping role_name -> (role_var, allowed_entity_types)
+
+    Returns:
+        List of fetch item strings like:
+            '"employee_iid": iid($employee)'
+            '"employee_type": label($employee_type)'
+            '"employee": { $employee.* }'
+
+    Note: The caller must add type variable bindings to the match clause:
+        $employee isa $employee_type;
+    """
+    fetch_items = []
+    for role_name, (role_var, _) in role_info.items():
+        # Fetch IID separately (can't be mixed with .* in nested block)
+        fetch_items.append(f'"{role_name}_iid": iid({role_var})')
+        # Fetch type label for polymorphic role player resolution
+        fetch_items.append(f'"{role_name}_type": label({role_var}_type)')
+        # Fetch all attributes for the role player
+        fetch_items.append(f'"{role_name}": {{\n    {role_var}.*\n  }}')
+    return fetch_items
+
+
+# ============================================================================
 # Relation IID Population Utilities
 # ============================================================================
 

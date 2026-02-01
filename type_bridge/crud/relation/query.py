@@ -14,9 +14,11 @@ from ..utils import (
     assign_relation_iids,
     build_relation_iid_query,
     build_relation_result_map,
+    build_role_player_fetch_items,
     extract_entity_key,
     format_value,
     is_multi_value_attribute,
+    resolve_entity_class_from_label,
     unwrap_attribute,
 )
 
@@ -318,15 +320,20 @@ class RelationQuery[R: Relation](BaseQuery[R]):
         # Build match clause with inline role players
         role_parts = []
         role_info = {}  # role_name -> (var, allowed_entity_classes)
+        role_type_bindings = []  # Type variable bindings for each role player
         for role_name, role in self.model_class._roles.items():
             role_var = f"${role_name}"
             role_parts.append(f"{role.role_name}: {role_var}")
             role_info[role_name] = (role_var, role.player_entity_types)
+            # Add type variable binding for polymorphic role player resolution
+            role_type_bindings.append(f"{role_var} isa! {role_var}_type")
 
         # Use isa! to bind exact type to $t for label() function
         roles_str = ", ".join(role_parts)
         base_type = self.model_class.get_type_name()
         match_clauses = [f"$r isa! $t ({roles_str})", f"$t sub {base_type}"]
+        # Add role player type bindings for polymorphic resolution
+        match_clauses.extend(role_type_bindings)
 
         # Add dict-based attribute filters
         for field_name, value in attr_filters.items():
@@ -374,9 +381,8 @@ class RelationQuery[R: Relation](BaseQuery[R]):
             else:
                 fetch_items.append(f'"{attr_name}": $r.{attr_name}')
 
-        # Add each role player as nested object
-        for role_name, (role_var, allowed_entity_classes) in role_info.items():
-            fetch_items.append(f'"{role_name}": {{\n    {role_var}.*\n  }}')
+        # Add role player fetch items (IID + type label + attributes for each role)
+        fetch_items.extend(build_role_player_fetch_items(role_info))
 
         fetch_body = ",\n  ".join(fetch_items)
 
@@ -485,21 +491,24 @@ class RelationQuery[R: Relation](BaseQuery[R]):
             # Create relation instance
             relation = self.model_class(**attrs)
 
+            # Set relation IID (now available from fetch)
+            relation_iid = result.get("_iid")
+            if relation_iid:
+                object.__setattr__(relation, "_iid", relation_iid)
+
             # Extract role players from nested objects in result
             for role_name, (role_var, allowed_entity_classes) in role_info.items():
                 if role_name in result and isinstance(result[role_name], dict):
                     player_data = result[role_name]
-                    # Choose entity class based on key attributes present; fallback to first allowed
-                    entity_class = allowed_entity_classes[0]
-                    for candidate in allowed_entity_classes:
-                        key_attr_names = [
-                            attr_info.typ.get_attribute_name()
-                            for attr_info in candidate.get_all_attributes().values()
-                            if attr_info.flags.is_key
-                        ]
-                        if any(key in player_data for key in key_attr_names):
-                            entity_class = candidate
-                            break
+
+                    # Get the actual type label from TypeDB (fetched via label())
+                    type_label = result.get(f"{role_name}_type")
+
+                    # Resolve entity class from type label for polymorphic support
+                    entity_class = resolve_entity_class_from_label(
+                        type_label, allowed_entity_classes
+                    )
+
                     # Extract player attributes (including inherited)
                     player_attrs: dict[str, Any] = {}
                     for field_name, attr_info in entity_class.get_all_attributes().items():
@@ -528,13 +537,16 @@ class RelationQuery[R: Relation](BaseQuery[R]):
                     # so we also create if player_attrs is empty (valid for relations)
                     if player_attrs == {} or any(v is not None for v in player_attrs.values()):
                         player_entity = entity_class(**player_attrs)
+                        # Set IID on player if available
+                        player_iid = result.get(f"{role_name}_iid")
+                        if player_iid:
+                            object.__setattr__(player_entity, "_iid", player_iid)
                         setattr(relation, role_name, player_entity)
 
             relations.append(relation)
 
-        # Populate IIDs by fetching them in a second query
-        if relations:
-            self._populate_iids(relations)
+        # Set IIDs on relations (now available from fetch)
+        # Note: We no longer need _populate_iids since IIDs are fetched with the query
 
         logger.info(f"RelationQuery executed: {len(relations)} relations returned")
         return relations
