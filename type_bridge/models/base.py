@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from datetime import date as date_type
-from datetime import datetime as datetime_type
-from datetime import timedelta
-from decimal import Decimal as DecimalType
 from typing import Any, ClassVar, dataclass_transform
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from type_bridge.attribute import Attribute, AttributeFlags, TypeFlags
+from type_bridge.attribute import AttributeFlags, TypeFlags
 from type_bridge.attribute.flags import format_type_name
+from type_bridge.crud.utils import format_value as _format_value_impl
 from type_bridge.models.utils import ModelAttrInfo, validate_type_name
 
 
@@ -262,34 +259,8 @@ class TypeDBType(BaseModel, ABC):
 
     @staticmethod
     def _format_value(value: Any) -> str:
-        """Format a Python value for TypeQL."""
+        """Format a Python value for TypeQL.
 
-        import isodate
-        from isodate import Duration as IsodateDuration
-
-        # Extract value from Attribute instances
-        if isinstance(value, Attribute):
-            value = value.value
-
-        if isinstance(value, str):
-            # Escape backslashes first, then double quotes for TypeQL string literals
-            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-            return f'"{escaped}"'
-        elif isinstance(value, bool):
-            return "true" if value else "false"
-        elif isinstance(value, DecimalType):
-            # TypeDB decimal literals require 'dec' suffix
-            return f"{value}dec"
-        elif isinstance(value, int | float):
-            return str(value)
-        elif isinstance(value, IsodateDuration | timedelta):
-            # TypeDB duration literals are unquoted ISO 8601 duration strings
-            return isodate.duration_isoformat(value)
-        elif isinstance(value, datetime_type):
-            # TypeDB datetime literals are unquoted ISO 8601 strings
-            return value.isoformat()
-        elif isinstance(value, date_type):
-            # TypeDB date literals are unquoted ISO 8601 date strings (YYYY-MM-DD)
-            return value.isoformat()
-        else:
-            return str(value)
+        Delegates to the shared format_value utility in crud/utils.py.
+        """
+        return _format_value_impl(value)

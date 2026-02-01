@@ -11,7 +11,12 @@ from type_bridge.session import Connection, ConnectionExecutor
 
 from ..base import R
 from ..exceptions import RelationNotFoundError
-from ..utils import format_value, is_multi_value_attribute
+from ..utils import (
+    build_role_player_match,
+    format_value,
+    is_multi_value_attribute,
+    normalize_role_players,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +45,7 @@ class RelationManager[R: Relation]:
     def _build_role_player_match(self, role_name: str, entity: Any, entity_type_name: str) -> str:
         """Build a match clause for a role player entity.
 
-        Prefers IID-based matching when available (more precise and faster),
-        falls back to key attribute matching, and raises a clear error if
-        neither is available.
+        Delegates to shared utility in crud/utils.py.
 
         Args:
             role_name: The role name (used as variable name)
@@ -56,32 +59,7 @@ class RelationManager[R: Relation]:
         Raises:
             ValueError: If entity has neither _iid nor key attributes
         """
-        # Prefer IID-based matching when available (more precise and faster)
-        entity_iid = getattr(entity, "_iid", None)
-        if entity_iid:
-            return f"${role_name} isa {entity_type_name}, iid {entity_iid}"
-
-        # Fall back to key attribute matching
-        key_attrs = {
-            field_name: attr_info
-            for field_name, attr_info in entity.__class__.get_all_attributes().items()
-            if attr_info.flags.is_key
-        }
-
-        for field_name, attr_info in key_attrs.items():
-            value = getattr(entity, field_name)
-            if value is not None:
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-                formatted_value = format_value(value)
-                return f"${role_name} isa {entity_type_name}, has {attr_name} {formatted_value}"
-
-        # Neither IID nor key attributes available
-        raise ValueError(
-            f"Role player '{role_name}' ({entity.__class__.__name__}) cannot be identified: "
-            f"no _iid set and no @key attributes defined. Either fetch the entity from the "
-            f"database first (to populate _iid) or add Flag(Key) to an attribute."
-        )
+        return build_role_player_match(role_name, entity, entity_type_name)
 
     def _build_role_player_fetch_items(
         self, role_info: dict[str, tuple[str, tuple[type, ...]]]
@@ -236,20 +214,8 @@ class RelationManager[R: Relation]:
 
             if attr_name in player_data:
                 raw_value = player_data[attr_name]
-                # Check if multi-value attribute
-                if (
-                    hasattr(attr_info.flags, "has_explicit_card")
-                    and attr_info.flags.has_explicit_card
-                ):
-                    is_multi = True
-                elif hasattr(attr_info.flags, "card_min") and attr_info.flags.card_min is not None:
-                    is_multi = attr_info.flags.card_min > 1 or (
-                        hasattr(attr_info.flags, "card_max")
-                        and attr_info.flags.card_max is not None
-                        and attr_info.flags.card_max != 1
-                    )
-                else:
-                    is_multi = False
+                # Check if multi-value attribute using shared utility
+                is_multi = is_multi_value_attribute(attr_info.flags)
 
                 if is_multi and isinstance(raw_value, list):
                     player_attrs[field_name] = [attr_class(v) for v in raw_value]
@@ -307,19 +273,12 @@ class RelationManager[R: Relation]:
 
         # Build match clause for role players (IID-preferring)
         # Handles both single players and lists of players (for multi-cardinality roles)
+        normalized_players, role_var_mapping = normalize_role_players(role_players)
         match_parts = []
-        role_var_mapping: dict[str, list[str]] = {}  # role_name -> list of variable names
 
-        for role_name, entity_or_list in role_players.items():
-            # Normalize to list for uniform handling
-            entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
-            role_var_mapping[role_name] = []
-
+        for role_name, entities in normalized_players.items():
             for i, entity in enumerate(entities):
-                # Generate unique variable name for each player
-                var_name = f"{role_name}_{i}" if len(entities) > 1 else role_name
-                role_var_mapping[role_name].append(var_name)
-
+                var_name = role_var_mapping[role_name][i]
                 entity_type_name = entity.__class__.get_type_name()
                 match_parts.append(
                     self._build_role_player_match(var_name, entity, entity_type_name)
@@ -412,19 +371,12 @@ class RelationManager[R: Relation]:
 
         # Build match clause for role players (IID-preferring)
         # Handles both single players and lists of players (for multi-cardinality roles)
+        normalized_players, role_var_mapping = normalize_role_players(role_players)
         match_parts = []
-        role_var_mapping: dict[str, list[str]] = {}  # role_name -> list of variable names
 
-        for role_name, entity_or_list in role_players.items():
-            # Normalize to list for uniform handling
-            entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
-            role_var_mapping[role_name] = []
-
+        for role_name, entities in normalized_players.items():
             for i, entity in enumerate(entities):
-                # Generate unique variable name for each player
-                var_name = f"{role_name}_{i}" if len(entities) > 1 else role_name
-                role_var_mapping[role_name].append(var_name)
-
+                var_name = role_var_mapping[role_name][i]
                 entity_type_name = entity.__class__.get_type_name()
                 match_parts.append(
                     self._build_role_player_match(var_name, entity, entity_type_name)

@@ -63,10 +63,10 @@ class ComparisonExpr[T: "Attribute"](Expression):
         Returns:
             TypeQL pattern string (without trailing semicolon)
         """
-        from type_bridge.query import _format_value
+        from type_bridge.crud.utils import format_value
 
         # Format the value for TypeQL
-        formatted_value = _format_value(self.value.value)
+        formatted_value = format_value(self.value.value)
 
         # Get attribute type name for schema
         attr_type_name = self.attr_type.get_attribute_name()

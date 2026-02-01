@@ -69,6 +69,151 @@ def format_value(value: Any) -> str:
         return f'"{escaped}"'
 
 
+def unwrap_attribute(value: Any) -> Any:
+    """Extract raw value from Attribute instance.
+
+    This utility consolidates the common pattern of extracting the underlying
+    value from Attribute instances before processing.
+
+    Args:
+        value: Value that may be an Attribute instance or raw value
+
+    Returns:
+        The raw value (value.value if Attribute, otherwise value unchanged)
+
+    Examples:
+        >>> unwrap_attribute(Name("Alice"))
+        "Alice"
+        >>> unwrap_attribute("Alice")
+        "Alice"
+        >>> unwrap_attribute(42)
+        42
+    """
+    if hasattr(value, "value"):
+        return value.value
+    return value
+
+
+def normalize_role_players(
+    role_players: dict[str, Any],
+) -> tuple[dict[str, list[Any]], dict[str, list[str]]]:
+    """Normalize role players to always be lists for uniform handling.
+
+    Handles both single entities and lists of entities (for multi-cardinality roles).
+    Also generates unique variable names for each player in the match clause.
+
+    Args:
+        role_players: Dict mapping role_name -> entity or list of entities
+
+    Returns:
+        Tuple of:
+        - normalized_players: Dict mapping role_name -> list of entities
+        - var_mapping: Dict mapping role_name -> list of variable names
+
+    Examples:
+        >>> normalize_role_players({"employee": alice, "employer": company})
+        ({"employee": [alice], "employer": [company]},
+         {"employee": ["employee"], "employer": ["employer"]})
+
+        >>> normalize_role_players({"member": [alice, bob]})
+        ({"member": [alice, bob]},
+         {"member": ["member_0", "member_1"]})
+    """
+    normalized_players: dict[str, list[Any]] = {}
+    var_mapping: dict[str, list[str]] = {}
+
+    for role_name, entity_or_list in role_players.items():
+        # Normalize to list
+        entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+        normalized_players[role_name] = entities
+
+        # Generate variable names
+        var_names = []
+        for i in range(len(entities)):
+            var_name = f"{role_name}_{i}" if len(entities) > 1 else role_name
+            var_names.append(var_name)
+        var_mapping[role_name] = var_names
+
+    return normalized_players, var_mapping
+
+
+def build_role_player_match(var_name: str, entity: Any, entity_type_name: str) -> str:
+    """Build a match clause for a role player entity.
+
+    Prefers IID-based matching when available (more precise and faster),
+    falls back to key attribute matching, and raises a clear error if
+    neither is available.
+
+    This is the canonical implementation used by RelationManager and RelationQuery.
+
+    Args:
+        var_name: The variable name to use (without $)
+        entity: The entity instance
+        entity_type_name: The TypeDB type name for the entity
+
+    Returns:
+        A TypeQL match clause string like "$var_name isa type, iid 0x..."
+        or "$var_name isa type, has key_attr value"
+
+    Raises:
+        ValueError: If entity has neither _iid nor key attributes
+    """
+    # Prefer IID-based matching when available (more precise and faster)
+    entity_iid = getattr(entity, "_iid", None)
+    if entity_iid:
+        return f"${var_name} isa {entity_type_name}, iid {entity_iid}"
+
+    # Fall back to key attribute matching
+    key_attrs = {
+        field_name: attr_info
+        for field_name, attr_info in entity.__class__.get_all_attributes().items()
+        if attr_info.flags.is_key
+    }
+
+    for field_name, attr_info in key_attrs.items():
+        value = getattr(entity, field_name)
+        if value is not None:
+            attr_class = attr_info.typ
+            attr_name = attr_class.get_attribute_name()
+            formatted_value = format_value(value)
+            return f"${var_name} isa {entity_type_name}, has {attr_name} {formatted_value}"
+
+    # Neither IID nor key attributes available
+    raise ValueError(
+        f"Role player '{var_name}' ({entity.__class__.__name__}) cannot be identified: "
+        f"no _iid set and no @key attributes defined. Either fetch the entity from the "
+        f"database first (to populate _iid) or add Flag(Key) to an attribute."
+    )
+
+
+def extract_entity_key(entity: Any) -> tuple[str, str, Any] | None:
+    """Extract the first key attribute from an entity for matching.
+
+    This is used to build match clauses based on key attributes when IID
+    is not available.
+
+    Args:
+        entity: The entity instance
+
+    Returns:
+        Tuple of (field_name, attr_typeql_name, raw_value) if a key attribute
+        with a non-None value is found, otherwise None.
+
+    Examples:
+        >>> extract_entity_key(person)  # person has name as @key
+        ("name", "name", "Alice")
+    """
+    for field_name, attr_info in entity.__class__.get_all_attributes().items():
+        if attr_info.flags.is_key:
+            key_value = getattr(entity, field_name, None)
+            if key_value is not None:
+                attr_name = attr_info.typ.get_attribute_name()
+                # Unwrap Attribute instance
+                raw_value = key_value.value if hasattr(key_value, "value") else key_value
+                return (field_name, attr_name, raw_value)
+    return None
+
+
 def is_multi_value_attribute(flags: AttributeFlags) -> bool:
     """Check if attribute is multi-value based on cardinality.
 

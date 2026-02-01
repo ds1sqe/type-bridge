@@ -1,13 +1,8 @@
 """Query builder for TypeQL."""
 
 import logging
-from datetime import date, datetime, timedelta
-from decimal import Decimal as DecimalType
-from typing import Any
 
-import isodate
-from isodate import Duration as IsodateDuration
-
+from type_bridge.crud.utils import format_value
 from type_bridge.models import Entity, Relation
 
 logger = logging.getLogger(__name__)
@@ -205,7 +200,7 @@ class QueryBuilder:
             if field_name in owned_attrs:
                 attr_info = owned_attrs[field_name]
                 attr_name = attr_info.typ.get_attribute_name()
-                formatted_value = _format_value(field_value)
+                formatted_value = format_value(field_value)
                 pattern_parts.append(f"has {attr_name} {formatted_value}")
 
         pattern = ", ".join(pattern_parts)
@@ -262,36 +257,3 @@ class QueryBuilder:
         query.match(pattern)
 
         return query
-
-
-def _format_value(value: Any) -> str:
-    """Format a Python value for TypeQL."""
-    # Extract value from Attribute instances first
-    if hasattr(value, "value"):
-        value = value.value
-
-    if isinstance(value, str):
-        # Escape backslashes first, then double quotes for TypeQL string literals
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
-    elif isinstance(value, bool):
-        return "true" if value else "false"
-    elif isinstance(value, DecimalType):
-        # TypeDB decimal literals use 'dec' suffix
-        return f"{value}dec"
-    elif isinstance(value, (int, float)):
-        return str(value)
-    elif isinstance(value, datetime):
-        # TypeDB datetime/datetimetz literals are unquoted ISO 8601 strings
-        return value.isoformat()
-    elif isinstance(value, date):
-        # TypeDB date literals are unquoted ISO 8601 date strings
-        return value.isoformat()
-    elif isinstance(value, (IsodateDuration, timedelta)):
-        # TypeDB duration literals are unquoted ISO 8601 duration strings
-        return isodate.duration_isoformat(value)
-    else:
-        # For other types, convert to string and escape
-        str_value = str(value)
-        escaped = str_value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'

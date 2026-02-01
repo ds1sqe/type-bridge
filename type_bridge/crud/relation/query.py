@@ -511,24 +511,8 @@ class RelationQuery[R: Relation]:
                         attr_name = attr_class.get_attribute_name()
                         if attr_name in player_data:
                             raw_value = player_data[attr_name]
-                            # Multi-value attributes need explicit conversion from list of raw values
-                            # Use static method to avoid binding issues between EntityQuery/RelationQuery
-                            if (
-                                hasattr(attr_info.flags, "has_explicit_card")
-                                and attr_info.flags.has_explicit_card
-                            ):
-                                is_multi = True
-                            elif (
-                                hasattr(attr_info.flags, "card_min")
-                                and attr_info.flags.card_min is not None
-                            ):
-                                is_multi = attr_info.flags.card_min > 1 or (
-                                    hasattr(attr_info.flags, "card_max")
-                                    and attr_info.flags.card_max is not None
-                                    and attr_info.flags.card_max != 1
-                                )
-                            else:
-                                is_multi = False
+                            # Check if multi-value attribute using shared utility
+                            is_multi = is_multi_value_attribute(attr_info.flags)
                             if is_multi and isinstance(raw_value, list):
                                 # Convert each raw value to Attribute instance
                                 player_attrs[field_name] = [attr_class(v) for v in raw_value]
