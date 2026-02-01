@@ -7,6 +7,13 @@ from type_bridge.crud.utils import (
     build_relation_match_pattern,
 )
 from type_bridge.models import Entity, Relation
+from type_bridge.query_parts import (
+    DeleteBlock,
+    FetchBlock,
+    InsertBlock,
+    MatchBlock,
+    Modifiers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +23,11 @@ class Query:
 
     def __init__(self):
         """Initialize query builder."""
-        self._match_clauses: list[str] = []
-        self._fetch_specs: dict[str, list[str]] = {}  # var -> [attributes]
-        self._delete_clauses: list[str] = []
-        self._insert_clauses: list[str] = []
-        self._sort_clauses: list[tuple[str, str]] = []  # [(variable, direction)]
-        self._limit: int | None = None
-        self._offset: int | None = None
+        self.match_block = MatchBlock()
+        self.fetch_block = FetchBlock()
+        self.delete_block = DeleteBlock()
+        self.insert_block = InsertBlock()
+        self.modifiers = Modifiers()
 
     def match(self, pattern: str) -> "Query":
         """Add a match clause.
@@ -33,7 +38,7 @@ class Query:
         Returns:
             Self for chaining
         """
-        self._match_clauses.append(pattern)
+        self.match_block.add(pattern)
         return self
 
     def fetch(self, variable: str, *attributes: str) -> "Query":
@@ -52,7 +57,7 @@ class Query:
         Example:
             query.fetch("$e")  # Fetches all attributes
         """
-        self._fetch_specs[variable] = list(attributes)
+        self.fetch_block.add(variable, list(attributes))
         return self
 
     def delete(self, pattern: str) -> "Query":
@@ -64,7 +69,7 @@ class Query:
         Returns:
             Self for chaining
         """
-        self._delete_clauses.append(pattern)
+        self.delete_block.add(pattern)
         return self
 
     def insert(self, pattern: str) -> "Query":
@@ -76,7 +81,7 @@ class Query:
         Returns:
             Self for chaining
         """
-        self._insert_clauses.append(pattern)
+        self.insert_block.add(pattern)
         return self
 
     def limit(self, limit: int) -> "Query":
@@ -88,7 +93,7 @@ class Query:
         Returns:
             Self for chaining
         """
-        self._limit = limit
+        self.modifiers.limit(limit)
         return self
 
     def offset(self, offset: int) -> "Query":
@@ -100,7 +105,7 @@ class Query:
         Returns:
             Self for chaining
         """
-        self._offset = offset
+        self.modifiers.offset(offset)
         return self
 
     def sort(self, variable: str, direction: str = "asc") -> "Query":
@@ -116,9 +121,7 @@ class Query:
         Example:
             Query().match("$p isa person").fetch("$p").sort("$p", "asc")
         """
-        if direction not in ("asc", "desc"):
-            raise ValueError(f"Invalid sort direction: {direction}. Must be 'asc' or 'desc'")
-        self._sort_clauses.append((variable, direction))
+        self.modifiers.sort(variable, direction)
         return self
 
     def build(self) -> str:
@@ -131,39 +134,30 @@ class Query:
         parts = []
 
         # Match clause
-        if self._match_clauses:
-            match_body = "; ".join(self._match_clauses)
-            parts.append(f"match\n{match_body};")
+        match_str = self.match_block.build()
+        if match_str:
+            parts.append(match_str)
 
         # Delete clause
-        if self._delete_clauses:
-            delete_body = "; ".join(self._delete_clauses)
-            parts.append(f"delete\n{delete_body};")
+        delete_str = self.delete_block.build()
+        if delete_str:
+            parts.append(delete_str)
 
         # Insert clause
-        if self._insert_clauses:
-            insert_body = "; ".join(self._insert_clauses)
-            parts.append(f"insert\n{insert_body};")
+        insert_str = self.insert_block.build()
+        if insert_str:
+            parts.append(insert_str)
 
         # Sort, offset, and limit modifiers (must come BEFORE fetch in TypeQL 3.x)
         # IMPORTANT: offset must come BEFORE limit for pagination to work correctly
-        if self._sort_clauses:
-            # TypeQL uses comma-separated sort variables: sort $var1 asc, $var2 desc;
-            sort_items = [f"{var} {direction}" for var, direction in self._sort_clauses]
-            parts.append(f"sort {', '.join(sort_items)};")
-        if self._offset is not None:
-            parts.append(f"offset {self._offset};")
-        if self._limit is not None:
-            parts.append(f"limit {self._limit};")
+        modifier_str = self.modifiers.build()
+        if modifier_str:
+            parts.append(modifier_str)
 
         # Fetch clause (TypeQL 3.x syntax: fetch { $var.* })
-        if self._fetch_specs:
-            fetch_items = []
-            for var in self._fetch_specs.keys():
-                fetch_items.append(f"  {var}.*")
-            # Use actual newline, not \n literal
-            fetch_body = ",\n".join(fetch_items)
-            parts.append(f"fetch {{\n{fetch_body}\n}};")
+        fetch_str = self.fetch_block.build()
+        if fetch_str:
+            parts.append(fetch_str)
 
         query = "\n".join(parts)
         logger.debug(f"Built query: {query}")

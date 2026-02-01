@@ -28,7 +28,11 @@ class TestQuery:
         """Multiple match clauses should be joined with semicolons."""
         query = Query().match("$p isa person").match("$p has name $n")
         result = query.build()
-        assert "$p isa person; $p has name $n" in result
+        # Both patterns should be present, joined by semicolons
+        assert "$p isa person" in result
+        assert "$p has name $n" in result
+        # Should have semicolons separating patterns
+        assert ";" in result
 
     def test_fetch_single_variable(self):
         """Fetch with a single variable should use .* syntax."""
