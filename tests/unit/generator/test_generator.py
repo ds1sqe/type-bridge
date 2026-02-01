@@ -528,6 +528,94 @@ class TestComingSoonAnnotationStubs:
         assert "# TODO: @cascade" not in relation_source
         assert "# TODO: @distinct" not in relation_source
 
+    def test_role_cardinality_exact(self) -> None:
+        """Render relation with exact role cardinality (@card(2))."""
+        schema = parse_tql_schema("""
+            define
+            entity memory,
+                plays is_similar_to:similar_memory;
+
+            define
+            relation is_similar_to,
+                relates similar_memory @card(2..2);
+        """)
+        attr_names = build_class_name_map(schema.attributes)
+        entity_names = build_class_name_map(schema.entities)
+        relation_names = build_class_name_map(schema.relations)
+        source = render_relations(schema, attr_names, entity_names, relation_names)
+
+        # Role with @card(2..2) should include cardinality=Card(2, 2)
+        assert 'similar_memory: Role[entities.Memory] = Role("similar_memory", entities.Memory, cardinality=Card(2, 2))' in source
+        assert "Card" in source
+
+    def test_role_cardinality_unbounded(self) -> None:
+        """Render relation with unbounded role cardinality (@card(2..))."""
+        schema = parse_tql_schema("""
+            define
+            entity person,
+                plays group_membership:member;
+
+            define
+            relation group_membership,
+                relates member @card(2..);
+        """)
+        attr_names = build_class_name_map(schema.attributes)
+        entity_names = build_class_name_map(schema.entities)
+        relation_names = build_class_name_map(schema.relations)
+        source = render_relations(schema, attr_names, entity_names, relation_names)
+
+        # Role with @card(2..) should include cardinality=Card(2) (unbounded)
+        assert 'member: Role[entities.Person] = Role("member", entities.Person, cardinality=Card(2))' in source
+
+    def test_role_cardinality_bounded(self) -> None:
+        """Render relation with bounded role cardinality (@card(1..3))."""
+        schema = parse_tql_schema("""
+            define
+            entity document,
+                plays review:document;
+            entity reviewer,
+                plays review:reviewer;
+
+            define
+            relation review,
+                relates document @card(1),
+                relates reviewer @card(1..3);
+        """)
+        attr_names = build_class_name_map(schema.attributes)
+        entity_names = build_class_name_map(schema.entities)
+        relation_names = build_class_name_map(schema.relations)
+        source = render_relations(schema, attr_names, entity_names, relation_names)
+
+        # Role with @card(1..3) should include cardinality=Card(1, 3)
+        assert 'reviewer: Role[entities.Reviewer] = Role("reviewer", entities.Reviewer, cardinality=Card(1, 3))' in source
+        # Role with @card(1) is default, should not include Card
+        assert 'document: Role[entities.Document] = Role("document", entities.Document)' in source
+
+    def test_role_cardinality_default_omitted(self) -> None:
+        """Default role cardinality (@card(1..1)) should not generate Card."""
+        schema = parse_tql_schema("""
+            define
+            entity person,
+                plays employment:employee;
+            entity company,
+                plays employment:employer;
+
+            define
+            relation employment,
+                relates employee @card(1..1),
+                relates employer;
+        """)
+        attr_names = build_class_name_map(schema.attributes)
+        entity_names = build_class_name_map(schema.entities)
+        relation_names = build_class_name_map(schema.relations)
+        source = render_relations(schema, attr_names, entity_names, relation_names)
+
+        # Default cardinality should not include Card
+        assert 'employee: Role[entities.Person] = Role("employee", entities.Person)' in source
+        assert 'employer: Role[entities.Company] = Role("employer", entities.Company)' in source
+        # Card should not be imported if only default cardinalities
+        assert "Card" not in source
+
 
 class TestRenderPackageInit:
     """Tests for package __init__.py rendering."""
@@ -666,3 +754,155 @@ class TestBookstoreSchema:
             for py_file in output.glob("*.py"):
                 content = py_file.read_text()
                 compile(content, py_file.name, "exec")
+
+
+class TestPlaysCardinalityRendering:
+    """Tests for entity plays cardinality rendering.
+
+    When entities declare `plays relation:role @card(0..5)`, the cardinality
+    should be rendered as a TODO comment (until TypeDB supports it at runtime).
+    """
+
+    def test_plays_cardinality_rendered_as_todo(self) -> None:
+        """Entity plays cardinality should be rendered as TODO comment."""
+        schema = parse_tql_schema("""
+            define
+            entity person,
+                plays friendship:friend @card(0..5);
+
+            define
+            relation friendship,
+                relates friend @card(2..2);
+        """)
+        attr_names = build_class_name_map(schema.attributes)
+        entity_names = build_class_name_map(schema.entities)
+        source = render_entities(schema, attr_names, entity_names)
+
+        # Should have TODO comment about plays cardinality
+        assert "# TODO: plays cardinality" in source or "@card(0..5)" in source
+
+    def test_plays_cardinality_unbounded(self) -> None:
+        """Unbounded plays cardinality should be rendered."""
+        schema = parse_tql_schema("""
+            define
+            entity employee,
+                plays employment:employee @card(1..);
+
+            define
+            relation employment,
+                relates employee,
+                relates employer;
+
+            define
+            entity company,
+                plays employment:employer;
+        """)
+        attr_names = build_class_name_map(schema.attributes)
+        entity_names = build_class_name_map(schema.entities)
+        source = render_entities(schema, attr_names, entity_names)
+
+        # Should indicate the cardinality constraint somewhere
+        assert "@card(1..)" in source or "plays_cardinality" in source.lower()
+
+
+class TestDocstringExtraction:
+    """Tests for docstring extraction from TypeQL comments."""
+
+    def test_entity_docstring_from_comment(self) -> None:
+        """Entity docstring should be extracted from preceding comment."""
+        schema = parse_tql_schema("""
+            define
+            ## Represents a person in the system.
+            ## Can be an employee or customer.
+            entity person,
+                owns name;
+
+            define
+            attribute name, value string;
+        """)
+
+        # Docstring should be extracted
+        assert schema.entities["person"].docstring is not None
+        assert "person" in schema.entities["person"].docstring.lower()
+
+    def test_attribute_docstring_from_comment(self) -> None:
+        """Attribute docstring should be extracted from preceding comment."""
+        schema = parse_tql_schema("""
+            define
+            ## The person's full legal name.
+            attribute name, value string;
+        """)
+
+        # Docstring should be extracted
+        assert schema.attributes["name"].docstring is not None
+        assert "name" in schema.attributes["name"].docstring.lower()
+
+    def test_relation_docstring_from_comment(self) -> None:
+        """Relation docstring should be extracted from preceding comment."""
+        schema = parse_tql_schema("""
+            define
+            entity person,
+                plays friendship:friend;
+
+            define
+            ## Represents a friendship between two people.
+            relation friendship,
+                relates friend @card(2..2);
+        """)
+
+        # Docstring should be extracted
+        assert schema.relations["friendship"].docstring is not None
+        assert "friendship" in schema.relations["friendship"].docstring.lower()
+
+
+class TestAnnotationRendering:
+    """Tests for custom annotation rendering."""
+
+    def test_role_annotations_in_relation_context(self) -> None:
+        """Role annotations should be available in generated relation code."""
+        schema = parse_tql_schema("""
+            define
+            entity person,
+                plays friendship:friend;
+
+            define
+            ## @api(public)
+            relation friendship,
+                relates friend @card(2..2);
+        """)
+        attr_names = build_class_name_map(schema.attributes)
+        entity_names = build_class_name_map(schema.entities)
+        relation_names = build_class_name_map(schema.relations)
+        source = render_relations(schema, attr_names, entity_names, relation_names)
+
+        # Relation should have some indication of the annotation
+        # Either as a comment, docstring, or class variable
+        assert "@api" in source or "api" in source.lower()
+
+
+class TestAttributeDefaultAndTransform:
+    """Tests for attribute default and transform annotations."""
+
+    def test_attribute_default_annotation(self) -> None:
+        """Attribute @default annotation should be parsed."""
+        schema = parse_tql_schema("""
+            define
+            ## @default(0)
+            attribute count, value integer;
+        """)
+
+        attr = schema.attributes["count"]
+        # Should have default value parsed from annotation
+        assert attr.annotations.get("default") == 0 or attr.default == 0
+
+    def test_attribute_transform_annotation(self) -> None:
+        """Attribute @transform annotation should be parsed."""
+        schema = parse_tql_schema("""
+            define
+            ## @transform(lowercase)
+            attribute email, value string;
+        """)
+
+        attr = schema.attributes["email"]
+        # Should have transform parsed from annotation
+        assert attr.annotations.get("transform") == "lowercase" or attr.transform == "lowercase"

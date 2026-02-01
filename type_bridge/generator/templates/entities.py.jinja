@@ -38,6 +38,12 @@ class {{ entity.class_name }}({{ entity.base_class }}):
     # subkey_group "{{ group }}": {{ attrs }}
 {% endfor %}
 {% endif %}
+{% if entity.plays_cardinalities %}
+    # TODO: plays cardinality constraints (parsed but not yet enforced at runtime)
+{% for role_ref, card in entity.plays_cardinalities.items() %}
+    # plays {{ role_ref }} {{ card }}
+{% endfor %}
+{% endif %}
 
 
 {% endfor %}

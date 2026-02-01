@@ -35,6 +35,13 @@ class {{ relation.class_name }}({{ relation.base_class }}):
     # TODO: @distinct annotation (coming soon in TypeDB)
     # distinct_roles: {{ relation.distinct_roles }}
 {% endif %}
+{% if relation.annotations %}
+    # Custom annotations from schema:
+{% for name, value in relation.annotations.items() %}
+    # @{{ name }}{% if value is not sameas true %}({{ value }}){% endif %}
+
+{% endfor %}
+{% endif %}
 
 
 {% endfor %}

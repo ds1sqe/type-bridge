@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 # Pattern to match annotation comments: # @name or # @name(...)
 ANNOTATION_PATTERN = re.compile(r"#\s*@([\w-]+)(?:\(([^)]*)\))?\s*$")
 
+# Pattern to match docstring comments: ## text (double hash for docstrings)
+DOCSTRING_PATTERN = re.compile(r"^##\s*(.*)$")
+
 # Pattern to match definition starts: entity X, attribute X, relation X
 DEFINITION_PATTERN = re.compile(r"^\s*(entity|attribute|relation)\s+([\w-]+)")
 
@@ -147,11 +150,29 @@ def extract_annotations(
 
     lines = schema_text.splitlines()
     pending: dict[str, AnnotationValue] = {}
+    pending_docstring: list[str] = []
     current_relation: str | None = None
     pending_role: dict[str, AnnotationValue] = {}
 
     for line in lines:
         stripped = line.strip()
+
+        # Check for docstring comment (## text)
+        docstring_match = DOCSTRING_PATTERN.match(stripped)
+        if docstring_match:
+            doc_text = docstring_match.group(1).strip()
+            # Check if it's also an annotation (## @name)
+            if doc_text.startswith("@"):
+                annotation = parse_annotation("# " + doc_text)
+                if annotation:
+                    if current_relation is not None:
+                        pending_role[annotation[0]] = annotation[1]
+                    else:
+                        pending[annotation[0]] = annotation[1]
+                    continue
+            # Regular docstring text
+            pending_docstring.append(doc_text)
+            continue
 
         # Check for annotation comment
         annotation = parse_annotation(stripped)
@@ -168,6 +189,12 @@ def extract_annotations(
         if def_match:
             def_type = def_match.group(1)
             def_name = def_match.group(2)
+
+            # Apply pending docstring
+            if pending_docstring:
+                docstring = " ".join(pending_docstring)
+                pending["_docstring"] = docstring
+                pending_docstring.clear()
 
             if pending:
                 if def_type == "entity":
@@ -200,5 +227,9 @@ def extract_annotations(
         if ";" in stripped:
             current_relation = None
             pending_role.clear()
+
+        # Non-comment, non-definition line - clear pending docstring
+        if stripped and not stripped.startswith("#"):
+            pending_docstring.clear()
 
     return entity_annotations, attribute_annotations, relation_annotations, role_annotations
