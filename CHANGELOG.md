@@ -2,6 +2,63 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [1.2.6] - 2026-02-01
+
+### New Features
+
+#### Polymorphic Role Player Type Resolution (PR #92)
+- **Role players now resolve to their concrete Python types**
+  - When querying relations with abstract role types, role players are resolved to concrete types (e.g., `Person` instead of `Profile`)
+  - Uses TypeQL `label()` function to fetch type labels and resolve to correct Python class
+  - Location: `type_bridge/crud/relation/manager.py`
+
+#### Relations as Role Players
+- **Fixed hydration for relations serving as role players**
+  - Relations can now properly participate as role players in other relations
+  - Comprehensive test suites added for this pattern
+  - Location: `type_bridge/crud/relation/manager.py`
+
+### Improvements
+
+#### Modular Helper Methods (PR #92)
+- **Extracted reusable helper methods for DRY refactoring**
+  - `_resolve_entity_class_from_label()` - Resolves concrete types using TypeQL `label()` function
+  - `_hydrate_entity_from_data()` - Helper for role player instantiation
+  - Eliminates duplicate code in `get()` and `get_by_iid()` methods
+
+#### Generator Enhancements (PR #92)
+- **Improved code generation for relations**
+  - Role cardinality annotations now properly rendered
+  - Docstrings and type annotations rendering improvements
+  - Location: `type_bridge/generator/`
+
+### Bug Fixes
+
+#### Polymorphic Role Validation (PR #92)
+- **Fixed polymorphic role validation and role player IIDs**
+  - Correct handling of abstract types in role player resolution
+  - Fixed role player IID extraction in polymorphic queries
+
+#### Test Fixes (PR #92)
+- Fixed `manager.count()` → `manager.filter().count()` in tests
+- Renamed attribute types to avoid naming collisions
+
+### Testing
+
+- **19 new integration tests** (`tests/integration/queries/test_social_network_queries.py`)
+  - Deep inheritance (3-level: Entity → Profile → Person/Organization)
+  - Self-referential symmetric relations (Friendship)
+  - Geographic hierarchy chains (Person → City → Country)
+  - Polymorphic role players with concrete type verification
+  - Multi-value attributes with `@card(0..*)`
+  - Chained relations and complex filter combinations
+
+### Key Files Modified
+
+- `type_bridge/crud/relation/manager.py` - Polymorphic role player resolution
+- `type_bridge/generator/render/` - Role cardinality and annotations rendering
+- `tests/integration/queries/test_social_network_queries.py` - New comprehensive tests
+
 ## [1.2.5] - 2026-01-31
 
 ### New Features
