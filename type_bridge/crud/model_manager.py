@@ -101,6 +101,105 @@ class ModelManager[T: "TypeDBType"](BaseManager[T]):
 
         return instance
 
+    def insert_many(self, instances: list[T]) -> list[T]:
+        """Insert multiple instances into the database in a single transaction.
+
+        Uses the model's build_batch_write_query() method for optimized batching.
+
+        Args:
+            instances: List of instances to insert
+
+        Returns:
+            List of inserted instances
+        """
+        if not instances:
+            logger.debug("insert_many called with empty list")
+            return []
+
+        logger.debug(f"Inserting {len(instances)} instances: {self.model_class.__name__}")
+
+        query = self.model_class.build_batch_write_query(instances, "insert")
+        logger.debug(f"Insert many query: {query}")
+
+        self._execute(query, TransactionType.WRITE)
+
+        logger.info(f"Inserted {len(instances)} instances: {self.model_class.__name__}")
+        return instances
+
+    def put_many(self, instances: list[T]) -> list[T]:
+        """Put multiple instances into the database (insert if not exists).
+
+        Uses TypeQL's PUT clause with all-or-nothing semantics:
+        - If ALL instances match existing data, nothing is inserted
+        - If ANY instance doesn't match, ALL instances are inserted
+
+        Args:
+            instances: List of instances to put
+
+        Returns:
+            List of instances
+        """
+        if not instances:
+            logger.debug("put_many called with empty list")
+            return []
+
+        logger.debug(f"Put {len(instances)} instances: {self.model_class.__name__}")
+
+        query = self.model_class.build_batch_write_query(instances, "put")
+        logger.debug(f"Put many query: {query}")
+
+        self._execute(query, TransactionType.WRITE)
+
+        logger.info(f"Put {len(instances)} instances: {self.model_class.__name__}")
+        return instances
+
+    def delete_many(self, instances: list[T], *, strict: bool = False) -> list[T]:
+        """Delete multiple instances in a single transaction.
+
+        Uses batched TypeQL queries (disjunctive OR-pattern) for efficiency.
+
+        Args:
+            instances: Instances to delete
+            strict: If True, raise error when any instance doesn't exist.
+                   If False (default), silently ignores missing instances.
+
+        Returns:
+            List of instances that were requested to be deleted
+        """
+        if not instances:
+            logger.debug("delete_many called with empty list")
+            return []
+
+        logger.debug(f"Deleting {len(instances)} instances: {self.model_class.__name__}")
+
+        # Build OR-pattern match clause for all instances
+        or_clauses = []
+        for instance in instances:
+            try:
+                match_info = instance.get_match_clause_info("$x")
+                all_clauses = [match_info.main_clause] + match_info.extra_clauses
+                clause = ";\n".join(all_clauses)
+                or_clauses.append(f"{{ {clause}; }}")
+            except ValueError:
+                # Instance can't be identified (no IID, no key) - skip in non-strict mode
+                if strict:
+                    raise
+                continue
+
+        if not or_clauses:
+            logger.info("No instances could be identified for deletion")
+            return []
+
+        # Build and execute the delete query
+        match_section = " or ".join(or_clauses)
+        query = f"match\n{match_section};\ndelete\n$x;"
+        logger.debug(f"Delete many query: {query}")
+
+        self._execute(query, TransactionType.WRITE)
+
+        logger.info(f"Deleted {len(instances)} instances: {self.model_class.__name__}")
+        return instances
+
     def _populate_iid_after_write(self, instance: T) -> None:
         """Populate _iid on instance by querying it back.
 

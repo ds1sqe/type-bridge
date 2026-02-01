@@ -45,52 +45,6 @@ class EntityManager[E: Entity](ModelManager[E]):
     Inherits connection management and common operations from BaseManager.
     """
 
-    def put_many(self, entities: list[E]) -> list[E]:
-        """Put multiple entities into the database (insert if not exists).
-
-        Uses TypeQL's PUT clause with all-or-nothing semantics:
-        - If ALL entities match existing data, nothing is inserted
-        - If ANY entity doesn't match, ALL entities in the pattern are inserted
-
-        This means if one entity already exists, attempting to put it with new entities
-        may cause a key constraint violation.
-
-        Args:
-            entities: List of entity instances to put
-
-        Returns:
-            List of entity instances
-
-        Example:
-            persons = [
-                Person(name="Alice", email="alice@example.com"),
-                Person(name="Bob", email="bob@example.com"),
-            ]
-            # First call inserts all, subsequent identical calls are idempotent
-            Person.manager(db).put_many(persons)
-        """
-        if not entities:
-            logger.debug("put_many called with empty list")
-            return []
-
-        logger.debug(f"Put {len(entities)} entities: {self.model_class.__name__}")
-        # Build a single TypeQL PUT query with multiple patterns
-        put_patterns = []
-        for i, entity in enumerate(entities):
-            # Use unique variable names for each entity
-            var = f"$e{i}"
-            pattern = entity.to_insert_query(var)
-            put_patterns.append(pattern)
-
-        # Combine all patterns into a single put query
-        query = "put\n" + ";\n".join(put_patterns) + ";"
-        logger.debug(f"Put many query: {query}")
-
-        self._execute(query, TransactionType.WRITE)
-
-        logger.info(f"Put {len(entities)} entities: {self.model_class.__name__}")
-        return entities
-
     def update_many(self, entities: list[E]) -> list[E]:
         """Update multiple entities within a single transaction.
 
@@ -177,47 +131,6 @@ class EntityManager[E: Entity](ModelManager[E]):
         self._execute(full_query, TransactionType.WRITE)
 
         logger.info(f"Updated {len(entities)} entities: {self.model_class.__name__}")
-        return entities
-
-    def insert_many(self, entities: list[E]) -> list[E]:
-        """Insert multiple entities into the database in a single transaction.
-
-        More efficient than calling insert() multiple times.
-
-        Args:
-            entities: List of entity instances to insert
-
-        Returns:
-            List of inserted entity instances
-
-        Example:
-            persons = [
-                Person(name="Alice", email="alice@example.com"),
-                Person(name="Bob", email="bob@example.com"),
-                Person(name="Charlie", email="charlie@example.com"),
-            ]
-            Person.manager(db).insert_many(persons)
-        """
-        if not entities:
-            logger.debug("insert_many called with empty list")
-            return []
-
-        logger.debug(f"Inserting {len(entities)} entities: {self.model_class.__name__}")
-        # Build a single TypeQL query with multiple insert patterns
-        insert_patterns = []
-        for i, entity in enumerate(entities):
-            # Use unique variable names for each entity
-            var = f"$e{i}"
-            pattern = entity.to_insert_query(var)
-            insert_patterns.append(pattern)
-
-        # Combine all patterns into a single insert query
-        query = "insert\n" + ";\n".join(insert_patterns) + ";"
-        logger.debug(f"Insert many query: {query}")
-
-        self._execute(query, TransactionType.WRITE)
-
-        logger.info(f"Inserted {len(entities)} entities: {self.model_class.__name__}")
         return entities
 
     def get(self, **filters) -> list[E]:

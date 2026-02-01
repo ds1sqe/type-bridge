@@ -476,6 +476,30 @@ class Entity(TypeDBType, metaclass=EntityMeta):
         write_pattern = self.to_insert_query(var_name)
         return WriteQueryInfo(match_clause=None, write_pattern=write_pattern)
 
+    @classmethod
+    def build_batch_write_query(
+        cls, instances: list["Entity"], keyword: str = "insert"
+    ) -> str:
+        """Build a batch write query for multiple entity instances.
+
+        Entities don't need match clauses, so this simply combines
+        multiple write patterns.
+
+        Args:
+            instances: List of entity instances
+            keyword: Write keyword ("insert" or "put")
+
+        Returns:
+            Complete TypeQL query string
+        """
+        patterns = []
+        for i, instance in enumerate(instances):
+            var_name = f"$e{i}"
+            pattern = instance.to_insert_query(var_name)
+            patterns.append(pattern)
+
+        return f"{keyword}\n" + ";\n".join(patterns) + ";"
+
     def to_dict(
         self,
         *,

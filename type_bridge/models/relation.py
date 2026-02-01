@@ -498,6 +498,124 @@ class Relation(TypeDBType, metaclass=RelationMeta):
 
         return WriteQueryInfo(match_clause=match_clause, write_pattern=write_pattern)
 
+    @classmethod
+    def build_batch_write_query(
+        cls, instances: list["Relation"], keyword: str = "insert"
+    ) -> str:
+        """Build a batch write query for multiple relation instances.
+
+        Deduplicates role players across all instances to avoid redundant
+        match clauses when multiple relations share the same role players.
+
+        Args:
+            instances: List of relation instances
+            keyword: Write keyword ("insert" or "put")
+
+        Returns:
+            Complete TypeQL query string with match and write clauses
+        """
+        if not instances:
+            return ""
+
+        roles = cls._roles
+
+        # Collect all unique role players with deduplication
+        # Maps player_key -> (player_var, match_clause)
+        all_players: dict[tuple[str, Any], tuple[str, str]] = {}
+        player_counter = 0
+
+        def get_player_key_and_match(entity: Any) -> tuple[tuple[str, Any], str]:
+            """Get deduplication key and match clause for a role player."""
+            player_type = entity.get_type_name()
+
+            # Prefer IID-based matching when available
+            entity_iid = getattr(entity, "_iid", None)
+            if entity_iid:
+                player_key: tuple[str, Any] = ("iid", entity_iid)
+                match_clause = f"isa {player_type}, iid {entity_iid}"
+                return (player_key, match_clause)
+
+            # Fall back to key attribute matching
+            owned_attrs = entity.get_all_attributes()
+            key_parts: list[str] = [f"isa {player_type}"]
+            key_values: list[tuple[str, Any]] = []
+
+            for field_name, attr_info in owned_attrs.items():
+                if attr_info.flags.is_key:
+                    value = getattr(entity, field_name, None)
+                    if value is not None:
+                        attr_name = attr_info.typ.get_attribute_name()
+                        formatted = entity._format_value(value)
+                        key_parts.append(f"has {attr_name} {formatted}")
+                        key_values.append((attr_name, value))
+
+            if key_values:
+                player_key = ("keys", tuple(sorted(key_values)))
+                match_clause = ", ".join(key_parts)
+                return (player_key, match_clause)
+
+            raise ValueError(
+                f"Role player ({entity.__class__.__name__}) cannot be identified: "
+                "no _iid set and no @key attributes defined."
+            )
+
+        # First pass: collect all unique players
+        match_clauses = []
+        for instance in instances:
+            for role_name in roles:
+                entity_or_list = instance.__dict__.get(role_name)
+                if entity_or_list is None:
+                    continue
+
+                entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+                for entity in entities:
+                    player_key, match_parts = get_player_key_and_match(entity)
+                    if player_key not in all_players:
+                        player_var = f"$player{player_counter}"
+                        player_counter += 1
+                        all_players[player_key] = (player_var, match_parts)
+                        match_clauses.append(f"{player_var} {match_parts}")
+
+        # Second pass: build write patterns using the player variables
+        write_patterns = []
+        for instance in instances:
+            role_parts = []
+            for role_name, role in roles.items():
+                entity_or_list = instance.__dict__.get(role_name)
+                if entity_or_list is None:
+                    raise ValueError(f"Missing role player for role: {role_name}")
+
+                entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+                for entity in entities:
+                    player_key, _ = get_player_key_and_match(entity)
+                    player_var, _ = all_players[player_key]
+                    role_parts.append(f"{role.role_name}: {player_var}")
+
+            # Build write pattern for this relation
+            roles_str = ", ".join(role_parts)
+            pattern_parts = [f"({roles_str}) isa {cls.get_type_name()}"]
+
+            # Add attributes (including inherited)
+            for field_name, attr_info in cls.get_all_attributes().items():
+                value = getattr(instance, field_name, None)
+                if value is not None:
+                    attr_name = attr_info.typ.get_attribute_name()
+                    if isinstance(value, list):
+                        for item in value:
+                            pattern_parts.append(f"has {attr_name} {instance._format_value(item)}")
+                    else:
+                        pattern_parts.append(f"has {attr_name} {instance._format_value(value)}")
+
+            write_patterns.append(", ".join(pattern_parts))
+
+        # Build complete query
+        if match_clauses:
+            match_section = "match\n" + ";\n".join(match_clauses) + ";"
+            write_section = f"{keyword}\n" + ";\n".join(write_patterns) + ";"
+            return f"{match_section}\n{write_section}"
+        else:
+            return f"{keyword}\n" + ";\n".join(write_patterns) + ";"
+
     def insert(self: R, connection: Connection) -> R:
         """Insert this relation instance into the database.
 
