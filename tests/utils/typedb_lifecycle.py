@@ -1,10 +1,32 @@
 import os
+import shutil
 import subprocess
 import time
 from contextlib import contextmanager
 
-# Container tool selection (docker|podman or explicit binary)
-CONTAINER_TOOL = os.getenv("CONTAINER_TOOL", "docker")
+
+def _detect_container_tool() -> str:
+    """Auto-detect available container tool (podman or docker).
+
+    Returns the first available tool, preferring podman if both are present.
+    Falls back to 'docker' if neither is found (will fail later with clear error).
+    """
+    # Check environment variable first
+    env_tool = os.getenv("CONTAINER_TOOL")
+    if env_tool:
+        return env_tool
+
+    # Auto-detect: prefer podman, fall back to docker
+    for tool in ("podman", "docker"):
+        if shutil.which(tool):
+            return tool
+
+    # Default to docker (will fail with clear error if not found)
+    return "docker"
+
+
+# Container tool selection (auto-detected or from CONTAINER_TOOL env var)
+CONTAINER_TOOL = _detect_container_tool()
 
 # Test database configuration
 TEST_DB_NAME = "type_bridge_test"

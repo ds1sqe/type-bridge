@@ -83,6 +83,30 @@ class RelationManager[R: Relation]:
             f"database first (to populate _iid) or add Flag(Key) to an attribute."
         )
 
+    def _build_role_player_fetch_items(
+        self, role_info: dict[str, tuple[str, tuple[type, ...]]]
+    ) -> list[str]:
+        """Build fetch items for role players with their IIDs.
+
+        TypeQL 3.x doesn't allow mixing iid() with .* in the same nested block,
+        so we fetch the IID as a separate key alongside the nested attributes.
+
+        Args:
+            role_info: Dict mapping role_name -> (role_var, allowed_entity_types)
+
+        Returns:
+            List of fetch item strings like:
+                '"employee_iid": iid($employee)'
+                '"employee": { $employee.* }'
+        """
+        fetch_items = []
+        for role_name, (role_var, _) in role_info.items():
+            # Fetch IID separately (can't be mixed with .* in nested block)
+            fetch_items.append(f'"{role_name}_iid": iid({role_var})')
+            # Fetch all attributes for the role player
+            fetch_items.append(f'"{role_name}": {{\n    {role_var}.*\n  }}')
+        return fetch_items
+
     def _build_player_key_and_match(
         self, player_entity: Any
     ) -> tuple[tuple[str, Any], str, list[str]]:
@@ -166,16 +190,32 @@ class RelationManager[R: Relation]:
                 role_players[role_name] = entity
 
         # Build match clause for role players (IID-preferring)
+        # Handles both single players and lists of players (for multi-cardinality roles)
         match_parts = []
-        for role_name, entity in role_players.items():
-            entity_type_name = entity.__class__.get_type_name()
-            match_parts.append(self._build_role_player_match(role_name, entity, entity_type_name))
+        role_var_mapping: dict[str, list[str]] = {}  # role_name -> list of variable names
+
+        for role_name, entity_or_list in role_players.items():
+            # Normalize to list for uniform handling
+            entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+            role_var_mapping[role_name] = []
+
+            for i, entity in enumerate(entities):
+                # Generate unique variable name for each player
+                var_name = f"{role_name}_{i}" if len(entities) > 1 else role_name
+                role_var_mapping[role_name].append(var_name)
+
+                entity_type_name = entity.__class__.get_type_name()
+                match_parts.append(
+                    self._build_role_player_match(var_name, entity, entity_type_name)
+                )
 
         # Build insert clause
         relation_type_name = self.model_class.get_type_name()
-        role_parts = [
-            f"{roles[role_name].role_name}: ${role_name}" for role_name in role_players.keys()
-        ]
+        role_parts = []
+        for role_name in role_players.keys():
+            typedb_role_name = roles[role_name].role_name
+            for var_name in role_var_mapping[role_name]:
+                role_parts.append(f"{typedb_role_name}: ${var_name}")
         relation_pattern = f"({', '.join(role_parts)}) isa {relation_type_name}"
 
         # Add attributes (including inherited)
@@ -671,9 +711,8 @@ class RelationManager[R: Relation]:
             else:
                 fetch_items.append(f'"{attr_name}": $r.{attr_name}')
 
-        # Add each role player as nested object
-        for role_name, (role_var, entity_class) in role_info.items():
-            fetch_items.append(f'"{role_name}": {{\n    {role_var}.*\n  }}')
+        # Add role player fetch items (IID + attributes for each role)
+        fetch_items.extend(self._build_role_player_fetch_items(role_info))
 
         fetch_body = ",\n  ".join(fetch_items)
         fetch_str = f"fetch {{\n  {fetch_body}\n}};"
@@ -684,17 +723,37 @@ class RelationManager[R: Relation]:
         results = self._execute(query_str, TransactionType.READ)
         logger.debug(f"Query returned {len(results)} results")
 
-        # Convert results to relation instances
+        # Group results by relation IID to handle multi-player roles correctly
+        # TypeDB returns one row per role player combination, so we need to merge rows
+        # with the same relation IID into a single relation instance
+        grouped_results: dict[str, list[dict[str, Any]]] = {}
+        for result in results:
+            iid = result.get("_iid")
+            if iid:
+                if iid not in grouped_results:
+                    grouped_results[iid] = []
+                grouped_results[iid].append(result)
+
+        # Check which roles have multi-player cardinality
+        multi_player_roles = set()
+        for role_name, role in self.model_class._roles.items():
+            if role.is_multi_player:
+                multi_player_roles.add(role_name)
+
+        # Convert grouped results to relation instances
         relations = []
 
-        for result in results:
+        for iid, result_group in grouped_results.items():
+            # Use first result for relation attributes (same across all rows)
+            first_result = result_group[0]
+
             # Extract relation attributes (including inherited)
             attrs: dict[str, Any] = {}
             for field_name, attr_info in all_attrs.items():
                 attr_class = attr_info.typ
                 attr_name = attr_class.get_attribute_name()
-                if attr_name in result:
-                    raw_value = result[attr_name]
+                if attr_name in first_result:
+                    raw_value = first_result[attr_name]
                     # Multi-value attributes need explicit conversion from list of raw values
                     if is_multi_value_attribute(attr_info.flags) and isinstance(raw_value, list):
                         # Convert each raw value to Attribute instance
@@ -713,70 +772,90 @@ class RelationManager[R: Relation]:
             # Create relation instance
             relation = self.model_class(**attrs)
 
-            # Extract role players from nested objects in result
+            # Extract role players from all results in the group
+            # For multi-player roles, collect all unique players into a list
             for role_name, (role_var, allowed_entity_classes) in role_info.items():
-                if role_name in result and isinstance(result[role_name], dict):
-                    player_data = result[role_name]
-                    # Choose entity class based on available key attributes; fallback to first allowed
-                    entity_class = allowed_entity_classes[0]
-                    for candidate in allowed_entity_classes:
-                        key_attr_names = [
-                            attr_info.typ.get_attribute_name()
-                            for attr_info in candidate.get_all_attributes().values()
-                            if attr_info.flags.is_key
-                        ]
-                        if any(key in player_data for key in key_attr_names):
-                            entity_class = candidate
-                            break
-                    # Extract player attributes (including inherited)
-                    player_attrs: dict[str, Any] = {}
-                    for field_name, attr_info in entity_class.get_all_attributes().items():
-                        attr_class = attr_info.typ
-                        attr_name = attr_class.get_attribute_name()
-                        if attr_name in player_data:
-                            raw_value = player_data[attr_name]
-                            # Multi-value attributes need explicit conversion from list of raw values
-                            # Use static method to avoid binding issues between EntityQuery/RelationQuery
-                            if (
-                                hasattr(attr_info.flags, "has_explicit_card")
-                                and attr_info.flags.has_explicit_card
-                            ):
-                                is_multi = True
-                            elif (
-                                hasattr(attr_info.flags, "card_min")
-                                and attr_info.flags.card_min is not None
-                            ):
-                                is_multi = attr_info.flags.card_min > 1 or (
-                                    hasattr(attr_info.flags, "card_max")
-                                    and attr_info.flags.card_max is not None
-                                    and attr_info.flags.card_max != 1
-                                )
-                            else:
-                                is_multi = False
-                            if is_multi and isinstance(raw_value, list):
-                                # Convert each raw value to Attribute instance
-                                player_attrs[field_name] = [attr_class(v) for v in raw_value]
-                            else:
-                                # Single value - let Pydantic handle conversion
-                                player_attrs[field_name] = raw_value
-                        else:
-                            # For list fields (has_explicit_card), default to empty list
-                            # For other optional fields, explicitly set to None
-                            if attr_info.flags.has_explicit_card:
-                                player_attrs[field_name] = []
-                            else:
-                                player_attrs[field_name] = None
+                is_multi = role_name in multi_player_roles
+                collected_players = []
+                seen_player_keys: set[tuple[Any, ...]] = set()
 
-                    # Create entity instance and assign to role
-                    if any(v is not None for v in player_attrs.values()):
-                        player_entity = entity_class(**player_attrs)
-                        setattr(relation, role_name, player_entity)
+                for result in result_group:
+                    if role_name in result and isinstance(result[role_name], dict):
+                        player_data = result[role_name]
 
+                        # Choose entity class based on available key attributes
+                        entity_class = allowed_entity_classes[0]
+                        for candidate in allowed_entity_classes:
+                            key_attr_names = [
+                                ai.typ.get_attribute_name()
+                                for ai in candidate.get_all_attributes().values()
+                                if ai.flags.is_key
+                            ]
+                            if any(key in player_data for key in key_attr_names):
+                                entity_class = candidate
+                                break
+
+                        # Extract player attributes (including inherited)
+                        player_attrs: dict[str, Any] = {}
+                        player_key_values = []
+                        for field_name, attr_info in entity_class.get_all_attributes().items():
+                            attr_class = attr_info.typ
+                            attr_name = attr_class.get_attribute_name()
+                            if attr_name in player_data:
+                                raw_value = player_data[attr_name]
+                                # Check if multi-value attribute
+                                if (
+                                    hasattr(attr_info.flags, "has_explicit_card")
+                                    and attr_info.flags.has_explicit_card
+                                ):
+                                    attr_is_multi = True
+                                elif (
+                                    hasattr(attr_info.flags, "card_min")
+                                    and attr_info.flags.card_min is not None
+                                ):
+                                    attr_is_multi = attr_info.flags.card_min > 1 or (
+                                        hasattr(attr_info.flags, "card_max")
+                                        and attr_info.flags.card_max is not None
+                                        and attr_info.flags.card_max != 1
+                                    )
+                                else:
+                                    attr_is_multi = False
+                                if attr_is_multi and isinstance(raw_value, list):
+                                    player_attrs[field_name] = [attr_class(v) for v in raw_value]
+                                else:
+                                    player_attrs[field_name] = raw_value
+                                # Collect key for deduplication
+                                player_key_values.append((attr_name, raw_value))
+                            else:
+                                if attr_info.flags.has_explicit_card:
+                                    player_attrs[field_name] = []
+                                else:
+                                    player_attrs[field_name] = None
+
+                        # Create entity instance if we have attributes
+                        if any(v is not None for v in player_attrs.values()):
+                            # Deduplicate players based on their attribute values
+                            player_key = tuple(sorted(player_key_values))
+                            if player_key not in seen_player_keys:
+                                seen_player_keys.add(player_key)
+                                player_entity = entity_class(**player_attrs)
+                                # Set _iid on the player entity if available
+                                # IID is fetched separately as {role_name}_iid
+                                player_iid = result.get(f"{role_name}_iid")
+                                if player_iid:
+                                    object.__setattr__(player_entity, "_iid", player_iid)
+                                collected_players.append(player_entity)
+
+                # Assign role player(s) to relation
+                if collected_players:
+                    if is_multi:
+                        setattr(relation, role_name, collected_players)
+                    else:
+                        setattr(relation, role_name, collected_players[0])
+
+            # Set IID on the relation instance
+            object.__setattr__(relation, "_iid", iid)
             relations.append(relation)
-
-        # Populate IIDs by fetching them in a second query
-        if relations:
-            self._populate_iids(relations)
 
         logger.info(f"Retrieved {len(relations)} relations: {self.model_class.__name__}")
         return relations
@@ -831,9 +910,8 @@ class RelationManager[R: Relation]:
             else:
                 fetch_items.append(f'"{attr_name}": $r.{attr_name}')
 
-        # Add each role player as nested object
-        for role_name, (role_var, allowed_entity_classes) in role_info.items():
-            fetch_items.append(f'"{role_name}": {{\n    {role_var}.*\n  }}')
+        # Add role player fetch items (IID + attributes for each role)
+        fetch_items.extend(self._build_role_player_fetch_items(role_info))
 
         fetch_body = ",\n  ".join(fetch_items)
         fetch_str = f"fetch {{\n  {fetch_body}\n}};"
@@ -926,6 +1004,11 @@ class RelationManager[R: Relation]:
                 # Create entity instance and assign to role
                 if any(v is not None for v in player_attrs.values()):
                     player_entity = entity_class(**player_attrs)
+                    # Set _iid on the player entity if available
+                    # IID is fetched separately as {role_name}_iid
+                    player_iid = result.get(f"{role_name}_iid")
+                    if player_iid:
+                        object.__setattr__(player_entity, "_iid", player_iid)
                     setattr(relation, role_name, player_entity)
 
         # Set the IID directly since we know it

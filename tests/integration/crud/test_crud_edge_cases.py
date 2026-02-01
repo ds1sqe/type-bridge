@@ -179,8 +179,8 @@ class TestDeleteEdgeCases:
         # Verify deleted
         assert len(manager.all()) == 0
 
-    def test_delete_entity_with_relation_fails(self, schema_for_deletes):
-        """Delete entity that participates in relation fails with constraint error."""
+    def test_delete_entity_with_relation_cascades(self, schema_for_deletes):
+        """Delete entity that participates in relation also deletes the relation."""
         db, Person, Company, Employment, Name = schema_for_deletes
 
         # Create person and company
@@ -193,11 +193,18 @@ class TestDeleteEdgeCases:
         employment = Employment(employee=person, employer=company)
         Employment.manager(db).insert(employment)
 
-        # Attempt to delete person (should fail - still in relation)
-        fetched_person = Person.manager(db).get(name="Bob")[0]
+        # Verify relation exists
+        assert len(Employment.manager(db).all()) == 1
 
-        with pytest.raises(TypeDBException):
-            Person.manager(db).delete(fetched_person)
+        # Delete person - TypeDB cascades and removes the relation too
+        fetched_person = Person.manager(db).get(name="Bob")[0]
+        Person.manager(db).delete(fetched_person)
+
+        # Person is deleted
+        assert len(Person.manager(db).get(name="Bob")) == 0
+
+        # Relation is also deleted (cascade)
+        assert len(Employment.manager(db).all()) == 0
 
     def test_delete_relation_then_entity_succeeds(self, schema_for_deletes):
         """Delete relation first, then entity succeeds."""

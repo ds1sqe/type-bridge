@@ -101,7 +101,8 @@ class TestEntityManagerEdgeCases:
         mgr.insert(person)
 
         assert len(mgr.queries) > 0
-        assert "insert" in mgr.queries[-1].lower()
+        # The insert query may be followed by an IID fetch query, so check any query contains insert
+        assert any("insert" in q.lower() for q in mgr.queries)
 
     def test_update_entity_generates_match_delete_insert(self):
         """update() should generate MATCH + DELETE + INSERT pattern."""

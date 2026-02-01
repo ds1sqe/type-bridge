@@ -5,7 +5,7 @@ are not just synced to the database but actually enforced at runtime.
 """
 
 import pytest
-from typedb.driver import TypeDBException
+from typedb.driver import TypeDBDriverException
 
 from type_bridge import (
     Card,
@@ -66,7 +66,7 @@ class TestKeyConstraintEnforcement:
 
         # Insert duplicate should fail
         person2 = Person(name=Name("Alice"))
-        with pytest.raises(TypeDBException):
+        with pytest.raises(TypeDBDriverException):
             manager.insert(person2)
 
 
@@ -118,7 +118,7 @@ class TestUniqueConstraintEnforcement:
 
         # Insert with same email should fail
         person2 = Person(name=Name("Bob"), email=Email("shared@example.com"))
-        with pytest.raises(TypeDBException):
+        with pytest.raises(TypeDBDriverException):
             manager.insert(person2)
 
 
@@ -197,7 +197,7 @@ class TestCardinalityConstraintEnforcement:
         )
         manager = Item.manager(db)
 
-        with pytest.raises(TypeDBException):
+        with pytest.raises(TypeDBDriverException):
             manager.insert(item)
 
 
@@ -247,7 +247,7 @@ class TestRegexConstraintEnforcement:
         airport = Airport(name=Name("Test Airport"), code=Code("abc"))
         manager = Airport.manager(db)
 
-        with pytest.raises(TypeDBException):
+        with pytest.raises(TypeDBDriverException):
             manager.insert(airport)
 
     def test_insert_wrong_length_regex_fails(self, schema_with_regex):
@@ -258,7 +258,7 @@ class TestRegexConstraintEnforcement:
         airport = Airport(name=Name("Test Airport"), code=Code("ABCD"))
         manager = Airport.manager(db)
 
-        with pytest.raises(TypeDBException):
+        with pytest.raises(TypeDBDriverException):
             manager.insert(airport)
 
 
@@ -321,7 +321,7 @@ class TestValuesConstraintEnforcement:
         account = Account(name=Name("Bad Account"), status=Status("deleted"))
         manager = Account.manager(db)
 
-        with pytest.raises(TypeDBException):
+        with pytest.raises(TypeDBDriverException):
             manager.insert(account)
 
 
@@ -338,8 +338,7 @@ class TestRangeConstraintEnforcement:
 
         class Score(Integer):
             # Score must be 0-100
-            range_min = 0
-            range_max = 100
+            range_constraint = (0, 100)
 
         class Student(Entity):
             flags = TypeFlags(name="student_range_test")
@@ -382,21 +381,17 @@ class TestRangeConstraintEnforcement:
         assert len(results) == 2
 
     def test_insert_below_range_fails(self, schema_with_range):
-        """Insert with value below range fails."""
+        """Insert with value below range fails at Python validation level."""
         db, Student, Name, Score = schema_with_range
 
-        student = Student(name=Name("Low Student"), score=Score(-1))
-        manager = Student.manager(db)
-
-        with pytest.raises(TypeDBException):
-            manager.insert(student)
+        # Range constraint is enforced when creating the attribute instance
+        with pytest.raises(ValueError, match="below minimum"):
+            Score(-1)
 
     def test_insert_above_range_fails(self, schema_with_range):
-        """Insert with value above range fails."""
+        """Insert with value above range fails at Python validation level."""
         db, Student, Name, Score = schema_with_range
 
-        student = Student(name=Name("High Student"), score=Score(101))
-        manager = Student.manager(db)
-
-        with pytest.raises(TypeDBException):
-            manager.insert(student)
+        # Range constraint is enforced when creating the attribute instance
+        with pytest.raises(ValueError, match="above maximum"):
+            Score(101)

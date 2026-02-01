@@ -28,25 +28,25 @@ class TestIidFunction:
         class Name(String):
             pass
 
-        class Value(Integer):
+        class ItemValue(Integer):
             pass
 
         class Item(Entity):
             flags = TypeFlags(name="item_iid_test")
             name: Name = Flag(Key)
-            value: Value
+            value: ItemValue
 
         schema_manager = SchemaManager(clean_db)
         schema_manager.register(Item)
         schema_manager.sync_schema(force=True)
 
-        return clean_db, Item, Name, Value
+        return clean_db, Item, Name, ItemValue
 
     def test_entity_has_iid_after_insert(self, schema_for_iid):
         """Entity has _iid attribute after insertion."""
-        db, Item, Name, Value = schema_for_iid
+        db, Item, Name, ItemValue = schema_for_iid
 
-        item = Item(name=Name("Test"), value=Value(42))
+        item = Item(name=Name("Test"), value=ItemValue(42))
         manager = Item.manager(db)
         manager.insert(item)
 
@@ -61,14 +61,14 @@ class TestIidFunction:
 
     def test_iid_is_unique_per_entity(self, schema_for_iid):
         """Each entity gets a unique iid."""
-        db, Item, Name, Value = schema_for_iid
+        db, Item, Name, ItemValue = schema_for_iid
 
         manager = Item.manager(db)
 
         # Insert multiple items
-        manager.insert(Item(name=Name("Item1"), value=Value(1)))
-        manager.insert(Item(name=Name("Item2"), value=Value(2)))
-        manager.insert(Item(name=Name("Item3"), value=Value(3)))
+        manager.insert(Item(name=Name("Item1"), value=ItemValue(1)))
+        manager.insert(Item(name=Name("Item2"), value=ItemValue(2)))
+        manager.insert(Item(name=Name("Item3"), value=ItemValue(3)))
 
         # Fetch all
         results = manager.all()
@@ -80,10 +80,10 @@ class TestIidFunction:
 
     def test_iid_persists_across_queries(self, schema_for_iid):
         """Same entity returns same iid across different queries."""
-        db, Item, Name, Value = schema_for_iid
+        db, Item, Name, ItemValue = schema_for_iid
 
         manager = Item.manager(db)
-        manager.insert(Item(name=Name("Persistent"), value=Value(100)))
+        manager.insert(Item(name=Name("Persistent"), value=ItemValue(100)))
 
         # Query twice
         result1 = manager.get(name="Persistent")[0]

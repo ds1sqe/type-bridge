@@ -465,9 +465,17 @@ class Relation(TypeDBType, metaclass=RelationMeta):
 
         lines.append(relation_def)
 
-        # Add roles
+        # Add roles with optional cardinality constraints
         for _role_name, role in cls._roles.items():
-            lines.append(f"    relates {role.role_name}")
+            role_def = f"    relates {role.role_name}"
+            # Add cardinality annotation if not default (1..1)
+            if role.cardinality is not None:
+                card = role.cardinality
+                if card.max is None:
+                    role_def += f" @card({card.min}..)"
+                else:
+                    role_def += f" @card({card.min}..{card.max})"
+            lines.append(role_def)
 
         # Add attribute ownerships
         for _field_name, attr_info in cls._owned_attrs.items():

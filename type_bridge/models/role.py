@@ -193,26 +193,37 @@ class Role[T: "Entity"]:
                     allowed_names.add(arg.__name__)
 
         def validate_role_player(value: Any) -> Any:
-            """Validate that value is an allowed entity type by class name."""
+            """Validate that value is an allowed entity type by class name.
+
+            Checks the full inheritance chain (MRO) to support subclasses.
+            E.g., if Document is allowed and Report is a subclass of Document,
+            Report instances are accepted.
+            """
             if not allowed_names:
                 # No type constraints - allow anything
                 return value
 
+            def is_allowed_type(obj: Any) -> bool:
+                """Check if obj's class or any base class matches allowed names."""
+                # Check entire MRO (Method Resolution Order) for inheritance support
+                for cls in type(obj).__mro__:
+                    if cls.__name__ in allowed_names:
+                        return True
+                return False
+
             if isinstance(value, list):
                 # List of entities for multi-player roles
                 for item in value:
-                    item_name = type(item).__name__
-                    if item_name not in allowed_names:
+                    if not is_allowed_type(item):
                         raise ValueError(
-                            f"Expected one of {allowed_names}, got {item_name}"
+                            f"Expected one of {allowed_names}, got {type(item).__name__}"
                         )
                 return value
             else:
                 # Single entity
-                value_name = type(value).__name__
-                if value_name not in allowed_names:
+                if not is_allowed_type(value):
                     raise ValueError(
-                        f"Expected one of {allowed_names}, got {value_name}"
+                        f"Expected one of {allowed_names}, got {type(value).__name__}"
                     )
                 return value
 

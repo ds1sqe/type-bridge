@@ -48,7 +48,7 @@ class TestTransactionRollback:
         db, Counter, Name, Count = schema_for_transactions
 
         # Use transaction context
-        with db.transaction() as tx:
+        with db.transaction("write") as tx:
             manager = Counter.manager(tx)
             counter = Counter(name=Name("test"), count=Count(1))
             manager.insert(counter)
@@ -66,7 +66,7 @@ class TestTransactionRollback:
 
         # First insert something that should be rolled back
         try:
-            with db.transaction() as tx:
+            with db.transaction("write") as tx:
                 manager = Counter.manager(tx)
                 counter = Counter(name=Name("rollback_test"), count=Count(1))
                 manager.insert(counter)
@@ -85,7 +85,7 @@ class TestTransactionRollback:
         """Multiple operations in one transaction commit together."""
         db, Counter, Name, Count = schema_for_transactions
 
-        with db.transaction() as tx:
+        with db.transaction("write") as tx:
             manager = Counter.manager(tx)
 
             # Insert multiple entities
@@ -103,7 +103,7 @@ class TestTransactionRollback:
         db, Counter, Name, Count = schema_for_transactions
 
         try:
-            with db.transaction() as tx:
+            with db.transaction("write") as tx:
                 manager = Counter.manager(tx)
 
                 # These inserts should be rolled back
@@ -151,12 +151,12 @@ class TestTransactionContextCleanup:
         db, Record, Name, Value = schema_for_cleanup
 
         # Use context manager
-        with db.transaction() as tx:
+        with db.transaction("write") as tx:
             manager = Record.manager(tx)
             manager.insert(Record(name=Name("test"), value=Value(42)))
 
         # After context exits, should be able to start new transaction
-        with db.transaction() as tx:
+        with db.transaction("read") as tx:
             manager = Record.manager(tx)
             results = manager.all()
             assert len(results) == 1
@@ -167,13 +167,13 @@ class TestTransactionContextCleanup:
 
         # First transaction with exception
         try:
-            with db.transaction():
+            with db.transaction("read"):
                 raise ValueError("Test error")
         except ValueError:
             pass
 
         # Should still be able to use database
-        with db.transaction() as tx:
+        with db.transaction("write") as tx:
             manager = Record.manager(tx)
             manager.insert(Record(name=Name("after_error"), value=Value(1)))
 
@@ -211,13 +211,13 @@ class TestSequentialTransactions:
         """Later transactions see changes from earlier committed transactions."""
         db, Item, Name, Seq = schema_for_sequential
 
-        # First transaction
-        with db.transaction() as tx:
+        # First transaction (write)
+        with db.transaction("write") as tx:
             manager = Item.manager(tx)
             manager.insert(Item(name=Name("first"), seq=Seq(1)))
 
         # Second transaction should see first's changes
-        with db.transaction() as tx:
+        with db.transaction("write") as tx:
             manager = Item.manager(tx)
             results = manager.all()
             assert len(results) == 1
@@ -235,12 +235,12 @@ class TestSequentialTransactions:
         db, Item, Name, Seq = schema_for_sequential
 
         # Insert
-        with db.transaction() as tx:
+        with db.transaction("write") as tx:
             manager = Item.manager(tx)
             manager.insert(Item(name=Name("update_target"), seq=Seq(0)))
 
         # Update in new transaction
-        with db.transaction() as tx:
+        with db.transaction("write") as tx:
             manager = Item.manager(tx)
             item = manager.get(name="update_target")[0]
             item.seq = Seq(100)
