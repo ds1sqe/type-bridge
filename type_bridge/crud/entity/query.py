@@ -9,7 +9,8 @@ from type_bridge.models import Entity
 from type_bridge.query import Query, QueryBuilder
 from type_bridge.session import Connection
 
-from ..base import BaseQuery, E, parse_aggregate_results
+from ..aggregates import parse_aggregate_results
+from ..base import BaseQuery, E
 from ..utils import (
     assign_entity_iids,
     build_entity_iid_map,

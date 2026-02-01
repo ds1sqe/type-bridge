@@ -10,10 +10,10 @@ from type_bridge.attribute.string import String
 from type_bridge.expressions import AttributeExistsExpr, BooleanExpr, Expression
 from type_bridge.models import Entity
 from type_bridge.query import QueryBuilder
-from type_bridge.session import Connection, ConnectionExecutor
 
 from ..base import E
 from ..exceptions import EntityNotFoundError, KeyAttributeError, NotUniqueError
+from ..manager import BaseManager
 from ..utils import (
     assign_entity_iids,
     build_entity_iid_map,
@@ -38,26 +38,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class EntityManager[E: Entity]:
+class EntityManager[E: Entity](BaseManager[E]):
     """Manager for entity CRUD operations.
 
     Type-safe manager that preserves entity type information.
+    Inherits connection management and common operations from BaseManager.
     """
-
-    def __init__(
-        self,
-        connection: Connection,
-        model_class: type[E],
-    ):
-        """Initialize entity manager.
-
-        Args:
-            connection: Database, Transaction, or TransactionContext
-            model_class: Entity model class
-        """
-        self._connection = connection
-        self._executor = ConnectionExecutor(connection)
-        self.model_class = model_class
 
     def insert(self, entity: E) -> E:
         """Insert an entity instance into the database.
@@ -664,15 +650,6 @@ class EntityManager[E: Entity]:
 
         return base_filters, expressions
 
-    def all(self) -> list[E]:
-        """Get all entities of this type.
-
-        Returns:
-            List of all entities
-        """
-        logger.debug(f"Getting all entities: {self.model_class.__name__}")
-        return self.get()
-
     def delete(self, entity: E) -> E:
         """Delete an entity instance from the database.
 
@@ -1224,7 +1201,3 @@ class EntityManager[E: Entity]:
         # Build IID map and assign to entities
         iid_map = build_entity_iid_map(results, key_attr_names)
         assign_entity_iids(entities, iid_map, key_attrs)
-
-    def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
-        """Execute a query using existing transaction if provided."""
-        return self._executor.execute(query, tx_type)

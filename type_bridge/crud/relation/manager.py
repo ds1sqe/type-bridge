@@ -7,10 +7,10 @@ from typedb.driver import TransactionType
 
 from type_bridge.models import Entity, Relation
 from type_bridge.query import Query
-from type_bridge.session import Connection, ConnectionExecutor
 
 from ..base import R
 from ..exceptions import RelationNotFoundError
+from ..manager import BaseManager
 from ..utils import (
     assign_relation_iids,
     build_relation_iid_query,
@@ -36,22 +36,12 @@ if TYPE_CHECKING:
     from .query import RelationQuery
 
 
-class RelationManager[R: Relation]:
+class RelationManager[R: Relation](BaseManager[R]):
     """Manager for relation CRUD operations.
 
     Type-safe manager that preserves relation type information.
+    Inherits connection management and common operations from BaseManager.
     """
-
-    def __init__(self, connection: Connection, model_class: type[R]):
-        """Initialize relation manager.
-
-        Args:
-            connection: Database, Transaction, or TransactionContext
-            model_class: Relation model class
-        """
-        self._connection = connection
-        self._executor = ConnectionExecutor(connection)
-        self.model_class = model_class
 
     def _build_role_player_match(self, role_name: str, entity: Any, entity_type_name: str) -> str:
         """Build a match clause for a role player entity.
@@ -455,9 +445,7 @@ class RelationManager[R: Relation]:
                     continue
 
                 # Build player key and match clause (IID-preferring)
-                player_key, _, match_parts = self._build_player_key_and_match(
-                    player_entity
-                )
+                player_key, _, match_parts = self._build_player_key_and_match(player_entity)
 
                 if player_key not in all_players:
                     player_var = f"$player{player_counter}"
@@ -583,9 +571,7 @@ class RelationManager[R: Relation]:
                     continue
 
                 # Build player key and match clause (IID-preferring)
-                player_key, _, match_parts = self._build_player_key_and_match(
-                    player_entity
-                )
+                player_key, _, match_parts = self._build_player_key_and_match(player_entity)
 
                 if player_key not in all_players:
                     player_var = f"$player{player_counter}"
@@ -902,20 +888,6 @@ class RelationManager[R: Relation]:
 
         logger.info(f"Retrieved relation by IID: {self.model_class.__name__}")
         return relation
-
-    def all(self) -> list[R]:
-        """Get all relations of this type.
-
-        Syntactic sugar for get() with no filters.
-
-        Returns:
-            List of all relations
-
-        Example:
-            all_employments = Employment.manager(db).all()
-        """
-        logger.debug(f"Getting all relations: {self.model_class.__name__}")
-        return self.get()
 
     def update(self, relation: R) -> R:
         """Update a relation in the database based on its current state.
@@ -1407,10 +1379,6 @@ class RelationManager[R: Relation]:
                     query._role_player_expressions[role_name] = []
                 query._role_player_expressions[role_name].extend(exprs)
         return query
-
-    def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
-        """Execute a query using an existing transaction when provided."""
-        return self._executor.execute(query, tx_type)
 
     def _populate_iids(self, relations: list[R]) -> None:
         """Populate _iid field on relations and their role players by querying TypeDB.

@@ -243,9 +243,9 @@ def test_entity_delete_falls_back_to_key_when_no_iid():
 
     # Mock filter().count() to return 1 (entity exists)
     class _MockEntityManager(_RecordingEntityManager):
-        def filter(self, **kwargs):  # noqa: ARG002
+        def filter(self, **kwargs):  # type: ignore[override]  # noqa: ARG002
             class _MockQuery:
-                def count(self):
+                def count(self) -> int:
                     return 1
 
             return _MockQuery()
@@ -313,9 +313,7 @@ def test_relation_put_populates_iid():
     class _IidPopulatingRelationManager(_RecordingRelationManager):
         """Relation manager that returns IID from fetch query."""
 
-        def _execute(
-            self, query: str, tx_type: TransactionType
-        ) -> list[dict[str, Any]]:
+        def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
             del tx_type  # unused
             self.queries.append(query)
             # If this is a fetch query for IID, return one

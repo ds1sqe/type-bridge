@@ -8,7 +8,7 @@ from typedb.driver import TransactionType
 from type_bridge.models import Relation
 from type_bridge.session import Connection, ConnectionExecutor
 
-from ..base import parse_grouped_aggregate_results
+from ..aggregates import parse_grouped_aggregate_results
 from ..utils import extract_entity_key, format_value
 
 logger = logging.getLogger(__name__)

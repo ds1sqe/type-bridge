@@ -9,7 +9,7 @@ from type_bridge.models import Entity
 from type_bridge.query import QueryBuilder
 from type_bridge.session import Connection, ConnectionExecutor
 
-from ..base import parse_grouped_aggregate_results
+from ..aggregates import parse_grouped_aggregate_results
 
 logger = logging.getLogger(__name__)
 

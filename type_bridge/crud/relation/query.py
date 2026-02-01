@@ -9,7 +9,8 @@ from type_bridge.models import Relation
 from type_bridge.query import Query
 from type_bridge.session import Connection
 
-from ..base import BaseQuery, R, parse_aggregate_results
+from ..aggregates import parse_aggregate_results
+from ..base import BaseQuery, R
 from ..utils import (
     assign_relation_iids,
     build_relation_iid_query,
