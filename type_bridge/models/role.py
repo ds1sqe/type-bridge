@@ -12,18 +12,25 @@ from type_bridge.validation import validate_type_name as validate_reserved_word
 
 if TYPE_CHECKING:
     from type_bridge.fields.role import RoleRef
-    from type_bridge.models.entity import Entity
+    from type_bridge.models.base import TypeDBType
 
 
-class Role[T: "Entity"]:
+class Role[T: "TypeDBType"]:
     """Descriptor for relation role players with type safety.
 
-    Generic type T represents the entity type that can play this role.
+    Generic type T represents the type (Entity or Relation) that can play this role.
+    TypeDB supports both entities and relations as role players.
 
     Example:
+        # Entity as role player
         class Employment(Relation):
             employee: Role[Person] = Role("employee", Person)
             employer: Role[Company] = Role("employer", Company)
+
+        # Relation as role player
+        class Permission(Relation):
+            permitted_subject: Role[Subject] = Role("permitted_subject", Subject)
+            permitted_access: Role[Access] = Role("permitted_access", Access)  # Access is a Relation
     """
 
     def __init__(
@@ -37,12 +44,13 @@ class Role[T: "Entity"]:
 
         Args:
             role_name: The name of the role in TypeDB
-            player_type: The entity type that can play this role
-            additional_player_types: Optional additional entity types allowed to play this role
+            player_type: The type (Entity or Relation) that can play this role
+            additional_player_types: Optional additional types allowed to play this role
             cardinality: Optional cardinality constraint for the role (e.g., Card(2, 2) for exactly 2)
 
         Raises:
             ReservedWordError: If role_name is a TypeQL reserved word
+            TypeError: If player type is a library base class (Entity, Relation, TypeDBType)
         """
         # Validate role name doesn't conflict with TypeQL reserved words
         validate_reserved_word(role_name, "role")
@@ -51,6 +59,8 @@ class Role[T: "Entity"]:
         self.cardinality = cardinality
         unique_types: list[type[T]] = []
         for typ in (player_type, *additional_player_types):
+            # Validate that we're not using library base classes directly
+            self._validate_player_type(typ)
             if typ not in unique_types:
                 unique_types.append(typ)
 
@@ -65,6 +75,42 @@ class Role[T: "Entity"]:
         self.player_types = tuple(pt.get_type_name() for pt in self.player_entity_types)
         self.player_type = first_entity_type.get_type_name()
         self.attr_name: str | None = None
+
+    def _validate_player_type(self, typ: type[T]) -> None:
+        """Validate that player type is not a library base class.
+
+        TypeDB doesn't have built-in Entity/Relation types - these are Python
+        abstractions. Users must define their own abstract types to use as
+        polymorphic role player types.
+
+        Args:
+            typ: The type to validate
+
+        Raises:
+            TypeError: If typ is Entity, Relation, or TypeDBType base class
+        """
+        # Import here to avoid circular import
+        from type_bridge.models.entity import Entity
+        from type_bridge.models.relation import Relation
+
+        # Check if this is a library base class (not a user-defined subclass)
+        # We check module to distinguish library classes from user classes
+        library_modules = (
+            "type_bridge.models",
+            "type_bridge.models.base",
+            "type_bridge.models.entity",
+            "type_bridge.models.relation",
+        )
+
+        if typ.__module__ in library_modules and typ.__name__ in ("Entity", "Relation", "TypeDBType"):
+            raise TypeError(
+                f"Cannot use library base class '{typ.__name__}' as role player type. "
+                f"TypeDB doesn't have a built-in '{typ.__name__}' type. "
+                f"Define your own abstract type instead:\n\n"
+                f"  class Subject(Entity):\n"
+                f"      flags = TypeFlags(abstract=True)\n\n"
+                f"Then use: Role(\"{self.role_name}\", Subject)"
+            )
 
     @property
     def is_multi_player(self) -> bool:

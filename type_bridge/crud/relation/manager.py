@@ -256,8 +256,9 @@ class RelationManager[R: Relation]:
                 else:
                     player_attrs[field_name] = raw_value
 
-                # Collect key for deduplication
-                key_values.append((attr_name, raw_value))
+                # Collect key for deduplication (convert lists to tuples for hashability)
+                hashable_value = tuple(raw_value) if isinstance(raw_value, list) else raw_value
+                key_values.append((attr_name, hashable_value))
             else:
                 # Default for missing attributes
                 if attr_info.flags.has_explicit_card:
@@ -266,7 +267,9 @@ class RelationManager[R: Relation]:
                     player_attrs[field_name] = None
 
         # Create entity instance if we have any non-None attributes
-        if any(v is not None for v in player_attrs.values()):
+        # Note: Relations as role players may have no owned attributes,
+        # so we also create if player_attrs is empty (valid for relations)
+        if player_attrs == {} or any(v is not None for v in player_attrs.values()):
             player_entity = entity_class(**player_attrs)
             if player_iid:
                 object.__setattr__(player_entity, "_iid", player_iid)

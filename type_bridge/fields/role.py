@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from type_bridge.attribute.string import String
     from type_bridge.expressions.base import Expression
     from type_bridge.expressions.role_player import RolePlayerExpr
-    from type_bridge.models.entity import Entity
+    from type_bridge.models.base import TypeDBType
 
 
 class RolePlayerFieldRef[T: "Attribute"]:
@@ -198,7 +198,7 @@ class RolePlayerNumericFieldRef[T: "Attribute"](RolePlayerFieldRef[T]):
     pass  # Inherits comparison methods; aggregations not applicable for role-player fields
 
 
-class RoleRef[T: "Entity"]:
+class RoleRef[T: "TypeDBType"]:
     """Reference to a role for type-safe attribute access.
 
     Returned when accessing a Role descriptor from the Relation class level.
@@ -212,6 +212,9 @@ class RoleRef[T: "Entity"]:
     For Role.multi() (polymorphic roles), attributes from all player types
     are available. If an attribute exists on at least one player type,
     it can be accessed.
+
+    Relations can also be role players:
+        Permission.permitted_access  # Returns RoleRef[Access] where Access is a Relation
     """
 
     def __init__(
@@ -223,7 +226,7 @@ class RoleRef[T: "Entity"]:
 
         Args:
             role_name: Name of the role (e.g., "employee")
-            player_types: Tuple of entity types that can play this role
+            player_types: Tuple of types (Entity or Relation) that can play this role
         """
         self.role_name = role_name
         self.player_types = player_types

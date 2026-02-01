@@ -544,7 +544,9 @@ class RelationQuery[R: Relation]:
                                 player_attrs[field_name] = None
 
                     # Create entity instance and assign to role
-                    if any(v is not None for v in player_attrs.values()):
+                    # Note: Relations as role players may have no owned attributes,
+                    # so we also create if player_attrs is empty (valid for relations)
+                    if player_attrs == {} or any(v is not None for v in player_attrs.values()):
                         player_entity = entity_class(**player_attrs)
                         setattr(relation, role_name, player_entity)
 
@@ -594,11 +596,17 @@ class RelationQuery[R: Relation]:
                     logger.debug(f"Skipping role {role_name} for relation without role player")
                     continue
 
+                # Validate entity is a TypeDBType instance (Entity or Relation)
+                # This guards against accessing RoleRef or other invalid objects
+                entity_class = entity.__class__
+                if not hasattr(entity_class, "get_all_attributes"):
+                    logger.debug(f"Skipping role {role_name}: player is not a valid TypeDBType")
+                    continue
+
                 role_var = f"${role_name}"
                 role_parts.append(f"{role.role_name}: {role_var}")
 
                 # Match the role player by their key attributes
-                entity_class = entity.__class__
                 player_owned_attrs = entity_class.get_all_attributes()
                 for field_name, attr_info in player_owned_attrs.items():
                     if attr_info.flags.is_key:
