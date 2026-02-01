@@ -1029,27 +1029,31 @@ class EntityManager[E: Entity]:
         """Update an entity in the database based on its current state.
 
         Reads all attribute values from the entity instance and persists them to the database.
-        Uses key attributes to identify the entity.
+        Uses IID for matching when available (from fetched entities), otherwise falls back
+        to key attributes.
 
         For single-value attributes (@card(0..1) or @card(1..1)), uses TypeQL update clause.
         For multi-value attributes (e.g., @card(0..5), @card(2..)), deletes old values
         and inserts new ones.
 
         Args:
-            entity: The entity instance to update (must have key attributes set)
+            entity: The entity instance to update (must have _iid set or key attributes)
 
         Returns:
             The same entity instance
 
+        Raises:
+            KeyAttributeError: If entity has no _iid and no key attributes defined
+
         Example:
-            # Fetch entity
+            # Fetch entity (populates _iid automatically)
             alice = person_manager.get(name="Alice")[0]
 
             # Modify attributes directly
             alice.age = 31
             alice.tags = ["python", "typedb", "ai"]
 
-            # Update in database
+            # Update in database (uses _iid for matching)
             person_manager.update(alice)
         """
         logger.debug(f"Updating entity: {self.model_class.__name__}")
@@ -1089,28 +1093,33 @@ class EntityManager[E: Entity]:
         # Get all attributes (including inherited) to determine cardinality
         owned_attrs = self.model_class.get_all_attributes()
 
-        # Extract key attributes from entity for matching
-        match_filters = {}
-        for field_name, attr_info in owned_attrs.items():
-            if attr_info.flags.is_key:
-                key_value = getattr(entity, field_name, None)
-                if key_value is None:
-                    raise KeyAttributeError(
-                        entity_type=self.model_class.__name__,
-                        operation="update",
-                        field_name=field_name,
-                    )
-                # Extract value from Attribute instance if needed
-                key_value = unwrap_attribute(key_value)
-                attr_name = attr_info.typ.get_attribute_name()
-                match_filters[attr_name] = key_value
+        # Prefer IID-based matching when available (like relation CRUD)
+        entity_iid = getattr(entity, "_iid", None)
+        use_iid_matching = entity_iid is not None
 
-        if not match_filters:
-            raise KeyAttributeError(
-                entity_type=self.model_class.__name__,
-                operation="update",
-                all_fields=list(owned_attrs.keys()),
-            )
+        # Fall back to key attributes if no IID
+        match_filters = {}
+        if not use_iid_matching:
+            for field_name, attr_info in owned_attrs.items():
+                if attr_info.flags.is_key:
+                    key_value = getattr(entity, field_name, None)
+                    if key_value is None:
+                        raise KeyAttributeError(
+                            entity_type=self.model_class.__name__,
+                            operation="update",
+                            field_name=field_name,
+                        )
+                    # Extract value from Attribute instance if needed
+                    key_value = unwrap_attribute(key_value)
+                    attr_name = attr_info.typ.get_attribute_name()
+                    match_filters[attr_name] = key_value
+
+            if not match_filters:
+                raise KeyAttributeError(
+                    entity_type=self.model_class.__name__,
+                    operation="update",
+                    all_fields=list(owned_attrs.keys()),
+                )
 
         # Extract single/multi-value updates using shared utility
         single_value_updates, single_value_deletes, multi_value_updates = extract_update_values(
@@ -1120,9 +1129,14 @@ class EntityManager[E: Entity]:
         # Build Match Clause
         match_statements = []
         entity_match_parts = [f"{var_name} isa {self.model_class.get_type_name()}"]
-        for attr_name, attr_value in match_filters.items():
-            formatted_value = format_value(attr_value)
-            entity_match_parts.append(f"has {attr_name} {formatted_value}")
+        if use_iid_matching:
+            # Use IID for precise matching
+            entity_match_parts.append(f"iid {entity_iid}")
+        else:
+            # Use key attributes for matching
+            for attr_name, attr_value in match_filters.items():
+                formatted_value = format_value(attr_value)
+                entity_match_parts.append(f"has {attr_name} {formatted_value}")
         match_statements.append(", ".join(entity_match_parts) + ";")
 
         # Add match statements to bind multi-value attributes for deletion with optional guards
