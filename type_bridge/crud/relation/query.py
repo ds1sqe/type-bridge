@@ -16,10 +16,11 @@ from ..utils import (
     build_relation_result_map,
     build_role_player_fetch_items,
     extract_entity_key,
+    extract_relation_attributes,
+    extract_role_players_from_results,
     format_value,
-    hydrate_attributes,
+    group_results_by_iid,
     is_multi_value_attribute,
-    resolve_entity_class_from_label,
     unwrap_attribute,
 )
 
@@ -463,100 +464,31 @@ class RelationQuery[R: Relation](BaseQuery[R]):
         results = self._execute(query_str, TransactionType.READ)
         logger.debug(f"Query returned {len(results)} results")
 
-        # Group results by relation IID to handle multi-player roles correctly
-        # TypeDB returns one row per role player combination, so we need to merge rows
-        # with the same relation IID into a single relation instance
-        grouped_results: dict[str, list[dict[str, Any]]] = {}
-        for result in results:
-            iid = result.get("_iid")
-            if iid:
-                if iid not in grouped_results:
-                    grouped_results[iid] = []
-                grouped_results[iid].append(result)
+        # Group results by relation IID (handles multi-player roles)
+        grouped_results = group_results_by_iid(results)
 
         # Check which roles have multi-player cardinality
-        multi_player_roles = set()
-        for role_name, role in self.model_class._roles.items():
-            if role.is_multi_player:
-                multi_player_roles.add(role_name)
+        multi_player_roles = {
+            role_name for role_name, role in self.model_class._roles.items() if role.is_multi_player
+        }
 
         # Convert grouped results to relation instances
         relations = []
 
         for iid, result_group in grouped_results.items():
-            # Use first result for relation attributes (same across all rows)
-            first_result = result_group[0]
-
-            # Extract relation attributes (including inherited)
-            attrs: dict[str, Any] = {}
-            for field_name, attr_info in all_attrs.items():
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-                if attr_name in first_result:
-                    raw_value = first_result[attr_name]
-                    # Multi-value attributes need explicit conversion from list of raw values
-                    if is_multi_value_attribute(attr_info.flags) and isinstance(raw_value, list):
-                        # Convert each raw value to Attribute instance
-                        attrs[field_name] = [attr_class(v) for v in raw_value]
-                    else:
-                        # Single value - let Pydantic handle conversion via model constructor
-                        attrs[field_name] = raw_value
-                else:
-                    # For list fields (has_explicit_card), default to empty list
-                    # For other optional fields, explicitly set to None
-                    if attr_info.flags.has_explicit_card:
-                        attrs[field_name] = []
-                    else:
-                        attrs[field_name] = None
+            # Extract relation attributes using shared utility
+            attrs = extract_relation_attributes(self.model_class, result_group[0])
 
             # Create relation instance
             relation = self.model_class(**attrs)
-
-            # Set relation IID
             object.__setattr__(relation, "_iid", iid)
 
-            # Extract role players from all results in the group
-            # For multi-player roles, collect all unique players into a list
-            for role_name, (role_var, allowed_entity_classes) in role_info.items():
-                is_multi = role_name in multi_player_roles
-                collected_players: list[Any] = []
-                seen_player_keys: set[tuple[Any, ...]] = set()
-
-                for result in result_group:
-                    if role_name in result and isinstance(result[role_name], dict):
-                        player_data = result[role_name]
-
-                        # Get the actual type label from TypeDB (fetched via label())
-                        type_label = result.get(f"{role_name}_type")
-
-                        # Resolve entity class from type label for polymorphic support
-                        entity_class = resolve_entity_class_from_label(
-                            type_label, allowed_entity_classes
-                        )
-
-                        # Hydrate player entity using shared utility
-                        player_iid = result.get(f"{role_name}_iid")
-                        player_attrs, key_values = hydrate_attributes(
-                            entity_class, player_data, wrap_values=True
-                        )
-
-                        # Create entity instance if we have any non-None attributes
-                        # Note: Relations as role players may have no owned attributes
-                        if player_attrs == {} or any(v is not None for v in player_attrs.values()):
-                            # Deduplicate players based on their attribute values
-                            if key_values not in seen_player_keys:
-                                seen_player_keys.add(key_values)
-                                player_entity = entity_class(**player_attrs)
-                                if player_iid:
-                                    object.__setattr__(player_entity, "_iid", player_iid)
-                                collected_players.append(player_entity)
-
-                # Assign collected players to role
-                if collected_players:
-                    if is_multi:
-                        setattr(relation, role_name, collected_players)
-                    else:
-                        setattr(relation, role_name, collected_players[0])
+            # Extract and assign role players using shared utility
+            extracted_players = extract_role_players_from_results(
+                result_group, role_info, multi_player_roles
+            )
+            for role_name, player_or_players in extracted_players.items():
+                setattr(relation, role_name, player_or_players)
 
             relations.append(relation)
 

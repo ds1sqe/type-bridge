@@ -813,6 +813,133 @@ def build_role_player_fetch_items(
     return fetch_items
 
 
+def group_results_by_iid(results: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Group query results by relation/entity IID.
+
+    TypeDB returns one row per role player combination for multi-cardinality
+    roles. This utility groups those rows by IID so they can be merged into
+    a single relation instance.
+
+    Args:
+        results: List of result dictionaries from TypeDB fetch
+
+    Returns:
+        Dictionary mapping IID -> list of result rows with that IID
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        iid = result.get("_iid")
+        if iid:
+            if iid not in grouped:
+                grouped[iid] = []
+            grouped[iid].append(result)
+    return grouped
+
+
+def extract_relation_attributes(
+    model_class: type["Relation"],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Extract relation attributes from a query result.
+
+    Handles multi-value attributes by wrapping them in Attribute instances.
+    Single values are passed directly to let Pydantic handle conversion.
+
+    Args:
+        model_class: The relation class to extract attributes for
+        result: The result dictionary from TypeDB fetch
+
+    Returns:
+        Dictionary mapping field_name -> attribute value (ready for model constructor)
+    """
+    attrs: dict[str, Any] = {}
+    all_attrs = model_class.get_all_attributes()
+
+    for field_name, attr_info in all_attrs.items():
+        attr_class = attr_info.typ
+        attr_name = attr_class.get_attribute_name()
+        if attr_name in result:
+            raw_value = result[attr_name]
+            # Multi-value attributes need explicit conversion from list of raw values
+            if is_multi_value_attribute(attr_info.flags) and isinstance(raw_value, list):
+                # Convert each raw value to Attribute instance
+                attrs[field_name] = [attr_class(v) for v in raw_value]
+            else:
+                # Single value - let Pydantic handle conversion via model constructor
+                attrs[field_name] = raw_value
+        else:
+            # For list fields (has_explicit_card), default to empty list
+            # For other optional fields, explicitly set to None
+            if attr_info.flags.has_explicit_card:
+                attrs[field_name] = []
+            else:
+                attrs[field_name] = None
+
+    return attrs
+
+
+def extract_role_players_from_results(
+    result_group: list[dict[str, Any]],
+    role_info: dict[str, tuple[str, tuple[type["Entity"], ...]]],
+    multi_player_roles: set[str],
+) -> dict[str, Any]:
+    """Extract and deduplicate role players from grouped query results.
+
+    For multi-player roles, collects all unique players from all rows in the group.
+    For single-player roles, takes the first player found.
+
+    Args:
+        result_group: List of result rows with the same relation IID
+        role_info: Dict mapping role_name -> (role_var, allowed_entity_classes)
+        multi_player_roles: Set of role names that allow multiple players
+
+    Returns:
+        Dictionary mapping role_name -> player entity or list of player entities
+    """
+    role_players: dict[str, Any] = {}
+
+    for role_name, (role_var, allowed_entity_classes) in role_info.items():
+        is_multi = role_name in multi_player_roles
+        collected_players: list[Any] = []
+        seen_player_keys: set[tuple[Any, ...]] = set()
+
+        for result in result_group:
+            if role_name in result and isinstance(result[role_name], dict):
+                player_data = result[role_name]
+
+                # Get the actual type label from TypeDB (fetched via label())
+                type_label = result.get(f"{role_name}_type")
+
+                # Resolve entity class from type label for polymorphic support
+                entity_class = resolve_entity_class_from_label(type_label, allowed_entity_classes)
+
+                # Hydrate player entity using shared utility
+                player_iid = result.get(f"{role_name}_iid")
+                player_attrs, key_values = hydrate_attributes(
+                    entity_class, player_data, wrap_values=True
+                )
+
+                # Create entity instance if we have any non-None attributes
+                # Note: Relations as role players may have no owned attributes
+                if player_attrs == {} or any(v is not None for v in player_attrs.values()):
+                    # Deduplicate players based on their attribute values
+                    if key_values not in seen_player_keys:
+                        seen_player_keys.add(key_values)
+                        player_entity = entity_class(**player_attrs)
+                        if player_iid:
+                            object.__setattr__(player_entity, "_iid", player_iid)
+                        collected_players.append(player_entity)
+
+        # Store collected players
+        if collected_players:
+            if is_multi:
+                role_players[role_name] = collected_players
+            else:
+                role_players[role_name] = collected_players[0]
+
+    return role_players
+
+
 # ============================================================================
 # Relation IID Population Utilities
 # ============================================================================
