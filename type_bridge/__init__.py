@@ -26,6 +26,7 @@ from type_bridge.crud import (
     NotUniqueError,
     RelationManager,
     RelationNotFoundError,
+    TypeDBManager,
 )
 from type_bridge.migration import (
     Migration,
@@ -87,6 +88,7 @@ __all__ = [
     "Query",
     "QueryBuilder",
     # CRUD
+    "TypeDBManager",
     "EntityManager",
     "RelationManager",
     # CRUD Exceptions

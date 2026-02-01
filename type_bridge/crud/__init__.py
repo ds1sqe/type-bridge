@@ -7,6 +7,8 @@ and relations with type safety.
 The module is organized into submodules:
 - entity: Entity-related CRUD operations
 - relation: Relation-related CRUD operations
+- typedb_manager: Unified TypeDBManager (v2 architecture)
+- strategies: Model-specific strategies for TypeDBManager
 - utils: Shared utilities
 - base: Base type definitions
 """
@@ -21,13 +23,20 @@ from .exceptions import (
     RelationNotFoundError,
 )
 from .relation import RelationGroupByQuery, RelationManager, RelationQuery
+from .strategies import EntityStrategy, ModelStrategy, RelationStrategy
+from .typedb_manager import TypeDBManager
 
 __all__ = [
-    # Entity operations
+    # Unified manager (v2)
+    "TypeDBManager",
+    "ModelStrategy",
+    "EntityStrategy",
+    "RelationStrategy",
+    # Entity operations (legacy, will be deprecated)
     "EntityManager",
     "EntityQuery",
     "GroupByQuery",
-    # Relation operations
+    # Relation operations (legacy, will be deprecated)
     "RelationManager",
     "RelationQuery",
     "RelationGroupByQuery",
