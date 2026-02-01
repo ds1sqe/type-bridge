@@ -156,7 +156,7 @@ class SchemaIntrospector:
         # Check each attribute type
         for attr_type in attr_types:
             attr_name = attr_type.get_attribute_name()
-            if type_exists(self.db,attr_name):
+            if type_exists(self.db, attr_name):
                 schema.attributes[attr_name] = IntrospectedAttribute(
                     name=attr_name,
                     value_type=getattr(attr_type, "_value_type", "string"),
@@ -168,7 +168,7 @@ class SchemaIntrospector:
             type_name = model.get_type_name()
 
             if issubclass(model, Entity) and model is not Entity:
-                if type_exists(self.db,type_name):
+                if type_exists(self.db, type_name):
                     schema.entities[type_name] = IntrospectedEntity(name=type_name)
                     logger.debug(f"Found existing entity: {type_name}")
 
@@ -176,7 +176,7 @@ class SchemaIntrospector:
                     self._introspect_ownerships_for_type(schema, type_name, model)
 
             elif issubclass(model, Relation) and model is not Relation:
-                if type_exists(self.db,type_name):
+                if type_exists(self.db, type_name):
                     schema.relations[type_name] = IntrospectedRelation(name=type_name)
                     logger.debug(f"Found existing relation: {type_name}")
 
@@ -232,7 +232,7 @@ class SchemaIntrospector:
             if model and hasattr(model, "get_owned_attributes"):
                 for attr_name, attr_info in model.get_owned_attributes().items():
                     attr_type_name = attr_info.typ.get_attribute_name()
-                    if type_exists(self.db,attr_type_name):
+                    if type_exists(self.db, attr_type_name):
                         schema.ownerships.append(
                             IntrospectedOwnership(
                                 owner_name=type_name,
