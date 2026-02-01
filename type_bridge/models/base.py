@@ -44,6 +44,9 @@ class TypeDBType(BaseModel, ABC):
     _flags: ClassVar[TypeFlags] = TypeFlags()
     _owned_attrs: ClassVar[dict[str, ModelAttrInfo]] = {}
     _iid: str | None = None  # TypeDB internal ID
+    
+    # Fields accessor for query building
+    c: ClassVar[Any]  # Any to avoid circular import in type hint
 
     def __setattr__(self, name: str, value: Any) -> None:
         """Override setattr to preserve _iid during attribute assignment.
@@ -73,6 +76,10 @@ class TypeDBType(BaseModel, ABC):
     def __init_subclass__(cls) -> None:
         """Called when a TypeDBType subclass is created."""
         super().__init_subclass__()
+
+        # Initialize fields accessor
+        from type_bridge.models.fields_accessor import FieldsAccessor
+        cls.c = FieldsAccessor(cls)
 
         # Get TypeFlags if defined, otherwise create new default flags
         # Check if flags is defined directly on this class (not inherited)

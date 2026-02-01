@@ -9,8 +9,6 @@ from typing import (
     ClassVar,
     TypeVar,
     dataclass_transform,
-    get_origin,
-    get_type_hints,
 )
 
 from pydantic import ConfigDict
@@ -22,9 +20,7 @@ from type_bridge.models.base import TypeDBType
 from type_bridge.models.role import Role
 from type_bridge.models.utils import (
     MatchClauseInfo,
-    ModelAttrInfo,
     WriteQueryInfo,
-    extract_metadata,
 )
 
 if TYPE_CHECKING:
@@ -39,10 +35,10 @@ R = TypeVar("R", bound="Relation")
 
 class RelationMeta(ModelMetaclass):
     """
-    Metaclass for Relation that enables class-level field access for query building.
+    Metaclass for Relation.
 
-    Intercepts class-level attribute access to return FieldRef instances
-    for defined fields, enabling syntax like Employment.position.eq(Position("Engineer")).
+    Handles Pydantic initialization, warning suppression, and field/role access.
+    Provides backward-compatible attribute access that delegates to FieldsAccessor.
     """
 
     def __new__(
@@ -57,8 +53,6 @@ class RelationMeta(ModelMetaclass):
         import warnings
 
         # Now call parent __new__ (ModelMetaclass)
-        # The smart __getattribute__ below will prevent FieldRef from being
-        # captured as defaults during Pydantic's field collection
         # Suppress Pydantic's field shadowing warnings - field shadowing is intentional
         # in TypeBridge when child relations override parent attributes
         with warnings.catch_warnings():
@@ -69,38 +63,28 @@ class RelationMeta(ModelMetaclass):
 
     def __getattribute__(cls, name: str) -> Any:
         """
-        Intercept class-level attribute access.
+        Intercept class-level attribute access for backward compatibility.
 
-        For owned attributes AFTER initialization is complete, return FieldRef instances.
-        For roles AFTER initialization is complete, return RoleRef instances.
-        During Pydantic initialization, return the actual descriptor.
+        For owned attributes and roles AFTER initialization is complete,
+        delegates to FieldsAccessor (cls.c) to return FieldRef/RoleRef instances.
+        This maintains backward compatibility with Employment.employee syntax
+        while the preferred explicit syntax is Employment.c.employee.
         """
         # Check if this is a field/role and if we should return FieldRef/RoleRef
         try:
+            owned_attrs = super().__getattribute__("_owned_attrs")
+            roles = super().__getattribute__("_roles")
             pydantic_complete = super().__getattribute__("__pydantic_complete__")
 
-            if pydantic_complete:
-                # Check if it's an owned attribute -> return FieldRef
-                owned_attrs = super().__getattribute__("_owned_attrs")
-                if name in owned_attrs:
-                    from type_bridge.fields import FieldDescriptor
-
-                    attr_info = owned_attrs[name]
-                    descriptor = FieldDescriptor(field_name=name, attr_type=attr_info.typ)
-                    return descriptor.__get__(None, cls)
-
-                # Check if it's a role -> return RoleRef
-                roles = super().__getattribute__("_roles")
-                if name in roles:
-                    from type_bridge.fields.role import RoleRef
-
-                    role = roles[name]
-                    return RoleRef(
-                        role_name=role.role_name,
-                        player_types=role.player_entity_types,
-                    )
+            # Only delegate to FieldsAccessor if:
+            # 1. Field is in owned_attrs or roles
+            # 2. Pydantic setup is complete (__pydantic_complete__ is True)
+            if (name in owned_attrs or name in roles) and pydantic_complete:
+                # Delegate to FieldsAccessor for consistent behavior
+                fields_accessor = super().__getattribute__("c")
+                return getattr(fields_accessor, name)
         except AttributeError:
-            # _owned_attrs, _roles, or __pydantic_complete__ not defined yet
+            # _owned_attrs, _roles, __pydantic_complete__, or c not defined yet
             pass
 
         # For all other cases, use normal access
@@ -155,140 +139,11 @@ class Relation(TypeDBType, metaclass=RelationMeta):
         super().__init_subclass__()
         logger.debug(f"Initializing Relation subclass: {cls.__name__}")
 
-        # Collect roles from type hints
-        roles = {}
+        from type_bridge.models.schema_scanner import SchemaScanner
 
-        # Check annotations for Role[T] fields
-        annotations = getattr(cls, "__annotations__", {})
-        for key, hint in annotations.items():
-            if not key.startswith("_") and key != "flags":
-                # Check if it's a Role[T] type
-                origin = get_origin(hint)
-                if origin is Role:
-                    # It's Role[T] - get value directly from __dict__ to avoid
-                    # triggering Role.__get__ descriptor (which returns RoleRef)
-                    value = cls.__dict__.get(key)
-                    if isinstance(value, Role):
-                        roles[key] = value
-
-        cls._roles = roles
-
-        # Extract owned attributes from type hints
-        owned_attrs = {}
-
-        # Get direct annotations from this class
-        direct_annotations = set(getattr(cls, "__annotations__", {}).keys())
-
-        # Also include annotations from base=True parent classes
-        # (they don't appear in TypeDB schema, so child must own their attributes)
-        # Stop when we hit a non-base Relation class (it already handles its base=True parents)
-        for base in cls.__mro__[1:]:  # Skip cls itself
-            if base is Relation or not issubclass(base, Relation):
-                continue
-            if hasattr(base, "_flags") and base._flags.base:
-                base_annotations = getattr(base, "__annotations__", {})
-                direct_annotations.update(base_annotations.keys())
-            else:
-                # Stop at first non-base Relation class
-                break
-
-        try:
-            # Use include_extras=True to preserve Annotated metadata
-            all_hints = get_type_hints(cls, include_extras=True)
-            # Filter to only include direct annotations and base=True parent annotations
-            hints = {k: v for k, v in all_hints.items() if k in direct_annotations}
-        except Exception:
-            hints = {
-                k: v
-                for k, v in getattr(cls, "__annotations__", {}).items()
-                if k in direct_annotations
-            }
-
-        # Rewrite annotations to add base types for type checker support
-        new_annotations = {}
-
-        for field_name, field_type in hints.items():
-            if field_name.startswith("_"):
-                new_annotations[field_name] = field_type
-                continue
-            if field_name == "flags":  # Skip the flags field itself
-                new_annotations[field_name] = field_type
-                continue
-            if field_name in roles:  # Skip role fields
-                new_annotations[field_name] = field_type
-                continue
-
-            # Get the default value (should be AttributeFlags from Flag())
-            default_value = getattr(cls, field_name, None)
-
-            # Extract attribute type and cardinality/key/unique metadata
-            field_info = extract_metadata(field_type)
-
-            # Check if field type is a list annotation
-            field_origin = get_origin(field_type)
-            is_list_type = field_origin is list
-
-            # If we found an Attribute type, add it to owned attributes
-            if field_info.attr_type is not None:
-                # Validate: list[Type] must have Flag(Card(...))
-                if is_list_type and not isinstance(default_value, AttributeFlags):
-                    raise TypeError(
-                        f"Field '{field_name}' in {cls.__name__}: "
-                        f"list[Type] annotations must use Flag(Card(...)) to specify cardinality. "
-                        f"Example: {field_name}: list[{field_info.attr_type.__name__}] = Flag(Card(min=1))"
-                    )
-
-                # Get flags from default value or create new flags
-                if isinstance(default_value, AttributeFlags):
-                    flags = default_value
-
-                    # Validate: Flag(Card(...)) should only be used with list[Type]
-                    if flags.has_explicit_card and not is_list_type:
-                        raise TypeError(
-                            f"Field '{field_name}' in {cls.__name__}: "
-                            f"Flag(Card(...)) can only be used with list[Type] annotations. "
-                            f"For optional single values, use Optional[{field_info.attr_type.__name__}] instead."
-                        )
-
-                    # Validate: list[Type] must have Flag(Card(...))
-                    if is_list_type and not flags.has_explicit_card:
-                        raise TypeError(
-                            f"Field '{field_name}' in {cls.__name__}: "
-                            f"list[Type] annotations must use Flag(Card(...)) to specify cardinality. "
-                            f"Example: {field_name}: list[{field_info.attr_type.__name__}] = Flag(Card(min=1))"
-                        )
-
-                    # Merge with cardinality from type annotation if not already set
-                    if flags.card_min is None and flags.card_max is None:
-                        flags.card_min = field_info.card_min
-                        flags.card_max = field_info.card_max
-                    # Set is_key and is_unique from type annotation if found
-                    if field_info.is_key:
-                        flags.is_key = True
-                    if field_info.is_unique:
-                        flags.is_unique = True
-                else:
-                    # Create flags from type annotation metadata
-                    flags = AttributeFlags(
-                        is_key=field_info.is_key,
-                        is_unique=field_info.is_unique,
-                        card_min=field_info.card_min,
-                        card_max=field_info.card_max,
-                    )
-
-                owned_attrs[field_name] = ModelAttrInfo(typ=field_info.attr_type, flags=flags)
-
-                # Keep annotation as-is - no need for unions since validators always return Attribute instances
-                # - position: Position → stays as Position
-                # - salary: Salary | None → stays as Salary | None
-                # - tags: list[Tag] → stays as list[Tag]
-                new_annotations[field_name] = field_type
-            else:
-                new_annotations[field_name] = field_type
-
-        # Update class annotations for Pydantic's benefit
-        cls.__annotations__ = new_annotations
-        cls._owned_attrs = owned_attrs
+        scanner = SchemaScanner(cls)
+        cls._roles = scanner.scan_roles()
+        cls._owned_attrs = scanner.scan_attributes(is_relation=True)
 
     @classmethod
     def _get_base_type_class(cls) -> type[Relation]:
