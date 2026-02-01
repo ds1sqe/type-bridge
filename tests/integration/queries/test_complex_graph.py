@@ -296,8 +296,8 @@ class TestAggregationWithFilters:
         manager.insert(Employee(name=Name("Bob"), salary=Salary(60000), department=Department("Engineering")))
         manager.insert(Employee(name=Name("Carol"), salary=Salary(90000), department=Department("Marketing")))
 
-        # All employees
-        all_count = manager.count()
+        # All employees - use filter() to get a Query that has count()
+        all_count = manager.filter().count()
         assert all_count == 3
 
 

@@ -406,6 +406,41 @@ animal_manager = Animal.manager(db)
 all_animals = animal_manager.all()
 ```
 
+### Polymorphic Role Players
+
+When a relation role uses an abstract type, queried role players are resolved to their concrete types:
+
+```python
+# Abstract base
+class Profile(Entity):
+    flags = TypeFlags(name="profile", abstract=True)
+    profile_id: ProfileId = Flag(Key)
+
+# Concrete subtypes
+class Person(Profile):
+    flags = TypeFlags(name="person")
+    email: Email | None = None
+
+class Organization(Profile):
+    flags = TypeFlags(name="org")
+    website: Website | None = None
+
+# Relation with abstract role type
+class Authorship(Relation):
+    flags = TypeFlags(name="authorship")
+    author: Role[Profile] = Role("author", Profile)  # Abstract!
+    post: Role[Post] = Role("post", Post)
+
+# Query - role players resolved to concrete types
+authorships = Authorship.manager(db).all()
+for auth in authorships:
+    # author is Person or Organization, NOT abstract Profile
+    if isinstance(auth.author, Person):
+        print(f"Person: {auth.author.email}")
+    elif isinstance(auth.author, Organization):
+        print(f"Org: {auth.author.website}")
+```
+
 ### Serialization
 
 ```python

@@ -900,6 +900,29 @@ for employment in all_employments:
     print(f"{employment.employee.name}: {employment.position}")
 ```
 
+#### Polymorphic Role Player Resolution
+
+When a role accepts an abstract entity type, queried role players are automatically resolved to their **concrete types**:
+
+```python
+# Role accepts abstract type
+class Authorship(Relation):
+    author: Role[Profile] = Role("author", Profile)  # Profile is abstract
+    post: Role[Post] = Role("post", Post)
+
+# Person and Organization both extend Profile
+authorships = Authorship.manager(db).all()
+
+for auth in authorships:
+    # author is resolved to Person or Organization, NOT abstract Profile
+    if isinstance(auth.author, Person):
+        print(f"Person email: {auth.author.email}")  # Person-specific attr
+    elif isinstance(auth.author, Organization):
+        print(f"Org website: {auth.author.website}")  # Org-specific attr
+```
+
+This works in all query methods: `get()`, `all()`, `get_by_iid()`, and `filter().execute()`.
+
 #### Get Relations with Filters
 
 Filter by both attributes and role players:

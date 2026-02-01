@@ -103,6 +103,7 @@ class Employment(Relation):
 ```
 
 **Components**:
+
 - `field_name`: Python field name (e.g., `employee`, `employer`)
 - `Role[EntityType]`: Type hint for role player type
 - `Role("role_name", EntityType)`: Role definition with TypeDB role name and player type
@@ -173,10 +174,12 @@ results = manager.filter(
 ### Available Methods
 
 **Numeric fields**:
+
 - `.gt(value)`, `.lt(value)`, `.gte(value)`, `.lte(value)`
 - `.eq(value)`, `.neq(value)`
 
 **String fields**:
+
 - `.contains(value)` - Substring match
 - `.like(value)` - Regex pattern
 - `.regex(value)` - Regex pattern (alias)
@@ -242,6 +245,7 @@ email plays trace:origin;
 ```
 
 ### CRUD and queries
+
 - Filtering or deleting by a multi-player role uses the actual player’s key attributes and works across all allowed entity types.
 - Role uniqueness rules still apply: keep role names distinct (TypeDB requirement).
 
@@ -277,6 +281,7 @@ class Employment(Relation):
 ```
 
 **When explicit flags ARE needed:**
+
 - `abstract=True` - Abstract relations
 - `base=True` - Python-only base classes
 - Custom `name` - Override type name
@@ -640,6 +645,43 @@ relation authorship,
 person plays authorship:author;
 content plays authorship:content;  # Abstract type in role player definition
 ```
+
+### Polymorphic Role Player Type Resolution
+
+When querying relations with polymorphic role players, TypeBridge resolves each role player to its **concrete type**, not the abstract declared type. This enables type-safe access to subtype-specific attributes:
+
+```python
+# Query authorships - role players are resolved to concrete types
+authorships = Authorship.manager(db).all()
+
+for authorship in authorships:
+    content = authorship.content
+
+    # content is Article, Video, or other concrete subtype - NOT abstract Content
+    if isinstance(content, Article):
+        print(f"Article body: {content.body}")
+    elif isinstance(content, Video):
+        print(f"Video URL: {content.url}")
+
+    # Common attributes from abstract type are always accessible
+    print(f"Title: {content.title}")
+```
+
+**How it works**:
+
+TypeBridge uses TypeDB's `label()` built-in function to fetch the actual type of each role player, then resolves it to the correct Python class. This happens automatically in:
+
+- `RelationManager.get()` - filter-based queries
+- `RelationManager.all()` - fetch all relations
+- `RelationManager.get_by_iid()` - IID-based lookup
+- `RelationQuery.execute()` - chainable query execution
+
+**Benefits**:
+
+- Access concrete type-specific attributes directly
+- Use `isinstance()` for type-safe branching
+- Proper Python type inference in IDEs
+- No need to manually resolve types from IIDs
 
 ## Best Practices
 

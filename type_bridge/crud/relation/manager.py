@@ -86,10 +86,11 @@ class RelationManager[R: Relation]:
     def _build_role_player_fetch_items(
         self, role_info: dict[str, tuple[str, tuple[type, ...]]]
     ) -> list[str]:
-        """Build fetch items for role players with their IIDs.
+        """Build fetch items for role players with their IIDs and type labels.
 
         TypeQL 3.x doesn't allow mixing iid() with .* in the same nested block,
         so we fetch the IID as a separate key alongside the nested attributes.
+        We also fetch the type label to correctly identify polymorphic role players.
 
         Args:
             role_info: Dict mapping role_name -> (role_var, allowed_entity_types)
@@ -97,12 +98,18 @@ class RelationManager[R: Relation]:
         Returns:
             List of fetch item strings like:
                 '"employee_iid": iid($employee)'
+                '"employee_type": label($employee_type)'
                 '"employee": { $employee.* }'
+
+        Note: The caller must add type variable bindings to the match clause:
+            $employee isa $employee_type;
         """
         fetch_items = []
         for role_name, (role_var, _) in role_info.items():
             # Fetch IID separately (can't be mixed with .* in nested block)
             fetch_items.append(f'"{role_name}_iid": iid({role_var})')
+            # Fetch type label for polymorphic role player resolution
+            fetch_items.append(f'"{role_name}_type": label({role_var}_type)')
             # Fetch all attributes for the role player
             fetch_items.append(f'"{role_name}": {{\n    {role_var}.*\n  }}')
         return fetch_items
@@ -160,6 +167,112 @@ class RelationManager[R: Relation]:
             f"no _iid set and no @key attributes defined. Either fetch the entity from the "
             f"database first (to populate _iid) or add Flag(Key) to an attribute."
         )
+
+    def _resolve_entity_class_from_label(
+        self, type_label: str | None, allowed_entity_classes: tuple[type, ...]
+    ) -> type:
+        """Resolve the correct Python entity class from a TypeDB type label.
+
+        Used for polymorphic role players where the declared role type is abstract
+        but the actual entity is a concrete subtype.
+
+        Args:
+            type_label: The TypeDB type label (from label() function), e.g., "person_poly"
+            allowed_entity_classes: Tuple of allowed entity classes for this role
+
+        Returns:
+            The matching Python entity class, or the first allowed class as fallback
+        """
+        if not type_label:
+            # Fallback to first allowed class if no type label
+            return allowed_entity_classes[0]
+
+        # Build a mapping of type names to classes, including subclasses
+        type_name_to_class: dict[str, type] = {}
+
+        def collect_subclasses(cls: type) -> None:
+            """Recursively collect all subclasses and their type names."""
+            type_name = cls.get_type_name() if hasattr(cls, "get_type_name") else None
+            if type_name:
+                type_name_to_class[type_name] = cls
+            for subclass in cls.__subclasses__():
+                collect_subclasses(subclass)
+
+        for cls in allowed_entity_classes:
+            collect_subclasses(cls)
+
+        # Look up the class by type label
+        if type_label in type_name_to_class:
+            return type_name_to_class[type_label]
+
+        # Fallback to first allowed class
+        return allowed_entity_classes[0]
+
+    def _hydrate_entity_from_data(
+        self,
+        entity_class: type,
+        player_data: dict[str, Any],
+        player_iid: str | None = None,
+    ) -> tuple[Any | None, tuple[tuple[str, Any], ...]]:
+        """Hydrate an entity instance from raw player data.
+
+        Handles multi-value attributes, optional fields, and IID assignment.
+        Used by both get() and get_by_iid() for role player hydration.
+
+        Args:
+            entity_class: The entity class to instantiate
+            player_data: Raw attribute data from TypeDB fetch
+            player_iid: Optional IID to set on the entity
+
+        Returns:
+            Tuple of (entity instance or None, key values tuple for deduplication)
+        """
+        player_attrs: dict[str, Any] = {}
+        key_values: list[tuple[str, Any]] = []
+
+        for field_name, attr_info in entity_class.get_all_attributes().items():
+            attr_class = attr_info.typ
+            attr_name = attr_class.get_attribute_name()
+
+            if attr_name in player_data:
+                raw_value = player_data[attr_name]
+                # Check if multi-value attribute
+                if (
+                    hasattr(attr_info.flags, "has_explicit_card")
+                    and attr_info.flags.has_explicit_card
+                ):
+                    is_multi = True
+                elif hasattr(attr_info.flags, "card_min") and attr_info.flags.card_min is not None:
+                    is_multi = attr_info.flags.card_min > 1 or (
+                        hasattr(attr_info.flags, "card_max")
+                        and attr_info.flags.card_max is not None
+                        and attr_info.flags.card_max != 1
+                    )
+                else:
+                    is_multi = False
+
+                if is_multi and isinstance(raw_value, list):
+                    player_attrs[field_name] = [attr_class(v) for v in raw_value]
+                else:
+                    player_attrs[field_name] = raw_value
+
+                # Collect key for deduplication
+                key_values.append((attr_name, raw_value))
+            else:
+                # Default for missing attributes
+                if attr_info.flags.has_explicit_card:
+                    player_attrs[field_name] = []
+                else:
+                    player_attrs[field_name] = None
+
+        # Create entity instance if we have any non-None attributes
+        if any(v is not None for v in player_attrs.values()):
+            player_entity = entity_class(**player_attrs)
+            if player_iid:
+                object.__setattr__(player_entity, "_iid", player_iid)
+            return player_entity, tuple(sorted(key_values))
+
+        return None, tuple()
 
     def insert(self, relation: R) -> R:
         """Insert a typed relation instance into the database.
@@ -670,6 +783,12 @@ class RelationManager[R: Relation]:
         base_type = self.model_class.get_type_name()
         match_clauses = [f"$r isa! $t ({roles_str})", f"$t sub {base_type}"]
 
+        # Add type variable bindings for each role player to enable label() fetch
+        for role_name in self.model_class._roles:
+            role_var = f"${role_name}"
+            type_var = f"{role_var}_type"
+            match_clauses.append(f"{role_var} isa! {type_var}")
+
         # Add attribute filter clauses
         for field_name, value in attr_filters.items():
             attr_info = all_attrs[field_name]
@@ -783,68 +902,24 @@ class RelationManager[R: Relation]:
                     if role_name in result and isinstance(result[role_name], dict):
                         player_data = result[role_name]
 
-                        # Choose entity class based on available key attributes
-                        entity_class = allowed_entity_classes[0]
-                        for candidate in allowed_entity_classes:
-                            key_attr_names = [
-                                ai.typ.get_attribute_name()
-                                for ai in candidate.get_all_attributes().values()
-                                if ai.flags.is_key
-                            ]
-                            if any(key in player_data for key in key_attr_names):
-                                entity_class = candidate
-                                break
+                        # Get the actual type label from TypeDB (fetched via label())
+                        type_label = result.get(f"{role_name}_type")
 
-                        # Extract player attributes (including inherited)
-                        player_attrs: dict[str, Any] = {}
-                        player_key_values = []
-                        for field_name, attr_info in entity_class.get_all_attributes().items():
-                            attr_class = attr_info.typ
-                            attr_name = attr_class.get_attribute_name()
-                            if attr_name in player_data:
-                                raw_value = player_data[attr_name]
-                                # Check if multi-value attribute
-                                if (
-                                    hasattr(attr_info.flags, "has_explicit_card")
-                                    and attr_info.flags.has_explicit_card
-                                ):
-                                    attr_is_multi = True
-                                elif (
-                                    hasattr(attr_info.flags, "card_min")
-                                    and attr_info.flags.card_min is not None
-                                ):
-                                    attr_is_multi = attr_info.flags.card_min > 1 or (
-                                        hasattr(attr_info.flags, "card_max")
-                                        and attr_info.flags.card_max is not None
-                                        and attr_info.flags.card_max != 1
-                                    )
-                                else:
-                                    attr_is_multi = False
-                                if attr_is_multi and isinstance(raw_value, list):
-                                    player_attrs[field_name] = [attr_class(v) for v in raw_value]
-                                else:
-                                    player_attrs[field_name] = raw_value
-                                # Collect key for deduplication
-                                player_key_values.append((attr_name, raw_value))
-                            else:
-                                if attr_info.flags.has_explicit_card:
-                                    player_attrs[field_name] = []
-                                else:
-                                    player_attrs[field_name] = None
+                        # Resolve entity class from type label for polymorphic support
+                        entity_class = self._resolve_entity_class_from_label(
+                            type_label, allowed_entity_classes
+                        )
 
-                        # Create entity instance if we have attributes
-                        if any(v is not None for v in player_attrs.values()):
-                            # Deduplicate players based on their attribute values
-                            player_key = tuple(sorted(player_key_values))
-                            if player_key not in seen_player_keys:
-                                seen_player_keys.add(player_key)
-                                player_entity = entity_class(**player_attrs)
-                                # Set _iid on the player entity if available
-                                # IID is fetched separately as {role_name}_iid
-                                player_iid = result.get(f"{role_name}_iid")
-                                if player_iid:
-                                    object.__setattr__(player_entity, "_iid", player_iid)
-                                collected_players.append(player_entity)
+                        # Hydrate player entity from data
+                        player_iid = result.get(f"{role_name}_iid")
+                        player_entity, player_key = self._hydrate_entity_from_data(
+                            entity_class, player_data, player_iid
+                        )
+
+                        # Deduplicate players based on their attribute values
+                        if player_entity is not None and player_key not in seen_player_keys:
+                            seen_player_keys.add(player_key)
+                            collected_players.append(player_entity)
 
                 # Assign role player(s) to relation
                 if collected_players:
@@ -895,7 +970,15 @@ class RelationManager[R: Relation]:
         # Use isa! to bind exact type to $t for label() function
         roles_str = ", ".join(role_parts)
         base_type = self.model_class.get_type_name()
-        match_clause = f"$r isa! $t ({roles_str}), iid {iid};\n$t sub {base_type};"
+        match_parts = [f"$r isa! $t ({roles_str}), iid {iid}", f"$t sub {base_type}"]
+
+        # Add type variable bindings for each role player to enable label() fetch
+        for role_name in self.model_class._roles:
+            role_var = f"${role_name}"
+            type_var = f"{role_var}_type"
+            match_parts.append(f"{role_var} isa! {type_var}")
+
+        match_clause = ";\n".join(match_parts) + ";"
 
         # Build fetch clause with nested structure for role players
         # Use label($t) where $t is a TYPE variable bound via isa!
@@ -957,58 +1040,22 @@ class RelationManager[R: Relation]:
         for role_name, (role_var, allowed_entity_classes) in role_info.items():
             if role_name in result and isinstance(result[role_name], dict):
                 player_data = result[role_name]
-                # Choose entity class based on key attributes present; fallback to first allowed
-                entity_class = allowed_entity_classes[0]
-                for candidate in allowed_entity_classes:
-                    key_attr_names = [
-                        attr_info.typ.get_attribute_name()
-                        for attr_info in candidate.get_all_attributes().values()
-                        if attr_info.flags.is_key
-                    ]
-                    if any(key in player_data for key in key_attr_names):
-                        entity_class = candidate
-                        break
-                # Extract player attributes (including inherited)
-                player_attrs: dict[str, Any] = {}
-                for field_name, attr_info in entity_class.get_all_attributes().items():
-                    attr_class = attr_info.typ
-                    attr_name = attr_class.get_attribute_name()
-                    if attr_name in player_data:
-                        raw_value = player_data[attr_name]
-                        if (
-                            hasattr(attr_info.flags, "has_explicit_card")
-                            and attr_info.flags.has_explicit_card
-                        ):
-                            is_multi = True
-                        elif (
-                            hasattr(attr_info.flags, "card_min")
-                            and attr_info.flags.card_min is not None
-                        ):
-                            is_multi = attr_info.flags.card_min > 1 or (
-                                hasattr(attr_info.flags, "card_max")
-                                and attr_info.flags.card_max is not None
-                                and attr_info.flags.card_max != 1
-                            )
-                        else:
-                            is_multi = False
-                        if is_multi and isinstance(raw_value, list):
-                            player_attrs[field_name] = [attr_class(v) for v in raw_value]
-                        else:
-                            player_attrs[field_name] = raw_value
-                    else:
-                        if attr_info.flags.has_explicit_card:
-                            player_attrs[field_name] = []
-                        else:
-                            player_attrs[field_name] = None
 
-                # Create entity instance and assign to role
-                if any(v is not None for v in player_attrs.values()):
-                    player_entity = entity_class(**player_attrs)
-                    # Set _iid on the player entity if available
-                    # IID is fetched separately as {role_name}_iid
-                    player_iid = result.get(f"{role_name}_iid")
-                    if player_iid:
-                        object.__setattr__(player_entity, "_iid", player_iid)
+                # Get the actual type label from TypeDB (fetched via label())
+                type_label = result.get(f"{role_name}_type")
+
+                # Resolve entity class from type label for polymorphic support
+                entity_class = self._resolve_entity_class_from_label(
+                    type_label, allowed_entity_classes
+                )
+
+                # Hydrate player entity from data
+                player_iid = result.get(f"{role_name}_iid")
+                player_entity, _ = self._hydrate_entity_from_data(
+                    entity_class, player_data, player_iid
+                )
+
+                if player_entity is not None:
                     setattr(relation, role_name, player_entity)
 
         # Set the IID directly since we know it
@@ -1151,47 +1198,56 @@ class RelationManager[R: Relation]:
                 )
                 match_statements.append(try_block)
 
+        # Add match statements to bind single-value attributes for updates (delete old + insert new)
+        # TypeDB 3.x: `update $r has attr val;` adds attributes, doesn't replace
+        # So we need to delete the existing value first, then insert the new one
+        if single_value_updates:
+            for attr_name in single_value_updates:
+                # Use try block in case attribute doesn't exist yet
+                match_statements.append(f"try {{ $r has {attr_name} $old_{attr_name}; }};")
+
         # Add match statements to bind single-value attributes for deletion
+        # Use try block since the attribute might not exist (optional attribute)
         if single_value_deletes:
             for attr_name in single_value_deletes:
-                match_statements.append(f"$r has {attr_name} ${attr_name};")
+                match_statements.append(f"try {{ $r has {attr_name} ${attr_name}; }};")
 
         match_clause = "\n".join(match_statements)
 
         # Build query parts
         query_parts = [f"match\n{match_clause}"]
 
-        # Delete clause (for multi-value and single-value deletions)
+        # Delete clause (for multi-value, single-value updates, and single-value deletions)
         delete_parts = []
         if multi_value_updates:
             for attr_name in multi_value_updates:
                 delete_parts.append(f"try {{ ${attr_name} of $r; }};")
+        # Delete old values for single-value attributes being updated
+        if single_value_updates:
+            for attr_name in single_value_updates:
+                delete_parts.append(f"try {{ $old_{attr_name} of $r; }};")
         if single_value_deletes:
             for attr_name in single_value_deletes:
-                delete_parts.append(f"${attr_name} of $r;")
+                delete_parts.append(f"try {{ ${attr_name} of $r; }};")
         if delete_parts:
             delete_clause = "\n".join(delete_parts)
             query_parts.append(f"delete\n{delete_clause}")
 
-        # Insert clause (for multi-value attributes)
+        # Insert clause (for multi-value and single-value attributes)
+        insert_parts = []
         if multi_value_updates:
-            insert_parts = []
             for attr_name, values in multi_value_updates.items():
                 for value in values:
                     formatted_value = format_value(value)
                     insert_parts.append(f"$r has {attr_name} {formatted_value};")
-            if insert_parts:
-                insert_clause = "\n".join(insert_parts)
-                query_parts.append(f"insert\n{insert_clause}")
-
-        # Update clause (for single-value attributes)
+        # Insert new values for single-value attributes being updated
         if single_value_updates:
-            update_parts = []
             for attr_name, value in single_value_updates.items():
                 formatted_value = format_value(value)
-                update_parts.append(f"$r has {attr_name} {formatted_value};")
-            update_clause = "\n".join(update_parts)
-            query_parts.append(f"update\n{update_clause}")
+                insert_parts.append(f"$r has {attr_name} {formatted_value};")
+        if insert_parts:
+            insert_clause = "\n".join(insert_parts)
+            query_parts.append(f"insert\n{insert_clause}")
 
         # Combine and execute
         full_query = "\n".join(query_parts)
