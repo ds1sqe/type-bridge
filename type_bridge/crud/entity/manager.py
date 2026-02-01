@@ -13,7 +13,7 @@ from type_bridge.query import QueryBuilder
 
 from ..base import E
 from ..exceptions import EntityNotFoundError, KeyAttributeError, NotUniqueError
-from ..manager import BaseManager
+from ..model_manager import ModelManager
 from ..utils import (
     assign_entity_iids,
     build_entity_iid_map,
@@ -38,126 +38,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class EntityManager[E: Entity](BaseManager[E]):
+class EntityManager[E: Entity](ModelManager[E]):
     """Manager for entity CRUD operations.
 
     Type-safe manager that preserves entity type information.
     Inherits connection management and common operations from BaseManager.
     """
-
-    def insert(self, entity: E) -> E:
-        """Insert an entity instance into the database.
-
-        After insertion, attempts to populate the entity's _iid by querying
-        it back. This allows the entity to be used in relation insertions
-        without requiring @key attributes.
-
-        Args:
-            entity: Entity instance to insert
-
-        Returns:
-            The inserted entity instance (with _iid populated if successful)
-
-        Example:
-            # Create typed entity instance with wrapped attributes
-            person = Person(
-                name=Name("Alice"),
-                age=Age(30),
-                email=Email("alice@example.com")
-            )
-            Person.manager(db).insert(person)
-            # person._iid is now populated
-        """
-        logger.debug(f"Inserting entity: {self.model_class.__name__}")
-        query = QueryBuilder.insert_entity(entity)
-        query_str = query.build()
-        logger.debug(f"Insert query: {query_str}")
-
-        self._execute(query_str, TransactionType.WRITE)
-
-        logger.info(f"Entity inserted: {self.model_class.__name__}")
-
-        # Try to populate _iid by fetching the entity back
-        self._populate_iid_after_insert(entity)
-
-        return entity
-
-    def _populate_iid_after_insert(self, entity: E) -> None:
-        """Populate _iid on entity by querying it back using its attributes.
-
-        This allows entities without @key to be used in relation insertions.
-        """
-        # Build match clause using all non-None attributes
-        type_name = self.model_class.get_type_name()
-        match_parts = [f"$e isa {type_name}"]
-
-        for field_name, attr_info in self.model_class.get_all_attributes().items():
-            value = getattr(entity, field_name, None)
-            if value is not None:
-                attr_name = attr_info.typ.get_attribute_name()
-                # Handle lists (multi-value attributes)
-                # format_value already unwraps Attribute instances
-                if isinstance(value, list):
-                    for item in value:
-                        formatted = format_value(item)
-                        match_parts.append(f"has {attr_name} {formatted}")
-                else:
-                    formatted = format_value(value)
-                    match_parts.append(f"has {attr_name} {formatted}")
-
-        match_clause = ", ".join(match_parts)
-        query_str = f'match {match_clause}; fetch {{ "_iid": iid($e) }};'
-        logger.debug(f"Fetch IID query: {query_str}")
-
-        try:
-            results = self._execute(query_str, TransactionType.READ)
-            if results and len(results) == 1:
-                iid = results[0].get("_iid")
-                if iid:
-                    object.__setattr__(entity, "_iid", iid)
-                    logger.debug(f"Populated _iid {iid} for {self.model_class.__name__}")
-            elif results and len(results) > 1:
-                logger.warning(
-                    f"Multiple entities match after insert for {self.model_class.__name__}, "
-                    f"_iid not populated. Consider adding @key attribute for uniqueness."
-                )
-        except Exception as e:
-            logger.warning(f"Failed to fetch _iid after insert: {e}")
-
-    def put(self, entity: E) -> E:
-        """Put an entity instance into the database (insert if not exists).
-
-        Uses TypeQL's PUT clause to ensure idempotent insertion. If the entity
-        already exists (matching all attributes), no changes are made. If it doesn't
-        exist, it's inserted.
-
-        Args:
-            entity: Entity instance to put
-
-        Returns:
-            The entity instance
-
-        Example:
-            # Create typed entity instance
-            person = Person(
-                name=Name("Alice"),
-                age=Age(30),
-                email=Email("alice@example.com")
-            )
-            # First call inserts, subsequent calls are idempotent
-            Person.manager(db).put(person)
-            Person.manager(db).put(person)  # No duplicate created
-        """
-        # Build PUT query similar to insert, but use "put" instead of "insert"
-        logger.debug(f"Put entity: {self.model_class.__name__}")
-        pattern = entity.to_insert_query("$e")
-        query = f"put\n{pattern};"
-        logger.debug(f"Put query: {query}")
-
-        self._execute(query, TransactionType.WRITE)
-
-        logger.info(f"Entity put: {self.model_class.__name__}")
-        return entity
 
     def put_many(self, entities: list[E]) -> list[E]:
         """Put multiple entities into the database (insert if not exists).

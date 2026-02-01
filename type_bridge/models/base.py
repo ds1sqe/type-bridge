@@ -11,7 +11,12 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from type_bridge.attribute import AttributeFlags, TypeFlags
 from type_bridge.attribute.flags import format_type_name
 from type_bridge.crud.utils import format_value as _format_value_impl
-from type_bridge.models.utils import ModelAttrInfo, validate_type_name
+from type_bridge.models.utils import (
+    MatchClauseInfo,
+    ModelAttrInfo,
+    WriteQueryInfo,
+    validate_type_name,
+)
 
 
 @dataclass_transform(kw_only_default=True, field_specifiers=(AttributeFlags, TypeFlags))
@@ -321,6 +326,40 @@ class TypeDBType(BaseModel, ABC):
 
         Returns:
             TypeQL insert pattern
+        """
+        ...
+
+    @abstractmethod
+    def get_match_clause_info(self, var_name: str = "$x") -> MatchClauseInfo:
+        """Get information to build a TypeQL match clause for this instance.
+
+        Used by ModelManager for unified CRUD operations. Returns IID-based
+        matching when available, otherwise falls back to type-specific
+        identification (key attributes for entities, role players for relations).
+
+        Args:
+            var_name: Variable name to use in the match clause
+
+        Returns:
+            MatchClauseInfo with main clause, extra clauses, and variable name
+
+        Raises:
+            ValueError: If instance cannot be identified (no IID and no keys/role players)
+        """
+        ...
+
+    @abstractmethod
+    def get_write_query_info(self, var_name: str = "$x") -> WriteQueryInfo:
+        """Get information to build a TypeQL write query for this instance.
+
+        Used by ModelManager for unified insert/put operations. Entities return
+        just a write pattern, while relations include a match clause for role players.
+
+        Args:
+            var_name: Variable name to use
+
+        Returns:
+            WriteQueryInfo with optional match clause and write pattern
         """
         ...
 

@@ -19,7 +19,12 @@ from pydantic._internal._model_construction import ModelMetaclass
 from type_bridge.attribute import Attribute, AttributeFlags, TypeFlags
 from type_bridge.crud.utils import unwrap_attribute
 from type_bridge.models.base import TypeDBType
-from type_bridge.models.utils import ModelAttrInfo, extract_metadata
+from type_bridge.models.utils import (
+    MatchClauseInfo,
+    ModelAttrInfo,
+    WriteQueryInfo,
+    extract_metadata,
+)
 
 if TYPE_CHECKING:
     from type_bridge.crud import EntityManager
@@ -405,6 +410,67 @@ class Entity(TypeDBType, metaclass=EntityMeta):
                     parts.append(f"has {attr_name} {self._format_value(value)}")
 
         return ", ".join(parts)
+
+    def get_match_clause_info(self, var_name: str = "$e") -> MatchClauseInfo:
+        """Get match clause info for this entity instance.
+
+        Prefers IID-based matching when available (most precise).
+        Falls back to @key attribute matching.
+
+        Args:
+            var_name: Variable name to use in the match clause
+
+        Returns:
+            MatchClauseInfo with the match clause
+
+        Raises:
+            ValueError: If entity has neither _iid nor key attributes
+        """
+        type_name = self.get_type_name()
+
+        # Prefer IID-based matching when available
+        entity_iid = getattr(self, "_iid", None)
+        if entity_iid:
+            main_clause = f"{var_name} isa {type_name}, iid {entity_iid}"
+            return MatchClauseInfo(main_clause=main_clause, extra_clauses=[], var_name=var_name)
+
+        # Fall back to key attribute matching
+        key_attrs = {
+            field_name: attr_info
+            for field_name, attr_info in self.get_all_attributes().items()
+            if attr_info.flags.is_key
+        }
+
+        if key_attrs:
+            parts = [f"{var_name} isa {type_name}"]
+            for field_name, attr_info in key_attrs.items():
+                value = getattr(self, field_name, None)
+                if value is not None:
+                    attr_name = attr_info.typ.get_attribute_name()
+                    parts.append(f"has {attr_name} {self._format_value(value)}")
+            main_clause = ", ".join(parts)
+            return MatchClauseInfo(main_clause=main_clause, extra_clauses=[], var_name=var_name)
+
+        # Neither IID nor key attributes available
+        raise ValueError(
+            f"Entity '{self.__class__.__name__}' cannot be identified: "
+            f"no _iid set and no @key attributes defined. Either fetch the entity from the "
+            f"database first (to populate _iid) or add Flag(Key) to an attribute."
+        )
+
+    def get_write_query_info(self, var_name: str = "$e") -> WriteQueryInfo:
+        """Get write query info for this entity instance.
+
+        Entities don't need a match clause for write operations.
+
+        Args:
+            var_name: Variable name to use
+
+        Returns:
+            WriteQueryInfo with just the write pattern (no match clause)
+        """
+        write_pattern = self.to_insert_query(var_name)
+        return WriteQueryInfo(match_clause=None, write_pattern=write_pattern)
 
     def to_dict(
         self,

@@ -20,7 +20,12 @@ from type_bridge.attribute import AttributeFlags, TypeFlags
 from type_bridge.crud.utils import extract_entity_key, unwrap_attribute
 from type_bridge.models.base import TypeDBType
 from type_bridge.models.role import Role
-from type_bridge.models.utils import ModelAttrInfo, extract_metadata
+from type_bridge.models.utils import (
+    MatchClauseInfo,
+    ModelAttrInfo,
+    WriteQueryInfo,
+    extract_metadata,
+)
 
 if TYPE_CHECKING:
     from type_bridge.crud import RelationManager
@@ -378,6 +383,118 @@ class Relation(TypeDBType, metaclass=RelationMeta):
                     parts.append(f"has {attr_name} {self._format_value(value)}")
 
         return ", ".join(parts)
+
+    def get_match_clause_info(self, var_name: str = "$r") -> MatchClauseInfo:
+        """Get match clause info for this relation instance.
+
+        Prefers IID-based matching when available (most precise).
+        Falls back to role player matching.
+
+        Args:
+            var_name: Variable name to use in the match clause
+
+        Returns:
+            MatchClauseInfo with the match clause and role player clauses
+
+        Raises:
+            ValueError: If any role player cannot be identified
+        """
+        type_name = self.get_type_name()
+
+        # Prefer IID-based matching when available
+        relation_iid = getattr(self, "_iid", None)
+        if relation_iid:
+            main_clause = f"{var_name} isa {type_name}, iid {relation_iid}"
+            return MatchClauseInfo(main_clause=main_clause, extra_clauses=[], var_name=var_name)
+
+        # Fall back to role player matching
+        roles = self.__class__._roles
+        role_parts = []
+        extra_clauses = []
+
+        for role_name, role in roles.items():
+            entity_or_list = self.__dict__.get(role_name)
+            if entity_or_list is None:
+                raise ValueError(f"Role player '{role_name}' is required for matching")
+
+            # Normalize to list for uniform handling
+            entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+
+            for i, entity in enumerate(entities):
+                player_var = f"${role_name}_{i}" if len(entities) > 1 else f"${role_name}"
+                role_parts.append(f"{role.role_name}: {player_var}")
+
+                # Get match clause for the role player entity
+                player_match = entity.get_match_clause_info(player_var)
+                extra_clauses.append(player_match.main_clause)
+                extra_clauses.extend(player_match.extra_clauses)
+
+        roles_str = ", ".join(role_parts)
+        main_clause = f"{var_name} isa {type_name} ({roles_str})"
+
+        return MatchClauseInfo(main_clause=main_clause, extra_clauses=extra_clauses, var_name=var_name)
+
+    def get_write_query_info(self, var_name: str = "$r") -> WriteQueryInfo:
+        """Get write query info for this relation instance.
+
+        Relations need a match clause for role players before the insert/put.
+
+        Args:
+            var_name: Variable name to use
+
+        Returns:
+            WriteQueryInfo with match clause for role players and write pattern
+        """
+        roles = self.__class__._roles
+        match_parts = []
+        role_parts = []
+        role_var_map: dict[str, list[str]] = {}
+
+        # Build match clauses for role players
+        for role_name, role in roles.items():
+            entity_or_list = self.__dict__.get(role_name)
+            if entity_or_list is None:
+                raise ValueError(f"Role player '{role_name}' is required for insert")
+
+            # Normalize to list for uniform handling
+            entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+            role_var_map[role_name] = []
+
+            for i, entity in enumerate(entities):
+                player_var = f"${role_name}_{i}" if len(entities) > 1 else f"${role_name}"
+                role_var_map[role_name].append(player_var)
+                role_parts.append(f"{role.role_name}: {player_var}")
+
+                # Get match clause for the role player entity
+                player_match = entity.get_match_clause_info(player_var)
+                match_parts.append(player_match.main_clause)
+                match_parts.extend(player_match.extra_clauses)
+
+        # Build match clause
+        match_clause = ";\n".join(match_parts) if match_parts else None
+
+        # Build write pattern
+        type_name = self.get_type_name()
+        roles_str = ", ".join(role_parts)
+        write_parts = [f"{var_name} ({roles_str}) isa {type_name}"]
+
+        # Add attributes
+        for field_name, attr_info in self._owned_attrs.items():
+            value = getattr(self, field_name, None)
+            if value is not None:
+                attr_class = attr_info.typ
+                attr_name = attr_class.get_attribute_name()
+
+                # Handle lists (multi-value attributes)
+                if isinstance(value, list):
+                    for item in value:
+                        write_parts.append(f"has {attr_name} {self._format_value(item)}")
+                else:
+                    write_parts.append(f"has {attr_name} {self._format_value(value)}")
+
+        write_pattern = ", ".join(write_parts)
+
+        return WriteQueryInfo(match_clause=match_clause, write_pattern=write_pattern)
 
     def insert(self: R, connection: Connection) -> R:
         """Insert this relation instance into the database.

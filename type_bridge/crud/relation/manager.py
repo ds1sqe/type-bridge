@@ -10,7 +10,7 @@ from type_bridge.query import Query
 
 from ..base import R
 from ..exceptions import RelationNotFoundError
-from ..manager import BaseManager
+from ..model_manager import ModelManager
 from ..utils import (
     assign_relation_iids,
     build_relation_iid_query,
@@ -25,7 +25,6 @@ from ..utils import (
     group_results_by_iid,
     hydrate_attributes,
     is_multi_value_attribute,
-    normalize_role_players,
     resolve_entity_class_from_label,
 )
 
@@ -36,7 +35,7 @@ if TYPE_CHECKING:
     from .query import RelationQuery
 
 
-class RelationManager[R: Relation](BaseManager[R]):
+class RelationManager[R: Relation](ModelManager[R]):
     """Manager for relation CRUD operations.
 
     Type-safe manager that preserves relation type information.
@@ -185,213 +184,6 @@ class RelationManager[R: Relation](BaseManager[R]):
             return player_entity, key_values
 
         return None, tuple()
-
-    def _build_relation_write_query(
-        self, relation: R, write_keyword: str
-    ) -> tuple[str, dict[str, Any]]:
-        """Build a write query (insert or put) for a relation.
-
-        Shared implementation for insert() and put() to avoid code duplication.
-
-        Args:
-            relation: Typed relation instance with role players and attributes
-            write_keyword: Either "insert" or "put"
-
-        Returns:
-            Tuple of (query_string, role_players_dict)
-        """
-        # Extract role players from relation instance
-        roles = self.model_class._roles
-        role_players: dict[str, Any] = {}
-        for role_name, role in roles.items():
-            del role  # unused
-            entity = relation.__dict__.get(role_name)
-            if entity is not None:
-                role_players[role_name] = entity
-
-        # Build match clause for role players (IID-preferring)
-        # Handles both single players and lists of players (for multi-cardinality roles)
-        normalized_players, role_var_mapping = normalize_role_players(role_players)
-        match_parts = []
-
-        for role_name, entities in normalized_players.items():
-            for i, entity in enumerate(entities):
-                var_name = role_var_mapping[role_name][i]
-                entity_type_name = entity.__class__.get_type_name()
-                match_parts.append(
-                    self._build_role_player_match(var_name, entity, entity_type_name)
-                )
-
-        # Build write clause (insert or put)
-        relation_type_name = self.model_class.get_type_name()
-        role_parts = []
-        for role_name in role_players.keys():
-            typedb_role_name = roles[role_name].role_name
-            for var_name in role_var_mapping[role_name]:
-                role_parts.append(f"{typedb_role_name}: ${var_name}")
-        relation_pattern = f"({', '.join(role_parts)}) isa {relation_type_name}"
-
-        # Add attributes (including inherited)
-        attr_parts = []
-        for field_name, attr_info in self.model_class.get_all_attributes().items():
-            value = getattr(relation, field_name, None)
-            if value is not None:
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-
-                # Handle lists (multi-value attributes)
-                # Note: format_value already unwraps Attribute instances
-                if isinstance(value, list):
-                    for item in value:
-                        formatted = format_value(item)
-                        attr_parts.append(f"has {attr_name} {formatted}")
-                else:
-                    formatted = format_value(value)
-                    attr_parts.append(f"has {attr_name} {formatted}")
-
-        # Combine relation pattern with attributes
-        if attr_parts:
-            write_pattern = relation_pattern + ", " + ", ".join(attr_parts)
-        else:
-            write_pattern = relation_pattern
-
-        # Build full query
-        match_clause = "match\n" + ";\n".join(match_parts) + ";"
-        write_clause = f"{write_keyword}\n" + write_pattern + ";"
-        query = match_clause + "\n" + write_clause
-
-        return query, role_players
-
-    def insert(self, relation: R) -> R:
-        """Insert a typed relation instance into the database.
-
-        Args:
-            relation: Typed relation instance with role players and attributes
-
-        Returns:
-            The inserted relation instance
-
-        Example:
-            # Typed construction - full IDE support and type checking
-            employment = Employment(
-                employee=person,
-                employer=company,
-                position="Engineer",
-                salary=100000
-            )
-            employment_manager.insert(employment)
-        """
-        logger.debug(f"Inserting relation: {self.model_class.__name__}")
-
-        query, role_players = self._build_relation_write_query(relation, "insert")
-        logger.debug(f"Insert query: {query}")
-
-        self._execute(query, TransactionType.WRITE)
-        logger.info(f"Relation inserted: {self.model_class.__name__}")
-
-        # Try to populate _iid by fetching the relation back
-        self._populate_iid_after_insert(relation, role_players)
-
-        return relation
-
-    def _populate_iid_after_insert(self, relation: R, role_players: dict[str, Any]) -> None:
-        """Populate _iid on relation by querying it back using role players and attributes.
-
-        This allows relations without attributes to be identified and used in
-        subsequent operations like update or delete.
-        """
-        roles = self.model_class._roles
-
-        # Build match clause for role players
-        normalized_players, role_var_mapping = normalize_role_players(role_players)
-        match_parts = []
-
-        for role_name, entities in normalized_players.items():
-            for i, entity in enumerate(entities):
-                var_name = role_var_mapping[role_name][i]
-                entity_type_name = entity.__class__.get_type_name()
-                match_parts.append(
-                    self._build_role_player_match(var_name, entity, entity_type_name)
-                )
-
-        # Build relation match with role players
-        relation_type_name = self.model_class.get_type_name()
-        role_parts = []
-        for role_name in role_players.keys():
-            typedb_role_name = roles[role_name].role_name
-            for var_name in role_var_mapping[role_name]:
-                role_parts.append(f"{typedb_role_name}: ${var_name}")
-        relation_pattern = f"$r isa {relation_type_name} ({', '.join(role_parts)})"
-        match_parts.insert(0, relation_pattern)
-
-        # Add attribute constraints for uniqueness
-        for field_name, attr_info in self.model_class.get_all_attributes().items():
-            value = getattr(relation, field_name, None)
-            if value is not None:
-                attr_name = attr_info.typ.get_attribute_name()
-                # Handle lists (multi-value attributes)
-                if isinstance(value, list):
-                    for item in value:
-                        formatted = format_value(item)
-                        match_parts.append(f"$r has {attr_name} {formatted}")
-                else:
-                    formatted = format_value(value)
-                    match_parts.append(f"$r has {attr_name} {formatted}")
-
-        match_clause = ";\n".join(match_parts)
-        query_str = f'match\n{match_clause};\nfetch {{ "_iid": iid($r) }};'
-        logger.debug(f"Fetch relation IID query: {query_str}")
-
-        try:
-            results = self._execute(query_str, TransactionType.READ)
-            if results and len(results) == 1:
-                iid = results[0].get("_iid")
-                if iid:
-                    object.__setattr__(relation, "_iid", iid)
-                    logger.debug(f"Populated _iid {iid} for {self.model_class.__name__}")
-            elif results and len(results) > 1:
-                logger.warning(
-                    f"Multiple relations match after insert for {self.model_class.__name__}, "
-                    f"_iid not populated."
-                )
-        except Exception as e:
-            logger.warning(f"Failed to fetch relation _iid after insert: {e}")
-
-    def put(self, relation: R) -> R:
-        """Put a typed relation instance into the database (insert if not exists).
-
-        Uses TypeQL's PUT clause to ensure idempotent insertion. If the relation
-        already exists (matching role players and attributes), no changes are made.
-        If it doesn't exist, it's inserted.
-
-        Args:
-            relation: Typed relation instance with role players and attributes
-
-        Returns:
-            The relation instance
-
-        Example:
-            # Typed construction
-            employment = Employment(
-                employee=person,
-                employer=company,
-                position="Engineer",
-                salary=100000
-            )
-            # First call inserts, subsequent calls are idempotent
-            employment_manager.put(employment)
-            employment_manager.put(employment)  # No duplicate created
-        """
-        logger.debug(f"Put relation: {self.model_class.__name__}")
-
-        query, role_players = self._build_relation_write_query(relation, "put")
-        logger.debug(f"Put query: {query}")
-
-        self._execute(query, TransactionType.WRITE)
-        logger.info(f"Relation put: {self.model_class.__name__}")
-
-        self._populate_iid_after_insert(relation, role_players)
-        return relation
 
     def put_many(self, relations: list[R]) -> list[R]:
         """Put multiple relations into the database (insert if not exists).

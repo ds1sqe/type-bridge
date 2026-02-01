@@ -19,6 +19,39 @@ from type_bridge.validation import validate_type_name as validate_reserved_word
 
 
 @dataclass
+class MatchClauseInfo:
+    """Information needed to build a TypeQL match clause for an instance.
+
+    Used by ModelManager to build unified CRUD queries for both entities and relations.
+
+    Attributes:
+        main_clause: The primary match clause (e.g., "$e isa person, has Name \"Alice\"")
+        extra_clauses: Additional match clauses (e.g., role player matches for relations)
+        var_name: The main variable name (e.g., "$e" or "$r")
+    """
+
+    main_clause: str
+    extra_clauses: list[str]
+    var_name: str
+
+
+@dataclass
+class WriteQueryInfo:
+    """Information needed to build a TypeQL write query for an instance.
+
+    Supports both entities (which only need insert/put pattern) and relations
+    (which need match clause for role players + insert/put pattern).
+
+    Attributes:
+        match_clause: Optional match clause (for relations with role players)
+        write_pattern: The insert/put pattern
+    """
+
+    match_clause: str | None
+    write_pattern: str
+
+
+@dataclass
 class FieldInfo:
     """Information extracted from a field type annotation.
 
