@@ -51,11 +51,15 @@ class EntityManager[E: Entity]:
     def insert(self, entity: E) -> E:
         """Insert an entity instance into the database.
 
+        After insertion, attempts to populate the entity's _iid by querying
+        it back. This allows the entity to be used in relation insertions
+        without requiring @key attributes.
+
         Args:
             entity: Entity instance to insert
 
         Returns:
-            The inserted entity instance
+            The inserted entity instance (with _iid populated if successful)
 
         Example:
             # Create typed entity instance with wrapped attributes
@@ -65,6 +69,7 @@ class EntityManager[E: Entity]:
                 email=Email("alice@example.com")
             )
             Person.manager(db).insert(person)
+            # person._iid is now populated
         """
         logger.debug(f"Inserting entity: {self.model_class.__name__}")
         query = QueryBuilder.insert_entity(entity)
@@ -74,7 +79,56 @@ class EntityManager[E: Entity]:
         self._execute(query_str, TransactionType.WRITE)
 
         logger.info(f"Entity inserted: {self.model_class.__name__}")
+
+        # Try to populate _iid by fetching the entity back
+        self._populate_iid_after_insert(entity)
+
         return entity
+
+    def _populate_iid_after_insert(self, entity: E) -> None:
+        """Populate _iid on entity by querying it back using its attributes.
+
+        This allows entities without @key to be used in relation insertions.
+        """
+        # Build match clause using all non-None attributes
+        type_name = self.model_class.get_type_name()
+        match_parts = [f"$e isa {type_name}"]
+
+        for field_name, attr_info in self.model_class.get_all_attributes().items():
+            value = getattr(entity, field_name, None)
+            if value is not None:
+                attr_name = attr_info.typ.get_attribute_name()
+                # Handle lists (multi-value attributes)
+                if isinstance(value, list):
+                    for item in value:
+                        if hasattr(item, "value"):
+                            item = item.value
+                        formatted = format_value(item)
+                        match_parts.append(f"has {attr_name} {formatted}")
+                else:
+                    if hasattr(value, "value"):
+                        value = value.value
+                    formatted = format_value(value)
+                    match_parts.append(f"has {attr_name} {formatted}")
+
+        match_clause = ", ".join(match_parts)
+        query_str = f'match {match_clause}; fetch {{ "_iid": iid($e) }};'
+        logger.debug(f"Fetch IID query: {query_str}")
+
+        try:
+            results = self._execute(query_str, TransactionType.READ)
+            if results and len(results) == 1:
+                iid = results[0].get("_iid")
+                if iid:
+                    object.__setattr__(entity, "_iid", iid)
+                    logger.debug(f"Populated _iid {iid} for {self.model_class.__name__}")
+            elif results and len(results) > 1:
+                logger.warning(
+                    f"Multiple entities match after insert for {self.model_class.__name__}, "
+                    f"_iid not populated. Consider adding @key attribute for uniqueness."
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch _iid after insert: {e}")
 
     def put(self, entity: E) -> E:
         """Put an entity instance into the database (insert if not exists).

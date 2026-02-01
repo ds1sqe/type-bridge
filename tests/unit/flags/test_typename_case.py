@@ -23,6 +23,12 @@ class Age(Integer):
     pass
 
 
+class Employee(Entity):
+    """Employee entity for relation tests."""
+
+    flags = TypeFlags(abstract=True)
+
+
 def test_typename_case_classname_default():
     """Test that CLASS_NAME is the default case formatting."""
 
@@ -89,7 +95,7 @@ def test_relation_typename_case_lowercase():
 
     class PersonEmployment(Relation):
         flags = TypeFlags(case=TypeNameCase.LOWERCASE)
-        employee: Role[Entity] = Role("employee", Entity)
+        employee: Role[Employee] = Role("employee", Employee)
 
     assert PersonEmployment.get_type_name() == "personemployment"
 
@@ -99,7 +105,7 @@ def test_relation_typename_case_classname():
 
     class PersonEmployment(Relation):
         flags = TypeFlags(case=TypeNameCase.CLASS_NAME)
-        employee: Role[Entity] = Role("employee", Entity)
+        employee: Role[Employee] = Role("employee", Employee)
 
     assert PersonEmployment.get_type_name() == "PersonEmployment"
 
@@ -109,7 +115,7 @@ def test_relation_typename_case_snake_case():
 
     class PersonEmployment(Relation):
         flags = TypeFlags(case=TypeNameCase.SNAKE_CASE)
-        employee: Role[Entity] = Role("employee", Entity)
+        employee: Role[Employee] = Role("employee", Employee)
 
     assert PersonEmployment.get_type_name() == "person_employment"
 
@@ -119,7 +125,7 @@ def test_relation_typename_explicit_takes_precedence():
 
     class PersonEmployment(Relation):
         flags = TypeFlags(name="employment", case=TypeNameCase.SNAKE_CASE)
-        employee: Role[Entity] = Role("employee", Entity)
+        employee: Role[Employee] = Role("employee", Employee)
 
     assert PersonEmployment.get_type_name() == "employment"
 

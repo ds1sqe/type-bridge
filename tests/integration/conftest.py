@@ -1,43 +1,16 @@
 """Pytest fixtures for integration tests."""
 
-import os
-import subprocess
-import time
-from contextlib import contextmanager
-
 import pytest
 from typedb.driver import DriverOptions
 
+from tests.utils.typedb_lifecycle import (
+    TEST_DB_ADDRESS,
+    TEST_DB_NAME,
+    start_typedb_container,
+    stop_typedb_container,
+    suppress_stderr,
+)
 from type_bridge import Credentials, Database, TypeDB
-
-
-@contextmanager
-def suppress_stderr():
-    """Suppress stderr at the file descriptor level.
-
-    This is needed to silence the TypeDB driver's Rust logging initialization
-    warning which writes directly to fd 2, bypassing Python's sys.stderr.
-    """
-    # Always use fd 2 directly (actual stderr) since Rust writes there
-    stderr_fd = 2
-    saved_stderr = os.dup(stderr_fd)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull, stderr_fd)
-    os.close(devnull)
-    try:
-        yield
-    finally:
-        os.dup2(saved_stderr, stderr_fd)
-        os.close(saved_stderr)
-
-
-# Container tool selection (docker|podman or explicit binary)
-CONTAINER_TOOL = os.getenv("CONTAINER_TOOL", "docker")
-
-# Test database configuration
-TEST_DB_NAME = "type_bridge_test"
-# Allow overriding port/address via environment (for local conflicts or Podman/Docker remaps)
-TEST_DB_ADDRESS = os.getenv("TYPEDB_ADDRESS", "localhost:1730")
 
 
 @pytest.fixture(scope="session")
@@ -47,64 +20,13 @@ def docker_typedb():
     Yields:
         None (container runs in background)
     """
-    # Build compose commands based on container tool
-    compose_base = (
-        [CONTAINER_TOOL, "compose"]
-        if CONTAINER_TOOL not in ("docker-compose", "podman-compose")
-        else [CONTAINER_TOOL]
-    )
-
-    # Check if we should use Docker (default: yes, unless USE_DOCKER=false)
-    use_docker = os.getenv("USE_DOCKER", "true").lower() != "false"
-
-    if not use_docker:
-        # Skip Docker management - assume TypeDB is already running
+    if start_typedb_container():
+        try:
+            yield
+        finally:
+            stop_typedb_container()
+    else:
         yield
-        return
-
-    # Get project root directory
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-
-    # Start Docker container
-    try:
-        # Stop any existing container
-        subprocess.run(
-            [*compose_base, "down"],
-            cwd=project_root,
-            capture_output=True,
-        )
-
-        # Start container
-        subprocess.run(
-            [*compose_base, "up", "-d"],
-            cwd=project_root,
-            check=True,
-            capture_output=True,
-        )
-
-        # Wait for TypeDB to be healthy
-        max_retries = 30
-        for i in range(max_retries):
-            result = subprocess.run(
-                [CONTAINER_TOOL, "inspect", "--format={{.State.Health.Status}}", "typedb_test"],
-                capture_output=True,
-                text=True,
-            )
-            if result.stdout.strip() == "healthy":
-                break
-            time.sleep(1)
-        else:
-            raise RuntimeError("TypeDB container failed to become healthy")
-
-        yield
-
-    finally:
-        # Stop Docker container
-        subprocess.run(
-            [*compose_base, "down"],
-            cwd=project_root,
-            capture_output=True,
-        )
 
 
 @pytest.fixture(scope="session")

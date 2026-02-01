@@ -6,13 +6,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..models import minimal_role_players
+from ..models import Cardinality, minimal_role_players
 from ..naming import to_class_name, to_python_name
 from .entities import _render_attr_field
 from .template_loader import get_template
 
 if TYPE_CHECKING:
-    from ..models import ParsedSchema
+    from ..models import AnnotationValue, ParsedSchema
 
 logger = logging.getLogger(__name__)
 
@@ -32,21 +32,39 @@ class RelationContext:
     cascade_attrs: list[str] = field(default_factory=list)
     subkey_groups: dict[str, list[str]] = field(default_factory=dict)
     distinct_roles: list[str] = field(default_factory=list)
+    # Custom annotations from TQL comments (e.g., # @api(public))
+    annotations: dict[str, AnnotationValue] = field(default_factory=dict)
+
+
+def _render_card_arg(cardinality: Cardinality | None) -> str:
+    """Render Card argument for role cardinality, if needed."""
+    if cardinality is None:
+        return ""
+    # Default single cardinality (1, 1) doesn't need explicit Card
+    if cardinality.min == 1 and cardinality.max == 1:
+        return ""
+    if cardinality.max is None:
+        return f", cardinality=Card({cardinality.min})"
+    return f", cardinality=Card({cardinality.min}, {cardinality.max})"
 
 
 def _render_role_field(
     role_name: str,
     player_classes: list[str],
+    cardinality: Cardinality | None = None,
 ) -> str | None:
     """Render a single role field declaration."""
     if not player_classes:
         return None
 
     py_name = to_python_name(role_name)
+    card_arg = _render_card_arg(cardinality)
 
     if len(player_classes) == 1:
         player = player_classes[0]
-        return f'{py_name}: Role[entities.{player}] = Role("{role_name}", entities.{player})'
+        return (
+            f'{py_name}: Role[entities.{player}] = Role("{role_name}", entities.{player}{card_arg})'
+        )
 
     primary, *rest = player_classes
     extras = ", ".join(f"entities.{p}" for p in rest)
@@ -54,7 +72,7 @@ def _render_role_field(
 
     return (
         f"{py_name}: Role[{union_type}] = "
-        f'_multi(Role.multi("{role_name}", entities.{primary}, {extras}))'
+        f'_multi(Role.multi("{role_name}", entities.{primary}, {extras}{card_arg}))'
     )
 
 
@@ -142,7 +160,7 @@ def _build_relation_context(
         players = minimal_role_players(schema, relation_name, role.name)
         player_classes = [entity_class_names[p] for p in players if p in entity_class_names]
 
-        role_line = _render_role_field(role.name, player_classes)
+        role_line = _render_role_field(role.name, player_classes, role.cardinality)
         if role_line:
             role_fields.append(role_line)
 
@@ -157,6 +175,9 @@ def _build_relation_context(
     # Collect roles with @distinct annotation
     distinct_roles = [r.name for r in relation.roles if r.distinct]
 
+    # Collect custom annotations (excluding internal ones like _docstring)
+    annotations = {k: v for k, v in relation.annotations.items() if not k.startswith("_")}
+
     return RelationContext(
         class_name=cls_name,
         base_class=base_class,
@@ -167,16 +188,33 @@ def _build_relation_context(
         cascade_attrs=cascade_attrs,
         subkey_groups=subkey_groups,
         distinct_roles=sorted(distinct_roles),
+        annotations=annotations,
     )
 
 
-def _needs_card_import(schema: ParsedSchema) -> bool:
+def _needs_card_for_attributes(schema: ParsedSchema) -> bool:
     """Check if any relation uses multi-valued attributes requiring Card."""
     return any(
         card.is_multi
         for relation in schema.relations.values()
         for card in relation.cardinalities.values()
     )
+
+
+def _needs_card_for_roles(schema: ParsedSchema) -> bool:
+    """Check if any role has non-default cardinality requiring Card."""
+    for relation in schema.relations.values():
+        for role in relation.roles:
+            if role.cardinality is not None:
+                # Default (1, 1) doesn't need Card import
+                if not (role.cardinality.min == 1 and role.cardinality.max == 1):
+                    return True
+    return False
+
+
+def _needs_card_import(schema: ParsedSchema) -> bool:
+    """Check if any relation uses multi-valued attributes or role cardinalities requiring Card."""
+    return _needs_card_for_attributes(schema) or _needs_card_for_roles(schema)
 
 
 def _needs_key_import(schema: ParsedSchema) -> bool:
@@ -212,7 +250,12 @@ def render_relations(
 
     # Build imports list
     imports = ["Relation", "Role", "TypeFlags"]
-    needs_flag = _needs_key_import(schema) or _needs_unique_import(schema)
+    # Flag is needed for @key, @unique, or multi-value attributes (Card used with Flag)
+    needs_flag = (
+        _needs_key_import(schema)
+        or _needs_unique_import(schema)
+        or _needs_card_for_attributes(schema)
+    )
     if _needs_card_import(schema):
         imports.insert(0, "Card")
     if needs_flag:

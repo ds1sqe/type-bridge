@@ -1,0 +1,52 @@
+## Role Cardinality Test Schema
+## Tests various role cardinality patterns
+
+define
+
+# Attributes
+attribute name, value string;
+attribute content, value string;
+attribute score, value double;
+
+# Entities
+entity memory,
+    owns name,
+    owns content,
+    plays is_similar_to:similar_memory;
+
+entity person,
+    owns name,
+    plays friendship:friend,
+    plays group_membership:member,
+    plays review:reviewer;
+
+entity document,
+    owns name,
+    owns content,
+    plays review:document;
+
+entity group,
+    owns name,
+    plays group_membership:group;
+
+# Relations with various role cardinalities
+
+# Exact cardinality: exactly 2 memories
+relation is_similar_to,
+    relates similar_memory @card(2..2),
+    owns score;
+
+# Symmetric relation: exactly 2 friends
+relation friendship,
+    relates friend @card(2..2);
+
+# Unbounded cardinality: at least 2 members
+relation group_membership,
+    relates group @card(1..1),
+    relates member @card(2..);
+
+# Mixed cardinalities: 1 document, 1-3 reviewers
+relation review,
+    relates document @card(1..1),
+    relates reviewer @card(1..3),
+    owns score;

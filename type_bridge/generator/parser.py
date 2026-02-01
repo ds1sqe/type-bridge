@@ -62,6 +62,11 @@ class SchemaTransformer(Transformer):
         for opt in opts_list:
             opts.update(opt)
 
+        # Extract docstring and annotations
+        attr_annots = self.attribute_annotations.get(name, {}).copy()
+        docstring = attr_annots.pop("_docstring", None)
+        attr_docstring: str | None = docstring if isinstance(docstring, str) else None
+
         attr = AttributeSpec(
             name=name,
             value_type=opts.get("value_type", ""),
@@ -72,7 +77,8 @@ class SchemaTransformer(Transformer):
             allowed_values=opts.get("values"),
             range_min=opts.get("range_min"),
             range_max=opts.get("range_max"),
-            annotations=self.attribute_annotations.get(name, {}),
+            docstring=attr_docstring,
+            annotations=attr_annots,
         )
         self.schema.attributes[attr.name] = attr
 
@@ -215,6 +221,14 @@ class SchemaTransformer(Transformer):
             if card:
                 plays_cardinalities[role_ref] = card
 
+        # Extract docstring and annotations
+        entity_annots = self.entity_annotations.get(name, {}).copy()
+        docstring = entity_annots.pop("_docstring", None)
+        if isinstance(docstring, str):
+            entity_docstring: str | None = docstring
+        else:
+            entity_docstring = None
+
         entity = EntitySpec(
             name=name,
             parent=opts.get("parent"),
@@ -228,7 +242,8 @@ class SchemaTransformer(Transformer):
             subkeys=subkeys,
             cardinalities=cardinalities,
             plays_cardinalities=plays_cardinalities,
-            annotations=self.entity_annotations.get(name, {}),
+            docstring=entity_docstring,
+            annotations=entity_annots,
         )
         self.schema.entities[name] = entity
 
@@ -397,6 +412,11 @@ class SchemaTransformer(Transformer):
             if role.name in role_annots:
                 role.annotations.update(role_annots[role.name])
 
+        # Extract docstring and annotations
+        rel_annots = self.relation_annotations.get(name, {}).copy()
+        docstring = rel_annots.pop("_docstring", None)
+        rel_docstring: str | None = docstring if isinstance(docstring, str) else None
+
         rel = RelationSpec(
             name=name,
             parent=opts.get("parent"),
@@ -409,7 +429,8 @@ class SchemaTransformer(Transformer):
             cascades=cascades,
             subkeys=subkeys,
             cardinalities=cardinalities,
-            annotations=self.relation_annotations.get(name, {}),
+            docstring=rel_docstring,
+            annotations=rel_annots,
         )
         self.schema.relations[name] = rel
 

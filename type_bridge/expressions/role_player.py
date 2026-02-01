@@ -27,10 +27,10 @@ from type_bridge.expressions.base import Expression
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
-    from type_bridge.models import Entity
+    from type_bridge.models.base import TypeDBType
 
 
-class RolePlayerExpr[T: "Entity"](Expression):
+class RolePlayerExpr[T: "TypeDBType"](Expression):
     """Type-safe expression for filtering role players by their attributes.
 
     Wraps an attribute expression and associates it with a specific role,

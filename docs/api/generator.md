@@ -6,7 +6,7 @@ Generate TypeBridge Python models from TypeDB schema files (`.tql`).
 
 The generator eliminates manual synchronization between TypeDB schemas and Python code. Instead of writing both `.tql` and Python classes, you write the schema once in TypeQL and generate type-safe Python models.
 
-```
+```text
 schema.tql  →  generator  →  attributes.py
                           →  entities.py
                           →  relations.py
@@ -47,7 +47,7 @@ generate_models(schema, "./myapp/models/")
 
 ## CLI Reference
 
-```
+```text
 Usage: python -m type_bridge.generator [OPTIONS] SCHEMA
 
 Arguments:
@@ -65,7 +65,7 @@ The `--output` directory is **required**. We recommend a dedicated directory lik
 
 ## Generated Package Structure
 
-```
+```text
 myapp/models/
 ├── __init__.py      # Package exports, SCHEMA_VERSION, schema_text()
 ├── attributes.py    # Attribute class definitions
@@ -97,26 +97,26 @@ print(schema_text())
 
 The generator supports the full TypeDB 3.0 schema syntax:
 
-| Feature | Status |
-|---------|--------|
-| Attributes with value types | ✓ |
-| `@abstract` types | ✓ |
-| `@independent` attributes | ✓ |
-| `sub` inheritance | ✓ |
-| `@regex` constraints | ✓ |
-| `@values` constraints | ✓ |
-| `@range` constraints | ✓ |
-| `@key` / `@unique` | ✓ |
-| `@card` on owns | ✓ |
-| `@card` on plays | ✓ |
-| `@card` on relates | ✓ |
-| `@cascade` on owns | ✓ |
-| `@subkey` on owns | ✓ |
-| `@distinct` on relates | ✓ |
-| Role overrides (`as`) | ✓ |
-| Functions (`fun`) | ✓ |
-| Structs (`struct`) | ✓ |
-| `#` and `//` comments | ✓ |
+| Feature                     | Status |
+| --------------------------- | ------ |
+| Attributes with value types | ✓      |
+| `@abstract` types           | ✓      |
+| `@independent` attributes   | ✓      |
+| `sub` inheritance           | ✓      |
+| `@regex` constraints        | ✓      |
+| `@values` constraints       | ✓      |
+| `@range` constraints        | ✓      |
+| `@key` / `@unique`          | ✓      |
+| `@card` on owns             | ✓      |
+| `@card` on plays            | ✓      |
+| `@card` on relates          | ✓      |
+| `@cascade` on owns          | ✓      |
+| `@subkey` on owns           | ✓      |
+| `@distinct` on relates      | ✓      |
+| Role overrides (`as`)       | ✓      |
+| Functions (`fun`)           | ✓      |
+| Structs (`struct`)          | ✓      |
+| `#` and `//` comments       | ✓      |
 
 ### Attributes
 
@@ -266,6 +266,16 @@ class Employment(Relation):
     employer: Role[entities.Company] = Role("employer", entities.Company)
     employee: Role[entities.Person] = Role("employee", entities.Person)
 
+class Friendship(SocialRelation):
+    flags = TypeFlags(name="friendship")
+    # Symmetric role - multiple friends allowed per friendship
+    friend: Role[entities.Person] = Role("friend", entities.Person, cardinality=Card(0, 1000))
+
+class Parentship(Relation):
+    flags = TypeFlags(name="parentship")
+    parent: Role[entities.Person] = Role("parent", entities.Person, cardinality=Card(1, 2))
+    child: Role[entities.Person] = Role("child", entities.Person, cardinality=Card(1))
+
 class Contribution(Relation):
     flags = TypeFlags(name="contribution", abstract=True)
     contributor: Role[entities.Contributor] = Role("contributor", entities.Contributor)
@@ -377,15 +387,15 @@ relation friendship,
 
 The following cardinality rules apply to attributes on both **entities** and **relations**:
 
-| TypeQL | Python Type | Default |
-|--------|-------------|---------|
-| `@card(1)` or `@card(1..1)` | `Type` | Required |
-| `@card(0..1)` or no annotation | `Type \| None = None` | Optional |
-| `@card(0..)` | `list[Type] = Flag(Card(min=0))` | Optional list |
-| `@card(1..)` | `list[Type] = Flag(Card(min=1))` | Required list |
-| `@card(2..5)` | `list[Type] = Flag(Card(2, 5))` | Bounded list |
-| `@key` | `Type = Flag(Key)` | Key (implies required) |
-| `@unique` | `Type = Flag(Unique)` | Unique (implies required) |
+| TypeQL                         | Python Type                      | Default                   |
+| ------------------------------ | -------------------------------- | ------------------------- |
+| `@card(1)` or `@card(1..1)`    | `Type`                           | Required                  |
+| `@card(0..1)` or no annotation | `Type \| None = None`            | Optional                  |
+| `@card(0..)`                   | `list[Type] = Flag(Card(min=0))` | Optional list             |
+| `@card(1..)`                   | `list[Type] = Flag(Card(min=1))` | Required list             |
+| `@card(2..5)`                  | `list[Type] = Flag(Card(2, 5))`  | Bounded list              |
+| `@key`                         | `Type = Flag(Key)`               | Key (implies required)    |
+| `@unique`                      | `Type = Flag(Unique)`            | Unique (implies required) |
 
 **Inheritance:** Child types inherit cardinality constraints from parent types. A child can override inherited constraints by redeclaring the attribute with a different `@card`.
 
@@ -420,14 +430,14 @@ entity user,
     owns username @key;
 ```
 
-| Annotation | Effect |
-|------------|--------|
-| `# @prefix(XXX)` | Adds `prefix: ClassVar[str] = "XXX"` |
-| `# @internal` | Sets `internal = True` on the spec |
-| `# @case(SNAKE_CASE)` | Uses specified case for type name |
-| `# @transform(xxx)` | Adds `transform = "xxx"` attribute |
-| `# @tags(a, b, c)` | Adds list annotation |
-| `# Any other comment` | Becomes the class docstring |
+| Annotation            | Effect                               |
+| --------------------- | ------------------------------------ |
+| `# @prefix(XXX)`      | Adds `prefix: ClassVar[str] = "XXX"` |
+| `# @internal`         | Sets `internal = True` on the spec   |
+| `# @case(SNAKE_CASE)` | Uses specified case for type name    |
+| `# @transform(xxx)`   | Adds `transform = "xxx"` attribute   |
+| `# @tags(a, b, c)`    | Adds list annotation                 |
+| `# Any other comment` | Becomes the class docstring          |
 
 ## Functions
 
@@ -479,14 +489,14 @@ fun karma_sum_and_squares() -> double, double:
 
 ### Function Return Types
 
-| TypeQL | Parsed `return_type` |
-|--------|---------------------|
-| `-> { type }` | `"{ type }"` |
-| `-> { t1, t2 }` | `"{ t1, t2 }"` |
-| `-> type` | `"type"` |
-| `-> t1, t2` | `"t1, t2"` |
-| `-> t1, t2?` | `"t1, t2?"` |
-| `-> bool` | `"bool"` |
+| TypeQL          | Parsed `return_type` |
+| --------------- | -------------------- |
+| `-> { type }`   | `"{ type }"`         |
+| `-> { t1, t2 }` | `"{ t1, t2 }"`       |
+| `-> type`       | `"type"`             |
+| `-> t1, t2`     | `"t1, t2"`           |
+| `-> t1, t2?`    | `"t1, t2?"`          |
+| `-> bool`       | `"bool"`             |
 
 ## API Reference
 
@@ -582,7 +592,7 @@ class ParameterSpec:
 
 ### 1. Keep Generated Code Separate
 
-```
+```text
 myapp/
 ├── models/          # Generated (don't edit!)
 │   ├── __init__.py

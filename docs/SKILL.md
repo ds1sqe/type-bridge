@@ -138,6 +138,40 @@ class Company(Entity):
     name: Name = Flag(Key)
 ```
 
+### Role Cardinality
+
+For relations where the same role has multiple players of the same type:
+
+```python
+from type_bridge import Relation, Role, Card, TypeFlags
+
+# Exactly 2 Memory entities playing the same role
+class IsSimilarTo(Relation):
+    flags = TypeFlags(name="is_similar_to")
+    similar_memory: Role[Memory] = Role("similar_memory", Memory, Card(2, 2))
+
+# Generates: relation is_similar_to, relates similar_memory @card(2..2);
+```
+
+**Card variations for roles:**
+
+| Python       | TypeQL        | Meaning                             |
+| ------------ | ------------- | ----------------------------------- |
+| `Card(2, 2)` | `@card(2..2)` | Exactly 2 players                   |
+| `Card(1, 3)` | `@card(1..3)` | Between 1 and 3 players             |
+| `Card(2)`    | `@card(2..)`  | At least 2 players (no upper bound) |
+
+**Creating instances with multiple role players:**
+
+```python
+memory1 = Memory(content=Content("First memory"))
+memory2 = Memory(content=Content("Second memory"))
+
+# Pass a list for roles with multiple players
+similarity = IsSimilarTo(similar_memory=[memory1, memory2])
+manager.insert(similarity)
+```
+
 ---
 
 ## CRUD Operations
@@ -370,6 +404,41 @@ class Cat(Animal):
 # Gets both Dogs and Cats
 animal_manager = Animal.manager(db)
 all_animals = animal_manager.all()
+```
+
+### Polymorphic Role Players
+
+When a relation role uses an abstract type, queried role players are resolved to their concrete types:
+
+```python
+# Abstract base
+class Profile(Entity):
+    flags = TypeFlags(name="profile", abstract=True)
+    profile_id: ProfileId = Flag(Key)
+
+# Concrete subtypes
+class Person(Profile):
+    flags = TypeFlags(name="person")
+    email: Email | None = None
+
+class Organization(Profile):
+    flags = TypeFlags(name="org")
+    website: Website | None = None
+
+# Relation with abstract role type
+class Authorship(Relation):
+    flags = TypeFlags(name="authorship")
+    author: Role[Profile] = Role("author", Profile)  # Abstract!
+    post: Role[Post] = Role("post", Post)
+
+# Query - role players resolved to concrete types
+authorships = Authorship.manager(db).all()
+for auth in authorships:
+    # author is Person or Organization, NOT abstract Profile
+    if isinstance(auth.author, Person):
+        print(f"Person: {auth.author.email}")
+    elif isinstance(auth.author, Organization):
+        print(f"Org: {auth.author.website}")
 ```
 
 ### Serialization

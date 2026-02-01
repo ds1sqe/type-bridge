@@ -343,3 +343,156 @@ class TestTypeTheoreticSchema:
         assert issubclass(attributes.Isbn10, attributes.Isbn)
         assert issubclass(attributes.Issn, attributes.Isn)
         assert issubclass(attributes.Ismn, attributes.Isn)
+
+
+class TestRoleCardinalitySchema:
+    """Integration tests for role cardinality patterns.
+
+    Tests that relations with role cardinality annotations (@card) are
+    correctly generated and can be instantiated with multiple role players.
+    """
+
+    SCHEMA_PATH = FIXTURES_DIR / "role_cardinality.tql"
+
+    @pytest.fixture
+    def generated_package(self, tmp_path: Path) -> dict[str, ModuleType]:
+        """Generate and import the role cardinality package."""
+        output = tmp_path / "role_cardinality"
+        generate_models(self.SCHEMA_PATH, output)
+        return _import_generated_package(output)
+
+    def test_imports_without_error(self, generated_package: dict[str, ModuleType]) -> None:
+        """Generated modules import without error."""
+        assert "attributes" in generated_package
+        assert "entities" in generated_package
+        assert "relations" in generated_package
+
+    def test_relation_classes_exist(self, generated_package: dict[str, ModuleType]) -> None:
+        """Expected relation classes with role cardinality are generated."""
+        relations = generated_package["relations"]
+
+        # Note: Generator uses underscores for multi-word names (e.g., is_similar_to -> Is_similar_to)
+        assert hasattr(relations, "Is_similar_to")
+        assert hasattr(relations, "Friendship")
+        assert hasattr(relations, "Group_membership")
+        assert hasattr(relations, "Review")
+
+    def test_role_has_card_attribute(self, generated_package: dict[str, ModuleType]) -> None:
+        """Roles with cardinality have Card in their definition."""
+        relations = generated_package["relations"]
+
+        # Check that Is_similar_to has a similar_memory role with cardinality
+        is_similar_to = relations.Is_similar_to
+        roles = is_similar_to.get_roles()
+        assert "similar_memory" in roles
+
+        # The role should have cardinality info
+        similar_memory_role = roles["similar_memory"]
+        assert similar_memory_role.cardinality is not None
+        assert similar_memory_role.cardinality.min == 2
+        assert similar_memory_role.cardinality.max == 2
+
+    def test_friendship_role_cardinality(self, generated_package: dict[str, ModuleType]) -> None:
+        """Friendship relation has @card(2..2) on friend role."""
+        relations = generated_package["relations"]
+
+        friendship = relations.Friendship
+        roles = friendship.get_roles()
+        assert "friend" in roles
+
+        friend_role = roles["friend"]
+        assert friend_role.cardinality is not None
+        assert friend_role.cardinality.min == 2
+        assert friend_role.cardinality.max == 2
+
+    def test_unbounded_cardinality_role(self, generated_package: dict[str, ModuleType]) -> None:
+        """Group_membership has @card(2..) on member role (unbounded)."""
+        relations = generated_package["relations"]
+
+        membership = relations.Group_membership
+        roles = membership.get_roles()
+
+        # group role has default cardinality (1..1) - not emitted, so None
+        group_role = roles["group"]
+        assert group_role.cardinality is None  # Default cardinality not emitted
+
+        # member role has @card(2..) - unbounded
+        member_role = roles["member"]
+        assert member_role.cardinality is not None
+        assert member_role.cardinality.min == 2
+        assert member_role.cardinality.max is None  # Unbounded
+
+    def test_bounded_cardinality_role(self, generated_package: dict[str, ModuleType]) -> None:
+        """Review has @card(1..3) on reviewer role."""
+        relations = generated_package["relations"]
+
+        review = relations.Review
+        roles = review.get_roles()
+
+        # document role has @card(1..1) - default, not emitted
+        document_role = roles["document"]
+        assert document_role.cardinality is None  # Default cardinality not emitted
+
+        # reviewer role has @card(1..3)
+        reviewer_role = roles["reviewer"]
+        assert reviewer_role.cardinality is not None
+        assert reviewer_role.cardinality.min == 1
+        assert reviewer_role.cardinality.max == 3
+
+    def test_create_relation_with_list_players(
+        self, generated_package: dict[str, ModuleType]
+    ) -> None:
+        """Create relation instance with list of role players."""
+        entities = generated_package["entities"]
+        relations = generated_package["relations"]
+        attributes = generated_package["attributes"]
+
+        # Create two memory instances
+        memory1 = entities.Memory(
+            name=attributes.Name("Memory 1"), content=attributes.Content("First memory content")
+        )
+        memory2 = entities.Memory(
+            name=attributes.Name("Memory 2"), content=attributes.Content("Second memory content")
+        )
+
+        # Create similarity relation with list of players
+        similarity = relations.Is_similar_to(
+            similar_memory=[memory1, memory2], score=attributes.Score(0.95)
+        )
+
+        assert similarity.similar_memory == [memory1, memory2]
+        # Compare by value since attribute objects have value-based equality
+        assert float(similarity.score) == 0.95
+
+    def test_symmetric_friendship_with_list(self, generated_package: dict[str, ModuleType]) -> None:
+        """Friendship relation with list of two friends."""
+        entities = generated_package["entities"]
+        relations = generated_package["relations"]
+        attributes = generated_package["attributes"]
+
+        alice = entities.Person(name=attributes.Name("Alice"))
+        bob = entities.Person(name=attributes.Name("Bob"))
+
+        friendship = relations.Friendship(friend=[alice, bob])
+
+        assert len(friendship.friend) == 2
+        assert alice in friendship.friend
+        assert bob in friendship.friend
+
+    def test_unbounded_role_with_multiple_players(
+        self, generated_package: dict[str, ModuleType]
+    ) -> None:
+        """Group membership with 3+ members."""
+        entities = generated_package["entities"]
+        relations = generated_package["relations"]
+        attributes = generated_package["attributes"]
+
+        group = entities.Group(name=attributes.Name("Test Group"))
+        member1 = entities.Person(name=attributes.Name("Member 1"))
+        member2 = entities.Person(name=attributes.Name("Member 2"))
+        member3 = entities.Person(name=attributes.Name("Member 3"))
+
+        membership = relations.Group_membership(group=group, member=[member1, member2, member3])
+
+        assert membership.group == group
+        assert len(membership.member) == 3

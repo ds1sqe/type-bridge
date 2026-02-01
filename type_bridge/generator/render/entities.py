@@ -30,6 +30,8 @@ class EntityContext:
     # These will render as TODO comments in generated code
     cascade_attrs: list[str] = field(default_factory=list)
     subkey_groups: dict[str, list[str]] = field(default_factory=dict)
+    # Plays cardinality constraints (e.g., plays friendship:friend @card(0..5))
+    plays_cardinalities: dict[str, str] = field(default_factory=dict)
 
 
 def _render_attr_field(
@@ -149,6 +151,14 @@ def _build_entity_context(
     for group in subkey_groups:
         subkey_groups[group] = sorted(subkey_groups[group])
 
+    # Collect plays cardinalities for TODO comments
+    plays_cardinalities: dict[str, str] = {}
+    for role_ref, card in entity.plays_cardinalities.items():
+        if card.max is None:
+            plays_cardinalities[role_ref] = f"@card({card.min}..)"
+        else:
+            plays_cardinalities[role_ref] = f"@card({card.min}..{card.max})"
+
     return EntityContext(
         class_name=cls_name,
         base_class=base_class,
@@ -159,6 +169,7 @@ def _build_entity_context(
         fields=fields,
         cascade_attrs=cascade_attrs,
         subkey_groups=subkey_groups,
+        plays_cardinalities=plays_cardinalities,
     )
 
 
