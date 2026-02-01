@@ -110,3 +110,86 @@ def test_relation_update_multi_value_uses_guards():
         "};"
     )
     assert expected_try in query
+
+
+def test_entity_update_uses_iid_when_available():
+    """update() should use IID-based matching when _iid is set.
+
+    Regression test: update() used to only use @key attributes for matching,
+    failing with KeyAttributeError for entities without @key even if _iid was set.
+    """
+
+    class ItemTitle(String):
+        pass
+
+    class ItemValue(String):
+        pass
+
+    # Entity WITHOUT @key attributes
+    class Item(Entity):
+        flags = TypeFlags(name="item")
+        title: ItemTitle
+        value: ItemValue | None = None
+
+    item = Item(title=ItemTitle("test"), value=ItemValue("old"))
+    # Simulate a fetched entity with _iid set
+    object.__setattr__(item, "_iid", "0x1234567890abcdef")
+
+    mgr = _RecordingEntityManager(Item)
+    mgr.update(item)
+
+    query = mgr.queries[-1]
+    # Should use IID matching, not key attributes
+    assert "iid 0x1234567890abcdef" in query
+    # Should NOT try to match by non-existent key attributes
+    assert "has ItemTitle" not in query.split("match")[1].split("update")[0]
+
+
+def test_entity_update_falls_back_to_key_when_no_iid():
+    """update() should use @key attributes when _iid is not available."""
+
+    class Name(String):
+        pass
+
+    class Status(String):
+        pass
+
+    class Person(Entity):
+        flags = TypeFlags(name="person")
+        name: Name = Flag(Key)
+        status: Status | None = None
+
+    person = Person(name=Name("Alice"), status=Status("active"))
+    # No _iid set - should fall back to key attributes
+
+    mgr = _RecordingEntityManager(Person)
+    mgr.update(person)
+
+    query = mgr.queries[-1]
+    # Should use key attribute matching
+    assert 'has Name "Alice"' in query
+    # Should NOT have iid
+    assert "iid 0x" not in query
+
+
+def test_entity_update_without_iid_or_key_raises():
+    """update() should raise KeyAttributeError when entity has no _iid and no @key."""
+    import pytest
+
+    from type_bridge.crud.exceptions import KeyAttributeError
+
+    class ItemTitle(String):
+        pass
+
+    # Entity WITHOUT @key attributes
+    class Item(Entity):
+        flags = TypeFlags(name="item2")
+        title: ItemTitle
+
+    item = Item(title=ItemTitle("test"))
+    # No _iid set, no @key attributes
+
+    mgr = _RecordingEntityManager(Item)
+
+    with pytest.raises(KeyAttributeError):
+        mgr.update(item)

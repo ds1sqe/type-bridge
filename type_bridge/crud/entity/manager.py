@@ -460,8 +460,8 @@ class EntityManager[E: Entity]:
         attrs = self._extract_attributes(result, entity_class)
         entity = entity_class(**attrs)
 
-        # Set the IID (from iid($e) in fetch or from input parameter)
-        object.__setattr__(entity, "_iid", result.get("_iid", iid))
+        # Set the IID - always use the input parameter since fetch { $e.* } doesn't return IID
+        object.__setattr__(entity, "_iid", iid)
 
         logger.info(f"Retrieved entity by IID: {entity_class.__name__}")
         return entity
