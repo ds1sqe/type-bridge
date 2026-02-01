@@ -343,9 +343,7 @@ class Entity(TypeDBType, metaclass=EntityMeta):
         return WriteQueryInfo(match_clause=None, write_pattern=write_pattern)
 
     @classmethod
-    def build_batch_write_query(
-        cls, instances: list["Entity"], keyword: str = "insert"
-    ) -> str:
+    def build_batch_write_query(cls, instances: list[Entity], keyword: str = "insert") -> str:
         """Build a batch write query for multiple entity instances.
 
         Entities don't need match clauses, so this simply combines

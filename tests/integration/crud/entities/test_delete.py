@@ -93,9 +93,7 @@ def test_delete_entity_with_none_key_raises(db_with_schema):
     person = Person(name=Name("Test"))
     person.__dict__["name"] = None  # type: ignore[index]
 
-    with pytest.raises(
-        ValueError, match="Cannot identify Person: key attribute 'name' is None"
-    ):
+    with pytest.raises(ValueError, match="Cannot identify Person: key attribute 'name' is None"):
         manager.delete(person)
 
 

@@ -343,12 +343,14 @@ class ModelManager[T: "TypeDBType"](BaseManager[T]):
         for attr_name, values in multi_value_updates.items():
             keep_literals = [format_value(v) for v in dict.fromkeys(values)]
             guard_lines = [f"not {{ ${attr_name} == {lit}; }};" for lit in keep_literals]
-            try_block = "\n".join([
-                "try {",
-                f"  $x has {attr_name} ${attr_name};",
-                *[f"  {g}" for g in guard_lines],
-                "};",
-            ])
+            try_block = "\n".join(
+                [
+                    "try {",
+                    f"  $x has {attr_name} ${attr_name};",
+                    *[f"  {g}" for g in guard_lines],
+                    "};",
+                ]
+            )
             try_blocks.append(try_block)
 
         # Add bindings for single-value updates (delete old + insert new)

@@ -287,7 +287,9 @@ class Relation(TypeDBType, metaclass=RelationMeta):
         roles_str = ", ".join(role_parts)
         main_clause = f"{var_name} isa {type_name} ({roles_str})"
 
-        return MatchClauseInfo(main_clause=main_clause, extra_clauses=extra_clauses, var_name=var_name)
+        return MatchClauseInfo(
+            main_clause=main_clause, extra_clauses=extra_clauses, var_name=var_name
+        )
 
     def get_write_query_info(self, var_name: str = "$r") -> WriteQueryInfo:
         """Get write query info for this relation instance.
@@ -354,9 +356,7 @@ class Relation(TypeDBType, metaclass=RelationMeta):
         return WriteQueryInfo(match_clause=match_clause, write_pattern=write_pattern)
 
     @classmethod
-    def build_batch_write_query(
-        cls, instances: list["Relation"], keyword: str = "insert"
-    ) -> str:
+    def build_batch_write_query(cls, instances: list[Relation], keyword: str = "insert") -> str:
         """Build a batch write query for multiple relation instances.
 
         Deduplicates role players across all instances to avoid redundant

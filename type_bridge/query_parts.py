@@ -83,7 +83,7 @@ class FetchBlock(QueryPart):
 
     def add(self, variable: str, attributes: list[str] | None = None) -> None:
         """Add a fetch projection.
-        
+
         Args:
             variable: The variable to fetch (e.g. "$x")
             attributes: Optional specific attributes (not used in generic fetch { $x.* })
@@ -99,13 +99,13 @@ class FetchBlock(QueryPart):
     def build(self) -> str:
         if not self.projections:
             return ""
-        
+
         lines = []
         for var, _attrs in self.projections.items():
             # For now, default to fetching all attributes ($var.*)
             # TODO: Support specific attribute fetching when _attrs is non-empty
             lines.append(f"  {var}.*")
-            
+
         body = ",\n".join(lines)
         return f"fetch {{\n{body}\n}};"
 
@@ -137,11 +137,11 @@ class Modifiers(QueryPart):
         if self.sort_clauses:
             sort_items = [f"{var} {dir}" for var, dir in self.sort_clauses]
             parts.append(f"sort {', '.join(sort_items)};")
-        
+
         # Order matters: offset then limit
         if self.offset_val is not None:
             parts.append(f"offset {self.offset_val};")
         if self.limit_val is not None:
             parts.append(f"limit {self.limit_val};")
-            
+
         return "\n".join(parts)

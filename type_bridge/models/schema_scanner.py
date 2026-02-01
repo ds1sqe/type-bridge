@@ -21,7 +21,7 @@ class SchemaScanner:
         Modifies the class annotations in-place to ensure Pydantic compatibility.
         """
         owned_attrs: dict[str, ModelAttrInfo] = {}
-        
+
         # Get direct annotations from this class
         direct_annotations = set(getattr(self.cls, "__annotations__", {}).keys())
 
@@ -30,11 +30,11 @@ class SchemaScanner:
         # Stop when we hit a non-base Model class
         # Note: cls.__mro__ includes cls itself, then parents.
         # We want parents only.
-        
+
         # Determine the base class to stop at
         from type_bridge.models.entity import Entity
         from type_bridge.models.relation import Relation
-        
+
         base_model_cls = Relation if is_relation else Entity
 
         for base in self.cls.__mro__[1:]:
@@ -60,7 +60,7 @@ class SchemaScanner:
             }
 
         new_annotations = {}
-        
+
         # If relation, we need to know about roles to skip them
         role_names = getattr(self.cls, "_roles", {}).keys() if is_relation else set()
 
@@ -68,7 +68,7 @@ class SchemaScanner:
             if field_name.startswith("_") or field_name == "flags":
                 new_annotations[field_name] = field_type
                 continue
-            
+
             if is_relation and field_name in role_names:
                 new_annotations[field_name] = field_type
                 continue
@@ -102,7 +102,7 @@ class SchemaScanner:
                             f"Field '{field_name}' in {self.cls.__name__}: "
                             f"list[Type] annotations must use Flag(Card(...))."
                         )
-                    
+
                     if flags.card_min is None and flags.card_max is None:
                         flags.card_min = field_info.card_min
                         flags.card_max = field_info.card_max
@@ -124,21 +124,21 @@ class SchemaScanner:
                 new_annotations[field_name] = field_type
 
         self.cls.__annotations__ = new_annotations
-        
+
         # Set explicit None defaults for optional fields
         for field_name, attr_info in owned_attrs.items():
             existing_default = self.cls.__dict__.get(field_name, None)
             if attr_info.flags.card_min == 0 and not attr_info.flags.has_explicit_card:
                 if not isinstance(existing_default, Attribute):
                     setattr(self.cls, field_name, Field(default=None))
-                    
+
         return owned_attrs
 
     def scan_roles(self) -> dict[str, Role]:
         """Scan class for Role definitions (Relation only)."""
         roles = {}
         annotations = getattr(self.cls, "__annotations__", {})
-        
+
         for key, hint in annotations.items():
             if not key.startswith("_") and key != "flags":
                 origin = get_origin(hint)

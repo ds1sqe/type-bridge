@@ -44,7 +44,7 @@ class TypeDBType(BaseModel, ABC):
     _flags: ClassVar[TypeFlags] = TypeFlags()
     _owned_attrs: ClassVar[dict[str, ModelAttrInfo]] = {}
     _iid: str | None = None  # TypeDB internal ID
-    
+
     # Fields accessor for query building
     c: ClassVar[Any]  # Any to avoid circular import in type hint
 
@@ -79,6 +79,7 @@ class TypeDBType(BaseModel, ABC):
 
         # Initialize fields accessor
         from type_bridge.models.fields_accessor import FieldsAccessor
+
         cls.c = FieldsAccessor(cls)
 
         # Get TypeFlags if defined, otherwise create new default flags
