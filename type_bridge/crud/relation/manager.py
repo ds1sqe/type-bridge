@@ -196,30 +196,25 @@ class RelationManager[R: Relation]:
 
         return None, tuple()
 
-    def insert(self, relation: R) -> R:
-        """Insert a typed relation instance into the database.
+    def _build_relation_write_query(
+        self, relation: R, write_keyword: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Build a write query (insert or put) for a relation.
+
+        Shared implementation for insert() and put() to avoid code duplication.
 
         Args:
             relation: Typed relation instance with role players and attributes
+            write_keyword: Either "insert" or "put"
 
         Returns:
-            The inserted relation instance
-
-        Example:
-            # Typed construction - full IDE support and type checking
-            employment = Employment(
-                employee=person,
-                employer=company,
-                position="Engineer",
-                salary=100000
-            )
-            employment_manager.insert(employment)
+            Tuple of (query_string, role_players_dict)
         """
-        logger.debug(f"Inserting relation: {self.model_class.__name__}")
         # Extract role players from relation instance
         roles = self.model_class._roles
-        role_players = {}
+        role_players: dict[str, Any] = {}
         for role_name, role in roles.items():
+            del role  # unused
             entity = relation.__dict__.get(role_name)
             if entity is not None:
                 role_players[role_name] = entity
@@ -237,7 +232,7 @@ class RelationManager[R: Relation]:
                     self._build_role_player_match(var_name, entity, entity_type_name)
                 )
 
-        # Build insert clause
+        # Build write clause (insert or put)
         relation_type_name = self.model_class.get_type_name()
         role_parts = []
         for role_name in role_players.keys():
@@ -266,18 +261,42 @@ class RelationManager[R: Relation]:
 
         # Combine relation pattern with attributes
         if attr_parts:
-            insert_pattern = relation_pattern + ", " + ", ".join(attr_parts)
+            write_pattern = relation_pattern + ", " + ", ".join(attr_parts)
         else:
-            insert_pattern = relation_pattern
+            write_pattern = relation_pattern
 
         # Build full query
         match_clause = "match\n" + ";\n".join(match_parts) + ";"
-        insert_clause = "insert\n" + insert_pattern + ";"
-        query = match_clause + "\n" + insert_clause
+        write_clause = f"{write_keyword}\n" + write_pattern + ";"
+        query = match_clause + "\n" + write_clause
+
+        return query, role_players
+
+    def insert(self, relation: R) -> R:
+        """Insert a typed relation instance into the database.
+
+        Args:
+            relation: Typed relation instance with role players and attributes
+
+        Returns:
+            The inserted relation instance
+
+        Example:
+            # Typed construction - full IDE support and type checking
+            employment = Employment(
+                employee=person,
+                employer=company,
+                position="Engineer",
+                salary=100000
+            )
+            employment_manager.insert(employment)
+        """
+        logger.debug(f"Inserting relation: {self.model_class.__name__}")
+
+        query, role_players = self._build_relation_write_query(relation, "insert")
         logger.debug(f"Insert query: {query}")
 
         self._execute(query, TransactionType.WRITE)
-
         logger.info(f"Relation inserted: {self.model_class.__name__}")
 
         # Try to populate _iid by fetching the relation back
@@ -374,69 +393,13 @@ class RelationManager[R: Relation]:
             employment_manager.put(employment)  # No duplicate created
         """
         logger.debug(f"Put relation: {self.model_class.__name__}")
-        # Extract role players from relation instance
-        roles = self.model_class._roles
-        role_players = {}
-        for role_name, role in roles.items():
-            entity = relation.__dict__.get(role_name)
-            if entity is not None:
-                role_players[role_name] = entity
 
-        # Build match clause for role players (IID-preferring)
-        # Handles both single players and lists of players (for multi-cardinality roles)
-        normalized_players, role_var_mapping = normalize_role_players(role_players)
-        match_parts = []
-
-        for role_name, entities in normalized_players.items():
-            for i, entity in enumerate(entities):
-                var_name = role_var_mapping[role_name][i]
-                entity_type_name = entity.__class__.get_type_name()
-                match_parts.append(
-                    self._build_role_player_match(var_name, entity, entity_type_name)
-                )
-
-        # Build put clause (same as insert clause but with "put" keyword)
-        relation_type_name = self.model_class.get_type_name()
-        role_parts = []
-        for role_name in role_players.keys():
-            typedb_role_name = roles[role_name].role_name
-            for var_name in role_var_mapping[role_name]:
-                role_parts.append(f"{typedb_role_name}: ${var_name}")
-        relation_pattern = f"({', '.join(role_parts)}) isa {relation_type_name}"
-
-        # Add attributes (including inherited)
-        attr_parts = []
-        for field_name, attr_info in self.model_class.get_all_attributes().items():
-            value = getattr(relation, field_name, None)
-            if value is not None:
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-
-                # Handle lists (multi-value attributes)
-                # Note: format_value already unwraps Attribute instances
-                if isinstance(value, list):
-                    for item in value:
-                        formatted = format_value(item)
-                        attr_parts.append(f"has {attr_name} {formatted}")
-                else:
-                    formatted = format_value(value)
-                    attr_parts.append(f"has {attr_name} {formatted}")
-
-        # Combine relation pattern with attributes
-        if attr_parts:
-            put_pattern = relation_pattern + ", " + ", ".join(attr_parts)
-        else:
-            put_pattern = relation_pattern
-
-        # Build full query with match for role players, then put for the relation
-        match_clause = "match\n" + ";\n".join(match_parts) + ";"
-        put_clause = "put\n" + put_pattern + ";"
-        query = match_clause + "\n" + put_clause
+        query, role_players = self._build_relation_write_query(relation, "put")
         logger.debug(f"Put query: {query}")
 
         self._execute(query, TransactionType.WRITE)
-
         logger.info(f"Relation put: {self.model_class.__name__}")
+
         self._populate_iid_after_insert(relation, role_players)
         return relation
 
@@ -777,7 +740,7 @@ class RelationManager[R: Relation]:
         fetch_items = ['"_iid": iid($r)', '"_type": label($t)']
 
         # Add relation attributes (including inherited)
-        for field_name, attr_info in all_attrs.items():
+        for attr_info in all_attrs.values():
             attr_name = attr_info.typ.get_attribute_name()
             # Multi-value attributes need to be wrapped in [] for TypeQL fetch
             if is_multi_value_attribute(attr_info.flags):
@@ -879,7 +842,7 @@ class RelationManager[R: Relation]:
         fetch_items = ['"_iid": iid($r)', '"_type": label($t)']
 
         # Add relation attributes (including inherited)
-        for field_name, attr_info in all_attrs.items():
+        for attr_info in all_attrs.values():
             attr_name = attr_info.typ.get_attribute_name()
             # Multi-value attributes need to be wrapped in [] for TypeQL fetch
             if is_multi_value_attribute(attr_info.flags):
@@ -905,27 +868,8 @@ class RelationManager[R: Relation]:
         # Convert result to relation instance
         result = results[0]
 
-        # Extract relation attributes (including inherited)
-        attrs: dict[str, Any] = {}
-        for field_name, attr_info in all_attrs.items():
-            attr_class = attr_info.typ
-            attr_name = attr_class.get_attribute_name()
-            if attr_name in result:
-                raw_value = result[attr_name]
-                # Multi-value attributes need explicit conversion from list of raw values
-                if is_multi_value_attribute(attr_info.flags) and isinstance(raw_value, list):
-                    # Convert each raw value to Attribute instance
-                    attrs[field_name] = [attr_class(v) for v in raw_value]
-                else:
-                    # Single value - let Pydantic handle conversion via model constructor
-                    attrs[field_name] = raw_value
-            else:
-                # For list fields (has_explicit_card), default to empty list
-                # For other optional fields, explicitly set to None
-                if attr_info.flags.has_explicit_card:
-                    attrs[field_name] = []
-                else:
-                    attrs[field_name] = None
+        # Extract relation attributes using shared utility
+        attrs = extract_relation_attributes(self.model_class, result)
 
         # Create relation instance
         relation = self.model_class(**attrs)

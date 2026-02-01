@@ -44,8 +44,15 @@ def format_value(value: Any) -> str:
         value = value.value
 
     if isinstance(value, str):
-        # Escape backslashes first, then double quotes for TypeQL string literals
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        # Escape special characters for TypeQL string literals (JSON-style escaping)
+        # Order matters: backslashes first, then other sequences
+        escaped = (
+            value.replace("\\", "\\\\")  # Backslashes
+            .replace('"', '\\"')  # Double quotes
+            .replace("\n", "\\n")  # Newlines
+            .replace("\r", "\\r")  # Carriage returns
+            .replace("\t", "\\t")  # Tabs
+        )
         return f'"{escaped}"'
     elif isinstance(value, bool):
         return "true" if value else "false"
@@ -66,7 +73,13 @@ def format_value(value: Any) -> str:
     else:
         # For other types, convert to string and escape
         str_value = str(value)
-        escaped = str_value.replace("\\", "\\\\").replace('"', '\\"')
+        escaped = (
+            str_value.replace("\\", "\\\\")  # Backslashes
+            .replace('"', '\\"')  # Double quotes
+            .replace("\n", "\\n")  # Newlines
+            .replace("\r", "\\r")  # Carriage returns
+            .replace("\t", "\\t")  # Tabs
+        )
         return f'"{escaped}"'
 
 

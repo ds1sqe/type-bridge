@@ -70,15 +70,15 @@ def _extract_values_from_dict(raw_dict: dict[str, Any]) -> dict[str, Any]:
             try:
                 result[clean_key] = {"value": concept.get_value()}
                 continue
-            except Exception:
-                pass
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug(f"Failed to extract value via get_value() for {key}: {e}")
         # _Value concept (from aggregations) - use .get() not .as_value()
         if hasattr(concept, "is_value") and concept.is_value():
             try:
                 result[clean_key] = {"value": concept.get()}
                 continue
-            except Exception:
-                pass
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug(f"Failed to extract value via get() for {key}: {e}")
         # Fallback: keep as-is (may be a nested structure or primitive)
         result[clean_key] = concept
     return result
@@ -100,10 +100,11 @@ def _extract_concept_row(item: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     has_concept_data = False
 
-    # Try to get column names
+    # Try to get column names - if this fails, it's likely an aggregation result
     try:
         column_names = list(item.column_names())
-    except Exception:
+    except (AttributeError, TypeError) as e:
+        logger.debug(f"Cannot get column_names, treating as aggregation result: {e}")
         return {"result": str(item)}
 
     for var_name in column_names:
@@ -118,8 +119,8 @@ def _extract_concept_row(item: Any) -> dict[str, Any]:
                     if iid is not None:
                         concept_data["_iid"] = str(iid)
                         has_concept_data = True
-                except Exception:
-                    pass
+                except (AttributeError, TypeError) as e:
+                    logger.debug(f"Failed to get IID for {var_name}: {e}")
 
             # Try to get type label via driver method
             if hasattr(concept, "get_type"):
@@ -132,8 +133,8 @@ def _extract_concept_row(item: Any) -> dict[str, Any]:
                         elif hasattr(label, "name"):
                             concept_data["_type"] = label.name
                         has_concept_data = True
-                except Exception:
-                    pass
+                except (AttributeError, TypeError) as e:
+                    logger.debug(f"Failed to get type for {var_name}: {e}")
 
             # Try to get value (for attribute concepts)
             if hasattr(concept, "get_value"):
@@ -142,8 +143,8 @@ def _extract_concept_row(item: Any) -> dict[str, Any]:
                     if value is not None:
                         concept_data["value"] = value
                         has_concept_data = True
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, ValueError) as e:
+                    logger.debug(f"Failed to get value for {var_name}: {e}")
 
             # Try to get value (for _Value concepts from aggregations)
             # Note: _Value.as_value() returns another _Value, use .get() instead
@@ -153,13 +154,13 @@ def _extract_concept_row(item: Any) -> dict[str, Any]:
                     if value is not None:
                         concept_data["value"] = value
                         has_concept_data = True
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, ValueError) as e:
+                    logger.debug(f"Failed to get aggregation value for {var_name}: {e}")
 
             clean_var_name = var_name.lstrip("$")
             result[clean_var_name] = concept_data
 
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError) as e:
             logger.debug(f"Error extracting concept for {var_name}: {e}")
             continue
 
@@ -261,7 +262,25 @@ class Database:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager exit."""
+        del exc_type, exc_val, exc_tb  # unused
         self.close()
+
+    def __del__(self) -> None:
+        """Destructor that warns if driver was not properly closed."""
+        import warnings
+
+        if self._driver is not None and self._owns_driver:
+            warnings.warn(
+                f"Database connection to {self.address} was not closed. "
+                "Use 'with Database(...) as db:' or call db.close() explicitly.",
+                ResourceWarning,
+                stacklevel=2,
+            )
+            # Attempt to close to prevent resource leak
+            try:
+                self._driver.close()
+            except Exception:
+                pass  # Ignore errors during cleanup
 
     @property
     def driver(self) -> Driver:

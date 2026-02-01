@@ -294,9 +294,9 @@ class TestFormatValue:
         assert format_value("") == '""'
 
     def test_format_string_with_newline(self):
-        """Strings with newlines should preserve them."""
+        """Strings with newlines should escape them for TypeQL."""
         result = format_value("line1\nline2")
-        assert result == '"line1\nline2"'
+        assert result == r'"line1\nline2"'
 
     def test_format_boolean_true_returns_lowercase(self):
         """Boolean True should be 'true' (lowercase)."""

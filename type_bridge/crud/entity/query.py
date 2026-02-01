@@ -19,6 +19,7 @@ from ..utils import (
     build_known_key_values,
     format_value,
     get_key_attrs,
+    hydrate_attributes,
     is_multi_value_attribute,
     match_entity_type,
     modify_match_for_type_binding,
@@ -248,35 +249,14 @@ class EntityQuery[E: Entity](BaseQuery[E]):
         entities = []
         base_attrs = self.model_class.get_all_attributes()
         for result in results:
-            # First, extract base attributes for matching
-            base_attr_values = {}
-            for field_name, attr_info in base_attrs.items():
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-                if attr_name in result:
-                    base_attr_values[field_name] = result[attr_name]
-                else:
-                    if attr_info.flags.has_explicit_card:
-                        base_attr_values[field_name] = []
-                    else:
-                        base_attr_values[field_name] = None
+            # First, extract base attributes for matching (to find IID/type)
+            base_attr_values, _ = hydrate_attributes(self.model_class, result)
 
             # Find matching IID/type and resolve class
             entity_class, iid = self._match_entity_type(base_attr_values, iid_type_map, base_attrs)
 
             # Now extract all attributes using the resolved class (includes subtype attrs)
-            resolved_attrs = entity_class.get_all_attributes()
-            attrs = {}
-            for field_name, attr_info in resolved_attrs.items():
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-                if attr_name in result:
-                    attrs[field_name] = result[attr_name]
-                else:
-                    if attr_info.flags.has_explicit_card:
-                        attrs[field_name] = []
-                    else:
-                        attrs[field_name] = None
+            attrs, _ = hydrate_attributes(entity_class, result)
 
             entity = entity_class(**attrs)
             if iid:
