@@ -26,51 +26,20 @@ def _suppress_stderr():
     This silences the TypeDB driver's Rust logging initialization warning
     which writes directly to fd 2, bypassing Python's sys.stderr.
 
-    Note: This uses file descriptor manipulation which may not work on all
-    platforms (e.g., some Windows configurations). Falls back to no-op if
-    suppression fails.
+    Note: Always use fd 2 directly since Rust code writes to the actual
+    stderr file descriptor, not Python's sys.stderr wrapper.
     """
-    import sys
-
-    # Skip suppression on Windows or if os.devnull is unavailable
-    if sys.platform == "win32" or not hasattr(os, "devnull"):
-        logger.debug("Stderr suppression skipped (unsupported platform)")
-        yield
-        return
-
-    saved_stderr = None
-    devnull = None
+    # Always use fd 2 directly (actual stderr) since Rust writes there
     stderr_fd = 2
-
+    saved_stderr = os.dup(stderr_fd)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, stderr_fd)
+    os.close(devnull)
     try:
-        saved_stderr = os.dup(stderr_fd)
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, stderr_fd)
-    except OSError as e:
-        # Fall back to no-op if fd manipulation fails
-        logger.debug(f"Stderr suppression failed, continuing without: {e}")
-        if devnull is not None:
-            try:
-                os.close(devnull)
-            except OSError:
-                pass
-        if saved_stderr is not None:
-            try:
-                os.close(saved_stderr)
-            except OSError:
-                pass
-        yield
-        return
-
-    try:
-        os.close(devnull)
         yield
     finally:
-        try:
-            os.dup2(saved_stderr, stderr_fd)
-            os.close(saved_stderr)
-        except OSError as e:
-            logger.warning(f"Failed to restore stderr: {e}")
+        os.dup2(saved_stderr, stderr_fd)
+        os.close(saved_stderr)
 
 
 def _tx_type_name(tx_type: TransactionType) -> str:
