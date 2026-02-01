@@ -411,16 +411,32 @@ class RelationManager[R: Relation]:
                 role_players[role_name] = entity
 
         # Build match clause for role players (IID-preferring)
+        # Handles both single players and lists of players (for multi-cardinality roles)
         match_parts = []
-        for role_name, entity in role_players.items():
-            entity_type_name = entity.__class__.get_type_name()
-            match_parts.append(self._build_role_player_match(role_name, entity, entity_type_name))
+        role_var_mapping: dict[str, list[str]] = {}  # role_name -> list of variable names
+
+        for role_name, entity_or_list in role_players.items():
+            # Normalize to list for uniform handling
+            entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+            role_var_mapping[role_name] = []
+
+            for i, entity in enumerate(entities):
+                # Generate unique variable name for each player
+                var_name = f"{role_name}_{i}" if len(entities) > 1 else role_name
+                role_var_mapping[role_name].append(var_name)
+
+                entity_type_name = entity.__class__.get_type_name()
+                match_parts.append(
+                    self._build_role_player_match(var_name, entity, entity_type_name)
+                )
 
         # Build put clause (same as insert clause but with "put" keyword)
         relation_type_name = self.model_class.get_type_name()
-        role_parts = [
-            f"{roles[role_name].role_name}: ${role_name}" for role_name in role_players.keys()
-        ]
+        role_parts = []
+        for role_name in role_players.keys():
+            typedb_role_name = roles[role_name].role_name
+            for var_name in role_var_mapping[role_name]:
+                role_parts.append(f"{typedb_role_name}: ${var_name}")
         relation_pattern = f"({', '.join(role_parts)}) isa {relation_type_name}"
 
         # Add attributes (including inherited)

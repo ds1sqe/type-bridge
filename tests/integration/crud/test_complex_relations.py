@@ -368,6 +368,47 @@ class TestMultiValueRoles:
         teams = Team.manager(db).all()
         assert len(teams) == 1
 
+    def test_put_with_list_of_role_players(self, schema_with_multi_role):
+        """Put relation with list of players for multi-value role."""
+        db, Person, Project, Team, Name = schema_with_multi_role
+
+        project = Project(name=Name("Gamma"))
+        alice = Person(name=Name("Alice"))
+        bob = Person(name=Name("Bob"))
+
+        Project.manager(db).insert(project)
+        Person.manager(db).insert(alice)
+        Person.manager(db).insert(bob)
+
+        # Create team with multiple members using put
+        team = Team(project=project, member=[alice, bob])
+        Team.manager(db).put(team)
+
+        teams = Team.manager(db).all()
+        assert len(teams) == 1
+
+        # Put again should be idempotent
+        Team.manager(db).put(team)
+        teams = Team.manager(db).all()
+        assert len(teams) == 1
+
+    def test_to_insert_query_with_multi_role(self, schema_with_multi_role):
+        """Verify to_insert_query generates correct TypeQL for multi-value roles."""
+        db, Person, Project, Team, Name = schema_with_multi_role
+
+        project = Project(name=Name("Delta"))
+        alice = Person(name=Name("Alice"))
+        bob = Person(name=Name("Bob"))
+
+        team = Team(project=project, member=[alice, bob])
+        query = team.to_insert_query()
+
+        # Should have two member role assignments
+        assert "member: $member_0" in query
+        assert "member: $member_1" in query
+        assert "project: $project" in query
+        assert "isa team_multi_role" in query
+
 
 @pytest.mark.integration
 class TestRelationWithAttributes:

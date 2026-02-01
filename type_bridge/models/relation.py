@@ -363,15 +363,14 @@ class Relation(TypeDBType, metaclass=RelationMeta):
         role_parts = []
         for role_name, role in self.__class__._roles.items():
             # Get the entity from the instance
-            entity = self.__dict__.get(role_name)
-            if entity is not None:
-                # Use the entity's variable or IID
-                if hasattr(entity, "_iid") and entity._iid:
-                    # Use existing entity's IID
-                    role_parts.append(f"{role.role_name}: ${role_name}")
-                else:
-                    # New entity - use a variable
-                    role_parts.append(f"{role.role_name}: ${role_name}")
+            entity_or_list = self.__dict__.get(role_name)
+            if entity_or_list is not None:
+                # Normalize to list for uniform handling (multi-cardinality roles)
+                entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+                for i, entity in enumerate(entities):
+                    # Generate unique variable name for each player
+                    var_name = f"{role_name}_{i}" if len(entities) > 1 else role_name
+                    role_parts.append(f"{role.role_name}: ${var_name}")
 
         # Start with relation pattern
         relation_pattern = f"{var} ({', '.join(role_parts)}) isa {type_name}"
