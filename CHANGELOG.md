@@ -2,6 +2,45 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [1.2.7] - 2026-02-03
+
+### New Features
+
+#### TypeDB 3.8.0 Support (PR #93)
+- Full compatibility with TypeDB 3.8.0
+- Updated driver integration
+
+### Performance Improvements
+
+#### Batch Operations Optimization
+- **Batch delete operations** with disjunctive IID matching
+- **Batch entity inserts/puts** into single query
+- **Optimized IID retrieval** with single-query insert+fetch
+
+### Bug Fixes
+
+- **HydrationError handling** - Raise HydrationError instead of silently swallowing exceptions
+- **Variable collision prevention** - Use double underscore separator to prevent variable collisions
+- **TypeDB 3.x relation syntax** - Use correct relation insert syntax with `links` keyword
+- **Multi-variable let fix** - Remove incorrect parentheses in multi-variable let assignment
+- **Polymorphic attributes** - Restore polymorphic attribute fetching with nested wildcard
+
+### Refactoring
+
+- Consolidate duplicated code and fix Python 3.13 warnings
+- Unify entity identification logic across managers
+- Extract shared attribute-to-AST logic into TypeDBType
+- Remove `.c` accessor for direct field access
+
+### Code Quality
+
+- Remove all `type: ignore` comments for full type safety
+
+### Testing
+
+- Add recursive relation tests
+- Add validation performance benchmarks
+
 ## [1.2.6] - 2026-02-01
 
 ### New Features
