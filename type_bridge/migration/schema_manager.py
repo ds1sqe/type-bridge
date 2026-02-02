@@ -159,7 +159,7 @@ class SchemaManager:
 
         logger.debug("Schema compatibility verified - no breaking changes")
 
-    def sync_schema(self, force: bool = False) -> None:
+    def sync_schema(self, force: bool = False, skip_if_exists: bool = False) -> None:
         """Synchronize database schema with registered models.
 
         Automatically checks for existing schema in the database and raises
@@ -167,13 +167,19 @@ class SchemaManager:
 
         Args:
             force: If True, recreate database from scratch, ignoring conflicts
+            skip_if_exists: If True, skip conflict checks when types already exist.
+                           Use this for idempotent deployments where you want to ensure
+                           the schema is in place without recreating the database.
+                           TypeDB 3.x's define statement is idempotent for identical
+                           definitions.
 
         Raises:
             SchemaConflictError: If database has existing schema and force=False
+                                and skip_if_exists=False
         """
-        logger.info(f"Syncing schema (force={force})")
+        logger.info(f"Syncing schema (force={force}, skip_if_exists={skip_if_exists})")
         # Check for existing schema before making changes
-        if not force and self.has_existing_schema():
+        if not force and not skip_if_exists and self.has_existing_schema():
             logger.debug("Existing schema detected, checking for conflicts")
             # In TypeDB 3.x, schema introspection is limited without instances
             # For safety, we treat any attempt to redefine existing types as a potential conflict
