@@ -887,10 +887,9 @@ class TypeDBManager[T: "TypeDBType"]:
         )
 
         # Validate IID format (TypeDB IIDs are hexadecimal strings starting with 0x)
+        # Return None for invalid IIDs (graceful handling - treat as "not found")
         if not iid or not re.match(r"^0x[0-9a-fA-F]+$", iid):
-            raise ValueError(
-                f"Invalid IID format: '{iid}'. IID must be a hexadecimal string starting with '0x'."
-            )
+            return None
 
         var = "$x"
         base_type = self.model_class.get_type_name()
