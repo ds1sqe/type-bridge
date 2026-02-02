@@ -47,9 +47,15 @@ def _unquote_string(raw: str) -> str:
         ValueError: If string is not a valid string literal
     """
     import ast
+    import warnings
 
     try:
-        result = ast.literal_eval(raw)
+        # Suppress SyntaxWarning for invalid escape sequences (e.g., \. in regex)
+        # Python 3.13+ raises warnings for escape sequences that are valid in regex
+        # but not in Python strings. These are legitimate in TQL @regex annotations.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SyntaxWarning)
+            result = ast.literal_eval(raw)
         if not isinstance(result, str):
             raise ValueError(f"Expected string literal, got {type(result).__name__}")
         return result
@@ -128,6 +134,7 @@ class SchemaTransformer(Transformer):
 
     def regex_annotation(self, items: list[Any]) -> dict[str, str]:
         import re
+        import warnings
 
         raw = str(items[0])
         try:
@@ -136,8 +143,11 @@ class SchemaTransformer(Transformer):
             raise ValueError(f"Invalid @regex annotation: {e}") from e
 
         # Validate: must be a valid regex pattern
+        # Suppress SyntaxWarning for valid regex escape sequences like \.
         try:
-            re.compile(pattern)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                re.compile(pattern)
         except re.error as e:
             raise ValueError(
                 f"Invalid @regex pattern: '{pattern}'. "

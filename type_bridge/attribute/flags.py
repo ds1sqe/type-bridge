@@ -236,6 +236,8 @@ class AttributeFlags:
         Returns:
             List of TypeQL annotation strings
         """
+        from type_bridge.typeql.annotations import format_card_annotation
+
         annotations = []
         if self.is_key:
             annotations.append("@key")
@@ -251,13 +253,9 @@ class AttributeFlags:
             # Check if it's @unique with default (1,1) - if so, omit @card
             is_default_card = self.card_min == 1 and self.card_max == 1
             if not (self.is_unique and is_default_card):
-                min_val = self.card_min if self.card_min is not None else 0
-                if self.card_max is not None:
-                    # Use .. syntax for range: @card(1..5)
-                    annotations.append(f"@card({min_val}..{self.card_max})")
-                else:
-                    # Unbounded max: @card(min..)
-                    annotations.append(f"@card({min_val}..)")
+                card_annotation = format_card_annotation(self.card_min, self.card_max)
+                if card_annotation:
+                    annotations.append(card_annotation)
 
         return annotations
 

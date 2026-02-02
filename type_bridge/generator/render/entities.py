@@ -136,12 +136,13 @@ def _build_entity_context(
         subkey_groups[group] = sorted(subkey_groups[group])
 
     # Collect plays cardinalities for TODO comments
+    from type_bridge.typeql.annotations import format_card_annotation
+
     plays_cardinalities: dict[str, str] = {}
     for role_ref, card in entity.plays_cardinalities.items():
-        if card.max is None:
-            plays_cardinalities[role_ref] = f"@card({card.min}..)"
-        else:
-            plays_cardinalities[role_ref] = f"@card({card.min}..{card.max})"
+        card_annotation = format_card_annotation(card.min, card.max)
+        if card_annotation:
+            plays_cardinalities[role_ref] = card_annotation
 
     return EntityContext(
         class_name=cls_name,

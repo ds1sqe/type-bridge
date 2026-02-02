@@ -105,6 +105,8 @@ class Entity(TypeDBType):
         Returns:
             TypeQL schema definition string, or None if this is a base class
         """
+        from type_bridge.typeql.annotations import format_type_annotations
+
         # Base classes don't appear in TypeDB schema
         if cls.is_base():
             return None
@@ -115,11 +117,11 @@ class Entity(TypeDBType):
         # Define entity type with supertype from Python inheritance
         # TypeDB 3.x syntax: entity name @abstract, sub parent,
         supertype = cls.get_supertype()
-        is_abstract = cls.is_abstract()
+        type_annotations = format_type_annotations(abstract=cls.is_abstract())
 
         entity_def = f"entity {type_name}"
-        if is_abstract:
-            entity_def += " @abstract"
+        if type_annotations:
+            entity_def += " " + " ".join(type_annotations)
         if supertype:
             entity_def += f", sub {supertype}"
 
@@ -375,42 +377,12 @@ class Entity(TypeDBType):
     def _wrap_attribute_value(value: Any, attr_info: ModelAttrInfo) -> Any:
         """Wrap raw values using the attribute class, handling multi-value fields.
 
-        Uses _pydantic_validate when available to properly handle type coercion
-        (e.g., parsing ISO datetime strings from TypeDB).
+        Uses the unified wrap_attribute_value() helper for consistent behavior
+        across all hydration paths.
         """
-        attr_class = attr_info.typ
+        from type_bridge.crud.types import wrap_attribute_value
 
-        def wrap_single(item: Any) -> Any:
-            """Wrap a single value, using Pydantic validation for proper type coercion."""
-            if isinstance(item, attr_class):
-                return item
-            # Use _pydantic_validate if available (handles string parsing for datetimes, etc.)
-            if hasattr(attr_class, "_pydantic_validate"):
-                return attr_class._pydantic_validate(item)
-            return attr_class(item)
-
-        if attr_info.flags.has_explicit_card:
-            items = value if isinstance(value, list) else [value]
-            wrapped_items = []
-            for item in items:
-                if item is None:
-                    continue
-                wrapped_items.append(wrap_single(item))
-
-            return wrapped_items or None
-
-        if isinstance(value, list):
-            wrapped_items = []
-            for item in value:
-                if item is None:
-                    continue
-                wrapped_items.append(wrap_single(item))
-            return wrapped_items or None
-
-        if isinstance(value, attr_class):
-            return value
-
-        return wrap_single(value)
+        return wrap_attribute_value(value, attr_info, use_pydantic_validate=True)
 
     def __repr__(self) -> str:
         """Developer-friendly string representation of entity."""

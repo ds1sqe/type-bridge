@@ -304,6 +304,11 @@ class Relation(TypeDBType):
         Returns:
             TypeQL schema definition string, or None if this is a base class
         """
+        from type_bridge.typeql.annotations import (
+            format_card_annotation,
+            format_type_annotations,
+        )
+
         # Base classes don't appear in TypeDB schema
         if cls.is_base():
             return None
@@ -314,11 +319,11 @@ class Relation(TypeDBType):
         # Define relation type with supertype from Python inheritance
         # TypeDB 3.x syntax: relation name @abstract, sub parent,
         supertype = cls.get_supertype()
-        is_abstract = cls.is_abstract()
+        type_annotations = format_type_annotations(abstract=cls.is_abstract())
 
         relation_def = f"relation {type_name}"
-        if is_abstract:
-            relation_def += " @abstract"
+        if type_annotations:
+            relation_def += " " + " ".join(type_annotations)
         if supertype:
             relation_def += f", sub {supertype}"
 
@@ -329,11 +334,9 @@ class Relation(TypeDBType):
             role_def = f"    relates {role.role_name}"
             # Add cardinality annotation if not default (1..1)
             if role.cardinality is not None:
-                card = role.cardinality
-                if card.max is None:
-                    role_def += f" @card({card.min}..)"
-                else:
-                    role_def += f" @card({card.min}..{card.max})"
+                card_annotation = format_card_annotation(role.cardinality.min, role.cardinality.max)
+                if card_annotation:
+                    role_def += f" {card_annotation}"
             lines.append(role_def)
 
         # Add attribute ownerships using shared helper

@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING, Any
 
 from type_bridge.crud.formatting import format_value
-from type_bridge.crud.types import hydrate_attributes, is_multi_value_attribute
+from type_bridge.crud.types import hydrate_attributes, wrap_attribute_value
 
 if TYPE_CHECKING:
     from type_bridge.models import Entity, Relation
@@ -64,9 +64,8 @@ def resolve_entity_class_from_label(
 ) -> type["Entity"]:
     """Resolve the correct Python entity class from a TypeDB type label.
 
-    Searches through the allowed entity classes and their subclasses to find
-    the class matching the given type label. This handles polymorphic role
-    players where the declared role type may be abstract.
+    This is a thin wrapper around ModelRegistry.resolve() that provides
+    polymorphic class resolution with caching.
 
     Args:
         type_label: The TypeDB type label (from label() function), e.g., "person"
@@ -75,34 +74,9 @@ def resolve_entity_class_from_label(
     Returns:
         The matching Python entity class, or the first allowed class as fallback
     """
-    if not type_label:
-        # Fallback to first allowed class if no type label
-        return allowed_entity_classes[0]
+    from type_bridge.models.registry import ModelRegistry
 
-    # Quick check: does the label match one of the allowed classes directly?
-    for cls in allowed_entity_classes:
-        if cls.get_type_name() == type_label:
-            return cls
-
-    # Search through subclasses of allowed classes
-    def find_in_subclasses(cls: type["Entity"]) -> type["Entity"] | None:
-        """Recursively search subclasses for matching type name."""
-        for subclass in cls.__subclasses__():
-            if subclass.get_type_name() == type_label:
-                return subclass
-            # Recurse into deeper subclasses
-            found = find_in_subclasses(subclass)
-            if found:
-                return found
-        return None
-
-    for cls in allowed_entity_classes:
-        found = find_in_subclasses(cls)
-        if found:
-            return found
-
-    # Fallback to first allowed class
-    return allowed_entity_classes[0]
+    return ModelRegistry.resolve(type_label, allowed_entity_classes)
 
 
 def build_role_player_fetch_items(
@@ -166,8 +140,8 @@ def extract_relation_attributes(
 ) -> dict[str, Any]:
     """Extract relation attributes from a query result.
 
-    Handles multi-value attributes by wrapping them in Attribute instances.
-    Single values are passed directly to let Pydantic handle conversion.
+    Uses the unified wrap_attribute_value() helper for consistent handling
+    of multi-value and single-value attributes.
 
     Args:
         model_class: The relation class to extract attributes for
@@ -184,13 +158,10 @@ def extract_relation_attributes(
         attr_name = attr_class.get_attribute_name()
         if attr_name in result:
             raw_value = result[attr_name]
-            # Multi-value attributes need explicit conversion from list of raw values
-            if is_multi_value_attribute(attr_info.flags) and isinstance(raw_value, list):
-                # Convert each raw value to Attribute instance
-                attrs[field_name] = [attr_class(v) for v in raw_value]
-            else:
-                # Single value - let Pydantic handle conversion via model constructor
-                attrs[field_name] = raw_value
+            # Use unified wrapping helper for consistent behavior
+            attrs[field_name] = wrap_attribute_value(
+                raw_value, attr_info, use_pydantic_validate=True
+            )
         else:
             # For list fields (has_explicit_card), default to empty list
             # For other optional fields, explicitly set to None

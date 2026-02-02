@@ -125,12 +125,34 @@ class SchemaScanner:
 
         self.cls.__annotations__ = new_annotations
 
-        # Set explicit None defaults for optional fields
+        # Set explicit defaults for optional and list fields
         for field_name, attr_info in owned_attrs.items():
             existing_default = self.cls.__dict__.get(field_name, None)
-            if attr_info.flags.card_min == 0 and not attr_info.flags.has_explicit_card:
+
+            # List fields with Card(...) need default_factory=list
+            if attr_info.flags.has_explicit_card:
+                if isinstance(existing_default, AttributeFlags):
+                    # Replace AttributeFlags with proper Pydantic Field
+                    setattr(self.cls, field_name, Field(default_factory=list))
+            # Optional single-value fields need default=None
+            elif attr_info.flags.card_min == 0:
                 if not isinstance(existing_default, Attribute):
                     setattr(self.cls, field_name, Field(default=None))
+
+        # Also fix inherited list fields from parent classes
+        # This is needed because __pydantic_init_subclass__ sets FieldDescriptor
+        # on parent class attributes, which Pydantic then inherits as defaults
+
+        for base in self.cls.__mro__[1:]:
+            if base is base_model_cls or not issubclass(base, base_model_cls):
+                continue
+            if hasattr(base, "_owned_attrs"):
+                for field_name, attr_info in base._owned_attrs.items():
+                    if attr_info.flags.has_explicit_card:
+                        # Check if this class doesn't already define this field
+                        if field_name not in self.cls.__dict__:
+                            # Set proper default_factory for inherited list fields
+                            setattr(self.cls, field_name, Field(default_factory=list))
 
         return owned_attrs
 

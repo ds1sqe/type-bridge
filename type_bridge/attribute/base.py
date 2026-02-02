@@ -231,15 +231,16 @@ class Attribute(ABC):
         Returns:
             TypeQL schema definition string
         """
+        from type_bridge.typeql.annotations import format_type_annotations
+
         attr_name = cls.get_attribute_name()
         value_type = cls.get_value_type()
 
         # Build type-level annotations (@abstract, @independent come right after name)
-        type_annotations = []
-        if cls.abstract:
-            type_annotations.append("@abstract")
-        if cls.independent:
-            type_annotations.append("@independent")
+        type_annotations = format_type_annotations(
+            abstract=cls.abstract,
+            independent=cls.independent,
+        )
 
         # Build definition: attribute name [@abstract] [@independent], [sub parent,] value type;
         if type_annotations:

@@ -966,11 +966,11 @@ class TestRegexValidation:
 
     def test_regex_valid_pattern(self) -> None:
         """Valid regex pattern is accepted."""
-        schema = parse_tql_schema("""
+        schema = parse_tql_schema(r"""
             define
-            attribute email, value string @regex("^[a-z]+@[a-z]+\\.[a-z]+$");
+            attribute email, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");
         """)
-        assert schema.attributes["email"].regex == "^[a-z]+@[a-z]+\\.[a-z]+$"
+        assert schema.attributes["email"].regex == r"^[a-z]+@[a-z]+\.[a-z]+$"
 
     def test_regex_invalid_pattern(self) -> None:
         """Invalid regex pattern raises error."""
