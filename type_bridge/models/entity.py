@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import (
     TYPE_CHECKING,
     Any,
-    Literal,
     Self,
     TypeVar,
     dataclass_transform,
@@ -142,7 +140,7 @@ class Entity(TypeDBType):
         Returns:
             InsertClause containing statements
         """
-        from type_bridge.models.utils import get_base_type_for_attribute
+        from type_bridge.models.utils import AstValueType, get_ast_value_type
         from type_bridge.query.ast import (
             HasStatement,
             InsertClause,
@@ -161,25 +159,8 @@ class Entity(TypeDBType):
                 attr_class = attr_info.typ
                 attr_name = attr_class.get_attribute_name()
 
-                # Determine value type for AST
-                py_type = get_base_type_for_attribute(attr_class)
-                val_type_map: dict[
-                    type, Literal["string", "long", "double", "boolean", "datetime", "date"]
-                ] = {
-                    str: "string",
-                    int: "long",
-                    float: "double",
-                    bool: "boolean",
-                    datetime: "datetime",
-                }
-                # Default to string if unknown (shouldn't happen with standard attrs)
-                # Note: get_base_type_for_attribute might return None for custom attrs
-                # that don't inherit directly from standard ones in MRO order checked.
-                # Ideally, we should check isinstance on value or Attribute instance.
-
-                ast_type: Literal["string", "long", "double", "boolean", "datetime", "date"] = (
-                    val_type_map.get(py_type, "string") if py_type else "string"
-                )
+                # Get AST value type from shared utility
+                ast_type = get_ast_value_type(attr_class)
 
                 # Handle lists (multi-value attributes)
                 values = value if isinstance(value, list) else [value]
@@ -189,7 +170,7 @@ class Entity(TypeDBType):
                     raw_val = item.value if isinstance(item, Attribute) else item
 
                     # Refine type based on actual value if needed
-                    item_type: Literal["string", "long", "double", "boolean", "datetime", "date"]
+                    item_type: AstValueType
                     if ast_type == "string" and isinstance(raw_val, bool):
                         item_type = "boolean"
                     elif ast_type == "string" and isinstance(raw_val, float):

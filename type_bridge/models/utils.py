@@ -235,6 +235,42 @@ def get_base_type_for_attribute(attr_cls: type[Attribute]) -> type | None:
     return None
 
 
+# Type alias for AST value types
+AstValueType = Literal["string", "long", "double", "boolean", "datetime", "datetime-tz", "date"]
+
+
+def get_ast_value_type(attr_cls: type[Attribute]) -> AstValueType:
+    """Get the AST value type for an Attribute class.
+
+    This function determines the correct TypeQL literal type for an attribute,
+    including proper handling of DateTimeTZ vs DateTime.
+
+    Args:
+        attr_cls: The Attribute subclass
+
+    Returns:
+        The AST value type string ("string", "long", "double", "boolean",
+        "datetime", "datetime-tz", or "date")
+    """
+    from type_bridge.attribute.datetimetz import DateTimeTZ
+
+    # Check for DateTimeTZ first (before DateTime, since DateTimeTZ doesn't inherit DateTime)
+    if issubclass(attr_cls, DateTimeTZ):
+        return "datetime-tz"
+
+    # Map base types to AST types
+    py_type = get_base_type_for_attribute(attr_cls)
+    type_map: dict[type | None, AstValueType] = {
+        str: "string",
+        int: "long",
+        float: "double",
+        bool: "boolean",
+        datetime_type: "datetime",
+        None: "string",  # Default fallback
+    }
+    return type_map.get(py_type, "string")
+
+
 # TypeDB built-in type names that cannot be used
 TYPEDB_BUILTIN_TYPES = {"thing", "entity", "relation", "attribute"}
 

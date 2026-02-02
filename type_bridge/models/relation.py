@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Literal,
     TypeVar,
     dataclass_transform,
 )
@@ -132,7 +130,6 @@ class Relation(TypeDBType):
         Returns:
             InsertClause containing statements
         """
-        from type_bridge.models.utils import get_base_type_for_attribute
         from type_bridge.query.ast import (
             HasStatement,
             InsertClause,
@@ -177,20 +174,10 @@ class Relation(TypeDBType):
                 attr_class = attr_info.typ
                 attr_name = attr_class.get_attribute_name()
 
-                # Determine value type for AST
-                py_type = get_base_type_for_attribute(attr_class)
-                val_type_map: dict[
-                    type, Literal["string", "long", "double", "boolean", "datetime", "date"]
-                ] = {
-                    str: "string",
-                    int: "long",
-                    float: "double",
-                    bool: "boolean",
-                    datetime: "datetime",
-                }
-                ast_type: Literal["string", "long", "double", "boolean", "datetime", "date"] = (
-                    val_type_map.get(py_type, "string") if py_type else "string"
-                )
+                # Get AST value type from shared utility
+                from type_bridge.models.utils import AstValueType, get_ast_value_type
+
+                ast_type = get_ast_value_type(attr_class)
 
                 # Handle lists (multi-value attributes)
                 values = value if isinstance(value, list) else [value]
@@ -200,7 +187,7 @@ class Relation(TypeDBType):
                     raw_val = item.value if isinstance(item, Attribute) else item
 
                     # Refine type based on actual value if needed
-                    item_type: Literal["string", "long", "double", "boolean", "datetime", "date"]
+                    item_type: AstValueType
                     if ast_type == "string" and isinstance(raw_val, bool):
                         item_type = "boolean"
                     elif ast_type == "string" and isinstance(raw_val, float):

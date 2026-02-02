@@ -38,7 +38,7 @@ class LiteralValue(Value):
     """A literal value (string, number, boolean, date, etc.)."""
 
     value: Any
-    value_type: Literal["string", "long", "double", "boolean", "datetime", "date"]
+    value_type: Literal["string", "long", "double", "boolean", "datetime", "datetime-tz", "date"]
 
 
 @dataclass

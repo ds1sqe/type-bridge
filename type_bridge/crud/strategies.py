@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from type_bridge.models.utils import get_base_type_for_attribute
 from type_bridge.query.ast import (
     Constraint,
     HasConstraint,
@@ -55,24 +54,9 @@ class ModelStrategy(ABC):
 
     def _convert_value(self, value: Any, attr_class: type[Attribute]) -> LiteralValue:
         """Helper to convert Python value to AST LiteralValue."""
-        # This logic mimics to_ast in models
-        py_type = get_base_type_for_attribute(attr_class)
-        val_type_map: dict[
-            type, Literal["string", "long", "double", "boolean", "datetime", "date"]
-        ] = {
-            str: "string",
-            int: "long",
-            float: "double",
-            bool: "boolean",
-        }
-        # Add datetime support if needed, requires import
-        from datetime import datetime
+        from type_bridge.models.utils import get_ast_value_type
 
-        val_type_map[datetime] = "datetime"
-
-        ast_type: Literal["string", "long", "double", "boolean", "datetime", "date"] = (
-            val_type_map.get(py_type, "string") if py_type else "string"
-        )
+        ast_type = get_ast_value_type(attr_class)
 
         # Refine type based on actual value
         if ast_type == "string" and isinstance(value, bool):
