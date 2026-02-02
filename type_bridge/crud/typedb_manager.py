@@ -179,8 +179,16 @@ class TypeDBManager[T: "TypeDBType"]:
         # Execute the insert (WRITE transaction)
         self._execute(query, TransactionType.WRITE)
 
-        # Fetch the IID of the newly inserted instance
-        # Try key-based matching first, then fall back to attribute-based matching
+        # Fetch and set _iid on the instance
+        self._fetch_and_set_iid(instance, var)
+
+        return instance
+
+    def _fetch_and_set_iid(self, instance: T, var: str) -> None:
+        """Fetch and set _iid on an instance after insert/put.
+
+        Tries key-based matching first, then falls back to attribute-based matching.
+        """
         try:
             # Build AST-based match + fetch query
             if isinstance(instance, Entity):
@@ -206,8 +214,6 @@ class TypeDBManager[T: "TypeDBType"]:
             # Fall back to attribute-based matching for entities without keys
             # This is less precise but allows IID retrieval when there's exactly one match
             self._try_fetch_iid_by_attributes(instance, var)
-
-        return instance
 
     def _try_fetch_iid_by_attributes(self, instance: T, var: str) -> None:
         """Try to fetch IID by matching all attributes (fallback for types without keys).
@@ -786,31 +792,8 @@ class TypeDBManager[T: "TypeDBType"]:
         query = "\n".join(query_parts)
         self._execute(query, TransactionType.WRITE)
 
-        # Fetch the IID of the instance (same logic as insert)
-        try:
-            # Build AST-based match + fetch query
-            if isinstance(instance, Entity):
-                patterns = [instance.get_match_pattern(var)]
-            else:  # Relation
-                patterns = instance.get_match_patterns(var)
-
-            match_clause = MatchClause(patterns=patterns)
-            match_str = self.compiler.compile(match_clause)
-            iid_fetch_str = self._build_iid_fetch(var)
-            fetch_query = f"{match_str}\n{iid_fetch_str}"
-            results = self._execute(fetch_query, TransactionType.READ)
-
-            if results and len(results) > 0:
-                iid_result = results[0].get("iid")
-                # Handle wrapped IID format from TypeDB driver
-                if isinstance(iid_result, dict) and "value" in iid_result:
-                    iid_result = iid_result["value"]
-                if iid_result:
-                    object.__setattr__(instance, "_iid", iid_result)
-                    logger.debug(f"Set _iid on instance after put: {iid_result}")
-        except ValueError:
-            # Fall back to attribute-based matching for entities without keys
-            self._try_fetch_iid_by_attributes(instance, var)
+        # Fetch and set _iid on the instance
+        self._fetch_and_set_iid(instance, var)
 
         return instance
 

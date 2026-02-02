@@ -166,3 +166,80 @@ def test_put_vs_insert_duplicates(db_with_schema):
     # With @key constraint, we should have exactly 1 person
     assert len(results) == 1
     assert results[0].name.value == "Alice"
+
+
+@pytest.mark.integration
+@pytest.mark.order(17)
+def test_put_populates_iid(db_with_schema):
+    """Test that put() populates _iid on the instance."""
+
+    class Name(String):
+        pass
+
+    class Age(Integer):
+        pass
+
+    class Person(Entity):
+        flags = TypeFlags(name="person")
+        name: Name = Flag(Key)
+        age: Age | None
+
+    person_manager = Person.manager(db_with_schema)
+
+    # Create entity - _iid should be None before put
+    alice = Person(name=Name("Alice"), age=Age(30))
+    assert alice._iid is None
+
+    # Put should populate _iid
+    person_manager.put(alice)
+    assert alice._iid is not None
+
+    # Second put should also have _iid populated (may be same or refreshed)
+    bob = Person(name=Name("Bob"), age=Age(25))
+    assert bob._iid is None
+    person_manager.put(bob)
+    assert bob._iid is not None
+
+    # Verify IIDs are different
+    assert alice._iid != bob._iid
+
+
+@pytest.mark.integration
+@pytest.mark.order(18)
+def test_put_many_populates_iid(db_with_schema):
+    """Test that put_many() populates _iid on all instances."""
+
+    class Name(String):
+        pass
+
+    class Age(Integer):
+        pass
+
+    class Person(Entity):
+        flags = TypeFlags(name="person")
+        name: Name = Flag(Key)
+        age: Age | None
+
+    person_manager = Person.manager(db_with_schema)
+
+    # Create entities
+    persons = [
+        Person(name=Name("Alice"), age=Age(30)),
+        Person(name=Name("Bob"), age=Age(25)),
+        Person(name=Name("Charlie"), age=Age(35)),
+    ]
+
+    # All should have None _iid before put
+    for p in persons:
+        assert p._iid is None
+
+    # Put many should populate _iid on all
+    person_manager.put_many(persons)
+
+    # All should now have _iid populated
+    for p in persons:
+        assert p._iid is not None
+
+    # All IIDs should be unique
+    iids = [p._iid for p in persons]
+    assert len(set(iids)) == 3
