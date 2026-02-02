@@ -47,7 +47,7 @@ class AggregateExpr[T: "Attribute"](Expression):
             "Aggregate expressions are values, not patterns. Use to_value_ast()."
         )
 
-    def to_value_ast(self, var: str) -> "Value":
+    def to_value_ast(self, var: str) -> "Value":  # type: ignore[override]
         """Convert to AST FunctionCallValue."""
         from type_bridge.query.ast import FunctionCallValue
 

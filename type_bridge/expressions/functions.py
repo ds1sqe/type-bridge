@@ -215,7 +215,7 @@ class FunctionQuery[T]:
             keys = [v.lstrip("$") for v in vars_list]
 
         items = [FetchVariable(key=k, var=v) for k, v in zip(keys, vars_list, strict=True)]
-        clause = FetchClause(items=items)
+        clause = FetchClause(items=items)  # type: ignore[arg-type]
         compiler = QueryCompiler()
 
         return compiler.compile(clause)

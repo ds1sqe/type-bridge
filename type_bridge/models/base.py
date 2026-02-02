@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Self, dataclass_transform
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, dataclass_transform
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
@@ -99,7 +99,7 @@ class TypeDBType(BaseModel, ABC):
         return self
 
     # Type context for name validation (entity, relation, etc.)
-    _type_context: ClassVar[str] = "entity"
+    _type_context: ClassVar[Literal["entity", "relation", "attribute", "role"]] = "entity"
 
     def __init_subclass__(cls) -> None:
         """Called when a TypeDBType subclass is created."""
