@@ -5,7 +5,7 @@ from typing import cast
 import pytest
 
 from type_bridge import Database, Entity, Flag, Key, Relation, Role, String, TypeFlags
-from type_bridge.schema.info import SchemaInfo
+from type_bridge.migration.info import SchemaInfo
 
 
 def test_role_allows_multiple_player_types_validation():

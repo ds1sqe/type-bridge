@@ -44,7 +44,7 @@ def attribute_wrapper(attr_class: type[Attribute]):
 class MatchClauseInfo:
     """Information needed to build a TypeQL match clause for an instance.
 
-    Used by ModelManager to build unified CRUD queries for both entities and relations.
+    Used by TypeDBManager to build CRUD queries for both entities and relations.
 
     Attributes:
         main_clause: The primary match clause (e.g., "$e isa person, has Name \"Alice\"")

@@ -6,30 +6,14 @@ from unittest.mock import MagicMock
 from typedb.driver import TransactionType
 
 from type_bridge import Card, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
-from type_bridge.crud.entity.manager import EntityManager
-from type_bridge.crud.relation.manager import RelationManager
+from type_bridge.crud import TypeDBManager
 from type_bridge.crud.utils import format_value
 
 
-class _RecordingEntityManager(EntityManager):
-    """Entity manager that records executed queries instead of hitting TypeDB."""
+class _RecordingTypeDBManager[T](TypeDBManager[T]):
+    """TypeDBManager that records executed queries instead of hitting TypeDB."""
 
-    def __init__(self, model_class: type):
-        # Use a mock object instead of real Database
-        from type_bridge import Database
-
-        super().__init__(cast(Database, MagicMock()), model_class)
-        self.queries: list[str] = []
-
-    def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
-        self.queries.append(query)
-        return []
-
-
-class _RecordingRelationManager(RelationManager):
-    """Relation manager that records executed queries instead of hitting TypeDB."""
-
-    def __init__(self, model_class: type):
+    def __init__(self, model_class: type[T]):
         from type_bridge import Database
 
         super().__init__(cast(Database, MagicMock()), model_class)
@@ -83,8 +67,8 @@ class TestFormatValueEdgeCases:
         assert "newline" in result
 
 
-class TestEntityManagerEdgeCases:
-    """Tests for EntityManager edge cases."""
+class TestTypeDBManagerEdgeCases:
+    """Tests for TypeDBManager edge cases."""
 
     def test_insert_entity_generates_query(self):
         """insert() should generate an INSERT query."""
@@ -97,7 +81,7 @@ class TestEntityManagerEdgeCases:
             name: NegName = Flag(Key)
 
         person = NegPerson(name=NegName("Alice"))
-        mgr = _RecordingEntityManager(NegPerson)
+        mgr = _RecordingTypeDBManager(NegPerson)
         mgr.insert(person)
 
         assert len(mgr.queries) > 0
@@ -119,7 +103,7 @@ class TestEntityManagerEdgeCases:
             age: UpdAge
 
         person = UpdPerson(name=UpdName("Bob"), age=UpdAge(30))
-        mgr = _RecordingEntityManager(UpdPerson)
+        mgr = _RecordingTypeDBManager(UpdPerson)
         mgr.update(person)
 
         assert len(mgr.queries) > 0
@@ -136,7 +120,7 @@ class TestEntityManagerEdgeCases:
             flags = TypeFlags(name="get_person")
             name: GetName = Flag(Key)
 
-        mgr = _RecordingEntityManager(GetPerson)
+        mgr = _RecordingTypeDBManager(GetPerson)
         # get() generates a fetch query
         mgr.get(name=GetName("Charlie"))
 
@@ -147,7 +131,7 @@ class TestEntityManagerEdgeCases:
 
 
 class TestRelationManagerEdgeCases:
-    """Tests for RelationManager edge cases."""
+    """Tests for TypeDBManager with relations edge cases."""
 
     def test_insert_relation_with_role_player(self):
         """insert() should include role player in query."""
@@ -165,7 +149,7 @@ class TestRelationManagerEdgeCases:
 
         user = RelUser(name=RelName("Alice"))
         friendship = RelFriendship(friend=user)
-        mgr = _RecordingRelationManager(RelFriendship)
+        mgr = _RecordingTypeDBManager(RelFriendship)
         mgr.insert(friendship)
 
         assert len(mgr.queries) > 0
@@ -262,7 +246,7 @@ class TestStringEscapingEdgeCases:
             name: SqName = Flag(Key)
 
         person = SqPerson(name=SqName("O'Brien"))
-        mgr = _RecordingEntityManager(SqPerson)
+        mgr = _RecordingTypeDBManager(SqPerson)
         mgr.insert(person)
 
         query = mgr.queries[-1]
@@ -279,7 +263,7 @@ class TestStringEscapingEdgeCases:
             name: DqName = Flag(Key)
 
         person = DqPerson(name=DqName('Say "Hello"'))
-        mgr = _RecordingEntityManager(DqPerson)
+        mgr = _RecordingTypeDBManager(DqPerson)
         mgr.insert(person)
 
         query = mgr.queries[-1]
@@ -297,7 +281,7 @@ class TestStringEscapingEdgeCases:
             name: BsName = Flag(Key)
 
         person = BsPerson(name=BsName("C:\\Users\\test"))
-        mgr = _RecordingEntityManager(BsPerson)
+        mgr = _RecordingTypeDBManager(BsPerson)
         mgr.insert(person)
 
         query = mgr.queries[-1]

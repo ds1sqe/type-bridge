@@ -17,18 +17,12 @@ logger = logging.getLogger(__name__)
 class BaseManager[T: "TypeDBType"](ABC):
     """Abstract base manager for CRUD operations.
 
-    Provides shared functionality for EntityManager and RelationManager:
+    Provides shared functionality for TypeDBManager:
     - Connection and executor management
     - Query execution helpers
     - Common operations like all(), _execute()
 
-    Subclasses must implement:
-    - insert(): Insert a single instance
-    - get(): Retrieve instances with optional filters
-    - update(): Update an instance
-    - delete(): Delete an instance
-    - filter(): Create a chainable query
-    - group_by(): Create a grouped aggregation query
+    TypeDBManager implements all abstract methods.
     """
 
     _connection: Connection

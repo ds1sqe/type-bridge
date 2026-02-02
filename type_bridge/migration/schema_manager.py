@@ -2,10 +2,10 @@
 
 import logging
 
+from type_bridge.migration.exceptions import SchemaConflictError
+from type_bridge.migration.info import SchemaInfo
+from type_bridge.migration.utils import type_exists
 from type_bridge.models import Entity, Relation
-from type_bridge.schema.exceptions import SchemaConflictError
-from type_bridge.schema.info import SchemaInfo
-from type_bridge.schema.utils import type_exists
 from type_bridge.session import Database
 
 logger = logging.getLogger(__name__)
@@ -189,7 +189,7 @@ class SchemaManager:
                         existing_types.append(f"relation '{type_name}'")
 
             if existing_types:
-                from type_bridge.schema.diff import SchemaDiff
+                from type_bridge.migration.diff import SchemaDiff
 
                 types_str = ", ".join(existing_types)
                 logger.error(f"Schema conflict: types already exist: {types_str}")

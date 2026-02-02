@@ -1,12 +1,10 @@
 """Query builder for TypeQL."""
 
-import logging
+from __future__ import annotations
 
-from type_bridge.crud.utils import (
-    build_entity_match_pattern,
-    build_relation_match_pattern,
-)
-from type_bridge.models import Entity, Relation
+import logging
+from typing import TYPE_CHECKING
+
 from type_bridge.query_parts import (
     DeleteBlock,
     FetchBlock,
@@ -14,6 +12,9 @@ from type_bridge.query_parts import (
     MatchBlock,
     Modifiers,
 )
+
+if TYPE_CHECKING:
+    from type_bridge.models import Entity, Relation
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class Query:
         self.insert_block = InsertBlock()
         self.modifiers = Modifiers()
 
-    def match(self, pattern: str) -> "Query":
+    def match(self, pattern: str) -> Query:
         """Add a match clause.
 
         Args:
@@ -41,7 +42,7 @@ class Query:
         self.match_block.add(pattern)
         return self
 
-    def fetch(self, variable: str, *attributes: str) -> "Query":
+    def fetch(self, variable: str, *attributes: str) -> Query:
         """Add variables and attributes to fetch.
 
         In TypeQL 3.x, fetch uses the syntax:
@@ -60,7 +61,7 @@ class Query:
         self.fetch_block.add(variable, list(attributes))
         return self
 
-    def delete(self, pattern: str) -> "Query":
+    def delete(self, pattern: str) -> Query:
         """Add a delete clause.
 
         Args:
@@ -72,7 +73,7 @@ class Query:
         self.delete_block.add(pattern)
         return self
 
-    def insert(self, pattern: str) -> "Query":
+    def insert(self, pattern: str) -> Query:
         """Add an insert clause.
 
         Args:
@@ -84,7 +85,7 @@ class Query:
         self.insert_block.add(pattern)
         return self
 
-    def limit(self, limit: int) -> "Query":
+    def limit(self, limit: int) -> Query:
         """Set query limit.
 
         Args:
@@ -96,7 +97,7 @@ class Query:
         self.modifiers.limit(limit)
         return self
 
-    def offset(self, offset: int) -> "Query":
+    def offset(self, offset: int) -> Query:
         """Set query offset.
 
         Args:
@@ -108,7 +109,7 @@ class Query:
         self.modifiers.offset(offset)
         return self
 
-    def sort(self, variable: str, direction: str = "asc") -> "Query":
+    def sort(self, variable: str, direction: str = "asc") -> Query:
         """Add sorting to the query.
 
         Args:
@@ -183,6 +184,8 @@ class QueryBuilder:
         Returns:
             Query object
         """
+        from type_bridge.crud.patterns import build_entity_match_pattern
+
         logger.debug(
             f"QueryBuilder.match_entity: {model_class.__name__}, var={var}, filters={filters}"
         )
@@ -225,6 +228,8 @@ class QueryBuilder:
         Raises:
             ValueError: If a role name is not defined in the model
         """
+        from type_bridge.crud.patterns import build_relation_match_pattern
+
         logger.debug(
             f"QueryBuilder.match_relation: {model_class.__name__}, var={var}, "
             f"role_players={role_players}"

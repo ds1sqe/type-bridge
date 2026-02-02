@@ -8,10 +8,10 @@ from type_bridge import (
     Flag,
     Integer,
     Key,
+    SchemaManager,
     String,
     TypeFlags,
 )
-from type_bridge.schema import SchemaManager
 
 
 @pytest.mark.integration
@@ -261,6 +261,11 @@ def test_delete_entity_without_key_and_no_iid_raises(db_with_schema):
 
     The unified ModelManager requires either IID or @key attributes to identify
     the entity for deletion.
+
+    Note: When entities are inserted, IID is populated via attribute matching if
+    there's exactly one match. When counter1 is inserted, it's unique, so it gets
+    an IID. When counter2 is inserted, there are now 2 matches, so counter2 does
+    NOT get an IID. Therefore counter2 cannot be deleted.
     """
 
     class CounterValue(Integer):
@@ -282,9 +287,13 @@ def test_delete_entity_without_key_and_no_iid_raises(db_with_schema):
     counter2 = Counter(counter_value=CounterValue(42))
     manager.insert_many([counter1, counter2])
 
-    # Should raise ValueError since no @key and no IID
+    # counter1 has IID (was unique when inserted), counter2 does NOT (2 matches when inserted)
+    assert counter1._iid is not None, "counter1 should have IID (was unique at insert time)"
+    assert counter2._iid is None, "counter2 should NOT have IID (multiple matches at insert time)"
+
+    # Deleting counter2 should raise ValueError since it has no @key and no IID
     with pytest.raises(ValueError, match="no _iid set and no @key attributes defined"):
-        manager.delete(counter1)
+        manager.delete(counter2)
 
 
 @pytest.mark.integration

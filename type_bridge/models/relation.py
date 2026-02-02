@@ -8,6 +8,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
+    Literal,
     TypeVar,
     dataclass_transform,
 )
@@ -18,14 +19,10 @@ from type_bridge.attribute import Attribute, AttributeFlags, TypeFlags
 from type_bridge.crud.utils import extract_entity_key, unwrap_attribute
 from type_bridge.models.base import TypeDBType
 from type_bridge.models.role import Role
-from type_bridge.models.utils import (
-    MatchClauseInfo,
-    WriteQueryInfo,
-)
+from type_bridge.models.utils import MatchClauseInfo
 
 if TYPE_CHECKING:
-    from type_bridge.crud import RelationManager
-    from type_bridge.query.ast import InsertClause
+    from type_bridge.query.ast import InsertClause, Pattern, RelationPattern
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +74,9 @@ class Relation(TypeDBType):
     _type_context = "relation"
     _roles: ClassVar[dict[str, Role]] = {}
 
-    def __init_subclass__(cls) -> None:
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         """Initialize relation subclass."""
-        super().__init_subclass__()
+        super().__init_subclass__(**kwargs)
         logger.debug(f"Initializing Relation subclass: {cls.__name__}")
 
         from type_bridge.models.schema_scanner import SchemaScanner
@@ -89,15 +86,33 @@ class Relation(TypeDBType):
         cls._owned_attrs = scanner.scan_attributes(is_relation=True)
 
     @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Called by Pydantic after model class initialization.
+
+        This is the right place to restore Role descriptors because:
+        1. __init_subclass__ runs before Pydantic's metaclass finishes
+        2. Pydantic removes Role instances from class __dict__ during construction
+        3. __pydantic_init_subclass__ runs after Pydantic's setup is complete
+
+        This restores Role descriptors so class-level access (Employment.employee)
+        returns a RoleRef for type-safe query building.
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+
+        # Restore Role descriptors using type.__setattr__ to bypass any Pydantic interception
+        for role_name, role in cls._roles.items():
+            type.__setattr__(cls, role_name, role)
+
+    @classmethod
     def _get_base_type_class(cls) -> type[Relation]:
         """Return Relation as the base type class for supertype resolution."""
         return Relation
 
     @classmethod
-    def _get_manager_class(cls) -> type[RelationManager]:
-        from type_bridge.crud import RelationManager
+    def _get_manager_class(cls) -> type:
+        from type_bridge.crud import TypeDBManager
 
-        return RelationManager
+        return TypeDBManager
 
     @classmethod
     def get_roles(cls) -> dict[str, Role]:
@@ -123,6 +138,7 @@ class Relation(TypeDBType):
             InsertClause,
             LiteralValue,
             RelationStatement,
+            Statement,
         )
         from type_bridge.query.ast import RolePlayer as AstRolePlayer
 
@@ -153,8 +169,9 @@ class Relation(TypeDBType):
                     )
 
         # Collect attribute ownerships inline (for TypeDB 3.x insert without variable)
+        # Use get_all_attributes() to include inherited attributes
         inline_attributes = []
-        for field_name, attr_info in self._owned_attrs.items():
+        for field_name, attr_info in self.get_all_attributes().items():
             value = getattr(self, field_name, None)
             if value is not None:
                 attr_class = attr_info.typ
@@ -162,14 +179,18 @@ class Relation(TypeDBType):
 
                 # Determine value type for AST
                 py_type = get_base_type_for_attribute(attr_class)
-                val_type_map = {
+                val_type_map: dict[
+                    type, Literal["string", "long", "double", "boolean", "datetime", "date"]
+                ] = {
                     str: "string",
                     int: "long",
                     float: "double",
                     bool: "boolean",
                     datetime: "datetime",
                 }
-                ast_type = val_type_map.get(py_type, "string")
+                ast_type: Literal["string", "long", "double", "boolean", "datetime", "date"] = (
+                    val_type_map.get(py_type, "string") if py_type else "string"
+                )
 
                 # Handle lists (multi-value attributes)
                 values = value if isinstance(value, list) else [value]
@@ -178,20 +199,26 @@ class Relation(TypeDBType):
                     # Unwrap attribute value
                     raw_val = item.value if isinstance(item, Attribute) else item
 
+                    # Refine type based on actual value if needed
+                    item_type: Literal["string", "long", "double", "boolean", "datetime", "date"]
                     if ast_type == "string" and isinstance(raw_val, bool):
-                        ast_type = "boolean"
-                    elif ast_type == "string" and isinstance(raw_val, (int, float)):
-                        ast_type = "double" if isinstance(raw_val, float) else "long"
+                        item_type = "boolean"
+                    elif ast_type == "string" and isinstance(raw_val, float):
+                        item_type = "double"
+                    elif ast_type == "string" and isinstance(raw_val, int):
+                        item_type = "long"
+                    else:
+                        item_type = ast_type
 
                     inline_attributes.append(
                         HasStatement(
                             subject_var=var,
                             attr_name=attr_name,
-                            value=LiteralValue(value=raw_val, value_type=ast_type),
+                            value=LiteralValue(value=raw_val, value_type=item_type),
                         )
                     )
 
-        statements = [
+        statements: list[Statement] = [
             RelationStatement(
                 variable=var,
                 type_name=type_name,
@@ -202,55 +229,6 @@ class Relation(TypeDBType):
         ]
 
         return InsertClause(statements=statements)
-
-    def to_insert_query(self, var: str = "$r") -> str:
-        """Generate TypeQL insert query for this relation instance.
-
-        Args:
-            var: Variable name to use
-
-        Returns:
-            TypeQL insert pattern for the relation
-
-        Example:
-            >>> employment = Employment(employee=alice, employer=tech_corp, position="Engineer")
-            >>> employment.to_insert_query()
-            '$r (employee: $alice, employer: $tech_corp) isa employment, has position "Engineer"'
-        """
-        type_name = self.get_type_name()
-
-        # Build role players
-        role_parts = []
-        for role_name, role in self.__class__._roles.items():
-            # Get the entity from the instance
-            entity_or_list = self.__dict__.get(role_name)
-            if entity_or_list is not None:
-                # Normalize to list for uniform handling (multi-cardinality roles)
-                entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
-                for i, entity in enumerate(entities):
-                    # Generate unique variable name for each player
-                    var_name = f"{role_name}_{i}" if len(entities) > 1 else role_name
-                    role_parts.append(f"{role.role_name}: ${var_name}")
-
-        # Start with relation pattern
-        relation_pattern = f"{var} ({', '.join(role_parts)}) isa {type_name}"
-        parts = [relation_pattern]
-
-        # Add attribute ownerships
-        for field_name, attr_info in self._owned_attrs.items():
-            value = getattr(self, field_name, None)
-            if value is not None:
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-
-                # Handle lists (multi-value attributes)
-                if isinstance(value, list):
-                    for item in value:
-                        parts.append(f"has {attr_name} {self._format_value(item)}")
-                else:
-                    parts.append(f"has {attr_name} {self._format_value(value)}")
-
-        return ", ".join(parts)
 
     def get_match_clause_info(self, var_name: str = "$r") -> MatchClauseInfo:
         """Get match clause info for this relation instance.
@@ -304,185 +282,76 @@ class Relation(TypeDBType):
             main_clause=main_clause, extra_clauses=extra_clauses, var_name=var_name
         )
 
-    def get_write_query_info(self, var_name: str = "$r") -> WriteQueryInfo:
-        """Get write query info for this relation instance.
+    def get_match_patterns(self, var_name: str = "$r") -> list["Pattern"]:
+        """Get AST patterns for matching this relation instance.
 
-        Relations need a match clause for role players before the insert/put.
+        Returns a list of patterns: the main RelationPattern plus EntityPatterns
+        for each role player (when matching by role players, not IID).
 
         Args:
-            var_name: Variable name to use
+            var_name: Variable name to use in the pattern
 
         Returns:
-            WriteQueryInfo with match clause for role players and write pattern
-        """
-        roles = self.__class__._roles
-        match_parts = []
-        role_parts = []
-        role_var_map: dict[str, list[str]] = {}
+            List of Pattern AST nodes
 
-        # Build match clauses for role players
+        Raises:
+            ValueError: If any role player cannot be identified
+        """
+        from type_bridge.query.ast import (
+            IidConstraint,
+            RelationPattern,
+            RolePlayer,
+        )
+
+        type_name = self.get_type_name()
+        patterns: list[Pattern] = []
+
+        # Prefer IID-based matching when available
+        relation_iid = getattr(self, "_iid", None)
+        if relation_iid:
+            main_pattern = RelationPattern(
+                variable=var_name,
+                type_name=type_name,
+                role_players=[],
+                constraints=[IidConstraint(iid=relation_iid)],
+            )
+            return [main_pattern]
+
+        # Fall back to role player matching
+        roles = self.__class__._roles
+        role_player_nodes: list[RolePlayer] = []
+
         for role_name, role in roles.items():
             entity_or_list = self.__dict__.get(role_name)
             if entity_or_list is None:
-                raise ValueError(f"Role player '{role_name}' is required for insert")
+                raise ValueError(f"Role player '{role_name}' is required for matching")
 
             # Normalize to list for uniform handling
             entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
-            role_var_map[role_name] = []
 
-            for i, entity in enumerate(entities):
+            for i, player in enumerate(entities):
                 player_var = f"${role_name}_{i}" if len(entities) > 1 else f"${role_name}"
-                role_var_map[role_name].append(player_var)
-                role_parts.append(f"{role.role_name}: {player_var}")
+                role_player_nodes.append(RolePlayer(role=role.role_name, player_var=player_var))
 
-                # Get match clause for the role player entity
-                player_match = entity.get_match_clause_info(player_var)
-                match_parts.append(player_match.main_clause)
-                match_parts.extend(player_match.extra_clauses)
-
-        # Build match clause
-        match_clause = ";\n".join(match_parts) if match_parts else None
-
-        # Build write pattern
-        # Note: In TypeDB 3.x insert, relations don't get a variable binding
-        # (the var_name is ignored for the write pattern)
-        type_name = self.get_type_name()
-        roles_str = ", ".join(role_parts)
-        write_parts = [f"({roles_str}) isa {type_name}"]
-
-        # Add attributes (including inherited)
-        for field_name, attr_info in self.get_all_attributes().items():
-            value = getattr(self, field_name, None)
-            if value is not None:
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-
-                # Handle lists (multi-value attributes)
-                if isinstance(value, list):
-                    for item in value:
-                        write_parts.append(f"has {attr_name} {self._format_value(item)}")
+                # Get AST pattern for the role player (could be Entity or Relation)
+                if hasattr(player, "get_match_pattern"):
+                    # Entity: returns single pattern
+                    patterns.append(player.get_match_pattern(player_var))
                 else:
-                    write_parts.append(f"has {attr_name} {self._format_value(value)}")
+                    # Relation: returns list of patterns
+                    patterns.extend(player.get_match_patterns(player_var))
 
-        write_pattern = ", ".join(write_parts)
+        # Build main relation pattern
+        main_pattern = RelationPattern(
+            variable=var_name,
+            type_name=type_name,
+            role_players=role_player_nodes,
+            constraints=[],
+        )
+        # Insert main pattern first, then role player patterns
+        patterns.insert(0, main_pattern)
 
-        return WriteQueryInfo(match_clause=match_clause, write_pattern=write_pattern)
-
-    @classmethod
-    def build_batch_write_query(cls, instances: list[Relation], keyword: str = "insert") -> str:
-        """Build a batch write query for multiple relation instances.
-
-        Deduplicates role players across all instances to avoid redundant
-        match clauses when multiple relations share the same role players.
-
-        Args:
-            instances: List of relation instances
-            keyword: Write keyword ("insert" or "put")
-
-        Returns:
-            Complete TypeQL query string with match and write clauses
-        """
-        if not instances:
-            return ""
-
-        roles = cls._roles
-
-        # Collect all unique role players with deduplication
-        # Maps player_key -> (player_var, match_clause)
-        all_players: dict[tuple[str, Any], tuple[str, str]] = {}
-        player_counter = 0
-
-        def get_player_key_and_match(entity: Any) -> tuple[tuple[str, Any], str]:
-            """Get deduplication key and match clause for a role player."""
-            player_type = entity.get_type_name()
-
-            # Prefer IID-based matching when available
-            entity_iid = getattr(entity, "_iid", None)
-            if entity_iid:
-                player_key: tuple[str, Any] = ("iid", entity_iid)
-                match_clause = f"isa {player_type}, iid {entity_iid}"
-                return (player_key, match_clause)
-
-            # Fall back to key attribute matching
-            owned_attrs = entity.get_all_attributes()
-            key_parts: list[str] = [f"isa {player_type}"]
-            key_values: list[tuple[str, Any]] = []
-
-            for field_name, attr_info in owned_attrs.items():
-                if attr_info.flags.is_key:
-                    value = getattr(entity, field_name, None)
-                    if value is not None:
-                        attr_name = attr_info.typ.get_attribute_name()
-                        formatted = entity._format_value(value)
-                        key_parts.append(f"has {attr_name} {formatted}")
-                        key_values.append((attr_name, value))
-
-            if key_values:
-                player_key = ("keys", tuple(sorted(key_values)))
-                match_clause = ", ".join(key_parts)
-                return (player_key, match_clause)
-
-            raise ValueError(
-                f"Role player ({entity.__class__.__name__}) cannot be identified: "
-                "no _iid set and no @key attributes defined."
-            )
-
-        # First pass: collect all unique players
-        match_clauses = []
-        for instance in instances:
-            for role_name in roles:
-                entity_or_list = instance.__dict__.get(role_name)
-                if entity_or_list is None:
-                    continue
-
-                entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
-                for entity in entities:
-                    player_key, match_parts = get_player_key_and_match(entity)
-                    if player_key not in all_players:
-                        player_var = f"$player{player_counter}"
-                        player_counter += 1
-                        all_players[player_key] = (player_var, match_parts)
-                        match_clauses.append(f"{player_var} {match_parts}")
-
-        # Second pass: build write patterns using the player variables
-        write_patterns = []
-        for instance in instances:
-            role_parts = []
-            for role_name, role in roles.items():
-                entity_or_list = instance.__dict__.get(role_name)
-                if entity_or_list is None:
-                    raise ValueError(f"Missing role player for role: {role_name}")
-
-                entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
-                for entity in entities:
-                    player_key, _ = get_player_key_and_match(entity)
-                    player_var, _ = all_players[player_key]
-                    role_parts.append(f"{role.role_name}: {player_var}")
-
-            # Build write pattern for this relation
-            roles_str = ", ".join(role_parts)
-            pattern_parts = [f"({roles_str}) isa {cls.get_type_name()}"]
-
-            # Add attributes (including inherited)
-            for field_name, attr_info in cls.get_all_attributes().items():
-                value = getattr(instance, field_name, None)
-                if value is not None:
-                    attr_name = attr_info.typ.get_attribute_name()
-                    if isinstance(value, list):
-                        for item in value:
-                            pattern_parts.append(f"has {attr_name} {instance._format_value(item)}")
-                    else:
-                        pattern_parts.append(f"has {attr_name} {instance._format_value(value)}")
-
-            write_patterns.append(", ".join(pattern_parts))
-
-        # Build complete query
-        if match_clauses:
-            match_section = "match\n" + ";\n".join(match_clauses) + ";"
-            write_section = f"{keyword}\n" + ";\n".join(write_patterns) + ";"
-            return f"{match_section}\n{write_section}"
-        else:
-            return f"{keyword}\n" + ";\n".join(write_patterns) + ";"
+        return patterns
 
     @classmethod
     def to_schema_definition(cls) -> str | None:

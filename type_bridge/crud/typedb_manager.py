@@ -1,4 +1,9 @@
-"""Unified TypeDB Manager using AST and Strategies."""
+"""Unified TypeDB Manager using AST and Strategies.
+
+This module provides TypeDBManager, a unified CRUD manager that replaces
+the separate EntityManager and RelationManager with a single generic
+implementation using the Strategy pattern.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,18 @@ from type_bridge.crud.formatting import format_value
 from type_bridge.crud.strategies import EntityStrategy, ModelStrategy, RelationStrategy
 from type_bridge.crud.types import is_multi_value_attribute
 from type_bridge.models import Entity, Relation
-from type_bridge.query.ast import MatchClause
+from type_bridge.query.ast import (
+    AggregateExpr,
+    DeleteClause,
+    DeleteThingStatement,
+    FetchAttribute,
+    FetchAttributeList,
+    FetchClause,
+    FetchFunction,
+    MatchClause,
+    ReduceAssignment,
+    ReduceClause,
+)
 from type_bridge.query.compiler import QueryCompiler
 from type_bridge.session import Connection, ConnectionExecutor
 
@@ -41,8 +57,107 @@ class TypeDBManager[T: "TypeDBType"]:
     def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
         return self._executor.execute(query, tx_type)
 
+    def _build_fetch_items(
+        self, var: str, attrs: dict[str, Any], *, include_iid: bool = True, include_type: bool = True
+    ) -> list[FetchAttribute | FetchAttributeList | FetchFunction]:
+        """Build typed fetch items for a query.
+
+        Args:
+            var: The variable to fetch from (e.g., "$ent")
+            attrs: Dict of attribute info from get_all_attributes()
+            include_iid: Whether to include _iid fetch
+            include_type: Whether to include _type fetch (requires $t type variable)
+
+        Returns:
+            List of typed FetchItem nodes
+        """
+        items: list[FetchAttribute | FetchAttributeList | FetchFunction] = []
+
+        if include_iid:
+            items.append(FetchFunction(key="_iid", func_name="iid", var=var))
+
+        if include_type:
+            items.append(FetchFunction(key="_type", func_name="label", var="$t"))
+
+        for _field_name, attr_info in attrs.items():
+            attr_name = attr_info.typ.get_attribute_name()
+            if is_multi_value_attribute(attr_info.flags):
+                items.append(FetchAttributeList(key=attr_name, var=var, attr_name=attr_name))
+            else:
+                items.append(FetchAttribute(key=attr_name, var=var, attr_name=attr_name))
+
+        return items
+
+    def _compile_fetch(self, items: list[FetchAttribute | FetchAttributeList | FetchFunction]) -> str:
+        """Compile fetch items to a fetch clause string."""
+        return self.compiler.compile(FetchClause(items=items))
+
+    def _build_count_reduce(self, var: str, result_var: str = "$count") -> str:
+        """Build a reduce count clause string.
+
+        Args:
+            var: Variable to count (e.g., "$e")
+            result_var: Result variable name (e.g., "$count")
+
+        Returns:
+            Compiled reduce clause like "reduce $count = count($e);"
+        """
+        reduce_clause = ReduceClause(
+            assignments=[
+                ReduceAssignment(
+                    result_var=result_var,
+                    aggregate=AggregateExpr(func_name="count", var=var),
+                )
+            ]
+        )
+        return self.compiler.compile(reduce_clause)
+
+    def _build_iid_fetch(self, var: str) -> str:
+        """Build a fetch clause that only fetches the IID.
+
+        Args:
+            var: Variable to fetch IID from (e.g., "$e")
+
+        Returns:
+            Compiled fetch clause like 'fetch { "iid": iid($e) };'
+        """
+        fetch_items = [FetchFunction(key="iid", func_name="iid", var=var)]
+        return self._compile_fetch(fetch_items)
+
+    def _collect_all_subclass_attributes(self, model_class: type[T]) -> dict[str, bool]:
+        """Collect all attributes from a class and all its subclasses.
+
+        For polymorphic queries, we need to fetch attributes from all possible
+        concrete subtypes, not just the queried supertype.
+
+        Args:
+            model_class: The base class to start from
+
+        Returns:
+            Dict mapping attribute names to is_multi_value flags
+        """
+        collected: dict[str, bool] = {}
+
+        def collect_from_class(cls: type[TypeDBType]) -> None:
+            """Recursively collect attributes from class and its subclasses."""
+            # Skip base classes that don't define types
+            if hasattr(cls, "get_all_attributes"):
+                for field_name, attr_info in cls.get_all_attributes().items():
+                    attr_name = attr_info.typ.get_attribute_name()
+                    is_multi = is_multi_value_attribute(attr_info.flags)
+                    # Only update if not seen or if multi-value (to not lose that info)
+                    if attr_name not in collected:
+                        collected[attr_name] = is_multi
+
+            # Recurse into subclasses
+            for subclass in cls.__subclasses__():
+                collect_from_class(subclass)
+
+        collect_from_class(model_class)
+        return collected
+
     def insert(self, instance: T) -> T:
-        """Insert a new instance."""
+        """Insert a new instance and populate _iid."""
         var = "$x"
         match_clause, insert_clause = self.strategy.build_insert(instance, var)
 
@@ -54,45 +169,357 @@ class TypeDBManager[T: "TypeDBType"]:
 
         query = "\n".join(query_parts)
 
-        # Execute (WRITE transaction)
+        # Execute the insert (WRITE transaction)
         self._execute(query, TransactionType.WRITE)
 
-        # TODO: Retrieve and set IID on instance
+        # Fetch the IID of the newly inserted instance
+        # Try key-based matching first, then fall back to attribute-based matching
+        try:
+            # Build AST-based match + fetch query
+            if isinstance(instance, Entity):
+                patterns = [instance.get_match_pattern(var)]
+            else:  # Relation
+                patterns = instance.get_match_patterns(var)
+
+            match_clause = MatchClause(patterns=patterns)
+            match_str = self.compiler.compile(match_clause)
+            iid_fetch_str = self._build_iid_fetch(var)
+            fetch_query = f"{match_str}\n{iid_fetch_str}"
+            results = self._execute(fetch_query, TransactionType.READ)
+
+            if results and len(results) > 0:
+                iid_result = results[0].get("iid")
+                # Handle wrapped IID format from TypeDB driver
+                if isinstance(iid_result, dict) and "value" in iid_result:
+                    iid_result = iid_result["value"]
+                if iid_result:
+                    object.__setattr__(instance, "_iid", iid_result)
+                    logger.debug(f"Set _iid on instance: {iid_result}")
+        except ValueError:
+            # Fall back to attribute-based matching for entities without keys
+            # This is less precise but allows IID retrieval when there's exactly one match
+            self._try_fetch_iid_by_attributes(instance, var)
+
         return instance
+
+    def _try_fetch_iid_by_attributes(self, instance: T, var: str) -> None:
+        """Try to fetch IID by matching all attributes (fallback for types without keys).
+
+        This is used when a type has no @key and no _iid. For entities, it matches by type
+        and all attribute values. For relations, it matches by role players and attributes.
+        If exactly one instance matches, we populate _iid.
+        """
+        if issubclass(self.model_class, Relation):
+            self._try_fetch_relation_iid(instance, var)
+            return
+
+        if not issubclass(self.model_class, Entity):
+            logger.debug(f"Attribute-based IID fetch not supported for {self.model_class.__name__}")
+            return
+
+        type_name = self.model_class.get_type_name()
+        all_attrs = self.model_class.get_all_attributes()
+
+        # Build match clause with all attributes
+        match_parts = [f"{var} isa {type_name}"]
+        has_attrs = False
+
+        for field_name, attr_info in all_attrs.items():
+            value = getattr(instance, field_name, None)
+            if value is not None:
+                attr_name = attr_info.typ.get_attribute_name()
+                # Handle lists (multi-value attributes)
+                if isinstance(value, list):
+                    for item in value:
+                        match_parts.append(f"has {attr_name} {format_value(item)}")
+                        has_attrs = True
+                else:
+                    match_parts.append(f"has {attr_name} {format_value(value)}")
+                    has_attrs = True
+
+        if not has_attrs:
+            logger.debug(f"No attributes to match for {self.model_class.__name__}")
+            return
+
+        match_clause = ", ".join(match_parts)
+        iid_fetch_str = self._build_iid_fetch(var)
+        fetch_query = f"match\n{match_clause};\n{iid_fetch_str}"
+
+        try:
+            results = self._execute(fetch_query, TransactionType.READ)
+            if results and len(results) == 1:
+                iid_result = results[0].get("iid")
+                if isinstance(iid_result, dict) and "value" in iid_result:
+                    iid_result = iid_result["value"]
+                if iid_result:
+                    object.__setattr__(instance, "_iid", iid_result)
+                    logger.debug(f"Set _iid via attribute matching: {iid_result}")
+            elif results and len(results) > 1:
+                logger.debug(
+                    f"Multiple matches for {self.model_class.__name__} - "
+                    f"cannot uniquely identify for IID population"
+                )
+        except Exception as e:
+            logger.debug(f"Failed to fetch IID by attributes: {e}")
+
+    def _try_fetch_relation_iid(self, instance: T, var: str) -> None:
+        """Try to fetch IID for a relation by matching role players and attributes.
+
+        Uses the relation's role players (by their IIDs) and attributes to find
+        a unique match. If exactly one relation matches, we populate _iid.
+        """
+        type_name = self.model_class.get_type_name()
+        roles = getattr(self.model_class, "_roles", {})
+        all_attrs = self.model_class.get_all_attributes()
+
+        # Build role player match patterns
+        role_parts = []
+        role_match_clauses = []
+        role_var_counter = 0
+
+        for role_name, role in roles.items():
+            entity_or_list = getattr(instance, role_name, None)
+            if entity_or_list is not None:
+                entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
+                for entity in entities:
+                    role_var = f"$rp{role_var_counter}"
+                    role_var_counter += 1
+                    role_parts.append(f"{role.role_name}: {role_var}")
+
+                    # Match role player by IID if available
+                    if entity._iid:
+                        role_match_clauses.append(
+                            f"{role_var} isa {entity.get_type_name()}, iid {entity._iid}"
+                        )
+                    else:
+                        # Fall back to key attributes
+                        key_parts = [f"{role_var} isa {entity.get_type_name()}"]
+                        for field_name, attr_info in entity.get_all_attributes().items():
+                            if attr_info.flags.is_key:
+                                value = getattr(entity, field_name, None)
+                                if value is not None:
+                                    attr_name = attr_info.typ.get_attribute_name()
+                                    key_parts.append(f"has {attr_name} {format_value(value)}")
+                        role_match_clauses.append(", ".join(key_parts))
+
+        if not role_parts:
+            logger.debug(f"No role players to match for {self.model_class.__name__}")
+            return
+
+        # Build the relation match clause
+        roles_str = ", ".join(role_parts)
+        match_parts = [f"{var} isa {type_name} ({roles_str})"]
+
+        # Add role player constraints
+        match_parts.extend(role_match_clauses)
+
+        # Add attribute constraints
+        for field_name, attr_info in all_attrs.items():
+            value = getattr(instance, field_name, None)
+            if value is not None:
+                attr_name = attr_info.typ.get_attribute_name()
+                if isinstance(value, list):
+                    for item in value:
+                        match_parts.append(f"{var} has {attr_name} {format_value(item)}")
+                else:
+                    match_parts.append(f"{var} has {attr_name} {format_value(value)}")
+
+        match_clause = "match\n" + ";\n".join(match_parts) + ";"
+        iid_fetch_str = self._build_iid_fetch(var)
+        fetch_query = f"{match_clause}\n{iid_fetch_str}"
+
+        try:
+            results = self._execute(fetch_query, TransactionType.READ)
+            if results and len(results) == 1:
+                iid_result = results[0].get("iid")
+                if isinstance(iid_result, dict) and "value" in iid_result:
+                    iid_result = iid_result["value"]
+                if iid_result:
+                    object.__setattr__(instance, "_iid", iid_result)
+                    logger.debug(f"Set relation _iid via role player matching: {iid_result}")
+            elif results and len(results) > 1:
+                logger.debug(
+                    f"Multiple relations match for {self.model_class.__name__} - "
+                    f"cannot uniquely identify for IID population"
+                )
+        except Exception as e:
+            logger.debug(f"Failed to fetch relation IID: {e}")
 
     def get(self, **filters) -> list[T]:
         """Get instances matching filters."""
-        var = "$x"
+        from type_bridge.crud.role_players import resolve_entity_class_from_label
+        from type_bridge.models.registry import ModelRegistry
+
+        # Use descriptive variable name to avoid conflicts
+        var = "$rel" if isinstance(self.strategy, RelationStrategy) else "$ent"
+
+        # Check if this is a relation (needs special handling for role players)
+        if isinstance(self.strategy, RelationStrategy):
+            return self._get_relations(var, filters, [])
+
+        # Entity path: fetch with polymorphic type resolution
+        base_type = self.model_class.get_type_name()
+
+        # Build match clause with isa! for type variable binding (enables polymorphic resolution)
+        # This allows us to fetch the actual concrete type using label()
         match_clause = self.strategy.build_match_all(self.model_class, var, filters)
+        match_str = self.compiler.compile(match_clause)
 
-        # We need to fetch attributes to rehydrate the objects
-        # TypeQL 3.x fetch syntax: fetch { $x.* }
-        from type_bridge.query.ast import FetchClause
+        # Add type variable binding for polymorphic resolution
+        # Convert "match $ent isa entity_type" to "match $ent isa! $t; $t sub entity_type"
+        # Only if not already using isa! pattern
+        if "isa!" not in match_str:
+            # Replace "isa type_name" with "isa! $t" and add sub constraint
+            match_str = match_str.replace(f"isa {base_type}", "isa! $t")
+            match_str = match_str.rstrip(";") + f";\n$t sub {base_type};"
 
-        fetch_clause = FetchClause(items=[f"{var}.*"])
+        # Build fetch clause with type label for polymorphic resolution
+        # Note: For polymorphic queries, we can only fetch attributes that exist on
+        # the queried type. Subtype-specific attributes will not be fetched.
+        # This is a TypeDB limitation - it type-checks that all fetched attributes
+        # are valid for all matching types.
+        all_attrs = self.model_class.get_all_attributes()
+        fetch_items = self._build_fetch_items(var, all_attrs, include_iid=True, include_type=True)
+        fetch_clause_str = self._compile_fetch(fetch_items)
+        query = match_str + "\n" + fetch_clause_str
 
-        query = self.compiler.compile_batch([match_clause, fetch_clause])
-
-        # Execute (READ transaction)
         results = self._execute(query, TransactionType.READ)
 
-        # Hydrate objects
-        # This duplicates logic from old manager's hydration.
-        # We should use a shared hydration utility or port it here.
-        # For now, simplistic hydration to verify architectural flow.
-
+        # Hydrate entity instances with polymorphic type resolution
         instances = []
         for result in results:
-            # result is a dict of attributes (field_name -> value)
-            # TODO: Robust hydration including nested attributes and types
-            # Note: _execute wrapper handles some extraction, assume
-            # standard TypeDB JSON-like output or ConceptMap
             try:
-                # Assuming result is { "name": "Alice", "age": 30 }
-                instance = self.model_class.from_dict(result, strict=False)
+                iid = result.pop("_iid", None)
+                # Handle wrapped IID format from TypeDB driver
+                if isinstance(iid, dict) and "value" in iid:
+                    iid = iid["value"]
+
+                # Get actual type label for polymorphic resolution
+                type_label = result.pop("_type", None)
+
+                # Resolve concrete class from type label
+                if type_label and type_label != base_type:
+                    # Try to find concrete class from registry
+                    concrete_class = ModelRegistry.get(type_label)
+                    if concrete_class is None:
+                        # Fallback: resolve from subclasses
+                        concrete_class = resolve_entity_class_from_label(
+                            type_label, (self.model_class,)
+                        )
+                else:
+                    concrete_class = self.model_class
+
+                instance = concrete_class.from_dict(result, strict=False)
+                if iid:
+                    object.__setattr__(instance, "_iid", iid)
                 instances.append(instance)
             except Exception as e:
-                logger.error(f"Failed to hydrate instance: {e}")
+                logger.error(f"Failed to hydrate entity: {e}, result: {result}")
+
+        return instances
+
+    def _get_relations(
+        self,
+        var: str,
+        filters: dict[str, Any],
+        expressions: list[Any],
+        order_by: list[tuple[str, bool]] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[T]:
+        """Get relations with role player hydration.
+
+        Handles multi-cardinality roles by grouping results by IID and merging
+        role players into lists where appropriate.
+        """
+        from type_bridge.crud.role_lookup import parse_role_lookup_filters
+        from type_bridge.crud.role_players import (
+            extract_relation_attributes,
+            extract_role_players_from_results,
+            group_results_by_iid,
+        )
+
+        # Extract special _iid filter if present
+        iid_filter = None
+        if filters and "_iid" in filters:
+            iid_filter = filters.pop("_iid")
+
+        # Parse Django-style filters (e.g., employer__industry__eq="Technology")
+        # This extracts role player attribute lookups into expressions
+        all_expressions = list(expressions)  # Copy to avoid mutating input
+        if filters:
+            attr_filters, role_player_filters, role_expressions, attr_expressions = (
+                parse_role_lookup_filters(self.model_class, filters)
+            )
+            # Merge parsed filters: direct attrs and entity instances
+            parsed_filters = {**attr_filters, **role_player_filters}
+            # Add role player expressions (these are RolePlayerExpr)
+            for exprs in role_expressions.values():
+                all_expressions.extend(exprs)
+            # Add relation attribute expressions
+            all_expressions.extend(attr_expressions)
+        else:
+            parsed_filters = {}
+
+        # Build and execute query with modifiers
+        query = self.strategy.build_fetch_query(
+            self.model_class, var, parsed_filters, all_expressions, order_by, limit, offset
+        )
+
+        # Add IID filter to match clause if specified
+        if iid_filter:
+            # Insert iid constraint into match clause
+            query = query.replace(f"{var} isa!", f"{var} iid {iid_filter}, isa!")
+        logger.debug(f"Relation fetch query: {query}")
+        results = self._execute(query, TransactionType.READ)
+
+        # Unwrap IID values in all results first
+        for result in results:
+            iid = result.get("_iid")
+            if isinstance(iid, dict) and "value" in iid:
+                result["_iid"] = iid["value"]
+            # Also unwrap role player IIDs
+            for key in list(result.keys()):
+                if key.endswith("_iid"):
+                    val = result[key]
+                    if isinstance(val, dict) and "value" in val:
+                        result[key] = val["value"]
+
+        # Group results by relation IID to handle multi-cardinality roles
+        grouped = group_results_by_iid(results)
+
+        # Build role info for the extraction utilities
+        roles = getattr(self.model_class, "_roles", {})
+        role_info: dict[str, tuple[str, tuple[type, ...]]] = {}
+        multi_player_roles: set[str] = set()
+
+        for role_name, role in roles.items():
+            role_var = f"${role_name}"
+            role_info[role_name] = (role_var, role.player_entity_types)
+            # Check if role allows multiple players (has explicit cardinality)
+            if role.is_multi_player:
+                multi_player_roles.add(role_name)
+
+        # Hydrate relation instances
+        instances = []
+        for relation_iid, result_group in grouped.items():
+            try:
+                # Extract relation attributes from first result (all should have same attrs)
+                relation_attrs = extract_relation_attributes(self.model_class, result_group[0])
+
+                # Extract and deduplicate role players from all results in group
+                role_players = extract_role_players_from_results(
+                    result_group, role_info, multi_player_roles
+                )
+
+                # Build relation instance
+                relation_kwargs = {**relation_attrs, **role_players}
+                relation_instance = self.model_class(**relation_kwargs)
+                object.__setattr__(relation_instance, "_iid", relation_iid)
+
+                instances.append(relation_instance)
+            except Exception as e:
+                logger.error(f"Failed to hydrate relation: {e}, result_group: {result_group}")
 
         return instances
 
@@ -218,37 +645,802 @@ class TypeDBManager[T: "TypeDBType"]:
 
         return instance
 
-    def delete(self, instance: T) -> None:
-        """Delete an instance."""
+    def delete(self, instance: T) -> T:
+        """Delete an instance and return it."""
         var = "$x"
-        constraints = self.strategy.identify(instance)
 
-        from type_bridge.query.ast import (
-            DeleteClause,
-            DeleteThingStatement,
-            EntityPattern,
-            RelationPattern,
-        )
+        # Build AST-based match clause
+        if isinstance(instance, Entity):
+            patterns = [instance.get_match_pattern(var)]
+        else:  # Relation
+            patterns = instance.get_match_patterns(var)
 
-        # Build match pattern based on model type
-        if issubclass(self.model_class, Entity):
-            pattern = EntityPattern(
-                variable=var,
-                type_name=self.model_class.get_type_name(),
-                constraints=constraints,
-            )
-        else:
-            # Relation - IID-based match doesn't need role players
-            pattern = RelationPattern(
-                variable=var,
-                type_name=self.model_class.get_type_name(),
-                role_players=[],
-                constraints=constraints,
-            )
-
-        match_clause = MatchClause(patterns=[pattern])
+        match_clause = MatchClause(patterns=patterns)
         delete_clause = DeleteClause(statements=[DeleteThingStatement(variable=var)])
 
-        query = self.compiler.compile(match_clause) + "\n" + self.compiler.compile(delete_clause)
+        # Compile and execute
+        match_str = self.compiler.compile(match_clause)
+        delete_str = self.compiler.compile(delete_clause)
+        query = f"{match_str}\n{delete_str}"
 
         self._execute(query, TransactionType.WRITE)
+        return instance
+
+    def all(self) -> list[T]:
+        """Fetch all instances of this type."""
+        return self.get()
+
+    def insert_many(self, instances: list[T]) -> list[T]:
+        """Insert multiple instances."""
+        for instance in instances:
+            self.insert(instance)
+        return instances
+
+    def put(self, instance: T) -> T:
+        """Insert or update an instance (idempotent).
+
+        Uses TypeQL's PUT clause for idempotent insertion.
+        """
+        var = "$x"
+        match_clause, insert_clause = self.strategy.build_insert(instance, var)
+
+        query_parts = []
+        if match_clause:
+            query_parts.append(self.compiler.compile(match_clause))
+
+        # Use 'put' instead of 'insert'
+        insert_query = self.compiler.compile(insert_clause)
+        put_query = insert_query.replace("insert\n", "put\n", 1)
+        query_parts.append(put_query)
+
+        query = "\n".join(query_parts)
+        self._execute(query, TransactionType.WRITE)
+        return instance
+
+    def delete_many(self, instances: list[T], *, strict: bool = False) -> list[T]:
+        """Delete multiple instances.
+
+        Args:
+            instances: List of instances to delete
+            strict: If True, raise EntityNotFoundError if any entity doesn't exist.
+                   In strict mode, checks all entities first and raises before any deletion.
+
+        Returns:
+            List of actually-deleted entities (excludes those that didn't exist)
+        """
+        from type_bridge.crud.exceptions import EntityNotFoundError
+
+        # First pass: check existence of all entities
+        exists_map: dict[int, bool] = {}
+        not_found: list[T] = []
+
+        for i, instance in enumerate(instances):
+            exists = self._entity_exists(instance)
+            exists_map[i] = exists
+            if not exists:
+                not_found.append(instance)
+
+        # In strict mode, raise before deleting anything
+        if strict and not_found:
+            names = [str(e) for e in not_found]
+            raise EntityNotFoundError(f"entity(ies) not found: {names}")
+
+        # Second pass: delete entities that exist
+        deleted: list[T] = []
+        for i, instance in enumerate(instances):
+            if exists_map.get(i, False):
+                self.delete(instance)
+                deleted.append(instance)
+
+        return deleted
+
+    def _entity_exists(self, instance: T) -> bool:
+        """Check if an entity exists in the database."""
+        var = "$x"
+        try:
+            match_info = instance.get_match_clause_info(var)
+            reduce_str = self._build_count_reduce(var)
+            query = f"match\n{match_info.main_clause};\n{reduce_str}"
+            results = self._execute(query, TransactionType.READ)
+            if results and "count" in results[0]:
+                count_val = results[0]["count"]
+                if isinstance(count_val, dict) and "value" in count_val:
+                    count_val = count_val["value"]
+                return count_val > 0
+        except ValueError:
+            # Can't identify entity (no IID, no keys) - assume doesn't exist
+            pass
+        return False
+
+    def put_many(self, instances: list[T]) -> list[T]:
+        """Put multiple instances (idempotent insert/update)."""
+        for instance in instances:
+            self.put(instance)
+        return instances
+
+    def update_many(self, instances: list[T]) -> list[T]:
+        """Update multiple instances."""
+        for instance in instances:
+            self.update(instance)
+        return instances
+
+    def get_by_iid(self, iid: str) -> T | None:
+        """Fetch an instance by its internal ID with polymorphic type resolution."""
+        import re
+
+        from type_bridge.crud.role_players import resolve_entity_class_from_label
+        from type_bridge.models.registry import ModelRegistry
+
+        # Validate IID format (TypeDB IIDs are hexadecimal strings starting with 0x)
+        if not iid or not re.match(r"^0x[0-9a-fA-F]+$", iid):
+            raise ValueError(f"Invalid IID format: {iid}")
+
+        var = "$x"
+        base_type = self.model_class.get_type_name()
+
+        if issubclass(self.model_class, Entity):
+            # Entity path: Build match clause with isa! for polymorphic type resolution
+            match_str = f"match\n{var} isa! $t, iid {iid};\n$t sub {base_type};"
+
+            # Build fetch clause with type label (no IID needed - already have it)
+            all_attrs = self.model_class.get_all_attributes()
+            fetch_items = self._build_fetch_items(var, all_attrs, include_iid=False, include_type=True)
+            fetch_clause_str = self._compile_fetch(fetch_items)
+            query = match_str + "\n" + fetch_clause_str
+
+            results = self._execute(query, TransactionType.READ)
+
+            if not results:
+                return None
+
+            try:
+                result = results[0]
+                type_label = result.pop("_type", None)
+
+                # Resolve concrete class
+                if type_label and type_label != base_type:
+                    concrete_class = ModelRegistry.get(type_label)
+                    if concrete_class is None:
+                        concrete_class = resolve_entity_class_from_label(
+                            type_label, (self.model_class,)
+                        )
+                else:
+                    concrete_class = self.model_class
+
+                instance = concrete_class.from_dict(result, strict=False)
+                object.__setattr__(instance, "_iid", iid)
+                return instance
+            except Exception as e:
+                logger.error(f"Failed to hydrate entity: {e}")
+                return None
+        else:
+            # Relation path: Use _get_relations with IID filter
+            # This properly handles role player hydration
+            results = self._get_relations(var, {"_iid": iid}, [])
+            if results:
+                return results[0]
+            return None
+
+    def filter(self, *expressions: Any, **filters: Any) -> TypeDBQuery[T]:
+        """Create a chainable query with filters.
+
+        Args:
+            *expressions: Expression objects (Person.c.age.gt(Age(30)), etc.)
+            **filters: Attribute filters (exact match) - age=30, name="Alice"
+
+        Returns:
+            TypeDBQuery for chaining
+
+        Raises:
+            ValueError: If expressions reference attribute types not owned by the model
+        """
+        # Validate expressions reference owned attribute types
+        if expressions:
+            owned_attrs = self.model_class.get_all_attributes()
+            owned_attr_types = {attr_info.typ for attr_info in owned_attrs.values()}
+
+            from type_bridge.expressions.role_player import RolePlayerExpr
+
+            for expr in expressions:
+                # Skip RolePlayerExpr - they reference player attributes, not relation attributes
+                if isinstance(expr, RolePlayerExpr):
+                    continue
+
+                # Get attribute types from expression
+                expr_attr_types = expr.get_attribute_types()
+
+                # Check if all attribute types are owned by the model
+                for attr_type in expr_attr_types:
+                    if attr_type not in owned_attr_types:
+                        raise ValueError(
+                            f"{self.model_class.__name__} does not own attribute type {attr_type.__name__}. "
+                            f"Available attribute types: {', '.join(t.__name__ for t in owned_attr_types)}"
+                        )
+
+        return TypeDBQuery(self, filters, list(expressions))
+
+    def count(self) -> int:
+        """Count all instances of this type."""
+        var = "$x"
+        match_clause = self.strategy.build_match_all(self.model_class, var, {})
+        match_str = self.compiler.compile(match_clause)
+        reduce_str = self._build_count_reduce(var)
+        query = match_str + "\n" + reduce_str
+
+        results = self._execute(query, TransactionType.READ)
+        if results and "count" in results[0]:
+            count_val = results[0]["count"]
+            # Handle wrapped value format from TypeDB driver
+            if isinstance(count_val, dict) and "value" in count_val:
+                return count_val["value"]
+            return count_val
+        return 0
+
+    def group_by(self, *fields: Any) -> GroupByQuery[T]:
+        """Group results by field values and compute aggregations.
+
+        Args:
+            *fields: Field descriptors to group by (e.g., Person.department)
+
+        Returns:
+            GroupByQuery for chained aggregations
+
+        Example:
+            # Group by department, compute average age per department
+            result = manager.group_by(Person.department).aggregate(Person.c.age.avg())
+            # Returns: {
+            #   "Engineering": {"avg_age": 35.5},
+            #   "Sales": {"avg_age": 28.3}
+            # }
+        """
+        return GroupByQuery(self, {}, [], fields)
+
+
+class TypeDBQuery[T: "TypeDBType"]:
+    """Chainable query builder for TypeDBManager."""
+
+    def __init__(
+        self,
+        manager: TypeDBManager[T],
+        filters: dict[str, Any],
+        expressions: list[Any] | None = None,
+    ):
+        self._manager = manager
+        self._filters = filters
+        self._expressions: list[Any] = expressions or []
+        self._order_fields: list[tuple[str, bool]] = []  # (field, descending)
+        self._limit_val: int | None = None
+        self._offset_val: int | None = None
+
+    def filter(self, *expressions: Any, **filters: Any) -> TypeDBQuery[T]:
+        """Add additional filters to the query.
+
+        Validates that expression attribute types are owned by the model class.
+        """
+        # Validate expressions reference owned attribute types
+        if expressions:
+            model_class = self._manager.model_class
+            owned_attrs = model_class.get_all_attributes()
+            owned_attr_types = {attr_info.typ for attr_info in owned_attrs.values()}
+
+            # For relations, also include role player attribute types
+            # (RolePlayerExpr inner expressions will be validated separately)
+            from type_bridge.expressions.role_player import RolePlayerExpr
+
+            for expr in expressions:
+                # Skip RolePlayerExpr - they reference player attributes, not relation attributes
+                if isinstance(expr, RolePlayerExpr):
+                    continue
+
+                # Get attribute types from expression
+                expr_attr_types = expr.get_attribute_types()
+
+                # Check if all attribute types are owned by the model
+                for attr_type in expr_attr_types:
+                    if attr_type not in owned_attr_types:
+                        raise ValueError(
+                            f"{model_class.__name__} does not own attribute type {attr_type.__name__}. "
+                            f"Available attribute types: {', '.join(t.__name__ for t in owned_attr_types)}"
+                        )
+
+        self._expressions.extend(expressions)
+        self._filters.update(filters)
+        return self
+
+    def order_by(self, *fields: str) -> TypeDBQuery[T]:
+        """Order results by fields. Prefix with '-' for descending."""
+        for field in fields:
+            if field.startswith("-"):
+                self._order_fields.append((field[1:], True))
+            else:
+                self._order_fields.append((field, False))
+        return self
+
+    def limit(self, n: int) -> TypeDBQuery[T]:
+        """Limit number of results."""
+        self._limit_val = n
+        return self
+
+    def offset(self, n: int) -> TypeDBQuery[T]:
+        """Skip first n results."""
+        self._offset_val = n
+        return self
+
+    def execute(self) -> list[T]:
+        """Execute the query and return results."""
+        from type_bridge.crud.role_players import resolve_entity_class_from_label
+        from type_bridge.models.registry import ModelRegistry
+
+        model_class = self._manager.model_class
+
+        # Relations need special handling for role player fetching
+        if isinstance(self._manager.strategy, RelationStrategy):
+            return self._manager._get_relations(
+                "$r",
+                self._filters,
+                self._expressions,
+                order_by=self._order_fields if self._order_fields else None,
+                limit=self._limit_val,
+                offset=self._offset_val,
+            )
+
+        # Entity path with polymorphic type resolution
+        var = "$x"
+        base_type = model_class.get_type_name()
+
+        # Parse Django-style lookup filters (e.g., name__startswith="Al")
+        base_filters, lookup_expressions = self._parse_entity_lookup_filters(
+            model_class, self._filters
+        )
+        all_expressions = list(self._expressions) + lookup_expressions
+
+        # Build base match clause using parsed filters (exact match only)
+        match_clause = self._manager.strategy.build_match_all(model_class, var, base_filters)
+        match_str = self._manager.compiler.compile(match_clause)
+
+        # Add type variable binding for polymorphic resolution
+        # Convert "isa type_name" to "isa! $t" and add sub constraint
+        if "isa!" not in match_str:
+            match_str = match_str.replace(f"isa {base_type}", "isa! $t")
+            match_str = match_str.rstrip(";") + f";\n$t sub {base_type};"
+
+        # Add expression patterns to match clause (includes parsed lookup expressions)
+        if all_expressions:
+            # Remove trailing semicolon and add expression patterns
+            match_str = match_str.rstrip(";").rstrip()
+            for expr in all_expressions:
+                pattern = expr.to_typeql(var)
+                match_str += f";\n{pattern}"
+            match_str += ";"
+
+        # Build fetch clause with type label for polymorphic resolution
+        # Note: For polymorphic queries, we can only fetch attributes that exist on
+        # the queried type (TypeDB type-checks all fetched attributes)
+        all_attrs = model_class.get_all_attributes()
+        fetch_items = self._manager._build_fetch_items(var, all_attrs, include_iid=True, include_type=True)
+
+        # Build modifiers (sort, offset, limit) with proper semicolons
+        # These must come BEFORE fetch in TypeQL 3.x
+        # TypeDB 3.x requires binding sort attributes to variables in match clause
+        modifier_clauses = []
+        sort_var_bindings = []
+        if self._order_fields:
+            sort_parts = []
+            for i, (field_name, desc) in enumerate(self._order_fields):
+                if field_name in all_attrs:
+                    attr_name = all_attrs[field_name].typ.get_attribute_name()
+                    sort_var = f"$sort_{i}"
+                    # Bind attribute to variable in match clause
+                    sort_var_bindings.append(f"{var} has {attr_name} {sort_var}")
+                    direction = "desc" if desc else "asc"
+                    sort_parts.append(f"{sort_var} {direction}")
+            if sort_parts:
+                modifier_clauses.append(f"sort {', '.join(sort_parts)};")
+
+        # Add sort variable bindings to match clause
+        if sort_var_bindings:
+            match_str = match_str.rstrip(";") + ";\n" + ";\n".join(sort_var_bindings) + ";"
+
+        # offset must come BEFORE limit
+        if self._offset_val is not None:
+            modifier_clauses.append(f"offset {self._offset_val};")
+        if self._limit_val is not None:
+            modifier_clauses.append(f"limit {self._limit_val};")
+
+        modifier_str = "\n".join(modifier_clauses)
+
+        fetch_clause_str = self._manager._compile_fetch(fetch_items)
+
+        # Build final query: match ; modifiers ; fetch
+        if modifier_str:
+            query = match_str + "\n" + modifier_str + "\n" + fetch_clause_str
+        else:
+            query = match_str + "\n" + fetch_clause_str
+
+        # Execute
+        results = self._manager._execute(query, TransactionType.READ)
+
+        # Hydrate objects with polymorphic type resolution
+        instances = []
+        for result in results:
+            try:
+                iid = result.pop("_iid", None)
+                # Handle wrapped IID format from TypeDB driver
+                if isinstance(iid, dict) and "value" in iid:
+                    iid = iid["value"]
+
+                # Get actual type label for polymorphic resolution
+                type_label = result.pop("_type", None)
+
+                # Resolve concrete class from type label
+                if type_label and type_label != base_type:
+                    concrete_class = ModelRegistry.get(type_label)
+                    if concrete_class is None:
+                        concrete_class = resolve_entity_class_from_label(
+                            type_label, (model_class,)
+                        )
+                else:
+                    concrete_class = model_class
+
+                instance = concrete_class.from_dict(result, strict=False)
+                if iid:
+                    object.__setattr__(instance, "_iid", iid)
+                instances.append(instance)
+            except Exception as e:
+                logger.error(f"Failed to hydrate instance: {e}")
+
+        return instances
+
+    @staticmethod
+    def _parse_entity_lookup_filters(
+        model_class: type[TypeDBType], filters: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[Any]]:
+        """Parse Django-style lookup filters for entities.
+
+        Converts filters like `name__startswith="Al"` into expressions.
+
+        Args:
+            model_class: Entity model class
+            filters: Raw filter keyword arguments
+
+        Returns:
+            Tuple of (base_filters, expressions) where base_filters are exact matches
+            and expressions are lookup expressions (startswith, contains, etc.)
+        """
+        from type_bridge.crud.lookup import build_lookup_expression
+        from type_bridge.expressions import BooleanExpr, IidExpr
+
+        owned_attrs = model_class.get_all_attributes()
+        base_filters: dict[str, Any] = {}
+        expressions: list[Any] = []
+
+        for raw_key, raw_value in filters.items():
+            # Handle special iid__in lookup (IID is not an attribute)
+            if raw_key == "iid__in":
+                if not isinstance(raw_value, (list, tuple, set)):
+                    raise ValueError("iid__in lookup requires an iterable of IID strings")
+                iids = list(raw_value)
+                if not iids:
+                    raise ValueError("iid__in lookup requires a non-empty iterable")
+                iid_exprs = [IidExpr(iid) for iid in iids]
+                if len(iid_exprs) == 1:
+                    expressions.append(iid_exprs[0])
+                else:
+                    expressions.append(BooleanExpr("or", iid_exprs))
+                continue
+
+            # No "__" means exact match
+            if "__" not in raw_key:
+                if raw_key not in owned_attrs:
+                    raise ValueError(
+                        f"Unknown filter field '{raw_key}' for {model_class.__name__}"
+                    )
+                base_filters[raw_key] = raw_value
+                continue
+
+            # Parse field__lookup
+            field_name, lookup = raw_key.split("__", 1)
+            if field_name not in owned_attrs:
+                raise ValueError(
+                    f"Unknown filter field '{field_name}' for {model_class.__name__}"
+                )
+
+            attr_info = owned_attrs[field_name]
+            attr_type = attr_info.typ
+
+            # Handle exact/eq as base filter for efficiency
+            if lookup in ("exact", "eq"):
+                base_filters[field_name] = raw_value
+                continue
+
+            # Use shared lookup builder for other lookups
+            expr = build_lookup_expression(attr_type, lookup, raw_value)
+            expressions.append(expr)
+
+        return base_filters, expressions
+
+    def all(self) -> list[T]:
+        """Alias for execute()."""
+        return self.execute()
+
+    def first(self) -> T | None:
+        """Get the first matching instance."""
+        # Optimize by limiting to 1
+        original_limit = self._limit_val
+        self._limit_val = 1
+        results = self.execute()
+        self._limit_val = original_limit
+        return results[0] if results else None
+
+    def count(self) -> int:
+        """Count matching instances.
+
+        Note: For relation queries with role player filters, TypeDB 3.x's reduce count
+        may not work as expected. In those cases, we fall back to fetching IIDs and
+        counting unique results.
+        """
+        model_class = self._manager.model_class
+
+        # For relations with filters, fetch and count to avoid TypeDB count limitations
+        if isinstance(self._manager.strategy, RelationStrategy) and self._filters:
+            # Fetch only IIDs for efficiency
+            results = self._manager._get_relations(
+                "$r", self._filters, self._expressions
+            )
+            return len(results)
+
+        # Entity path or relation without filters - use reduce count
+        var = "$x"
+
+        # Build match clause with filters and expressions
+        match_clause = self._manager.strategy.build_match_all(model_class, var, self._filters)
+        match_str = self._manager.compiler.compile(match_clause)
+
+        if self._expressions:
+            match_str = match_str.rstrip(";").rstrip()
+            for expr in self._expressions:
+                pattern = expr.to_typeql(var)
+                match_str += f";\n{pattern}"
+            match_str += ";"
+
+        # Explicitly count the variable to avoid counting joins
+        reduce_str = self._manager._build_count_reduce(var)
+        query = match_str + "\n" + reduce_str
+        results = self._manager._execute(query, TransactionType.READ)
+        if results and "count" in results[0]:
+            count_val = results[0]["count"]
+            # Handle wrapped value format from TypeDB driver
+            if isinstance(count_val, dict) and "value" in count_val:
+                return count_val["value"]
+            return count_val
+        return 0
+
+    def delete(self) -> int:
+        """Delete all matching instances and return count."""
+        instances = self.execute()
+        for instance in instances:
+            self._manager.delete(instance)
+        return len(instances)
+
+    def exists(self) -> bool:
+        """Check if any matching instances exist."""
+        return self.count() > 0
+
+    def update_with(self, func: Any) -> list[T]:
+        """Update instances by applying a function to each.
+
+        Uses atomic transaction semantics: if the function fails on any entity,
+        no updates are persisted (all or nothing).
+
+        Note: _iid is preserved during attribute modification by the wrap validator
+        in TypeDBType base class.
+        """
+        instances = self.execute()
+        if not instances:
+            return []
+
+        # Phase 1: Apply function to all instances FIRST
+        # If any function call fails, no writes have happened yet
+        for instance in instances:
+            func(instance)
+
+        # Phase 2: All functions succeeded, now persist all updates
+        for instance in instances:
+            self._manager.update(instance)
+
+        return instances
+
+    def aggregate(self, *aggregates: Any) -> dict[str, Any]:
+        """Execute aggregation queries.
+
+        Performs database-side aggregations for efficiency.
+
+        Args:
+            *aggregates: AggregateExpr objects (Person.c.age.avg(), Person.c.score.sum(), etc.)
+
+        Returns:
+            Dictionary mapping aggregate keys to results
+
+        Examples:
+            # Single aggregation
+            result = manager.filter().aggregate(Person.c.age.avg())
+            avg_age = result['avg_age']
+
+            # Multiple aggregations
+            result = manager.filter(Person.c.city.eq(City("NYC"))).aggregate(
+                Person.c.age.avg(),
+                Person.c.score.sum(),
+                Person.c.salary.max()
+            )
+        """
+        from type_bridge.crud.aggregates import parse_aggregate_results
+        from type_bridge.expressions import AggregateExpr
+        from type_bridge.expressions.utils import generate_has_pattern
+
+        if not aggregates:
+            raise ValueError("At least one aggregation expression required")
+
+        model_class = self._manager.model_class
+        var = "$e"
+
+        # Build base match clause with filters
+        match_clause = self._manager.strategy.build_match_all(model_class, var, self._filters)
+        match_str = self._manager.compiler.compile(match_clause)
+
+        # Add expression-based filters
+        if self._expressions:
+            match_str = match_str.rstrip(";").rstrip()
+            for expr in self._expressions:
+                pattern = expr.to_typeql(var)
+                match_str += f";\n{pattern}"
+            match_str += ";"
+
+        # Build reduce clauses for each aggregation
+        # Use generate_has_pattern to ensure consistent variable naming with AggregateExpr
+        reduce_clauses = []
+        for agg in aggregates:
+            if not isinstance(agg, AggregateExpr):
+                raise TypeError(f"Expected AggregateExpr, got {type(agg).__name__}")
+
+            # If this aggregation is on a specific attr_type (not count), add binding pattern
+            if agg.attr_type is not None:
+                # Use generate_has_pattern for consistent variable naming
+                _, has_pattern = generate_has_pattern(var, agg.attr_type)
+                match_str = match_str.rstrip(";")
+                match_str += f";\n{has_pattern};"
+
+            # Generate reduce clause: $result_var = function($attr_var)
+            result_var = f"${agg.get_fetch_key()}"
+            reduce_clauses.append(f"{result_var} = {agg.to_typeql(var)}")
+
+        # Build final query
+        reduce_query = f"{match_str}\nreduce {', '.join(reduce_clauses)};"
+
+        results = self._manager._execute(reduce_query, TransactionType.READ)
+        return parse_aggregate_results(results)
+
+    def group_by(self, *fields: Any) -> GroupByQuery[T]:
+        """Group results by field values.
+
+        Args:
+            *fields: FieldRef objects or field descriptors to group by (e.g., Person.department)
+
+        Returns:
+            GroupByQuery for chained aggregations
+
+        Example:
+            result = manager.group_by(Person.department).aggregate(Person.c.age.avg())
+        """
+        return GroupByQuery(
+            self._manager,
+            self._filters,
+            self._expressions,
+            fields,
+        )
+
+
+class GroupByQuery[T: "TypeDBType"]:
+    """Query for grouped aggregations.
+
+    Allows grouping entities by field values and computing aggregations per group.
+    """
+
+    def __init__(
+        self,
+        manager: TypeDBManager[T],
+        filters: dict[str, Any],
+        expressions: list[Any],
+        group_fields: tuple[Any, ...],
+    ):
+        """Initialize grouped query.
+
+        Args:
+            manager: TypeDBManager instance
+            filters: Dict-based filters
+            expressions: Expression-based filters
+            group_fields: Fields to group by (FieldRef or field descriptors)
+        """
+        self._manager = manager
+        self._filters = filters
+        self._expressions = expressions
+        self._group_fields = group_fields
+
+    def aggregate(self, *aggregates: Any) -> dict[Any, dict[str, Any]]:
+        """Execute grouped aggregation.
+
+        Args:
+            *aggregates: AggregateExpr objects
+
+        Returns:
+            Dictionary mapping group values to aggregation results
+
+        Example:
+            # Group by department, compute average age per department
+            result = manager.group_by(Person.department).aggregate(Person.c.age.avg())
+            # Returns: {
+            #   "Engineering": {"avg_age": 35.5},
+            #   "Sales": {"avg_age": 28.3}
+            # }
+        """
+        from type_bridge.crud.aggregates import parse_grouped_aggregate_results
+        from type_bridge.expressions import AggregateExpr
+        from type_bridge.expressions.utils import generate_has_pattern
+        from type_bridge.fields.base import FieldRef
+
+        if not aggregates:
+            raise ValueError("At least one aggregation expression required")
+
+        model_class = self._manager.model_class
+        var = "$e"
+
+        # Build base match clause with filters
+        match_clause = self._manager.strategy.build_match_all(model_class, var, self._filters)
+        match_str = self._manager.compiler.compile(match_clause)
+
+        # Add expression-based filters
+        if self._expressions:
+            match_str = match_str.rstrip(";").rstrip()
+            for expr in self._expressions:
+                pattern = expr.to_typeql(var)
+                match_str += f";\n{pattern}"
+            match_str += ";"
+
+        # Add group-by fields to match clause
+        group_vars = []
+        for i, field in enumerate(self._group_fields):
+            var_name = f"$group{i}"
+            # Field can be a FieldRef or a field descriptor
+            if isinstance(field, FieldRef):
+                attr_name = field.attr_type.get_attribute_name()
+            else:
+                # Assume it's a field descriptor with attr_type attribute
+                attr_name = field.attr_type.get_attribute_name()
+            match_str = match_str.rstrip(";")
+            match_str += f";\n{var} has {attr_name} {var_name};"
+            group_vars.append(var_name)
+
+        # Build reduce clauses for each aggregation
+        # Use generate_has_pattern for consistent variable naming with AggregateExpr
+        reduce_clauses = []
+        for agg in aggregates:
+            if not isinstance(agg, AggregateExpr):
+                raise TypeError(f"Expected AggregateExpr, got {type(agg).__name__}")
+
+            # If this aggregation is on a specific attr_type (not count), add binding pattern
+            if agg.attr_type is not None:
+                # Use generate_has_pattern for consistent variable naming
+                _, has_pattern = generate_has_pattern(var, agg.attr_type)
+                match_str = match_str.rstrip(";")
+                match_str += f";\n{has_pattern};"
+
+            # Generate reduce clause: $result_var = function($attr_var)
+            result_var = f"${agg.get_fetch_key()}"
+            reduce_clauses.append(f"{result_var} = {agg.to_typeql(var)}")
+
+        # Build final query with group-by
+        group_clause = ", ".join(group_vars)
+        reduce_clause = ", ".join(reduce_clauses)
+        reduce_query = f"{match_str}\nreduce {reduce_clause} groupby {group_clause};"
+
+        results = self._manager._execute(reduce_query, TransactionType.READ)
+        return parse_grouped_aggregate_results(results, group_vars)

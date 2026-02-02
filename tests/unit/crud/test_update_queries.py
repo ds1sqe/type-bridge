@@ -15,26 +15,13 @@ from type_bridge import (
     String,
     TypeFlags,
 )
-from type_bridge.crud.entity.manager import EntityManager
-from type_bridge.crud.relation.manager import RelationManager
+from type_bridge.crud import TypeDBManager
 
 
-class _RecordingEntityManager(EntityManager):
-    """Entity manager that records executed queries instead of hitting TypeDB."""
+class _RecordingTypeDBManager[T](TypeDBManager[T]):
+    """TypeDBManager that records executed queries instead of hitting TypeDB."""
 
-    def __init__(self, model_class: type):
-        super().__init__(cast(Database, object()), model_class)
-        self.queries: list[str] = []
-
-    def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
-        self.queries.append(query)
-        return []
-
-
-class _RecordingRelationManager(RelationManager):
-    """Relation manager that records executed queries instead of hitting TypeDB."""
-
-    def __init__(self, model_class: type):
+    def __init__(self, model_class: type[T]):
         super().__init__(cast(Database, object()), model_class)
         self.queries: list[str] = []
 
@@ -58,7 +45,7 @@ def test_entity_update_multi_value_uses_guards():
         tags: list[Tag] = Flag(Card(min=0))
 
     person = Person(name=Name("Alice"), tags=[Tag("keep"), Tag("drop")])
-    mgr = _RecordingEntityManager(Person)
+    mgr = _RecordingTypeDBManager(Person)
 
     mgr.update(person)
 
@@ -95,7 +82,9 @@ def test_relation_update_multi_value_uses_guards():
         notes: list[Note] = Flag(Card(min=0))
 
     attachment = Attachment(owner=User(doc=Doc("ref")), notes=[Note("keep"), Note("old")])
-    mgr = _RecordingRelationManager(Attachment)
+    # Set IID to simulate a fetched relation (relations require IID for identification)
+    object.__setattr__(attachment, "_iid", "0xtest123")
+    mgr = _RecordingTypeDBManager(Attachment)
 
     mgr.update(attachment)
 
@@ -136,7 +125,7 @@ def test_entity_update_uses_iid_when_available():
     # Simulate a fetched entity with _iid set
     object.__setattr__(item, "_iid", "0x1234567890abcdef")
 
-    mgr = _RecordingEntityManager(Item)
+    mgr = _RecordingTypeDBManager(Item)
     mgr.update(item)
 
     query = mgr.queries[-1]
@@ -164,7 +153,7 @@ def test_entity_update_falls_back_to_key_when_no_iid():
     person = Person(name=Name("Alice"), status=Status("active"))
     # No _iid set - should fall back to key attributes
 
-    mgr = _RecordingEntityManager(Person)
+    mgr = _RecordingTypeDBManager(Person)
     mgr.update(person)
 
     query = mgr.queries[-1]
@@ -189,7 +178,7 @@ def test_entity_update_without_iid_or_key_raises():
     item = Item(title=ItemTitle("test"))
     # No _iid set, no @key attributes
 
-    mgr = _RecordingEntityManager(Item)
+    mgr = _RecordingTypeDBManager(Item)
 
     with pytest.raises(ValueError, match="cannot be identified"):
         mgr.update(item)
@@ -218,7 +207,7 @@ def test_entity_delete_uses_iid_when_available():
     # Simulate a fetched entity with _iid set
     object.__setattr__(item, "_iid", "0x1234567890abcdef")
 
-    mgr = _RecordingEntityManager(Item)
+    mgr = _RecordingTypeDBManager(Item)
     mgr.delete(item)
 
     query = mgr.queries[-1]
@@ -242,7 +231,7 @@ def test_entity_delete_falls_back_to_key_when_no_iid():
     # No _iid set - should fall back to key attributes
 
     # Mock filter().count() to return 1 (entity exists)
-    class _MockEntityManager(_RecordingEntityManager):
+    class _MockTypeDBManager(_RecordingTypeDBManager):
         def filter(self, **kwargs):  # type: ignore[override]  # noqa: ARG002
             class _MockQuery:
                 def count(self) -> int:
@@ -250,7 +239,7 @@ def test_entity_delete_falls_back_to_key_when_no_iid():
 
             return _MockQuery()
 
-    mgr = _MockEntityManager(Person)
+    mgr = _MockTypeDBManager(Person)
     mgr.delete(person)
 
     query = mgr.queries[-1]
@@ -261,7 +250,7 @@ def test_entity_delete_falls_back_to_key_when_no_iid():
 
 
 def test_relation_delete_uses_iid_when_available():
-    """RelationManager.delete() should use IID-based matching when _iid is set."""
+    """TypeDBManager.delete() for relations should use IID-based matching when _iid is set."""
 
     class Doc(String):
         pass
@@ -279,7 +268,7 @@ def test_relation_delete_uses_iid_when_available():
     # Simulate a fetched relation with _iid set
     object.__setattr__(link, "_iid", "0xabcdef1234567890")
 
-    mgr = _RecordingRelationManager(Link)
+    mgr = _RecordingTypeDBManager(Link)
     mgr.delete(link)
 
     query = mgr.queries[-1]
@@ -290,46 +279,3 @@ def test_relation_delete_uses_iid_when_available():
     assert "target:" not in query
 
 
-# ============================================================================
-# Put IID population tests
-# ============================================================================
-
-
-def test_relation_put_populates_iid():
-    """RelationManager.put() should populate _iid after insertion."""
-
-    class Doc(String):
-        pass
-
-    class User(Entity):
-        flags = TypeFlags(name="user4")
-        doc: Doc = Flag(Key)
-
-    class Link(Relation):
-        flags = TypeFlags(name="link2")
-        source: Role[User] = Role("source", User)
-        target: Role[User] = Role("target", User)
-
-    class _IidPopulatingRelationManager(_RecordingRelationManager):
-        """Relation manager that returns IID from fetch query."""
-
-        def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
-            del tx_type  # unused
-            self.queries.append(query)
-            # If this is a fetch query for IID, return one
-            if "fetch" in query and "_iid" in query:
-                return [{"_iid": "0xput1234567890"}]
-            return []
-
-    link = Link(source=User(doc=Doc("a")), target=User(doc=Doc("b")))
-    # Verify no _iid before put
-    assert getattr(link, "_iid", None) is None
-
-    mgr = _IidPopulatingRelationManager(Link)
-    result = mgr.put(link)
-
-    # Should have _iid populated after put
-    assert getattr(result, "_iid", None) == "0xput1234567890"
-    # Should have executed both the put query and the IID fetch query
-    assert any("put" in q for q in mgr.queries)
-    assert any("fetch" in q and "_iid" in q for q in mgr.queries)

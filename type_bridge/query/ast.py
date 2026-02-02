@@ -188,7 +188,96 @@ class UpdateClause(Clause):
 
 
 @dataclass
-class FetchClause(Clause):
-    """A fetch clause defining output structure."""
+class FetchItem(QueryNode, ABC):
+    """Abstract base class for fetch items."""
 
-    items: list[str]  # e.g., ["$x", "$y: name"]
+    key: str  # The output key name (e.g., "_iid", "name")
+
+
+@dataclass
+class FetchAttribute(FetchItem):
+    """Fetch a single attribute value.
+
+    Generates: "key": $var.attr_name
+    """
+
+    var: str
+    attr_name: str
+
+
+@dataclass
+class FetchAttributeList(FetchItem):
+    """Fetch a multi-value attribute as a list.
+
+    Generates: "key": [$var.attr_name]
+    """
+
+    var: str
+    attr_name: str
+
+
+@dataclass
+class FetchFunction(FetchItem):
+    """Fetch a function result.
+
+    Generates: "key": func($var)
+    Examples: iid($var), label($t)
+    """
+
+    func_name: str
+    var: str
+
+
+@dataclass
+class FetchWildcard(FetchItem):
+    """Fetch all attributes of a variable.
+
+    Generates: "key": $var.*
+    """
+
+    var: str
+
+
+@dataclass
+class FetchClause(Clause):
+    """A fetch clause defining output structure.
+
+    Can contain either typed FetchItems or raw strings for backwards compatibility.
+    """
+
+    items: list[FetchItem | str] = field(default_factory=list)
+
+
+@dataclass
+class AggregateExpr(QueryNode):
+    """An aggregate expression like count($var) or sum($attr).
+
+    Generates: function($var) or function($var.attr)
+    """
+
+    func_name: str  # count, sum, min, max, mean, std, median
+    var: str
+    attr_name: str | None = None  # If None, aggregates the variable itself
+
+
+@dataclass
+class ReduceAssignment(QueryNode):
+    """A reduce assignment like $count = count($var).
+
+    Generates: $result_var = function($var)
+    """
+
+    result_var: str
+    aggregate: AggregateExpr
+
+
+@dataclass
+class ReduceClause(Clause):
+    """A reduce clause for aggregations.
+
+    Generates: reduce $count = count($var);
+    Or with groupby: reduce $count = count($var) groupby $group;
+    """
+
+    assignments: list[ReduceAssignment]
+    group_by: str | None = None  # Variable to group by

@@ -1,14 +1,14 @@
 """Schema information container for TypeDB schema management."""
 
 from type_bridge.attribute.base import Attribute
-from type_bridge.models import Entity, Relation
-from type_bridge.schema.diff import (
+from type_bridge.migration.diff import (
     AttributeFlagChange,
     EntityChanges,
     RelationChanges,
     RolePlayerChange,
     SchemaDiff,
 )
+from type_bridge.models import Entity, Relation
 
 
 class SchemaInfo:
@@ -80,7 +80,7 @@ class SchemaInfo:
         Raises:
             SchemaValidationError: If duplicate attribute types are detected
         """
-        from type_bridge.schema.exceptions import SchemaValidationError
+        from type_bridge.migration.exceptions import SchemaValidationError
 
         owned_attrs = model.get_owned_attributes()
 

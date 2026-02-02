@@ -5,22 +5,31 @@ from __future__ import annotations
 import logging
 
 from type_bridge.query.ast import (
+    AggregateExpr,
     AttributePattern,
     Clause,
     Constraint,
     DeleteClause,
     DeleteThingStatement,
     EntityPattern,
+    FetchAttribute,
+    FetchAttributeList,
     FetchClause,
+    FetchFunction,
+    FetchItem,
+    FetchWildcard,
     HasConstraint,
     HasStatement,
     IidConstraint,
     InsertClause,
     IsaConstraint,
     IsaStatement,
+    LiteralValue,
     MatchClause,
     Pattern,
     QueryNode,
+    ReduceAssignment,
+    ReduceClause,
     RelationPattern,
     RelationStatement,
     Statement,
@@ -86,8 +95,15 @@ class QueryCompiler:
             return "update\n" + ";\n".join(statements) + ";"
 
         elif isinstance(clause, FetchClause):
-            items = clause.items
-            return "fetch {\n" + ";\n".join(items) + "\n};"
+            compiled_items = [self._compile_fetch_item(item) for item in clause.items]
+            return "fetch {\n  " + ",\n  ".join(compiled_items) + "\n};"
+
+        elif isinstance(clause, ReduceClause):
+            assignments = [self._compile_reduce_assignment(a) for a in clause.assignments]
+            reduce_str = "reduce " + ", ".join(assignments)
+            if clause.group_by:
+                reduce_str += f" groupby {clause.group_by}"
+            return reduce_str + ";"
 
         raise ValueError(f"Unknown clause type: {type(clause).__name__}")
 
@@ -101,11 +117,12 @@ class QueryCompiler:
             return ", ".join(parts)
 
         elif isinstance(pattern, RelationPattern):
-            # Only include role players if there are any (IID-based matching doesn't need them)
+            # TypeDB 3.x syntax: $r isa type (role: $player)
+            # Order matters: isa comes before role players
             if pattern.role_players:
                 role_parts = [f"{rp.role}: {rp.player_var}" for rp in pattern.role_players]
                 roles_str = f"({', '.join(role_parts)})"
-                parts = [f"{pattern.variable} {roles_str} isa {pattern.type_name}"]
+                parts = [f"{pattern.variable} isa {pattern.type_name} {roles_str}"]
             else:
                 parts = [f"{pattern.variable} isa {pattern.type_name}"]
             for constraint in pattern.constraints:
@@ -183,4 +200,41 @@ class QueryCompiler:
         # For Phase 1, we import the existing robust formatter.
         from type_bridge.crud.formatting import format_value
 
-        return format_value(value_node.value)
+        if isinstance(value_node, LiteralValue):
+            return format_value(value_node.value)
+        raise ValueError(f"Unknown value type: {type(value_node).__name__}")
+
+    # --- Fetch Items ---
+
+    def _compile_fetch_item(self, item: FetchItem | str) -> str:
+        """Compile a fetch item to TypeQL string."""
+        # Backwards compatibility: raw strings pass through
+        if isinstance(item, str):
+            return item
+
+        if isinstance(item, FetchAttribute):
+            return f'"{item.key}": {item.var}.{item.attr_name}'
+
+        elif isinstance(item, FetchAttributeList):
+            return f'"{item.key}": [{item.var}.{item.attr_name}]'
+
+        elif isinstance(item, FetchFunction):
+            return f'"{item.key}": {item.func_name}({item.var})'
+
+        elif isinstance(item, FetchWildcard):
+            return f'"{item.key}": {item.var}.*'
+
+        raise ValueError(f"Unknown fetch item type: {type(item).__name__}")
+
+    # --- Reduce/Aggregate ---
+
+    def _compile_reduce_assignment(self, assignment: ReduceAssignment) -> str:
+        """Compile a reduce assignment like $count = count($var)."""
+        agg_str = self._compile_aggregate(assignment.aggregate)
+        return f"{assignment.result_var} = {agg_str}"
+
+    def _compile_aggregate(self, agg: AggregateExpr) -> str:
+        """Compile an aggregate expression like count($var) or sum($var.attr)."""
+        if agg.attr_name:
+            return f"{agg.func_name}({agg.var}.{agg.attr_name})"
+        return f"{agg.func_name}({agg.var})"

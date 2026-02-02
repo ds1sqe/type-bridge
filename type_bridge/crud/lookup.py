@@ -1,7 +1,7 @@
 """Unified lookup parsing utilities.
 
 This module provides parsing for Django-style lookup filters (e.g. `age__gt=30`).
-It unifies logic previously duplicated in EntityManager and RelationManager.
+Used by TypeDBManager and TypeDBQuery for filter expressions.
 """
 
 from __future__ import annotations

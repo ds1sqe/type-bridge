@@ -15,7 +15,6 @@ from type_bridge.models.registry import ModelRegistry
 from type_bridge.models.utils import (
     MatchClauseInfo,
     ModelAttrInfo,
-    WriteQueryInfo,
     validate_type_name,
 )
 
@@ -143,9 +142,21 @@ class TypeDBType(BaseModel, ABC):
 
         This catches edge cases like default values and model_copy that bypass validators.
         Uses 'wrap' mode to intercept all validation paths including model_copy.
+
+        Also preserves _iid during revalidation - Pydantic resets private attributes
+        when revalidating instances, so we capture and restore _iid here.
         """
+        # Preserve _iid if values is an existing instance being revalidated
+        preserved_iid = None
+        if isinstance(values, cls) and hasattr(values, "_iid"):
+            preserved_iid = values._iid
+
         # First, let Pydantic do its validation
         instance = handler(values)
+
+        # Restore _iid if it was preserved and got reset
+        if preserved_iid is not None and getattr(instance, "_iid", None) is None:
+            object.__setattr__(instance, "_iid", preserved_iid)
 
         # Then wrap any raw values
         owned_attrs = cls.get_owned_attributes()
@@ -195,10 +206,17 @@ class TypeDBType(BaseModel, ABC):
         """Override model_copy to ensure raw values are wrapped in Attribute instances.
 
         Pydantic's model_copy bypasses validators even with revalidate_instances='always',
-        so we override it to force proper validation.
+        so we override it to force proper validation. Also preserves _iid from original.
         """
+        # Preserve _iid before copy
+        preserved_iid = getattr(self, "_iid", None)
+
         # Call parent model_copy
         copied = super().model_copy(update=update, deep=deep)
+
+        # Restore _iid if it was lost during copy
+        if preserved_iid is not None and getattr(copied, "_iid", None) is None:
+            object.__setattr__(copied, "_iid", preserved_iid)
 
         # Force wrap any raw values in the update dict
         if update:
@@ -342,22 +360,10 @@ class TypeDBType(BaseModel, ABC):
         ...
 
     @abstractmethod
-    def to_insert_query(self, var: str) -> str:
-        """Generate TypeQL insert query for this instance.
-
-        Args:
-            var: Variable name to use
-
-        Returns:
-            TypeQL insert pattern
-        """
-        ...
-
-    @abstractmethod
     def get_match_clause_info(self, var_name: str = "$x") -> MatchClauseInfo:
         """Get information to build a TypeQL match clause for this instance.
 
-        Used by ModelManager for unified CRUD operations. Returns IID-based
+        Used by TypeDBManager for delete/update operations. Returns IID-based
         matching when available, otherwise falls back to type-specific
         identification (key attributes for entities, role players for relations).
 
@@ -372,21 +378,6 @@ class TypeDBType(BaseModel, ABC):
         """
         ...
 
-    @abstractmethod
-    def get_write_query_info(self, var_name: str = "$x") -> WriteQueryInfo:
-        """Get information to build a TypeQL write query for this instance.
-
-        Used by ModelManager for unified insert/put operations. Entities return
-        just a write pattern, while relations include a match clause for role players.
-
-        Args:
-            var_name: Variable name to use
-
-        Returns:
-            WriteQueryInfo with optional match clause and write pattern
-        """
-        ...
-
     @staticmethod
     def _format_value(value: Any) -> str:
         """Format a Python value for TypeQL.
@@ -394,3 +385,32 @@ class TypeDBType(BaseModel, ABC):
         Delegates to the shared format_value utility in crud/utils.py.
         """
         return _format_value_impl(value)
+
+    @abstractmethod
+    def to_ast(self, var: str = "$x") -> Any:
+        """Generate AST InsertClause for this instance.
+
+        Args:
+            var: Variable name to use
+
+        Returns:
+            InsertClause containing statements
+        """
+        ...
+
+    def to_insert_query(self, var: str = "$e") -> str:
+        """Generate TypeQL insert query string for this instance.
+
+        This is a convenience method that uses the AST-based generation
+        internally and compiles it to a string.
+
+        Args:
+            var: Variable name to use (default: "$e")
+
+        Returns:
+            TypeQL insert query string
+        """
+        from type_bridge.query.compiler import QueryCompiler
+
+        insert_clause = self.to_ast(var=var)
+        return QueryCompiler().compile(insert_clause)

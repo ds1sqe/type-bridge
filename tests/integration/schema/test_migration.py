@@ -2,8 +2,16 @@
 
 import pytest
 
-from type_bridge import AttributeFlags, Entity, Flag, Integer, Key, String, TypeFlags
-from type_bridge.schema.migration import MigrationManager
+from type_bridge import (
+    AttributeFlags,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    MigrationManager,
+    String,
+    TypeFlags,
+)
 
 
 @pytest.mark.integration
@@ -180,8 +188,9 @@ def test_apply_migrations_single(clean_db):
 
     # Assert - Verify schema was applied by using TypeBridge entity manager
     # Define the entity class to match the schema
+    # Note: AttributeFlags(name="name") to match migration-created "name" attribute
     class Name(String):
-        pass
+        flags = AttributeFlags(name="name")
 
     class Person(Entity):
         flags = TypeFlags(name="person")

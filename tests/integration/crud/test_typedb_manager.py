@@ -319,11 +319,8 @@ def test_typedb_manager_relation_delete_with_iid(db_with_extended_schema):
     friendship = Friendship(friend1=ivan_fetched, friend2=julia_fetched)
     relation_mgr.insert(friendship)
 
-    # Fetch relation to get IID (using legacy manager for now since get() needs work)
-    from type_bridge.crud import RelationManager
-
-    legacy_mgr = RelationManager(db_with_extended_schema, Friendship)
-    friendships = legacy_mgr.all()
+    # Fetch relation to get IID
+    friendships = relation_mgr.all()
     assert len(friendships) >= 1
 
     # Find our friendship (latest one)

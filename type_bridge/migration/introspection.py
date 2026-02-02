@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from type_bridge.schema.utils import type_exists
+from type_bridge.migration.utils import type_exists
 
 if TYPE_CHECKING:
     from type_bridge.models import Entity, Relation

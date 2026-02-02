@@ -58,7 +58,7 @@ def test_integer_key_insert_and_query(clean_db: Database):
     This is a regression test for the bug where Integer-keyed entities would
     insert successfully but fail to query by their key value.
     """
-    from type_bridge.schema import SchemaManager
+    from type_bridge import SchemaManager
 
     # Register schema
     schema_manager = SchemaManager(clean_db)
@@ -83,7 +83,7 @@ def test_integer_key_insert_and_query(clean_db: Database):
 @pytest.mark.order(302)
 def test_integer_key_vs_string_key_comparison(clean_db: Database):
     """Compare Integer key behavior with String key behavior (both should work)."""
-    from type_bridge.schema import SchemaManager
+    from type_bridge import SchemaManager
 
     # Register schema
     schema_manager = SchemaManager(clean_db)
@@ -118,7 +118,7 @@ def test_integer_key_vs_string_key_comparison(clean_db: Database):
 @pytest.mark.order(303)
 def test_integer_key_with_different_values(clean_db: Database):
     """Test querying with different Integer key values."""
-    from type_bridge.schema import SchemaManager
+    from type_bridge import SchemaManager
 
     # Register schema
     schema_manager = SchemaManager(clean_db)
@@ -154,7 +154,7 @@ def test_integer_key_with_different_values(clean_db: Database):
 @pytest.mark.order(304)
 def test_integer_key_filter_chainable_query(clean_db: Database):
     """Test that Integer key works with chainable query API."""
-    from type_bridge.schema import SchemaManager
+    from type_bridge import SchemaManager
 
     # Register schema
     schema_manager = SchemaManager(clean_db)
@@ -178,7 +178,7 @@ def test_integer_key_filter_chainable_query(clean_db: Database):
 @pytest.mark.order(305)
 def test_integer_key_all_and_count(clean_db: Database):
     """Test that Integer key entities can be retrieved with all() and counted."""
-    from type_bridge.schema import SchemaManager
+    from type_bridge import SchemaManager
 
     # Register schema
     schema_manager = SchemaManager(clean_db)

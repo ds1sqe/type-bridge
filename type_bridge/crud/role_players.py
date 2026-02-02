@@ -16,7 +16,7 @@ def build_role_player_match(var_name: str, entity: Any, entity_type_name: str) -
     falls back to key attribute matching, and raises a clear error if
     neither is available.
 
-    This is the canonical implementation used by RelationManager and RelationQuery.
+    Used by TypeDBManager for relation CRUD operations.
 
     Args:
         var_name: The variable name to use (without $)

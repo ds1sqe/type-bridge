@@ -87,14 +87,16 @@ def test_put_many_entities(db_with_schema):
 @pytest.mark.integration
 @pytest.mark.order(15)
 def test_put_partial_match(db_with_schema):
-    """Test put with all-or-nothing semantics.
+    """Test put_many with individual idempotent semantics.
 
-    According to TypeDB docs, put works on all-or-nothing basis:
-    - If the entire pattern matches, nothing is inserted
-    - If any part fails to match, the entire pattern is inserted
+    TypeBridge's put_many() operates on each item individually:
+    - Each put() is idempotent (no error if entity already exists)
+    - This is more practical for application code than TypeDB's batch PUT
 
-    This means putting [Alice, Bob] when Alice exists will try to insert
-    both Alice and Bob, causing a key constraint violation.
+    When putting [Alice, Bob] where Alice exists:
+    - put(Alice) succeeds (no-op, Alice already exists)
+    - put(Bob) succeeds (Bob is inserted)
+    - Both Alice and Bob exist at the end
     """
 
     class Name(String):
@@ -115,24 +117,20 @@ def test_put_partial_match(db_with_schema):
     person_manager.insert(alice)
 
     # Put both Alice and Bob (Alice exists, Bob doesn't)
-    # This should fail because put will try to insert the entire pattern
-    # including Alice (who already exists), violating @key constraint
+    # Each put is individual and idempotent
     persons = [
         Person(name=Name("Alice"), age=Age(30)),
         Person(name=Name("Bob"), age=Age(25)),
     ]
 
-    # Expect constraint violation due to all-or-nothing semantics
-    with pytest.raises(Exception) as exc_info:
-        person_manager.put_many(persons)
+    # No exception should occur - put_many handles each individually
+    person_manager.put_many(persons)
 
-    # Verify it's a key constraint violation
-    assert "unique" in str(exc_info.value).lower() or "key" in str(exc_info.value).lower()
-
-    # Only Alice should exist (Bob was not inserted due to failure)
+    # Both Alice and Bob should exist
     results = person_manager.all()
-    assert len(results) == 1
-    assert results[0].name.value == "Alice"
+    assert len(results) == 2
+    names = {r.name.value for r in results}
+    assert names == {"Alice", "Bob"}
 
 
 @pytest.mark.integration

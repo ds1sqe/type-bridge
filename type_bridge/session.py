@@ -490,14 +490,12 @@ class TransactionContext:
         self.transaction.rollback()
 
     def manager(self, model_cls: Any):
-        """Get an Entity/Relation manager bound to this transaction."""
-        from type_bridge.crud import EntityManager, RelationManager
+        """Get a TypeDBManager bound to this transaction."""
+        from type_bridge.crud import TypeDBManager
         from type_bridge.models import Entity, Relation
 
-        if issubclass(model_cls, Entity):
-            return EntityManager(self.transaction, model_cls)
-        if issubclass(model_cls, Relation):
-            return RelationManager(self.transaction, model_cls)
+        if issubclass(model_cls, (Entity, Relation)):
+            return TypeDBManager(self.transaction, model_cls)
 
         raise TypeError("manager() expects an Entity or Relation subclass")
 

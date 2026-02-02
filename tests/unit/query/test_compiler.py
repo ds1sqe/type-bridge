@@ -17,6 +17,7 @@ from type_bridge.query.ast import (
     RelationStatement,
     RolePlayer,
     UpdateClause,
+    Value,
 )
 from type_bridge.query.compiler import QueryCompiler
 
@@ -133,3 +134,19 @@ def test_escaping_behavior(compiler):
     # The formatter should handle escaping.
     # Standard formatter usually wraps in double quotes and escapes internal double quotes
     assert "'He said \"Hello\"'" in result or '"He said \\"Hello\\""' in result
+
+
+def test_compile_value_unknown_type_raises_error(compiler):
+    """Test that compiling an unknown Value subclass raises an error."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class UnknownValue(Value):
+        """A custom Value subclass not handled by the compiler."""
+
+        data: str
+
+    unknown = UnknownValue(data="test")
+
+    with pytest.raises(ValueError, match="Unknown value type: UnknownValue"):
+        compiler._compile_value(unknown)

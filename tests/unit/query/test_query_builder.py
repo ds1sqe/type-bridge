@@ -255,8 +255,8 @@ class TestQueryBuilderHelpers:
 
         query = QueryBuilder.match_relation(Friendship, "$r", role_players={"friend": "$u"})
         result = query.build()
-        assert "$r isa friendship" in result
-        assert "(friend: $u)" in result
+        # TypeQL 3.x syntax: variable, role players, then isa
+        assert "$r (friend: $u) isa friendship" in result
 
     def test_insert_entity_generates_correct_pattern(self):
         """insert_entity should generate insert query from instance."""

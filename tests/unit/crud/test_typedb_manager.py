@@ -245,9 +245,13 @@ def test_relation_update_requires_iid():
         mgr.update(link)
 
 
-def test_relation_delete_requires_iid():
-    """Relation delete should require IID."""
-    import pytest
+def test_relation_delete_with_role_players():
+    """Relation delete works via role player matching when role players have @key.
+
+    When a relation has no _iid but its role players can be identified
+    (via @key attributes), the relation can still be deleted using
+    role player matching. This is the expected behavior.
+    """
 
     class Doc(String):
         pass
@@ -262,12 +266,18 @@ def test_relation_delete_requires_iid():
         target: Role[User] = Role("target", User)
 
     link = Link(source=User(doc=Doc("a")), target=User(doc=Doc("b")))
-    # No _iid set
+    # No _iid set, but role players have @key attributes
 
     mgr = _RecordingTypeDBManager(Link)
 
-    with pytest.raises(ValueError, match="no _iid set"):
-        mgr.delete(link)
+    # Delete should work via role player matching (no error raised)
+    mgr.delete(link)
+
+    # Verify the match clause includes role player constraints
+    assert len(mgr.queries) == 1
+    query = mgr.queries[0]
+    assert "source:" in query
+    assert "target:" in query
 
 
 def test_relation_update_with_iid():

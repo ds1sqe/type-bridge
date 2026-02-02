@@ -113,7 +113,7 @@ def parse_role_lookup_filters(
             role_expressions[role_name].append(expr)
         elif first_part in owned_attrs:
             # Relation attribute lookup: attr__lookup
-            # Parse into expression like EntityManager._parse_lookup_filters does
+            # Parse into expression using build_lookup_expression
             lookup = parts[1] if len(parts) > 1 else "exact"
             attr_info = owned_attrs[first_part]
             attr_type = attr_info.typ

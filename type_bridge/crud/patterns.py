@@ -1,11 +1,72 @@
 """Match pattern building utilities for TypeQL queries."""
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from type_bridge.crud.formatting import format_value
+from type_bridge.query.ast import (
+    EntityPattern,
+    HasConstraint,
+    LiteralValue,
+    RelationPattern,
+    RolePlayer,
+)
+from type_bridge.query.compiler import QueryCompiler
 
 if TYPE_CHECKING:
     from type_bridge.models import Entity, Relation
+
+
+def _get_literal_type(
+    value: Any,
+) -> Literal["string", "long", "double", "boolean", "datetime", "date"]:
+    """Determine the LiteralValue type for a Python value."""
+    if isinstance(value, bool):
+        return "boolean"
+    elif isinstance(value, int):
+        return "long"
+    elif isinstance(value, float):
+        return "double"
+    elif isinstance(value, str):
+        return "string"
+    else:
+        return "string"
+
+
+def build_entity_match_ast(
+    model_class: type["Entity"],
+    var: str = "$e",
+    filters: dict[str, Any] | None = None,
+) -> EntityPattern:
+    """Build an AST EntityPattern for an entity.
+
+    Args:
+        model_class: The entity model class
+        var: Variable name to use (default: "$e")
+        filters: Attribute filters as field_name -> value
+
+    Returns:
+        EntityPattern AST node
+    """
+    constraints = []
+
+    if filters:
+        owned_attrs = model_class.get_all_attributes()
+        for field_name, field_value in filters.items():
+            if field_name in owned_attrs:
+                attr_info = owned_attrs[field_name]
+                attr_name = attr_info.typ.get_attribute_name()
+                literal_type = _get_literal_type(field_value)
+                constraints.append(
+                    HasConstraint(
+                        attr_name=attr_name,
+                        value=LiteralValue(value=field_value, value_type=literal_type),
+                    )
+                )
+
+    return EntityPattern(
+        variable=var,
+        type_name=model_class.get_type_name(),
+        constraints=constraints,
+    )
 
 
 def build_entity_match_pattern(
@@ -14,9 +75,6 @@ def build_entity_match_pattern(
     filters: dict[str, Any] | None = None,
 ) -> str:
     """Build a TypeQL match pattern for an entity.
-
-    This is the single source of truth for entity match pattern generation,
-    used by both QueryBuilder and CRUD managers.
 
     Args:
         model_class: The entity model class
@@ -30,18 +88,45 @@ def build_entity_match_pattern(
         >>> build_entity_match_pattern(Person, filters={"name": "Alice"})
         '$e isa person, has name "Alice"'
     """
-    pattern_parts = [f"{var} isa {model_class.get_type_name()}"]
+    pattern = build_entity_match_ast(model_class, var, filters)
+    return QueryCompiler().compile(pattern)
 
-    if filters:
-        owned_attrs = model_class.get_all_attributes()
-        for field_name, field_value in filters.items():
-            if field_name in owned_attrs:
-                attr_info = owned_attrs[field_name]
-                attr_name = attr_info.typ.get_attribute_name()
-                formatted_value = format_value(field_value)
-                pattern_parts.append(f"has {attr_name} {formatted_value}")
 
-    return ", ".join(pattern_parts)
+def build_relation_match_ast(
+    model_class: type["Relation"],
+    var: str = "$r",
+    role_players: dict[str, str] | None = None,
+) -> RelationPattern:
+    """Build an AST RelationPattern for a relation.
+
+    Args:
+        model_class: The relation model class
+        var: Variable name to use (default: "$r")
+        role_players: Dict mapping role names to player variable names
+
+    Returns:
+        RelationPattern AST node
+
+    Raises:
+        ValueError: If a role name is not defined in the model
+    """
+    role_player_nodes = []
+
+    if role_players:
+        defined_roles = model_class._roles
+        for role_name, player_var in role_players.items():
+            if role_name not in defined_roles:
+                raise ValueError(
+                    f"Unknown role '{role_name}' for relation {model_class.__name__}. "
+                    f"Available roles: {list(defined_roles.keys())}"
+                )
+            role_player_nodes.append(RolePlayer(role=role_name, player_var=player_var))
+
+    return RelationPattern(
+        variable=var,
+        type_name=model_class.get_type_name(),
+        role_players=role_player_nodes,
+    )
 
 
 def build_relation_match_pattern(
@@ -50,9 +135,6 @@ def build_relation_match_pattern(
     role_players: dict[str, str] | None = None,
 ) -> str:
     """Build a TypeQL match pattern for a relation.
-
-    This is the single source of truth for relation match pattern generation,
-    used by both QueryBuilder and CRUD managers.
 
     Args:
         model_class: The relation model class
@@ -69,19 +151,8 @@ def build_relation_match_pattern(
         >>> build_relation_match_pattern(Employment, role_players={"employee": "$p"})
         '$r isa employment, (employee: $p)'
     """
-    pattern_parts = [f"{var} isa {model_class.get_type_name()}"]
-
-    if role_players:
-        defined_roles = model_class._roles
-        for role_name, player_var in role_players.items():
-            if role_name not in defined_roles:
-                raise ValueError(
-                    f"Unknown role '{role_name}' for relation {model_class.__name__}. "
-                    f"Available roles: {list(defined_roles.keys())}"
-                )
-            pattern_parts.append(f"({role_name}: {player_var})")
-
-    return ", ".join(pattern_parts)
+    pattern = build_relation_match_ast(model_class, var, role_players)
+    return QueryCompiler().compile(pattern)
 
 
 def normalize_role_players(

@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import (
     TYPE_CHECKING,
     Any,
+    Literal,
     Self,
     TypeVar,
     dataclass_transform,
@@ -20,12 +21,10 @@ from type_bridge.models.base import TypeDBType
 from type_bridge.models.utils import (
     MatchClauseInfo,
     ModelAttrInfo,
-    WriteQueryInfo,
 )
 
 if TYPE_CHECKING:
-    from type_bridge.crud import EntityManager
-    from type_bridge.query.ast import InsertClause
+    from type_bridge.query.ast import EntityPattern, InsertClause
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +95,10 @@ class Entity(TypeDBType):
         return Entity
 
     @classmethod
-    def _get_manager_class(cls) -> type[EntityManager]:
-        from type_bridge.crud import EntityManager
+    def _get_manager_class(cls) -> type:
+        from type_bridge.crud import TypeDBManager
 
-        return EntityManager
+        return TypeDBManager
 
     @classmethod
     def to_schema_definition(cls) -> str | None:
@@ -144,10 +143,16 @@ class Entity(TypeDBType):
             InsertClause containing statements
         """
         from type_bridge.models.utils import get_base_type_for_attribute
-        from type_bridge.query.ast import HasStatement, InsertClause, IsaStatement, LiteralValue
+        from type_bridge.query.ast import (
+            HasStatement,
+            InsertClause,
+            IsaStatement,
+            LiteralValue,
+            Statement,
+        )
 
         type_name = self.get_type_name()
-        statements = [IsaStatement(variable=var, type_name=type_name)]
+        statements: list[Statement] = [IsaStatement(variable=var, type_name=type_name)]
 
         # Use get_all_attributes to include inherited attributes
         for field_name, attr_info in self.get_all_attributes().items():
@@ -158,7 +163,9 @@ class Entity(TypeDBType):
 
                 # Determine value type for AST
                 py_type = get_base_type_for_attribute(attr_class)
-                val_type_map = {
+                val_type_map: dict[
+                    type, Literal["string", "long", "double", "boolean", "datetime", "date"]
+                ] = {
                     str: "string",
                     int: "long",
                     float: "double",
@@ -170,7 +177,9 @@ class Entity(TypeDBType):
                 # that don't inherit directly from standard ones in MRO order checked.
                 # Ideally, we should check isinstance on value or Attribute instance.
 
-                ast_type = val_type_map.get(py_type, "string")
+                ast_type: Literal["string", "long", "double", "boolean", "datetime", "date"] = (
+                    val_type_map.get(py_type, "string") if py_type else "string"
+                )
 
                 # Handle lists (multi-value attributes)
                 values = value if isinstance(value, list) else [value]
@@ -180,49 +189,25 @@ class Entity(TypeDBType):
                     raw_val = item.value if isinstance(item, Attribute) else item
 
                     # Refine type based on actual value if needed
+                    item_type: Literal["string", "long", "double", "boolean", "datetime", "date"]
                     if ast_type == "string" and isinstance(raw_val, bool):
-                        ast_type = "boolean"
-                    elif ast_type == "string" and isinstance(raw_val, (int, float)):
-                        ast_type = "double" if isinstance(raw_val, float) else "long"
+                        item_type = "boolean"
+                    elif ast_type == "string" and isinstance(raw_val, float):
+                        item_type = "double"
+                    elif ast_type == "string" and isinstance(raw_val, int):
+                        item_type = "long"
+                    else:
+                        item_type = ast_type
 
                     statements.append(
                         HasStatement(
                             subject_var=var,
                             attr_name=attr_name,
-                            value=LiteralValue(value=raw_val, value_type=ast_type),
+                            value=LiteralValue(value=raw_val, value_type=item_type),
                         )
                     )
 
         return InsertClause(statements=statements)
-
-    def to_insert_query(self, var: str = "$e") -> str:
-        """Generate TypeQL insert query for this instance.
-
-        Args:
-            var: Variable name to use
-
-        Returns:
-            TypeQL insert pattern
-        """
-        type_name = self.get_type_name()
-        parts = [f"{var} isa {type_name}"]
-
-        # Use get_all_attributes to include inherited attributes
-        for field_name, attr_info in self.get_all_attributes().items():
-            # Use Pydantic's getattr to get field value
-            value = getattr(self, field_name, None)
-            if value is not None:
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-
-                # Handle lists (multi-value attributes)
-                if isinstance(value, list):
-                    for item in value:
-                        parts.append(f"has {attr_name} {self._format_value(item)}")
-                else:
-                    parts.append(f"has {attr_name} {self._format_value(value)}")
-
-        return ", ".join(parts)
 
     def get_match_clause_info(self, var_name: str = "$e") -> MatchClauseInfo:
         """Get match clause info for this entity instance.
@@ -275,41 +260,70 @@ class Entity(TypeDBType):
             f"database first (to populate _iid) or add Flag(Key) to an attribute."
         )
 
-    def get_write_query_info(self, var_name: str = "$e") -> WriteQueryInfo:
-        """Get write query info for this entity instance.
+    def get_match_pattern(self, var_name: str = "$e") -> "EntityPattern":
+        """Get an AST EntityPattern for matching this entity instance.
 
-        Entities don't need a match clause for write operations.
-
-        Args:
-            var_name: Variable name to use
-
-        Returns:
-            WriteQueryInfo with just the write pattern (no match clause)
-        """
-        write_pattern = self.to_insert_query(var_name)
-        return WriteQueryInfo(match_clause=None, write_pattern=write_pattern)
-
-    @classmethod
-    def build_batch_write_query(cls, instances: list[Entity], keyword: str = "insert") -> str:
-        """Build a batch write query for multiple entity instances.
-
-        Entities don't need match clauses, so this simply combines
-        multiple write patterns.
+        Prefers IID-based matching when available (most precise).
+        Falls back to @key attribute matching.
 
         Args:
-            instances: List of entity instances
-            keyword: Write keyword ("insert" or "put")
+            var_name: Variable name to use in the pattern
 
         Returns:
-            Complete TypeQL query string
-        """
-        patterns = []
-        for i, instance in enumerate(instances):
-            var_name = f"$e{i}"
-            pattern = instance.to_insert_query(var_name)
-            patterns.append(pattern)
+            EntityPattern AST node
 
-        return f"{keyword}\n" + ";\n".join(patterns) + ";"
+        Raises:
+            ValueError: If entity has neither _iid nor key attributes
+        """
+        from type_bridge.crud.patterns import _get_literal_type
+        from type_bridge.query.ast import (
+            EntityPattern,
+            HasConstraint,
+            IidConstraint,
+            LiteralValue,
+        )
+
+        type_name = self.get_type_name()
+        constraints: list = []
+
+        # Prefer IID-based matching when available
+        entity_iid = getattr(self, "_iid", None)
+        if entity_iid:
+            constraints.append(IidConstraint(iid=entity_iid))
+            return EntityPattern(variable=var_name, type_name=type_name, constraints=constraints)
+
+        # Fall back to key attribute matching
+        key_attrs = {
+            field_name: attr_info
+            for field_name, attr_info in self.get_all_attributes().items()
+            if attr_info.flags.is_key
+        }
+
+        if key_attrs:
+            for field_name, attr_info in key_attrs.items():
+                value = getattr(self, field_name, None)
+                if value is None:
+                    raise ValueError(
+                        f"Cannot identify {self.__class__.__name__}: "
+                        f"key attribute '{field_name}' is None"
+                    )
+                attr_name = attr_info.typ.get_attribute_name()
+                # Unwrap Attribute wrapper if needed
+                raw_value = value.value if hasattr(value, "value") else value
+                literal_type = _get_literal_type(raw_value)
+                constraints.append(
+                    HasConstraint(
+                        attr_name=attr_name,
+                        value=LiteralValue(value=raw_value, value_type=literal_type),
+                    )
+                )
+            return EntityPattern(variable=var_name, type_name=type_name, constraints=constraints)
+
+        # Neither IID nor key attributes available
+        raise ValueError(
+            f"Entity '{self.__class__.__name__}' cannot be identified: "
+            f"no _iid set and no @key attributes defined."
+        )
 
     def to_dict(
         self,
@@ -387,7 +401,7 @@ class Entity(TypeDBType):
                     raise ValueError(f"Unknown field '{raw_key}' for {cls.__name__}")
                 continue
 
-            if raw_value is None or (isinstance(raw_value, str) and raw_value == ""):
+            if raw_value is None:
                 continue
 
             attr_info = attrs[internal_key]
@@ -402,31 +416,44 @@ class Entity(TypeDBType):
 
     @staticmethod
     def _wrap_attribute_value(value: Any, attr_info: ModelAttrInfo) -> Any:
-        """Wrap raw values using the attribute class, handling multi-value fields."""
+        """Wrap raw values using the attribute class, handling multi-value fields.
+
+        Uses _pydantic_validate when available to properly handle type coercion
+        (e.g., parsing ISO datetime strings from TypeDB).
+        """
         attr_class = attr_info.typ
+
+        def wrap_single(item: Any) -> Any:
+            """Wrap a single value, using Pydantic validation for proper type coercion."""
+            if isinstance(item, attr_class):
+                return item
+            # Use _pydantic_validate if available (handles string parsing for datetimes, etc.)
+            if hasattr(attr_class, "_pydantic_validate"):
+                return attr_class._pydantic_validate(item)
+            return attr_class(item)
 
         if attr_info.flags.has_explicit_card:
             items = value if isinstance(value, list) else [value]
             wrapped_items = []
             for item in items:
-                if item is None or (isinstance(item, str) and item == ""):
+                if item is None:
                     continue
-                wrapped_items.append(item if isinstance(item, attr_class) else attr_class(item))
+                wrapped_items.append(wrap_single(item))
 
             return wrapped_items or None
 
         if isinstance(value, list):
             wrapped_items = []
             for item in value:
-                if item is None or (isinstance(item, str) and item == ""):
+                if item is None:
                     continue
-                wrapped_items.append(item if isinstance(item, attr_class) else attr_class(item))
+                wrapped_items.append(wrap_single(item))
             return wrapped_items or None
 
         if isinstance(value, attr_class):
             return value
 
-        return attr_class(value)
+        return wrap_single(value)
 
     def __repr__(self) -> str:
         """Developer-friendly string representation of entity."""

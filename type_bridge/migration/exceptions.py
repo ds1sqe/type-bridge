@@ -2,7 +2,7 @@
 
 from typing import cast
 
-from type_bridge.schema.diff import EntityChanges, RelationChanges, SchemaDiff
+from type_bridge.migration.diff import EntityChanges, RelationChanges, SchemaDiff
 
 
 class SchemaValidationError(Exception):

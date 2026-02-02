@@ -7,7 +7,7 @@ which changes are safe, require warnings, or are breaking changes.
 from dataclasses import dataclass
 from enum import Enum
 
-from type_bridge.schema.diff import SchemaDiff
+from type_bridge.migration.diff import SchemaDiff
 
 
 class ChangeCategory(Enum):

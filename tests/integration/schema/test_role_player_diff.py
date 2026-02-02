@@ -2,9 +2,19 @@
 
 import pytest
 
-from type_bridge import Entity, Flag, Key, Relation, Role, SchemaManager, String, TypeFlags
+from type_bridge import (
+    BreakingChangeAnalyzer,
+    ChangeCategory,
+    Entity,
+    Flag,
+    Key,
+    Relation,
+    Role,
+    SchemaManager,
+    String,
+    TypeFlags,
+)
 from type_bridge.attribute import AttributeFlags
-from type_bridge.schema import BreakingChangeAnalyzer, ChangeCategory
 
 
 # Shared attributes

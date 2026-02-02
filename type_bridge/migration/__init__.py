@@ -68,6 +68,20 @@ CLI Usage:
 
 from type_bridge.migration import operations
 from type_bridge.migration.base import Migration, MigrationDependency
+from type_bridge.migration.breaking import (
+    BreakingChangeAnalyzer,
+    ChangeCategory,
+    ClassifiedChange,
+)
+from type_bridge.migration.diff import (
+    AttributeFlagChange,
+    EntityChanges,
+    RelationChanges,
+    RoleCardinalityChange,
+    RolePlayerChange,
+    SchemaDiff,
+)
+from type_bridge.migration.exceptions import SchemaConflictError, SchemaValidationError
 from type_bridge.migration.executor import (
     MigrationError,
     MigrationExecutor,
@@ -75,22 +89,49 @@ from type_bridge.migration.executor import (
     MigrationResult,
 )
 from type_bridge.migration.generator import MigrationGenerator
+from type_bridge.migration.info import SchemaInfo
+from type_bridge.migration.introspection import (
+    IntrospectedAttribute,
+    IntrospectedEntity,
+    IntrospectedOwnership,
+    IntrospectedRelation,
+    IntrospectedRole,
+    IntrospectedSchema,
+    SchemaIntrospector,
+)
 from type_bridge.migration.loader import (
     LoadedMigration,
     MigrationLoader,
     MigrationLoadError,
 )
 from type_bridge.migration.registry import ModelRegistry
+from type_bridge.migration.schema_manager import SchemaManager
+from type_bridge.migration.simple_migration import MigrationManager as SimpleMigrationManager
 from type_bridge.migration.state import (
     MigrationRecord,
     MigrationState,
     MigrationStateManager,
 )
+from type_bridge.migration.utils import type_exists
 
 __all__ = [
     # Core classes
     "Migration",
     "MigrationDependency",
+    # Diff classes
+    "SchemaDiff",
+    "EntityChanges",
+    "RelationChanges",
+    "AttributeFlagChange",
+    "RolePlayerChange",
+    "RoleCardinalityChange",
+    # Breaking change analysis
+    "BreakingChangeAnalyzer",
+    "ChangeCategory",
+    "ClassifiedChange",
+    # Exceptions
+    "SchemaConflictError",
+    "SchemaValidationError",
     # Executor
     "MigrationExecutor",
     "MigrationError",
@@ -108,6 +149,21 @@ __all__ = [
     "MigrationGenerator",
     # Model registry
     "ModelRegistry",
+    # Schema info
+    "SchemaInfo",
+    # Introspection
+    "SchemaIntrospector",
+    "IntrospectedSchema",
+    "IntrospectedEntity",
+    "IntrospectedRelation",
+    "IntrospectedAttribute",
+    "IntrospectedOwnership",
+    "IntrospectedRole",
+    # Schema Manager
+    "SchemaManager",
+    "SimpleMigrationManager",
+    # Utils
+    "type_exists",
     # Operations module
     "operations",
 ]
