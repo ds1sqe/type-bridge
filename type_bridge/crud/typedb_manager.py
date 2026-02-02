@@ -1006,6 +1006,9 @@ class TypeDBManager[T: "TypeDBType"]:
     def delete_many(self, instances: list[T], *, strict: bool = False) -> list[T]:
         """Delete multiple instances.
 
+        Optimized for batch deletion: instances with IIDs are deleted in a single
+        query using disjunctive matching (OR pattern), reducing N roundtrips to 1.
+
         Args:
             instances: List of instances to delete
             strict: If True, raise EntityNotFoundError if any entity doesn't exist.
@@ -1014,31 +1017,167 @@ class TypeDBManager[T: "TypeDBType"]:
         Returns:
             List of actually-deleted entities (excludes those that didn't exist)
         """
+        if not instances:
+            return instances
+
         from type_bridge.crud.exceptions import EntityNotFoundError
 
-        # First pass: check existence of all entities
-        exists_map: dict[int, bool] = {}
-        not_found: list[T] = []
+        # Separate instances by whether they have IIDs
+        with_iids: list[T] = []
+        without_iids: list[T] = []
 
-        for i, instance in enumerate(instances):
-            exists = self._entity_exists(instance)
-            exists_map[i] = exists
-            if not exists:
-                not_found.append(instance)
+        for instance in instances:
+            if getattr(instance, "_iid", None):
+                with_iids.append(instance)
+            else:
+                without_iids.append(instance)
 
-        # In strict mode, raise before deleting anything
-        if strict and not_found:
-            names = [str(e) for e in not_found]
-            raise EntityNotFoundError(f"entity(ies) not found: {names}")
+        # For strict mode, we need to check existence before deleting
+        if strict:
+            # Batch check existence for instances with IIDs
+            existing_iids = self._batch_check_existence_by_iid(with_iids) if with_iids else set()
+            not_found_with_iid = [inst for inst in with_iids if inst._iid not in existing_iids]
 
-        # Second pass: delete entities that exist
-        deleted: list[T] = []
-        for i, instance in enumerate(instances):
-            if exists_map.get(i, False):
-                self.delete(instance)
-                deleted.append(instance)
+            # Check existence individually for instances without IIDs
+            not_found_without_iid = [inst for inst in without_iids if not self._entity_exists(inst)]
+
+            not_found = not_found_with_iid + not_found_without_iid
+            if not_found:
+                names = [str(e) for e in not_found]
+                raise EntityNotFoundError(f"entity(ies) not found: {names}")
+
+            # All exist - proceed with batch delete
+            deleted: list[T] = []
+            if with_iids:
+                self._batch_delete_by_iid(with_iids)
+                deleted.extend(with_iids)
+            for inst in without_iids:
+                self.delete(inst)
+                deleted.append(inst)
+            return deleted
+
+        # Non-strict mode: batch delete instances with IIDs, individual for others
+        deleted = []
+
+        if with_iids:
+            # Batch check which ones exist
+            existing_iids = self._batch_check_existence_by_iid(with_iids)
+            existing_instances = [inst for inst in with_iids if inst._iid in existing_iids]
+
+            if existing_instances:
+                self._batch_delete_by_iid(existing_instances)
+                deleted.extend(existing_instances)
+
+        # Handle instances without IIDs individually
+        for inst in without_iids:
+            if self._entity_exists(inst):
+                self.delete(inst)
+                deleted.append(inst)
 
         return deleted
+
+    def _batch_check_existence_by_iid(self, instances: list[T]) -> set[str]:
+        """Batch check existence of instances by IID using disjunctive matching.
+
+        Args:
+            instances: List of instances (must have _iid set)
+
+        Returns:
+            Set of IIDs that exist in the database
+        """
+        from type_bridge.query.ast import (
+            FetchClause,
+            FetchFunction,
+            IidPattern,
+            MatchClause,
+            OrPattern,
+        )
+
+        if not instances:
+            return set()
+
+        var = "$x"
+
+        # Build OR pattern for all IIDs
+        alternatives: list[list[Pattern]] = []
+        for inst in instances:
+            iid = getattr(inst, "_iid", None)
+            if iid:
+                alternatives.append([IidPattern(variable=var, iid=iid)])
+
+        if not alternatives:
+            return set()
+
+        # If only one IID, no need for OR pattern
+        if len(alternatives) == 1:
+            match_clause = MatchClause(patterns=alternatives[0])
+        else:
+            or_pattern = OrPattern(alternatives=alternatives)
+            match_clause = MatchClause(patterns=[or_pattern])
+
+        # Fetch IIDs of matching instances
+        match_str = self.compiler.compile(match_clause)
+        fetch_items: list[FetchFunction] = [FetchFunction(key="iid", func_name="iid", var=var)]
+        fetch_clause = FetchClause(items=cast(list, fetch_items))
+        fetch_str = self.compiler.compile(fetch_clause)
+
+        query = f"{match_str}\n{fetch_str}"
+        results = self._execute(query, TransactionType.READ)
+
+        # Extract IIDs from results
+        existing_iids: set[str] = set()
+        for result in results:
+            iid = result.get("iid")
+            if isinstance(iid, dict) and "value" in iid:
+                iid = iid["value"]
+            if isinstance(iid, str):
+                existing_iids.add(iid)
+
+        return existing_iids
+
+    def _batch_delete_by_iid(self, instances: list[T]) -> None:
+        """Batch delete instances using disjunctive IID matching.
+
+        Generates a single query with OR pattern to match all instances by IID,
+        then deletes them in one operation.
+
+        Args:
+            instances: List of instances to delete (must have _iid set)
+        """
+        from type_bridge.query.ast import IidPattern, OrPattern
+
+        if not instances:
+            return
+
+        var = "$x"
+
+        # Build OR pattern for all IIDs
+        alternatives: list[list[Pattern]] = []
+        for inst in instances:
+            iid = getattr(inst, "_iid", None)
+            if iid:
+                alternatives.append([IidPattern(variable=var, iid=iid)])
+
+        if not alternatives:
+            return
+
+        # Build match clause with OR pattern
+        if len(alternatives) == 1:
+            match_clause = MatchClause(patterns=alternatives[0])
+        else:
+            or_pattern = OrPattern(alternatives=alternatives)
+            match_clause = MatchClause(patterns=[or_pattern])
+
+        # Build delete clause
+        delete_clause = DeleteClause(statements=[DeleteThingStatement(variable=var)])
+
+        # Compile and execute
+        match_str = self.compiler.compile(match_clause)
+        delete_str = self.compiler.compile(delete_clause)
+        query = f"{match_str}\n{delete_str}"
+
+        logger.debug(f"Batch delete query: {query}")
+        self._execute(query, TransactionType.WRITE)
 
     def _entity_exists(self, instance: T) -> bool:
         """Check if an entity exists in the database."""
@@ -1092,7 +1231,9 @@ class TypeDBManager[T: "TypeDBType"]:
                 # Check if this is a key constraint violation
                 error_str = str(e)
                 if "unique" in error_str.lower() or "constraint" in error_str.lower():
-                    logger.debug(f"Batch put failed with constraint violation, falling back to individual: {e}")
+                    logger.debug(
+                        f"Batch put failed with constraint violation, falling back to individual: {e}"
+                    )
                     # Fall back to individual operations
                     for instance in instances:
                         self.put(instance)
