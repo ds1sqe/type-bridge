@@ -890,9 +890,84 @@ class TypeDBManager[T: "TypeDBType"]:
         return self.get()
 
     def insert_many(self, instances: list[T]) -> list[T]:
-        """Insert multiple instances."""
+        """Insert multiple instances in a single query (batched).
+
+        For entities, combines all inserts into a single query for efficiency.
+        For relations, falls back to individual inserts (due to match clause complexity).
+        """
+        if not instances:
+            return instances
+
+        # Check if all instances are entities (can be batched)
+        # Relations need individual handling due to role player match clauses
+        if all(isinstance(inst, Entity) for inst in instances):
+            return self._batch_insert_entities(instances)
+
+        # Fallback for relations or mixed types
         for instance in instances:
             self.insert(instance)
+        return instances
+
+    def _batch_insert_entities(self, instances: list[T], *, use_put: bool = False) -> list[T]:
+        """Batch insert/put multiple entities in a single query.
+
+        Combines all entity inserts into one query with a single fetch clause
+        to retrieve all IIDs, reducing N roundtrips to 1.
+
+        Args:
+            instances: List of Entity instances to insert
+            use_put: If True, use 'put' instead of 'insert' for idempotent operation
+
+        Returns:
+            The same list with _iid populated on each instance
+        """
+        from type_bridge.query.ast import FetchClause, FetchFunction, InsertClause
+
+        if not instances:
+            return instances
+
+        # Build combined insert clause with unique variables
+        all_statements = []
+        var_to_instance: dict[str, T] = {}
+
+        for i, instance in enumerate(instances):
+            var = f"$x{i}"
+            var_to_instance[var] = instance
+
+            # Get insert clause for this instance
+            insert_clause = instance.to_ast(var)
+            all_statements.extend(insert_clause.statements)
+
+        # Create combined insert clause
+        combined_insert = InsertClause(statements=all_statements)
+        query_str = self.compiler.compile(combined_insert)
+
+        # Convert to 'put' if needed
+        if use_put:
+            query_str = query_str.replace("insert\n", "put\n", 1)
+
+        # Build fetch clause for all IIDs
+        fetch_items: list[FetchFunction] = [
+            FetchFunction(key=var, func_name="iid", var=var) for var in var_to_instance
+        ]
+        fetch_clause = FetchClause(items=cast(list, fetch_items))
+        fetch_str = self.compiler.compile(fetch_clause)
+
+        # Execute combined query
+        query = f"{query_str}\n{fetch_str}"
+        results = self._execute(query, TransactionType.WRITE)
+
+        # Parse results and set IIDs on instances
+        if results:
+            result = results[0]  # All IIDs come back in a single result row
+            for var, instance in var_to_instance.items():
+                iid_value = result.get(var)
+                if isinstance(iid_value, dict) and "value" in iid_value:
+                    iid_value = iid_value["value"]
+                if iid_value:
+                    object.__setattr__(instance, "_iid", iid_value)
+                    logger.debug(f"Set _iid on instance {var}: {iid_value}")
+
         return instances
 
     def put(self, instance: T) -> T:
@@ -997,7 +1072,35 @@ class TypeDBManager[T: "TypeDBType"]:
         return False
 
     def put_many(self, instances: list[T]) -> list[T]:
-        """Put multiple instances (idempotent insert/update)."""
+        """Put multiple instances (idempotent insert/update).
+
+        Attempts batch operation first for efficiency. If a key constraint
+        violation occurs (some entities exist with different data), falls back
+        to individual operations which are idempotent.
+
+        For entities, uses batch PUT when possible (N→1 roundtrips).
+        For relations, uses individual operations (match clause complexity).
+        """
+        if not instances:
+            return instances
+
+        # Check if all instances are entities (can attempt batch)
+        if all(isinstance(inst, Entity) for inst in instances):
+            try:
+                return self._batch_insert_entities(instances, use_put=True)
+            except Exception as e:
+                # Check if this is a key constraint violation
+                error_str = str(e)
+                if "unique" in error_str.lower() or "constraint" in error_str.lower():
+                    logger.debug(f"Batch put failed with constraint violation, falling back to individual: {e}")
+                    # Fall back to individual operations
+                    for instance in instances:
+                        self.put(instance)
+                    return instances
+                # Re-raise other errors
+                raise
+
+        # Fallback for relations or mixed types
         for instance in instances:
             self.put(instance)
         return instances
