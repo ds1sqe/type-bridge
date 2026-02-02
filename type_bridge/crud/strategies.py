@@ -141,7 +141,6 @@ class RelationStrategy(ModelStrategy["Relation"]):
         from type_bridge.crud.formatting import format_value
         from type_bridge.crud.types import is_multi_value_attribute
         from type_bridge.crud.utils import build_role_player_fetch_items
-        from type_bridge.models import Entity
 
         roles = getattr(model_class, "_roles", {})
         owned_attrs = model_class.get_all_attributes()
@@ -178,22 +177,22 @@ class RelationStrategy(ModelStrategy["Relation"]):
                 raw_val = value.value if hasattr(value, "value") else value
                 match_clauses.append(f"{var} has {attr_name} {format_value(raw_val)}")
 
-        # Add role player filter clauses
+        # Add role player filter clauses (handles both Entity and Relation role players)
         for role_name, value in filters.items():
-            if role_name in roles and isinstance(value, Entity):
-                entity = value
-                entity_type = entity.get_type_name()
+            if role_name in roles and hasattr(value, "get_type_name"):
+                player = value
+                player_type = player.get_type_name()
                 role_var = f"${role_name}"
 
-                # Get entity identification (IID or keys)
-                if entity._iid:
-                    match_clauses.append(f"{role_var} isa {entity_type}, iid {entity._iid}")
-                else:
-                    # Use key attributes
-                    key_match = f"{role_var} isa {entity_type}"
-                    for field_name, attr_info in entity.get_all_attributes().items():
+                # Get player identification (IID or keys for entities)
+                if player._iid:
+                    match_clauses.append(f"{role_var} isa {player_type}, iid {player._iid}")
+                elif hasattr(player, "_build_identification_constraints"):
+                    # Entity: use key attributes
+                    key_match = f"{role_var} isa {player_type}"
+                    for field_name, attr_info in player.get_all_attributes().items():
                         if attr_info.flags.is_key:
-                            attr_value = getattr(entity, field_name, None)
+                            attr_value = getattr(player, field_name, None)
                             if attr_value is not None:
                                 attr_name = attr_info.typ.get_attribute_name()
                                 raw_val = (
@@ -201,6 +200,12 @@ class RelationStrategy(ModelStrategy["Relation"]):
                                 )
                                 key_match += f", has {attr_name} {format_value(raw_val)}"
                     match_clauses.append(key_match)
+                else:
+                    # Relation as role player without IID - can't identify
+                    raise ValueError(
+                        f"Relation role player '{role_name}' cannot be identified: "
+                        f"no _iid set. Fetch the relation from the database first."
+                    )
 
         match_clause = "match\n" + ";\n".join(match_clauses) + ";"
 
@@ -314,22 +319,27 @@ class RelationStrategy(ModelStrategy["Relation"]):
 
         # NOTE: to_ast uses a specific variable naming convention: f"${role_name}_{i}"
 
-        for role_name, role in instance.__class__._roles.items():
-            entity_or_list = instance.__dict__.get(role_name)
-            if entity_or_list is not None:
-                entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
-                for i, entity in enumerate(entities):
+        for role_name, _ in instance.__class__._roles.items():
+            player_or_list = instance.__dict__.get(role_name)
+            if player_or_list is not None:
+                players = player_or_list if isinstance(player_or_list, list) else [player_or_list]
+                for i, player in enumerate(players):
                     # Reconstruct variable name used in to_ast
-                    var_name = f"{role_name}_{i}" if len(entities) > 1 else role_name
+                    var_name = f"{role_name}_{i}" if len(players) > 1 else role_name
                     player_var = f"${var_name}"
 
-                    # Identify the player entity
-                    # Quick fix: Use the entity's _iid or key attributes directly here.
-                    constraints = EntityStrategy().identify(entity)
+                    # Identify the player - could be Entity or Relation
+                    # Use the appropriate strategy based on player type
+                    if hasattr(player, "_build_identification_constraints"):
+                        # Entity: use the shared identification method
+                        constraints = player._build_identification_constraints()
+                    else:
+                        # Relation as role player: can only identify by IID
+                        constraints = self.identify(player)
 
                     pattern = EntityPattern(
                         variable=player_var,
-                        type_name=entity.get_type_name(),
+                        type_name=player.get_type_name(),
                         constraints=constraints,
                     )
                     patterns.append(pattern)
@@ -341,7 +351,6 @@ class RelationStrategy(ModelStrategy["Relation"]):
     def build_match_all(
         self, model_class: type[Relation], var: str, filters: dict[str, Any]
     ) -> MatchClause:
-        from type_bridge.models import Entity
         from type_bridge.query.ast import (
             EntityPattern,
             MatchClause,
@@ -366,8 +375,8 @@ class RelationStrategy(ModelStrategy["Relation"]):
                         attr_name=attr_name, value=self._convert_value(value, attr_info.typ)
                     )
                 )
-            # Check if it's a role player filter
-            elif field_name in roles and isinstance(value, Entity):
+            # Check if it's a role player filter (Entity or Relation)
+            elif field_name in roles and hasattr(value, "get_type_name"):
                 # Generate a unique variable for the role player
                 player_var = f"${field_name}_filter"
                 role = roles[field_name]
@@ -375,8 +384,13 @@ class RelationStrategy(ModelStrategy["Relation"]):
                 # Add role player to the relation pattern
                 role_players.append(RolePlayer(role=role.role_name, player_var=player_var))
 
-                # Build entity pattern for the role player using its key attributes
-                player_constraints = EntityStrategy().identify(value)
+                # Build entity pattern for the role player
+                # Handle both Entity (has _build_identification_constraints) and Relation (IID only)
+                if hasattr(value, "_build_identification_constraints"):
+                    player_constraints = value._build_identification_constraints()
+                else:
+                    # Relation as role player: can only identify by IID
+                    player_constraints = self.identify(value)
                 entity_patterns.append(
                     EntityPattern(
                         variable=player_var,

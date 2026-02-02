@@ -5,7 +5,7 @@ You can also import directly from the submodules:
 
 - type_bridge.crud.formatting: format_value, unwrap_attribute
 - type_bridge.crud.patterns: build_entity_match_pattern, build_relation_match_pattern, normalize_role_players
-- type_bridge.crud.types: is_multi_value_attribute, resolve_entity_class, hydrate_attributes, etc.
+- type_bridge.crud.types: is_multi_value_attribute, hydrate_attributes, etc.
 - type_bridge.crud.role_players: Role player utilities
 """
 
@@ -35,7 +35,6 @@ from type_bridge.crud.types import (
     extract_entity_key,
     hydrate_attributes,
     is_multi_value_attribute,
-    resolve_entity_class,
 )
 
 __all__ = [
@@ -48,7 +47,6 @@ __all__ = [
     "normalize_role_players",
     # types
     "is_multi_value_attribute",
-    "resolve_entity_class",
     "build_metadata_fetch",
     "hydrate_attributes",
     "extract_entity_key",

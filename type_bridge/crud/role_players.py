@@ -64,8 +64,9 @@ def resolve_entity_class_from_label(
 ) -> type["Entity"]:
     """Resolve the correct Python entity class from a TypeDB type label.
 
-    Used for polymorphic role players where the declared role type is abstract
-    but the actual entity is a concrete subtype.
+    Searches through the allowed entity classes and their subclasses to find
+    the class matching the given type label. This handles polymorphic role
+    players where the declared role type may be abstract.
 
     Args:
         type_label: The TypeDB type label (from label() function), e.g., "person"
@@ -78,23 +79,27 @@ def resolve_entity_class_from_label(
         # Fallback to first allowed class if no type label
         return allowed_entity_classes[0]
 
-    # Build a mapping of type names to classes, including subclasses
-    type_name_to_class: dict[str, type[Entity]] = {}
+    # Quick check: does the label match one of the allowed classes directly?
+    for cls in allowed_entity_classes:
+        if cls.get_type_name() == type_label:
+            return cls
 
-    def collect_subclasses(cls: type["Entity"]) -> None:
-        """Recursively collect all subclasses and their type names."""
-        type_name = cls.get_type_name()
-        if type_name:
-            type_name_to_class[type_name] = cls
+    # Search through subclasses of allowed classes
+    def find_in_subclasses(cls: type["Entity"]) -> type["Entity"] | None:
+        """Recursively search subclasses for matching type name."""
         for subclass in cls.__subclasses__():
-            collect_subclasses(subclass)
+            if subclass.get_type_name() == type_label:
+                return subclass
+            # Recurse into deeper subclasses
+            found = find_in_subclasses(subclass)
+            if found:
+                return found
+        return None
 
     for cls in allowed_entity_classes:
-        collect_subclasses(cls)
-
-    # Look up the class by type label
-    if type_label in type_name_to_class:
-        return type_name_to_class[type_label]
+        found = find_in_subclasses(cls)
+        if found:
+            return found
 
     # Fallback to first allowed class
     return allowed_entity_classes[0]
@@ -217,7 +222,7 @@ def extract_role_players_from_results(
     """
     role_players: dict[str, Any] = {}
 
-    for role_name, (role_var, allowed_entity_classes) in role_info.items():
+    for role_name, (_, allowed_entity_classes) in role_info.items():
         is_multi = role_name in multi_player_roles
         collected_players: list[Any] = []
         seen_player_keys: set[tuple[Any, ...]] = set()

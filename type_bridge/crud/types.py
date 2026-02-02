@@ -8,9 +8,6 @@ from type_bridge.crud.formatting import unwrap_attribute
 if TYPE_CHECKING:
     from type_bridge.models import Entity
 
-# Cache for subclass maps (keyed by class name for hashability)
-_subclass_map_cache: dict[str, dict[str, type["Entity"]]] = {}
-
 
 def is_multi_value_attribute(flags: AttributeFlags) -> bool:
     """Check if attribute is multi-value based on cardinality.
@@ -45,71 +42,6 @@ def is_multi_value_attribute(flags: AttributeFlags) -> bool:
         # Unbounded means multi-value
         return True
     return flags.card_max > 1
-
-
-def resolve_entity_class(
-    base_class: type["Entity"],
-    type_name: str,
-) -> type["Entity"]:
-    """Resolve a TypeDB type name to the corresponding Python entity class.
-
-    Searches through the class hierarchy starting from base_class to find
-    a subclass that matches the given TypeDB type name. This enables
-    polymorphic queries where a supertype query returns entities of
-    different concrete subtypes.
-
-    Args:
-        base_class: The base entity class (e.g., the queried supertype)
-        type_name: TypeDB type name to resolve (e.g., "user_story")
-
-    Returns:
-        The matching entity class, or base_class if no match found
-
-    Example:
-        # If querying Artifact and TypeDB returns a "user_story" entity:
-        resolved = resolve_entity_class(Artifact, "user_story")
-        # resolved is UserStory class (subclass of Artifact)
-    """
-    # Check if base class matches
-    if base_class.get_type_name() == type_name:
-        return base_class
-
-    # Build subclass map and search (using cache)
-    cache_key = f"{base_class.__module__}.{base_class.__name__}"
-    if cache_key not in _subclass_map_cache:
-        _subclass_map_cache[cache_key] = _build_subclass_map(base_class)
-    subclass_map = _subclass_map_cache[cache_key]
-    return subclass_map.get(type_name, base_class)
-
-
-def _build_subclass_map(base_class: type["Entity"]) -> dict[str, type["Entity"]]:
-    """Build a mapping from TypeDB type names to entity classes.
-
-    Recursively collects all subclasses of the given base class and maps
-    their TypeDB type names to the Python classes.
-
-    Args:
-        base_class: The base entity class to start from
-
-    Returns:
-        Dictionary mapping TypeDB type names to entity classes
-    """
-    result: dict[str, type[Entity]] = {}
-
-    def collect_subclasses(cls: type["Entity"]) -> None:
-        # Add this class to the map
-        try:
-            type_name = cls.get_type_name()
-            result[type_name] = cls
-        except Exception:
-            pass
-
-        # Recursively collect from subclasses
-        for subclass in cls.__subclasses__():
-            collect_subclasses(subclass)
-
-    collect_subclasses(base_class)
-    return result
 
 
 def build_metadata_fetch(var: str) -> str:
