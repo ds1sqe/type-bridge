@@ -359,7 +359,6 @@ class TypeDBType(BaseModel, ABC):
             Dictionary mapping field names to ModelAttrInfo, including
             attributes from all registered subtypes.
         """
-        from type_bridge.models.registry import ModelRegistry
 
         # Start with this class's attributes (including inherited)
         all_attrs = cls.get_all_attributes()
