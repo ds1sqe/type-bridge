@@ -6,13 +6,16 @@ import pytest
 
 from type_bridge.query.ast import (
     EntityPattern,
+    FunctionCallValue,
     HasConstraint,
     HasStatement,
     IidConstraint,
     InsertClause,
     IsaStatement,
+    LetAssignment,
     LiteralValue,
     MatchClause,
+    MatchLetClause,
     RelationPattern,
     RelationStatement,
     RolePlayer,
@@ -149,3 +152,98 @@ def test_compile_value_unknown_type_raises_error(compiler):
 
     with pytest.raises(ValueError, match="Unknown value type: UnknownValue"):
         compiler._compile_value(unknown)
+
+
+class TestLetAssignment:
+    """Tests for let assignment compilation in match clauses."""
+
+    def test_single_variable_assignment(self, compiler):
+        """Test single variable assignment with = operator."""
+        assignment = LetAssignment(
+            variables=["$count"],
+            expression=FunctionCallValue(function="count-items", args=[]),
+            is_stream=False,
+        )
+        clause = MatchLetClause(assignments=[assignment])
+
+        result = compiler.compile(clause)
+        assert result == "match\nlet $count = count-items();"
+
+    def test_single_variable_stream(self, compiler):
+        """Test single variable assignment with 'in' operator for streams."""
+        assignment = LetAssignment(
+            variables=["$item"],
+            expression=FunctionCallValue(function="get-items", args=[]),
+            is_stream=True,
+        )
+        clause = MatchLetClause(assignments=[assignment])
+
+        result = compiler.compile(clause)
+        assert result == "match\nlet $item in get-items();"
+
+    def test_multi_variable_assignment_no_parentheses(self, compiler):
+        """Test multi-variable assignment does NOT wrap in parentheses.
+
+        TypeQL 3.x syntax: let $t, $c in func();
+        NOT: let ($t, $c) in func();
+        """
+        assignment = LetAssignment(
+            variables=["$t", "$c"],
+            expression=FunctionCallValue(function="count_artifacts_by_type", args=[]),
+            is_stream=True,
+        )
+        clause = MatchLetClause(assignments=[assignment])
+
+        result = compiler.compile(clause)
+        # Critical: no parentheses around variables
+        assert result == "match\nlet $t, $c in count_artifacts_by_type();"
+        # Explicitly verify no parentheses
+        assert "($t" not in result
+        assert "$c)" not in result
+
+    def test_multi_variable_assignment_with_args(self, compiler):
+        """Test multi-variable stream function with arguments."""
+        assignment = LetAssignment(
+            variables=["$type", "$count"],
+            expression=FunctionCallValue(
+                function="count-by-type",
+                args=["$filter"],
+            ),
+            is_stream=True,
+        )
+        clause = MatchLetClause(assignments=[assignment])
+
+        result = compiler.compile(clause)
+        assert result == "match\nlet $type, $count in count-by-type($filter);"
+
+    def test_let_assignment_with_string_expression(self, compiler):
+        """Test let assignment with raw string expression."""
+        assignment = LetAssignment(
+            variables=["$x"],
+            expression="my_func()",
+            is_stream=False,
+        )
+        clause = MatchLetClause(assignments=[assignment])
+
+        result = compiler.compile(clause)
+        assert result == "match\nlet $x = my_func();"
+
+    def test_multiple_let_assignments(self, compiler):
+        """Test multiple assignments in a single MatchLetClause."""
+        assignments = [
+            LetAssignment(
+                variables=["$a"],
+                expression=FunctionCallValue(function="func-a", args=[]),
+                is_stream=False,
+            ),
+            LetAssignment(
+                variables=["$b", "$c"],
+                expression=FunctionCallValue(function="func-bc", args=[]),
+                is_stream=True,
+            ),
+        ]
+        clause = MatchLetClause(assignments=assignments)
+
+        result = compiler.compile(clause)
+        expected = "match\nlet $a = func-a();\nlet $b, $c in func-bc();"
+        assert result == expected

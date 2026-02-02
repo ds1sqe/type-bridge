@@ -16,6 +16,7 @@ from type_bridge.query.ast import (
     FetchClause,
     FetchFunction,
     FetchItem,
+    FetchNestedWildcard,
     FetchVariable,
     FetchWildcard,
     FunctionCallValue,
@@ -128,8 +129,6 @@ class QueryCompiler:
     def _compile_let_assignment(self, assignment: LetAssignment) -> str:
         vars_str = ", ".join(assignment.variables)
         op = "in" if assignment.is_stream else "="
-        if len(assignment.variables) > 1:
-            vars_str = f"({vars_str})"
         if isinstance(assignment.expression, Value):
             expr_str = self._compile_value(assignment.expression)
         else:
@@ -302,6 +301,9 @@ class QueryCompiler:
 
         elif isinstance(item, FetchWildcard):
             return f'"{item.key}": {item.var}.*'
+
+        elif isinstance(item, FetchNestedWildcard):
+            return f'"{item.key}": {{ {item.var}.* }}'
 
         raise ValueError(f"Unknown fetch item type: {type(item).__name__}")
 

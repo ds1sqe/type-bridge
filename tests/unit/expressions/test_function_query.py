@@ -121,7 +121,7 @@ class TestFunctionQueryMatchLet:
             name="get-pairs",
             return_type=ReturnType(["artifact", "count"], is_stream=True),
         )
-        assert fn.to_match_let() == "match\nlet ($artifact, $count) in get-pairs();"
+        assert fn.to_match_let() == "match\nlet $artifact, $count in get-pairs();"
 
     def test_composite_non_stream(self) -> None:
         """Match let for composite non-stream result."""
@@ -129,7 +129,7 @@ class TestFunctionQueryMatchLet:
             name="divide",
             return_type=ReturnType(["quotient", "remainder"]),
         )
-        assert fn.to_match_let() == "match\nlet ($quotient, $remainder) = divide();"
+        assert fn.to_match_let() == "match\nlet $quotient, $remainder = divide();"
 
     def test_custom_result_vars(self) -> None:
         """Custom variable names for results."""
@@ -357,6 +357,6 @@ class TestFunctionQueryRealWorldExamples:
             return_type=ReturnType(["artifact", "integer"], is_stream=True),
         )
         query = fn.to_query()
-        assert "match\nlet ($artifact, $integer) in count-artifacts-by-type();" in query
+        assert "match\nlet $artifact, $integer in count-artifacts-by-type();" in query
         assert '"artifact": $artifact' in query
         assert '"integer": $integer' in query

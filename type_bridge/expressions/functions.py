@@ -125,7 +125,7 @@ class FunctionQuery[T]:
         ...     return_type=ReturnType(["artifact", "integer"], is_stream=True),
         ... )
         >>> fn.to_query()
-        'match let ($artifact, $integer) in count-artifacts-by-type(); fetch { "artifact": $artifact, "integer": $integer };'
+        'match let $artifact, $integer in count-artifacts-by-type(); fetch { "artifact": $artifact, "integer": $integer };'
     """
 
     name: str
