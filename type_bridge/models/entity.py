@@ -244,9 +244,12 @@ class Entity(TypeDBType):
             for field_name, attr_info in key_attrs.items():
                 value = getattr(self, field_name, None)
                 if value is None:
-                    raise ValueError(
-                        f"Cannot identify {self.__class__.__name__}: "
-                        f"key attribute '{field_name}' is None"
+                    from type_bridge.crud.exceptions import KeyAttributeError
+
+                    raise KeyAttributeError(
+                        entity_type=self.__class__.__name__,
+                        operation="identify",
+                        field_name=field_name,
                     )
                 attr_name = attr_info.typ.get_attribute_name()
                 parts.append(f"has {attr_name} {self._format_value(value)}")
@@ -303,9 +306,12 @@ class Entity(TypeDBType):
             for field_name, attr_info in key_attrs.items():
                 value = getattr(self, field_name, None)
                 if value is None:
-                    raise ValueError(
-                        f"Cannot identify {self.__class__.__name__}: "
-                        f"key attribute '{field_name}' is None"
+                    from type_bridge.crud.exceptions import KeyAttributeError
+
+                    raise KeyAttributeError(
+                        entity_type=self.__class__.__name__,
+                        operation="identify",
+                        field_name=field_name,
                     )
                 attr_name = attr_info.typ.get_attribute_name()
                 # Unwrap Attribute wrapper if needed

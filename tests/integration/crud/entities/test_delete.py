@@ -8,6 +8,7 @@ from type_bridge import (
     Flag,
     Integer,
     Key,
+    KeyAttributeError,
     SchemaManager,
     String,
     TypeFlags,
@@ -78,7 +79,7 @@ def test_delete_entity_returns_instance(db_with_schema):
 @pytest.mark.integration
 @pytest.mark.order(21)
 def test_delete_entity_with_none_key_raises(db_with_schema):
-    """Test that deleting entity with None key value raises ValueError."""
+    """Test that deleting entity with None key value raises KeyAttributeError."""
 
     class Name(String):
         pass
@@ -93,7 +94,7 @@ def test_delete_entity_with_none_key_raises(db_with_schema):
     person = Person(name=Name("Test"))
     person.__dict__["name"] = None  # type: ignore[index]
 
-    with pytest.raises(ValueError, match="Cannot identify Person: key attribute 'name' is None"):
+    with pytest.raises(KeyAttributeError, match="key attribute 'name' is None"):
         manager.delete(person)
 
 

@@ -20,6 +20,7 @@ from type_bridge.models.utils import (
 
 if TYPE_CHECKING:
     from type_bridge.crud.manager import BaseManager
+    from type_bridge.crud.typedb_manager import TypeDBManager
     from type_bridge.session import Connection
 
 
@@ -61,7 +62,7 @@ class TypeDBType(BaseModel, ABC):
         ...
 
     @classmethod
-    def manager(cls, connection: Connection) -> BaseManager:
+    def manager(cls, connection: Connection) -> TypeDBManager[Self]:
         """Create a CRUD manager for this type.
 
         Args:
@@ -71,7 +72,7 @@ class TypeDBType(BaseModel, ABC):
             Manager instance for this type
         """
         manager_class = cls._get_manager_class()
-        return manager_class(connection, cls)
+        return manager_class(connection, cls)  # type: ignore[return-value]
 
     def insert(self, connection: Connection) -> Self:
         """Insert this instance into the database.
