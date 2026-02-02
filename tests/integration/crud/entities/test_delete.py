@@ -263,10 +263,9 @@ def test_delete_entity_without_key_and_no_iid_raises(db_with_schema):
     The unified ModelManager requires either IID or @key attributes to identify
     the entity for deletion.
 
-    Note: When entities are inserted, IID is populated via attribute matching if
-    there's exactly one match. When counter1 is inserted, it's unique, so it gets
-    an IID. When counter2 is inserted, there are now 2 matches, so counter2 does
-    NOT get an IID. Therefore counter2 cannot be deleted.
+    Note: Since the IID optimization (insert + fetch in single query), all inserted
+    entities now get their IID populated. To test the error case, we create an entity
+    without inserting it and manually ensure it has no IID.
     """
 
     class CounterValue(Integer):
@@ -283,14 +282,16 @@ def test_delete_entity_without_key_and_no_iid_raises(db_with_schema):
 
     manager = Counter.manager(db_with_schema)
 
-    # Insert two entities with same value
+    # Insert an entity to populate the schema
     counter1 = Counter(counter_value=CounterValue(42))
-    counter2 = Counter(counter_value=CounterValue(42))
-    manager.insert_many([counter1, counter2])
+    manager.insert(counter1)
 
-    # counter1 has IID (was unique when inserted), counter2 does NOT (2 matches when inserted)
-    assert counter1._iid is not None, "counter1 should have IID (was unique at insert time)"
-    assert counter2._iid is None, "counter2 should NOT have IID (multiple matches at insert time)"
+    # Verify inserted entity gets IID (optimization working)
+    assert counter1._iid is not None, "Inserted entity should have IID"
+
+    # Create a new entity but don't insert it - it should have no IID
+    counter2 = Counter(counter_value=CounterValue(42))
+    assert counter2._iid is None, "Non-inserted entity should NOT have IID"
 
     # Deleting counter2 should raise ValueError since it has no @key and no IID
     with pytest.raises(ValueError, match="no _iid set and no @key attributes defined"):

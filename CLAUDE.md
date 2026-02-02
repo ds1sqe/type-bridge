@@ -307,4 +307,27 @@ Additional standards:
 - When unifying code (e.g., EntityManager + RelationManager), remove ALL duplicated methods from subclasses
 - Delete dead code completely - no backwards-compatibility hacks, no `_unused` variables, no `# removed` comments
 
+### Pydantic Best Practices
+
+When working with Pydantic model validators:
+
+- **Avoid `object.__setattr__`** - Using `object.__setattr__` to bypass Pydantic's validation is a hack that can mask bugs
+- **Use `mode='before'` validators** to transform input data BEFORE validation, avoiding recursion with `validate_assignment=True`
+- **Use `mode='wrap'` validators** only when you need to capture state before AND after validation (e.g., preserving private attributes)
+- **Access private attributes via `__pydantic_private__`** - This is Pydantic's official API for private attribute storage
+
+Example pattern for value transformation:
+
+```python
+@model_validator(mode="before")
+@classmethod
+def transform_input(cls, values: Any) -> dict[str, Any]:
+    """Transform input BEFORE validation - no recursion possible."""
+    if isinstance(values, dict):
+        data = dict(values)
+        # Transform values here
+        return data
+    return values
+```
+
 For detailed documentation, see the links above.

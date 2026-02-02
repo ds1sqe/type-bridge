@@ -175,6 +175,63 @@ class TypeDBManager[T: "TypeDBType"]:
         ]
         return self._compile_fetch(fetch_items)
 
+    def _extract_iid_from_result(self, results: list[dict[str, Any]]) -> str | None:
+        """Extract IID value from query results.
+
+        Args:
+            results: Query results from execute()
+
+        Returns:
+            IID string if found, None otherwise
+        """
+        if not results or len(results) == 0:
+            return None
+        iid_result = results[0].get("iid")
+        # Handle wrapped IID format from TypeDB driver
+        if isinstance(iid_result, dict) and "value" in iid_result:
+            iid_result = iid_result["value"]
+        if isinstance(iid_result, str):
+            return iid_result
+        return None
+
+    def _execute_insert_with_iid(
+        self, instance: T, var: str, *, use_put: bool = False
+    ) -> str | None:
+        """Execute insert/put and fetch IID in a single query.
+
+        Combines insert (or put) with fetch in one roundtrip using TypeDB 3.x
+        query pipelining. After insert, the variable is bound to the new instance
+        so we can directly fetch its IID.
+
+        Args:
+            instance: Instance to insert
+            var: Variable name (e.g., "$x")
+            use_put: If True, use 'put' instead of 'insert' for idempotent operation
+
+        Returns:
+            IID string if successful, None otherwise
+        """
+        match_clause, insert_clause = self.strategy.build_insert(instance, var)
+
+        query_parts = []
+        if match_clause:
+            query_parts.append(self.compiler.compile(match_clause))
+
+        # Compile insert clause
+        insert_query = self.compiler.compile(insert_clause)
+        if use_put:
+            insert_query = insert_query.replace("insert\n", "put\n", 1)
+        query_parts.append(insert_query)
+
+        # Append fetch for IID - variable is already bound after insert
+        query_parts.append(self._build_iid_fetch(var))
+
+        query = "\n".join(query_parts)
+
+        # Execute combined insert+fetch in single WRITE transaction
+        results = self._execute(query, TransactionType.WRITE)
+        return self._extract_iid_from_result(results)
+
     def _collect_all_subclass_attributes(self, model_class: type[T]) -> dict[str, bool]:
         """Collect all attributes from a class and all its subclasses.
 
@@ -208,23 +265,34 @@ class TypeDBManager[T: "TypeDBType"]:
         return collected
 
     def insert(self, instance: T) -> T:
-        """Insert a new instance and populate _iid."""
+        """Insert a new instance and populate _iid.
+
+        For entities, uses a single roundtrip (insert + fetch combined).
+        For relations, uses two roundtrips (insert, then fetch) because
+        TypeDB 3.x relation inserts don't bind the variable.
+        """
         var = "$x"
-        match_clause, insert_clause = self.strategy.build_insert(instance, var)
 
-        query_parts = []
-        if match_clause:
-            query_parts.append(self.compiler.compile(match_clause))
+        # Relations use include_variable=False in to_ast(), so $x isn't bound
+        # after insert. Use the two-query approach for relations.
+        if isinstance(instance, Relation):
+            match_clause, insert_clause = self.strategy.build_insert(instance, var)
+            query_parts = []
+            if match_clause:
+                query_parts.append(self.compiler.compile(match_clause))
+            query_parts.append(self.compiler.compile(insert_clause))
+            self._execute("\n".join(query_parts), TransactionType.WRITE)
+            self._fetch_and_set_iid(instance, var)
+            return instance
 
-        query_parts.append(self.compiler.compile(insert_clause))
-
-        query = "\n".join(query_parts)
-
-        # Execute the insert (WRITE transaction)
-        self._execute(query, TransactionType.WRITE)
-
-        # Fetch and set _iid on the instance
-        self._fetch_and_set_iid(instance, var)
+        # Entities: Combined insert + fetch IID in single query
+        iid = self._execute_insert_with_iid(instance, var, use_put=False)
+        if iid:
+            object.__setattr__(instance, "_iid", iid)
+            logger.debug(f"Set _iid on instance: {iid}")
+        else:
+            # Fallback to separate fetch (for edge cases like types without keys)
+            self._fetch_and_set_iid(instance, var)
 
         return instance
 
@@ -828,28 +896,35 @@ class TypeDBManager[T: "TypeDBType"]:
         return instances
 
     def put(self, instance: T) -> T:
-        """Insert or update an instance (idempotent).
+        """Insert or update an instance (idempotent) and populate _iid.
 
         Uses TypeQL's PUT clause for idempotent insertion.
-        Populates _iid on the instance after the operation.
+        For entities, uses a single roundtrip. For relations, uses two.
         """
         var = "$x"
-        match_clause, insert_clause = self.strategy.build_insert(instance, var)
 
-        query_parts = []
-        if match_clause:
-            query_parts.append(self.compiler.compile(match_clause))
+        # Relations use include_variable=False in to_ast(), so $x isn't bound.
+        # Use the two-query approach for relations.
+        if isinstance(instance, Relation):
+            match_clause, insert_clause = self.strategy.build_insert(instance, var)
+            query_parts = []
+            if match_clause:
+                query_parts.append(self.compiler.compile(match_clause))
+            insert_query = self.compiler.compile(insert_clause)
+            put_query = insert_query.replace("insert\n", "put\n", 1)
+            query_parts.append(put_query)
+            self._execute("\n".join(query_parts), TransactionType.WRITE)
+            self._fetch_and_set_iid(instance, var)
+            return instance
 
-        # Use 'put' instead of 'insert'
-        insert_query = self.compiler.compile(insert_clause)
-        put_query = insert_query.replace("insert\n", "put\n", 1)
-        query_parts.append(put_query)
-
-        query = "\n".join(query_parts)
-        self._execute(query, TransactionType.WRITE)
-
-        # Fetch and set _iid on the instance
-        self._fetch_and_set_iid(instance, var)
+        # Entities: Combined put + fetch IID in single query
+        iid = self._execute_insert_with_iid(instance, var, use_put=True)
+        if iid:
+            object.__setattr__(instance, "_iid", iid)
+            logger.debug(f"Set _iid on instance: {iid}")
+        else:
+            # Fallback to separate fetch (for edge cases like types without keys)
+            self._fetch_and_set_iid(instance, var)
 
         return instance
 

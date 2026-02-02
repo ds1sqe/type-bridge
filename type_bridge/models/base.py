@@ -149,119 +149,151 @@ class TypeDBType(BaseModel, ABC):
 
     @model_validator(mode="wrap")
     @classmethod
-    def _wrap_raw_values(cls, values, handler):
-        """Ensure all attribute fields are wrapped in Attribute instances.
+    def _preserve_iid(cls, values: Any, handler: Any) -> Self:
+        """Preserve _iid during revalidation.
 
-        This catches edge cases like default values and model_copy that bypass validators.
-        Uses 'wrap' mode to intercept all validation paths including model_copy.
+        Pydantic resets private attributes when revalidating instances,
+        so we capture _iid before validation and restore it after.
 
-        Also preserves _iid during revalidation - Pydantic resets private attributes
-        when revalidating instances, so we capture and restore _iid here.
+        Uses mode='wrap' to wrap around the entire validation chain,
+        allowing us to capture state before and restore after.
         """
-        # Preserve _iid if values is an existing instance being revalidated
+        # Capture _iid if values is an existing instance
         preserved_iid = None
-        if isinstance(values, cls) and hasattr(values, "_iid"):
-            preserved_iid = values._iid
+        if isinstance(values, cls):
+            preserved_iid = getattr(values, "_iid", None)
 
-        # First, let Pydantic do its validation
+        # Run the rest of the validation chain (including _wrap_raw_values)
         instance = handler(values)
 
-        # Restore _iid if it was preserved and got reset
-        if preserved_iid is not None and getattr(instance, "_iid", None) is None:
-            object.__setattr__(instance, "_iid", preserved_iid)
+        # Restore _iid using Pydantic's official private attribute storage
+        private = instance.__pydantic_private__
+        if preserved_iid is not None and private is not None and private.get("_iid") is None:
+            private["_iid"] = preserved_iid
 
-        # Then wrap any raw values (including inherited attributes)
+        return instance
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_raw_values(cls, values: Any) -> dict[str, Any]:
+        """Ensure all attribute fields are wrapped in Attribute instances.
+
+        Uses mode='before' to transform input BEFORE Pydantic validation.
+        This avoids infinite recursion that would occur if we modified
+        the instance after validation (with validate_assignment=True).
+
+        The input can be either a dict or an existing model instance
+        (when revalidating). We convert to dict and wrap raw values.
+        """
+        from type_bridge.fields.base import FieldRef
+
+        # Convert instance to dict if needed
+        if isinstance(values, cls):
+            # Extract field values from existing instance
+            data: dict[str, Any] = {}
+            for field_name in cls.model_fields:
+                if hasattr(values, field_name):
+                    data[field_name] = getattr(values, field_name)
+            # Include extra fields if allowed
+            if cls.model_config.get("extra") == "allow" and values.__pydantic_extra__:
+                data.update(values.__pydantic_extra__)
+        elif isinstance(values, dict):
+            data = dict(values)  # Copy to avoid mutating input
+        else:
+            # Let Pydantic handle other types (will likely fail validation)
+            return values  # type: ignore[return-value]
+
+        # Wrap raw values in Attribute instances
         all_attrs = cls.get_all_attributes()
         for field_name, attr_info in all_attrs.items():
-            value = getattr(instance, field_name, None)
             flags = attr_info.flags
             attr_class = attr_info.typ
 
-            # Check if the value is AttributeFlags (from Flag() default)
-            # This happens when list fields with Flag(Card(...)) are not provided
+            # Handle fields not in data - check for special default values
+            # This happens for list fields with Flag(Card(...)) or inherited fields
+            # where the descriptor's FieldRef was captured as the default
+            if field_name not in data:
+                field_info = cls.model_fields.get(field_name)
+                if field_info is not None:
+                    # AttributeFlags default: list field with Card()
+                    if isinstance(field_info.default, AttributeFlags):
+                        if field_info.default.has_explicit_card:
+                            data[field_name] = []
+                    # FieldRef default: inherited field where descriptor was
+                    # accessed during subclass model building - use None
+                    elif isinstance(field_info.default, FieldRef):
+                        data[field_name] = None
+                continue
+
+            value = data[field_name]
+
+            # Handle AttributeFlags passed as value (from Flag() without value)
             if isinstance(value, AttributeFlags):
-                # For list fields (has_explicit_card), default to empty list
                 if flags.has_explicit_card:
-                    object.__setattr__(instance, field_name, [])
-                    continue
+                    data[field_name] = []
                 else:
-                    # For single-value fields, this is an error
                     raise ValueError(
                         f"Field '{field_name}' received AttributeFlags as value. "
                         f"This usually means the field was not provided a value."
                     )
+                continue
 
             if value is None:
                 continue
 
-            # Skip FieldRef objects - these appear when the descriptor is accessed
-            # as a default value during model construction (field wasn't actually set)
-            from type_bridge.fields.base import FieldRef
-
+            # Handle FieldRef (descriptor accessed as default value)
             if isinstance(value, FieldRef):
-                # Clear the FieldRef from the instance - field was not set
-                object.__setattr__(instance, field_name, None)
+                data[field_name] = None
                 continue
 
-            # Check if it's a list (multi-value attribute)
+            # Wrap values in Attribute instances
             if isinstance(value, list):
-                wrapped_list = []
-                for item in value:
-                    if not isinstance(item, attr_class):
-                        # Wrap raw value
-                        wrapped_list.append(attr_class(item))
-                    else:
-                        wrapped_list.append(item)
-                # Use object.__setattr__ to bypass validate_assignment and avoid recursion
-                object.__setattr__(instance, field_name, wrapped_list)
-            else:
-                # Single value
-                if not isinstance(value, attr_class):
-                    # Wrap raw value
-                    # Use object.__setattr__ to bypass validate_assignment and avoid recursion
-                    object.__setattr__(instance, field_name, attr_class(value))
+                data[field_name] = [
+                    item if isinstance(item, attr_class) else attr_class(item) for item in value
+                ]
+            elif not isinstance(value, attr_class):
+                data[field_name] = attr_class(value)
 
-        return instance
+        return data
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False):
         """Override model_copy to ensure raw values are wrapped in Attribute instances.
 
         Pydantic's model_copy bypasses validators even with revalidate_instances='always',
-        so we override it to force proper validation. Also preserves _iid from original.
+        so we pre-wrap values in the update dict before copying.
+        Also preserves _iid from original using Pydantic's __pydantic_private__.
         """
         # Preserve _iid before copy
         preserved_iid = getattr(self, "_iid", None)
 
-        # Call parent model_copy
-        copied = super().model_copy(update=update, deep=deep)
-
-        # Restore _iid if it was lost during copy
-        if preserved_iid is not None and getattr(copied, "_iid", None) is None:
-            object.__setattr__(copied, "_iid", preserved_iid)
-
-        # Force wrap any raw values in the update dict
+        # Pre-wrap values in update dict before calling super()
+        wrapped_update: dict[str, Any] | None = None
         if update:
+            wrapped_update = {}
             owned_attrs = self.__class__.get_owned_attributes()
-            for field_name, new_value in update.items():
-                if field_name not in owned_attrs:
-                    continue
-
-                attr_info = owned_attrs[field_name]
-                attr_class = attr_info.typ
-
-                # Check if it's a list (multi-value attribute)
-                if isinstance(new_value, list):
-                    wrapped_list = []
-                    for item in new_value:
-                        if not isinstance(item, attr_class):
-                            wrapped_list.append(attr_class(item))
-                        else:
-                            wrapped_list.append(item)
-                    object.__setattr__(copied, field_name, wrapped_list)
+            for key, value in update.items():
+                if key in owned_attrs and value is not None:
+                    attr_info = owned_attrs[key]
+                    attr_class = attr_info.typ
+                    if isinstance(value, list):
+                        wrapped_update[key] = [
+                            item if isinstance(item, attr_class) else attr_class(item)
+                            for item in value
+                        ]
+                    elif not isinstance(value, attr_class):
+                        wrapped_update[key] = attr_class(value)
+                    else:
+                        wrapped_update[key] = value
                 else:
-                    # Single value
-                    if not isinstance(new_value, attr_class):
-                        object.__setattr__(copied, field_name, attr_class(new_value))
+                    wrapped_update[key] = value
+
+        # Call parent model_copy with pre-wrapped update
+        copied = super().model_copy(update=wrapped_update, deep=deep)
+
+        # Restore _iid using Pydantic's official private attribute storage
+        private = copied.__pydantic_private__
+        if preserved_iid is not None and private is not None and private.get("_iid") is None:
+            private["_iid"] = preserved_iid
 
         return copied
 
