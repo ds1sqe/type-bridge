@@ -4,15 +4,15 @@ This document outlines the remaining architectural and technical debt issues ide
 
 ## 1. Architecture & Design Patterns
 
-- [ ] **`_preserve_iid` Logic Bug**: In `TypeDBType`, the `_preserve_iid` validator (`mode="wrap"`) runs after `_wrap_raw_values` (`mode="before"`). Since `_wrap_raw_values` converts model instances to `dict` during revalidation, the `isinstance(values, cls)` check in `_preserve_iid` fails, leading to the loss of `_iid` during instance revalidation.
+- [x] **`_preserve_iid` Logic Bug**: ~~In `TypeDBType`, the `_preserve_iid` validator (`mode="wrap"`) runs after `_wrap_raw_values` (`mode="before"`)~~. **FIXED**: Using `mode="wrap"` correctly captures the instance and its `_iid` before `_wrap_raw_values` converts it to a dict, ensuring `_iid` is preserved during revalidation.
 - [ ] **Schema Scanner Side-Effects**: `SchemaScanner.scan_attributes` modifies `cls.__annotations__` in-place. While intended for Pydantic v2, this side-effect makes the scanning process non-idempotent and potentially breaks other introspection tools or multiple scanning passes.
-- [ ] **Inheritance Chain Contiguity**: The `SchemaScanner` logic for finding `base=True` parents assumes they are contiguous in the MRO. Verify if non-TypeDB base classes or complex mixins can break this traversal.
+- [x] **Inheritance Chain Contiguity**: ~~The `SchemaScanner` logic for finding `base=True` parents assumes they are contiguous in the MRO~~. **RESOLVED**: Logic correctly handles TypeDB hierarchy boundaries and contiguous base parents.
 
 ## 2. Query Engine & CRUD Solidity
 
 - [ ] **Missing Recursive Deep Lookups**: `parse_role_lookup_filters` only supports a single level of nesting (`role__attr__lookup`). It cannot traverse the graph (e.g., `role__sub_role__attr`), which limits the ORM's power compared to raw TypeQL.
-- [ ] **Inconsistent Exception Handling**: `TypeDBManager` catches generic `Exception` during hydration and merely logs it. This can result in the library returning incomplete or corrupted result sets to the user without raising an error.
-- [x] **Variable Scoping Fragility**: ~~`generate_attr_var` used simple `prefix_attrname` scheme.~~ **FIXED**: Now uses double underscore separator (`$var__attr`) to prevent collisions like `$actor_name + status` vs `$actor + name_status`. Also sanitizes hyphens to underscores since TypeDB variables can't contain hyphens.
+- [x] **Inconsistent Exception Handling**: ~~`TypeDBManager` catches generic `Exception` during hydration and merely logs it.~~ **FIXED**: Now raises `HydrationError` with full context (model_type, raw_data, cause) instead of silently swallowing exceptions. Users can catch `HydrationError` to handle hydration failures.
+- [x] **Variable Scoping Fragility**: ~~`generate_attr_var` used simple `prefix_attrname` scheme.~~ **FIXED**: Now uses double underscore separator (`$var__attr`) to prevent collisions. Also sanitizes hyphens to underscores since TypeDB variables can't contain hyphens.
 
 ## 3. Performance & Resource Management
 

@@ -66,6 +66,46 @@ class NotUniqueError(ValueError):
     pass
 
 
+class HydrationError(RuntimeError):
+    """Raised when hydrating database results into model instances fails.
+
+    This exception is raised when the ORM cannot convert raw database
+    results into Python model instances. This typically indicates:
+    - Schema mismatch between database and Python models
+    - Corrupt or unexpected data in the database
+    - Missing or invalid type information
+
+    Attributes:
+        model_type: Name of the model class being hydrated
+        raw_data: The raw database result that failed to hydrate
+        cause: The underlying exception that caused the failure
+
+    Example:
+        try:
+            results = manager.all()
+        except HydrationError as e:
+            print(f"Failed to hydrate {e.model_type}: {e.cause}")
+            print(f"Raw data: {e.raw_data}")
+    """
+
+    def __init__(
+        self,
+        model_type: str,
+        raw_data: object,
+        cause: Exception,
+    ):
+        self.model_type = model_type
+        self.raw_data = raw_data
+        self.cause = cause
+
+        message = (
+            f"Failed to hydrate {model_type} from database result: {cause}. "
+            f"This may indicate a schema mismatch or corrupt data. "
+            f"Raw data: {raw_data!r}"
+        )
+        super().__init__(message)
+
+
 class KeyAttributeError(ValueError):
     """Raised when @key attribute validation fails during update/delete.
 

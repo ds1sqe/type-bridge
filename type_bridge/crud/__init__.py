@@ -7,6 +7,7 @@ and relations with type safety.
 
 from .exceptions import (
     EntityNotFoundError,
+    HydrationError,
     KeyAttributeError,
     NotFoundError,
     NotUniqueError,
@@ -30,4 +31,5 @@ __all__ = [
     "RelationNotFoundError",
     "NotUniqueError",
     "KeyAttributeError",
+    "HydrationError",
 ]

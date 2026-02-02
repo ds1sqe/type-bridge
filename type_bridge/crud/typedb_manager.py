@@ -628,7 +628,13 @@ class TypeDBManager[T: "TypeDBType"]:
                     object.__setattr__(instance, "_iid", iid)
                 instances.append(instance)
             except Exception as e:
-                logger.error(f"Failed to hydrate entity: {e}, result: {result}")
+                from type_bridge.crud.exceptions import HydrationError
+
+                raise HydrationError(
+                    model_type=self.model_class.__name__,
+                    raw_data=result,
+                    cause=e,
+                ) from e
 
         return instances
 
@@ -735,7 +741,13 @@ class TypeDBManager[T: "TypeDBType"]:
 
                 instances.append(relation_instance)
             except Exception as e:
-                logger.error(f"Failed to hydrate relation: {e}, result_group: {result_group}")
+                from type_bridge.crud.exceptions import HydrationError
+
+                raise HydrationError(
+                    model_type=self.model_class.__name__,
+                    raw_data=result_group,
+                    cause=e,
+                ) from e
 
         return instances
 
@@ -1607,7 +1619,13 @@ class TypeDBQuery[T: "TypeDBType"]:
                     object.__setattr__(instance, "_iid", iid)
                 instances.append(instance)
             except Exception as e:
-                logger.error(f"Failed to hydrate instance: {e}")
+                from type_bridge.crud.exceptions import HydrationError
+
+                raise HydrationError(
+                    model_type=model_class.__name__,
+                    raw_data=result,
+                    cause=e,
+                ) from e
 
         return instances
 
