@@ -215,9 +215,10 @@ class QueryCompiler:
         elif isinstance(stmt, RelationStatement):
             role_parts = [f"{rp.role}: {rp.player_var}" for rp in stmt.role_players]
             roles_str = f"({', '.join(role_parts)})"
-            # TypeDB 3.x insert doesn't use variable prefix for relations
+            # TypeDB 3.x insert syntax: $var isa type, links (role: $player);
+            # or without variable: (role: $player) isa type;
             if stmt.include_variable:
-                base = f"{stmt.variable} {roles_str} isa {stmt.type_name}"
+                base = f"{stmt.variable} isa {stmt.type_name}, links {roles_str}"
             else:
                 base = f"{roles_str} isa {stmt.type_name}"
 

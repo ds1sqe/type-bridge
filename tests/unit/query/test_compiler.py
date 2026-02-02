@@ -89,7 +89,10 @@ def test_compile_insert(compiler):
 
 
 def test_compile_relation_insert(compiler):
-    """Test inserting a relation."""
+    """Test inserting a relation with variable.
+
+    TypeDB 3.x syntax: $var isa type, links (role: $player);
+    """
     stmt = RelationStatement(
         variable="$rel",
         type_name="marriage",
@@ -97,11 +100,12 @@ def test_compile_relation_insert(compiler):
             RolePlayer(role="husband", player_var="$h"),
             RolePlayer(role="wife", player_var="$w"),
         ],
+        include_variable=True,
     )
     insert = InsertClause(statements=[stmt])
 
     result = compiler.compile(insert)
-    expected = "insert\n$rel (husband: $h, wife: $w) isa marriage;"
+    expected = "insert\n$rel isa marriage, links (husband: $h, wife: $w);"
     assert result == expected
 
 

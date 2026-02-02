@@ -433,7 +433,6 @@ class TestMutationStatements:
         assert results[0]["age"] == 40
 
     @pytest.mark.integration
-    @pytest.mark.skip(reason="TypeDB 3.x relation insert syntax needs investigation")
     def test_insert_relation_with_variable(self, setup_schema, compiler) -> None:
         """Insert relation statement with variable.
 
@@ -455,11 +454,20 @@ class TestMutationStatements:
         alice_iid = next(r["iid"] for r in results if r["name"] == "Alice")
         charlie_iid = next(r["iid"] for r in results if r["name"] == "Charlie")
 
-        # Build insert with match - use RawStatement for attribute to avoid variable conflict
+        # Build insert with match - must include type in pattern for TypeDB type inference
+        # Using EntityPattern with IidConstraint ensures TypeDB knows $a and $c are persons
         match = MatchClause(
             patterns=[
-                IidPattern(variable="$a", iid=alice_iid),
-                IidPattern(variable="$c", iid=charlie_iid),
+                EntityPattern(
+                    variable="$a",
+                    type_name="test_person",
+                    constraints=[IidConstraint(iid=alice_iid)],
+                ),
+                EntityPattern(
+                    variable="$c",
+                    type_name="test_person",
+                    constraints=[IidConstraint(iid=charlie_iid)],
+                ),
             ]
         )
         # Test just the relation statement without inline attributes
@@ -490,7 +498,6 @@ class TestMutationStatements:
         assert len(results) == 2
 
     @pytest.mark.integration
-    @pytest.mark.skip(reason="TypeDB 3.x relation insert syntax needs investigation")
     def test_insert_relation_without_variable(self, setup_schema, compiler) -> None:
         """Insert relation statement without variable (inline attributes).
 
@@ -512,10 +519,19 @@ class TestMutationStatements:
         charlie_iid = next(r["iid"] for r in results if r["name"] == "Charlie")
 
         # Build insert without variable - include_variable=False means no $f prefix
+        # Must use EntityPattern with IidConstraint for TypeDB type inference
         match = MatchClause(
             patterns=[
-                IidPattern(variable="$b", iid=bob_iid),
-                IidPattern(variable="$c", iid=charlie_iid),
+                EntityPattern(
+                    variable="$b",
+                    type_name="test_person",
+                    constraints=[IidConstraint(iid=bob_iid)],
+                ),
+                EntityPattern(
+                    variable="$c",
+                    type_name="test_person",
+                    constraints=[IidConstraint(iid=charlie_iid)],
+                ),
             ]
         )
         insert = InsertClause(
@@ -755,7 +771,6 @@ class TestReduce:
     """Tests for reduce clause with aggregations."""
 
     @pytest.mark.integration
-    @pytest.mark.skip(reason="TypeDB 3.x reduce result format needs investigation")
     def test_reduce_count(self, setup_schema, compiler) -> None:
         """Reduce with count aggregation."""
         db = setup_schema
@@ -775,12 +790,11 @@ class TestReduce:
             results = list(tx.execute(query))
 
         assert len(results) == 1
-        # TypeDB 3.x reduce returns result directly keyed by variable name (without $)
+        # TypeDB 3.x reduce returns {'varname': {'value': N}}
         result = results[0]
-        assert result.get("count") == 3 or result.get("value") == 3, f"Unexpected result: {result}"
+        assert result["count"]["value"] == 3, f"Unexpected result: {result}"
 
     @pytest.mark.integration
-    @pytest.mark.skip(reason="TypeDB 3.x reduce result format needs investigation")
     def test_reduce_with_string_expression(self, setup_schema, compiler) -> None:
         """Reduce with raw string expression."""
         db = setup_schema
@@ -795,9 +809,9 @@ class TestReduce:
             results = list(tx.execute(query))
 
         assert len(results) == 1
-        # TypeDB 3.x reduce returns result directly keyed by variable name (without $)
+        # TypeDB 3.x reduce returns {'varname': {'value': N}}
         result = results[0]
-        assert result.get("total") == 3 or result.get("value") == 3, f"Unexpected result: {result}"
+        assert result["total"]["value"] == 3, f"Unexpected result: {result}"
 
 
 # ============================================================================

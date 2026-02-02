@@ -299,9 +299,6 @@ class TestGeneratorInsertQueryCycle:
 
 
 @pytest.mark.integration
-@pytest.mark.skip(
-    reason="Bookstore schema has @card constraints that need SchemaManager investigation"
-)
 class TestGeneratorBookstoreE2E:
     """Test bookstore schema end-to-end with various attribute types."""
 
