@@ -1308,8 +1308,8 @@ class TypeDBManager[T: "TypeDBType"]:
             if not results:
                 return None
 
+            result = results[0]
             try:
-                result = results[0]
                 type_label = result.pop("_type", None)
 
                 # Extract attributes from nested "attributes" key (wildcard fetch structure)
@@ -1332,8 +1332,13 @@ class TypeDBManager[T: "TypeDBType"]:
                 object.__setattr__(instance, "_iid", iid)
                 return cast(T | None, instance)
             except Exception as e:
-                logger.error(f"Failed to hydrate entity: {e}")
-                return None
+                from type_bridge.crud.exceptions import HydrationError
+
+                raise HydrationError(
+                    model_type=self.model_class.__name__,
+                    raw_data=result,
+                    cause=e,
+                ) from e
         else:
             # Relation path: Use _get_relations with IID filter
             # This properly handles role player hydration
