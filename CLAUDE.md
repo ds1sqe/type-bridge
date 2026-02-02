@@ -282,8 +282,28 @@ persons = person_manager.all()
 
 ### Code Quality Standards
 
-- Run linting (`uv run ruff check --fix`) before committing
-- Run both unit tests (`uv run pytest tests/unit/`) and integration tests (`./test-integration.sh`) before PRs
+**CRITICAL: Always run checks on the ENTIRE codebase, not just modified files.**
+
+AI sessions may include multiple separate conversations or context compactions, so changes from earlier in a session could introduce issues. Running checks on only a subset of files will miss these problems and cause CI failures.
+
+Before committing, run ALL of these on the entire codebase:
+
+```bash
+uv run ruff check --fix .        # Lint entire codebase
+uv run ruff format .             # Format entire codebase
+uv run pyright type_bridge/      # Type check library
+uv run pyright tests/            # Type check tests
+uv run pytest tests/unit/ -x     # Run all unit tests
+```
+
+Before PRs, also run:
+
+```bash
+./test-integration.sh            # Integration tests (requires TypeDB)
+```
+
+Additional standards:
+
 - When unifying code (e.g., EntityManager + RelationManager), remove ALL duplicated methods from subclasses
 - Delete dead code completely - no backwards-compatibility hacks, no `_unused` variables, no `# removed` comments
 

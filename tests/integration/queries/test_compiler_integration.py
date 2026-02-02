@@ -66,7 +66,7 @@ class Person(Entity):
     flags = TypeFlags(name="test_person")
     name: PersonName = Flag(Key)
     age: PersonAge | None = None
-    emails: list[PersonEmail] = Flag(Card(0, None))  # Multi-value
+    emails: list[PersonEmail] = Flag(Card(min=0))  # Multi-value, unbounded max
 
 
 class FriendshipSince(Integer):
@@ -373,10 +373,9 @@ class TestMatchPatterns:
     def test_raw_pattern(self, setup_schema, compiler) -> None:
         """Raw pattern passes through literal TypeQL."""
         db = setup_schema
-        patterns = [
-            RawPattern(content='$p isa test_person, has person-name "Alice"'),
-        ]
-        match = MatchClause(patterns=patterns)
+        match = MatchClause(
+            patterns=[RawPattern(content='$p isa test_person, has person-name "Alice"')]
+        )
         fetch = FetchClause(items=[FetchAttribute(key="name", var="$p", attr_name="person-name")])
 
         query = compiler.compile(match) + "\n" + compiler.compile(fetch)
