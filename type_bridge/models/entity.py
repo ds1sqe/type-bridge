@@ -204,6 +204,63 @@ class Entity(TypeDBType):
             f"database first (to populate _iid) or add Flag(Key) to an attribute."
         )
 
+    def _build_identification_constraints(self) -> list[Any]:
+        """Build AST constraints to identify this entity instance.
+
+        Returns constraints for either IID-based or key-based identification.
+        This is a shared helper used by get_match_pattern() and EntityStrategy.identify().
+
+        Returns:
+            List of Constraint AST nodes (IidConstraint or HasConstraint)
+
+        Raises:
+            ValueError: If entity has neither _iid nor key attributes
+        """
+        from type_bridge.crud.patterns import _get_literal_type
+        from type_bridge.query.ast import HasConstraint, IidConstraint, LiteralValue
+
+        # Prefer IID-based matching when available
+        entity_iid = getattr(self, "_iid", None)
+        if entity_iid:
+            return [IidConstraint(iid=entity_iid)]
+
+        # Fall back to key attribute matching
+        key_attrs = {
+            field_name: attr_info
+            for field_name, attr_info in self.get_all_attributes().items()
+            if attr_info.flags.is_key
+        }
+
+        if not key_attrs:
+            raise ValueError(
+                f"Entity '{self.__class__.__name__}' cannot be identified: "
+                f"no _iid set and no @key attributes defined."
+            )
+
+        constraints: list[HasConstraint] = []
+        for field_name, attr_info in key_attrs.items():
+            value = getattr(self, field_name, None)
+            if value is None:
+                from type_bridge.crud.exceptions import KeyAttributeError
+
+                raise KeyAttributeError(
+                    entity_type=self.__class__.__name__,
+                    operation="identify",
+                    field_name=field_name,
+                )
+            attr_name = attr_info.typ.get_attribute_name()
+            # Unwrap Attribute wrapper if needed
+            raw_value = value.value if hasattr(value, "value") else value
+            literal_type = _get_literal_type(raw_value)
+            constraints.append(
+                HasConstraint(
+                    attr_name=attr_name,
+                    value=LiteralValue(value=raw_value, value_type=literal_type),
+                )
+            )
+
+        return constraints
+
     def get_match_pattern(self, var_name: str = "$e") -> EntityPattern:
         """Get an AST EntityPattern for matching this entity instance.
 
@@ -219,58 +276,11 @@ class Entity(TypeDBType):
         Raises:
             ValueError: If entity has neither _iid nor key attributes
         """
-        from type_bridge.crud.patterns import _get_literal_type
-        from type_bridge.query.ast import (
-            EntityPattern,
-            HasConstraint,
-            IidConstraint,
-            LiteralValue,
-        )
+        from type_bridge.query.ast import EntityPattern
 
         type_name = self.get_type_name()
-        constraints: list = []
-
-        # Prefer IID-based matching when available
-        entity_iid = getattr(self, "_iid", None)
-        if entity_iid:
-            constraints.append(IidConstraint(iid=entity_iid))
-            return EntityPattern(variable=var_name, type_name=type_name, constraints=constraints)
-
-        # Fall back to key attribute matching
-        key_attrs = {
-            field_name: attr_info
-            for field_name, attr_info in self.get_all_attributes().items()
-            if attr_info.flags.is_key
-        }
-
-        if key_attrs:
-            for field_name, attr_info in key_attrs.items():
-                value = getattr(self, field_name, None)
-                if value is None:
-                    from type_bridge.crud.exceptions import KeyAttributeError
-
-                    raise KeyAttributeError(
-                        entity_type=self.__class__.__name__,
-                        operation="identify",
-                        field_name=field_name,
-                    )
-                attr_name = attr_info.typ.get_attribute_name()
-                # Unwrap Attribute wrapper if needed
-                raw_value = value.value if hasattr(value, "value") else value
-                literal_type = _get_literal_type(raw_value)
-                constraints.append(
-                    HasConstraint(
-                        attr_name=attr_name,
-                        value=LiteralValue(value=raw_value, value_type=literal_type),
-                    )
-                )
-            return EntityPattern(variable=var_name, type_name=type_name, constraints=constraints)
-
-        # Neither IID nor key attributes available
-        raise ValueError(
-            f"Entity '{self.__class__.__name__}' cannot be identified: "
-            f"no _iid set and no @key attributes defined."
-        )
+        constraints = self._build_identification_constraints()
+        return EntityPattern(variable=var_name, type_name=type_name, constraints=constraints)
 
     def to_dict(
         self,

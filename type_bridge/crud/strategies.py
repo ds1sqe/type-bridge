@@ -69,42 +69,12 @@ class EntityStrategy(ModelStrategy["Entity"]):
     """Strategy for handling Entity models."""
 
     def identify(self, instance: Entity) -> list[Constraint]:
-        # 1. Prefer IID
-        iid_constraint = self._get_iid_constraint(instance)
-        if iid_constraint:
-            return [iid_constraint]
+        """Generate identification constraints for an entity.
 
-        # 2. Fallback to @key attributes
-        constraints: list[Constraint] = []
-        key_attrs = {
-            name: info for name, info in instance.get_all_attributes().items() if info.flags.is_key
-        }
-
-        if not key_attrs:
-            raise ValueError(
-                f"Entity '{instance.__class__.__name__}' cannot be identified: "
-                f"no _iid set and no @key attributes defined."
-            )
-
-        for field_name, attr_info in key_attrs.items():
-            value = getattr(instance, field_name, None)
-            if value is None:
-                raise ValueError(
-                    f"Cannot identify {instance.__class__.__name__}: "
-                    f"key attribute '{field_name}' is None"
-                )
-
-            # Unwrap
-            raw_val = value.value if hasattr(value, "value") else value
-            attr_name = attr_info.typ.get_attribute_name()
-
-            constraints.append(
-                HasConstraint(
-                    attr_name=attr_name, value=self._convert_value(raw_val, attr_info.typ)
-                )
-            )
-
-        return constraints
+        Delegates to the entity's _build_identification_constraints() method
+        to avoid duplicating the IID/key attribute logic.
+        """
+        return instance._build_identification_constraints()
 
     def build_insert(self, instance: Entity, var: str) -> tuple[MatchClause | None, InsertClause]:
         # Entity insert requires no match prerequisites (unless we support nested inserts later)
@@ -115,7 +85,7 @@ class EntityStrategy(ModelStrategy["Entity"]):
     def build_match_all(
         self, model_class: type[Entity], var: str, filters: dict[str, Any]
     ) -> MatchClause:
-        from type_bridge.query.ast import EntityPattern, HasConstraint, MatchClause
+        from type_bridge.query.ast import EntityPattern, MatchClause
 
         constraints = []
         owned_attrs = model_class.get_all_attributes()
@@ -374,7 +344,6 @@ class RelationStrategy(ModelStrategy["Relation"]):
         from type_bridge.models import Entity
         from type_bridge.query.ast import (
             EntityPattern,
-            HasConstraint,
             MatchClause,
             RelationPattern,
             RolePlayer,
