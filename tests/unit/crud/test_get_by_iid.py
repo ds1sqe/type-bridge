@@ -55,7 +55,10 @@ class TestGetByIidValidation:
         manager = TypeDBManager(mock_connection, PersonModel)
 
         # Invalid IIDs return None instead of raising (not found)
-        result = manager.get_by_iid(None)  # type: ignore
+        # Cast to str to test None handling at runtime
+        from typing import cast
+
+        result = manager.get_by_iid(cast(str, None))  # Intentionally testing None input
         assert result is None
 
     @patch("type_bridge.crud.typedb_manager.ConnectionExecutor")

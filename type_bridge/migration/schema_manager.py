@@ -26,7 +26,7 @@ class SchemaManager:
         self.db = db
         self.registered_models = []
 
-    def register(self, *models: type) -> None:
+    def register(self, *models: type[Entity | Relation]) -> None:
         """Register model classes for schema management.
 
         Args:

@@ -30,12 +30,15 @@ class Expression(ABC):
         """
         ...
 
-    def to_value_ast(self) -> "Value":
+    def to_value_ast(self, var: str | None = None) -> "Value":
         """
         Convert this expression to an AST Value (if applicable).
 
         Most expressions are patterns (filters) and cannot be converted to values.
         FunctionCall expressions and Literal wrappers are values.
+
+        Args:
+            var: Optional variable name for aggregate expressions that need context.
 
         Raises:
             NotImplementedError: If expression cannot be converted to a value.

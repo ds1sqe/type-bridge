@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from type_bridge.migration.utils import type_exists
 
 if TYPE_CHECKING:
+    from type_bridge.attribute.base import Attribute
     from type_bridge.models import Entity, Relation
     from type_bridge.session import Database
 
@@ -147,7 +148,7 @@ class SchemaIntrospector:
         logger.info(f"Introspecting database schema for {len(models)} model types")
 
         # Collect unique attribute types from all models
-        attr_types: set[type] = set()
+        attr_types: set[type[Attribute]] = set()
         for model in models:
             if hasattr(model, "get_owned_attributes"):
                 for attr_info in model.get_owned_attributes().values():

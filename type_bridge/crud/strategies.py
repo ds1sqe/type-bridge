@@ -24,24 +24,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ModelStrategy(ABC):
+class ModelStrategy[T: "TypeDBType"](ABC):
     """Abstract strategy for handling model-specific logic."""
 
     @abstractmethod
-    def identify(self, instance: TypeDBType) -> list[Constraint]:
+    def identify(self, instance: T) -> list[Constraint]:
         """Generate identification constraints (IID or keys/roles)."""
         pass
 
     @abstractmethod
-    def build_insert(
-        self, instance: TypeDBType, var: str
-    ) -> tuple[MatchClause | None, InsertClause]:
+    def build_insert(self, instance: T, var: str) -> tuple[MatchClause | None, InsertClause]:
         """Generate insert AST and optional match prerequisites."""
         pass
 
     @abstractmethod
     def build_match_all(
-        self, model_class: type[TypeDBType], var: str, filters: dict[str, Any]
+        self, model_class: type[T], var: str, filters: dict[str, Any]
     ) -> MatchClause:
         """Generate match AST for filtering."""
         pass
@@ -67,10 +65,10 @@ class ModelStrategy(ABC):
         return LiteralValue(value=value, value_type=ast_type)
 
 
-class EntityStrategy(ModelStrategy):
+class EntityStrategy(ModelStrategy["Entity"]):
     """Strategy for handling Entity models."""
 
-    def identify(self, instance: Entity) -> list[Constraint]:  # type: ignore[override]
+    def identify(self, instance: Entity) -> list[Constraint]:
         # 1. Prefer IID
         iid_constraint = self._get_iid_constraint(instance)
         if iid_constraint:
@@ -108,13 +106,13 @@ class EntityStrategy(ModelStrategy):
 
         return constraints
 
-    def build_insert(self, instance: Entity, var: str) -> tuple[MatchClause | None, InsertClause]:  # type: ignore[override]
+    def build_insert(self, instance: Entity, var: str) -> tuple[MatchClause | None, InsertClause]:
         # Entity insert requires no match prerequisites (unless we support nested inserts later)
         if hasattr(instance, "to_ast"):
             return None, instance.to_ast(var)
         raise NotImplementedError("Model does not implement to_ast")
 
-    def build_match_all(  # type: ignore[override]
+    def build_match_all(
         self, model_class: type[Entity], var: str, filters: dict[str, Any]
     ) -> MatchClause:
         from type_bridge.query.ast import EntityPattern, HasConstraint, MatchClause
@@ -140,7 +138,7 @@ class EntityStrategy(ModelStrategy):
         return MatchClause(patterns=[pattern])
 
 
-class RelationStrategy(ModelStrategy):
+class RelationStrategy(ModelStrategy["Relation"]):
     """Strategy for handling Relation models."""
 
     def build_fetch_query(
@@ -318,7 +316,7 @@ class RelationStrategy(ModelStrategy):
             return match_clause + "\n" + modifier_str + "\n" + fetch_clause + ";"
         return match_clause + "\n" + fetch_clause + ";"
 
-    def identify(self, instance: Relation) -> list[Constraint]:  # type: ignore[override]
+    def identify(self, instance: Relation) -> list[Constraint]:
         # 1. Prefer IID (most reliable for relations)
         iid_constraint = self._get_iid_constraint(instance)
         if iid_constraint:
@@ -331,7 +329,7 @@ class RelationStrategy(ModelStrategy):
             f"no _iid set. Fetch the relation from the database first to populate _iid."
         )
 
-    def build_insert(self, instance: Relation, var: str) -> tuple[MatchClause | None, InsertClause]:  # type: ignore[override]
+    def build_insert(self, instance: Relation, var: str) -> tuple[MatchClause | None, InsertClause]:
         from type_bridge.query.ast import EntityPattern, MatchClause
 
         # 1. Build Insert Clause
@@ -370,7 +368,7 @@ class RelationStrategy(ModelStrategy):
 
         return match_clause, insert_clause
 
-    def build_match_all(  # type: ignore[override]
+    def build_match_all(
         self, model_class: type[Relation], var: str, filters: dict[str, Any]
     ) -> MatchClause:
         from type_bridge.models import Entity

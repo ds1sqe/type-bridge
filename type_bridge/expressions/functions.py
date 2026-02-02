@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from .base import Expression
 
 if TYPE_CHECKING:
-    from type_bridge.query.ast import FunctionCallValue, Pattern, Value
+    from type_bridge.query.ast import FetchItem, FunctionCallValue, Pattern, Value
 
 
 @dataclass
@@ -21,14 +21,14 @@ class FunctionCallExpr[T](Expression):
     def to_ast(self, var: str) -> list[Pattern]:
         raise NotImplementedError("Function calls are values, not patterns. Use to_value_ast().")
 
-    def to_value_ast(self) -> Value:
+    def to_value_ast(self, var: str | None = None) -> Value:
         """Convert to AST FunctionCallValue."""
         from type_bridge.query.ast import FunctionCallValue, LiteralValue
 
         ast_args: list[Value | str] = []
         for arg in self.args:
             if isinstance(arg, Expression):
-                ast_args.append(arg.to_value_ast())
+                ast_args.append(arg.to_value_ast(var))
             elif isinstance(arg, bool):
                 ast_args.append(LiteralValue(arg, "boolean"))
             elif isinstance(arg, int):
@@ -215,7 +215,7 @@ class FunctionQuery[T]:
             keys = [v.lstrip("$") for v in vars_list]
 
         items = [FetchVariable(key=k, var=v) for k, v in zip(keys, vars_list, strict=True)]
-        clause = FetchClause(items=items)  # type: ignore[arg-type]
+        clause = FetchClause(items=cast(list["FetchItem | str"], items))
         compiler = QueryCompiler()
 
         return compiler.compile(clause)

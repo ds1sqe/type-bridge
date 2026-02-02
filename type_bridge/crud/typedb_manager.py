@@ -8,7 +8,7 @@ implementation using the Strategy pattern.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from typedb.driver import TransactionType
 
@@ -23,8 +23,10 @@ from type_bridge.query.ast import (
     FetchAttributeList,
     FetchClause,
     FetchFunction,
+    FetchItem,
     FunctionCallValue,
     MatchClause,
+    Pattern,
     ReduceAssignment,
     ReduceClause,
 )
@@ -97,7 +99,7 @@ class TypeDBManager[T: "TypeDBType"]:
         self, items: list[FetchAttribute | FetchAttributeList | FetchFunction]
     ) -> str:
         """Compile fetch items to a fetch clause string."""
-        return self.compiler.compile(FetchClause(items=items))  # type: ignore[arg-type]
+        return self.compiler.compile(FetchClause(items=cast(list[FetchItem | str], items)))
 
     def _build_count_reduce(self, var: str, result_var: str = "$count") -> str:
         """Build a reduce count clause string.
@@ -128,8 +130,10 @@ class TypeDBManager[T: "TypeDBType"]:
         Returns:
             Compiled fetch clause like 'fetch { "iid": iid($e) };'
         """
-        fetch_items = [FetchFunction(key="iid", func_name="iid", var=var)]
-        return self._compile_fetch(fetch_items)  # type: ignore[arg-type]
+        fetch_items: list[FetchAttribute | FetchAttributeList | FetchFunction] = [
+            FetchFunction(key="iid", func_name="iid", var=var)
+        ]
+        return self._compile_fetch(fetch_items)
 
     def _collect_all_subclass_attributes(self, model_class: type[T]) -> dict[str, bool]:
         """Collect all attributes from a class and all its subclasses.
@@ -191,12 +195,15 @@ class TypeDBManager[T: "TypeDBType"]:
         """
         try:
             # Build AST-based match + fetch query
+            patterns: list[Pattern]
             if isinstance(instance, Entity):
                 patterns = [instance.get_match_pattern(var)]
-            else:  # Relation
-                patterns = instance.get_match_patterns(var)  # type: ignore[union-attr]
+            elif isinstance(instance, Relation):
+                patterns = instance.get_match_patterns(var)
+            else:
+                raise TypeError(f"Unexpected instance type: {type(instance)}")
 
-            match_clause = MatchClause(patterns=patterns)  # type: ignore[arg-type]
+            match_clause = MatchClause(patterns=patterns)
             match_str = self.compiler.compile(match_clause)
             iid_fetch_str = self._build_iid_fetch(var)
             fetch_query = f"{match_str}\n{iid_fetch_str}"
@@ -409,8 +416,8 @@ class TypeDBManager[T: "TypeDBType"]:
         )
 
         # Combine all patterns into a MatchClause
-        all_patterns = [main_pattern] + nested_patterns
-        match_clause = MatchClause(patterns=all_patterns)  # type: ignore[arg-type]
+        all_patterns: list[Pattern] = [main_pattern, *nested_patterns]
+        match_clause = MatchClause(patterns=all_patterns)
         match_str = self.compiler.compile(match_clause)
 
         iid_fetch_str = self._build_iid_fetch(var)
@@ -500,12 +507,14 @@ class TypeDBManager[T: "TypeDBType"]:
                     if concrete_class is None:
                         concrete_class = resolve_entity_class_from_label(
                             type_label,
-                            (self.model_class,),  # type: ignore[arg-type]
+                            cast(tuple[type[Entity], ...], (self.model_class,)),
                         )
                 else:
                     concrete_class = self.model_class
 
-                instance = concrete_class.from_dict(result, strict=False)  # type: ignore[union-attr]
+                assert concrete_class is not None, "Failed to resolve concrete class"
+                entity_class = cast(type[Entity], concrete_class)
+                instance = entity_class.from_dict(result, strict=False)
                 if iid:
                     object.__setattr__(instance, "_iid", iid)
                 instances.append(instance)
@@ -543,9 +552,10 @@ class TypeDBManager[T: "TypeDBType"]:
         # Parse Django-style filters (e.g., employer__industry__eq="Technology")
         # This extracts role player attribute lookups into expressions
         all_expressions = list(expressions)  # Copy to avoid mutating input
+        relation_model = cast(type[Relation], self.model_class)
         if filters:
             attr_filters, role_player_filters, role_expressions, attr_expressions = (
-                parse_role_lookup_filters(self.model_class, filters)  # type: ignore[arg-type]
+                parse_role_lookup_filters(relation_model, filters)
             )
             # Merge parsed filters: direct attrs and entity instances
             parsed_filters = {**attr_filters, **role_player_filters}
@@ -558,8 +568,9 @@ class TypeDBManager[T: "TypeDBType"]:
             parsed_filters = {}
 
         # Build and execute query with modifiers
-        query = self.strategy.build_fetch_query(  # type: ignore[union-attr]
-            self.model_class, var, parsed_filters, all_expressions, order_by, limit, offset
+        assert isinstance(self.strategy, RelationStrategy), "Expected RelationStrategy"
+        query = self.strategy.build_fetch_query(
+            relation_model, var, parsed_filters, all_expressions, order_by, limit, offset
         )
 
         # Add IID filter to match clause if specified
@@ -601,7 +612,7 @@ class TypeDBManager[T: "TypeDBType"]:
         for relation_iid, result_group in grouped.items():
             try:
                 # Extract relation attributes from first result (all should have same attrs)
-                relation_attrs = extract_relation_attributes(self.model_class, result_group[0])  # type: ignore[arg-type]
+                relation_attrs = extract_relation_attributes(relation_model, result_group[0])
 
                 # Extract and deduplicate role players from all results in group
                 role_players = extract_role_players_from_results(
@@ -746,12 +757,15 @@ class TypeDBManager[T: "TypeDBType"]:
         var = "$x"
 
         # Build AST-based match clause
+        patterns: list[Pattern]
         if isinstance(instance, Entity):
             patterns = [instance.get_match_pattern(var)]
-        else:  # Relation
-            patterns = instance.get_match_patterns(var)  # type: ignore[union-attr]
+        elif isinstance(instance, Relation):
+            patterns = instance.get_match_patterns(var)
+        else:
+            raise TypeError(f"Unexpected instance type: {type(instance)}")
 
-        match_clause = MatchClause(patterns=patterns)  # type: ignore[arg-type]
+        match_clause = MatchClause(patterns=patterns)
         delete_clause = DeleteClause(statements=[DeleteThingStatement(variable=var)])
 
         # Compile and execute
@@ -840,12 +854,15 @@ class TypeDBManager[T: "TypeDBType"]:
         var = "$x"
         try:
             # Build AST-based match clause
+            patterns: list[Pattern]
             if isinstance(instance, Entity):
                 patterns = [instance.get_match_pattern(var)]
-            else:  # Relation
-                patterns = instance.get_match_patterns(var)  # type: ignore[union-attr]
+            elif isinstance(instance, Relation):
+                patterns = instance.get_match_patterns(var)
+            else:
+                raise TypeError(f"Unexpected instance type: {type(instance)}")
 
-            match_clause = MatchClause(patterns=patterns)  # type: ignore[arg-type]
+            match_clause = MatchClause(patterns=patterns)
             match_str = self.compiler.compile(match_clause)
             reduce_str = self._build_count_reduce(var)
             query = f"{match_str}\n{reduce_str}"
@@ -855,7 +872,9 @@ class TypeDBManager[T: "TypeDBType"]:
                 count_val = results[0]["count"]
                 if isinstance(count_val, dict) and "value" in count_val:
                     count_val = count_val["value"]
-                return int(count_val) > 0  # type: ignore[arg-type]
+                if isinstance(count_val, (int, float)):
+                    return int(count_val) > 0
+                return int(str(count_val)) > 0
         except ValueError:
             # Can't identify entity (no IID, no keys) - assume doesn't exist
             pass
@@ -930,14 +949,16 @@ class TypeDBManager[T: "TypeDBType"]:
                     if concrete_class is None:
                         concrete_class = resolve_entity_class_from_label(
                             type_label,
-                            (self.model_class,),  # type: ignore[arg-type]
+                            cast(tuple[type[Entity], ...], (self.model_class,)),
                         )
                 else:
                     concrete_class = self.model_class
 
-                instance = concrete_class.from_dict(result, strict=False)  # type: ignore[union-attr]
+                assert concrete_class is not None, "Failed to resolve concrete class"
+                entity_class = cast(type[Entity], concrete_class)
+                instance = entity_class.from_dict(result, strict=False)
                 object.__setattr__(instance, "_iid", iid)
-                return instance  # type: ignore[return-value]
+                return cast(T | None, instance)
             except Exception as e:
                 logger.error(f"Failed to hydrate entity: {e}")
                 return None
@@ -1001,7 +1022,9 @@ class TypeDBManager[T: "TypeDBType"]:
             # Handle wrapped value format from TypeDB driver
             if isinstance(count_val, dict) and "value" in count_val:
                 return int(count_val["value"])
-            return int(count_val)  # type: ignore[arg-type]
+            if isinstance(count_val, (int, float)):
+                return int(count_val)
+            return int(str(count_val))
         return 0
 
     def group_by(self, *fields: Any) -> GroupByQuery[T]:
@@ -1197,6 +1220,7 @@ class TypeDBQuery[T: "TypeDBType"]:
 
         # Hydrate objects with polymorphic type resolution
         instances = []
+        entity_model = cast(type[Entity], model_class)
         for result in results:
             try:
                 iid = result.pop("_iid", None)
@@ -1211,11 +1235,15 @@ class TypeDBQuery[T: "TypeDBType"]:
                 if type_label and type_label != base_type:
                     concrete_class = ModelRegistry.get(type_label)
                     if concrete_class is None:
-                        concrete_class = resolve_entity_class_from_label(type_label, (model_class,))  # type: ignore[arg-type]
+                        concrete_class = resolve_entity_class_from_label(
+                            type_label, (entity_model,)
+                        )
                 else:
-                    concrete_class = model_class
+                    concrete_class = entity_model
 
-                instance = concrete_class.from_dict(result, strict=False)  # type: ignore[union-attr]
+                assert concrete_class is not None, "Failed to resolve concrete class"
+                entity_class = cast(type[Entity], concrete_class)
+                instance = entity_class.from_dict(result, strict=False)
                 if iid:
                     object.__setattr__(instance, "_iid", iid)
                 instances.append(instance)
@@ -1241,7 +1269,7 @@ class TypeDBQuery[T: "TypeDBType"]:
             and expressions are lookup expressions (startswith, contains, etc.)
         """
         from type_bridge.crud.lookup import build_lookup_expression
-        from type_bridge.expressions import BooleanExpr, IidExpr
+        from type_bridge.expressions import BooleanExpr, Expression, IidExpr
 
         owned_attrs = model_class.get_all_attributes()
         base_filters: dict[str, Any] = {}
@@ -1255,11 +1283,11 @@ class TypeDBQuery[T: "TypeDBType"]:
                 iids = list(raw_value)
                 if not iids:
                     raise ValueError("iid__in lookup requires a non-empty iterable")
-                iid_exprs = [IidExpr(iid) for iid in iids]
+                iid_exprs: list[Expression] = [IidExpr(iid) for iid in iids]
                 if len(iid_exprs) == 1:
                     expressions.append(iid_exprs[0])
                 else:
-                    expressions.append(BooleanExpr("or", iid_exprs))  # type: ignore[arg-type]
+                    expressions.append(BooleanExpr("or", iid_exprs))
                 continue
 
             # No "__" means exact match
@@ -1321,7 +1349,17 @@ class TypeDBQuery[T: "TypeDBType"]:
         var = "$x"
 
         # Build match clause with filters and expressions
-        match_clause = self._manager.strategy.build_match_all(model_class, var, self._filters)  # type: ignore[arg-type]
+        # Strategy is generic, so we need to cast appropriately based on strategy type
+        if isinstance(self._manager.strategy, EntityStrategy):
+            match_clause = self._manager.strategy.build_match_all(
+                cast(type[Entity], model_class), var, self._filters
+            )
+        else:
+            # RelationStrategy without filters
+            assert isinstance(self._manager.strategy, RelationStrategy)
+            match_clause = self._manager.strategy.build_match_all(
+                cast(type[Relation], model_class), var, self._filters
+            )
 
         if self._expressions:
             from type_bridge.query.ast import RawPattern
@@ -1342,7 +1380,9 @@ class TypeDBQuery[T: "TypeDBType"]:
             # Handle wrapped value format from TypeDB driver
             if isinstance(count_val, dict) and "value" in count_val:
                 return int(count_val["value"])
-            return int(count_val)  # type: ignore[arg-type]
+            if isinstance(count_val, (int, float)):
+                return int(count_val)
+            return int(str(count_val))
         return 0
 
     def delete(self) -> int:

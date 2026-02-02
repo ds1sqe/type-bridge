@@ -4,6 +4,8 @@ Tests cover the RelationManager.delete() method with instance-based deletion
 using role players' @key attributes to identify the relation.
 """
 
+from typing import Any, cast
+
 import pytest
 
 from type_bridge import (
@@ -207,7 +209,10 @@ def test_delete_relation_missing_role_player_raises(db_with_schema):
     emp = Employment(employee=alice, employer=techcorp, position=Position("Engineer"))
 
     # Manually remove the role player to simulate a corrupt/incomplete relation
-    emp.__dict__["employer"] = None  # type: ignore[index]
+    # Write directly to __dict__ to bypass the Role descriptor's type validation
+    # Cast needed because pyright sees __dict__ as MappingProxyType
+    inst_dict = cast(dict[str, Any], emp.__dict__)
+    inst_dict["employer"] = None
 
     # Act & Assert
     with pytest.raises(ValueError, match="Role player 'employer' is required for matching"):

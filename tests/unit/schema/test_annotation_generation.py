@@ -71,7 +71,7 @@ class TestRegexAnnotationGeneration:
         """Test @regex with a simple pattern."""
 
         class Email(String):
-            regex: ClassVar[str] = r"^[a-z]+@[a-z]+\.[a-z]+$"  # type: ignore[assignment]
+            regex_pattern = r"^[a-z]+@[a-z]+\.[a-z]+$"
 
         schema = Email.to_schema_definition()
         assert '@regex("^[a-z]+@[a-z]+\\.[a-z]+$")' in schema
@@ -80,7 +80,7 @@ class TestRegexAnnotationGeneration:
         """Test @regex with special characters."""
 
         class PhoneNumber(String):
-            regex: ClassVar[str] = r"^\+?[0-9]{10,14}$"  # type: ignore[assignment]
+            regex_pattern = r"^\+?[0-9]{10,14}$"
 
         schema = PhoneNumber.to_schema_definition()
         assert '@regex("^\\+?[0-9]{10,14}$")' in schema

@@ -297,8 +297,8 @@ class FieldDescriptor[T: "Attribute"]:
         # 1. The model_validator _wrap_raw_values already handles attribute wrapping
         # 2. Calling validate_assignment triggers the model validator which would
         #    call object.__setattr__ and trigger this __set__ again (infinite recursion)
-        # Use cast to satisfy pyright (instance.__dict__ is always writable at runtime)
-        inst_dict: dict[str, Any] = instance.__dict__  # type: ignore[assignment]
+        # Cast needed because pyright sees __dict__ as potentially MappingProxyType
+        inst_dict = cast(dict[str, Any], instance.__dict__)
         inst_dict[self.field_name] = value
 
     def _make_field_ref(self, entity_type: Any) -> FieldRef[T]:

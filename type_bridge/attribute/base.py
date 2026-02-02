@@ -262,8 +262,9 @@ class Attribute(ABC):
             max_part = range_max if range_max is not None else ""
             definition += f" @range({min_part}..{max_part})"
 
-        # Add @regex annotation if regex is defined (after value type)
-        regex_pattern = getattr(cls, "regex", None)
+        # Add @regex annotation if regex_pattern is defined (after value type)
+        # Note: Use regex_pattern (not regex) to avoid conflict with String.regex() query method
+        regex_pattern = getattr(cls, "regex_pattern", None)
         if regex_pattern is not None and isinstance(regex_pattern, str):
             # Escape any quotes in the pattern
             escaped_pattern = regex_pattern.replace('"', '\\"')

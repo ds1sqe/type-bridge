@@ -16,13 +16,15 @@ from type_bridge import (
     TypeFlags,
 )
 from type_bridge.crud import TypeDBManager
+from type_bridge.models.base import TypeDBType
 
 
-class _RecordingTypeDBManager[T](TypeDBManager[T]):  # type: ignore[type-var]
+class _RecordingTypeDBManager[T: TypeDBType](TypeDBManager[T]):
     """TypeDBManager that records executed queries instead of hitting TypeDB."""
 
     def __init__(self, model_class: type[T]):
-        super().__init__(cast(Database, object()), model_class)  # type: ignore[arg-type]
+        # Use a mock connection - the manager won't actually execute queries
+        super().__init__(cast(Database, object()), model_class)
         self.queries: list[str] = []
 
     def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
@@ -231,8 +233,8 @@ def test_entity_delete_falls_back_to_key_when_no_iid():
     # No _iid set - should fall back to key attributes
 
     # Mock filter().count() to return 1 (entity exists)
-    class _MockTypeDBManager(_RecordingTypeDBManager):
-        def filter(self, **kwargs):  # type: ignore[override]  # noqa: ARG002
+    class _MockTypeDBManager(_RecordingTypeDBManager[Person]):
+        def filter(self, *_expressions: Any, **_filters: Any) -> Any:
             class _MockQuery:
                 def count(self) -> int:
                     return 1

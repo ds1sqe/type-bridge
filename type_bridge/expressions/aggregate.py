@@ -47,9 +47,19 @@ class AggregateExpr[T: "Attribute"](Expression):
             "Aggregate expressions are values, not patterns. Use to_value_ast()."
         )
 
-    def to_value_ast(self, var: str) -> "Value":  # type: ignore[override]
-        """Convert to AST FunctionCallValue."""
+    def to_value_ast(self, var: str | None = None) -> "Value":
+        """Convert to AST FunctionCallValue.
+
+        Args:
+            var: Variable name required for aggregate expressions (e.g., "$e")
+
+        Raises:
+            ValueError: If var is not provided (aggregates require context)
+        """
         from type_bridge.query.ast import FunctionCallValue
+
+        if var is None:
+            raise ValueError("AggregateExpr.to_value_ast() requires a variable name")
 
         if self.function == "count":
             return FunctionCallValue(function="count", args=[var])

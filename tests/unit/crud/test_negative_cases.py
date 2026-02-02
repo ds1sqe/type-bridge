@@ -5,18 +5,29 @@ from unittest.mock import MagicMock
 
 from typedb.driver import TransactionType
 
-from type_bridge import Card, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
+from type_bridge import (
+    Card,
+    Database,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    Relation,
+    Role,
+    String,
+    TypeFlags,
+)
 from type_bridge.crud import TypeDBManager
 from type_bridge.crud.utils import format_value
+from type_bridge.models.base import TypeDBType
 
 
-class _RecordingTypeDBManager[T](TypeDBManager[T]):  # type: ignore[type-var]
+class _RecordingTypeDBManager[T: TypeDBType](TypeDBManager[T]):
     """TypeDBManager that records executed queries instead of hitting TypeDB."""
 
     def __init__(self, model_class: type[T]):
-        from type_bridge import Database
-
-        super().__init__(cast(Database, MagicMock()), model_class)  # type: ignore[arg-type]
+        # Use a mock connection - the manager won't actually execute queries
+        super().__init__(cast(Database, MagicMock()), model_class)
         self.queries: list[str] = []
 
     def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:

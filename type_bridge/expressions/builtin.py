@@ -73,7 +73,7 @@ class BuiltinFunctionExpr(Expression):
         args_str = ", ".join(self.args)
         return f"{self.name}({args_str})"
 
-    def to_value_ast(self) -> Value:
+    def to_value_ast(self, var: str | None = None) -> Value:
         """Convert to AST FunctionCallValue."""
         from type_bridge.query.ast import FunctionCallValue
 

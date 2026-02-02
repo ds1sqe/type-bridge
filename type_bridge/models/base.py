@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, dataclass_transform
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast, dataclass_transform
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
@@ -19,7 +19,6 @@ from type_bridge.models.utils import (
 )
 
 if TYPE_CHECKING:
-    from type_bridge.crud.manager import BaseManager
     from type_bridge.crud.typedb_manager import TypeDBManager
     from type_bridge.session import Connection
 
@@ -54,7 +53,7 @@ class TypeDBType(BaseModel, ABC):
 
     @classmethod
     @abstractmethod
-    def _get_manager_class(cls) -> type[BaseManager]:
+    def _get_manager_class(cls) -> type:
         """Get the CRUD manager class for this type."""
         ...
 
@@ -69,7 +68,7 @@ class TypeDBType(BaseModel, ABC):
             Manager instance for this type
         """
         manager_class = cls._get_manager_class()
-        return manager_class(connection, cls)  # type: ignore[return-value]
+        return cast("TypeDBManager[Self]", manager_class(connection, cls))
 
     def insert(self, connection: Connection) -> Self:
         """Insert this instance into the database.
@@ -344,7 +343,7 @@ class TypeDBType(BaseModel, ABC):
         # Child attributes will override parent attributes with same name
         for base in reversed(cls.__mro__):
             if hasattr(base, "_owned_attrs") and isinstance(base._owned_attrs, dict):
-                all_attrs.update(base._owned_attrs)
+                all_attrs.update(dict(base._owned_attrs))
 
         return all_attrs
 
