@@ -277,5 +277,3 @@ def test_relation_delete_uses_iid_when_available():
     # Should NOT have role player matching
     assert "source:" not in query
     assert "target:" not in query
-
-

@@ -22,7 +22,7 @@ from type_bridge.models.role import Role
 from type_bridge.models.utils import MatchClauseInfo
 
 if TYPE_CHECKING:
-    from type_bridge.query.ast import InsertClause, Pattern, RelationPattern
+    from type_bridge.query.ast import InsertClause, Pattern
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +282,7 @@ class Relation(TypeDBType):
             main_clause=main_clause, extra_clauses=extra_clauses, var_name=var_name
         )
 
-    def get_match_patterns(self, var_name: str = "$r") -> list["Pattern"]:
+    def get_match_patterns(self, var_name: str = "$r") -> list[Pattern]:
         """Get AST patterns for matching this relation instance.
 
         Returns a list of patterns: the main RelationPattern plus EntityPatterns

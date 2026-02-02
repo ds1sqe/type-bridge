@@ -6,6 +6,7 @@ from type_bridge.expressions.base import Expression
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
+    from type_bridge.query.ast import Pattern, Value
 
 
 class AggregateExpr[T: "Attribute"](Expression):
@@ -41,25 +42,29 @@ class AggregateExpr[T: "Attribute"](Expression):
         if function != "count" and attr_type is None:
             raise ValueError(f"{function.upper()} requires an attribute type")
 
-    def to_typeql(self, var: str) -> str:
-        """
-        Generate TypeQL pattern for this aggregation.
+    def to_ast(self, var: str) -> list["Pattern"]:
+        raise NotImplementedError(
+            "Aggregate expressions are values, not patterns. Use to_value_ast()."
+        )
 
-        This is used in fetch clauses, not match clauses.
+    def to_value_ast(self, var: str) -> "Value":
+        """Convert to AST FunctionCallValue."""
+        from type_bridge.query.ast import FunctionCallValue
 
-        Example output: "mean($p_age)"
-
-        Args:
-            var: Entity variable name (used to reference attributes)
-
-        Returns:
-            TypeQL aggregation expression
-        """
         if self.function == "count":
-            # Count all matches
+            return FunctionCallValue(function="count", args=[var])
+
+        assert self.attr_type is not None
+        from type_bridge.expressions.utils import generate_attr_var
+
+        attr_var = generate_attr_var(var, self.attr_type)
+        return FunctionCallValue(function=self.function, args=[attr_var])
+
+    def to_typeql(self, var: str) -> str:
+        """Deprecated: Generate TypeQL pattern for this aggregation."""
+        if self.function == "count":
             return f"count({var})"
 
-        # Other aggregations need attribute reference
         assert self.attr_type is not None
         from type_bridge.expressions.utils import generate_attr_var
 

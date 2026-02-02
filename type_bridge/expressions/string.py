@@ -7,10 +7,11 @@ variable scoping and why we generate unique attribute variables.
 from typing import TYPE_CHECKING, Literal
 
 from type_bridge.expressions.base import Expression
-from type_bridge.expressions.utils import generate_has_pattern
+from type_bridge.expressions.utils import generate_attr_var
 
 if TYPE_CHECKING:
     from type_bridge.attribute.string import String
+    from type_bridge.query.ast import Pattern
 
 
 class StringExpr[T: "String"](Expression):
@@ -38,32 +39,36 @@ class StringExpr[T: "String"](Expression):
         self.operation = operation
         self.pattern = pattern
 
-    def to_typeql(self, var: str) -> str:
+    def to_ast(self, var: str) -> list["Pattern"]:
         """
-        Generate TypeQL pattern for this string operation.
+        Generate AST patterns for this string operation.
 
-        Example output: "$e has Name $e_name; $e_name contains 'Alice'"
+        Example: "$e has Name $e_name; $e_name contains 'Alice'"
 
         Args:
             var: Entity variable name (e.g., "$e", "$actor")
 
         Returns:
-            TypeQL pattern string (without trailing semicolon)
+            List of AST patterns
         """
-        # Generate unique attribute variable and 'has' pattern
-        attr_var, has_pattern = generate_has_pattern(var, self.attr_type)
+        from type_bridge.query.ast import (
+            HasPattern,
+            LiteralValue,
+            ValueComparisonPattern,
+        )
 
-        # Escape and quote the pattern
-        escaped_pattern = self.pattern.value.replace("\\", "\\\\").replace('"', '\\"')
-        quoted_pattern = f'"{escaped_pattern}"'
+        attr_type_name = self.attr_type.get_attribute_name()
+        attr_var = generate_attr_var(var, self.attr_type)
 
         # Map operation to TypeQL keyword
         # AUTOMATIC CONVERSION: regex() → 'like' in TypeQL
-        if self.operation == "regex":
-            # TypeQL uses 'like' for regex patterns (both do the same thing)
-            typeql_op = "like"
-        else:
-            typeql_op = self.operation
+        typeql_op = "like" if self.operation == "regex" else self.operation
 
-        # Generate full pattern (no trailing semicolon - QueryBuilder adds those)
-        return f"{has_pattern}; {attr_var} {typeql_op} {quoted_pattern}"
+        return [
+            HasPattern(thing_var=var, attr_type=attr_type_name, attr_var=attr_var),
+            ValueComparisonPattern(
+                var=attr_var,
+                operator=typeql_op,
+                value=LiteralValue(value=self.pattern.value, value_type="string"),
+            ),
+        ]

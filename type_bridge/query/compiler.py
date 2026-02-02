@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 from type_bridge.query.ast import (
-    AggregateExpr,
     AttributePattern,
     Clause,
     Constraint,
@@ -17,24 +16,36 @@ from type_bridge.query.ast import (
     FetchClause,
     FetchFunction,
     FetchItem,
+    FetchVariable,
     FetchWildcard,
+    FunctionCallValue,
     HasConstraint,
+    HasPattern,
     HasStatement,
     IidConstraint,
+    IidPattern,
     InsertClause,
     IsaConstraint,
     IsaStatement,
+    LetAssignment,
     LiteralValue,
     MatchClause,
+    MatchLetClause,
+    NotPattern,
+    OrPattern,
     Pattern,
     QueryNode,
+    RawPattern,
+    RawStatement,
     ReduceAssignment,
     ReduceClause,
     RelationPattern,
     RelationStatement,
     Statement,
+    SubTypePattern,
     UpdateClause,
     Value,
+    ValueComparisonPattern,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,6 +90,9 @@ class QueryCompiler:
             patterns = [self._compile_pattern(p) for p in clause.patterns]
             return "match\n" + ";\n".join(patterns) + ";"
 
+        elif isinstance(clause, MatchLetClause):
+            return self._compile_match_let(clause)
+
         elif isinstance(clause, InsertClause):
             statements = [self._compile_statement(s) for s in clause.statements]
             return "insert\n" + ";\n".join(statements) + ";"
@@ -107,11 +121,27 @@ class QueryCompiler:
 
         raise ValueError(f"Unknown clause type: {type(clause).__name__}")
 
+    def _compile_match_let(self, clause: MatchLetClause) -> str:
+        assignments = [self._compile_let_assignment(a) for a in clause.assignments]
+        return "match\n" + ";\n".join(assignments) + ";"
+
+    def _compile_let_assignment(self, assignment: LetAssignment) -> str:
+        vars_str = ", ".join(assignment.variables)
+        op = "in" if assignment.is_stream else "="
+        if len(assignment.variables) > 1:
+            vars_str = f"({vars_str})"
+        if isinstance(assignment.expression, Value):
+            expr_str = self._compile_value(assignment.expression)
+        else:
+            expr_str = assignment.expression
+        return f"let {vars_str} {op} {expr_str}"
+
     # --- Patterns (Match) ---
 
     def _compile_pattern(self, pattern: Pattern) -> str:
         if isinstance(pattern, EntityPattern):
-            parts = [f"{pattern.variable} isa {pattern.type_name}"]
+            op = "isa!" if pattern.is_strict else "isa"
+            parts = [f"{pattern.variable} {op} {pattern.type_name}"]
             for constraint in pattern.constraints:
                 parts.append(self._compile_constraint(constraint))
             return ", ".join(parts)
@@ -129,6 +159,37 @@ class QueryCompiler:
                 parts.append(self._compile_constraint(constraint))
             return ", ".join(parts)
 
+        elif isinstance(pattern, SubTypePattern):
+            return f"{pattern.variable} sub {pattern.parent_type}"
+
+        elif isinstance(pattern, HasPattern):
+            return f"{pattern.thing_var} has {pattern.attr_type} {pattern.attr_var}"
+
+        elif isinstance(pattern, ValueComparisonPattern):
+            if isinstance(pattern.value, Value):
+                val_str = self._compile_value(pattern.value)
+            else:
+                val_str = pattern.value
+            return f"{pattern.var} {pattern.operator} {val_str}"
+
+        elif isinstance(pattern, NotPattern):
+            sub_patterns = [self._compile_pattern(p) for p in pattern.patterns]
+            # not { $p1; $p2; };
+            inner = "; ".join(sub_patterns)
+            return f"not {{ {inner}; }}"
+
+        elif isinstance(pattern, OrPattern):
+            # { p1; p2; } or { p3; };
+            blocks = []
+            for alt in pattern.alternatives:
+                sub_patterns = [self._compile_pattern(p) for p in alt]
+                block_content = "; ".join(sub_patterns)
+                blocks.append(f"{{ {block_content}; }}")
+            return " or ".join(blocks)
+
+        elif isinstance(pattern, IidPattern):
+            return f"{pattern.variable} iid {pattern.iid}"
+
         elif isinstance(pattern, AttributePattern):
             # $a isa age; or $a isa age; $a 30;
             parts = [f"{pattern.variable} isa {pattern.type_name}"]
@@ -136,6 +197,9 @@ class QueryCompiler:
                 val_str = self._compile_value(pattern.value)
                 parts.append(f"{pattern.variable} {val_str}")
             return "; ".join(parts)
+
+        elif isinstance(pattern, RawPattern):
+            return pattern.content
 
         raise ValueError(f"Unknown pattern type: {type(pattern).__name__}")
 
@@ -170,6 +234,9 @@ class QueryCompiler:
         elif isinstance(stmt, DeleteThingStatement):
             return f"{stmt.variable}"
 
+        elif isinstance(stmt, RawStatement):
+            return stmt.content
+
         raise ValueError(f"Unknown statement type: {type(stmt).__name__}")
 
     # --- Constraints ---
@@ -195,6 +262,15 @@ class QueryCompiler:
     # --- Values & Escaping ---
 
     def _compile_value(self, value_node: Value) -> str:
+        if isinstance(value_node, FunctionCallValue):
+            args_str = []
+            for arg in value_node.args:
+                if isinstance(arg, Value):
+                    args_str.append(self._compile_value(arg))
+                else:
+                    args_str.append(arg)
+            return f"{value_node.function}({', '.join(args_str)})"
+
         # Use existing formatting logic from type_bridge.crud.formatting if available,
         # otherwise implement robust escaping here.
         # For Phase 1, we import the existing robust formatter.
@@ -215,6 +291,9 @@ class QueryCompiler:
         if isinstance(item, FetchAttribute):
             return f'"{item.key}": {item.var}.{item.attr_name}'
 
+        elif isinstance(item, FetchVariable):
+            return f'"{item.key}": {item.var}'
+
         elif isinstance(item, FetchAttributeList):
             return f'"{item.key}": [{item.var}.{item.attr_name}]'
 
@@ -230,11 +309,8 @@ class QueryCompiler:
 
     def _compile_reduce_assignment(self, assignment: ReduceAssignment) -> str:
         """Compile a reduce assignment like $count = count($var)."""
-        agg_str = self._compile_aggregate(assignment.aggregate)
-        return f"{assignment.result_var} = {agg_str}"
-
-    def _compile_aggregate(self, agg: AggregateExpr) -> str:
-        """Compile an aggregate expression like count($var) or sum($var.attr)."""
-        if agg.attr_name:
-            return f"{agg.func_name}({agg.var}.{agg.attr_name})"
-        return f"{agg.func_name}({agg.var})"
+        if isinstance(assignment.expression, Value):
+            expr_str = self._compile_value(assignment.expression)
+        else:
+            expr_str = assignment.expression
+        return f"{assignment.variable} = {expr_str}"

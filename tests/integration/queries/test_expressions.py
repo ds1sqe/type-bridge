@@ -198,7 +198,9 @@ def test_range_query(setup_schema):
     manager = Person.manager(setup_schema)
 
     # 28 <= age <= 35
-    results = manager.filter(Person.c.age.gte(PersonAge(28)), Person.c.age.lte(PersonAge(35))).execute()
+    results = manager.filter(
+        Person.c.age.gte(PersonAge(28)), Person.c.age.lte(PersonAge(35))
+    ).execute()
 
     assert len(results) == 3  # Diana(28), Frank(30), Bob(35)
     ages = [p.age.value for p in results]
@@ -328,7 +330,9 @@ def test_not_logic(setup_schema):
     manager = Person.manager(setup_schema)
 
     # NOT Engineering
-    results = manager.filter(Person.c.department.eq(PersonDepartment("Engineering")).not_()).execute()
+    results = manager.filter(
+        Person.c.department.eq(PersonDepartment("Engineering")).not_()
+    ).execute()
 
     assert len(results) == 3  # Charlie, Diana, Frank (not Engineering)
     for person in results:
@@ -430,7 +434,9 @@ def test_group_by_single_field(setup_schema):
     manager = Person.manager(setup_schema)
 
     # Group by department using FieldsAccessor (Person.c.field)
-    result = manager.group_by(Person.c.department).aggregate(Person.c.age.avg(), Person.c.salary.avg())
+    result = manager.group_by(Person.c.department).aggregate(
+        Person.c.age.avg(), Person.c.salary.avg()
+    )
 
     # Should have 3 departments
     assert len(result) == 3

@@ -67,7 +67,8 @@ def test_compile_relation_match(compiler):
     match = MatchClause(patterns=[pattern])
 
     result = compiler.compile(match)
-    expected = "match\n$rel (employee: $p, employer: $c) isa employment;"
+    # TypeDB 3.x syntax: isa type comes before role players
+    expected = "match\n$rel isa employment (employee: $p, employer: $c);"
     assert result == expected
 
 

@@ -7,10 +7,11 @@ variable scoping and why we generate unique attribute variables.
 from typing import TYPE_CHECKING, Literal
 
 from type_bridge.expressions.base import Expression
-from type_bridge.expressions.utils import generate_has_pattern
+from type_bridge.expressions.utils import generate_attr_var
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
+    from type_bridge.query.ast import Pattern
 
 
 class ComparisonExpr[T: "Attribute"](Expression):
@@ -38,28 +39,30 @@ class ComparisonExpr[T: "Attribute"](Expression):
         self.operator = operator
         self.value = value
 
-    def to_typeql(self, var: str) -> str:
+    def to_ast(self, var: str) -> list["Pattern"]:
         """
-        Generate TypeQL pattern for this comparison.
+        Generate AST patterns for this comparison.
 
-        Example output: "$e has Age $e_age; $e_age > 30"
-
-        Args:
-            var: Entity variable name (e.g., "$e", "$actor")
-
-        Returns:
-            TypeQL pattern string (without trailing semicolon)
+        Example: "$e has age $e_age; $e_age > 30"
         """
-        from type_bridge.crud.utils import format_value
+        from type_bridge.crud.patterns import _get_literal_type
+        from type_bridge.query.ast import HasPattern, LiteralValue, ValueComparisonPattern
 
-        # Format the value for TypeQL
-        formatted_value = format_value(self.value.value)
+        attr_type_name = self.attr_type.get_attribute_name()
+        attr_var = generate_attr_var(var, self.attr_type)
 
-        # Generate unique attribute variable and 'has' pattern
-        attr_var, has_pattern = generate_has_pattern(var, self.attr_type)
+        # Unwrap value from Attribute wrapper if needed
+        raw_value = self.value.value if hasattr(self.value, "value") else self.value
+        literal_type = _get_literal_type(raw_value)
 
-        # Generate full pattern (no trailing semicolon - QueryBuilder adds those)
-        return f"{has_pattern}; {attr_var} {self.operator} {formatted_value}"
+        return [
+            HasPattern(thing_var=var, attr_type=attr_type_name, attr_var=attr_var),
+            ValueComparisonPattern(
+                var=attr_var,
+                operator=self.operator,
+                value=LiteralValue(value=raw_value, value_type=literal_type),
+            ),
+        ]
 
 
 class AttributeExistsExpr[T: "Attribute"](Expression):
@@ -69,11 +72,19 @@ class AttributeExistsExpr[T: "Attribute"](Expression):
         self.attr_type = attr_type
         self.present = present
 
-    def to_typeql(self, var: str) -> str:
-        # Generate unique attribute variable and 'has' pattern
-        attr_var, has_pattern = generate_has_pattern(var, self.attr_type)
+    def to_ast(self, var: str) -> list["Pattern"]:
+        from type_bridge.query.ast import HasPattern, NotPattern
 
-        # Presence: simple has clause; Absence: negate a has clause block
+        attr_type_name = self.attr_type.get_attribute_name()
+        attr_var = generate_attr_var(var, self.attr_type)
+
+        start_pattern = HasPattern(
+            thing_var=var,
+            attr_type=attr_type_name,
+            attr_var=attr_var,
+        )
+
         if self.present:
-            return has_pattern
-        return f"not {{ {has_pattern}; }}"
+            return [start_pattern]
+        else:
+            return [NotPattern(patterns=[start_pattern])]

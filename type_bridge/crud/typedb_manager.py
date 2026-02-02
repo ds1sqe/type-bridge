@@ -17,13 +17,13 @@ from type_bridge.crud.strategies import EntityStrategy, ModelStrategy, RelationS
 from type_bridge.crud.types import is_multi_value_attribute
 from type_bridge.models import Entity, Relation
 from type_bridge.query.ast import (
-    AggregateExpr,
     DeleteClause,
     DeleteThingStatement,
     FetchAttribute,
     FetchAttributeList,
     FetchClause,
     FetchFunction,
+    FunctionCallValue,
     MatchClause,
     ReduceAssignment,
     ReduceClause,
@@ -58,7 +58,12 @@ class TypeDBManager[T: "TypeDBType"]:
         return self._executor.execute(query, tx_type)
 
     def _build_fetch_items(
-        self, var: str, attrs: dict[str, Any], *, include_iid: bool = True, include_type: bool = True
+        self,
+        var: str,
+        attrs: dict[str, Any],
+        *,
+        include_iid: bool = True,
+        include_type: bool = True,
     ) -> list[FetchAttribute | FetchAttributeList | FetchFunction]:
         """Build typed fetch items for a query.
 
@@ -88,7 +93,9 @@ class TypeDBManager[T: "TypeDBType"]:
 
         return items
 
-    def _compile_fetch(self, items: list[FetchAttribute | FetchAttributeList | FetchFunction]) -> str:
+    def _compile_fetch(
+        self, items: list[FetchAttribute | FetchAttributeList | FetchFunction]
+    ) -> str:
         """Compile fetch items to a fetch clause string."""
         return self.compiler.compile(FetchClause(items=items))
 
@@ -105,8 +112,8 @@ class TypeDBManager[T: "TypeDBType"]:
         reduce_clause = ReduceClause(
             assignments=[
                 ReduceAssignment(
-                    result_var=result_var,
-                    aggregate=AggregateExpr(func_name="count", var=var),
+                    variable=result_var,
+                    expression=FunctionCallValue(function="count", args=[var]),
                 )
             ]
         )
@@ -220,8 +227,11 @@ class TypeDBManager[T: "TypeDBType"]:
         type_name = self.model_class.get_type_name()
         all_attrs = self.model_class.get_all_attributes()
 
-        # Build match clause with all attributes
-        match_parts = [f"{var} isa {type_name}"]
+        # Build constraints
+        from type_bridge.crud.patterns import _get_literal_type
+        from type_bridge.query.ast import EntityPattern, HasConstraint, LiteralValue, MatchClause
+
+        constraints = []
         has_attrs = False
 
         for field_name, attr_info in all_attrs.items():
@@ -231,19 +241,39 @@ class TypeDBManager[T: "TypeDBType"]:
                 # Handle lists (multi-value attributes)
                 if isinstance(value, list):
                     for item in value:
-                        match_parts.append(f"has {attr_name} {format_value(item)}")
+                        raw_val = item.value if hasattr(item, "value") else item
+                        constraints.append(
+                            HasConstraint(
+                                attr_name=attr_name,
+                                value=LiteralValue(
+                                    value=raw_val, value_type=_get_literal_type(raw_val)
+                                ),
+                            )
+                        )
                         has_attrs = True
                 else:
-                    match_parts.append(f"has {attr_name} {format_value(value)}")
+                    raw_val = value.value if hasattr(value, "value") else value
+                    constraints.append(
+                        HasConstraint(
+                            attr_name=attr_name,
+                            value=LiteralValue(
+                                value=raw_val, value_type=_get_literal_type(raw_val)
+                            ),
+                        )
+                    )
                     has_attrs = True
 
         if not has_attrs:
             logger.debug(f"No attributes to match for {self.model_class.__name__}")
             return
 
-        match_clause = ", ".join(match_parts)
+        # Build match clause
+        pattern = EntityPattern(variable=var, type_name=type_name, constraints=constraints)
+        match_clause = MatchClause(patterns=[pattern])
+        match_str = self.compiler.compile(match_clause)
+
         iid_fetch_str = self._build_iid_fetch(var)
-        fetch_query = f"match\n{match_clause};\n{iid_fetch_str}"
+        fetch_query = f"{match_str}\n{iid_fetch_str}"
 
         try:
             results = self._execute(fetch_query, TransactionType.READ)
@@ -272,9 +302,21 @@ class TypeDBManager[T: "TypeDBType"]:
         roles = getattr(self.model_class, "_roles", {})
         all_attrs = self.model_class.get_all_attributes()
 
-        # Build role player match patterns
-        role_parts = []
-        role_match_clauses = []
+        # Build role players and nested match patterns
+        from type_bridge.crud.patterns import _get_literal_type
+        from type_bridge.query.ast import (
+            Constraint,
+            EntityPattern,
+            HasConstraint,
+            IidConstraint,
+            LiteralValue,
+            MatchClause,
+            RelationPattern,
+            RolePlayer,
+        )
+
+        role_players: list[RolePlayer] = []
+        nested_patterns: list[EntityPattern] = []
         role_var_counter = 0
 
         for role_name, role in roles.items():
@@ -284,49 +326,89 @@ class TypeDBManager[T: "TypeDBType"]:
                 for entity in entities:
                     role_var = f"$rp{role_var_counter}"
                     role_var_counter += 1
-                    role_parts.append(f"{role.role_name}: {role_var}")
+                    role_players.append(RolePlayer(role=role.role_name, player_var=role_var))
 
                     # Match role player by IID if available
                     if entity._iid:
-                        role_match_clauses.append(
-                            f"{role_var} isa {entity.get_type_name()}, iid {entity._iid}"
+                        nested_patterns.append(
+                            EntityPattern(
+                                variable=role_var,
+                                type_name=entity.get_type_name(),
+                                constraints=[IidConstraint(iid=entity._iid)],
+                            )
                         )
                     else:
                         # Fall back to key attributes
-                        key_parts = [f"{role_var} isa {entity.get_type_name()}"]
+                        key_constraints: list[Constraint] = []
                         for field_name, attr_info in entity.get_all_attributes().items():
                             if attr_info.flags.is_key:
                                 value = getattr(entity, field_name, None)
                                 if value is not None:
                                     attr_name = attr_info.typ.get_attribute_name()
-                                    key_parts.append(f"has {attr_name} {format_value(value)}")
-                        role_match_clauses.append(", ".join(key_parts))
+                                    raw_val = value.value if hasattr(value, "value") else value
+                                    key_constraints.append(
+                                        HasConstraint(
+                                            attr_name=attr_name,
+                                            value=LiteralValue(
+                                                value=raw_val, value_type=_get_literal_type(raw_val)
+                                            ),
+                                        )
+                                    )
+                        nested_patterns.append(
+                            EntityPattern(
+                                variable=role_var,
+                                type_name=entity.get_type_name(),
+                                constraints=key_constraints,
+                            )
+                        )
 
-        if not role_parts:
+        if not role_players:
             logger.debug(f"No role players to match for {self.model_class.__name__}")
             return
 
-        # Build the relation match clause
-        roles_str = ", ".join(role_parts)
-        match_parts = [f"{var} isa {type_name} ({roles_str})"]
-
-        # Add role player constraints
-        match_parts.extend(role_match_clauses)
-
-        # Add attribute constraints
+        # Build attribute constraints for the relation itself
+        rel_constraints: list[Constraint] = []
         for field_name, attr_info in all_attrs.items():
             value = getattr(instance, field_name, None)
             if value is not None:
                 attr_name = attr_info.typ.get_attribute_name()
                 if isinstance(value, list):
                     for item in value:
-                        match_parts.append(f"{var} has {attr_name} {format_value(item)}")
+                        raw_val = item.value if hasattr(item, "value") else item
+                        rel_constraints.append(
+                            HasConstraint(
+                                attr_name=attr_name,
+                                value=LiteralValue(
+                                    value=raw_val, value_type=_get_literal_type(raw_val)
+                                ),
+                            )
+                        )
                 else:
-                    match_parts.append(f"{var} has {attr_name} {format_value(value)}")
+                    raw_val = value.value if hasattr(value, "value") else value
+                    rel_constraints.append(
+                        HasConstraint(
+                            attr_name=attr_name,
+                            value=LiteralValue(
+                                value=raw_val, value_type=_get_literal_type(raw_val)
+                            ),
+                        )
+                    )
 
-        match_clause = "match\n" + ";\n".join(match_parts) + ";"
+        # Build the main relation pattern
+        main_pattern = RelationPattern(
+            variable=var,
+            type_name=type_name,
+            role_players=role_players,
+            constraints=rel_constraints,
+        )
+
+        # Combine all patterns into a MatchClause
+        all_patterns = [main_pattern] + nested_patterns
+        match_clause = MatchClause(patterns=all_patterns)
+        match_str = self.compiler.compile(match_clause)
+
         iid_fetch_str = self._build_iid_fetch(var)
-        fetch_query = f"{match_clause}\n{iid_fetch_str}"
+        fetch_query = f"{match_str}\n{iid_fetch_str}"
 
         try:
             results = self._execute(fetch_query, TransactionType.READ)
@@ -360,24 +442,36 @@ class TypeDBManager[T: "TypeDBType"]:
         # Entity path: fetch with polymorphic type resolution
         base_type = self.model_class.get_type_name()
 
+        from type_bridge.query.ast import EntityPattern
+
         # Build match clause with isa! for type variable binding (enables polymorphic resolution)
         # This allows us to fetch the actual concrete type using label()
-        match_clause = self.strategy.build_match_all(self.model_class, var, filters)
+        match_clause: MatchClause = self.strategy.build_match_all(self.model_class, var, filters)
+
+        # Modify the AST to use 'isa!' and capture type variable '$t'
+        # We iterate through patterns to find the main entity pattern
+        for pattern in match_clause.patterns:
+            if (
+                isinstance(pattern, EntityPattern)
+                and pattern.variable == var
+                and pattern.type_name == base_type
+            ):
+                # We found the main pattern.
+                # Transform to: $ent isa! $t
+                # And add: $t sub base_type
+
+                pattern.type_name = "$t"
+                pattern.is_strict = True
+
+                # Add sub constraint as a new pattern
+                from type_bridge.query.ast import SubTypePattern
+
+                match_clause.patterns.append(SubTypePattern(variable="$t", parent_type=base_type))
+                break
+
         match_str = self.compiler.compile(match_clause)
 
-        # Add type variable binding for polymorphic resolution
-        # Convert "match $ent isa entity_type" to "match $ent isa! $t; $t sub entity_type"
-        # Only if not already using isa! pattern
-        if "isa!" not in match_str:
-            # Replace "isa type_name" with "isa! $t" and add sub constraint
-            match_str = match_str.replace(f"isa {base_type}", "isa! $t")
-            match_str = match_str.rstrip(";") + f";\n$t sub {base_type};"
-
         # Build fetch clause with type label for polymorphic resolution
-        # Note: For polymorphic queries, we can only fetch attributes that exist on
-        # the queried type. Subtype-specific attributes will not be fetched.
-        # This is a TypeDB limitation - it type-checks that all fetched attributes
-        # are valid for all matching types.
         all_attrs = self.model_class.get_all_attributes()
         fetch_items = self._build_fetch_items(var, all_attrs, include_iid=True, include_type=True)
         fetch_clause_str = self._compile_fetch(fetch_items)
@@ -390,19 +484,14 @@ class TypeDBManager[T: "TypeDBType"]:
         for result in results:
             try:
                 iid = result.pop("_iid", None)
-                # Handle wrapped IID format from TypeDB driver
                 if isinstance(iid, dict) and "value" in iid:
                     iid = iid["value"]
 
-                # Get actual type label for polymorphic resolution
                 type_label = result.pop("_type", None)
 
-                # Resolve concrete class from type label
                 if type_label and type_label != base_type:
-                    # Try to find concrete class from registry
                     concrete_class = ModelRegistry.get(type_label)
                     if concrete_class is None:
-                        # Fallback: resolve from subclasses
                         concrete_class = resolve_entity_class_from_label(
                             type_label, (self.model_class,)
                         )
@@ -738,9 +827,17 @@ class TypeDBManager[T: "TypeDBType"]:
         """Check if an entity exists in the database."""
         var = "$x"
         try:
-            match_info = instance.get_match_clause_info(var)
+            # Build AST-based match clause
+            if isinstance(instance, Entity):
+                patterns = [instance.get_match_pattern(var)]
+            else:  # Relation
+                patterns = instance.get_match_patterns(var)
+
+            match_clause = MatchClause(patterns=patterns)
+            match_str = self.compiler.compile(match_clause)
             reduce_str = self._build_count_reduce(var)
-            query = f"match\n{match_info.main_clause};\n{reduce_str}"
+            query = f"{match_str}\n{reduce_str}"
+
             results = self._execute(query, TransactionType.READ)
             if results and "count" in results[0]:
                 count_val = results[0]["count"]
@@ -770,6 +867,12 @@ class TypeDBManager[T: "TypeDBType"]:
 
         from type_bridge.crud.role_players import resolve_entity_class_from_label
         from type_bridge.models.registry import ModelRegistry
+        from type_bridge.query.ast import (
+            EntityPattern,
+            IidConstraint,
+            MatchClause,
+            SubTypePattern,
+        )
 
         # Validate IID format (TypeDB IIDs are hexadecimal strings starting with 0x)
         if not iid or not re.match(r"^0x[0-9a-fA-F]+$", iid):
@@ -780,11 +883,22 @@ class TypeDBManager[T: "TypeDBType"]:
 
         if issubclass(self.model_class, Entity):
             # Entity path: Build match clause with isa! for polymorphic type resolution
-            match_str = f"match\n{var} isa! $t, iid {iid};\n$t sub {base_type};"
+            # $x isa! $t, iid <iid>; $t sub base_type;
+            entity_pattern = EntityPattern(
+                variable=var,
+                type_name="$t",  # Type variable for polymorphic resolution
+                constraints=[IidConstraint(iid=iid)],
+                is_strict=True,  # Use isa! for strict type matching
+            )
+            subtype_pattern = SubTypePattern(variable="$t", parent_type=base_type)
+            match_clause = MatchClause(patterns=[entity_pattern, subtype_pattern])
+            match_str = self.compiler.compile(match_clause)
 
             # Build fetch clause with type label (no IID needed - already have it)
             all_attrs = self.model_class.get_all_attributes()
-            fetch_items = self._build_fetch_items(var, all_attrs, include_iid=False, include_type=True)
+            fetch_items = self._build_fetch_items(
+                var, all_attrs, include_iid=False, include_type=True
+            )
             fetch_clause_str = self._compile_fetch(fetch_items)
             query = match_str + "\n" + fetch_clause_str
 
@@ -859,10 +973,10 @@ class TypeDBManager[T: "TypeDBType"]:
 
         return TypeDBQuery(self, filters, list(expressions))
 
-    def count(self) -> int:
-        """Count all instances of this type."""
+    def count(self, **filters) -> int:
+        """Count all instances of this type, optionally filtering."""
         var = "$x"
-        match_clause = self.strategy.build_match_all(self.model_class, var, {})
+        match_clause = self.strategy.build_match_all(self.model_class, var, filters)
         match_str = self.compiler.compile(match_clause)
         reduce_str = self._build_count_reduce(var)
         query = match_str + "\n" + reduce_str
@@ -994,52 +1108,59 @@ class TypeDBQuery[T: "TypeDBType"]:
         )
         all_expressions = list(self._expressions) + lookup_expressions
 
+        from type_bridge.query.ast import EntityPattern, SubTypePattern
+
         # Build base match clause using parsed filters (exact match only)
         match_clause = self._manager.strategy.build_match_all(model_class, var, base_filters)
-        match_str = self._manager.compiler.compile(match_clause)
-
-        # Add type variable binding for polymorphic resolution
-        # Convert "isa type_name" to "isa! $t" and add sub constraint
-        if "isa!" not in match_str:
-            match_str = match_str.replace(f"isa {base_type}", "isa! $t")
-            match_str = match_str.rstrip(";") + f";\n$t sub {base_type};"
 
         # Add expression patterns to match clause (includes parsed lookup expressions)
         if all_expressions:
-            # Remove trailing semicolon and add expression patterns
-            match_str = match_str.rstrip(";").rstrip()
             for expr in all_expressions:
-                pattern = expr.to_typeql(var)
-                match_str += f";\n{pattern}"
-            match_str += ";"
+                match_clause.patterns.extend(expr.to_ast(var))
 
-        # Build fetch clause with type label for polymorphic resolution
-        # Note: For polymorphic queries, we can only fetch attributes that exist on
-        # the queried type (TypeDB type-checks all fetched attributes)
-        all_attrs = model_class.get_all_attributes()
-        fetch_items = self._manager._build_fetch_items(var, all_attrs, include_iid=True, include_type=True)
+        # Add type variable binding for polymorphic resolution
+        # Transform "$x isa type" to "$x isa! $t; $t sub type"
 
-        # Build modifiers (sort, offset, limit) with proper semicolons
-        # These must come BEFORE fetch in TypeQL 3.x
-        # TypeDB 3.x requires binding sort attributes to variables in match clause
+        for pattern in match_clause.patterns:
+            if (
+                isinstance(pattern, EntityPattern)
+                and pattern.variable == var
+                and pattern.type_name == base_type
+            ):
+                pattern.type_name = "$t"
+                pattern.is_strict = True
+                match_clause.patterns.append(SubTypePattern(variable="$t", parent_type=base_type))
+                break
+
+        # Add sort variable bindings to match clause (TypeDB 3.x requirement)
+        # These must be added to the match clause BEFORE compilation
         modifier_clauses = []
-        sort_var_bindings = []
+        sort_parts = []
+        all_attrs = model_class.get_all_attributes()
         if self._order_fields:
-            sort_parts = []
             for i, (field_name, desc) in enumerate(self._order_fields):
                 if field_name in all_attrs:
                     attr_name = all_attrs[field_name].typ.get_attribute_name()
                     sort_var = f"$sort_{i}"
                     # Bind attribute to variable in match clause
-                    sort_var_bindings.append(f"{var} has {attr_name} {sort_var}")
+                    from type_bridge.query.ast import HasPattern
+
+                    match_clause.patterns.append(
+                        HasPattern(thing_var=var, attr_type=attr_name, attr_var=sort_var)
+                    )
                     direction = "desc" if desc else "asc"
                     sort_parts.append(f"{sort_var} {direction}")
             if sort_parts:
                 modifier_clauses.append(f"sort {', '.join(sort_parts)};")
 
-        # Add sort variable bindings to match clause
-        if sort_var_bindings:
-            match_str = match_str.rstrip(";") + ";\n" + ";\n".join(sort_var_bindings) + ";"
+        match_str = self._manager.compiler.compile(match_clause)
+
+        # Build fetch clause with type label for polymorphic resolution
+        # Note: For polymorphic queries, we can only fetch attributes that exist on
+        # the queried type (TypeDB type-checks all fetched attributes)
+        fetch_items = self._manager._build_fetch_items(
+            var, all_attrs, include_iid=True, include_type=True
+        )
 
         # offset must come BEFORE limit
         if self._offset_val is not None:
@@ -1076,9 +1197,7 @@ class TypeDBQuery[T: "TypeDBType"]:
                 if type_label and type_label != base_type:
                     concrete_class = ModelRegistry.get(type_label)
                     if concrete_class is None:
-                        concrete_class = resolve_entity_class_from_label(
-                            type_label, (model_class,)
-                        )
+                        concrete_class = resolve_entity_class_from_label(type_label, (model_class,))
                 else:
                     concrete_class = model_class
 
@@ -1132,18 +1251,14 @@ class TypeDBQuery[T: "TypeDBType"]:
             # No "__" means exact match
             if "__" not in raw_key:
                 if raw_key not in owned_attrs:
-                    raise ValueError(
-                        f"Unknown filter field '{raw_key}' for {model_class.__name__}"
-                    )
+                    raise ValueError(f"Unknown filter field '{raw_key}' for {model_class.__name__}")
                 base_filters[raw_key] = raw_value
                 continue
 
             # Parse field__lookup
             field_name, lookup = raw_key.split("__", 1)
             if field_name not in owned_attrs:
-                raise ValueError(
-                    f"Unknown filter field '{field_name}' for {model_class.__name__}"
-                )
+                raise ValueError(f"Unknown filter field '{field_name}' for {model_class.__name__}")
 
             attr_info = owned_attrs[field_name]
             attr_type = attr_info.typ
@@ -1153,8 +1268,9 @@ class TypeDBQuery[T: "TypeDBType"]:
                 base_filters[field_name] = raw_value
                 continue
 
-            # Use shared lookup builder for other lookups
+            # Use shared lookup builder for lookups
             expr = build_lookup_expression(attr_type, lookup, raw_value)
+            # Add to expressions list for AST processing later
             expressions.append(expr)
 
         return base_filters, expressions
@@ -1184,24 +1300,25 @@ class TypeDBQuery[T: "TypeDBType"]:
         # For relations with filters, fetch and count to avoid TypeDB count limitations
         if isinstance(self._manager.strategy, RelationStrategy) and self._filters:
             # Fetch only IIDs for efficiency
-            results = self._manager._get_relations(
-                "$r", self._filters, self._expressions
-            )
+            results = self._manager._get_relations("$r", self._filters, self._expressions)
             return len(results)
 
         # Entity path or relation without filters - use reduce count
         var = "$x"
 
         # Build match clause with filters and expressions
+        # Build match clause with filters and expressions
         match_clause = self._manager.strategy.build_match_all(model_class, var, self._filters)
-        match_str = self._manager.compiler.compile(match_clause)
 
         if self._expressions:
-            match_str = match_str.rstrip(";").rstrip()
+            from type_bridge.query.ast import RawPattern
+
             for expr in self._expressions:
-                pattern = expr.to_typeql(var)
-                match_str += f";\n{pattern}"
-            match_str += ";"
+                # Add expressions as RawPatterns to the AST
+                pattern_str = expr.to_typeql(var)
+                match_clause.patterns.append(RawPattern(content=pattern_str))
+
+        match_str = self._manager.compiler.compile(match_clause)
 
         # Explicitly count the variable to avoid counting joins
         reduce_str = self._manager._build_count_reduce(var)
@@ -1275,7 +1392,8 @@ class TypeDBQuery[T: "TypeDBType"]:
         """
         from type_bridge.crud.aggregates import parse_aggregate_results
         from type_bridge.expressions import AggregateExpr
-        from type_bridge.expressions.utils import generate_has_pattern
+        from type_bridge.expressions.utils import generate_attr_var
+        from type_bridge.query.ast import HasPattern, ReduceAssignment, ReduceClause
 
         if not aggregates:
             raise ValueError("At least one aggregation expression required")
@@ -1285,38 +1403,39 @@ class TypeDBQuery[T: "TypeDBType"]:
 
         # Build base match clause with filters
         match_clause = self._manager.strategy.build_match_all(model_class, var, self._filters)
-        match_str = self._manager.compiler.compile(match_clause)
 
-        # Add expression-based filters
-        if self._expressions:
-            match_str = match_str.rstrip(";").rstrip()
-            for expr in self._expressions:
-                pattern = expr.to_typeql(var)
-                match_str += f";\n{pattern}"
-            match_str += ";"
+        # Add expression-based filters as AST patterns
+        for expr in self._expressions:
+            match_clause.patterns.extend(expr.to_ast(var))
 
-        # Build reduce clauses for each aggregation
-        # Use generate_has_pattern to ensure consistent variable naming with AggregateExpr
-        reduce_clauses = []
+        # Build reduce assignments for each aggregation
+        reduce_assignments = []
         for agg in aggregates:
             if not isinstance(agg, AggregateExpr):
                 raise TypeError(f"Expected AggregateExpr, got {type(agg).__name__}")
 
             # If this aggregation is on a specific attr_type (not count), add binding pattern
             if agg.attr_type is not None:
-                # Use generate_has_pattern for consistent variable naming
-                _, has_pattern = generate_has_pattern(var, agg.attr_type)
-                match_str = match_str.rstrip(";")
-                match_str += f";\n{has_pattern};"
+                attr_name = agg.attr_type.get_attribute_name()
+                attr_var = generate_attr_var(var, agg.attr_type)
+                match_clause.patterns.append(
+                    HasPattern(thing_var=var, attr_type=attr_name, attr_var=attr_var)
+                )
 
-            # Generate reduce clause: $result_var = function($attr_var)
+            # Build reduce assignment using FunctionCallValue
             result_var = f"${agg.get_fetch_key()}"
-            reduce_clauses.append(f"{result_var} = {agg.to_typeql(var)}")
+            # agg.to_typeql produces something like "mean($e_age)" - use it as expression string
+            reduce_assignments.append(
+                ReduceAssignment(variable=result_var, expression=agg.to_typeql(var))
+            )
 
-        # Build final query
-        reduce_query = f"{match_str}\nreduce {', '.join(reduce_clauses)};"
+        # Compile and execute
+        match_str = self._manager.compiler.compile(match_clause)
+        reduce_clause = ReduceClause(assignments=reduce_assignments)
+        reduce_str = self._manager.compiler.compile(reduce_clause)
+        query = f"{match_str}\n{reduce_str}"
 
-        results = self._manager._execute(reduce_query, TransactionType.READ)
+        results = self._manager._execute(query, TransactionType.READ)
         return parse_aggregate_results(results)
 
     def group_by(self, *fields: Any) -> GroupByQuery[T]:
@@ -1384,8 +1503,9 @@ class GroupByQuery[T: "TypeDBType"]:
         """
         from type_bridge.crud.aggregates import parse_grouped_aggregate_results
         from type_bridge.expressions import AggregateExpr
-        from type_bridge.expressions.utils import generate_has_pattern
+        from type_bridge.expressions.utils import generate_attr_var
         from type_bridge.fields.base import FieldRef
+        from type_bridge.query.ast import HasPattern, ReduceAssignment, ReduceClause
 
         if not aggregates:
             raise ValueError("At least one aggregation expression required")
@@ -1395,17 +1515,12 @@ class GroupByQuery[T: "TypeDBType"]:
 
         # Build base match clause with filters
         match_clause = self._manager.strategy.build_match_all(model_class, var, self._filters)
-        match_str = self._manager.compiler.compile(match_clause)
 
-        # Add expression-based filters
-        if self._expressions:
-            match_str = match_str.rstrip(";").rstrip()
-            for expr in self._expressions:
-                pattern = expr.to_typeql(var)
-                match_str += f";\n{pattern}"
-            match_str += ";"
+        # Add expression-based filters as AST patterns
+        for expr in self._expressions:
+            match_clause.patterns.extend(expr.to_ast(var))
 
-        # Add group-by fields to match clause
+        # Add group-by fields to match clause as AST patterns
         group_vars = []
         for i, field in enumerate(self._group_fields):
             var_name = f"$group{i}"
@@ -1415,32 +1530,37 @@ class GroupByQuery[T: "TypeDBType"]:
             else:
                 # Assume it's a field descriptor with attr_type attribute
                 attr_name = field.attr_type.get_attribute_name()
-            match_str = match_str.rstrip(";")
-            match_str += f";\n{var} has {attr_name} {var_name};"
+            match_clause.patterns.append(
+                HasPattern(thing_var=var, attr_type=attr_name, attr_var=var_name)
+            )
             group_vars.append(var_name)
 
-        # Build reduce clauses for each aggregation
-        # Use generate_has_pattern for consistent variable naming with AggregateExpr
-        reduce_clauses = []
+        # Build reduce assignments for each aggregation
+        reduce_assignments = []
         for agg in aggregates:
             if not isinstance(agg, AggregateExpr):
                 raise TypeError(f"Expected AggregateExpr, got {type(agg).__name__}")
 
             # If this aggregation is on a specific attr_type (not count), add binding pattern
             if agg.attr_type is not None:
-                # Use generate_has_pattern for consistent variable naming
-                _, has_pattern = generate_has_pattern(var, agg.attr_type)
-                match_str = match_str.rstrip(";")
-                match_str += f";\n{has_pattern};"
+                attr_name = agg.attr_type.get_attribute_name()
+                attr_var = generate_attr_var(var, agg.attr_type)
+                match_clause.patterns.append(
+                    HasPattern(thing_var=var, attr_type=attr_name, attr_var=attr_var)
+                )
 
-            # Generate reduce clause: $result_var = function($attr_var)
+            # Build reduce assignment
             result_var = f"${agg.get_fetch_key()}"
-            reduce_clauses.append(f"{result_var} = {agg.to_typeql(var)}")
+            reduce_assignments.append(
+                ReduceAssignment(variable=result_var, expression=agg.to_typeql(var))
+            )
 
-        # Build final query with group-by
+        # Compile and execute with group-by
+        match_str = self._manager.compiler.compile(match_clause)
         group_clause = ", ".join(group_vars)
-        reduce_clause = ", ".join(reduce_clauses)
-        reduce_query = f"{match_str}\nreduce {reduce_clause} groupby {group_clause};"
+        reduce_clause = ReduceClause(assignments=reduce_assignments, group_by=group_clause)
+        reduce_str = self._manager.compiler.compile(reduce_clause)
+        query = f"{match_str}\n{reduce_str}"
 
-        results = self._manager._execute(reduce_query, TransactionType.READ)
+        results = self._manager._execute(query, TransactionType.READ)
         return parse_grouped_aggregate_results(results, group_vars)

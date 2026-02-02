@@ -269,10 +269,10 @@ class TestExpressionToTypeQL:
         expr = Person.c.age.lt(Age(20)).or_(Person.c.age.gt(Age(40)))
         pattern = expr.to_typeql("$p")
 
-        # OR creates disjunction blocks (with newlines for TypeDB compatibility)
+        # OR creates disjunction blocks
         # Variable names include entity prefix
         assert "{" in pattern and "}" in pattern
-        assert "\nor\n" in pattern
+        assert " or " in pattern
         assert "$p_age < 20" in pattern
         assert "$p_age > 40" in pattern
 

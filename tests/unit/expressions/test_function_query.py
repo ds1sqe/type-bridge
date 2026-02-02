@@ -105,7 +105,7 @@ class TestFunctionQueryMatchLet:
             name="count-all",
             return_type=ReturnType(["integer"]),
         )
-        assert fn.to_match_let() == "match let $integer = count-all();"
+        assert fn.to_match_let() == "match\nlet $integer = count-all();"
 
     def test_single_stream(self) -> None:
         """Match let for single stream result."""
@@ -113,7 +113,7 @@ class TestFunctionQueryMatchLet:
             name="get-ids",
             return_type=ReturnType(["id"], is_stream=True),
         )
-        assert fn.to_match_let() == "match let $id in get-ids();"
+        assert fn.to_match_let() == "match\nlet $id in get-ids();"
 
     def test_composite_stream(self) -> None:
         """Match let for composite stream result."""
@@ -121,7 +121,7 @@ class TestFunctionQueryMatchLet:
             name="get-pairs",
             return_type=ReturnType(["artifact", "count"], is_stream=True),
         )
-        assert fn.to_match_let() == "match let $artifact, $count in get-pairs();"
+        assert fn.to_match_let() == "match\nlet ($artifact, $count) in get-pairs();"
 
     def test_composite_non_stream(self) -> None:
         """Match let for composite non-stream result."""
@@ -129,7 +129,7 @@ class TestFunctionQueryMatchLet:
             name="divide",
             return_type=ReturnType(["quotient", "remainder"]),
         )
-        assert fn.to_match_let() == "match let $quotient, $remainder = divide();"
+        assert fn.to_match_let() == "match\nlet ($quotient, $remainder) = divide();"
 
     def test_custom_result_vars(self) -> None:
         """Custom variable names for results."""
@@ -137,7 +137,7 @@ class TestFunctionQueryMatchLet:
             name="count-all",
             return_type=ReturnType(["integer"]),
         )
-        assert fn.to_match_let(result_vars=["total"]) == "match let $total = count-all();"
+        assert fn.to_match_let(result_vars=["total"]) == "match\nlet $total = count-all();"
 
     def test_hyphenated_type_in_var(self) -> None:
         """Hyphenated types become underscored variables."""
@@ -145,7 +145,7 @@ class TestFunctionQueryMatchLet:
             name="get-display-ids",
             return_type=ReturnType(["display-id"], is_stream=True),
         )
-        assert fn.to_match_let() == "match let $display_id in get-display-ids();"
+        assert fn.to_match_let() == "match\nlet $display_id in get-display-ids();"
 
 
 class TestFunctionQueryFetch:
@@ -157,7 +157,7 @@ class TestFunctionQueryFetch:
             name="count-all",
             return_type=ReturnType(["integer"]),
         )
-        assert fn.to_fetch() == 'fetch { "integer": $integer };'
+        assert fn.to_fetch() == 'fetch {\n  "integer": $integer\n};'
 
     def test_composite_fetch(self) -> None:
         """Fetch composite result."""
@@ -165,7 +165,7 @@ class TestFunctionQueryFetch:
             name="get-pairs",
             return_type=ReturnType(["artifact", "count"], is_stream=True),
         )
-        assert fn.to_fetch() == 'fetch { "artifact": $artifact, "count": $count };'
+        assert fn.to_fetch() == 'fetch {\n  "artifact": $artifact,\n  "count": $count\n};'
 
     def test_custom_fetch_keys(self) -> None:
         """Custom keys for fetch object."""
@@ -173,7 +173,7 @@ class TestFunctionQueryFetch:
             name="count-all",
             return_type=ReturnType(["integer"]),
         )
-        assert fn.to_fetch(fetch_keys=["total"]) == 'fetch { "total": $integer };'
+        assert fn.to_fetch(fetch_keys=["total"]) == 'fetch {\n  "total": $integer\n};'
 
     def test_custom_vars_and_keys(self) -> None:
         """Both custom vars and keys."""
@@ -183,7 +183,7 @@ class TestFunctionQueryFetch:
         )
         assert (
             fn.to_fetch(result_vars=["my_count"], fetch_keys=["count"])
-            == 'fetch { "count": $my_count };'
+            == 'fetch {\n  "count": $my_count\n};'
         )
 
 
@@ -197,8 +197,8 @@ class TestFunctionQueryFullQuery:
             return_type=ReturnType(["integer"]),
         )
         query = fn.to_query()
-        assert "match let $integer = count-artifacts();" in query
-        assert 'fetch { "integer": $integer };' in query
+        assert "match\nlet $integer = count-artifacts();" in query
+        assert 'fetch {\n  "integer": $integer\n};' in query
 
     def test_stream_query(self) -> None:
         """Generate complete query for stream function."""
@@ -207,8 +207,8 @@ class TestFunctionQueryFullQuery:
             return_type=ReturnType(["id"], is_stream=True),
         )
         query = fn.to_query()
-        assert "match let $id in get-ids();" in query
-        assert 'fetch { "id": $id };' in query
+        assert "match\nlet $id in get-ids();" in query
+        assert 'fetch {\n  "id": $id\n};' in query
 
     def test_query_with_limit(self) -> None:
         """Query with limit clause."""
@@ -267,7 +267,7 @@ class TestFunctionQueryReduceQuery:
             name="count-all",
             return_type=ReturnType(["integer"]),
         )
-        assert fn.to_reduce_query() == "match let $integer = count-all();"
+        assert fn.to_reduce_query() == "match\nlet $integer = count-all();"
 
     def test_reduce_query_error_on_stream(self) -> None:
         """Reduce query raises error for stream functions."""
@@ -326,7 +326,7 @@ class TestFunctionQueryRealWorldExamples:
             return_type=ReturnType(["integer"]),
         )
         query = fn.to_query()
-        expected = 'match let $integer = count-artifacts();\nfetch { "integer": $integer };'
+        expected = 'match\nlet $integer = count-artifacts();\nfetch {\n  "integer": $integer\n};'
         assert query == expected
 
     def test_list_user_artifact_ids(self) -> None:
@@ -336,7 +336,7 @@ class TestFunctionQueryRealWorldExamples:
             return_type=ReturnType(["display-id"], is_stream=True),
         )
         query = fn.to_query(limit=100)
-        assert "match let $display_id in list-user-artifact-ids();" in query
+        assert "match\nlet $display_id in list-user-artifact-ids();" in query
         assert "limit 100;" in query
 
     def test_get_neighbor_ids(self) -> None:
@@ -348,7 +348,7 @@ class TestFunctionQueryRealWorldExamples:
         )
         query = fn.to_query()
         assert 'get-neighbor-ids("art-001")' in query
-        assert "match let $id in" in query
+        assert "match\nlet $id in" in query
 
     def test_count_artifacts_by_type(self) -> None:
         """Stream function with composite return (tuples)."""
@@ -357,6 +357,6 @@ class TestFunctionQueryRealWorldExamples:
             return_type=ReturnType(["artifact", "integer"], is_stream=True),
         )
         query = fn.to_query()
-        assert "match let $artifact, $integer in count-artifacts-by-type();" in query
+        assert "match\nlet ($artifact, $integer) in count-artifacts-by-type();" in query
         assert '"artifact": $artifact' in query
         assert '"integer": $integer' in query

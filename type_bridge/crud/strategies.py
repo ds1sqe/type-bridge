@@ -57,7 +57,9 @@ class ModelStrategy(ABC):
         """Helper to convert Python value to AST LiteralValue."""
         # This logic mimics to_ast in models
         py_type = get_base_type_for_attribute(attr_class)
-        val_type_map: dict[type, Literal["string", "long", "double", "boolean", "datetime", "date"]] = {
+        val_type_map: dict[
+            type, Literal["string", "long", "double", "boolean", "datetime", "date"]
+        ] = {
             str: "string",
             int: "long",
             float: "double",
@@ -68,9 +70,9 @@ class ModelStrategy(ABC):
 
         val_type_map[datetime] = "datetime"
 
-        ast_type: Literal["string", "long", "double", "boolean", "datetime", "date"] = val_type_map.get(
-            py_type, "string"
-        ) if py_type else "string"
+        ast_type: Literal["string", "long", "double", "boolean", "datetime", "date"] = (
+            val_type_map.get(py_type, "string") if py_type else "string"
+        )
 
         # Refine type based on actual value
         if ast_type == "string" and isinstance(value, bool):
@@ -242,7 +244,9 @@ class RelationStrategy(ModelStrategy):
                             attr_value = getattr(entity, field_name, None)
                             if attr_value is not None:
                                 attr_name = attr_info.typ.get_attribute_name()
-                                raw_val = attr_value.value if hasattr(attr_value, "value") else attr_value
+                                raw_val = (
+                                    attr_value.value if hasattr(attr_value, "value") else attr_value
+                                )
                                 key_match += f", has {attr_name} {format_value(raw_val)}"
                     match_clauses.append(key_match)
 
@@ -407,7 +411,9 @@ class RelationStrategy(ModelStrategy):
                 attr_name = attr_info.typ.get_attribute_name()
 
                 constraints.append(
-                    HasConstraint(attr_name=attr_name, value=self._convert_value(value, attr_info.typ))
+                    HasConstraint(
+                        attr_name=attr_name, value=self._convert_value(value, attr_info.typ)
+                    )
                 )
             # Check if it's a role player filter
             elif field_name in roles and isinstance(value, Entity):

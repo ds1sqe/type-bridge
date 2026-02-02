@@ -3,30 +3,52 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .base import Expression
+
+if TYPE_CHECKING:
+    from type_bridge.query.ast import FunctionCallValue, Pattern, Value
 
 
 @dataclass
 class FunctionCallExpr[T](Expression):
-    """Represents a call to a TypeDB function.
-
-    The generic type parameter T represents the return type of the function,
-    allowing for type-safe function call expressions.
-
-    Example:
-        >>> # A function returning an integer stream
-        >>> expr: FunctionCallExpr[int] = calculate_age(birth_date)
-        >>> # A function returning a tuple
-        >>> expr: FunctionCallExpr[tuple[int, int]] = divide(10, 3)
-    """
+    """Represents a call to a TypeDB function."""
 
     name: str
     args: list[Any]
 
+    def to_ast(self, var: str) -> list[Pattern]:
+        raise NotImplementedError("Function calls are values, not patterns. Use to_value_ast().")
+
+    def to_value_ast(self) -> Value:
+        """Convert to AST FunctionCallValue."""
+        from type_bridge.query.ast import FunctionCallValue, LiteralValue
+
+        ast_args: list[Value | str] = []
+        for arg in self.args:
+            if isinstance(arg, Expression):
+                ast_args.append(arg.to_value_ast())
+            elif isinstance(arg, bool):
+                ast_args.append(LiteralValue(arg, "boolean"))
+            elif isinstance(arg, int):
+                ast_args.append(LiteralValue(arg, "long"))
+            elif isinstance(arg, float):
+                ast_args.append(LiteralValue(arg, "double"))
+            elif isinstance(arg, str):
+                # Variables pass through as-is
+                if arg.startswith("$"):
+                    ast_args.append(arg)
+                else:
+                    ast_args.append(LiteralValue(arg, "string"))
+            else:
+                # Unknown types default to string
+                ast_args.append(LiteralValue(arg, "string"))
+
+        return FunctionCallValue(function=self.name, args=ast_args)
+
     def to_typeql(self, var: str) -> str:
-        """Convert to TypeQL function call syntax."""
+        """Deprecated: generate TypeQL function call syntax."""
         arg_strs = []
         for arg in self.args:
             if isinstance(arg, Expression):
@@ -111,107 +133,92 @@ class FunctionQuery[T]:
     args: list[tuple[str, Any]] = field(default_factory=list)
     docstring: str | None = None
 
-    def _format_arg_value(self, value: Any) -> str:
-        """Format an argument value for TypeQL."""
+    def _format_arg_ast(self, value: Any) -> Value | str:
+        """Format an argument value for AST."""
+        from type_bridge.query.ast import LiteralValue
+
         if isinstance(value, str):
-            # Check if it's already a variable reference
             if value.startswith("$"):
                 return value
-            # Check if it's already quoted
+            # Already-quoted strings pass through as raw values
             if value.startswith('"') and value.endswith('"'):
                 return value
-            if value.startswith("'") and value.endswith("'"):
-                return value
-            # Quote string literals
-            return f'"{value}"'
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, Expression):
-            return value.to_typeql("$_")
-        return str(value)
+            return LiteralValue(value, "string")
 
-    def _format_args(self) -> str:
-        """Format all arguments for the function call."""
-        if not self.args:
-            return ""
-        return ", ".join(self._format_arg_value(v) for _, v in self.args)
+        if isinstance(value, Expression):
+            return value.to_value_ast()
+
+        if isinstance(value, bool):
+            return LiteralValue(value, "boolean")
+        if isinstance(value, int):
+            return LiteralValue(value, "long")
+        if isinstance(value, float):
+            return LiteralValue(value, "double")
+
+        # fallback for other types (datetime etc not handled in this basic map yet)
+        return LiteralValue(value, "string")
 
     def _get_result_vars(self, custom_vars: list[str] | None = None) -> list[str]:
-        """Get variable names for the function results.
-
-        Args:
-            custom_vars: Optional custom variable names to use
-
-        Returns:
-            List of variable names (e.g., ["$count"] or ["$type", "$count"])
-        """
+        """Get variable names for the function results."""
         if custom_vars:
             return [v if v.startswith("$") else f"${v}" for v in custom_vars]
 
         # Generate default variable names from return types
         return [f"${t.replace('-', '_')}" for t in self.return_type.types]
 
-    def to_call(self) -> str:
-        """Generate just the function call expression.
+    def to_call_ast(self) -> FunctionCallValue:
+        """Generate AST for function call."""
+        from type_bridge.query.ast import FunctionCallValue
 
-        Returns:
-            Function call like "count-artifacts()" or "get-neighbor-ids($id)"
-        """
-        return f"{self.name}({self._format_args()})"
+        ast_args = [self._format_arg_ast(v) for _, v in self.args]
+        return FunctionCallValue(function=self.name, args=ast_args)
+
+    def to_call(self) -> str:
+        """Generate just the function call expression string."""
+        from type_bridge.query.compiler import QueryCompiler
+
+        return QueryCompiler()._compile_value(self.to_call_ast())
 
     def to_match_let(
         self,
         result_vars: list[str] | None = None,
     ) -> str:
-        """Generate the match let clause for calling this function.
+        """Generate the match let clause string for calling this function."""
+        vars_list = self._get_result_vars(result_vars)
+        call_ast = self.to_call_ast()
+        is_stream = self.return_type.is_stream
 
-        Args:
-            result_vars: Optional custom variable names for results
+        from type_bridge.query.ast import LetAssignment, MatchLetClause
+        from type_bridge.query.compiler import QueryCompiler
 
-        Returns:
-            Match let clause like "match let $count = func();" or
-            "match let $a, $b in func();"
-        """
-        vars = self._get_result_vars(result_vars)
-        call = self.to_call()
+        assignment = LetAssignment(variables=vars_list, expression=call_ast, is_stream=is_stream)
+        clause = MatchLetClause(assignments=[assignment])
+        compiler = QueryCompiler()
 
-        if self.return_type.is_stream:
-            if self.return_type.is_composite:
-                var_list = ", ".join(vars)
-            else:
-                var_list = vars[0]
-            return f"match let {var_list} in {call};"
-        else:
-            if self.return_type.is_composite:
-                var_list = ", ".join(vars)
-                return f"match let {var_list} = {call};"
-            else:
-                return f"match let {vars[0]} = {call};"
+        return compiler.compile(clause)
 
     def to_fetch(
         self,
         result_vars: list[str] | None = None,
         fetch_keys: list[str] | None = None,
     ) -> str:
-        """Generate the fetch clause for the function results.
+        """Generate the fetch clause string for the function results."""
+        from type_bridge.query.ast import FetchClause, FetchVariable
+        from type_bridge.query.compiler import QueryCompiler
 
-        Args:
-            result_vars: Variable names being fetched
-            fetch_keys: Optional custom keys for the fetch object
-
-        Returns:
-            Fetch clause like 'fetch { "count": $count };'
-        """
-        vars = self._get_result_vars(result_vars)
+        vars_list = self._get_result_vars(result_vars)
 
         if fetch_keys:
             keys = fetch_keys
         else:
             # Use type names as keys (without $)
-            keys = [v.lstrip("$") for v in vars]
+            keys = [v.lstrip("$") for v in vars_list]
 
-        items = [f'"{k}": {v}' for k, v in zip(keys, vars, strict=True)]
-        return f"fetch {{ {', '.join(items)} }};"
+        items = [FetchVariable(key=k, var=v) for k, v in zip(keys, vars_list, strict=True)]
+        clause = FetchClause(items=items)
+        compiler = QueryCompiler()
+
+        return compiler.compile(clause)
 
     def to_query(
         self,

@@ -260,7 +260,7 @@ class Entity(TypeDBType):
             f"database first (to populate _iid) or add Flag(Key) to an attribute."
         )
 
-    def get_match_pattern(self, var_name: str = "$e") -> "EntityPattern":
+    def get_match_pattern(self, var_name: str = "$e") -> EntityPattern:
         """Get an AST EntityPattern for matching this entity instance.
 
         Prefers IID-based matching when available (most precise).

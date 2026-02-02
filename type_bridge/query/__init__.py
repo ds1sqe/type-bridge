@@ -5,13 +5,16 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from type_bridge.query_parts import (
-    DeleteBlock,
-    FetchBlock,
-    InsertBlock,
-    MatchBlock,
-    Modifiers,
+from type_bridge.query.ast import (
+    DeleteClause,
+    FetchClause,
+    FetchWildcard,
+    InsertClause,
+    MatchClause,
+    RawPattern,
+    RawStatement,
 )
+from type_bridge.query.compiler import QueryCompiler
 
 if TYPE_CHECKING:
     from type_bridge.models import Entity, Relation
@@ -24,11 +27,17 @@ class Query:
 
     def __init__(self):
         """Initialize query builder."""
-        self.match_block = MatchBlock()
-        self.fetch_block = FetchBlock()
-        self.delete_block = DeleteBlock()
-        self.insert_block = InsertBlock()
-        self.modifiers = Modifiers()
+        self.match_clause = MatchClause(patterns=[])
+        self.delete_clause = DeleteClause(statements=[])
+        self.insert_clause = InsertClause(statements=[])
+        self.fetch_clause = FetchClause(items=[])
+
+        # Modifiers
+        self.sort_clauses: list[tuple[str, str]] = []
+        self.offset_val: int | None = None
+        self.limit_val: int | None = None
+
+        self.compiler = QueryCompiler()
 
     def match(self, pattern: str) -> Query:
         """Add a match clause.
@@ -39,7 +48,13 @@ class Query:
         Returns:
             Self for chaining
         """
-        self.match_block.add(pattern)
+        if pattern:
+            # Clean string pattern
+            clean_pattern = pattern.strip().rstrip(";")
+            # RawPattern doesn't strictly require 'variable' if handled by compiler as raw string
+            # But we made it subclass Pattern again with 'variable' moved to subclasses.
+            # RawPattern definition: content: str
+            self.match_clause.patterns.append(RawPattern(content=clean_pattern))
         return self
 
     def fetch(self, variable: str, *attributes: str) -> Query:
@@ -58,7 +73,10 @@ class Query:
         Example:
             query.fetch("$e")  # Fetches all attributes
         """
-        self.fetch_block.add(variable, list(attributes))
+        # For TypeQL 3.x, default to wildcard fetch
+        # Use variable name (without $) as the key
+        key = variable.lstrip("$")
+        self.fetch_clause.items.append(FetchWildcard(key=key, var=variable))
         return self
 
     def delete(self, pattern: str) -> Query:
@@ -70,7 +88,9 @@ class Query:
         Returns:
             Self for chaining
         """
-        self.delete_block.add(pattern)
+        if pattern:
+            clean_pattern = pattern.strip().rstrip(";")
+            self.delete_clause.statements.append(RawStatement(content=clean_pattern))
         return self
 
     def insert(self, pattern: str) -> Query:
@@ -82,7 +102,9 @@ class Query:
         Returns:
             Self for chaining
         """
-        self.insert_block.add(pattern)
+        if pattern:
+            clean_pattern = pattern.strip().rstrip(";")
+            self.insert_clause.statements.append(RawStatement(content=clean_pattern))
         return self
 
     def limit(self, limit: int) -> Query:
@@ -94,7 +116,7 @@ class Query:
         Returns:
             Self for chaining
         """
-        self.modifiers.limit(limit)
+        self.limit_val = limit
         return self
 
     def offset(self, offset: int) -> Query:
@@ -106,7 +128,7 @@ class Query:
         Returns:
             Self for chaining
         """
-        self.modifiers.offset(offset)
+        self.offset_val = offset
         return self
 
     def sort(self, variable: str, direction: str = "asc") -> Query:
@@ -122,7 +144,9 @@ class Query:
         Example:
             Query().match("$p isa person").fetch("$p").sort("$p", "asc")
         """
-        self.modifiers.sort(variable, direction)
+        if direction not in ("asc", "desc"):
+            raise ValueError(f"Invalid sort direction: {direction}")
+        self.sort_clauses.append((variable, direction))
         return self
 
     def build(self) -> str:
@@ -135,30 +159,35 @@ class Query:
         parts = []
 
         # Match clause
-        match_str = self.match_block.build()
-        if match_str:
-            parts.append(match_str)
+        if self.match_clause.patterns:
+            parts.append(self.compiler.compile(self.match_clause))
 
         # Delete clause
-        delete_str = self.delete_block.build()
-        if delete_str:
-            parts.append(delete_str)
+        if self.delete_clause.statements:
+            parts.append(self.compiler.compile(self.delete_clause))
 
         # Insert clause
-        insert_str = self.insert_block.build()
-        if insert_str:
-            parts.append(insert_str)
+        if self.insert_clause.statements:
+            parts.append(self.compiler.compile(self.insert_clause))
 
         # Sort, offset, and limit modifiers (must come BEFORE fetch in TypeQL 3.x)
-        # IMPORTANT: offset must come BEFORE limit for pagination to work correctly
-        modifier_str = self.modifiers.build()
-        if modifier_str:
-            parts.append(modifier_str)
+        modifier_parts = []
+        if self.sort_clauses:
+            sort_items = [f"{var} {dir}" for var, dir in self.sort_clauses]
+            modifier_parts.append(f"sort {', '.join(sort_items)};")
 
-        # Fetch clause (TypeQL 3.x syntax: fetch { $var.* })
-        fetch_str = self.fetch_block.build()
-        if fetch_str:
-            parts.append(fetch_str)
+        # Order matters: form modifiers, put offset then limit
+        if self.offset_val is not None:
+            modifier_parts.append(f"offset {self.offset_val};")
+        if self.limit_val is not None:
+            modifier_parts.append(f"limit {self.limit_val};")
+
+        if modifier_parts:
+            parts.append("\n".join(modifier_parts))
+
+        # Fetch clause
+        if self.fetch_clause.items:
+            parts.append(self.compiler.compile(self.fetch_clause))
 
         query = "\n".join(parts)
         logger.debug(f"Built query: {query}")

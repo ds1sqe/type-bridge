@@ -26,6 +26,14 @@ class Value(QueryNode, ABC):
 
 
 @dataclass
+class FunctionCallValue(Value):
+    """Value representing a function call (e.g. iid($x))."""
+
+    function: str
+    args: list[Value | str]
+
+
+@dataclass
 class LiteralValue(Value):
     """A literal value (string, number, boolean, date, etc.)."""
 
@@ -75,32 +83,91 @@ class IsaConstraint(Constraint):
 class Pattern(QueryNode, ABC):
     """Abstract base class for patterns in a match clause."""
 
-    variable: str
+    pass
 
 
 @dataclass
 class EntityPattern(Pattern):
     """Pattern matching an entity."""
 
+    variable: str
     type_name: str
     constraints: list[Constraint] = field(default_factory=list)
+    is_strict: bool = False  # If True, uses 'isa!'
 
 
 @dataclass
 class RelationPattern(Pattern):
     """Pattern matching a relation."""
 
+    variable: str
     type_name: str
     role_players: list[RolePlayer] = field(default_factory=list)
     constraints: list[Constraint] = field(default_factory=list)
 
 
 @dataclass
+class SubTypePattern(Pattern):
+    """Pattern checking for type inheritance ($t sub type)."""
+
+    variable: str
+    parent_type: str
+
+
+@dataclass
 class AttributePattern(Pattern):
     """Pattern matching an attribute explicitly."""
 
+    variable: str
     type_name: str
     value: Value | None = None  # None if just matching the attribute type
+
+
+@dataclass
+class HasPattern(Pattern):
+    """Pattern for variable has attribute assignment ($x has Type $v)."""
+
+    thing_var: str
+    attr_type: str
+    attr_var: str
+
+
+@dataclass
+class ValueComparisonPattern(Pattern):
+    """Pattern for value comparison ($v > 10)."""
+
+    var: str
+    operator: str
+    value: Value | str  # Literal or variable
+
+
+@dataclass
+class NotPattern(Pattern):
+    """Pattern for negation (not { ... })."""
+
+    patterns: list[Pattern]
+
+
+@dataclass
+class OrPattern(Pattern):
+    """Pattern for disjunction ({ ... } or { ... })."""
+
+    alternatives: list[list[Pattern]]
+
+
+@dataclass
+class IidPattern(Pattern):
+    """Pattern for IID match ($x iid 0x...)."""
+
+    variable: str
+    iid: str
+
+
+@dataclass
+class RawPattern(Pattern):
+    """A raw string pattern (legacy support)."""
+
+    content: str
 
 
 @dataclass
@@ -108,6 +175,13 @@ class Statement(QueryNode, ABC):
     """Abstract base class for statements in insert/delete/update clauses."""
 
     pass
+
+
+@dataclass
+class RawStatement(Statement):
+    """A raw string statement (legacy support)."""
+
+    content: str
 
 
 @dataclass
@@ -167,6 +241,27 @@ class MatchClause(Clause):
 
 
 @dataclass
+class MatchLetClause(Clause):
+    """A match let clause."""
+
+    assignments: list[LetAssignment]
+
+
+@dataclass
+class LetAssignment(QueryNode):
+    """Assignment in a match let clause.
+
+    Can be:
+    - $x = func() (single value)
+    - $x in func() (stream)
+    """
+
+    variables: list[str]  # e.g. ["$x"] or ["$x", "$y"]
+    expression: Value | str  # Function call or expression string
+    is_stream: bool = False  # If True, use 'in', else '='
+
+
+@dataclass
 class InsertClause(Clause):
     """An insert clause containing statements."""
 
@@ -203,6 +298,16 @@ class FetchAttribute(FetchItem):
 
     var: str
     attr_name: str
+
+
+@dataclass
+class FetchVariable(FetchItem):
+    """Fetch a variable directly.
+
+    Generates: "key": $var
+    """
+
+    var: str
 
 
 @dataclass
@@ -262,13 +367,10 @@ class AggregateExpr(QueryNode):
 
 @dataclass
 class ReduceAssignment(QueryNode):
-    """A reduce assignment like $count = count($var).
+    """Assignment in reduce clause ($x = sum($v))."""
 
-    Generates: $result_var = function($var)
-    """
-
-    result_var: str
-    aggregate: AggregateExpr
+    variable: str
+    expression: Value | str
 
 
 @dataclass

@@ -1,6 +1,5 @@
 """Unit tests for Entity.to_ast method."""
 
-
 from type_bridge import Boolean, Entity, Flag, Integer, Key, String, TypeFlags
 from type_bridge.query.ast import HasStatement, InsertClause, IsaStatement, LiteralValue
 
