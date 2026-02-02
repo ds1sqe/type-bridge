@@ -88,5 +88,6 @@ def test_to_ast_type_refinement_bool_from_raw():
     has_stmts = [s for s in result.statements if isinstance(s, HasStatement)]
     active_stmt = next(s for s in has_stmts if s.attr_name == "Active")
 
+    assert isinstance(active_stmt.value, LiteralValue)
     assert active_stmt.value.value_type == "boolean"
     assert active_stmt.value.value is False

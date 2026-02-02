@@ -59,6 +59,7 @@ def test_relation_to_ast_integer_attribute():
 
     result = employment.to_ast("$r")
     rel_stmt = result.statements[0]
+    assert isinstance(rel_stmt, RelationStatement)
 
     # Find salary attribute (uses class name)
     salary_attr = next(a for a in rel_stmt.attributes if a.attr_name == "Salary")
@@ -76,6 +77,7 @@ def test_relation_to_ast_boolean_attribute():
 
     result = employment.to_ast("$r")
     rel_stmt = result.statements[0]
+    assert isinstance(rel_stmt, RelationStatement)
 
     # Find full_time attribute (uses class name)
     ft_attr = next(a for a in rel_stmt.attributes if a.attr_name == "FullTime")
@@ -93,9 +95,11 @@ def test_relation_to_ast_type_refinement():
 
     result = employment.to_ast("$r")
     rel_stmt = result.statements[0]
+    assert isinstance(rel_stmt, RelationStatement)
 
     ft_attr = next(a for a in rel_stmt.attributes if a.attr_name == "FullTime")
 
     # Verify boolean type refinement works
+    assert isinstance(ft_attr.value, LiteralValue)
     assert ft_attr.value.value_type == "boolean"
     assert ft_attr.value.value is False

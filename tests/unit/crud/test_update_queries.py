@@ -18,11 +18,11 @@ from type_bridge import (
 from type_bridge.crud import TypeDBManager
 
 
-class _RecordingTypeDBManager[T](TypeDBManager[T]):
+class _RecordingTypeDBManager[T](TypeDBManager[T]):  # type: ignore[type-var]
     """TypeDBManager that records executed queries instead of hitting TypeDB."""
 
     def __init__(self, model_class: type[T]):
-        super().__init__(cast(Database, object()), model_class)
+        super().__init__(cast(Database, object()), model_class)  # type: ignore[arg-type]
         self.queries: list[str] = []
 
     def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:

@@ -158,6 +158,7 @@ def test_typedb_manager_entity_update(db_with_extended_schema):
     # Verify update
     updated = manager.get(name="Diana")
     assert len(updated) >= 1
+    assert updated[0].age is not None
     assert updated[0].age.value == 29
 
 

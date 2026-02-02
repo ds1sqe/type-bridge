@@ -99,6 +99,7 @@ class TestPolymorphicEntityQueries:
         # (TypeDB limitation - can only fetch attributes common to all matching types)
         # To get full attributes, use get_by_iid() with the concrete manager:
         for artifact in artifacts:
+            assert artifact._iid is not None  # Already verified above, but helps pyright
             if isinstance(artifact, UserStory):
                 # Use get_by_iid to fetch full entity with subtype attributes
                 full_story = UserStory.manager(self.db).get_by_iid(artifact._iid)

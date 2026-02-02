@@ -105,12 +105,10 @@ def test_compile_relation_insert(compiler):
 def test_compile_update(compiler):
     """Test update clause (using delete + insert typically, but testing generic UpdateClause here)."""
     # Assuming we use the 'update' syntactic sugar for simple attribute updates
-    stmts = [
-        HasStatement(
-            subject_var="$p", attr_name="email", value=LiteralValue("new@example.com", "string")
-        )
-    ]
-    update = UpdateClause(statements=stmts)
+    stmt = HasStatement(
+        subject_var="$p", attr_name="email", value=LiteralValue("new@example.com", "string")
+    )
+    update = UpdateClause(statements=[stmt])
 
     result = compiler.compile(update)
     expected = 'update\n$p has email "new@example.com";'

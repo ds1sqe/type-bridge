@@ -499,7 +499,8 @@ class TypeDBManager[T: "TypeDBType"]:
                     concrete_class = ModelRegistry.get(type_label)
                     if concrete_class is None:
                         concrete_class = resolve_entity_class_from_label(
-                            type_label, (self.model_class,)  # type: ignore[arg-type]
+                            type_label,
+                            (self.model_class,),  # type: ignore[arg-type]
                         )
                 else:
                     concrete_class = self.model_class
@@ -928,7 +929,8 @@ class TypeDBManager[T: "TypeDBType"]:
                     concrete_class = ModelRegistry.get(type_label)
                     if concrete_class is None:
                         concrete_class = resolve_entity_class_from_label(
-                            type_label, (self.model_class,)  # type: ignore[arg-type]
+                            type_label,
+                            (self.model_class,),  # type: ignore[arg-type]
                         )
                 else:
                     concrete_class = self.model_class
