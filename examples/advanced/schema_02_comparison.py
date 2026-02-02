@@ -14,10 +14,10 @@ from type_bridge import (
     Key,
     Relation,
     Role,
+    SchemaManager,
     String,
     TypeFlags,
 )
-from type_bridge.schema import SchemaManager
 
 
 # Version 1: Initial schema

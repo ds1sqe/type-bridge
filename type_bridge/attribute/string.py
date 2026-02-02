@@ -1,14 +1,12 @@
-"""String attribute type for TypeDB."""
+import re
+from typing import TYPE_CHECKING, Any, ClassVar, Self, TypeVar
 
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, get_origin
-
-from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
 from type_bridge.attribute.base import Attribute
 
 if TYPE_CHECKING:
-    from type_bridge.expressions import StringExpr
+    from type_bridge.expressions import Expression, StringExpr
 
 # TypeVar for proper type checking
 StrValue = TypeVar("StrValue", bound=str)
@@ -69,42 +67,36 @@ class String(Attribute):
         else:
             return NotImplemented
 
+    # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
+
     @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source_type: type[StrValue], handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        """Pydantic validation: accept str values, Literal types, or attribute instances."""
+    def _get_default_value(cls) -> str:
+        """Default value for String is empty string."""
+        return ""
 
-        # Serializer to extract value from attribute instances
-        def serialize_string(value: Any) -> str:
-            if isinstance(value, cls):
-                return str(value._value) if value._value is not None else ""
-            return str(value)
+    @classmethod
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Return schema for string serialization."""
+        return core_schema.str_schema()
 
-        # Check if source_type is a Literal type
-        if get_origin(source_type) is Literal:
-            # Convert tuple to list for literal_schema
-            return core_schema.with_info_plain_validator_function(
-                lambda v, _: v._value if isinstance(v, cls) else v,
-                serialization=core_schema.plain_serializer_function_ser_schema(
-                    serialize_string,
-                    return_schema=core_schema.str_schema(),
-                ),
-            )
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> str:
+        """Serialize String to raw str value."""
+        if isinstance(value, cls):
+            return str(value._value) if value._value is not None else ""
+        return str(value)
 
-        # Default: accept str or attribute instance, always return attribute instance
-        def validate_string(value: Any) -> "String":
-            if isinstance(value, cls):
-                return value  # Return attribute instance as-is
-            return cls(str(value))  # Wrap raw str in attribute instance
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap value in String instance."""
+        if isinstance(value, cls):
+            return value
+        return cls(str(value))
 
-        return core_schema.with_info_plain_validator_function(
-            lambda v, _: validate_string(v),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                serialize_string,
-                return_schema=core_schema.str_schema(),
-            ),
-        )
+    @classmethod
+    def _supports_literal_types(cls) -> bool:
+        """String supports Literal type annotations."""
+        return True
 
     # ========================================================================
     # String Query Expression Class Methods (Type-Safe API)
@@ -164,3 +156,56 @@ class String(Attribute):
         from type_bridge.expressions import StringExpr
 
         return StringExpr(attr_type=cls, operation="regex", pattern=pattern)
+
+    @classmethod
+    def startswith(cls, prefix: "String") -> "StringExpr":
+        """Create startswith string expression.
+
+        Args:
+            prefix: Prefix string to check for
+
+        Returns:
+            StringExpr for attr like "^prefix.*"
+        """
+        # Unwrap if it's an Attribute instance to get the raw string for regex construction
+        # Note: Type-safe signature says "String", but we need the raw value
+        raw_prefix = prefix.value if isinstance(prefix, String) else str(prefix)
+        pattern = f"^{re.escape(raw_prefix)}.*"
+        return cls.regex(cls(pattern))
+
+    @classmethod
+    def endswith(cls, suffix: "String") -> "StringExpr":
+        """Create endswith string expression.
+
+        Args:
+            suffix: Suffix string to check for
+
+        Returns:
+            StringExpr for attr like ".*suffix$"
+        """
+        # Unwrap if it's an Attribute instance to get the raw string for regex construction
+        raw_suffix = suffix.value if isinstance(suffix, String) else str(suffix)
+        pattern = f".*{re.escape(raw_suffix)}$"
+        return cls.regex(cls(pattern))
+
+    @classmethod
+    def build_lookup(cls, lookup: str, value: Any) -> "Expression":
+        """Build an expression for string-specific lookups.
+
+        Overrides base method to handle contains, regex, startswith, endswith.
+        """
+        if lookup in ("contains", "regex", "startswith", "endswith", "like"):
+            # Ensure value is wrapped in String for method calls
+            wrapped_val = value if isinstance(value, cls) else cls(str(value))
+
+            if lookup == "contains":
+                return cls.contains(wrapped_val)
+            elif lookup == "regex" or lookup == "like":
+                return cls.regex(wrapped_val)
+            elif lookup == "startswith":
+                return cls.startswith(wrapped_val)
+            elif lookup == "endswith":
+                return cls.endswith(wrapped_val)
+
+        # Delegate to base for standard operators (eq, in, isnull, etc.)
+        return super().build_lookup(lookup, value)

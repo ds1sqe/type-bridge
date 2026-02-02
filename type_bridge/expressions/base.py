@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
     from type_bridge.expressions.boolean import BooleanExpr
+    from type_bridge.query.ast import Pattern, Value
 
 
 class Expression(ABC):
@@ -17,17 +18,47 @@ class Expression(ABC):
     """
 
     @abstractmethod
-    def to_typeql(self, var: str) -> str:
+    def to_ast(self, var: str) -> list["Pattern"]:
         """
-        Convert this expression to a TypeQL pattern.
+        Convert this expression to AST patterns.
 
         Args:
             var: The variable name to use in the pattern (e.g., "$e")
 
         Returns:
-            TypeQL pattern string
+            List of AST patterns
         """
         ...
+
+    def to_value_ast(self, var: str | None = None) -> "Value":
+        """
+        Convert this expression to an AST Value (if applicable).
+
+        Most expressions are patterns (filters) and cannot be converted to values.
+        FunctionCall expressions and Literal wrappers are values.
+
+        Args:
+            var: Optional variable name for aggregate expressions that need context.
+
+        Raises:
+            NotImplementedError: If expression cannot be converted to a value.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot be converted to an AST Value.")
+
+    def to_typeql(self, var: str) -> str:
+        """Deprecated: Use to_ast() instead."""
+        from type_bridge.query.compiler import QueryCompiler
+
+        compiler = QueryCompiler()
+        patterns = self.to_ast(var)
+        # We need to compile each pattern and join them?
+        # Compiler has _compile_pattern.
+        # But _compile_pattern is private.
+        # compiler.compile() takes a Clause.
+        # We can create a temporary MatchClause?
+        from type_bridge.query.ast import MatchClause
+
+        return compiler.compile(MatchClause(patterns=patterns)).replace("match\n", "").strip(";")
 
     def get_attribute_types(self) -> set[type["Attribute"]]:
         """

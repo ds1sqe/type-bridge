@@ -1,29 +1,17 @@
 """Comparison expressions for value-based filtering.
 
-TypeDB 3.x Variable Scoping:
-    TypeDB uses variable bindings to create implicit equality constraints.
-    If the same variable is used twice in a match clause, both bindings
-    must have the same value.
-
-    Wrong approach:
-        $actor has name $name;    -- $name binds to actor's name
-        $target has name $name;   -- CONSTRAINT: target's name must EQUAL actor's name!
-
-    Correct approach (unique variables):
-        $actor has name $actor_name;    -- $actor_name binds to actor's name
-        $target has name $target_name;  -- $target_name binds to target's name (independent)
-
-    This is why expressions generate ${var_prefix}_${attr_name} patterns.
-    For example, when var="$actor" and attr="name":
-        Generated: $actor has name $actor_name; $actor_name > "value"
+See :mod:`type_bridge.expressions.utils` for documentation on TypeDB 3.x
+variable scoping and why we generate unique attribute variables.
 """
 
 from typing import TYPE_CHECKING, Literal
 
 from type_bridge.expressions.base import Expression
+from type_bridge.expressions.utils import generate_attr_var
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
+    from type_bridge.query.ast import Pattern
 
 
 class ComparisonExpr[T: "Attribute"](Expression):
@@ -51,38 +39,30 @@ class ComparisonExpr[T: "Attribute"](Expression):
         self.operator = operator
         self.value = value
 
-    def to_typeql(self, var: str) -> str:
+    def to_ast(self, var: str) -> list["Pattern"]:
         """
-        Generate TypeQL pattern for this comparison.
+        Generate AST patterns for this comparison.
 
-        Example output: "$e has Age $e_age; $e_age > 30"
-
-        Args:
-            var: Entity variable name (e.g., "$e", "$actor")
-
-        Returns:
-            TypeQL pattern string (without trailing semicolon)
+        Example: "$e has age $e_age; $e_age > 30"
         """
-        from type_bridge.query import _format_value
+        from type_bridge.crud.patterns import _get_literal_type
+        from type_bridge.query.ast import HasPattern, LiteralValue, ValueComparisonPattern
 
-        # Format the value for TypeQL
-        formatted_value = _format_value(self.value.value)
-
-        # Get attribute type name for schema
         attr_type_name = self.attr_type.get_attribute_name()
+        attr_var = generate_attr_var(var, self.attr_type)
 
-        # Generate unique attribute variable name by combining entity var and attr name
-        # This prevents collisions when filtering multiple entities by same attribute type
-        # e.g., $actor -> $actor_name, $target -> $target_name
-        var_prefix = var.lstrip("$")
-        attr_var = f"${var_prefix}_{attr_type_name.lower()}"
+        # Unwrap value from Attribute wrapper if needed
+        raw_value = self.value.value if hasattr(self.value, "value") else self.value
+        literal_type = _get_literal_type(raw_value)
 
-        # Generate pattern (no trailing semicolon - QueryBuilder adds those)
-        pattern = (
-            f"{var} has {attr_type_name} {attr_var}; {attr_var} {self.operator} {formatted_value}"
-        )
-
-        return pattern
+        return [
+            HasPattern(thing_var=var, attr_type=attr_type_name, attr_var=attr_var),
+            ValueComparisonPattern(
+                var=attr_var,
+                operator=self.operator,
+                value=LiteralValue(value=raw_value, value_type=literal_type),
+            ),
+        ]
 
 
 class AttributeExistsExpr[T: "Attribute"](Expression):
@@ -92,13 +72,19 @@ class AttributeExistsExpr[T: "Attribute"](Expression):
         self.attr_type = attr_type
         self.present = present
 
-    def to_typeql(self, var: str) -> str:
-        attr_type_name = self.attr_type.get_attribute_name()
-        # Generate unique attribute variable name by combining entity var and attr name
-        var_prefix = var.lstrip("$")
-        attr_var = f"${var_prefix}_{attr_type_name.lower()}"
+    def to_ast(self, var: str) -> list["Pattern"]:
+        from type_bridge.query.ast import HasPattern, NotPattern
 
-        # Presence: simple has clause; Absence: negate a has clause block
+        attr_type_name = self.attr_type.get_attribute_name()
+        attr_var = generate_attr_var(var, self.attr_type)
+
+        start_pattern = HasPattern(
+            thing_var=var,
+            attr_type=attr_type_name,
+            attr_var=attr_var,
+        )
+
         if self.present:
-            return f"{var} has {attr_type_name} {attr_var}"
-        return f"not {{ {var} has {attr_type_name} {attr_var}; }}"
+            return [start_pattern]
+        else:
+            return [NotPattern(patterns=[start_pattern])]

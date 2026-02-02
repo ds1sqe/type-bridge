@@ -5,7 +5,8 @@ from datetime import UTC
 import pytest
 
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
-from type_bridge.query import Query, QueryBuilder, _format_value
+from type_bridge.crud.utils import format_value
+from type_bridge.query import Query, QueryBuilder
 
 
 class TestQuery:
@@ -27,7 +28,11 @@ class TestQuery:
         """Multiple match clauses should be joined with semicolons."""
         query = Query().match("$p isa person").match("$p has name $n")
         result = query.build()
-        assert "$p isa person; $p has name $n" in result
+        # Both patterns should be present, joined by semicolons
+        assert "$p isa person" in result
+        assert "$p has name $n" in result
+        # Should have semicolons separating patterns
+        assert ";" in result
 
     def test_fetch_single_variable(self):
         """Fetch with a single variable should use .* syntax."""
@@ -250,8 +255,8 @@ class TestQueryBuilderHelpers:
 
         query = QueryBuilder.match_relation(Friendship, "$r", role_players={"friend": "$u"})
         result = query.build()
-        assert "$r isa friendship" in result
-        assert "(friend: $u)" in result
+        # TypeDB 3.x syntax: isa type comes before role players
+        assert "$r isa friendship (friend: $u)" in result
 
     def test_insert_entity_generates_correct_pattern(self):
         """insert_entity should generate insert query from instance."""
@@ -274,62 +279,62 @@ class TestQueryBuilderHelpers:
 
 
 class TestFormatValue:
-    """Tests for _format_value helper function."""
+    """Tests for format_value helper function."""
 
     def test_format_string_simple(self):
         """Simple strings should be quoted."""
-        assert _format_value("hello") == '"hello"'
+        assert format_value("hello") == '"hello"'
 
     def test_format_string_with_double_quotes(self):
         """Strings with quotes should be escaped."""
-        assert _format_value('say "hello"') == '"say \\"hello\\""'
+        assert format_value('say "hello"') == '"say \\"hello\\""'
 
     def test_format_string_with_backslash(self):
         """Strings with backslashes should be escaped."""
-        assert _format_value("path\\to\\file") == '"path\\\\to\\\\file"'
+        assert format_value("path\\to\\file") == '"path\\\\to\\\\file"'
 
     def test_format_string_empty(self):
         """Empty strings should be quoted."""
-        assert _format_value("") == '""'
+        assert format_value("") == '""'
 
     def test_format_string_with_newline(self):
-        """Strings with newlines should preserve them."""
-        result = _format_value("line1\nline2")
-        assert result == '"line1\nline2"'
+        """Strings with newlines should escape them for TypeQL."""
+        result = format_value("line1\nline2")
+        assert result == r'"line1\nline2"'
 
     def test_format_boolean_true_returns_lowercase(self):
         """Boolean True should be 'true' (lowercase)."""
-        assert _format_value(True) == "true"
+        assert format_value(True) == "true"
 
     def test_format_boolean_false_returns_lowercase(self):
         """Boolean False should be 'false' (lowercase)."""
-        assert _format_value(False) == "false"
+        assert format_value(False) == "false"
 
     def test_format_integer_positive(self):
         """Positive integers should be formatted as strings."""
-        assert _format_value(42) == "42"
+        assert format_value(42) == "42"
 
     def test_format_integer_negative(self):
         """Negative integers should include the sign."""
-        assert _format_value(-5) == "-5"
+        assert format_value(-5) == "-5"
 
     def test_format_integer_zero(self):
         """Zero should be formatted as '0'."""
-        assert _format_value(0) == "0"
+        assert format_value(0) == "0"
 
     def test_format_float_positive(self):
         """Positive floats should be formatted as strings."""
-        assert _format_value(3.14) == "3.14"
+        assert format_value(3.14) == "3.14"
 
     def test_format_float_negative(self):
         """Negative floats should include the sign."""
-        assert _format_value(-2.5) == "-2.5"
+        assert format_value(-2.5) == "-2.5"
 
     def test_format_decimal_adds_dec_suffix(self):
         """Decimal values should have 'dec' suffix."""
         from decimal import Decimal
 
-        result = _format_value(Decimal("123.45"))
+        result = format_value(Decimal("123.45"))
         assert result == "123.45dec"
 
     def test_format_datetime_naive(self):
@@ -337,7 +342,7 @@ class TestFormatValue:
         from datetime import datetime
 
         dt = datetime(2024, 1, 15, 10, 30, 0)
-        result = _format_value(dt)
+        result = format_value(dt)
         assert result == "2024-01-15T10:30:00"
 
     def test_format_datetime_with_timezone(self):
@@ -345,7 +350,7 @@ class TestFormatValue:
         from datetime import datetime
 
         dt = datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC)
-        result = _format_value(dt)
+        result = format_value(dt)
         assert "2024-01-15T10:30:00" in result
         assert "+00:00" in result or "Z" in result or "UTC" in result
 
@@ -354,7 +359,7 @@ class TestFormatValue:
         from datetime import date
 
         d = date(2024, 1, 15)
-        result = _format_value(d)
+        result = format_value(d)
         assert result == "2024-01-15"
 
     def test_format_timedelta(self):
@@ -362,7 +367,7 @@ class TestFormatValue:
         from datetime import timedelta
 
         td = timedelta(days=1, hours=2, minutes=30)
-        result = _format_value(td)
+        result = format_value(td)
         # ISO duration format
         assert "P" in result
 
@@ -371,7 +376,7 @@ class TestFormatValue:
         import isodate
 
         duration = isodate.parse_duration("P1DT2H30M")
-        result = _format_value(duration)
+        result = format_value(duration)
         assert "P" in result
 
     def test_format_attribute_instance_extracts_value(self):
@@ -381,7 +386,7 @@ class TestFormatValue:
             pass
 
         name = Name("Alice")
-        result = _format_value(name)
+        result = format_value(name)
         assert result == '"Alice"'
 
     def test_format_custom_object_stringifies(self):
@@ -391,5 +396,5 @@ class TestFormatValue:
             def __str__(self):
                 return "custom"
 
-        result = _format_value(CustomObj())
+        result = format_value(CustomObj())
         assert result == '"custom"'

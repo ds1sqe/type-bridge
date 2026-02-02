@@ -161,12 +161,13 @@ class TestGetByIid:
         result = manager.get_by_iid("0xdeadbeefdeadbeefdeadbeef")
         assert result is None
 
-    def test_get_by_iid_validates_format(self):
-        """Test that get_by_iid validates IID format."""
+    def test_get_by_iid_returns_none_for_invalid_format(self):
+        """Test that get_by_iid returns None for invalid IID format (graceful handling)."""
         manager = IidPerson.manager(self.db)
 
-        with pytest.raises(ValueError, match="Invalid IID format"):
-            manager.get_by_iid("not-a-valid-iid")
+        # Invalid IIDs are treated as "not found" (graceful handling)
+        result = manager.get_by_iid("not-a-valid-iid")
+        assert result is None
 
 
 @pytest.mark.integration

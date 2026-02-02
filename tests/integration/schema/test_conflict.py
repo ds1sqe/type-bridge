@@ -2,8 +2,16 @@
 
 import pytest
 
-from type_bridge import Entity, Flag, Integer, Key, SchemaManager, String, TypeFlags
-from type_bridge.schema import SchemaConflictError
+from type_bridge import (
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    SchemaConflictError,
+    SchemaManager,
+    String,
+    TypeFlags,
+)
 
 
 @pytest.mark.integration

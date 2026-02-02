@@ -1,17 +1,16 @@
 """Double attribute type for TypeDB."""
 
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 
-from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
-from type_bridge.attribute.base import Attribute
+from type_bridge.attribute.numeric import NumericAttribute
 
 # TypeVar for proper type checking
 FloatValue = TypeVar("FloatValue", bound=float)
 
 
-class Double(Attribute):
+class Double(NumericAttribute):
     """Double precision float attribute type that accepts float values.
 
     Example:
@@ -23,6 +22,7 @@ class Double(Attribute):
     """
 
     value_type: ClassVar[str] = "double"
+    _accepted_types: ClassVar[tuple[type, ...]] = (int, float)
 
     def __init__(self, value: float):
         """Initialize Double attribute with a float value.
@@ -54,6 +54,10 @@ class Double(Attribute):
 
         super().__init__(float_value)
 
+    def _coerce_value(self, value: Any) -> float:
+        """Coerce value to float."""
+        return float(value)
+
     @property
     def value(self) -> float:
         """Get the stored float value."""
@@ -63,179 +67,53 @@ class Double(Attribute):
         """Convert to float."""
         return float(self.value)
 
-    def __add__(self, other: object) -> "Double":
-        """Add two floats."""
-        if isinstance(other, (int, float)):
-            return Double(self.value + other)
-        elif isinstance(other, Double):
-            return Double(self.value + other.value)
-        else:
-            return NotImplemented
+    # Note: Arithmetic operators (__add__, __sub__, __mul__, etc.) are inherited
+    # from NumericAttribute base class
 
-    def __radd__(self, other: object) -> "Double":
-        """Right-hand add."""
-        if isinstance(other, (int, float)):
-            return Double(other + self.value)
-        else:
-            return NotImplemented
-
-    def __sub__(self, other: object) -> "Double":
-        """Subtract two floats."""
-        if isinstance(other, (int, float)):
-            return Double(self.value - other)
-        elif isinstance(other, Double):
-            return Double(self.value - other.value)
-        else:
-            return NotImplemented
-
-    def __rsub__(self, other: object) -> "Double":
-        """Right-hand subtract."""
-        if isinstance(other, (int, float)):
-            return Double(other - self.value)
-        else:
-            return NotImplemented
-
-    def __mul__(self, other: object) -> "Double":
-        """Multiply two floats."""
-        if isinstance(other, (int, float)):
-            return Double(self.value * other)
-        elif isinstance(other, Double):
-            return Double(self.value * other.value)
-        else:
-            return NotImplemented
-
-    def __rmul__(self, other: object) -> "Double":
-        """Right-hand multiply."""
-        if isinstance(other, (int, float)):
-            return Double(other * self.value)
-        else:
-            return NotImplemented
-
-    def __truediv__(self, other: object) -> "Double":
-        """True division."""
-        if isinstance(other, (int, float)):
-            return Double(self.value / other)
-        elif isinstance(other, Double):
-            return Double(self.value / other.value)
-        else:
-            return NotImplemented
-
-    def __rtruediv__(self, other: object) -> "Double":
-        """Right-hand true division."""
-        if isinstance(other, (int, float)):
-            return Double(other / self.value)
-        else:
-            return NotImplemented
-
-    def __floordiv__(self, other: object) -> "Double":
-        """Floor division."""
-        if isinstance(other, (int, float)):
-            return Double(self.value // other)
-        elif isinstance(other, Double):
-            return Double(self.value // other.value)
-        else:
-            return NotImplemented
-
-    def __rfloordiv__(self, other: object) -> "Double":
-        """Right-hand floor division."""
-        if isinstance(other, (int, float)):
-            return Double(other // self.value)
-        else:
-            return NotImplemented
-
-    def __mod__(self, other: object) -> "Double":
-        """Modulo operation."""
-        if isinstance(other, (int, float)):
-            return Double(self.value % other)
-        elif isinstance(other, Double):
-            return Double(self.value % other.value)
-        else:
-            return NotImplemented
-
-    def __rmod__(self, other: object) -> "Double":
-        """Right-hand modulo."""
-        if isinstance(other, (int, float)):
-            return Double(other % self.value)
-        else:
-            return NotImplemented
-
-    def __pow__(self, other: object) -> "Double":
-        """Power operation."""
-        if isinstance(other, (int, float)):
-            return Double(self.value**other)
-        elif isinstance(other, Double):
-            return Double(self.value**other.value)
-        else:
-            return NotImplemented
-
-    def __rpow__(self, other: object) -> "Double":
-        """Right-hand power."""
-        if isinstance(other, (int, float)):
-            return Double(other**self.value)
-        else:
-            return NotImplemented
-
-    def __neg__(self) -> "Double":
-        """Negate the float."""
-        return Double(-self.value)
-
-    def __pos__(self) -> "Double":
-        """Positive (unary +)."""
-        return Double(+self.value)
-
-    def __abs__(self) -> "Double":
-        """Absolute value."""
-        return Double(abs(self.value))
+    # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
 
     @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source_type: type[FloatValue], handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        """Pydantic validation: accept float values or attribute instances."""
-
-        # Serializer to extract value from attribute instances
-        def serialize_double(value: Any) -> float:
-            if isinstance(value, cls):
-                return float(value._value) if value._value is not None else 0.0
-            return float(value)
-
-        # Validator: accept float or attribute instance, always return attribute instance
-        def validate_double(value: Any) -> "Double":
-            if isinstance(value, cls):
-                float_value = value._value
-            else:
-                float_value = float(value)
-
-            # Check range constraint if defined on the class
-            range_constraint = getattr(cls, "range_constraint", None)
-            if range_constraint is not None:
-                range_min, range_max = range_constraint
-                if range_min is not None:
-                    min_val = float(range_min)
-                    if float_value < min_val:
-                        raise ValueError(
-                            f"{cls.__name__} value {float_value} is below minimum {min_val}"
-                        )
-                if range_max is not None:
-                    max_val = float(range_max)
-                    if float_value > max_val:
-                        raise ValueError(
-                            f"{cls.__name__} value {float_value} is above maximum {max_val}"
-                        )
-
-            if isinstance(value, cls):
-                return value  # Return attribute instance as-is
-            return cls(float_value)  # Wrap raw float in attribute instance
-
-        return core_schema.with_info_plain_validator_function(
-            lambda v, _: validate_double(v),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                serialize_double,
-                return_schema=core_schema.float_schema(),
-            ),
-        )
+    def _get_default_value(cls) -> float:
+        """Default value for Double is 0.0."""
+        return 0.0
 
     @classmethod
-    def __class_getitem__(cls, item: object) -> type["Double"]:
-        """Allow generic subscription for type checking (e.g., Double[float])."""
-        return cls
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Return schema for float serialization."""
+        return core_schema.float_schema()
+
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> float:
+        """Serialize Double to raw float value."""
+        if isinstance(value, cls):
+            return float(value._value) if value._value is not None else 0.0
+        return float(value)
+
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap value in Double instance with range checking."""
+        if isinstance(value, cls):
+            float_value = value._value
+        else:
+            float_value = float(value)
+
+        # Check range constraint if defined on the class
+        range_constraint = getattr(cls, "range_constraint", None)
+        if range_constraint is not None:
+            range_min, range_max = range_constraint
+            if range_min is not None:
+                min_val = float(range_min)
+                if float_value < min_val:
+                    raise ValueError(
+                        f"{cls.__name__} value {float_value} is below minimum {min_val}"
+                    )
+            if range_max is not None:
+                max_val = float(range_max)
+                if float_value > max_val:
+                    raise ValueError(
+                        f"{cls.__name__} value {float_value} is above maximum {max_val}"
+                    )
+
+        if isinstance(value, cls):
+            return value  # Return attribute instance as-is
+        return cls(float_value)  # Wrap raw float in attribute instance

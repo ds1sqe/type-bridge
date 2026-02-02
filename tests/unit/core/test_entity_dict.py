@@ -99,8 +99,12 @@ def test_from_dict_maps_fields_wraps_values_and_handles_unknowns():
     assert relaxed.display_id.value == "ID"
 
 
-def test_from_dict_skips_none_and_empty_and_handles_lists():
-    """Skip None/empty values and wrap list items with Attribute types."""
+def test_from_dict_skips_none_preserves_empty_and_handles_lists():
+    """Skip None values, preserve empty strings, and wrap list items with Attribute types.
+
+    Empty strings are valid values that should be preserved (not treated as None).
+    Only actual None values are skipped.
+    """
 
     class Tag(String):
         flags = AttributeFlags(case=TypeNameCase.SNAKE_CASE)
@@ -113,12 +117,21 @@ def test_from_dict_skips_none_and_empty_and_handles_lists():
         tags: list[Tag] = Flag(Card(min=1))
         summary: Title | None = None
 
+    # Empty strings should be preserved (not filtered)
     data = {"title": "Note", "tags": ["one", "two", ""], "summary": ""}
 
     note = Note.from_dict(data, strict=False)
 
-    assert [tag.value for tag in note.tags] == ["one", "two"]
-    assert note.summary is None
+    # Empty string in list is preserved
+    assert [tag.value for tag in note.tags] == ["one", "two", ""]
+    # Empty string for optional field becomes Title(""), not None
+    assert note.summary is not None
+    assert note.summary.value == ""
+
+    # Verify that actual None values ARE skipped
+    data_with_none = {"title": "Note", "tags": ["one"], "summary": None}
+    note2 = Note.from_dict(data_with_none, strict=False)
+    assert note2.summary is None
 
 
 def test_to_dict_from_dict_round_trip_with_alias_names():

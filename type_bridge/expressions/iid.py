@@ -9,6 +9,7 @@ from type_bridge.expressions.base import Expression
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
+    from type_bridge.query.ast import Pattern
 
 # IID format: 0x followed by hex digits
 IID_PATTERN = re.compile(r"^0x[0-9a-fA-F]+$")
@@ -49,16 +50,15 @@ class IidExpr(Expression):
         validate_iid(iid)
         self.iid = iid
 
-    def to_typeql(self, var: str) -> str:
-        """Generate TypeQL pattern for IID match.
-
-        Args:
-            var: Entity variable name (e.g., "$e")
+    def to_ast(self, var: str) -> list[Pattern]:
+        """Generate AST patterns for IID match.
 
         Returns:
-            TypeQL pattern: "$var iid 0x..."
+            List containing one IidPattern.
         """
-        return f"{var} iid {self.iid}"
+        from type_bridge.query.ast import IidPattern
+
+        return [IidPattern(variable=var, iid=self.iid)]
 
     def get_attribute_types(self) -> set[type[Attribute]]:
         """IID is not an attribute, so return empty set."""

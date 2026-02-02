@@ -39,7 +39,7 @@ uv run pyright tests/            # Type check tests
 
 ## Project Structure
 
-```
+```text
 type_bridge/
 ├── __init__.py           # Main package exports
 ├── query.py              # TypeQL query builder
@@ -268,5 +268,66 @@ persons = person_manager.all()
 7. **TransactionContext** - Share transactions across operations with `db.transaction()`
 8. **Connection type** - Managers accept `Database`, `Transaction`, or `TransactionContext`
 9. **Dict helpers** - Use `to_dict()` and `from_dict()` for serialization
+
+## Claude Code Instructions
+
+### Always Fix Issues
+
+**CRITICAL**: When encountering bugs, test failures, or issues during development:
+
+- ALWAYS fix issues, regardless of whether they appear to be "pre-existing"
+- Never dismiss bugs as "not related to current changes" - if you found it, fix it
+- Complete the work fully; don't leave partial implementations
+- If a refactor is done, it should be COMPLETE - no dead code, no overridden methods that defeat the purpose
+
+### Code Quality Standards
+
+**CRITICAL: Always run checks on the ENTIRE codebase, not just modified files.**
+
+AI sessions may include multiple separate conversations or context compactions, so changes from earlier in a session could introduce issues. Running checks on only a subset of files will miss these problems and cause CI failures.
+
+Before committing, run ALL of these on the entire codebase:
+
+```bash
+uv run ruff check --fix .        # Lint entire codebase
+uv run ruff format .             # Format entire codebase
+uv run pyright type_bridge/      # Type check library
+uv run pyright tests/            # Type check tests
+uv run pytest tests/unit/ -x     # Run all unit tests
+```
+
+Before PRs, also run:
+
+```bash
+./test-integration.sh            # Integration tests (requires TypeDB)
+```
+
+Additional standards:
+
+- When unifying code (e.g., EntityManager + RelationManager), remove ALL duplicated methods from subclasses
+- Delete dead code completely - no backwards-compatibility hacks, no `_unused` variables, no `# removed` comments
+
+### Pydantic Best Practices
+
+When working with Pydantic model validators:
+
+- **Avoid `object.__setattr__`** - Using `object.__setattr__` to bypass Pydantic's validation is a hack that can mask bugs
+- **Use `mode='before'` validators** to transform input data BEFORE validation, avoiding recursion with `validate_assignment=True`
+- **Use `mode='wrap'` validators** only when you need to capture state before AND after validation (e.g., preserving private attributes)
+- **Access private attributes via `__pydantic_private__`** - This is Pydantic's official API for private attribute storage
+
+Example pattern for value transformation:
+
+```python
+@model_validator(mode="before")
+@classmethod
+def transform_input(cls, values: Any) -> dict[str, Any]:
+    """Transform input BEFORE validation - no recursion possible."""
+    if isinstance(values, dict):
+        data = dict(values)
+        # Transform values here
+        return data
+    return values
+```
 
 For detailed documentation, see the links above.

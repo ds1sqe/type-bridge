@@ -292,13 +292,14 @@ class FieldDescriptor[T: "Attribute"]:
             instance: Entity instance
             value: Attribute value to set
         """
-        # Delegate to Pydantic's field validation and storage
-        # Use cast to satisfy pyright (instance.__dict__ is always a writable dict at runtime)
-        inst_dict: dict[str, Any] = instance.__dict__  # type: ignore[assignment]
+        # Store directly in instance __dict__
+        # Note: We don't call validate_assignment() here because:
+        # 1. The model_validator _wrap_raw_values already handles attribute wrapping
+        # 2. Calling validate_assignment triggers the model validator which would
+        #    call object.__setattr__ and trigger this __set__ again (infinite recursion)
+        # Cast needed because pyright sees __dict__ as potentially MappingProxyType
+        inst_dict = cast(dict[str, Any], instance.__dict__)
         inst_dict[self.field_name] = value
-        # Trigger Pydantic validation if needed
-        if hasattr(instance, "__pydantic_validator__"):
-            instance.__pydantic_validator__.validate_assignment(instance, self.field_name, value)
 
     def _make_field_ref(self, entity_type: Any) -> FieldRef[T]:
         """

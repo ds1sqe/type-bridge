@@ -1,7 +1,6 @@
 """Flag system for TypeDB attribute annotations."""
 
 import re
-import warnings
 from dataclasses import dataclass
 from enum import Enum
 from typing import Annotated, Any, TypeVar
@@ -127,7 +126,6 @@ class TypeFlags:
         abstract: bool = False,
         base: bool = False,
         case: TypeNameCase = TypeNameCase.CLASS_NAME,
-        type_name: str | None = None,  # Backward compatibility
     ):
         """Initialize TypeFlags.
 
@@ -136,19 +134,8 @@ class TypeFlags:
             abstract: Whether this is an abstract type
             base: Whether this is a Python base class that should not appear in TypeDB schema
             case: Case formatting for auto-generated type names (default: CLASS_NAME)
-            type_name: (Deprecated) Use 'name' instead. Kept for backward compatibility.
         """
-        # Handle backward compatibility: type_name takes precedence if provided
-        if type_name is not None:
-            warnings.warn(
-                "The 'type_name' parameter is deprecated and will be removed in a future version. "
-                "Use 'name' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.name = type_name
-        else:
-            self.name = name
+        self.name = name
         self.abstract = abstract
         self.base = base
         self.case = case
@@ -249,6 +236,8 @@ class AttributeFlags:
         Returns:
             List of TypeQL annotation strings
         """
+        from type_bridge.typeql.annotations import format_card_annotation
+
         annotations = []
         if self.is_key:
             annotations.append("@key")
@@ -264,13 +253,9 @@ class AttributeFlags:
             # Check if it's @unique with default (1,1) - if so, omit @card
             is_default_card = self.card_min == 1 and self.card_max == 1
             if not (self.is_unique and is_default_card):
-                min_val = self.card_min if self.card_min is not None else 0
-                if self.card_max is not None:
-                    # Use .. syntax for range: @card(1..5)
-                    annotations.append(f"@card({min_val}..{self.card_max})")
-                else:
-                    # Unbounded max: @card(min..)
-                    annotations.append(f"@card({min_val}..)")
+                card_annotation = format_card_annotation(self.card_min, self.card_max)
+                if card_annotation:
+                    annotations.append(card_annotation)
 
         return annotations
 

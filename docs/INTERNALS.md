@@ -176,6 +176,7 @@ class EntityManager(Generic[E]):
 ```
 
 **Benefits:**
+
 - Cleaner syntax
 - Better IDE support
 - Matches modern Python standards
@@ -227,6 +228,7 @@ TypeBridge is fully compatible with:
 - **Pydantic's type system**: Built on Pydantic v2
 
 **Current status:**
+
 - ✅ 0 type errors with Pyright
 - ✅ 0 type warnings (except in type-check-except tests)
 - ✅ Full type inference for managers and queries
@@ -263,9 +265,7 @@ Tests that intentionally check Pydantic validation behavior use raw values and a
 
 ```json
 {
-  "exclude": [
-    "tests/unit/type-check-except/**"
-  ]
+  "exclude": ["tests/unit/type-check-except/**"]
 }
 ```
 
@@ -278,6 +278,7 @@ The project minimizes `Any` usage for type safety:
 **Where `Any` is used:**
 
 1. **`Flag()` function**: Accepts `Any` for parameters to handle type aliases like `Key` and `Unique`
+
    ```python
    def Flag(*args: Any) -> AttributeFlags:
        """Create attribute flags from Key, Unique, Card arguments."""
@@ -285,12 +286,14 @@ The project minimizes `Any` usage for type safety:
    ```
 
 2. **`Flag()` return type**: Returns `AttributeFlags` (used as field default)
+
    ```python
    class Person(Entity):
        name: Name = Flag(Key)  # Flag() returns AttributeFlags
    ```
 
 3. **Pydantic core schema methods**: Use proper TypeVars (`StrValue`, `IntValue`, etc.)
+
    ```python
    @classmethod
    def __get_pydantic_core_schema__(
@@ -381,6 +384,7 @@ class Entity(BaseModel):
 ```
 
 This tells type checkers:
+
 - All fields are keyword-only by default
 - `Flag()` is recognized as a valid field specifier
 - Constructor signature is inferred from class annotations
@@ -433,12 +437,11 @@ crud/
 ### Import Patterns
 
 ```python
-# Public API (backward compatible)
-from type_bridge import EntityManager, RelationManager
+# Public API
+from type_bridge import TypeDBManager
 
-# Direct module imports (new style)
-from type_bridge.crud.entity import EntityManager
-from type_bridge.crud.relation import RelationManager
+# Or from crud module
+from type_bridge.crud import TypeDBManager
 
 # Shared utilities (internal use)
 from type_bridge.crud.utils import format_value, is_multi_value_attribute
@@ -482,6 +485,7 @@ with db.transaction(TransactionType.WRITE) as tx:
 ```
 
 **Behavior:**
+
 - Auto-commit on successful context exit (WRITE/SCHEMA transactions)
 - Auto-rollback on exception
 - READ transactions never commit (no writes)
@@ -510,6 +514,7 @@ class ConnectionExecutor:
 ```
 
 **Design principles:**
+
 1. **Transparency**: CRUD operations work identically regardless of connection type
 2. **Transaction reuse**: Existing transactions are never duplicated
 3. **Auto-management**: Database connections create transactions as needed

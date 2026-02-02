@@ -2,9 +2,8 @@
 
 from datetime import date as date_type
 from datetime import datetime as datetime_type
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 
-from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
 from type_bridge.attribute.base import Attribute
@@ -66,44 +65,36 @@ class Date(Attribute):
         """Get the stored date value."""
         return self._value if self._value is not None else date_type.today()
 
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source_type: type[DateValue], handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        """Pydantic validation: accept date values or attribute instances."""
-
-        # Serializer to extract value from attribute instances
-        def serialize_date(value: Any) -> date_type:
-            if isinstance(value, cls):
-                return value._value if value._value is not None else date_type.today()
-            if isinstance(value, date_type):
-                return value
-            if isinstance(value, datetime_type):
-                return value.date()
-            # Try to parse ISO string
-            return date_type.fromisoformat(str(value))
-
-        # Validator: accept date or attribute instance, always return attribute instance
-        def validate_date(value: Any) -> "Date":
-            if isinstance(value, cls):
-                return value  # Return attribute instance as-is
-            # Wrap date value in attribute instance
-            if isinstance(value, date_type):
-                return cls(value)
-            if isinstance(value, datetime_type):
-                return cls(value.date())
-            # Try to parse ISO string
-            return cls(date_type.fromisoformat(str(value)))
-
-        return core_schema.with_info_plain_validator_function(
-            lambda v, _: validate_date(v),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                serialize_date,
-                return_schema=core_schema.date_schema(),
-            ),
-        )
+    # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
 
     @classmethod
-    def __class_getitem__(cls, item: object) -> type["Date"]:
-        """Allow generic subscription for type checking (e.g., Date[date])."""
-        return cls
+    def _get_default_value(cls) -> date_type:
+        """Default value for Date is today()."""
+        return date_type.today()
+
+    @classmethod
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Return schema for date serialization."""
+        return core_schema.date_schema()
+
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> date_type:
+        """Serialize Date to raw date value."""
+        if isinstance(value, cls):
+            return value._value if value._value is not None else date_type.today()
+        if isinstance(value, date_type):
+            return value
+        if isinstance(value, datetime_type):
+            return value.date()
+        return date_type.fromisoformat(str(value))
+
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap value in Date instance."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, date_type):
+            return cls(value)
+        if isinstance(value, datetime_type):
+            return cls(value.date())
+        return cls(date_type.fromisoformat(str(value)))

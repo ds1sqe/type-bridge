@@ -3,10 +3,8 @@
 import pytest
 
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
-from type_bridge.crud.relation.lookup import (
-    _build_lookup_expression,
-    parse_role_lookup_filters,
-)
+from type_bridge.crud.lookup import build_lookup_expression
+from type_bridge.crud.role_lookup import parse_role_lookup_filters
 from type_bridge.expressions import (
     AttributeExistsExpr,
     BooleanExpr,
@@ -222,7 +220,7 @@ def test_parse_role_lookup_regex():
 
 def test_string_lookup_on_non_string_raises():
     """Test string lookups on non-string attribute raises error."""
-    with pytest.raises(ValueError, match="String lookup.*requires a String attribute"):
+    with pytest.raises(ValueError, match="Unsupported lookup operator 'contains' for Age"):
         parse_role_lookup_filters(Employment, {"employee__age__contains": "30"})
 
 
@@ -417,14 +415,14 @@ def test_too_many_parts_raises():
 
 def test_build_expression_wraps_raw_value():
     """Test raw values are wrapped in attribute type."""
-    expr = _build_lookup_expression(Age, "gt", 30)
+    expr = build_lookup_expression(Age, "gt", 30)
     assert isinstance(expr, ComparisonExpr)
     assert expr.value.value == 30
 
 
 def test_build_expression_preserves_wrapped_value():
     """Test already-wrapped values are preserved."""
-    expr = _build_lookup_expression(Age, "gt", Age(30))
+    expr = build_lookup_expression(Age, "gt", Age(30))
     assert isinstance(expr, ComparisonExpr)
     assert expr.value.value == 30
 

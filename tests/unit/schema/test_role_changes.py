@@ -1,6 +1,6 @@
 """Unit tests for role change dataclasses."""
 
-from type_bridge.schema.diff import (
+from type_bridge.migration.diff import (
     AttributeFlagChange,
     RelationChanges,
     RoleCardinalityChange,

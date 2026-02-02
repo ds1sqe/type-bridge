@@ -18,11 +18,11 @@ from type_bridge import (
     Key,
     Relation,
     Role,
+    SchemaManager,
     String,
     TypeFlags,
     Unique,
 )
-from type_bridge.schema import SchemaManager
 from type_bridge.session import Database
 
 

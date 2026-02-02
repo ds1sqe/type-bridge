@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime as datetime_type
-from typing import Literal, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
+
+from pydantic import BeforeValidator
 
 from type_bridge.attribute import (
     Attribute,
@@ -16,6 +18,59 @@ from type_bridge.attribute import (
     String,
 )
 from type_bridge.validation import validate_type_name as validate_reserved_word
+
+
+def attribute_wrapper(attr_class: type[Attribute]):
+    """Create a validator that wraps raw values in the attribute class.
+
+    Returns a Pydantic BeforeValidator that converts raw values (str, int, etc.)
+    into instances of the specified Attribute class.
+    """
+
+    def wrap(v: Any) -> Any:
+        # If it's already an Attribute instance, return as is
+        if isinstance(v, attr_class):
+            return v
+        # If None, return None (Pydantic handles Optional separately)
+        if v is None:
+            return None
+        # Wrap the raw value
+        return attr_class(v)
+
+    return BeforeValidator(wrap)
+
+
+@dataclass
+class MatchClauseInfo:
+    """Information needed to build a TypeQL match clause for an instance.
+
+    Used by TypeDBManager to build CRUD queries for both entities and relations.
+
+    Attributes:
+        main_clause: The primary match clause (e.g., "$e isa person, has Name \"Alice\"")
+        extra_clauses: Additional match clauses (e.g., role player matches for relations)
+        var_name: The main variable name (e.g., "$e" or "$r")
+    """
+
+    main_clause: str
+    extra_clauses: list[str]
+    var_name: str
+
+
+@dataclass
+class WriteQueryInfo:
+    """Information needed to build a TypeQL write query for an instance.
+
+    Supports both entities (which only need insert/put pattern) and relations
+    (which need match clause for role players + insert/put pattern).
+
+    Attributes:
+        match_clause: Optional match clause (for relations with role players)
+        write_pattern: The insert/put pattern
+    """
+
+    match_clause: str | None
+    write_pattern: str
 
 
 @dataclass
@@ -178,6 +233,42 @@ def get_base_type_for_attribute(attr_cls: type[Attribute]) -> type | None:
         elif base is DateTime:
             return datetime_type
     return None
+
+
+# Type alias for AST value types
+AstValueType = Literal["string", "long", "double", "boolean", "datetime", "datetime-tz", "date"]
+
+
+def get_ast_value_type(attr_cls: type[Attribute]) -> AstValueType:
+    """Get the AST value type for an Attribute class.
+
+    This function determines the correct TypeQL literal type for an attribute,
+    including proper handling of DateTimeTZ vs DateTime.
+
+    Args:
+        attr_cls: The Attribute subclass
+
+    Returns:
+        The AST value type string ("string", "long", "double", "boolean",
+        "datetime", "datetime-tz", or "date")
+    """
+    from type_bridge.attribute.datetimetz import DateTimeTZ
+
+    # Check for DateTimeTZ first (before DateTime, since DateTimeTZ doesn't inherit DateTime)
+    if issubclass(attr_cls, DateTimeTZ):
+        return "datetime-tz"
+
+    # Map base types to AST types
+    py_type = get_base_type_for_attribute(attr_cls)
+    type_map: dict[type | None, AstValueType] = {
+        str: "string",
+        int: "long",
+        float: "double",
+        bool: "boolean",
+        datetime_type: "datetime",
+        None: "string",  # Default fallback
+    }
+    return type_map.get(py_type, "string")
 
 
 # TypeDB built-in type names that cannot be used

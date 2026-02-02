@@ -43,7 +43,7 @@ class Status(String):
 class Email(String):
     """Email with regex constraint."""
 
-    regex: ClassVar[str] = r"^[a-z]+@[a-z]+\.[a-z]+$"  # type: ignore[assignment]
+    regex_pattern = r"^[a-z]+@[a-z]+\.[a-z]+$"
 
 
 # Define entities using the annotated attributes
@@ -188,8 +188,6 @@ class TestTypeDBEnforcesConstraints:
 
     def test_typedb_rejects_out_of_range_via_raw_query(self, db: Database) -> None:
         """Verify TypeDB rejects out-of-range values via raw TypeQL."""
-        from typedb.driver import TransactionType
-
         schema_manager = SchemaManager(db)
         schema_manager.register(Person)
         schema_manager.sync_schema()
@@ -203,19 +201,15 @@ class TestTypeDBEnforcesConstraints:
         """
 
         with pytest.raises(Exception) as exc_info:
-            with db.driver.transaction(  # type: ignore[attr-defined]
-                db.database_name, TransactionType.WRITE
-            ) as tx:
-                tx.query(insert_query).resolve()
-                tx.commit()
+            with db.transaction("write") as ctx:
+                ctx.transaction._tx.query(insert_query).resolve()
+                ctx.transaction._tx.commit()
 
         # TypeDB should reject the value
         assert "200" in str(exc_info.value) or "range" in str(exc_info.value).lower()
 
     def test_typedb_rejects_invalid_values_via_raw_query(self, db: Database) -> None:
         """Verify TypeDB rejects invalid @values via raw TypeQL."""
-        from typedb.driver import TransactionType
-
         schema_manager = SchemaManager(db)
         schema_manager.register(Task)
         schema_manager.sync_schema()
@@ -228,19 +222,15 @@ class TestTypeDBEnforcesConstraints:
         """
 
         with pytest.raises(Exception) as exc_info:
-            with db.driver.transaction(  # type: ignore[attr-defined]
-                db.database_name, TransactionType.WRITE
-            ) as tx:
-                tx.query(insert_query).resolve()
-                tx.commit()
+            with db.transaction("write") as ctx:
+                ctx.transaction._tx.query(insert_query).resolve()
+                ctx.transaction._tx.commit()
 
         # TypeDB should reject the value
         assert "invalid_status" in str(exc_info.value) or "values" in str(exc_info.value).lower()
 
     def test_typedb_rejects_invalid_regex_via_raw_query(self, db: Database) -> None:
         """Verify TypeDB rejects values not matching @regex via raw TypeQL."""
-        from typedb.driver import TransactionType
-
         schema_manager = SchemaManager(db)
         schema_manager.register(User)
         schema_manager.sync_schema()
@@ -254,11 +244,9 @@ class TestTypeDBEnforcesConstraints:
         """
 
         with pytest.raises(Exception) as exc_info:
-            with db.driver.transaction(  # type: ignore[attr-defined]
-                db.database_name, TransactionType.WRITE
-            ) as tx:
-                tx.query(insert_query).resolve()
-                tx.commit()
+            with db.transaction("write") as ctx:
+                ctx.transaction._tx.query(insert_query).resolve()
+                ctx.transaction._tx.commit()
 
         # TypeDB should reject the value due to regex mismatch
         assert "not-an-email" in str(exc_info.value) or "regex" in str(exc_info.value).lower()
@@ -298,8 +286,6 @@ class TestIndependentAnnotationSync:
 
     def test_independent_attribute_can_be_inserted_standalone(self, db: Database) -> None:
         """Verify independent attributes can be inserted without an owner."""
-        from typedb.driver import TransactionType
-
         schema_manager = SchemaManager(db)
         schema_manager.register(Document)
         schema_manager.sync_schema()
@@ -309,17 +295,15 @@ class TestIndependentAnnotationSync:
         insert $lang isa Language "English";
         """
 
-        with db.driver.transaction(  # type: ignore[attr-defined]
-            db.database_name, TransactionType.WRITE
-        ) as tx:
-            tx.query(insert_query).resolve()
-            tx.commit()
+        with db.transaction("write") as ctx:
+            ctx.transaction._tx.query(insert_query).resolve()
+            ctx.transaction._tx.commit()
 
         # Verify the attribute exists
-        with db.driver.transaction(  # type: ignore[attr-defined]
-            db.database_name, TransactionType.READ
-        ) as tx:
-            result = tx.query('match $lang isa Language "English"; select $lang;').resolve()
+        with db.transaction("read") as ctx:
+            result = ctx.transaction._tx.query(
+                'match $lang isa Language "English"; select $lang;'
+            ).resolve()
             answers = list(result.as_concept_rows())
             assert len(answers) == 1
 

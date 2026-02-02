@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING
 
 from type_bridge.migration.base import Migration
 from type_bridge.migration.loader import LoadedMigration, MigrationLoader
+from type_bridge.migration.schema_manager import SchemaManager
 from type_bridge.migration.state import MigrationState, MigrationStateManager
-from type_bridge.schema import SchemaManager
 
 if TYPE_CHECKING:
     from type_bridge.session import Database

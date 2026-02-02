@@ -21,6 +21,7 @@ from type_bridge.expressions.base import Expression
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
+    from type_bridge.query.ast import Pattern, Value
 
 
 @dataclass
@@ -52,16 +53,31 @@ class BuiltinFunctionExpr(Expression):
         self.name = name
         self.args = args
 
+    def to_ast(self, var: str) -> list[Pattern]:
+        """Built-in functions are values, not patterns.
+
+        Use to_value_ast() instead for AST representation.
+        """
+        # Return empty list since built-in functions don't produce match patterns
+        return []
+
     def to_typeql(self, var: str) -> str:
-        """Generate TypeQL function call syntax.
+        """Generate TypeQL for this built-in function call.
 
         Args:
-            var: Ignored for built-in functions (args are explicit)
+            var: Ignored (built-in functions use their own args)
 
         Returns:
-            TypeQL function call like "iid($e)" or "max($a, $b)"
+            TypeQL function call string (e.g., "iid($e)")
         """
-        return f"{self.name}({', '.join(self.args)})"
+        args_str = ", ".join(self.args)
+        return f"{self.name}({args_str})"
+
+    def to_value_ast(self, var: str | None = None) -> Value:
+        """Convert to AST FunctionCallValue."""
+        from type_bridge.query.ast import FunctionCallValue
+
+        return FunctionCallValue(function=self.name, args=list(self.args))
 
     def get_attribute_types(self) -> set[type[Attribute]]:
         """Built-in functions don't reference attribute types."""

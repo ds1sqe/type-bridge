@@ -1,29 +1,17 @@
 """String-specific expressions for text filtering.
 
-TypeDB 3.x Variable Scoping:
-    TypeDB uses variable bindings to create implicit equality constraints.
-    If the same variable is used twice in a match clause, both bindings
-    must have the same value.
-
-    Wrong approach:
-        $actor has name $name;    -- $name binds to actor's name
-        $target has name $name;   -- CONSTRAINT: target's name must EQUAL actor's name!
-
-    Correct approach (unique variables):
-        $actor has name $actor_name;    -- $actor_name binds to actor's name
-        $target has name $target_name;  -- $target_name binds to target's name (independent)
-
-    This is why expressions generate ${var_prefix}_${attr_name} patterns.
-    For example, when var="$actor" and attr="name":
-        Generated: $actor has name $actor_name; $actor_name contains "value"
+See :mod:`type_bridge.expressions.utils` for documentation on TypeDB 3.x
+variable scoping and why we generate unique attribute variables.
 """
 
 from typing import TYPE_CHECKING, Literal
 
 from type_bridge.expressions.base import Expression
+from type_bridge.expressions.utils import generate_attr_var
 
 if TYPE_CHECKING:
     from type_bridge.attribute.string import String
+    from type_bridge.query.ast import Pattern
 
 
 class StringExpr[T: "String"](Expression):
@@ -51,39 +39,36 @@ class StringExpr[T: "String"](Expression):
         self.operation = operation
         self.pattern = pattern
 
-    def to_typeql(self, var: str) -> str:
+    def to_ast(self, var: str) -> list["Pattern"]:
         """
-        Generate TypeQL pattern for this string operation.
+        Generate AST patterns for this string operation.
 
-        Example output: "$e has Name $e_name; $e_name contains 'Alice'"
+        Example: "$e has Name $e_name; $e_name contains 'Alice'"
 
         Args:
             var: Entity variable name (e.g., "$e", "$actor")
 
         Returns:
-            TypeQL pattern string (without trailing semicolon)
+            List of AST patterns
         """
-        # Get attribute type name for schema
+        from type_bridge.query.ast import (
+            HasPattern,
+            LiteralValue,
+            ValueComparisonPattern,
+        )
+
         attr_type_name = self.attr_type.get_attribute_name()
-
-        # Generate unique attribute variable name by combining entity var and attr name
-        # This prevents collisions when filtering multiple entities by same attribute type
-        var_prefix = var.lstrip("$")
-        attr_var = f"${var_prefix}_{attr_type_name.lower()}"
-
-        # Escape and quote the pattern
-        escaped_pattern = self.pattern.value.replace("\\", "\\\\").replace('"', '\\"')
-        quoted_pattern = f'"{escaped_pattern}"'
+        attr_var = generate_attr_var(var, self.attr_type)
 
         # Map operation to TypeQL keyword
         # AUTOMATIC CONVERSION: regex() → 'like' in TypeQL
-        if self.operation == "regex":
-            # TypeQL uses 'like' for regex patterns (both do the same thing)
-            typeql_op = "like"
-        else:
-            typeql_op = self.operation
+        typeql_op = "like" if self.operation == "regex" else self.operation
 
-        # Generate pattern (no trailing semicolon - QueryBuilder adds those)
-        pattern = f"{var} has {attr_type_name} {attr_var}; {attr_var} {typeql_op} {quoted_pattern}"
-
-        return pattern
+        return [
+            HasPattern(thing_var=var, attr_type=attr_type_name, attr_var=attr_var),
+            ValueComparisonPattern(
+                var=attr_var,
+                operator=typeql_op,
+                value=LiteralValue(value=self.pattern.value, value_type="string"),
+            ),
+        ]

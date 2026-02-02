@@ -34,14 +34,14 @@ class TestFormatValueStrings:
         assert format_value("\\\\network") == '"\\\\\\\\network"'
 
     def test_format_string_with_newline(self):
-        """Strings with newlines should preserve them."""
+        """Strings with newlines should escape them for TypeQL."""
         result = format_value("line1\nline2")
-        assert result == '"line1\nline2"'
+        assert result == r'"line1\nline2"'
 
     def test_format_string_with_tab(self):
-        """Strings with tabs should preserve them."""
+        """Strings with tabs should escape them for TypeQL."""
         result = format_value("col1\tcol2")
-        assert result == '"col1\tcol2"'
+        assert result == r'"col1\tcol2"'
 
     def test_format_string_empty(self):
         """Empty strings should be quoted."""

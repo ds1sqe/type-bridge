@@ -6,10 +6,9 @@ Tests type-safe filtering, aggregations, and grouping against a real TypeDB inst
 
 import pytest
 
-from type_bridge import Database, Entity, TypeFlags
+from type_bridge import Database, Entity, SchemaManager, TypeFlags
 from type_bridge.attribute import Double, Integer, String
 from type_bridge.attribute.flags import Flag, Key
-from type_bridge.schema import SchemaManager
 
 # ============================================================================
 # Test Schema
@@ -430,7 +429,7 @@ def test_group_by_single_field(setup_schema):
     """Test grouping by single field."""
     manager = Person.manager(setup_schema)
 
-    # Group by department
+    # Group by department using direct field access (Person.field)
     result = manager.group_by(Person.department).aggregate(Person.age.avg(), Person.salary.avg())
 
     # Should have 3 departments
@@ -475,7 +474,7 @@ def test_group_by_multiple_fields(setup_schema):
     """Test grouping by multiple fields."""
     manager = Person.manager(setup_schema)
 
-    # Group by city AND department
+    # Group by city AND department using direct field access
     result = manager.group_by(Person.city, Person.department).aggregate(Person.age.avg())
 
     # Should have tuple keys

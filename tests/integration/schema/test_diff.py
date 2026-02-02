@@ -3,12 +3,12 @@
 import pytest
 
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
-from type_bridge.schema.diff import (
+from type_bridge.migration.diff import (
     AttributeFlagChange,
     EntityChanges,
     RelationChanges,
 )
-from type_bridge.schema.info import SchemaInfo
+from type_bridge.migration.info import SchemaInfo
 
 
 @pytest.mark.integration

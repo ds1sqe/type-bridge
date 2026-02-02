@@ -4,17 +4,23 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from datetime import date as date_type
-from datetime import datetime as datetime_type
-from datetime import timedelta
-from decimal import Decimal as DecimalType
-from typing import Any, ClassVar, dataclass_transform
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast, dataclass_transform
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
-from type_bridge.attribute import Attribute, AttributeFlags, TypeFlags
+from type_bridge.attribute import AttributeFlags, TypeFlags
 from type_bridge.attribute.flags import format_type_name
-from type_bridge.models.utils import ModelAttrInfo, validate_type_name
+from type_bridge.crud.utils import format_value as _format_value_impl
+from type_bridge.models.registry import ModelRegistry
+from type_bridge.models.utils import (
+    MatchClauseInfo,
+    ModelAttrInfo,
+    validate_type_name,
+)
+
+if TYPE_CHECKING:
+    from type_bridge.crud.typedb_manager import TypeDBManager
+    from type_bridge.session import Connection
 
 
 @dataclass_transform(kw_only_default=True, field_specifiers=(AttributeFlags, TypeFlags))
@@ -41,7 +47,55 @@ class TypeDBType(BaseModel, ABC):
     # Internal metadata (class-level)
     _flags: ClassVar[TypeFlags] = TypeFlags()
     _owned_attrs: ClassVar[dict[str, ModelAttrInfo]] = {}
-    _iid: str | None = None  # TypeDB internal ID
+
+    # TypeDB internal ID - treated as private attribute by Pydantic
+    _iid: str | None = PrivateAttr(default=None)
+
+    @classmethod
+    @abstractmethod
+    def _get_manager_class(cls) -> type:
+        """Get the CRUD manager class for this type."""
+        ...
+
+    @classmethod
+    def manager(cls, connection: Connection) -> TypeDBManager[Self]:
+        """Create a CRUD manager for this type.
+
+        Args:
+            connection: Database, Transaction, or TransactionContext
+
+        Returns:
+            Manager instance for this type
+        """
+        manager_class = cls._get_manager_class()
+        return cast("TypeDBManager[Self]", manager_class(connection, cls))
+
+    def insert(self, connection: Connection) -> Self:
+        """Insert this instance into the database.
+
+        Args:
+            connection: Database, Transaction, or TransactionContext
+
+        Returns:
+            Self for chaining
+        """
+        self.manager(connection).insert(self)
+        return self
+
+    def delete(self, connection: Connection) -> Self:
+        """Delete this instance from the database.
+
+        Args:
+            connection: Database, Transaction, or TransactionContext
+
+        Returns:
+            Self for chaining
+        """
+        self.manager(connection).delete(self)
+        return self
+
+    # Type context for name validation (entity, relation, etc.)
+    _type_context: ClassVar[Literal["entity", "relation", "attribute", "role"]] = "entity"
 
     def __init_subclass__(cls) -> None:
         """Called when a TypeDBType subclass is created."""
@@ -68,110 +122,178 @@ class TypeDBType(BaseModel, ABC):
         )
         if not cls._flags.base and not is_base_entity_or_relation:
             type_name = cls._flags.name or format_type_name(cls.__name__, cls._flags.case)
+            validate_type_name(type_name, cls.__name__, cls._type_context)
 
-            # Determine context based on class hierarchy
-            from typing import Literal
+        # Register model in the central registry
+        ModelRegistry.register(cls)
 
-            from type_bridge.models.entity import Entity
-            from type_bridge.models.relation import Relation
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Called by Pydantic after model class initialization.
 
-            if issubclass(cls, Relation):
-                context: Literal["relation", "entity", "attribute", "role"] = "relation"
-            elif issubclass(cls, Entity):
-                context = "entity"
-            else:
-                # Default for TypeDBType subclasses
-                context = "entity"
+        Injects FieldDescriptor instances for class-level query access.
+        This runs after Pydantic's setup is complete, so descriptors won't be removed.
 
-            validate_type_name(type_name, cls.__name__, context)
+        Example:
+            Person.age  # Returns FieldRef for query building (class-level access)
+            person.age  # Returns attribute value (instance-level access)
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+
+        from type_bridge.fields import FieldDescriptor
+
+        # Inject FieldDescriptors for class-level query access
+        for field_name, attr_info in cls._owned_attrs.items():
+            descriptor = FieldDescriptor(field_name=field_name, attr_type=attr_info.typ)
+            type.__setattr__(cls, field_name, descriptor)
 
     @model_validator(mode="wrap")
     @classmethod
-    def _wrap_raw_values(cls, values, handler):
-        """Ensure all attribute fields are wrapped in Attribute instances.
+    def _preserve_iid(cls, values: Any, handler: Any) -> Self:
+        """Preserve _iid during revalidation.
 
-        This catches edge cases like default values and model_copy that bypass validators.
-        Uses 'wrap' mode to intercept all validation paths including model_copy.
+        Pydantic resets private attributes when revalidating instances,
+        so we capture _iid before validation and restore it after.
+
+        Uses mode='wrap' to wrap around the entire validation chain,
+        allowing us to capture state before and restore after.
         """
-        # First, let Pydantic do its validation
+        # Capture _iid if values is an existing instance
+        preserved_iid = None
+        if isinstance(values, cls):
+            preserved_iid = getattr(values, "_iid", None)
+
+        # Run the rest of the validation chain (including _wrap_raw_values)
         instance = handler(values)
 
-        # Then wrap any raw values
-        owned_attrs = cls.get_owned_attributes()
-        for field_name, attr_info in owned_attrs.items():
-            value = getattr(instance, field_name, None)
+        # Restore _iid using Pydantic's official private attribute storage
+        private = instance.__pydantic_private__
+        if preserved_iid is not None and private is not None and private.get("_iid") is None:
+            private["_iid"] = preserved_iid
+
+        return instance
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_raw_values(cls, values: Any) -> dict[str, Any]:
+        """Ensure all attribute fields are wrapped in Attribute instances.
+
+        Uses mode='before' to transform input BEFORE Pydantic validation.
+        This avoids infinite recursion that would occur if we modified
+        the instance after validation (with validate_assignment=True).
+
+        The input can be either a dict or an existing model instance
+        (when revalidating). We convert to dict and wrap raw values.
+        """
+        from type_bridge.fields.base import FieldRef
+
+        # Convert instance to dict if needed
+        if isinstance(values, cls):
+            # Extract field values from existing instance
+            data: dict[str, Any] = {}
+            for field_name in cls.model_fields:
+                if hasattr(values, field_name):
+                    data[field_name] = getattr(values, field_name)
+            # Include extra fields if allowed
+            if cls.model_config.get("extra") == "allow" and values.__pydantic_extra__:
+                data.update(values.__pydantic_extra__)
+        elif isinstance(values, dict):
+            data = dict(values)  # Copy to avoid mutating input
+        else:
+            # Let Pydantic handle other types (will likely fail validation)
+            return values  # type: ignore[return-value]
+
+        # Wrap raw values in Attribute instances
+        all_attrs = cls.get_all_attributes()
+        for field_name, attr_info in all_attrs.items():
             flags = attr_info.flags
             attr_class = attr_info.typ
 
-            # Check if the value is AttributeFlags (from Flag() default)
-            # This happens when list fields with Flag(Card(...)) are not provided
+            # Handle fields not in data - check for special default values
+            # This happens for list fields with Flag(Card(...)) or inherited fields
+            # where the descriptor's FieldRef was captured as the default
+            if field_name not in data:
+                field_info = cls.model_fields.get(field_name)
+                if field_info is not None:
+                    # AttributeFlags default: list field with Card()
+                    if isinstance(field_info.default, AttributeFlags):
+                        if field_info.default.has_explicit_card:
+                            data[field_name] = []
+                    # FieldRef default: inherited field where descriptor was
+                    # accessed during subclass model building - use None
+                    elif isinstance(field_info.default, FieldRef):
+                        data[field_name] = None
+                continue
+
+            value = data[field_name]
+
+            # Handle AttributeFlags passed as value (from Flag() without value)
             if isinstance(value, AttributeFlags):
-                # For list fields (has_explicit_card), default to empty list
                 if flags.has_explicit_card:
-                    object.__setattr__(instance, field_name, [])
-                    continue
+                    data[field_name] = []
                 else:
-                    # For single-value fields, this is an error
                     raise ValueError(
                         f"Field '{field_name}' received AttributeFlags as value. "
                         f"This usually means the field was not provided a value."
                     )
+                continue
 
             if value is None:
                 continue
 
-            # Check if it's a list (multi-value attribute)
-            if isinstance(value, list):
-                wrapped_list = []
-                for item in value:
-                    if not isinstance(item, attr_class):
-                        # Wrap raw value
-                        wrapped_list.append(attr_class(item))
-                    else:
-                        wrapped_list.append(item)
-                # Use object.__setattr__ to bypass validate_assignment and avoid recursion
-                object.__setattr__(instance, field_name, wrapped_list)
-            else:
-                # Single value
-                if not isinstance(value, attr_class):
-                    # Wrap raw value
-                    # Use object.__setattr__ to bypass validate_assignment and avoid recursion
-                    object.__setattr__(instance, field_name, attr_class(value))
+            # Handle FieldRef (descriptor accessed as default value)
+            if isinstance(value, FieldRef):
+                data[field_name] = None
+                continue
 
-        return instance
+            # Wrap values in Attribute instances
+            if isinstance(value, list):
+                data[field_name] = [
+                    item if isinstance(item, attr_class) else attr_class(item) for item in value
+                ]
+            elif not isinstance(value, attr_class):
+                data[field_name] = attr_class(value)
+
+        return data
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False):
         """Override model_copy to ensure raw values are wrapped in Attribute instances.
 
         Pydantic's model_copy bypasses validators even with revalidate_instances='always',
-        so we override it to force proper validation.
+        so we pre-wrap values in the update dict before copying.
+        Also preserves _iid from original using Pydantic's __pydantic_private__.
         """
-        # Call parent model_copy
-        copied = super().model_copy(update=update, deep=deep)
+        # Preserve _iid before copy
+        preserved_iid = getattr(self, "_iid", None)
 
-        # Force wrap any raw values in the update dict
+        # Pre-wrap values in update dict before calling super()
+        wrapped_update: dict[str, Any] | None = None
         if update:
+            wrapped_update = {}
             owned_attrs = self.__class__.get_owned_attributes()
-            for field_name, new_value in update.items():
-                if field_name not in owned_attrs:
-                    continue
-
-                attr_info = owned_attrs[field_name]
-                attr_class = attr_info.typ
-
-                # Check if it's a list (multi-value attribute)
-                if isinstance(new_value, list):
-                    wrapped_list = []
-                    for item in new_value:
-                        if not isinstance(item, attr_class):
-                            wrapped_list.append(attr_class(item))
-                        else:
-                            wrapped_list.append(item)
-                    object.__setattr__(copied, field_name, wrapped_list)
+            for key, value in update.items():
+                if key in owned_attrs and value is not None:
+                    attr_info = owned_attrs[key]
+                    attr_class = attr_info.typ
+                    if isinstance(value, list):
+                        wrapped_update[key] = [
+                            item if isinstance(item, attr_class) else attr_class(item)
+                            for item in value
+                        ]
+                    elif not isinstance(value, attr_class):
+                        wrapped_update[key] = attr_class(value)
+                    else:
+                        wrapped_update[key] = value
                 else:
-                    # Single value
-                    if not isinstance(new_value, attr_class):
-                        object.__setattr__(copied, field_name, attr_class(new_value))
+                    wrapped_update[key] = value
+
+        # Call parent model_copy with pre-wrapped update
+        copied = super().model_copy(update=wrapped_update, deep=deep)
+
+        # Restore _iid using Pydantic's official private attribute storage
+        private = copied.__pydantic_private__
+        if preserved_iid is not None and private is not None and private.get("_iid") is None:
+            private["_iid"] = preserved_iid
 
         return copied
 
@@ -187,7 +309,18 @@ class TypeDBType(BaseModel, ABC):
         return format_type_name(cls.__name__, cls._flags.case)
 
     @classmethod
-    @abstractmethod
+    def _get_base_type_class(cls) -> type[TypeDBType]:
+        """Get the root base class for this type hierarchy.
+
+        Override in subclasses to return Entity or Relation.
+        Used by get_supertype() to correctly identify inheritance boundaries.
+
+        Returns:
+            The base type class (Entity or Relation)
+        """
+        return TypeDBType
+
+    @classmethod
     def get_supertype(cls) -> str | None:
         """Get the supertype from Python inheritance, skipping base classes.
 
@@ -197,7 +330,15 @@ class TypeDBType(BaseModel, ABC):
         Returns:
             Type name of the parent class, or None if direct subclass
         """
-        ...
+        base_class = cls._get_base_type_class()
+        for base in cls.__bases__:
+            if base is not base_class and issubclass(base, base_class):
+                # Skip base classes - they don't appear in TypeDB schema
+                if base.is_base():
+                    # Recursively find the first non-base parent
+                    return base.get_supertype()
+                return base.get_type_name()
+        return None
 
     @classmethod
     def is_abstract(cls) -> bool:
@@ -234,9 +375,68 @@ class TypeDBType(BaseModel, ABC):
         # Child attributes will override parent attributes with same name
         for base in reversed(cls.__mro__):
             if hasattr(base, "_owned_attrs") and isinstance(base._owned_attrs, dict):
-                all_attrs.update(base._owned_attrs)
+                all_attrs.update(dict(base._owned_attrs))
 
         return all_attrs
+
+    @classmethod
+    def get_polymorphic_attributes(cls) -> dict[str, ModelAttrInfo]:
+        """Get all attributes including those from registered subtypes.
+
+        For polymorphic queries where the base class is used but concrete
+        subtypes may be returned, this method collects attributes from all
+        known subtypes so the query can fetch all possible attributes.
+
+        Returns:
+            Dictionary mapping field names to ModelAttrInfo, including
+            attributes from all registered subtypes.
+        """
+
+        # Start with this class's attributes (including inherited)
+        all_attrs = cls.get_all_attributes()
+
+        # Recursively collect attributes from all subclasses
+        def collect_subclass_attrs(klass: type[TypeDBType]) -> None:
+            for subclass in klass.__subclasses__():
+                # Skip if subclass is a base class (abstract, Python-only)
+                if hasattr(subclass, "is_base") and subclass.is_base():
+                    continue
+
+                # Get subclass attributes and merge (subclass attrs take precedence)
+                if hasattr(subclass, "get_all_attributes"):
+                    subclass_attrs = subclass.get_all_attributes()
+                    for field_name, attr_info in subclass_attrs.items():
+                        if field_name not in all_attrs:
+                            all_attrs[field_name] = attr_info
+
+                # Recurse into further subclasses
+                collect_subclass_attrs(subclass)
+
+        collect_subclass_attrs(cls)
+        return all_attrs
+
+    @classmethod
+    def _build_owns_lines(cls) -> list[str]:
+        """Build TypeQL 'owns' lines for schema definition.
+
+        This is a shared helper used by both Entity and Relation to generate
+        the attribute ownership part of their schema definitions.
+
+        Returns:
+            List of TypeQL 'owns' lines with proper formatting
+        """
+        lines = []
+        for _field_name, attr_info in cls._owned_attrs.items():
+            attr_class = attr_info.typ
+            flags = attr_info.flags
+            attr_name = attr_class.get_attribute_name()
+
+            ownership = f"    owns {attr_name}"
+            annotations = flags.to_typeql_annotations()
+            if annotations:
+                ownership += " " + " ".join(annotations)
+            lines.append(ownership)
+        return lines
 
     @classmethod
     @abstractmethod
@@ -249,47 +449,113 @@ class TypeDBType(BaseModel, ABC):
         ...
 
     @abstractmethod
-    def to_insert_query(self, var: str) -> str:
-        """Generate TypeQL insert query for this instance.
+    def get_match_clause_info(self, var_name: str = "$x") -> MatchClauseInfo:
+        """Get information to build a TypeQL match clause for this instance.
+
+        Used by TypeDBManager for delete/update operations. Returns IID-based
+        matching when available, otherwise falls back to type-specific
+        identification (key attributes for entities, role players for relations).
 
         Args:
-            var: Variable name to use
+            var_name: Variable name to use in the match clause
 
         Returns:
-            TypeQL insert pattern
+            MatchClauseInfo with main clause, extra clauses, and variable name
+
+        Raises:
+            ValueError: If instance cannot be identified (no IID and no keys/role players)
         """
         ...
 
     @staticmethod
     def _format_value(value: Any) -> str:
-        """Format a Python value for TypeQL."""
+        """Format a Python value for TypeQL.
 
-        import isodate
-        from isodate import Duration as IsodateDuration
+        Delegates to the shared format_value utility in crud/utils.py.
+        """
+        return _format_value_impl(value)
 
-        # Extract value from Attribute instances
-        if isinstance(value, Attribute):
-            value = value.value
+    def _build_attribute_statements(self, var: str) -> list[Any]:
+        """Build HasStatement AST nodes for all attributes on this instance.
 
-        if isinstance(value, str):
-            # Escape backslashes first, then double quotes for TypeQL string literals
-            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-            return f'"{escaped}"'
-        elif isinstance(value, bool):
-            return "true" if value else "false"
-        elif isinstance(value, DecimalType):
-            # TypeDB decimal literals require 'dec' suffix
-            return f"{value}dec"
-        elif isinstance(value, int | float):
-            return str(value)
-        elif isinstance(value, IsodateDuration | timedelta):
-            # TypeDB duration literals are unquoted ISO 8601 duration strings
-            return isodate.duration_isoformat(value)
-        elif isinstance(value, datetime_type):
-            # TypeDB datetime literals are unquoted ISO 8601 strings
-            return value.isoformat()
-        elif isinstance(value, date_type):
-            # TypeDB date literals are unquoted ISO 8601 date strings (YYYY-MM-DD)
-            return value.isoformat()
-        else:
-            return str(value)
+        This is a shared helper used by both Entity.to_ast and Relation.to_ast
+        to avoid code duplication in attribute serialization logic.
+
+        Args:
+            var: Variable name to use (e.g., "$e" or "$r")
+
+        Returns:
+            List of HasStatement AST nodes for non-None attribute values
+        """
+        from type_bridge.attribute import Attribute
+        from type_bridge.models.utils import AstValueType, get_ast_value_type
+        from type_bridge.query.ast import HasStatement, LiteralValue
+
+        statements: list[HasStatement] = []
+
+        for field_name, attr_info in self.get_all_attributes().items():
+            value = getattr(self, field_name, None)
+            if value is None:
+                continue
+
+            attr_class = attr_info.typ
+            attr_name = attr_class.get_attribute_name()
+            ast_type = get_ast_value_type(attr_class)
+
+            # Handle lists (multi-value attributes)
+            values = value if isinstance(value, list) else [value]
+
+            for item in values:
+                # Unwrap attribute value
+                raw_val = item.value if isinstance(item, Attribute) else item
+
+                # Refine type based on actual value if needed
+                # (handles cases where base type is string but value is bool/int/float)
+                item_type: AstValueType
+                if ast_type == "string" and isinstance(raw_val, bool):
+                    item_type = "boolean"
+                elif ast_type == "string" and isinstance(raw_val, float):
+                    item_type = "double"
+                elif ast_type == "string" and isinstance(raw_val, int):
+                    item_type = "long"
+                else:
+                    item_type = ast_type
+
+                statements.append(
+                    HasStatement(
+                        subject_var=var,
+                        attr_name=attr_name,
+                        value=LiteralValue(value=raw_val, value_type=item_type),
+                    )
+                )
+
+        return statements
+
+    @abstractmethod
+    def to_ast(self, var: str = "$x") -> Any:
+        """Generate AST InsertClause for this instance.
+
+        Args:
+            var: Variable name to use
+
+        Returns:
+            InsertClause containing statements
+        """
+        ...
+
+    def to_insert_query(self, var: str = "$e") -> str:
+        """Generate TypeQL insert query string for this instance.
+
+        This is a convenience method that uses the AST-based generation
+        internally and compiles it to a string.
+
+        Args:
+            var: Variable name to use (default: "$e")
+
+        Returns:
+            TypeQL insert query string
+        """
+        from type_bridge.query.compiler import QueryCompiler
+
+        insert_clause = self.to_ast(var=var)
+        return QueryCompiler().compile(insert_clause)

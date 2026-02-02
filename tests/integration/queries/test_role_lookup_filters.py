@@ -448,5 +448,5 @@ def test_filter_string_lookup_on_integer_raises_error(setup_employment_data):
 
     manager = Employment.manager(db)
 
-    with pytest.raises(ValueError, match="String lookup.*requires a String"):
+    with pytest.raises(ValueError, match="Unsupported lookup operator 'contains' for Age"):
         manager.filter(employee__age__contains="30").execute()
