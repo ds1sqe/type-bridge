@@ -312,8 +312,8 @@ class TestBooleanExprValidation:
             name: BoolTestName = Flag(Key)
             age: BoolTestAge
 
-        expr1 = BoolTestPerson.c.age.gt(BoolTestAge(18))
-        expr2 = BoolTestPerson.c.age.lt(BoolTestAge(65))
+        expr1 = BoolTestPerson.age.gt(BoolTestAge(18))
+        expr2 = BoolTestPerson.age.lt(BoolTestAge(65))
 
         with pytest.raises(ValueError, match="NOT operation requires exactly 1 operand"):
             BooleanExpr("not", [expr1, expr2])
@@ -335,7 +335,7 @@ class TestBooleanExprValidation:
             name: AndTestName = Flag(Key)
             age: AndTestAge
 
-        expr = AndTestPerson.c.age.gt(AndTestAge(18))
+        expr = AndTestPerson.age.gt(AndTestAge(18))
 
         with pytest.raises(ValueError, match="AND operation requires at least 2 operands"):
             BooleanExpr("and", [expr])
@@ -357,7 +357,7 @@ class TestBooleanExprValidation:
             name: OrTestName = Flag(Key)
             age: OrTestAge
 
-        expr = OrTestPerson.c.age.gt(OrTestAge(18))
+        expr = OrTestPerson.age.gt(OrTestAge(18))
 
         with pytest.raises(ValueError, match="OR operation requires at least 2 operands"):
             BooleanExpr("or", [expr])
@@ -379,8 +379,8 @@ class TestBooleanExprValidation:
             name: AndOkName = Flag(Key)
             age: AndOkAge
 
-        expr1 = AndOkPerson.c.age.gt(AndOkAge(18))
-        expr2 = AndOkPerson.c.age.lt(AndOkAge(65))
+        expr1 = AndOkPerson.age.gt(AndOkAge(18))
+        expr2 = AndOkPerson.age.lt(AndOkAge(65))
 
         # Should not raise
         result = BooleanExpr("and", [expr1, expr2])
@@ -404,7 +404,7 @@ class TestBooleanExprValidation:
             name: NotOkName = Flag(Key)
             age: NotOkAge
 
-        expr = NotOkPerson.c.age.eq(NotOkAge(30))
+        expr = NotOkPerson.age.eq(NotOkAge(30))
 
         # Should not raise
         result = BooleanExpr("not", [expr])

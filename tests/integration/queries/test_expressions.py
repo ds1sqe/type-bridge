@@ -170,7 +170,7 @@ def test_greater_than_filter(setup_schema):
     manager = Person.manager(setup_schema)
 
     # age > 30
-    results = manager.filter(Person.c.age.gt(PersonAge(30))).execute()
+    results = manager.filter(Person.age.gt(PersonAge(30))).execute()
 
     assert len(results) == 3  # Bob(35), Charlie(45), Eve(52) - Frank(30) excluded
     ages = [p.age.value for p in results]
@@ -184,7 +184,7 @@ def test_less_than_filter(setup_schema):
     manager = Person.manager(setup_schema)
 
     # age < 30
-    results = manager.filter(Person.c.age.lt(PersonAge(30))).execute()
+    results = manager.filter(Person.age.lt(PersonAge(30))).execute()
 
     assert len(results) == 2  # Alice(25), Diana(28)
     ages = [p.age.value for p in results]
@@ -198,9 +198,7 @@ def test_range_query(setup_schema):
     manager = Person.manager(setup_schema)
 
     # 28 <= age <= 35
-    results = manager.filter(
-        Person.c.age.gte(PersonAge(28)), Person.c.age.lte(PersonAge(35))
-    ).execute()
+    results = manager.filter(Person.age.gte(PersonAge(28)), Person.age.lte(PersonAge(35))).execute()
 
     assert len(results) == 3  # Diana(28), Frank(30), Bob(35)
     ages = [p.age.value for p in results]
@@ -214,7 +212,7 @@ def test_equality_filter(setup_schema):
     manager = Person.manager(setup_schema)
 
     # age == 35
-    results = manager.filter(Person.c.age.eq(PersonAge(35))).execute()
+    results = manager.filter(Person.age.eq(PersonAge(35))).execute()
 
     assert len(results) == 1
     assert results[0].age.value == 35
@@ -228,7 +226,7 @@ def test_not_equal_filter(setup_schema):
     manager = Person.manager(setup_schema)
 
     # age != 35
-    results = manager.filter(Person.c.age.neq(PersonAge(35))).execute()
+    results = manager.filter(Person.age.neq(PersonAge(35))).execute()
 
     assert len(results) == 5  # All except Bob
     ages = [p.age.value for p in results]
@@ -247,7 +245,7 @@ def test_contains_filter(setup_schema):
     manager = Person.manager(setup_schema)
 
     # email contains '@company.com'
-    results = manager.filter(Person.c.email.contains(PersonEmail("@company.com"))).execute()
+    results = manager.filter(Person.email.contains(PersonEmail("@company.com"))).execute()
 
     assert len(results) == 4  # All except Charlie and Frank (gmail)
     for person in results:
@@ -261,7 +259,7 @@ def test_like_regex_filter(setup_schema):
     manager = Person.manager(setup_schema)
 
     # name starts with 'A' or 'B'
-    results = manager.filter(Person.c.name.like(PersonName("^[AB].*"))).execute()
+    results = manager.filter(Person.name.like(PersonName("^[AB].*"))).execute()
 
     assert len(results) == 2  # Alice, Bob
     for person in results:
@@ -281,7 +279,7 @@ def test_or_logic(setup_schema):
 
     # age < 28 OR age > 45
     results = manager.filter(
-        Person.c.age.lt(PersonAge(28)).or_(Person.c.age.gt(PersonAge(45)))
+        Person.age.lt(PersonAge(28)).or_(Person.age.gt(PersonAge(45)))
     ).execute()
 
     assert len(results) == 2  # Alice(25), Eve(52)
@@ -297,7 +295,7 @@ def test_and_logic_explicit(setup_schema):
 
     # Engineering AND age > 40
     results = manager.filter(
-        Person.c.department.eq(PersonDepartment("Engineering")).and_(Person.c.age.gt(PersonAge(40)))
+        Person.department.eq(PersonDepartment("Engineering")).and_(Person.age.gt(PersonAge(40)))
     ).execute()
 
     assert len(results) == 1  # Eve(52, Engineering)
@@ -314,7 +312,7 @@ def test_and_logic_implicit(setup_schema):
 
     # Engineering AND age > 30 (implicit AND)
     results = manager.filter(
-        Person.c.department.eq(PersonDepartment("Engineering")), Person.c.age.gt(PersonAge(30))
+        Person.department.eq(PersonDepartment("Engineering")), Person.age.gt(PersonAge(30))
     ).execute()
 
     assert len(results) == 2  # Bob(35), Eve(52)
@@ -330,9 +328,7 @@ def test_not_logic(setup_schema):
     manager = Person.manager(setup_schema)
 
     # NOT Engineering
-    results = manager.filter(
-        Person.c.department.eq(PersonDepartment("Engineering")).not_()
-    ).execute()
+    results = manager.filter(Person.department.eq(PersonDepartment("Engineering")).not_()).execute()
 
     assert len(results) == 3  # Charlie, Diana, Frank (not Engineering)
     for person in results:
@@ -347,8 +343,8 @@ def test_complex_boolean(setup_schema):
 
     # (age > 40 AND salary > 100k) OR score > 95
     results = manager.filter(
-        Person.c.age.gt(PersonAge(40))
-        .and_(Person.c.salary.gt(PersonSalary(100000.0)))
+        Person.age.gt(PersonAge(40))
+        .and_(Person.salary.gt(PersonSalary(100000.0)))
         .or_(PersonScore.gt(PersonScore(95.0)))
     ).execute()
 
@@ -372,7 +368,7 @@ def test_single_aggregation(setup_schema):
     manager = Person.manager(setup_schema)
 
     # Average age
-    result = manager.filter().aggregate(Person.c.age.avg())
+    result = manager.filter().aggregate(Person.age.avg())
 
     assert "avg_age" in result
     # Average of [25, 35, 45, 28, 52, 30] = 35.83...
@@ -387,11 +383,11 @@ def test_multiple_aggregations(setup_schema):
 
     # Multiple stats
     result = manager.filter().aggregate(
-        Person.c.age.avg(),
-        Person.c.salary.avg(),
-        Person.c.salary.sum(),
-        Person.c.salary.max(),
-        Person.c.salary.min(),
+        Person.age.avg(),
+        Person.salary.avg(),
+        Person.salary.sum(),
+        Person.salary.max(),
+        Person.salary.min(),
     )
 
     assert "avg_age" in result
@@ -413,8 +409,8 @@ def test_filtered_aggregation(setup_schema):
     manager = Person.manager(setup_schema)
 
     # Average salary for Engineering only
-    result = manager.filter(Person.c.department.eq(PersonDepartment("Engineering"))).aggregate(
-        Person.c.salary.avg()
+    result = manager.filter(Person.department.eq(PersonDepartment("Engineering"))).aggregate(
+        Person.salary.avg()
     )
 
     assert "avg_salary" in result
@@ -433,10 +429,8 @@ def test_group_by_single_field(setup_schema):
     """Test grouping by single field."""
     manager = Person.manager(setup_schema)
 
-    # Group by department using FieldsAccessor (Person.c.field)
-    result = manager.group_by(Person.c.department).aggregate(
-        Person.c.age.avg(), Person.c.salary.avg()
-    )
+    # Group by department using direct field access (Person.field)
+    result = manager.group_by(Person.department).aggregate(Person.age.avg(), Person.salary.avg())
 
     # Should have 3 departments
     assert len(result) == 3
@@ -460,9 +454,9 @@ def test_group_by_with_filter(setup_schema):
 
     # Group by department, only age > 30
     result = (
-        manager.filter(Person.c.age.gt(PersonAge(30)))
-        .group_by(Person.c.department)
-        .aggregate(Person.c.salary.avg())
+        manager.filter(Person.age.gt(PersonAge(30)))
+        .group_by(Person.department)
+        .aggregate(Person.salary.avg())
     )
 
     # Should have groups, but filtered
@@ -480,8 +474,8 @@ def test_group_by_multiple_fields(setup_schema):
     """Test grouping by multiple fields."""
     manager = Person.manager(setup_schema)
 
-    # Group by city AND department using FieldsAccessor
-    result = manager.group_by(Person.c.city, Person.c.department).aggregate(Person.c.age.avg())
+    # Group by city AND department using direct field access
+    result = manager.group_by(Person.city, Person.department).aggregate(Person.age.avg())
 
     # Should have tuple keys
     assert len(result) >= 3
@@ -533,7 +527,7 @@ def test_first(setup_schema):
     manager = Person.manager(setup_schema)
 
     # Get first Engineering employee
-    first = manager.filter(Person.c.department.eq(PersonDepartment("Engineering"))).first()
+    first = manager.filter(Person.department.eq(PersonDepartment("Engineering"))).first()
 
     assert first is not None
     assert first.department.value == "Engineering"
@@ -546,7 +540,7 @@ def test_count(setup_schema):
     manager = Person.manager(setup_schema)
 
     # Count Engineering employees
-    count = manager.filter(Person.c.department.eq(PersonDepartment("Engineering"))).count()
+    count = manager.filter(Person.department.eq(PersonDepartment("Engineering"))).count()
 
     assert count == 3  # Alice, Bob, Eve
 
@@ -566,8 +560,8 @@ def test_complex_query_promotion_candidates(setup_schema):
     # score > 90 AND salary < 100k AND age < 50
     candidates = manager.filter(
         PersonScore.gt(PersonScore(90.0)),
-        Person.c.salary.lt(PersonSalary(100000.0)),
-        Person.c.age.lt(PersonAge(50)),
+        Person.salary.lt(PersonSalary(100000.0)),
+        Person.age.lt(PersonAge(50)),
     ).execute()
 
     # Should find Alice(92.5, 75k, 25) - Frank(90, 82k, 30) excluded (score == 90, not > 90)
@@ -587,7 +581,7 @@ def test_complex_query_with_aggregation(setup_schema):
 
     # High performers' average salary
     result = manager.filter(PersonScore.gt(PersonScore(90.0))).aggregate(
-        Person.c.salary.avg(), Person.c.age.avg()
+        Person.salary.avg(), Person.age.avg()
     )
 
     assert "avg_salary" in result
@@ -620,7 +614,7 @@ def test_mixed_dict_and_expression_filters(setup_schema):
 
     # Mix old and new style
     results = manager.filter(
-        Person.c.age.gt(PersonAge(30)),  # Expression
+        Person.age.gt(PersonAge(30)),  # Expression
         department="Engineering",  # Dict filter
     ).execute()
 

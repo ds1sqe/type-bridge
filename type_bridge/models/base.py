@@ -52,9 +52,6 @@ class TypeDBType(BaseModel, ABC):
     # TypeDB internal ID - treated as private attribute by Pydantic
     _iid: str | None = PrivateAttr(default=None)
 
-    # Fields accessor for query building
-    c: ClassVar[Any]  # Any to avoid circular import in type hint
-
     @classmethod
     @abstractmethod
     def _get_manager_class(cls) -> type[BaseManager]:
@@ -105,11 +102,6 @@ class TypeDBType(BaseModel, ABC):
         """Called when a TypeDBType subclass is created."""
         super().__init_subclass__()
 
-        # Initialize fields accessor
-        from type_bridge.models.fields_accessor import FieldsAccessor
-
-        cls.c = FieldsAccessor(cls)
-
         # Get TypeFlags if defined, otherwise create new default flags
         # Check if flags is defined directly on this class (not inherited)
         if "flags" in cls.__dict__ and isinstance(cls.__dict__["flags"], TypeFlags):
@@ -136,6 +128,26 @@ class TypeDBType(BaseModel, ABC):
         # Register model in the central registry
         ModelRegistry.register(cls)
 
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Called by Pydantic after model class initialization.
+
+        Injects FieldDescriptor instances for class-level query access.
+        This runs after Pydantic's setup is complete, so descriptors won't be removed.
+
+        Example:
+            Person.age  # Returns FieldRef for query building (class-level access)
+            person.age  # Returns attribute value (instance-level access)
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+
+        from type_bridge.fields import FieldDescriptor
+
+        # Inject FieldDescriptors for class-level query access
+        for field_name, attr_info in cls._owned_attrs.items():
+            descriptor = FieldDescriptor(field_name=field_name, attr_type=attr_info.typ)
+            type.__setattr__(cls, field_name, descriptor)
+
     @model_validator(mode="wrap")
     @classmethod
     def _wrap_raw_values(cls, values, handler):
@@ -159,9 +171,9 @@ class TypeDBType(BaseModel, ABC):
         if preserved_iid is not None and getattr(instance, "_iid", None) is None:
             object.__setattr__(instance, "_iid", preserved_iid)
 
-        # Then wrap any raw values
-        owned_attrs = cls.get_owned_attributes()
-        for field_name, attr_info in owned_attrs.items():
+        # Then wrap any raw values (including inherited attributes)
+        all_attrs = cls.get_all_attributes()
+        for field_name, attr_info in all_attrs.items():
             value = getattr(instance, field_name, None)
             flags = attr_info.flags
             attr_class = attr_info.typ
@@ -181,6 +193,15 @@ class TypeDBType(BaseModel, ABC):
                     )
 
             if value is None:
+                continue
+
+            # Skip FieldRef objects - these appear when the descriptor is accessed
+            # as a default value during model construction (field wasn't actually set)
+            from type_bridge.fields.base import FieldRef
+
+            if isinstance(value, FieldRef):
+                # Clear the FieldRef from the instance - field was not set
+                object.__setattr__(instance, field_name, None)
                 continue
 
             # Check if it's a list (multi-value attribute)

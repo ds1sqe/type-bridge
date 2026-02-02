@@ -953,7 +953,7 @@ class TypeDBManager[T: "TypeDBType"]:
         """Create a chainable query with filters.
 
         Args:
-            *expressions: Expression objects (Person.c.age.gt(Age(30)), etc.)
+            *expressions: Expression objects (Person.age.gt(Age(30)), etc.)
             **filters: Attribute filters (exact match) - age=30, name="Alice"
 
         Returns:
@@ -1015,7 +1015,7 @@ class TypeDBManager[T: "TypeDBType"]:
 
         Example:
             # Group by department, compute average age per department
-            result = manager.group_by(Person.department).aggregate(Person.c.age.avg())
+            result = manager.group_by(Person.department).aggregate(Person.age.avg())
             # Returns: {
             #   "Engineering": {"avg_age": 35.5},
             #   "Sales": {"avg_age": 28.3}
@@ -1386,21 +1386,21 @@ class TypeDBQuery[T: "TypeDBType"]:
         Performs database-side aggregations for efficiency.
 
         Args:
-            *aggregates: AggregateExpr objects (Person.c.age.avg(), Person.c.score.sum(), etc.)
+            *aggregates: AggregateExpr objects (Person.age.avg(), Person.score.sum(), etc.)
 
         Returns:
             Dictionary mapping aggregate keys to results
 
         Examples:
             # Single aggregation
-            result = manager.filter().aggregate(Person.c.age.avg())
+            result = manager.filter().aggregate(Person.age.avg())
             avg_age = result['avg_age']
 
             # Multiple aggregations
-            result = manager.filter(Person.c.city.eq(City("NYC"))).aggregate(
-                Person.c.age.avg(),
-                Person.c.score.sum(),
-                Person.c.salary.max()
+            result = manager.filter(Person.city.eq(City("NYC"))).aggregate(
+                Person.age.avg(),
+                Person.score.sum(),
+                Person.salary.max()
             )
         """
         from type_bridge.crud.aggregates import parse_aggregate_results
@@ -1461,7 +1461,7 @@ class TypeDBQuery[T: "TypeDBType"]:
             GroupByQuery for chained aggregations
 
         Example:
-            result = manager.group_by(Person.department).aggregate(Person.c.age.avg())
+            result = manager.group_by(Person.department).aggregate(Person.age.avg())
         """
         return GroupByQuery(
             self._manager,
@@ -1508,7 +1508,7 @@ class GroupByQuery[T: "TypeDBType"]:
 
         Example:
             # Group by department, compute average age per department
-            result = manager.group_by(Person.department).aggregate(Person.c.age.avg())
+            result = manager.group_by(Person.department).aggregate(Person.age.avg())
             # Returns: {
             #   "Engineering": {"avg_age": 35.5},
             #   "Sales": {"avg_age": 28.3}
