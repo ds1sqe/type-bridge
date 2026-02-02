@@ -348,6 +348,43 @@ class TypeDBType(BaseModel, ABC):
         return all_attrs
 
     @classmethod
+    def get_polymorphic_attributes(cls) -> dict[str, ModelAttrInfo]:
+        """Get all attributes including those from registered subtypes.
+
+        For polymorphic queries where the base class is used but concrete
+        subtypes may be returned, this method collects attributes from all
+        known subtypes so the query can fetch all possible attributes.
+
+        Returns:
+            Dictionary mapping field names to ModelAttrInfo, including
+            attributes from all registered subtypes.
+        """
+        from type_bridge.models.registry import ModelRegistry
+
+        # Start with this class's attributes (including inherited)
+        all_attrs = cls.get_all_attributes()
+
+        # Recursively collect attributes from all subclasses
+        def collect_subclass_attrs(klass: type[TypeDBType]) -> None:
+            for subclass in klass.__subclasses__():
+                # Skip if subclass is a base class (abstract, Python-only)
+                if hasattr(subclass, "is_base") and subclass.is_base():
+                    continue
+
+                # Get subclass attributes and merge (subclass attrs take precedence)
+                if hasattr(subclass, "get_all_attributes"):
+                    subclass_attrs = subclass.get_all_attributes()
+                    for field_name, attr_info in subclass_attrs.items():
+                        if field_name not in all_attrs:
+                            all_attrs[field_name] = attr_info
+
+                # Recurse into further subclasses
+                collect_subclass_attrs(subclass)
+
+        collect_subclass_attrs(cls)
+        return all_attrs
+
+    @classmethod
     def _build_owns_lines(cls) -> list[str]:
         """Build TypeQL 'owns' lines for schema definition.
 

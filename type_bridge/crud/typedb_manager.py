@@ -24,6 +24,7 @@ from type_bridge.query.ast import (
     FetchClause,
     FetchFunction,
     FetchItem,
+    FetchNestedWildcard,
     FunctionCallValue,
     MatchClause,
     Pattern,
@@ -100,6 +101,45 @@ class TypeDBManager[T: "TypeDBType"]:
     ) -> str:
         """Compile fetch items to a fetch clause string."""
         return self.compiler.compile(FetchClause(items=cast(list[FetchItem | str], items)))
+
+    def _build_wildcard_fetch(
+        self,
+        var: str,
+        *,
+        include_iid: bool = True,
+        include_type: bool = True,
+    ) -> str:
+        """Build a fetch clause using wildcard syntax for all attributes.
+
+        Uses the nested wildcard syntax to fetch all attributes including
+        subtype-specific ones, combined with iid() and label() functions.
+
+        Generates: fetch {
+          "_iid": iid($var),
+          "_type": label($t),
+          "attributes": { $var.* }
+        };
+
+        Args:
+            var: The variable to fetch from (e.g., "$ent")
+            include_iid: Whether to include _iid fetch
+            include_type: Whether to include _type fetch (requires $t type variable)
+
+        Returns:
+            Compiled fetch clause string
+        """
+        items: list[FetchItem | str] = []
+
+        if include_iid:
+            items.append(FetchFunction(key="_iid", func_name="iid", var=var))
+
+        if include_type:
+            items.append(FetchFunction(key="_type", func_name="label", var="$t"))
+
+        # Use nested wildcard to fetch all attributes including subtype-specific ones
+        items.append(FetchNestedWildcard(key="attributes", var=var))
+
+        return self.compiler.compile(FetchClause(items=items))
 
     def _build_count_reduce(self, var: str, result_var: str = "$count") -> str:
         """Build a reduce count clause string.
@@ -484,10 +524,8 @@ class TypeDBManager[T: "TypeDBType"]:
 
         match_str = self.compiler.compile(match_clause)
 
-        # Build fetch clause with type label for polymorphic resolution
-        all_attrs = self.model_class.get_all_attributes()
-        fetch_items = self._build_fetch_items(var, all_attrs, include_iid=True, include_type=True)
-        fetch_clause_str = self._compile_fetch(fetch_items)
+        # Build fetch clause using wildcard to get all attributes including subtype-specific ones
+        fetch_clause_str = self._build_wildcard_fetch(var, include_iid=True, include_type=True)
         query = match_str + "\n" + fetch_clause_str
 
         results = self._execute(query, TransactionType.READ)
@@ -502,6 +540,9 @@ class TypeDBManager[T: "TypeDBType"]:
 
                 type_label = result.pop("_type", None)
 
+                # Extract attributes from nested "attributes" key (wildcard fetch structure)
+                attrs = result.pop("attributes", result)
+
                 if type_label and type_label != base_type:
                     concrete_class = ModelRegistry.get(type_label)
                     if concrete_class is None:
@@ -514,7 +555,7 @@ class TypeDBManager[T: "TypeDBType"]:
 
                 assert concrete_class is not None, "Failed to resolve concrete class"
                 entity_class = cast(type[Entity], concrete_class)
-                instance = entity_class.from_dict(result, strict=False)
+                instance = entity_class.from_dict(attrs, strict=False)
                 if iid:
                     object.__setattr__(instance, "_iid", iid)
                 instances.append(instance)
@@ -926,12 +967,9 @@ class TypeDBManager[T: "TypeDBType"]:
             match_clause = MatchClause(patterns=[entity_pattern, subtype_pattern])
             match_str = self.compiler.compile(match_clause)
 
-            # Build fetch clause with type label (no IID needed - already have it)
-            all_attrs = self.model_class.get_all_attributes()
-            fetch_items = self._build_fetch_items(
-                var, all_attrs, include_iid=False, include_type=True
-            )
-            fetch_clause_str = self._compile_fetch(fetch_items)
+            # Build fetch clause using wildcard to get all attributes including subtype-specific ones
+            # No IID needed in fetch - we already have it from input
+            fetch_clause_str = self._build_wildcard_fetch(var, include_iid=False, include_type=True)
             query = match_str + "\n" + fetch_clause_str
 
             results = self._execute(query, TransactionType.READ)
@@ -942,6 +980,9 @@ class TypeDBManager[T: "TypeDBType"]:
             try:
                 result = results[0]
                 type_label = result.pop("_type", None)
+
+                # Extract attributes from nested "attributes" key (wildcard fetch structure)
+                attrs = result.pop("attributes", result)
 
                 # Resolve concrete class
                 if type_label and type_label != base_type:
@@ -956,7 +997,7 @@ class TypeDBManager[T: "TypeDBType"]:
 
                 assert concrete_class is not None, "Failed to resolve concrete class"
                 entity_class = cast(type[Entity], concrete_class)
-                instance = entity_class.from_dict(result, strict=False)
+                instance = entity_class.from_dict(attrs, strict=False)
                 object.__setattr__(instance, "_iid", iid)
                 return cast(T | None, instance)
             except Exception as e:
@@ -1192,11 +1233,9 @@ class TypeDBQuery[T: "TypeDBType"]:
 
         match_str = self._manager.compiler.compile(match_clause)
 
-        # Build fetch clause with type label for polymorphic resolution
-        # Note: For polymorphic queries, we can only fetch attributes that exist on
-        # the queried type (TypeDB type-checks all fetched attributes)
-        fetch_items = self._manager._build_fetch_items(
-            var, all_attrs, include_iid=True, include_type=True
+        # Build fetch clause using wildcard to get all attributes including subtype-specific ones
+        fetch_clause_str = self._manager._build_wildcard_fetch(
+            var, include_iid=True, include_type=True
         )
 
         # offset must come BEFORE limit
@@ -1206,8 +1245,6 @@ class TypeDBQuery[T: "TypeDBType"]:
             modifier_clauses.append(f"limit {self._limit_val};")
 
         modifier_str = "\n".join(modifier_clauses)
-
-        fetch_clause_str = self._manager._compile_fetch(fetch_items)
 
         # Build final query: match ; modifiers ; fetch
         if modifier_str:
@@ -1231,6 +1268,9 @@ class TypeDBQuery[T: "TypeDBType"]:
                 # Get actual type label for polymorphic resolution
                 type_label = result.pop("_type", None)
 
+                # Extract attributes from nested "attributes" key (wildcard fetch structure)
+                attrs = result.pop("attributes", result)
+
                 # Resolve concrete class from type label
                 if type_label and type_label != base_type:
                     concrete_class = ModelRegistry.get(type_label)
@@ -1243,7 +1283,7 @@ class TypeDBQuery[T: "TypeDBType"]:
 
                 assert concrete_class is not None, "Failed to resolve concrete class"
                 entity_class = cast(type[Entity], concrete_class)
-                instance = entity_class.from_dict(result, strict=False)
+                instance = entity_class.from_dict(attrs, strict=False)
                 if iid:
                     object.__setattr__(instance, "_iid", iid)
                 instances.append(instance)

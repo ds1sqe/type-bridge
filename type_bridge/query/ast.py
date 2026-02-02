@@ -344,6 +344,20 @@ class FetchWildcard(FetchItem):
 
 
 @dataclass
+class FetchNestedWildcard(FetchItem):
+    """Fetch all attributes of a variable in a nested object.
+
+    Generates: "key": { $var.* }
+
+    This is used when you need to combine wildcard with other fetch items
+    like label() and iid(), since TypeDB doesn't allow mixing $var.* with
+    key-value pairs at the same level.
+    """
+
+    var: str
+
+
+@dataclass
 class FetchClause(Clause):
     """A fetch clause defining output structure.
 
