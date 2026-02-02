@@ -13,7 +13,7 @@ from typing import (
 
 from pydantic import ConfigDict
 
-from type_bridge.attribute import Attribute, AttributeFlags, TypeFlags
+from type_bridge.attribute import AttributeFlags, TypeFlags
 from type_bridge.crud.utils import extract_entity_key, unwrap_attribute
 from type_bridge.models.base import TypeDBType
 from type_bridge.models.role import Role
@@ -130,13 +130,7 @@ class Relation(TypeDBType):
         Returns:
             InsertClause containing statements
         """
-        from type_bridge.query.ast import (
-            HasStatement,
-            InsertClause,
-            LiteralValue,
-            RelationStatement,
-            Statement,
-        )
+        from type_bridge.query.ast import InsertClause, RelationStatement, Statement
         from type_bridge.query.ast import RolePlayer as AstRolePlayer
 
         type_name = self.get_type_name()
@@ -165,45 +159,8 @@ class Relation(TypeDBType):
                         AstRolePlayer(role=role.role_name, player_var=player_var)
                     )
 
-        # Collect attribute ownerships inline (for TypeDB 3.x insert without variable)
-        # Use get_all_attributes() to include inherited attributes
-        inline_attributes = []
-        for field_name, attr_info in self.get_all_attributes().items():
-            value = getattr(self, field_name, None)
-            if value is not None:
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-
-                # Get AST value type from shared utility
-                from type_bridge.models.utils import AstValueType, get_ast_value_type
-
-                ast_type = get_ast_value_type(attr_class)
-
-                # Handle lists (multi-value attributes)
-                values = value if isinstance(value, list) else [value]
-
-                for item in values:
-                    # Unwrap attribute value
-                    raw_val = item.value if isinstance(item, Attribute) else item
-
-                    # Refine type based on actual value if needed
-                    item_type: AstValueType
-                    if ast_type == "string" and isinstance(raw_val, bool):
-                        item_type = "boolean"
-                    elif ast_type == "string" and isinstance(raw_val, float):
-                        item_type = "double"
-                    elif ast_type == "string" and isinstance(raw_val, int):
-                        item_type = "long"
-                    else:
-                        item_type = ast_type
-
-                    inline_attributes.append(
-                        HasStatement(
-                            subject_var=var,
-                            attr_name=attr_name,
-                            value=LiteralValue(value=raw_val, value_type=item_type),
-                        )
-                    )
+        # Collect attribute statements using shared helper from TypeDBType
+        inline_attributes = self._build_attribute_statements(var)
 
         statements: list[Statement] = [
             RelationStatement(

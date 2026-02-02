@@ -475,6 +475,62 @@ class TypeDBType(BaseModel, ABC):
         """
         return _format_value_impl(value)
 
+    def _build_attribute_statements(self, var: str) -> list[Any]:
+        """Build HasStatement AST nodes for all attributes on this instance.
+
+        This is a shared helper used by both Entity.to_ast and Relation.to_ast
+        to avoid code duplication in attribute serialization logic.
+
+        Args:
+            var: Variable name to use (e.g., "$e" or "$r")
+
+        Returns:
+            List of HasStatement AST nodes for non-None attribute values
+        """
+        from type_bridge.attribute import Attribute
+        from type_bridge.models.utils import AstValueType, get_ast_value_type
+        from type_bridge.query.ast import HasStatement, LiteralValue
+
+        statements: list[HasStatement] = []
+
+        for field_name, attr_info in self.get_all_attributes().items():
+            value = getattr(self, field_name, None)
+            if value is None:
+                continue
+
+            attr_class = attr_info.typ
+            attr_name = attr_class.get_attribute_name()
+            ast_type = get_ast_value_type(attr_class)
+
+            # Handle lists (multi-value attributes)
+            values = value if isinstance(value, list) else [value]
+
+            for item in values:
+                # Unwrap attribute value
+                raw_val = item.value if isinstance(item, Attribute) else item
+
+                # Refine type based on actual value if needed
+                # (handles cases where base type is string but value is bool/int/float)
+                item_type: AstValueType
+                if ast_type == "string" and isinstance(raw_val, bool):
+                    item_type = "boolean"
+                elif ast_type == "string" and isinstance(raw_val, float):
+                    item_type = "double"
+                elif ast_type == "string" and isinstance(raw_val, int):
+                    item_type = "long"
+                else:
+                    item_type = ast_type
+
+                statements.append(
+                    HasStatement(
+                        subject_var=var,
+                        attr_name=attr_name,
+                        value=LiteralValue(value=raw_val, value_type=item_type),
+                    )
+                )
+
+        return statements
+
     @abstractmethod
     def to_ast(self, var: str = "$x") -> Any:
         """Generate AST InsertClause for this instance.

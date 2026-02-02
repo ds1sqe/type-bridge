@@ -140,53 +140,13 @@ class Entity(TypeDBType):
         Returns:
             InsertClause containing statements
         """
-        from type_bridge.models.utils import AstValueType, get_ast_value_type
-        from type_bridge.query.ast import (
-            HasStatement,
-            InsertClause,
-            IsaStatement,
-            LiteralValue,
-            Statement,
-        )
+        from type_bridge.query.ast import InsertClause, IsaStatement, Statement
 
         type_name = self.get_type_name()
         statements: list[Statement] = [IsaStatement(variable=var, type_name=type_name)]
 
-        # Use get_all_attributes to include inherited attributes
-        for field_name, attr_info in self.get_all_attributes().items():
-            value = getattr(self, field_name, None)
-            if value is not None:
-                attr_class = attr_info.typ
-                attr_name = attr_class.get_attribute_name()
-
-                # Get AST value type from shared utility
-                ast_type = get_ast_value_type(attr_class)
-
-                # Handle lists (multi-value attributes)
-                values = value if isinstance(value, list) else [value]
-
-                for item in values:
-                    # Unwrap attribute value
-                    raw_val = item.value if isinstance(item, Attribute) else item
-
-                    # Refine type based on actual value if needed
-                    item_type: AstValueType
-                    if ast_type == "string" and isinstance(raw_val, bool):
-                        item_type = "boolean"
-                    elif ast_type == "string" and isinstance(raw_val, float):
-                        item_type = "double"
-                    elif ast_type == "string" and isinstance(raw_val, int):
-                        item_type = "long"
-                    else:
-                        item_type = ast_type
-
-                    statements.append(
-                        HasStatement(
-                            subject_var=var,
-                            attr_name=attr_name,
-                            value=LiteralValue(value=raw_val, value_type=item_type),
-                        )
-                    )
+        # Add attribute statements using shared helper from TypeDBType
+        statements.extend(self._build_attribute_statements(var))
 
         return InsertClause(statements=statements)
 
