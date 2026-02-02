@@ -249,9 +249,9 @@ class TestRolePlayerExpressionToTypeQL:
         expr = Employment.employee.age.gt(Age(30))
         typeql = expr.to_typeql("$employee")
 
-        # Should use role-prefixed variable names
-        assert "$employee has Age $employee_age" in typeql
-        assert "$employee_age > 30" in typeql
+        # Should use role-prefixed variable names (double underscore separator)
+        assert "$employee has Age $employee__age" in typeql
+        assert "$employee__age > 30" in typeql
 
     def test_string_contains_generates_correct_typeql(self):
         """String contains expression should generate correct TypeQL."""
@@ -260,9 +260,9 @@ class TestRolePlayerExpressionToTypeQL:
         expr = employer_name_ref.contains(Name("Tech"))
         typeql = expr.to_typeql("$employer")
 
-        assert "$employer has Name $employer_name" in typeql
+        assert "$employer has Name $employer__name" in typeql
         # TypeQL 3.x uses infix syntax for contains
-        assert '$employer_name contains "Tech"' in typeql
+        assert '$employer__name contains "Tech"' in typeql
 
 
 class TestRoleInstanceAccess:

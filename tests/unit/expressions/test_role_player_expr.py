@@ -52,9 +52,9 @@ def test_role_player_expr_to_typeql_delegates_to_inner():
     )
     # The inner expression generates TypeQL with the role variable
     result = role_expr.to_typeql("$employee")
-    # Should use unique variable name $employee_age (attr type name is "Age")
-    assert "$employee has Age $employee_age" in result
-    assert "$employee_age > 30" in result
+    # Should use unique variable name $employee__age (double underscore separator)
+    assert "$employee has Age $employee__age" in result
+    assert "$employee__age > 30" in result
 
 
 def test_role_player_expr_get_attribute_types():
@@ -111,9 +111,9 @@ def test_role_player_expr_unique_variable_naming():
     actor_typeql = actor_expr.to_typeql("$actor")
     target_typeql = target_expr.to_typeql("$target")
 
-    # Should use $actor_name and $target_name, not both $name
-    assert "$actor_name" in actor_typeql
-    assert "$target_name" in target_typeql
+    # Should use $actor__name and $target__name (double underscore), not both $name
+    assert "$actor__name" in actor_typeql
+    assert "$target__name" in target_typeql
     assert "$name" not in actor_typeql  # Should NOT use generic $name
     assert "$name" not in target_typeql
 
@@ -127,8 +127,8 @@ def test_role_player_expr_with_string_expr():
         player_types=(Company,),
     )
     result = role_expr.to_typeql("$employer")
-    # Attribute type name is "Name" (class name)
-    assert "$employer has Name $employer_name" in result
+    # Attribute type name is "Name" (class name), double underscore separator
+    assert "$employer has Name $employer__name" in result
     assert "contains" in result
 
 
@@ -146,6 +146,6 @@ def test_role_player_expr_multi_player_types():
         player_types=(Person, Company),  # Simulating Role.multi
     )
     assert role_expr.player_types == (Person, Company)
-    # to_typeql still works the same way (attr type name is "Name")
+    # to_typeql still works the same way (attr type name is "Name", double underscore)
     result = role_expr.to_typeql("$actor")
-    assert "$actor has Name $actor_name" in result
+    assert "$actor has Name $actor__name" in result

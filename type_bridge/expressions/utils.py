@@ -36,22 +36,31 @@ def generate_attr_var(var: str, attr_type: type["Attribute"]) -> str:
     a unique variable that won't collide with other entities using the same
     attribute type in the same query.
 
+    Uses double underscore ``__`` as separator to prevent collisions between
+    variables like ``$actor_name`` + attr ``status`` vs ``$actor`` + attr ``name_status``.
+    Also sanitizes hyphens to underscores since TypeDB variables cannot contain hyphens.
+
     Args:
         var: Entity variable name (e.g., "$e", "$actor")
         attr_type: Attribute type class
 
     Returns:
-        Unique attribute variable (e.g., "$actor_name")
+        Unique attribute variable (e.g., "$actor__name")
 
     Example:
         >>> generate_attr_var("$actor", Name)
-        "$actor_name"
+        "$actor__name"
         >>> generate_attr_var("$e", Age)
-        "$e_age"
+        "$e__age"
+        >>> generate_attr_var("$e", BirthDate)  # with name="birth-date"
+        "$e__birth_date"
     """
     attr_type_name = attr_type.get_attribute_name()
+    # Sanitize: replace hyphens with underscores (TypeDB vars can't have hyphens)
+    sanitized_attr = attr_type_name.lower().replace("-", "_")
     var_prefix = var.lstrip("$")
-    return f"${var_prefix}_{attr_type_name.lower()}"
+    # Use double underscore separator to prevent collisions
+    return f"${var_prefix}__{sanitized_attr}"
 
 
 def generate_has_pattern(var: str, attr_type: type["Attribute"]) -> tuple[str, str]:
@@ -66,12 +75,12 @@ def generate_has_pattern(var: str, attr_type: type["Attribute"]) -> tuple[str, s
 
     Returns:
         Tuple of (attr_var, pattern) where:
-        - attr_var: The generated attribute variable (e.g., "$actor_name")
-        - pattern: The 'has' pattern (e.g., "$actor has name $actor_name")
+        - attr_var: The generated attribute variable (e.g., "$actor__name")
+        - pattern: The 'has' pattern (e.g., "$actor has name $actor__name")
 
     Example:
         >>> generate_has_pattern("$actor", Name)
-        ("$actor_name", "$actor has name $actor_name")
+        ("$actor__name", "$actor has name $actor__name")
     """
     attr_type_name = attr_type.get_attribute_name()
     attr_var = generate_attr_var(var, attr_type)
