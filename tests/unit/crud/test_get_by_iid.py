@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
 
 
@@ -25,37 +23,40 @@ class TestGetByIidValidation:
     """Tests for get_by_iid method parameter validation."""
 
     @patch("type_bridge.crud.typedb_manager.ConnectionExecutor")
-    def test_raises_on_empty_iid(self, mock_executor):
-        """Test raises ValueError for empty IID."""
+    def test_returns_none_on_empty_iid(self, mock_executor):
+        """Test returns None for empty IID (graceful handling)."""
         from type_bridge.crud import TypeDBManager
 
         mock_connection = MagicMock()
         manager = TypeDBManager(mock_connection, PersonModel)
 
-        with pytest.raises(ValueError, match="Invalid IID format"):
-            manager.get_by_iid("")
+        # Invalid IIDs return None instead of raising (not found)
+        result = manager.get_by_iid("")
+        assert result is None
 
     @patch("type_bridge.crud.typedb_manager.ConnectionExecutor")
-    def test_raises_on_invalid_iid_format(self, mock_executor):
-        """Test raises ValueError for IID not starting with 0x."""
+    def test_returns_none_on_invalid_iid_format(self, mock_executor):
+        """Test returns None for IID not starting with 0x (graceful handling)."""
         from type_bridge.crud import TypeDBManager
 
         mock_connection = MagicMock()
         manager = TypeDBManager(mock_connection, PersonModel)
 
-        with pytest.raises(ValueError, match="Invalid IID format"):
-            manager.get_by_iid("1e00000000000000000000")
+        # Invalid IIDs return None instead of raising (not found)
+        result = manager.get_by_iid("1e00000000000000000000")
+        assert result is None
 
     @patch("type_bridge.crud.typedb_manager.ConnectionExecutor")
-    def test_raises_on_none_iid(self, mock_executor):
-        """Test raises ValueError for None IID."""
+    def test_returns_none_on_none_iid(self, mock_executor):
+        """Test returns None for None IID (graceful handling)."""
         from type_bridge.crud import TypeDBManager
 
         mock_connection = MagicMock()
         manager = TypeDBManager(mock_connection, PersonModel)
 
-        with pytest.raises(ValueError, match="Invalid IID format"):
-            manager.get_by_iid(None)  # type: ignore
+        # Invalid IIDs return None instead of raising (not found)
+        result = manager.get_by_iid(None)  # type: ignore
+        assert result is None
 
     @patch("type_bridge.crud.typedb_manager.ConnectionExecutor")
     def test_accepts_valid_iid_format(self, mock_executor):

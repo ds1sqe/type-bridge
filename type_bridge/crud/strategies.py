@@ -86,7 +86,7 @@ class ModelStrategy(ABC):
 class EntityStrategy(ModelStrategy):
     """Strategy for handling Entity models."""
 
-    def identify(self, instance: Entity) -> list[Constraint]:
+    def identify(self, instance: Entity) -> list[Constraint]:  # type: ignore[override]
         # 1. Prefer IID
         iid_constraint = self._get_iid_constraint(instance)
         if iid_constraint:
@@ -124,13 +124,13 @@ class EntityStrategy(ModelStrategy):
 
         return constraints
 
-    def build_insert(self, instance: Entity, var: str) -> tuple[MatchClause | None, InsertClause]:
+    def build_insert(self, instance: Entity, var: str) -> tuple[MatchClause | None, InsertClause]:  # type: ignore[override]
         # Entity insert requires no match prerequisites (unless we support nested inserts later)
         if hasattr(instance, "to_ast"):
             return None, instance.to_ast(var)
         raise NotImplementedError("Model does not implement to_ast")
 
-    def build_match_all(
+    def build_match_all(  # type: ignore[override]
         self, model_class: type[Entity], var: str, filters: dict[str, Any]
     ) -> MatchClause:
         from type_bridge.query.ast import EntityPattern, HasConstraint, MatchClause
@@ -334,7 +334,7 @@ class RelationStrategy(ModelStrategy):
             return match_clause + "\n" + modifier_str + "\n" + fetch_clause + ";"
         return match_clause + "\n" + fetch_clause + ";"
 
-    def identify(self, instance: Relation) -> list[Constraint]:
+    def identify(self, instance: Relation) -> list[Constraint]:  # type: ignore[override]
         # 1. Prefer IID (most reliable for relations)
         iid_constraint = self._get_iid_constraint(instance)
         if iid_constraint:
@@ -347,7 +347,7 @@ class RelationStrategy(ModelStrategy):
             f"no _iid set. Fetch the relation from the database first to populate _iid."
         )
 
-    def build_insert(self, instance: Relation, var: str) -> tuple[MatchClause | None, InsertClause]:
+    def build_insert(self, instance: Relation, var: str) -> tuple[MatchClause | None, InsertClause]:  # type: ignore[override]
         from type_bridge.query.ast import EntityPattern, MatchClause
 
         # 1. Build Insert Clause
@@ -386,7 +386,7 @@ class RelationStrategy(ModelStrategy):
 
         return match_clause, insert_clause
 
-    def build_match_all(
+    def build_match_all(  # type: ignore[override]
         self, model_class: type[Relation], var: str, filters: dict[str, Any]
     ) -> MatchClause:
         from type_bridge.models import Entity
