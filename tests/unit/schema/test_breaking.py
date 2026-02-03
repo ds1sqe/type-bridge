@@ -1,12 +1,12 @@
 """Unit tests for breaking change analyzer."""
 
 from type_bridge import Entity, Integer, Relation, Role, String, TypeFlags
-from type_bridge.schema.breaking import (
+from type_bridge.migration.breaking import (
     BreakingChangeAnalyzer,
     ChangeCategory,
     ClassifiedChange,
 )
-from type_bridge.schema.diff import (
+from type_bridge.migration.diff import (
     AttributeFlagChange,
     EntityChanges,
     RelationChanges,

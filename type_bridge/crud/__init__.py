@@ -1,40 +1,35 @@
 """CRUD operations for TypeDB entities and relations.
 
-This module provides managers and query builders for performing
+This module provides the unified TypeDBManager for performing
 CRUD (Create, Read, Update, Delete) operations on TypeDB entities
 and relations with type safety.
-
-The module is organized into submodules:
-- entity: Entity-related CRUD operations
-- relation: Relation-related CRUD operations
-- utils: Shared utilities
-- base: Base type definitions
 """
 
-# Re-export for backward compatibility
-from .entity import EntityManager, EntityQuery, GroupByQuery
 from .exceptions import (
     EntityNotFoundError,
+    HydrationError,
     KeyAttributeError,
     NotFoundError,
     NotUniqueError,
     RelationNotFoundError,
 )
-from .relation import RelationGroupByQuery, RelationManager, RelationQuery
+from .strategies import EntityStrategy, ModelStrategy, RelationStrategy
+from .typedb_manager import GroupByQuery, TypeDBManager, TypeDBQuery
 
 __all__ = [
-    # Entity operations
-    "EntityManager",
-    "EntityQuery",
+    # Unified manager
+    "TypeDBManager",
+    "TypeDBQuery",
     "GroupByQuery",
-    # Relation operations
-    "RelationManager",
-    "RelationQuery",
-    "RelationGroupByQuery",
+    # Strategies
+    "ModelStrategy",
+    "EntityStrategy",
+    "RelationStrategy",
     # Exceptions
     "NotFoundError",
     "EntityNotFoundError",
     "RelationNotFoundError",
     "NotUniqueError",
     "KeyAttributeError",
+    "HydrationError",
 ]

@@ -172,7 +172,7 @@ def test_pydantic_with_optional_fields():
     class Person(Entity):
         flags = TypeFlags(name="person")
         name: Name
-        email: Email | None  # Optional field (PEP 604 syntax)
+        email: Email | None = None  # Optional field with explicit default
 
     # Create without optional field - testing type coercion
     alice = Person(name="Alice")

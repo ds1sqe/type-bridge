@@ -28,6 +28,7 @@ from type_bridge.expressions.base import Expression
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
     from type_bridge.models.base import TypeDBType
+    from type_bridge.query.ast import Pattern
 
 
 class RolePlayerExpr[T: "TypeDBType"](Expression):
@@ -73,26 +74,13 @@ class RolePlayerExpr[T: "TypeDBType"](Expression):
         self.inner_expr = inner_expr
         self.player_types = player_types
 
-    def to_typeql(self, var: str) -> str:
-        """Generate TypeQL pattern using role-prefixed variable names.
+    def to_ast(self, var: str) -> list[Pattern]:
+        """Generate AST patterns using role-prefixed variable names.
 
-        The inner expression generates TypeQL with unique variable names
-        based on the entity variable (e.g., $employee_age instead of $age).
-        This prevents collisions when filtering multiple role players
-        by the same attribute type.
-
-        Args:
-            var: The role player variable name (e.g., "$employee")
-
-        Returns:
-            TypeQL pattern string with role-prefixed attribute variables
-
-        Example:
-            >>> expr = RolePlayerExpr("employee", Age.gt(Age(30)), (Person,))
-            >>> expr.to_typeql("$employee")
-            '$employee has age $employee_age; $employee_age > 30'
+        Delegates to the inner expression with role variable.
         """
-        return self.inner_expr.to_typeql(var)
+
+        return self.inner_expr.to_ast(var)
 
     def get_attribute_types(self) -> set[type[Attribute]]:
         """Get all attribute types referenced by this expression.

@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from type_bridge.migration import operations as ops
+from type_bridge.migration.diff import SchemaDiff
+from type_bridge.migration.info import SchemaInfo
+from type_bridge.migration.introspection import IntrospectedSchema, SchemaIntrospector
 from type_bridge.migration.loader import MigrationLoader
-from type_bridge.schema import SchemaDiff, SchemaInfo, SchemaManager
-from type_bridge.schema.introspection import IntrospectedSchema, SchemaIntrospector
+from type_bridge.migration.schema_manager import SchemaManager
 
 if TYPE_CHECKING:
     from type_bridge.models import Entity, Relation

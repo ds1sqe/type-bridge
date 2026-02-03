@@ -214,7 +214,7 @@ class TestRegexConstraintEnforcement:
 
         class Code(String):
             # Pattern: exactly 3 uppercase letters
-            regex = r"^[A-Z]{3}$"  # type: ignore[assignment]
+            regex_pattern = r"^[A-Z]{3}$"
 
         class Airport(Entity):
             flags = TypeFlags(name="airport_regex_test")

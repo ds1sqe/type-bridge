@@ -1,8 +1,7 @@
 """Boolean attribute type for TypeDB."""
 
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 
-from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
 from type_bridge.attribute.base import Attribute
@@ -41,33 +40,28 @@ class Boolean(Attribute):
         """Convert to bool."""
         return bool(self.value)
 
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source_type: type[BoolValue], handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        """Pydantic validation: accept bool values or attribute instances."""
-
-        # Serializer to extract value from attribute instances
-        def serialize_boolean(value: Any) -> bool:
-            if isinstance(value, cls):
-                return bool(value._value) if value._value is not None else False
-            return bool(value)
-
-        # Validator: accept bool or attribute instance, always return attribute instance
-        def validate_boolean(value: Any) -> "Boolean":
-            if isinstance(value, cls):
-                return value  # Return attribute instance as-is
-            return cls(bool(value))  # Wrap raw bool in attribute instance
-
-        return core_schema.with_info_plain_validator_function(
-            lambda v, _: validate_boolean(v),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                serialize_boolean,
-                return_schema=core_schema.bool_schema(),
-            ),
-        )
+    # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
 
     @classmethod
-    def __class_getitem__(cls, item: object) -> type["Boolean"]:
-        """Allow generic subscription for type checking (e.g., Boolean[bool])."""
-        return cls
+    def _get_default_value(cls) -> bool:
+        """Default value for Boolean is False."""
+        return False
+
+    @classmethod
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Return schema for bool serialization."""
+        return core_schema.bool_schema()
+
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> bool:
+        """Serialize Boolean to raw bool value."""
+        if isinstance(value, cls):
+            return bool(value._value) if value._value is not None else False
+        return bool(value)
+
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap value in Boolean instance."""
+        if isinstance(value, cls):
+            return value
+        return cls(bool(value))

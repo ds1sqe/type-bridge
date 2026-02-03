@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from ..models import Cardinality, minimal_role_players
 from ..naming import to_class_name, to_python_name
+from ..utils import topological_sort
 from .entities import _render_attr_field
 from .template_loader import get_template
 
@@ -78,24 +79,7 @@ def _render_role_field(
 
 def _topological_sort_relations(schema: ParsedSchema) -> list[str]:
     """Sort relations so parents come before children."""
-    result: list[str] = []
-    visited: set[str] = set()
-
-    def visit(name: str) -> None:
-        if name in visited or name not in schema.relations:
-            return
-        visited.add(name)
-
-        relation = schema.relations[name]
-        if relation.parent and relation.parent in schema.relations:
-            visit(relation.parent)
-
-        result.append(name)
-
-    for name in schema.relations:
-        visit(name)
-
-    return result
+    return topological_sort(schema.relations, lambda relation: relation.parent)
 
 
 def _build_relation_context(

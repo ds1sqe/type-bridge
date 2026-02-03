@@ -6,10 +6,9 @@ and successfully insert/query with concrete entity instances.
 
 import pytest
 
-from type_bridge import Database, Entity, Integer, Relation, String, TypeFlags
+from type_bridge import Database, Entity, Integer, Relation, SchemaManager, String, TypeFlags
 from type_bridge.attribute.flags import Flag, Key
 from type_bridge.models.role import Role
-from type_bridge.schema import SchemaManager
 
 
 # Abstract base entity with key attribute

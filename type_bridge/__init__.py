@@ -20,33 +20,34 @@ from type_bridge.attribute import (
     Unique,
 )
 from type_bridge.crud import (
-    EntityManager,
     EntityNotFoundError,
     KeyAttributeError,
     NotUniqueError,
-    RelationManager,
     RelationNotFoundError,
+    TypeDBManager,
 )
 from type_bridge.migration import (
+    BreakingChangeAnalyzer,
+    ChangeCategory,
     Migration,
     MigrationError,
     MigrationExecutor,
     ModelRegistry,
+    RolePlayerChange,
+    SchemaConflictError,
+    SchemaInfo,
+    SchemaIntrospector,
+    SchemaManager,
+    SchemaValidationError,
 )
 from type_bridge.migration import operations as migration_ops
+from type_bridge.migration.simple_migration import MigrationManager
 from type_bridge.models import Entity, Relation, Role, TypeDBType
 from type_bridge.query import Query, QueryBuilder
-from type_bridge.schema import (
-    BreakingChangeAnalyzer,
-    ChangeCategory,
-    MigrationManager,
-    RolePlayerChange,
-    SchemaManager,
-)
 from type_bridge.session import Connection, Database, TransactionContext
 from type_bridge.typedb_driver import Credentials, TransactionType, TypeDB
 
-__version__ = "1.2.5"
+__version__ = "1.2.7"
 
 __all__ = [
     # Database and session
@@ -87,19 +88,23 @@ __all__ = [
     "Query",
     "QueryBuilder",
     # CRUD
-    "EntityManager",
-    "RelationManager",
+    "TypeDBManager",
     # CRUD Exceptions
     "EntityNotFoundError",
     "RelationNotFoundError",
     "NotUniqueError",
     "KeyAttributeError",
-    # Schema (legacy)
+    # Schema
     "SchemaManager",
+    "SchemaInfo",
+    "SchemaIntrospector",
     "MigrationManager",
     # Schema analysis
     "BreakingChangeAnalyzer",
     "ChangeCategory",
+    # Schema exceptions
+    "SchemaConflictError",
+    "SchemaValidationError",
     "RolePlayerChange",
     # Migration system
     "Migration",

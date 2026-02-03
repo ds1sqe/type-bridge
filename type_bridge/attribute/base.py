@@ -1,13 +1,16 @@
 """Base Attribute class for TypeDB attribute types."""
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_origin
+
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import core_schema
 
 from type_bridge.validation import validate_type_name as validate_reserved_word
 
 if TYPE_CHECKING:
     from type_bridge.attribute.flags import TypeNameCase
-    from type_bridge.expressions import AggregateExpr, ComparisonExpr
+    from type_bridge.expressions import AggregateExpr, ComparisonExpr, Expression
 
 # TypeDB built-in type names that cannot be used for attributes
 TYPEDB_BUILTIN_TYPES = {"thing", "entity", "relation", "attribute"}
@@ -228,15 +231,16 @@ class Attribute(ABC):
         Returns:
             TypeQL schema definition string
         """
+        from type_bridge.typeql.annotations import format_type_annotations
+
         attr_name = cls.get_attribute_name()
         value_type = cls.get_value_type()
 
         # Build type-level annotations (@abstract, @independent come right after name)
-        type_annotations = []
-        if cls.abstract:
-            type_annotations.append("@abstract")
-        if cls.independent:
-            type_annotations.append("@independent")
+        type_annotations = format_type_annotations(
+            abstract=cls.abstract,
+            independent=cls.independent,
+        )
 
         # Build definition: attribute name [@abstract] [@independent], [sub parent,] value type;
         if type_annotations:
@@ -259,8 +263,9 @@ class Attribute(ABC):
             max_part = range_max if range_max is not None else ""
             definition += f" @range({min_part}..{max_part})"
 
-        # Add @regex annotation if regex is defined (after value type)
-        regex_pattern = getattr(cls, "regex", None)
+        # Add @regex annotation if regex_pattern is defined (after value type)
+        # Note: Use regex_pattern (not regex) to avoid conflict with String.regex() query method
+        regex_pattern = getattr(cls, "regex_pattern", None)
         if regex_pattern is not None and isinstance(regex_pattern, str):
             # Escape any quotes in the pattern
             escaped_pattern = regex_pattern.replace('"', '\\"')
@@ -468,3 +473,178 @@ class Attribute(ABC):
         from type_bridge.expressions import AggregateExpr
 
         return AggregateExpr(attr_type=cls, function="std")
+
+    # ========================================================================
+    # Pydantic Integration (Base Implementation with Hooks)
+    # ========================================================================
+
+    @classmethod
+    def _get_default_value(cls) -> Any:
+        """Get the default value for this attribute type when _value is None.
+
+        Subclasses should override this to return the appropriate default
+        (e.g., 0 for Integer, "" for String, False for Boolean).
+
+        Returns:
+            The default value for this attribute type
+        """
+        return None
+
+    @classmethod
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Get the Pydantic return schema for serialization.
+
+        Subclasses should override this to return the appropriate schema
+        (e.g., core_schema.str_schema(), core_schema.int_schema()).
+
+        Returns:
+            The Pydantic core schema for the raw value type
+        """
+        return core_schema.any_schema()
+
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> Any:
+        """Serialize an attribute value for Pydantic.
+
+        This handles the common case of extracting _value from an attribute
+        instance. Subclasses can override for type-specific serialization.
+
+        Args:
+            value: The attribute instance or raw value to serialize
+
+        Returns:
+            The serialized raw value
+        """
+        if isinstance(value, cls):
+            return value._value if value._value is not None else cls._get_default_value()
+        return value
+
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap a value in an attribute instance.
+
+        This handles the common case of wrapping raw values. Subclasses
+        can override for type-specific validation (e.g., range constraints).
+
+        Args:
+            value: The raw value or attribute instance to validate
+
+        Returns:
+            The validated attribute instance
+        """
+        if isinstance(value, cls):
+            return value  # Already an instance, return as-is
+        return cls(value)  # Wrap raw value in attribute instance
+
+    @classmethod
+    def _supports_literal_types(cls) -> bool:
+        """Whether this attribute type supports Literal type annotations.
+
+        Subclasses that support Literal types (String, Integer) should
+        override this to return True.
+
+        Returns:
+            True if this type supports Literal annotations
+        """
+        return False
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source_type: type[Any], handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        """Unified Pydantic schema generation for all attribute types.
+
+        This base implementation handles the common patterns:
+        - Serialization: extract _value from attribute instances
+        - Validation: wrap raw values in attribute instances
+        - Literal type support (for types that enable it)
+
+        Subclasses can override for completely custom behavior, or override
+        the helper methods (_pydantic_serialize, _pydantic_validate, etc.)
+        for targeted customization.
+        """
+        # Check if this is a Literal type and the attribute supports it
+        if cls._supports_literal_types() and get_origin(source_type) is Literal:
+            # For Literal types, extract the raw value for constraint checking
+            return core_schema.with_info_plain_validator_function(
+                lambda v, _: v._value if isinstance(v, cls) else v,
+                serialization=core_schema.plain_serializer_function_ser_schema(
+                    cls._pydantic_serialize,
+                    return_schema=cls._get_pydantic_return_schema(),
+                ),
+            )
+
+        # Default: validate and wrap values in attribute instances
+        return core_schema.with_info_plain_validator_function(
+            lambda v, _: cls._pydantic_validate(v),
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                cls._pydantic_serialize,
+                return_schema=cls._get_pydantic_return_schema(),
+            ),
+        )
+
+    @classmethod
+    def __class_getitem__(cls, item: object) -> type[Self]:
+        """Allow generic subscription for type checking (e.g., Integer[int])."""
+        return cls
+
+    # ========================================================================
+    # Lookup Builder (Unified API for Managers)
+    # ========================================================================
+
+    @classmethod
+    def build_lookup(cls, lookup: str, value: Any) -> "Expression":
+        """Build an expression for a lookup operator.
+
+        This method centralizes the logic for converting lookup names (e.g., 'gt', 'in')
+        into TypeQL expressions. Subclasses (like String) should override this to
+        handle type-specific lookups.
+
+        Args:
+            lookup: The lookup operator name (e.g., 'exact', 'gt', 'contains')
+            value: The value to filter by
+
+        Returns:
+            Expression object representing the filter
+
+        Raises:
+            ValueError: If the lookup operator is not supported by this attribute type
+        """
+        from type_bridge.expressions import AttributeExistsExpr, BooleanExpr, Expression
+
+        def _wrap(v: Any) -> Any:
+            """Wrap raw value in attribute instance if needed."""
+            if isinstance(v, cls):
+                return v
+            return cls(v)
+
+        # Exact match
+        if lookup in ("exact", "eq"):
+            return cls.eq(_wrap(value))
+
+        # Comparison operators
+        if lookup in ("gt", "gte", "lt", "lte"):
+            if not hasattr(cls, lookup):
+                raise ValueError(f"Lookup '{lookup}' not supported for {cls.__name__}")
+            return getattr(cls, lookup)(_wrap(value))
+
+        # Membership test
+        if lookup == "in":
+            if not isinstance(value, (list, tuple, set)):
+                raise ValueError(f"'{lookup}' lookup requires an iterable of values")
+            values = list(value)
+            if not values:
+                raise ValueError(f"'{lookup}' lookup requires a non-empty iterable")
+
+            eq_exprs: list[Expression] = [cls.eq(_wrap(v)) for v in values]
+            if len(eq_exprs) == 1:
+                return eq_exprs[0]
+            return BooleanExpr("or", eq_exprs)
+
+        # Null check
+        if lookup == "isnull":
+            if not isinstance(value, bool):
+                raise ValueError(f"'{lookup}' lookup expects a boolean")
+            return AttributeExistsExpr(cls, present=not value)
+
+        raise ValueError(f"Unsupported lookup operator '{lookup}' for {cls.__name__}")

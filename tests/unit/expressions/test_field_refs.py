@@ -225,66 +225,66 @@ class TestExpressionChaining:
 
 
 class TestExpressionToTypeQL:
-    """Test TypeQL pattern generation from expressions."""
+    """Tests for TypeQL generation from expressions."""
 
     def test_comparison_to_typeql(self):
         """Test comparison expression TypeQL generation."""
         expr = Person.age.gt(Age(30))
         pattern = expr.to_typeql("$p")
 
-        # Variable names include entity prefix to avoid collisions
-        assert "$p has Age $p_age" in pattern
-        assert "$p_age > 30" in pattern
+        # Variable names use double underscore to avoid collisions
+        assert "$p has Age $p__age" in pattern
+        assert "$p__age > 30" in pattern
 
     def test_string_contains_to_typeql(self):
         """Test string contains TypeQL generation."""
         expr = Person.name.contains(Name("Alice"))
         pattern = expr.to_typeql("$p")
 
-        # Variable names include entity prefix to avoid collisions
-        assert "$p has Name $p_name" in pattern
-        assert '$p_name contains "Alice"' in pattern
+        # Variable names use double underscore to avoid collisions
+        assert "$p has Name $p__name" in pattern
+        assert '$p__name contains "Alice"' in pattern
 
     def test_string_like_to_typeql(self):
         """Test string like (regex) TypeQL generation."""
         expr = Person.name.like(Name("A.*"))
         pattern = expr.to_typeql("$p")
 
-        # Variable names include entity prefix to avoid collisions
-        assert "$p has Name $p_name" in pattern
-        assert '$p_name like "A.*"' in pattern
+        # Variable names use double underscore to avoid collisions
+        assert "$p has Name $p__name" in pattern
+        assert '$p__name like "A.*"' in pattern
 
     def test_boolean_and_to_typeql(self):
         """Test AND expression TypeQL generation."""
         expr = Person.age.gt(Age(18)).and_(Person.age.lt(Age(65)))
         pattern = expr.to_typeql("$p")
 
-        # AND just concatenates patterns; variable names include entity prefix
-        assert "$p has Age $p_age" in pattern
-        assert "$p_age > 18" in pattern
-        assert "$p_age < 65" in pattern
+        # AND just concatenates patterns; variable names use double underscore
+        assert "$p has Age $p__age" in pattern
+        assert "$p__age > 18" in pattern
+        assert "$p__age < 65" in pattern
 
     def test_boolean_or_to_typeql(self):
         """Test OR expression TypeQL generation."""
         expr = Person.age.lt(Age(20)).or_(Person.age.gt(Age(40)))
         pattern = expr.to_typeql("$p")
 
-        # OR creates disjunction blocks (with newlines for TypeDB compatibility)
-        # Variable names include entity prefix
+        # OR creates disjunction blocks
+        # Variable names use double underscore
         assert "{" in pattern and "}" in pattern
-        assert "\nor\n" in pattern
-        assert "$p_age < 20" in pattern
-        assert "$p_age > 40" in pattern
+        assert " or " in pattern
+        assert "$p__age < 20" in pattern
+        assert "$p__age > 40" in pattern
 
     def test_boolean_not_to_typeql(self):
         """Test NOT expression TypeQL generation."""
         expr = Person.age.eq(Age(30)).not_()
         pattern = expr.to_typeql("$p")
 
-        # NOT creates negation block; variable names include entity prefix
+        # NOT creates negation block; variable names use double underscore
         assert "not {" in pattern
         assert "}" in pattern
-        assert "$p_age == 30" in pattern
+        assert "$p__age == 30" in pattern
 
     def test_aggregate_to_typeql(self):
         """Test aggregate expression TypeQL generation."""
@@ -292,7 +292,7 @@ class TestExpressionToTypeQL:
         pattern = expr.to_typeql("$p")
 
         # TypeDB 3.x uses 'mean' instead of 'avg'
-        assert "mean($age)" in pattern
+        assert "mean($p__age)" in pattern
 
         # Count doesn't need attr_type
         from type_bridge.expressions import AggregateExpr

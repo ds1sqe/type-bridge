@@ -14,8 +14,12 @@ import pytest
 
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.attribute import AttributeFlags
-from type_bridge.migration import MigrationExecutor, MigrationGenerator, ModelRegistry
-from type_bridge.schema import SchemaIntrospector
+from type_bridge.migration import (
+    MigrationExecutor,
+    MigrationGenerator,
+    ModelRegistry,
+    SchemaIntrospector,
+)
 
 
 # Test fixtures - Version 1: Basic schema

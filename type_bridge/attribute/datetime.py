@@ -2,9 +2,8 @@
 
 from datetime import datetime as datetime_type
 from datetime import timezone as timezone_type
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Self, TypeVar
 
-from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
 from type_bridge.attribute.base import Attribute
@@ -116,40 +115,32 @@ class DateTime(Attribute):
         """Reverse addition for Duration + DateTime."""
         return self.__add__(other)
 
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source_type: type[DateTimeValue], handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        """Pydantic validation: accept datetime values or attribute instances."""
-
-        # Serializer to extract value from attribute instances
-        def serialize_datetime(value: Any) -> datetime_type:
-            if isinstance(value, cls):
-                return value._value if value._value is not None else datetime_type.now()
-            return (
-                value
-                if isinstance(value, datetime_type)
-                else datetime_type.fromisoformat(str(value))
-            )
-
-        # Validator: accept datetime or attribute instance, always return attribute instance
-        def validate_datetime(value: Any) -> "DateTime":
-            if isinstance(value, cls):
-                return value  # Return attribute instance as-is
-            # Wrap raw datetime in attribute instance
-            if isinstance(value, datetime_type):
-                return cls(value)
-            return cls(datetime_type.fromisoformat(str(value)))
-
-        return core_schema.with_info_plain_validator_function(
-            lambda v, _: validate_datetime(v),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                serialize_datetime,
-                return_schema=core_schema.datetime_schema(),
-            ),
-        )
+    # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
 
     @classmethod
-    def __class_getitem__(cls, item: object) -> type["DateTime"]:
-        """Allow generic subscription for type checking (e.g., DateTime[datetime])."""
-        return cls
+    def _get_default_value(cls) -> datetime_type:
+        """Default value for DateTime is now()."""
+        return datetime_type.now()
+
+    @classmethod
+    def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
+        """Return schema for datetime serialization."""
+        return core_schema.datetime_schema()
+
+    @classmethod
+    def _pydantic_serialize(cls, value: Any) -> datetime_type:
+        """Serialize DateTime to raw datetime value."""
+        if isinstance(value, cls):
+            return value._value if value._value is not None else datetime_type.now()
+        if isinstance(value, datetime_type):
+            return value
+        return datetime_type.fromisoformat(str(value))
+
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> Self:
+        """Validate and wrap value in DateTime instance."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, datetime_type):
+            return cls(value)
+        return cls(datetime_type.fromisoformat(str(value)))

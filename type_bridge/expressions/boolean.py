@@ -8,6 +8,7 @@ from type_bridge.expressions.base import Expression
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
+    from type_bridge.query.ast import Pattern
 
 
 class BooleanExpr(Expression):
@@ -52,40 +53,31 @@ class BooleanExpr(Expression):
             result.update(operand.get_attribute_types())
         return result
 
-    def to_typeql(self, var: str) -> str:
+    def to_ast(self, var: str) -> list[Pattern]:
         """
-        Generate TypeQL pattern for this boolean expression.
-
-        Example outputs:
-        - AND: "$e has age $age; $age > 30; $e has city $city; $city == 'NYC'"
-        - OR: "{ ... } or { ... }"
-        - NOT: "not { ... }"
-
-        Args:
-            var: Entity variable name
-
-        Returns:
-            TypeQL pattern string (without trailing semicolon)
+        Generate AST patterns for this boolean expression.
         """
+        from type_bridge.query.ast import NotPattern, OrPattern
+
         if self.operation == "and":
-            # AND is just concatenating patterns with semicolons
-            patterns = [op.to_typeql(var) for op in self.operands]
-            return "; ".join(patterns)
+            # Flatten all patterns from operands
+            all_patterns = []
+            for op in self.operands:
+                all_patterns.extend(op.to_ast(var))
+            return all_patterns
 
         if self.operation == "or":
-            # OR creates disjunction blocks (no trailing semicolon)
-            # TypeDB requires OR blocks to be on separate lines
-            patterns = [op.to_typeql(var) for op in self.operands]
-            # Each pattern becomes a block
-            blocks = [f"{{ {pattern}; }}" for pattern in patterns]
-            return "\nor\n".join(blocks)
+            # Operands define alternatives
+            # Each operand produces a list of patterns (a conjunction block)
+            alternatives = [op.to_ast(var) for op in self.operands]
+            return [OrPattern(alternatives=alternatives)]
 
         if self.operation == "not":
-            # NOT creates a negation block (no trailing semicolon)
-            pattern = self.operands[0].to_typeql(var)
-            return f"not {{ {pattern}; }}"
+            # Negate the conjunction of the operand's patterns
+            # Typically NOT applies to a block
+            operand_patterns = self.operands[0].to_ast(var)
+            return [NotPattern(patterns=operand_patterns)]
 
-        # This should never happen due to Literal type, but for safety
         raise ValueError(f"Unknown boolean operation: {self.operation}")
 
     def and_(self, other: Expression) -> BooleanExpr:

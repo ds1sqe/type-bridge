@@ -113,9 +113,9 @@ def test_multivalue_string_empty_and_special():
 
     # Empty string should be allowed
     assert 'has Tag ""' in query
-    # Newlines and tabs preserved as-is
-    assert "line1\nline2" in query
-    assert "tab\there" in query
+    # Newlines and tabs should be escaped for TypeQL
+    assert r"line1\nline2" in query
+    assert r"tab\there" in query
 
 
 def test_relation_multivalue_escaping():

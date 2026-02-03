@@ -30,7 +30,9 @@ class TestRangeGenerationAndValidation:
             # Add to path and import
             sys.path.insert(0, str(tmpdir))
             try:
-                import models.attributes as attrs  # type: ignore[import-not-found]
+                import importlib
+
+                attrs = importlib.import_module("models.attributes")
 
                 # Valid values should work
                 age_valid = attrs.Age(30)
@@ -74,7 +76,9 @@ class TestRangeGenerationAndValidation:
             # Add to path and import
             sys.path.insert(0, str(tmpdir))
             try:
-                import models.attributes as attrs  # type: ignore[import-not-found]
+                import importlib
+
+                attrs = importlib.import_module("models.attributes")
 
                 # Valid values should work
                 temp_valid = attrs.Temperature(25.5)
@@ -117,7 +121,9 @@ class TestRangeGenerationAndValidation:
 
             sys.path.insert(0, str(tmpdir))
             try:
-                import models.attributes as attrs  # type: ignore[import-not-found]
+                import importlib
+
+                attrs = importlib.import_module("models.attributes")
 
                 # Any non-negative value should work
                 assert attrs.Score(0).value == 0
@@ -150,7 +156,9 @@ class TestRangeGenerationAndValidation:
 
             sys.path.insert(0, str(tmpdir))
             try:
-                import models.attributes as attrs  # type: ignore[import-not-found]
+                import importlib
+
+                attrs = importlib.import_module("models.attributes")
 
                 # Any value up to 10 should work
                 assert attrs.Priority(-100).value == -100
@@ -186,8 +194,10 @@ class TestRangeGenerationAndValidation:
 
             sys.path.insert(0, str(tmpdir))
             try:
-                import models.attributes as attrs  # type: ignore[import-not-found]
-                import models.entities as entities  # type: ignore[import-not-found]
+                import importlib
+
+                attrs = importlib.import_module("models.attributes")
+                entities = importlib.import_module("models.entities")
 
                 # Valid entity should work
                 person = entities.Person(

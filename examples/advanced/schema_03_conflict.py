@@ -8,10 +8,11 @@ from type_bridge import (
     Entity,
     Flag,
     Key,
+    SchemaConflictError,
+    SchemaManager,
     String,
     TypeFlags,
 )
-from type_bridge.schema import SchemaConflictError, SchemaManager
 from type_bridge.session import Database
 
 

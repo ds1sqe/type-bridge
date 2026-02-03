@@ -10,8 +10,8 @@ from type_bridge.crud.exceptions import (
     RelationNotFoundError,
 )
 from type_bridge.expressions.boolean import BooleanExpr
-from type_bridge.schema.diff import SchemaDiff
-from type_bridge.schema.exceptions import SchemaConflictError, SchemaValidationError
+from type_bridge.migration.diff import SchemaDiff
+from type_bridge.migration.exceptions import SchemaConflictError, SchemaValidationError
 from type_bridge.validation import ReservedWordError, ValidationError
 
 

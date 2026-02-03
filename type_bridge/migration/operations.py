@@ -170,6 +170,8 @@ class AddOwnership(Operation):
     card_max: int | None = None
 
     def to_typeql(self) -> str:
+        from type_bridge.typeql.annotations import format_card_annotation
+
         owner_name = self.owner.get_type_name()
         attr_name = self.attribute.get_attribute_name()
 
@@ -179,9 +181,9 @@ class AddOwnership(Operation):
         elif self.unique:
             annotations.append("@unique")
         elif self.card_min is not None or self.card_max is not None:
-            min_val = self.card_min if self.card_min is not None else 0
-            max_val = self.card_max if self.card_max is not None else ""
-            annotations.append(f"@card({min_val}..{max_val})")
+            card_annotation = format_card_annotation(self.card_min, self.card_max)
+            if card_annotation:
+                annotations.append(card_annotation)
         elif self.optional:
             annotations.append("@card(0..1)")
 
