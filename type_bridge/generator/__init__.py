@@ -34,15 +34,23 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .dto_config import (
+    BaseClassConfig,
+    CompositeEntityConfig,
+    CompositeFieldConfig,
+    DTOConfig,
+    FieldSyncConfig,
+    ValidatorConfig,
+)
 from .models import ParsedSchema
 from .naming import build_class_name_map
 from .parser import parse_tql_schema
 from .render import (
+    render_api_dto,
     render_attributes,
     render_entities,
     render_functions,
     render_package_init,
-    render_api_dto,
     render_registry,
     render_relations,
     render_structs,
@@ -52,7 +60,13 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 __all__ = [
+    "BaseClassConfig",
+    "CompositeEntityConfig",
+    "CompositeFieldConfig",
+    "DTOConfig",
+    "FieldSyncConfig",
     "ParsedSchema",
+    "ValidatorConfig",
     "generate_models",
     "parse_tql_schema",
 ]
@@ -66,7 +80,8 @@ def generate_models(
     schema_version: str = "1.0.0",
     copy_schema: bool = True,
     schema_path: str | Path | None = None,
-    generate_pydantic: bool = False,
+    generate_dto: bool = False,
+    dto_config: DTOConfig | None = None,
 ) -> None:
     """Generate TypeBridge models from a TypeDB schema.
 
@@ -78,7 +93,8 @@ def generate_models(
         copy_schema: Whether to copy the schema file to the output directory
         schema_path: Custom path for the schema file. If relative, resolved against
             output_dir. If None and copy_schema=True, uses "schema.tql" in output_dir.
-        generate_pydantic: Whether to generate Pydantic API DTOs
+        generate_dto: Whether to generate Pydantic API DTOs
+        dto_config: Configuration for DTO generation (custom base classes, validators, etc.)
     """
     # Resolve schema text
     schema_source_path: Path | None = None
@@ -155,9 +171,9 @@ def generate_models(
     )
 
     # Render Pydantic DTOs if requested
-    if generate_pydantic:
+    if generate_dto:
         (output / "api_dto.py").write_text(
-            render_api_dto(parsed),
+            render_api_dto(parsed, config=dto_config),
             encoding="utf-8",
         )
 

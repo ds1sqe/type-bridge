@@ -1,34 +1,43 @@
+{% from "_dto_macros.jinja" import render_base_class, render_entity, render_relation, render_composite %}
 """API Data Transfer Objects generated from TypeDB schema via TypeBridge.
 
 AUTO-GENERATED FILE - DO NOT EDIT MANUALLY
-Regenerate with: type-bridge generate <schema.tql> <output_dir>
+Regenerate with: python -m type_bridge.generator <schema.tql> -o <output_dir> --dto
 """
 
-from datetime import datetime
-from typing import Annotated, Literal, Union, Any, Optional
-from uuid import UUID
+from datetime import datetime, date
+from decimal import Decimal
+from typing import Annotated, Literal, Union, Optional
+{% if validators %}
 import re
+{% endif %}
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator, AfterValidator
+from pydantic import BaseModel, ConfigDict, Field{% if validators or base_classes or composites %}, AfterValidator{% endif %}{% if base_classes or composites %}, model_validator{% endif %}
 
-# --- Constants & Validators ---
+{% if validators %}
+# --- Custom Validators ---
+{% for v in validators %}
+{% if v.pattern %}
 
-_DISPLAY_ID_PATTERN = re.compile(r"^[A-Z]{1,10}-\d+$")
-_UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-_IID_PATTERN = re.compile(r"^0x[0-9a-f]{20,24}$", re.IGNORECASE)
+_{{ v.name.upper() }}_PATTERN = re.compile(r"{{ v.pattern }}")
 
-def _validate_display_id(value: str) -> str:
-    if not _DISPLAY_ID_PATTERN.match(value):
-        raise ValueError(f"'{value}' is not a valid display ID format.")
+
+def {{ v.func_name }}(value: str) -> str:
+    """Validate {{ v.name }} format."""
+    if not _{{ v.name.upper() }}_PATTERN.match(value):
+        raise ValueError(f"'{value}' is not a valid {{ v.name }} format.")
     return value
 
-def _validate_node_id(value: str) -> str:
-    if _DISPLAY_ID_PATTERN.match(value) or _UUID_PATTERN.match(value) or _IID_PATTERN.match(value):
-        return value
-    raise ValueError(f"'{value}' is not a valid node ID format.")
 
-DisplayId = Annotated[str, AfterValidator(_validate_display_id)]
-NodeId = Annotated[str, AfterValidator(_validate_node_id)]
+{{ v.name }} = Annotated[str, AfterValidator({{ v.func_name }})]
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if preamble %}
+
+# --- Custom Preamble ---
+{{ preamble }}
+{% endif %}
 
 # --- Base Models ---
 
@@ -36,166 +45,119 @@ class BaseDTO(BaseModel):
     """Base class for all generated DTOs."""
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
+
 class BaseDTOOut(BaseDTO):
-    """Base for generic entity output."""
-    id: str = Field(description="TypeDB internal identifier (IID).")
+    """Base for entity output DTOs."""
+    {{ iid_field_name }}: str = Field(description="TypeDB internal identifier (IID).")
+
 
 class BaseDTOCreate(BaseDTO):
-    """Base for generic entity create."""
+    """Base for entity create DTOs."""
     pass
+
 
 class BaseDTOPatch(BaseDTO):
-    """Base for generic entity patch."""
+    """Base for entity partial update DTOs."""
     model_config = ConfigDict(extra="forbid")
 
-class BaseArtifactOut(BaseDTOOut):
-    """Base for artifacts with common synthesized fields."""
-    display_id: Optional[DisplayId] = None
-    name: str = ""
-    description: Optional[str] = None
-    content: Optional[str] = None
-    status: str = "proposed"
-    priority: Optional[int] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    version: Optional[int] = None
+{% for bc in base_classes %}
+{{ render_base_class(bc, strict_out_models) }}
+{% endfor %}
 
-    @model_validator(mode="after")
-    def _sync_description(self) -> "BaseArtifactOut":
-        if self.description and not self.content:
-            self.content = self.description
-        elif self.content and not self.description:
-            self.description = self.content
-        return self
-
-class BaseArtifactCreate(BaseDTOCreate):
-    """Base for artifact create payloads."""
-    name: str
-    description: Optional[str] = None
-    content: Optional[str] = None
-    status: Optional[str] = "proposed"
-    priority: Optional[int] = None
-
-    @model_validator(mode="after")
-    def _sync_description(self) -> "BaseArtifactCreate":
-        if self.description and not self.content:
-            self.content = self.description
-        elif self.content and not self.description:
-            self.description = self.content
-        return self
-
-class BaseArtifactPatch(BaseDTOPatch):
-    """Base for artifact partial updates."""
-    name: Optional[str] = None
-    description: Optional[str] = None
-    content: Optional[str] = None
-    status: Optional[str] = None
-    priority: Optional[int] = None
-
-    @model_validator(mode="after")
-    def _sync_description(self) -> "BaseArtifactPatch":
-        if self.description is not None and self.content is None:
-            self.content = self.description
-        elif self.content is not None and self.description is None:
-            self.description = self.content
-        return self
-
-# --- Generated Node DTOs ---
-
+# --- Generated Entity DTOs ---
 {% for entity in entities %}
-{% if not entity.abstract and not entity.internal %}
-# -- {{ entity.name | title }} --
+{% if not entity.abstract %}
 
-class {{ entity.class_name }}Out({{ entity.parent_base }}Out):
-    type: Literal["{{ entity.name }}"] = "{{ entity.name }}"
-{% for attr in entity.own_attributes %}
-    {{ attr.name }}: Optional[{{ attr.type }}] = {{ attr.default }}
-{% else %}
-    pass
-{% endfor %}
-
-class {{ entity.class_name }}Create({{ entity.parent_base }}Create):
-    type: Literal["{{ entity.name }}"] = "{{ entity.name }}"
-{% for attr in entity.own_attributes %}
-    {{ attr.name }}: Optional[{{ attr.type }}] = {{ attr.default }}
-{% else %}
-    pass
-{% endfor %}
-
-class {{ entity.class_name }}Patch({{ entity.parent_base }}Patch):
-    type: Literal["{{ entity.name }}"] = "{{ entity.name }}"
-{% for attr in entity.own_attributes %}
-    {{ attr.name }}: Optional[{{ attr.type }}] = None
-{% else %}
-    pass
-{% endfor %}
-
+{{ render_entity(entity, strict_out_models) }}
 {% endif %}
 {% endfor %}
 
-# --- Composite Unions ---
+# --- Entity Union Types ---
+{% if concrete_entities %}
 
-GraphNodeOut = Annotated[
+{{ entity_union_name }}Out = Annotated[
     Union[
-{% for entity in entities if not entity.abstract and not entity.internal %}
+{% for entity in concrete_entities %}
         {{ entity.class_name }}Out,
 {% endfor %}
     ],
     Field(discriminator="type")
 ]
 
-GraphNodeCreate = Annotated[
+{{ entity_union_name }}Create = Annotated[
     Union[
-{% for entity in entities if not entity.abstract and not entity.internal %}
+{% for entity in concrete_entities %}
         {{ entity.class_name }}Create,
 {% endfor %}
     ],
     Field(discriminator="type")
 ]
 
-GraphNodePatch = Annotated[
+{{ entity_union_name }}Patch = Annotated[
     Union[
-{% for entity in entities if not entity.abstract and not entity.internal %}
+{% for entity in concrete_entities %}
         {{ entity.class_name }}Patch,
 {% endfor %}
     ],
     Field(discriminator="type")
 ]
+{% endif %}
 
-# --- Relation DTOs ---
+# --- Generated Relation DTOs ---
+{% if relation_preamble %}
 
-class GraphEdgeOut(BaseDTO):
-    """API response representation of a graph relation edge."""
-    iid: str = Field(description="Relation IID.")
-    source: str = Field(description="Source node IID.")
-    target: str = Field(description="Target node IID.")
-    source_display_id: str = Field(description="Source node display ID.")
-    target_display_id: str = Field(description="Target node display ID.")
+# --- Custom Relation Preamble ---
+{{ relation_preamble }}
+{% endif %}
+{% if not skip_relation_output %}
+
+class BaseRelationOut(BaseDTO):
+    """Base for relation output DTOs."""
+    {{ iid_field_name }}: str = Field(description="Relation IID.")
     type: str
-    role_from: str
-    role_to: str
+{% endif %}
 
+{% if not relation_create_base_class %}
 class BaseRelationCreate(BaseDTO):
-    source_id: NodeId
-    target_id: NodeId
-    context_id: Optional[NodeId] = None
-
-{% for rel in relations %}
-class {{ rel.class_name }}Create(BaseRelationCreate):
-    type: Literal["{{ rel.name }}"] = "{{ rel.name }}"
-{% for attr in rel.own_attributes %}
-    {{ attr.name }}: Optional[{{ attr.type }}] = {{ attr.default }}
-{% else %}
+    """Base for relation create DTOs."""
     pass
+{% endif %}
+
+{% for relation in relations %}
+{% if not relation.abstract %}
+
+{{ render_relation(relation, iid_field_name, skip_relation_output, relation_create_base_class) }}
+{% endif %}
 {% endfor %}
 
-{% endfor %}
+# --- Relation Union Types ---
+{% if concrete_relations %}
+{% if not skip_relation_output %}
 
-GraphRelationCreate = Annotated[
+{{ relation_union_name }}Out = Annotated[
     Union[
-{% for rel in relations %}
-        {{ rel.class_name }}Create,
+{% for relation in concrete_relations %}
+        {{ relation.class_name }}Out,
 {% endfor %}
     ],
     Field(discriminator="type")
 ]
+{% endif %}
+
+{{ relation_union_name }}Create = Annotated[
+    Union[
+{% for relation in concrete_relations %}
+        {{ relation.class_name }}Create,
+{% endfor %}
+    ],
+    Field(discriminator="type")
+]
+{% endif %}
+{% if composites %}
+
+# --- Composite Entity DTOs ---
+{% for comp in composites %}
+
+{{ render_composite(comp) }}
+{% endfor %}
+{% endif %}
