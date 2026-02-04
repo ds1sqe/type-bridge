@@ -5,7 +5,6 @@ supporting both attribute and role player filters.
 """
 
 import pytest
-
 from type_bridge import (
     Entity,
     Flag,
@@ -110,7 +109,7 @@ def test_update_relation_by_role_players(db_with_schema):
     expected = 1
     actual = len(relations)
     assert expected == actual
-    assert "Engineer" == relations[0].position.value
+    assert relations[0].position.value == "Engineer"
 
     # Act - Fetch, modify, and update
     emp = employment_mgr.get(employee=alice)[0]
@@ -122,7 +121,7 @@ def test_update_relation_by_role_players(db_with_schema):
     expected = 1
     actual = len(updated_relations)
     assert expected == actual
-    assert "Senior Engineer" == updated_relations[0].position.value
+    assert updated_relations[0].position.value == "Senior Engineer"
 
 
 @pytest.mark.integration
@@ -245,11 +244,11 @@ def test_updating_relation_preserves_role_players(db_with_schema):
     assert expected == actual
 
     # Verify role players are preserved
-    assert "Charlie" == result[0].employee.name.value
-    assert "BigCorp" == result[0].employer.name.value
+    assert result[0].employee.name.value == "Charlie"
+    assert result[0].employer.name.value == "BigCorp"
 
     # Verify attribute was updated
-    assert "Junior Developer" == result[0].position.value
+    assert result[0].position.value == "Junior Developer"
 
 
 @pytest.mark.integration
@@ -312,7 +311,7 @@ def test_update_relation_with_optional_attribute(db_with_schema):
     assert expected == actual
 
     assert result[0].notes is not None
-    assert "Founding team member" == result[0].notes.value
+    assert result[0].notes.value == "Founding team member"
 
 
 @pytest.mark.integration

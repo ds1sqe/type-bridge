@@ -3,7 +3,6 @@
 from datetime import UTC
 
 import pytest
-
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.crud.utils import format_value
 from type_bridge.query import Query, QueryBuilder
@@ -372,7 +371,7 @@ class TestFormatValue:
         assert "P" in result
 
     def test_format_duration_isodate(self):
-        """isodate Duration should be ISO formatted."""
+        """Isodate Duration should be ISO formatted."""
         import isodate
 
         duration = isodate.parse_duration("P1DT2H30M")

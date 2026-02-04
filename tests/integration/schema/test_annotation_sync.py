@@ -3,7 +3,6 @@
 from typing import ClassVar
 
 import pytest
-
 from type_bridge import (
     Database,
     Double,

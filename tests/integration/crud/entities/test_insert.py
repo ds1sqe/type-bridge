@@ -1,7 +1,6 @@
 """Integration tests for entity insert operations."""
 
 import pytest
-
 from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
 
 

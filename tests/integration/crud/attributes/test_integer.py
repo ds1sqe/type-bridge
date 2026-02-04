@@ -1,7 +1,6 @@
 """Integration tests for Integer attribute CRUD operations."""
 
 import pytest
-
 from type_bridge import Entity, Flag, Integer, Key, SchemaManager, String, TypeFlags
 
 

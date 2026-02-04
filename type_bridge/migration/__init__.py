@@ -106,7 +106,9 @@ from type_bridge.migration.loader import (
 )
 from type_bridge.migration.registry import ModelRegistry
 from type_bridge.migration.schema_manager import SchemaManager
-from type_bridge.migration.simple_migration import MigrationManager as SimpleMigrationManager
+from type_bridge.migration.simple_migration import (
+    MigrationManager as SimpleMigrationManager,
+)
 from type_bridge.migration.state import (
     MigrationRecord,
     MigrationState,

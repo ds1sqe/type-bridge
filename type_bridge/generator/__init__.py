@@ -42,6 +42,7 @@ from .render import (
     render_entities,
     render_functions,
     render_package_init,
+    render_api_dto,
     render_registry,
     render_relations,
     render_structs,
@@ -51,9 +52,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 __all__ = [
+    "ParsedSchema",
     "generate_models",
     "parse_tql_schema",
-    "ParsedSchema",
 ]
 
 
@@ -65,6 +66,7 @@ def generate_models(
     schema_version: str = "1.0.0",
     copy_schema: bool = True,
     schema_path: str | Path | None = None,
+    generate_pydantic: bool = False,
 ) -> None:
     """Generate TypeBridge models from a TypeDB schema.
 
@@ -76,10 +78,7 @@ def generate_models(
         copy_schema: Whether to copy the schema file to the output directory
         schema_path: Custom path for the schema file. If relative, resolved against
             output_dir. If None and copy_schema=True, uses "schema.tql" in output_dir.
-
-    Raises:
-        FileNotFoundError: If schema is a path that doesn't exist
-        ValueError: If schema parsing fails
+        generate_pydantic: Whether to generate Pydantic API DTOs
     """
     # Resolve schema text
     schema_source_path: Path | None = None
@@ -154,6 +153,13 @@ def generate_models(
         ),
         encoding="utf-8",
     )
+
+    # Render Pydantic DTOs if requested
+    if generate_pydantic:
+        (output / "api_dto.py").write_text(
+            render_api_dto(parsed),
+            encoding="utf-8",
+        )
 
     # Determine schema output location
     schema_filename: str | None = None

@@ -1,7 +1,6 @@
 """Tests for TypeQL 3.8.0 built-in function expressions."""
 
 import pytest
-
 from type_bridge.expressions.builtin import (
     BuiltinFunctionExpr,
     abs_,

@@ -6,7 +6,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from type_bridge.generator import generate_models, parse_tql_schema
 from type_bridge.generator.naming import build_class_name_map
 from type_bridge.generator.render import (

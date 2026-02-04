@@ -11,7 +11,6 @@ These tests verify the full workflow:
 from pathlib import Path
 
 import pytest
-
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.attribute import AttributeFlags
 from type_bridge.migration import (

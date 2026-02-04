@@ -1,7 +1,6 @@
 """Integration tests for filter validation with attribute ownership checking."""
 
 import pytest
-
 from type_bridge import Entity, Flag, Integer, Key, SchemaManager, String, TypeFlags
 
 
@@ -165,7 +164,7 @@ def test_filter_with_inherited_attributes_passes(clean_db):
     expected = 1
     actual = len(result)
     assert expected == actual
-    assert "Alice" == result[0].name.value
+    assert result[0].name.value == "Alice"
 
 
 @pytest.mark.integration
@@ -241,5 +240,5 @@ def test_filter_with_owned_attribute_succeeds(clean_db):
     expected = 1
     actual = len(result)
     assert expected == actual
-    assert "Alice" == result[0].name.value
-    assert 30 == result[0].age.value
+    assert result[0].name.value == "Alice"
+    assert result[0].age.value == 30

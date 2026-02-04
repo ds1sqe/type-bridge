@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from type_bridge.expressions import FunctionQuery, ReturnType
 
 

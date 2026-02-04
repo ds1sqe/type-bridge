@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from type_bridge.generator.naming import (
     build_class_name_map,
     render_all_export,

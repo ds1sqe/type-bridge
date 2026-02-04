@@ -1,5 +1,4 @@
-"""
-Type-safe query expression system for TypeBridge.
+"""Type-safe query expression system for TypeBridge.
 
 This module provides expression classes for building type-safe TypeQL queries.
 """

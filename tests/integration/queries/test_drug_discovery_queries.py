@@ -6,7 +6,6 @@ Based on TypeDB Drug Discovery example schema.
 """
 
 import pytest
-
 from type_bridge import (
     AttributeFlags,
     Card,

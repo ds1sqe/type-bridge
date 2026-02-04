@@ -5,7 +5,6 @@ multi-value roles, and relation updates.
 """
 
 import pytest
-
 from type_bridge import (
     Card,
     Database,

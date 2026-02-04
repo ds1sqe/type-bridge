@@ -4,7 +4,6 @@ from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
-
 from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
 
 

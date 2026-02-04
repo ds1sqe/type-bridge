@@ -1,7 +1,6 @@
 """Integration tests for schema migration functionality."""
 
 import pytest
-
 from type_bridge import (
     AttributeFlags,
     Entity,
@@ -271,4 +270,4 @@ company plays employment:employer;""",
     expected = 1
     actual = len(results)
     assert expected == actual
-    assert "Alice" == results[0].name.value
+    assert results[0].name.value == "Alice"

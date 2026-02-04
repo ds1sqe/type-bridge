@@ -2,8 +2,6 @@
 
 from typing import Any, cast
 
-from typedb.driver import TransactionType
-
 from type_bridge import (
     Card,
     Database,
@@ -16,6 +14,7 @@ from type_bridge import (
     TypeFlags,
 )
 from type_bridge.crud.typedb_manager import TypeDBManager
+from typedb.driver import TransactionType
 
 
 class _RecordingTypeDBManager(TypeDBManager):

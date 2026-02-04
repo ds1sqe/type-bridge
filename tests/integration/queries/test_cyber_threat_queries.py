@@ -8,7 +8,6 @@ Based on TypeDB Cyber Threat Intelligence example schema (STIX 2.1).
 from datetime import UTC, datetime
 
 import pytest
-
 from type_bridge import (
     AttributeFlags,
     Card,

@@ -7,7 +7,6 @@ even when they share the same underlying value type.
 from unittest.mock import Mock
 
 import pytest
-
 from type_bridge import Entity, SchemaManager, SchemaValidationError
 from type_bridge.attribute.datetime import DateTime
 from type_bridge.attribute.flags import Flag, Key

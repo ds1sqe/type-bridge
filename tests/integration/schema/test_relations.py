@@ -1,7 +1,6 @@
 """Integration tests for schema creation with relations."""
 
 import pytest
-
 from type_bridge import (
     Entity,
     Flag,

@@ -1,7 +1,6 @@
 """Integration tests for schema inheritance."""
 
 import pytest
-
 from type_bridge import (
     Entity,
     Flag,

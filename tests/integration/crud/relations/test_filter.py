@@ -5,7 +5,6 @@ expression-based filtering, limit/offset, and aggregations.
 """
 
 import pytest
-
 from type_bridge import (
     Entity,
     Flag,
@@ -73,8 +72,8 @@ def test_filter_relations_by_attribute(db_with_schema):
     expected = 1
     actual = len(result)
     assert expected == actual
-    assert "Alice" == result[0].employee.name.value
-    assert "Engineer" == result[0].position.value
+    assert result[0].employee.name.value == "Alice"
+    assert result[0].position.value == "Engineer"
 
 
 @pytest.mark.integration
@@ -133,8 +132,8 @@ def test_filter_relations_by_role_player(db_with_schema):
     expected = 1
     actual = len(result)
     assert expected == actual
-    assert "Charlie" == result[0].employee.name.value
-    assert "Acme" == result[0].employer.name.value
+    assert result[0].employee.name.value == "Charlie"
+    assert result[0].employer.name.value == "Acme"
 
 
 @pytest.mark.integration
@@ -192,8 +191,8 @@ def test_filter_relations_combined_attribute_and_role(db_with_schema):
     expected = 1
     actual = len(result)
     assert expected == actual
-    assert "Eve" == result[0].employee.name.value
-    assert "CTO" == result[0].position.value
+    assert result[0].employee.name.value == "Eve"
+    assert result[0].position.value == "CTO"
 
 
 @pytest.mark.integration
@@ -347,7 +346,7 @@ def test_filter_relations_with_multiple_matching_results(db_with_schema):
 
     # Verify all have Developer position
     for emp in result:
-        assert "Developer" == emp.position.value
+        assert emp.position.value == "Developer"
 
 
 @pytest.mark.integration
@@ -407,9 +406,9 @@ def test_filter_relations_by_both_role_players(db_with_schema):
     expected = 1
     actual = len(result)
     assert expected == actual
-    assert "Henry" == result[0].employee.name.value
-    assert "Corp1" == result[0].employer.name.value
-    assert "Tech Lead" == result[0].position.value
+    assert result[0].employee.name.value == "Henry"
+    assert result[0].employer.name.value == "Corp1"
+    assert result[0].position.value == "Tech Lead"
 
 
 # New filter() method tests
@@ -592,7 +591,7 @@ def test_filter_first_and_count(db_with_schema):
 
     # Assert - first() should return one relation
     assert first_result is not None
-    assert "Developer" == first_result.position.value
+    assert first_result.position.value == "Developer"
 
     # Act - Test count()
     count_result = employment_mgr.filter(position="Developer").count()
@@ -666,7 +665,7 @@ def test_filter_with_dict_filters(db_with_schema):
     expected = 1
     actual = len(result)
     assert expected == actual
-    assert "Alice" == result[0].employee.name.value
+    assert result[0].employee.name.value == "Alice"
 
 
 @pytest.mark.integration
@@ -732,8 +731,8 @@ def test_filter_combining_role_players_and_attributes(db_with_schema):
     expected = 1
     actual = len(result)
     assert expected == actual
-    assert "CTO" == result[0].position.value
-    assert 150000 == result[0].salary.value
+    assert result[0].position.value == "CTO"
+    assert result[0].salary.value == 150000
 
 
 @pytest.mark.integration
@@ -801,7 +800,7 @@ def test_relation_query_delete(db_with_schema):
 
     # Verify we have 3 employments
     all_employments = employment_mgr.all()
-    assert 3 == len(all_employments)
+    assert len(all_employments) == 3
 
     # Act - Delete low-salary employments using filter().delete()
     deleted_count = employment_mgr.filter(Salary.lt(Salary(50000))).delete()
@@ -817,7 +816,7 @@ def test_relation_query_delete(db_with_schema):
 
     # Verify that the intern employment was deleted
     intern_employments = [e for e in remaining if e.position.value == "Intern"]
-    assert 0 == len(intern_employments)
+    assert len(intern_employments) == 0
 
 
 @pytest.mark.integration
@@ -894,7 +893,7 @@ def test_relation_query_delete_with_role_player_filter(db_with_schema):
     assert expected_remaining == len(remaining)
 
     # Verify only Bob's employment remains
-    assert "Bob" == remaining[0].employee.name.value
+    assert remaining[0].employee.name.value == "Bob"
 
 
 @pytest.mark.integration
@@ -971,7 +970,7 @@ def test_relation_query_update_with(db_with_schema):
 
     # Find engineers and verify their salaries
     engineers = [e for e in all_employments if e.position.value == "Engineer"]
-    assert 2 == len(engineers)
+    assert len(engineers) == 2
 
     # Check that salaries were increased by 10%
     engineer_salaries = sorted([e.salary.value for e in engineers])
@@ -980,8 +979,8 @@ def test_relation_query_update_with(db_with_schema):
 
     # Verify manager salary unchanged
     managers = [e for e in all_employments if e.position.value == "Manager"]
-    assert 1 == len(managers)
-    assert 120000 == managers[0].salary.value
+    assert len(managers) == 1
+    assert managers[0].salary.value == 120000
 
 
 @pytest.mark.integration
@@ -1056,7 +1055,7 @@ def test_relation_query_update_with_complex_function(db_with_schema):
 
     # Verify updates in database
     all_employments = employment_mgr.all()
-    assert 2 == len(all_employments)
+    assert len(all_employments) == 2
 
     # Verify positions have "Senior" prefix
     positions = sorted([e.position.value for e in all_employments])

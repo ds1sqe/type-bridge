@@ -1,7 +1,6 @@
 """Integration tests for chainable EntityQuery operations (delete and update_with)."""
 
 import pytest
-
 from type_bridge import Entity, Flag, Integer, Key, SchemaManager, String, TypeFlags
 
 

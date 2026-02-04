@@ -1,7 +1,6 @@
 """Integration tests for bulk entity operations."""
 
 import pytest
-
 from type_bridge import Card, Entity, Flag, Integer, Key, String, TypeFlags
 
 

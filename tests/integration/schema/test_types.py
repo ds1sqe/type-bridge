@@ -1,7 +1,6 @@
 """Integration tests for schema generation with all attribute types."""
 
 import pytest
-
 from type_bridge import (
     Boolean,
     Date,

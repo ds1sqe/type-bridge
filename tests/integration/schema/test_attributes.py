@@ -1,7 +1,6 @@
 """Integration tests for schema attribute constraints."""
 
 import pytest
-
 from type_bridge import Entity, Flag, Key, SchemaManager, String, TypeFlags, Unique
 
 

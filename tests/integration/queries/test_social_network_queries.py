@@ -13,7 +13,6 @@ These tests cover:
 """
 
 import pytest
-
 from type_bridge import (
     Card,
     Database,

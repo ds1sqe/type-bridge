@@ -1,6 +1,7 @@
 """Pytest fixtures for integration tests."""
 
 import pytest
+from type_bridge import Credentials, Database, TypeDB
 from typedb.driver import DriverOptions
 
 from tests.utils.typedb_lifecycle import (
@@ -10,7 +11,6 @@ from tests.utils.typedb_lifecycle import (
     stop_typedb_container,
     suppress_stderr,
 )
-from type_bridge import Credentials, Database, TypeDB
 
 
 @pytest.fixture(scope="session")

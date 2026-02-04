@@ -6,7 +6,6 @@ Based on TypeDB Bookstore example schema.
 """
 
 import pytest
-
 from type_bridge import (
     AttributeFlags,
     Database,

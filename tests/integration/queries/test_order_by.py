@@ -4,7 +4,6 @@ Tests actual TypeDB query execution with sorting.
 """
 
 import pytest
-
 from type_bridge import (
     Entity,
     Flag,

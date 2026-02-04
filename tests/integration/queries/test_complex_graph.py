@@ -5,7 +5,6 @@ and polymorphic queries.
 """
 
 import pytest
-
 from type_bridge import (
     Database,
     Entity,

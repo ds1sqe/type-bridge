@@ -1,7 +1,6 @@
 """Integration tests for Boolean attribute CRUD operations."""
 
 import pytest
-
 from type_bridge import Boolean, Entity, Flag, Key, SchemaManager, String, TypeFlags
 
 

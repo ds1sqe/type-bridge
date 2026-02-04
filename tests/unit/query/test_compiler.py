@@ -3,7 +3,6 @@
 from datetime import datetime
 
 import pytest
-
 from type_bridge.query.ast import (
     EntityPattern,
     FunctionCallValue,

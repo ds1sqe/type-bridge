@@ -443,7 +443,7 @@ class TestBreakingChangeAnalyzerSummary:
     """Tests for BreakingChangeAnalyzer.summary()."""
 
     def test_summary_no_changes(self):
-        """summary should indicate no changes for empty diff."""
+        """Summary should indicate no changes for empty diff."""
         diff = SchemaDiff()
 
         analyzer = BreakingChangeAnalyzer()
@@ -452,7 +452,7 @@ class TestBreakingChangeAnalyzerSummary:
         assert "No schema changes detected" in summary
 
     def test_summary_grouped_by_category(self):
-        """summary should group changes by category."""
+        """Summary should group changes by category."""
         diff = SchemaDiff(
             added_entities={Company},  # SAFE
             removed_entities={Person},  # BREAKING
@@ -469,7 +469,7 @@ class TestBreakingChangeAnalyzerSummary:
         assert "[SAFE]" in summary
 
     def test_summary_includes_recommendations(self):
-        """summary should include recommendations for breaking changes."""
+        """Summary should include recommendations for breaking changes."""
         diff = SchemaDiff(removed_entities={Person})
 
         analyzer = BreakingChangeAnalyzer()

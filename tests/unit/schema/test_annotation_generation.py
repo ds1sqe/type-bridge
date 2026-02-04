@@ -118,7 +118,7 @@ class TestMultipleAnnotations:
             range_constraint: ClassVar[tuple[str | None, str | None]] = ("1", "100")
 
         schema = BoundedInteger.to_schema_definition()
-        assert "attribute BoundedInteger, value integer @range(1..100);" == schema
+        assert schema == "attribute BoundedInteger, value integer @range(1..100);"
 
 
 class TestAbstractWithAnnotations:

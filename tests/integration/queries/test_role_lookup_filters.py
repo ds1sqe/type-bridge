@@ -5,7 +5,6 @@ Tests Django-style lookup filters on role player attributes:
 """
 
 import pytest
-
 from type_bridge import (
     Entity,
     Flag,

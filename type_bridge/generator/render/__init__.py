@@ -14,6 +14,7 @@ from .attributes import render_attributes
 from .entities import render_entities
 from .functions import render_functions
 from .package import render_package_init
+from .api_dto import render_api_dto
 from .registry import render_registry
 from .relations import render_relations
 from .structs import render_structs
@@ -23,6 +24,7 @@ __all__ = [
     "render_entities",
     "render_functions",
     "render_package_init",
+    "render_api_dto",
     "render_registry",
     "render_relations",
     "render_structs",

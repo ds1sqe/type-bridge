@@ -1,5 +1,4 @@
-"""
-Role-player field references for type-safe query building.
+"""Role-player field references for type-safe query building.
 
 This module provides field reference classes that enable type-safe filtering
 of role-player attributes in relations:

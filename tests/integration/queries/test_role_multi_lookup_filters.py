@@ -5,7 +5,6 @@ by multiple entity types.
 """
 
 import pytest
-
 from type_bridge import (
     Entity,
     Flag,

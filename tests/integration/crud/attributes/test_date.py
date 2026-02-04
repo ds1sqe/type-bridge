@@ -3,7 +3,6 @@
 from datetime import date
 
 import pytest
-
 from type_bridge import Date, Entity, Flag, Key, SchemaManager, String, TypeFlags
 
 

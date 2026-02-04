@@ -1,6 +1,16 @@
 """Unit tests for Relation.to_ast method."""
 
-from type_bridge import Boolean, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
+from type_bridge import (
+    Boolean,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    Relation,
+    Role,
+    String,
+    TypeFlags,
+)
 from type_bridge.query.ast import InsertClause, LiteralValue, RelationStatement
 
 

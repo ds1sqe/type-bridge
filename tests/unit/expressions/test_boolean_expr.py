@@ -1,7 +1,6 @@
 """Unit tests for BooleanExpr flattening behavior."""
 
 import pytest
-
 from type_bridge import Integer, String
 from type_bridge.expressions import BooleanExpr, ComparisonExpr
 

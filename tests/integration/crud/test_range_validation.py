@@ -7,7 +7,6 @@ entities through the full CRUD flow, preventing invalid data from reaching TypeD
 from typing import ClassVar
 
 import pytest
-
 from type_bridge import (
     Database,
     Double,

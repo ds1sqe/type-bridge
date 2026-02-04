@@ -1,11 +1,9 @@
-"""
-Integration tests for advanced query expressions.
+"""Integration tests for advanced query expressions.
 
 Tests type-safe filtering, aggregations, and grouping against a real TypeDB instance.
 """
 
 import pytest
-
 from type_bridge import Database, Entity, SchemaManager, TypeFlags
 from type_bridge.attribute import Double, Integer, String
 from type_bridge.attribute.flags import Flag, Key

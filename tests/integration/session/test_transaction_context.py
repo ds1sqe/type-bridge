@@ -1,8 +1,6 @@
 """Integration tests for transaction context manager reuse."""
 
 import pytest
-from typedb.driver import TransactionType
-
 from type_bridge import (
     Entity,
     Flag,
@@ -12,6 +10,7 @@ from type_bridge import (
     String,
     TypeFlags,
 )
+from typedb.driver import TransactionType
 
 
 @pytest.mark.integration

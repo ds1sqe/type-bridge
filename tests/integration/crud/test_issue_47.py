@@ -1,5 +1,4 @@
 import pytest
-
 from type_bridge import Entity, Flag, Key, SchemaManager, String, TypeFlags
 
 
@@ -29,11 +28,9 @@ class Person(Entity):
 
 @pytest.mark.integration
 def test_update_entity_with_multiple_none_optional_attributes(clean_db):
-    """
-    Regression test for Issue #47: update() fails silently when entity
+    """Regression test for Issue #47: update() fails silently when entity
     has multiple optional attributes where some are None.
     """
-
     # Setup schema
     schema_manager = SchemaManager(clean_db)
     schema_manager.register(Person)

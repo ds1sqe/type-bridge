@@ -11,7 +11,6 @@ Fix: Extract .value from Attribute instances before formatting in _format_value(
 """
 
 import pytest
-
 from type_bridge import Database, Entity, Integer, String, TypeFlags
 from type_bridge.attribute.flags import Flag, Key
 

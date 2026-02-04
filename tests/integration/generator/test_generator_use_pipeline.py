@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-
 from type_bridge import Database, SchemaManager
 from type_bridge.generator import generate_models
 

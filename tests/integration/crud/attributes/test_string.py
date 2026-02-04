@@ -1,7 +1,6 @@
 """Integration tests for String attribute CRUD operations."""
 
 import pytest
-
 from type_bridge import Entity, Flag, Key, SchemaManager, String, TypeFlags
 
 

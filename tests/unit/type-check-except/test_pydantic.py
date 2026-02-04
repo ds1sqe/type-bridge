@@ -7,7 +7,6 @@ The type: ignore comments are expected and indicate we're testing runtime valida
 
 import pytest
 from pydantic import ValidationError
-
 from type_bridge import Entity, Integer, String, TypeFlags
 
 

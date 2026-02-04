@@ -10,8 +10,7 @@ if TYPE_CHECKING:
 
 
 class AggregateExpr[T: "Attribute"](Expression):
-    """
-    Type-safe aggregate expression for database-side calculations.
+    """Type-safe aggregate expression for database-side calculations.
 
     Represents aggregations like sum(age), avg(score), count(*), etc.
     """
@@ -22,8 +21,7 @@ class AggregateExpr[T: "Attribute"](Expression):
         function: Literal["sum", "mean", "max", "min", "count", "median", "std"] = "count",
         field_name: str | None = None,
     ):
-        """
-        Create an aggregate expression.
+        """Create an aggregate expression.
 
         Args:
             attr_type: Attribute type to aggregate (None for count)
@@ -82,8 +80,7 @@ class AggregateExpr[T: "Attribute"](Expression):
         return f"{self.function}({attr_var})"
 
     def get_fetch_key(self) -> str:
-        """
-        Get the key to use in fetch results.
+        """Get the key to use in fetch results.
 
         Note:
             AUTOMATIC CONVERSION: TypeQL 'mean' → result key 'avg'

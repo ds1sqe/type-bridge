@@ -3,7 +3,6 @@
 from decimal import Decimal as PyDecimal
 
 import pytest
-
 from type_bridge import Decimal, Entity, Flag, Key, SchemaManager, String, TypeFlags
 
 
