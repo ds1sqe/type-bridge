@@ -503,7 +503,7 @@ class TestApiDtoGeneration:
 
     SCHEMA_PATH = FIXTURES_DIR / "bookstore.tql"
 
-    def _import_api_dto(self, package_path: Path) -> "ModuleType":
+    def _import_api_dto(self, package_path: Path) -> ModuleType:
         """Import the generated api_dto module."""
         parent = str(package_path.parent)
         package_name = package_path.name
