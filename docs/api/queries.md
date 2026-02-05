@@ -92,6 +92,7 @@ mid_range = manager.filter(
 ### Available Comparison Methods
 
 All numeric field references support:
+
 - `.gt(value)` - Greater than
 - `.lt(value)` - Less than
 - `.gte(value)` - Greater than or equal
@@ -129,6 +130,7 @@ city_pattern = manager.filter(Person.city.regex(City("New.*")))
 ### Available String Methods
 
 All string field references support:
+
 - `.contains(value)` - Substring match
 - `.like(value)` - Regex pattern (TypeQL `like`)
 - `.regex(value)` - Regex pattern (alias for `like`)
@@ -269,6 +271,7 @@ print(f"Min salary: ${stats['min_salary']:,.2f}")
 ### Available Aggregation Methods
 
 All numeric field references support:
+
 - `.avg()` - Average value
 - `.sum()` - Sum of values
 - `.max()` - Maximum value
@@ -429,11 +432,11 @@ results = manager.filter().order_by('city', '-age').execute()
 
 #### Available Sort Syntax
 
-| Syntax | Description | Example |
-|--------|-------------|---------|
-| `'field'` | Ascending by field | `order_by('age')` |
-| `'-field'` | Descending by field | `order_by('-age')` |
-| `'f1', 'f2'` | Multiple fields | `order_by('city', '-age')` |
+| Syntax         | Description                       | Example                     |
+| -------------- | --------------------------------- | --------------------------- |
+| `'field'`      | Ascending by field                | `order_by('age')`           |
+| `'-field'`     | Descending by field               | `order_by('-age')`          |
+| `'f1', 'f2'`   | Multiple fields                   | `order_by('city', '-age')`  |
 | `'role__attr'` | Role-player attribute (Relations) | `order_by('employee__age')` |
 
 #### Sorting Role-Player Attributes
@@ -632,6 +635,7 @@ results = manager.filter(
 ### Available Role Player Field Methods
 
 **Numeric fields** (`RolePlayerNumericFieldRef`):
+
 - `.gt(value)` - Greater than
 - `.lt(value)` - Less than
 - `.gte(value)` - Greater than or equal
@@ -640,6 +644,7 @@ results = manager.filter(
 - `.neq(value)` - Not equal to
 
 **String fields** (`RolePlayerStringFieldRef`):
+
 - `.contains(value)` - Substring match
 - `.like(value)` - Regex pattern
 - `.regex(value)` - Regex pattern (alias for like)
@@ -898,12 +903,48 @@ promoted = manager.filter(Age.gte(Age(35))).update_with(promote)
 ```
 
 **Benefits**:
+
 - Works with all expression types (comparisons, strings, boolean logic)
 - Single atomic transaction (all-or-nothing)
 - Returns count (delete) or list of entities (update_with)
 - Type-safe and validated at runtime
 
 For detailed documentation, see [CRUD Operations - Chainable Delete](crud.md#chainable-delete) and [CRUD Operations - Bulk Update](crud.md#bulk-update-with-function).
+
+## Arithmetic Expressions
+
+TypeQL supports six infix arithmetic operators: `+`, `-`, `*`, `/`, `%`, `^`. TypeBridge provides `ArithmeticExpr` and helper functions to build these in queries:
+
+```python
+from type_bridge.expressions import add, sub, mul, div, mod, pow_
+
+# Helper functions auto-normalize variable names (bare names get $ prefix)
+expr = add("x", "y")          # ($x + $y)
+expr = mul("price", 1.1)      # ($price * 1.1)
+expr = mod("x", 2)            # ($x % 2)
+expr = pow_("base", 3)        # ($base ^ 3)
+```
+
+Expressions can be nested via AST nodes for complex calculations:
+
+```python
+from type_bridge.query.ast import ArithmeticValue
+
+# (($x + $y) * $z)
+inner = ArithmeticValue(left="$x", operator="+", right="$y")
+outer = ArithmeticValue(left=inner, operator="*", right="$z")
+```
+
+Each helper returns an `ArithmeticExpr` which implements the standard `Expression` interface (`to_ast()`, `to_value_ast()`, `to_typeql()`).
+
+| Helper | Operator | Example             |
+| ------ | -------- | ------------------- |
+| `add`  | `+`      | `add("x", "y")`     |
+| `sub`  | `-`      | `sub("x", "y")`     |
+| `mul`  | `*`      | `mul("x", 2)`       |
+| `div`  | `/`      | `div("total", "n")` |
+| `mod`  | `%`      | `mod("x", 2)`       |
+| `pow_` | `^`      | `pow_("base", 3)`   |
 
 ## See Also
 

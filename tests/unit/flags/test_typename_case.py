@@ -1,5 +1,7 @@
 """Tests for TypeNameCase formatting options for Entity and Relation types."""
 
+import warnings
+
 from type_bridge import (
     Entity,
     Integer,
@@ -202,9 +204,13 @@ def test_typename_case_in_inheritance():
         flags = TypeFlags(case=TypeNameCase.LOWERCASE, base=True)
         name: Name
 
-    class PersonName(BaseEntity):
-        flags = TypeFlags(case=TypeNameCase.SNAKE_CASE)
-        age: Age
+    # Pydantic warns about field shadowing when base=True attrs are absorbed
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Field name.*shadows", category=UserWarning)
+
+        class PersonName(BaseEntity):
+            flags = TypeFlags(case=TypeNameCase.SNAKE_CASE)
+            age: Age
 
     assert PersonName.get_type_name() == "person_name"
 

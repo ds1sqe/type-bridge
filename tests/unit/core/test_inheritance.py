@@ -1,5 +1,7 @@
 """Tests for inheritance edge cases and built-in type name collisions."""
 
+import warnings
+
 import pytest
 
 import type_bridge as tbg
@@ -375,9 +377,13 @@ class TestComplexInheritanceHierarchy:
             created_at: CreatedAt
 
         # Abstract TypeDB entity that also inherits from Python base
-        class Resource(Timestamped):
-            flags = TypeFlags(name="resource", abstract=True)
-            id: Id = Flag(Key)
+        # Pydantic warns about field shadowing when base=True attrs are absorbed
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Field name.*shadows", category=UserWarning)
+
+            class Resource(Timestamped):
+                flags = TypeFlags(name="resource", abstract=True)
+                id: Id = Flag(Key)
 
         # Concrete entity
         class User(Resource):

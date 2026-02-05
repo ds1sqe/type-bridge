@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from type_bridge.query.ast import (
+    ArithmeticValue,
     AttributePattern,
     Clause,
     Constraint,
@@ -262,6 +263,19 @@ class QueryCompiler:
     # --- Values & Escaping ---
 
     def _compile_value(self, value_node: Value) -> str:
+        if isinstance(value_node, ArithmeticValue):
+            left = (
+                self._compile_value(value_node.left)
+                if isinstance(value_node.left, Value)
+                else value_node.left
+            )
+            right = (
+                self._compile_value(value_node.right)
+                if isinstance(value_node.right, Value)
+                else value_node.right
+            )
+            return f"({left} {value_node.operator} {right})"
+
         if isinstance(value_node, FunctionCallValue):
             args_str = []
             for arg in value_node.args:
