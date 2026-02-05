@@ -1,0 +1,250 @@
+{# Macros for rendering DTO components #}
+
+{# Render a custom base class set (Out, Create, Patch) #}
+{% macro render_base_class(bc, strict_out_models=false) %}
+# --- {{ bc.base_name }} Base Classes ---
+
+class {{ bc.base_name }}Out(BaseDTOOut):
+    """Base for {{ bc.source_entity }} output DTOs."""
+{% for attr in bc.fields %}
+{% if strict_out_models and attr.required %}
+    {{ attr.python_name }}: {{ attr.python_type }}
+{% else %}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+{% endif %}
+{% endfor %}
+{% for name, type_ann in bc.extra_fields.items() %}
+    {{ name }}: {{ type_ann }}
+{% endfor %}
+{% if bc.has_field_sync %}
+
+    @model_validator(mode="after")
+    def _sync_{{ bc.field_sync_a }}_{{ bc.field_sync_b }}(self) -> "{{ bc.base_name }}Out":
+        if self.{{ bc.field_sync_a }} and not self.{{ bc.field_sync_b }}:
+            self.{{ bc.field_sync_b }} = self.{{ bc.field_sync_a }}
+        elif self.{{ bc.field_sync_b }} and not self.{{ bc.field_sync_a }}:
+            self.{{ bc.field_sync_a }} = self.{{ bc.field_sync_b }}
+        return self
+{% endif %}
+
+
+class {{ bc.base_name }}Create(BaseDTOCreate):
+    """Base for {{ bc.source_entity }} create DTOs."""
+{% for attr in bc.fields %}
+{% if attr.required %}
+    {{ attr.python_name }}: {{ attr.python_type }}
+{% else %}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+{% endif %}
+{% endfor %}
+{% for name, type_ann in bc.extra_fields.items() %}
+    {{ name }}: {{ type_ann }}
+{% endfor %}
+{% if bc.has_field_sync %}
+
+    @model_validator(mode="after")
+    def _sync_{{ bc.field_sync_a }}_{{ bc.field_sync_b }}(self) -> "{{ bc.base_name }}Create":
+        if self.{{ bc.field_sync_a }} and not self.{{ bc.field_sync_b }}:
+            self.{{ bc.field_sync_b }} = self.{{ bc.field_sync_a }}
+        elif self.{{ bc.field_sync_b }} and not self.{{ bc.field_sync_a }}:
+            self.{{ bc.field_sync_a }} = self.{{ bc.field_sync_b }}
+        return self
+{% endif %}
+
+
+class {{ bc.base_name }}Patch(BaseDTOPatch):
+    """Base for {{ bc.source_entity }} partial update DTOs."""
+{% for attr in bc.fields %}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = None
+{% endfor %}
+{% for name, type_ann in bc.extra_fields.items() %}
+    {{ name }}: Optional[{{ type_ann.split('=')[0].strip() }}] = None
+{% endfor %}
+{% if bc.has_field_sync %}
+
+    @model_validator(mode="after")
+    def _sync_{{ bc.field_sync_a }}_{{ bc.field_sync_b }}(self) -> "{{ bc.base_name }}Patch":
+        if self.{{ bc.field_sync_a }} is not None and self.{{ bc.field_sync_b }} is None:
+            self.{{ bc.field_sync_b }} = self.{{ bc.field_sync_a }}
+        elif self.{{ bc.field_sync_b }} is not None and self.{{ bc.field_sync_a }} is None:
+            self.{{ bc.field_sync_a }} = self.{{ bc.field_sync_b }}
+        return self
+{% endif %}
+
+{% endmacro %}
+
+{# Render an entity DTO set (Out, Create, Patch) #}
+{% macro render_entity(entity, strict_out_models=false) %}
+# -- {{ entity.class_name }} --
+
+class {{ entity.class_name }}Out({{ entity.parent_class }}Out):
+    """Output DTO for {{ entity.name }}."""
+    type: Literal["{{ entity.name }}"] = "{{ entity.name }}"
+{% for attr in entity.own_attributes %}
+{% if strict_out_models and attr.required %}
+    {{ attr.python_name }}: {{ attr.python_type }}
+{% else %}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+{% endif %}
+{% endfor %}
+{% if not entity.own_attributes %}
+    pass
+{% endif %}
+
+
+class {{ entity.class_name }}Create({{ entity.parent_class }}Create):
+    """Create DTO for {{ entity.name }}."""
+    type: Literal["{{ entity.name }}"] = "{{ entity.name }}"
+{% for attr in entity.own_attributes %}
+{% if attr.required %}
+    {{ attr.python_name }}: {{ attr.python_type }}
+{% else %}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+{% endif %}
+{% endfor %}
+{% if not entity.own_attributes %}
+    pass
+{% endif %}
+
+
+class {{ entity.class_name }}Patch({{ entity.parent_class }}Patch):
+    """Patch DTO for {{ entity.name }}."""
+    type: Literal["{{ entity.name }}"] = "{{ entity.name }}"
+{% for attr in entity.own_attributes %}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = None
+{% endfor %}
+{% if not entity.own_attributes %}
+    pass
+{% endif %}
+
+{% endmacro %}
+
+{# Render a relation DTO set (Out, Create) #}
+{% macro render_relation(relation, iid_field_name, skip_relation_output, relation_create_base_class) %}
+{% if not skip_relation_output %}
+# -- {{ relation.class_name }} --
+
+class {{ relation.class_name }}Out({{ relation.parent_class }}Out):
+    """Output DTO for {{ relation.name }}."""
+    type: Literal["{{ relation.name }}"] = "{{ relation.name }}"
+{% for role in relation.roles %}
+    {{ role.python_name }}_iid: Optional[str] = Field(None, description="{{ role.name }} role player IID")
+{% endfor %}
+{% for attr in relation.own_attributes %}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+{% endfor %}
+
+{% endif %}
+class {{ relation.class_name }}Create({{ relation_create_base_class or 'BaseRelationCreate' }}):
+    """Create DTO for {{ relation.name }}."""
+    type: Literal["{{ relation.name }}"] = "{{ relation.name }}"
+{% if not relation_create_base_class %}
+{% for role in relation.roles %}
+{% if role.required %}
+    {{ role.python_name }}_id: str = Field(description="{{ role.name }} role player identifier")
+{% else %}
+    {{ role.python_name }}_id: Optional[str] = Field(None, description="{{ role.name }} role player identifier")
+{% endif %}
+{% endfor %}
+{% endif %}
+{% for attr in relation.own_attributes %}
+{% if attr.required %}
+    {{ attr.python_name }}: {{ attr.python_type }}
+{% else %}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+{% endif %}
+{% endfor %}
+{% if relation_create_base_class and not relation.own_attributes %}
+    pass
+{% endif %}
+
+{% endmacro %}
+
+{# Render a composite DTO set (Out, Create, Patch) #}
+{% macro render_composite(comp) %}
+# -- {{ comp.name }} Composite --
+{% if comp.type_enum_from_registry %}
+
+# Type enum for {{ comp.name }} (included entities: {{ comp.included_entity_names | join(', ') }})
+{{ comp.name }}Type = Literal[{% for ent in comp.included_entity_names %}"{{ ent }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+{% endif %}
+
+
+class {{ comp.name }}Out(BaseDTOOut):
+    """Output DTO for {{ comp.name }} composite."""
+{% if comp.type_enum_from_registry %}
+    {{ comp.type_field_name }}: {{ comp.name }}Type
+{% else %}
+    {{ comp.type_field_name }}: str
+{% endif %}
+{% for field in comp.fields %}
+    {{ field.name }}: Optional[{{ field.type_annotation }}] = None{% if field.description %}  # {{ field.description }}{% endif %}
+
+{% endfor %}
+{% for name, type_ann in comp.extra_fields.items() %}
+    {{ name }}: {{ type_ann }}
+{% endfor %}
+{% if comp.has_field_sync %}
+
+    @model_validator(mode="after")
+    def _sync_{{ comp.field_sync_a }}_{{ comp.field_sync_b }}(self) -> "{{ comp.name }}Out":
+        if self.{{ comp.field_sync_a }} and not self.{{ comp.field_sync_b }}:
+            self.{{ comp.field_sync_b }} = self.{{ comp.field_sync_a }}
+        elif self.{{ comp.field_sync_b }} and not self.{{ comp.field_sync_a }}:
+            self.{{ comp.field_sync_a }} = self.{{ comp.field_sync_b }}
+        return self
+{% endif %}
+
+
+class {{ comp.name }}Create(BaseDTOCreate):
+    """Create DTO for {{ comp.name }} composite."""
+{% if comp.type_enum_from_registry %}
+    {{ comp.type_field_name }}: {{ comp.name }}Type
+{% else %}
+    {{ comp.type_field_name }}: str
+{% endif %}
+{% for field in comp.fields %}
+{% if field.default is none %}
+    {{ field.name }}: {{ field.type_annotation }}{% if field.description %}  # {{ field.description }}{% endif %}
+
+{% else %}
+    {{ field.name }}: Optional[{{ field.type_annotation }}] = {{ field.default }}{% if field.description %}  # {{ field.description }}{% endif %}
+
+{% endif %}
+{% endfor %}
+{% for name, type_ann in comp.extra_fields.items() %}
+    {{ name }}: {{ type_ann }}
+{% endfor %}
+{% if comp.has_field_sync %}
+
+    @model_validator(mode="after")
+    def _sync_{{ comp.field_sync_a }}_{{ comp.field_sync_b }}(self) -> "{{ comp.name }}Create":
+        if self.{{ comp.field_sync_a }} and not self.{{ comp.field_sync_b }}:
+            self.{{ comp.field_sync_b }} = self.{{ comp.field_sync_a }}
+        elif self.{{ comp.field_sync_b }} and not self.{{ comp.field_sync_a }}:
+            self.{{ comp.field_sync_a }} = self.{{ comp.field_sync_b }}
+        return self
+{% endif %}
+
+
+class {{ comp.name }}Patch(BaseDTOPatch):
+    """Patch DTO for {{ comp.name }} composite."""
+{% for field in comp.fields %}
+    {{ field.name }}: Optional[{{ field.type_annotation }}] = None{% if field.description %}  # {{ field.description }}{% endif %}
+
+{% endfor %}
+{% for name, type_ann in comp.extra_fields.items() %}
+    {{ name }}: Optional[{{ type_ann.split('=')[0].strip() }}] = None
+{% endfor %}
+{% if comp.has_field_sync %}
+
+    @model_validator(mode="after")
+    def _sync_{{ comp.field_sync_a }}_{{ comp.field_sync_b }}(self) -> "{{ comp.name }}Patch":
+        if self.{{ comp.field_sync_a }} is not None and self.{{ comp.field_sync_b }} is None:
+            self.{{ comp.field_sync_b }} = self.{{ comp.field_sync_a }}
+        elif self.{{ comp.field_sync_b }} is not None and self.{{ comp.field_sync_a }} is None:
+            self.{{ comp.field_sync_a }} = self.{{ comp.field_sync_b }}
+        return self
+{% endif %}
+
+{% endmacro %}

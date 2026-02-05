@@ -2,6 +2,9 @@
 
 This module provides static, type-safe access to schema information
 without runtime introspection. All data is computed at generation time.
+
+AUTO-GENERATED FILE - DO NOT EDIT MANUALLY
+Regenerate with: type-bridge generate <schema.tql> <output_dir>
 """
 
 from __future__ import annotations
@@ -121,6 +124,20 @@ RELATION_ROLES: dict[str, dict[str, RoleInfo]] = {
         "{{ role.name }}": RoleInfo("{{ role.name }}", ({{ role.players | map('tojson') | join(', ') }}{% if role.players | length == 1 %},{% endif %})),
 {% endfor %}
     },
+{% endfor %}
+}
+
+# ======================================================================
+# RELATION ATTRIBUTE METADATA
+# ======================================================================
+
+RELATION_ATTRIBUTES: dict[str, frozenset[str]] = {
+{% for name, attrs in relation_attributes.items() %}
+{% if attrs %}
+    "{{ name }}": frozenset({{"{"}}{{ attrs | map('tojson') | join(', ') }}{{"}"}}),
+{% else %}
+    "{{ name }}": frozenset(),
+{% endif %}
 {% endfor %}
 }
 
@@ -273,6 +290,11 @@ def get_role_players(relation_type: str, role_name: str) -> tuple[str, ...]:
     roles = RELATION_ROLES.get(relation_type, {})
     role_info = roles.get(role_name)
     return role_info.player_types if role_info else ()
+
+
+def get_relation_attributes(relation_type: str) -> frozenset[str]:
+    """Get attribute names owned by a relation type."""
+    return RELATION_ATTRIBUTES.get(relation_type, frozenset())
 
 
 def get_entity_attributes(entity_type: str) -> frozenset[str]:

@@ -1,5 +1,4 @@
-"""
-Integration tests for FunctionQuery against a real TypeDB instance.
+"""Integration tests for FunctionQuery against a real TypeDB instance.
 
 Tests that FunctionQuery generates valid TypeQL that executes correctly.
 """

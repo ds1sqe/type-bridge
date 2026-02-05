@@ -5,7 +5,16 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from isodate import Duration as IsodateDuration
 
-from type_bridge import DateTime, DateTimeTZ, Duration, Entity, Flag, Key, String, TypeFlags
+from type_bridge import (
+    DateTime,
+    DateTimeTZ,
+    Duration,
+    Entity,
+    Flag,
+    Key,
+    String,
+    TypeFlags,
+)
 
 
 def test_duration_creation_from_iso_string():

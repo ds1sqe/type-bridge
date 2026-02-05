@@ -41,7 +41,7 @@ class RolePlayerExpr[T: "TypeDBType"](Expression):
         Variable names are prefixed with the entity variable to avoid collisions.
         Using the same variable twice creates an implicit equality constraint.
 
-        Example:
+    Example:
             # If both actor and target have 'name' attribute:
             $actor has name $actor_name; $actor_name contains "Bot";
             $target has name $target_name; $target_name == "Resource1";
@@ -79,7 +79,6 @@ class RolePlayerExpr[T: "TypeDBType"](Expression):
 
         Delegates to the inner expression with role variable.
         """
-
         return self.inner_expr.to_ast(var)
 
     def get_attribute_types(self) -> set[type[Attribute]]:

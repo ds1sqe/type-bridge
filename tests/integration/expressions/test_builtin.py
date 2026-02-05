@@ -6,7 +6,16 @@ These tests verify that the generated TypeQL syntax works correctly with TypeDB.
 import pytest
 
 from tests.integration.conftest import TEST_DB_ADDRESS
-from type_bridge import Database, Entity, Flag, Integer, Key, SchemaManager, String, TypeFlags
+from type_bridge import (
+    Database,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    SchemaManager,
+    String,
+    TypeFlags,
+)
 from type_bridge.expressions.builtin import abs_, iid, label
 
 

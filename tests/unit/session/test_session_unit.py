@@ -81,7 +81,7 @@ class TestTransactionContext:
             _ = ctx.transaction
 
     def test_database_property_returns_db(self):
-        """database property should return the Database."""
+        """Database property should return the Database."""
         db = Database()
         ctx = TransactionContext(db, TransactionType.READ)
         assert ctx.database is db
@@ -133,27 +133,27 @@ class TestConnectionExecutor:
         assert executor.has_transaction is False
 
     def test_database_property_when_using_database(self):
-        """database property should return Database when initialized with it."""
+        """Database property should return Database when initialized with it."""
         db = Database()
         executor = ConnectionExecutor(db)
         assert executor.database is db
 
     def test_database_property_when_using_transaction(self):
-        """database property should return None when initialized with transaction."""
+        """Database property should return None when initialized with transaction."""
         mock_tx = MagicMock()
         tx = Transaction(mock_tx)
         executor = ConnectionExecutor(tx)
         assert executor.database is None
 
     def test_transaction_property_when_using_transaction(self):
-        """transaction property should return Transaction when initialized with it."""
+        """Transaction property should return Transaction when initialized with it."""
         mock_tx = MagicMock()
         tx = Transaction(mock_tx)
         executor = ConnectionExecutor(tx)
         assert executor.transaction is tx
 
     def test_transaction_property_when_using_database(self):
-        """transaction property should return None when initialized with database."""
+        """Transaction property should return None when initialized with database."""
         db = Database()
         executor = ConnectionExecutor(db)
         assert executor.transaction is None
@@ -330,7 +330,7 @@ class TestDriverInjection:
         assert db._driver is None
 
     def test_driver_property_returns_injected_driver(self):
-        """driver property should return injected driver without connecting."""
+        """Driver property should return injected driver without connecting."""
         mock_driver = MagicMock()
         db = Database(driver=mock_driver)
 

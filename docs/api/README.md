@@ -25,6 +25,7 @@ TypeBridge provides a Pythonic interface to TypeDB that aligns with TypeDB's typ
 ### Code Generation
 
 - **[Generator](generator.md)** - Generate Python models from TypeDB schema files
+- **[API DTOs](dto.md)** - Pydantic Data Transfer Objects for REST APIs
 
 ### Validation and Type Safety
 
@@ -193,6 +194,7 @@ entity person,
 - [Functions Documentation](functions.md)
 - [Schema Management Documentation](schema.md)
 - [Generator Documentation](generator.md)
+- [API DTOs Documentation](dto.md)
 - [Validation Documentation](validation.md)
 
 ---

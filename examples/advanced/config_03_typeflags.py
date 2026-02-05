@@ -9,7 +9,17 @@ Key features:
 - Use 'abstract' and 'base' flags for type configuration
 """
 
-from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags, TypeNameCase
+from type_bridge import (
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    Relation,
+    Role,
+    String,
+    TypeFlags,
+    TypeNameCase,
+)
 
 
 # Define attributes

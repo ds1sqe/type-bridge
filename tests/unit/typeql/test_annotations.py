@@ -1,6 +1,9 @@
 """Tests for TypeQL annotation formatting utilities."""
 
-from type_bridge.typeql.annotations import format_card_annotation, format_type_annotations
+from type_bridge.typeql.annotations import (
+    format_card_annotation,
+    format_type_annotations,
+)
 
 
 class TestFormatCardAnnotation:

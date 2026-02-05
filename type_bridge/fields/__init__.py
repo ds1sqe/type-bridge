@@ -1,5 +1,4 @@
-"""
-Field reference system for type-safe query building.
+"""Field reference system for type-safe query building.
 
 This module provides field descriptors and references that enable type-safe
 query expressions like Person.age.gt(Age(30)) and Employment.employee.age.gt(Age(30)).
@@ -22,9 +21,9 @@ __all__ = [
     "FieldDescriptor",
     "FieldRef",
     "NumericFieldRef",
-    "StringFieldRef",
-    "RoleRef",
     "RolePlayerFieldRef",
-    "RolePlayerStringFieldRef",
     "RolePlayerNumericFieldRef",
+    "RolePlayerStringFieldRef",
+    "RoleRef",
+    "StringFieldRef",
 ]

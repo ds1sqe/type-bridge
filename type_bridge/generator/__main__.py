@@ -3,17 +3,19 @@
 Usage:
     python -m type_bridge.generator schema.tql -o ./myapp/models/
     python -m type_bridge.generator schema.tql --output ./myapp/models/ --version 2.0.0
+    python -m type_bridge.generator schema.tql -o ./models/ --dto --dto-config myapp.config:dto_config
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from . import generate_models
+from . import DTOConfig, generate_models
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,50 @@ app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+
+
+def _load_dto_config(config_path: str) -> DTOConfig:
+    """Load a DTOConfig from a Python module path.
+
+    Args:
+        config_path: Module path in format 'module.path:attribute'
+            e.g., 'myapp.config:dto_config'
+
+    Returns:
+        The loaded DTOConfig instance
+
+    Raises:
+        typer.Exit: If the config cannot be loaded
+    """
+    if ":" not in config_path:
+        typer.echo(
+            f"Error: --dto-config must be in format 'module.path:attribute', got '{config_path}'",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    module_path, attr_name = config_path.rsplit(":", 1)
+
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as e:
+        typer.echo(f"Error: Could not import module '{module_path}': {e}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        config = getattr(module, attr_name)
+    except AttributeError:
+        typer.echo(f"Error: Module '{module_path}' has no attribute '{attr_name}'", err=True)
+        raise typer.Exit(1)
+
+    if not isinstance(config, DTOConfig):
+        typer.echo(
+            f"Error: '{config_path}' is not a DTOConfig instance (got {type(config).__name__})",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    return config
 
 
 @app.command()
@@ -61,6 +107,20 @@ def main(
         list[str] | None,
         typer.Option("--implicit-keys", help="Attribute names to treat as @key even if not marked"),
     ] = None,
+    dto: Annotated[
+        bool,
+        typer.Option("--dto", help="Generate Pydantic API DTOs (api_dto.py)"),
+    ] = False,
+    dto_config: Annotated[
+        str | None,
+        typer.Option(
+            "--dto-config",
+            help=(
+                "Python module path to DTOConfig instance in format 'module.path:attribute'. "
+                "Example: 'myapp.config:dto_config'"
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Generate TypeBridge Python models from a TypeDB schema file."""
     logger.debug(f"CLI arguments: schema={schema}, output={output}, version={version}")
@@ -75,6 +135,17 @@ def main(
         typer.echo(f"Error: Not a file: {schema}", err=True)
         raise typer.Exit(1)
 
+    # Load DTO config if specified
+    loaded_config: DTOConfig | None = None
+    if dto_config:
+        if not dto:
+            typer.echo(
+                "Warning: --dto-config specified but --dto not enabled. Config will be ignored.",
+                err=True,
+            )
+        else:
+            loaded_config = _load_dto_config(dto_config)
+
     try:
         logger.info(f"Generating models from {schema} to {output}")
         generate_models(
@@ -84,6 +155,8 @@ def main(
             schema_version=version,
             copy_schema=not no_copy_schema,
             schema_path=schema_path,
+            generate_dto=dto,
+            dto_config=loaded_config,
         )
     except Exception as e:
         logger.error(f"Generation failed: {e}", exc_info=True)

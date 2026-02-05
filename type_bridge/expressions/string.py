@@ -15,8 +15,7 @@ if TYPE_CHECKING:
 
 
 class StringExpr[T: "String"](Expression):
-    """
-    Type-safe string expression for text-based filtering.
+    """Type-safe string expression for text-based filtering.
 
     Represents string operations like contains, like (regex), etc.
     """
@@ -27,8 +26,7 @@ class StringExpr[T: "String"](Expression):
         operation: Literal["contains", "like", "regex"],
         pattern: T,
     ):
-        """
-        Create a string expression.
+        """Create a string expression.
 
         Args:
             attr_type: String attribute type to filter on
@@ -40,8 +38,7 @@ class StringExpr[T: "String"](Expression):
         self.pattern = pattern
 
     def to_ast(self, var: str) -> list["Pattern"]:
-        """
-        Generate AST patterns for this string operation.
+        """Generate AST patterns for this string operation.
 
         Example: "$e has Name $e_name; $e_name contains 'Alice'"
 

@@ -81,16 +81,16 @@ def main():
     tech_corp = Company(name=Name("TechCorp"))
 
     print("Person with all fields:")
-    print(f"  str(alice):  {str(alice)}")
-    print(f"  repr(alice): {repr(alice)}")
+    print(f"  str(alice):  {alice!s}")
+    print(f"  repr(alice): {alice!r}")
 
     print("\nPerson with optional field missing:")
-    print(f"  str(bob):  {str(bob)}")
-    print(f"  repr(bob): {repr(bob)}")
+    print(f"  str(bob):  {bob!s}")
+    print(f"  repr(bob): {bob!r}")
 
     print("\nCompany:")
-    print(f"  str(tech_corp):  {str(tech_corp)}")
-    print(f"  repr(tech_corp): {repr(tech_corp)}")
+    print(f"  str(tech_corp):  {tech_corp!s}")
+    print(f"  repr(tech_corp): {tech_corp!r}")
 
     # Create relation instance
     print("\n2. Relation Representations")
@@ -108,11 +108,11 @@ def main():
     )
 
     print("Employment with salary:")
-    print(f"  str():  {str(employment_with_salary)}")
+    print(f"  str():  {employment_with_salary!s}")
     print(f"  repr(): {repr(employment_with_salary)[:100]}...")  # Truncate for readability
 
     print("\nEmployment without salary:")
-    print(f"  str():  {str(employment_no_salary)}")
+    print(f"  str():  {employment_no_salary!s}")
     print(f"  repr(): {repr(employment_no_salary)[:100]}...")
 
     # Using in print statements

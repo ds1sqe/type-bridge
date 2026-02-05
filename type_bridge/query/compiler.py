@@ -1,4 +1,4 @@
-"Compiler for converting AST nodes to TypeQL strings."
+"""Compiler for converting AST nodes to TypeQL strings."""
 
 from __future__ import annotations
 

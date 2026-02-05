@@ -277,13 +277,13 @@ def test_delete_relation_preserves_role_player_entities(db_with_schema):
     expected_people = 1
     actual_people = len(people)
     assert expected_people == actual_people
-    assert "Diana" == people[0].name.value
+    assert people[0].name.value == "Diana"
 
     companies = company_mgr.all()
     expected_companies = 1
     actual_companies = len(companies)
     assert expected_companies == actual_companies
-    assert "Startup" == companies[0].name.value
+    assert companies[0].name.value == "Startup"
 
 
 @pytest.mark.integration

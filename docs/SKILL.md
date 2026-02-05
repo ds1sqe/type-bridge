@@ -545,3 +545,137 @@ class Person(Entity):
    - `"read"`: For queries (no commit needed)
    - `"write"`: For insert/update/delete (auto-commits)
    - `"schema"`: For schema changes (auto-commits)
+
+---
+
+## Code Generator
+
+Generate Python models from TypeDB schema files instead of writing them manually.
+
+### CLI Usage
+
+```bash
+# Generate models from schema
+python -m type_bridge.generator schema.tql -o ./myapp/models/
+
+# With Pydantic API DTOs
+python -m type_bridge.generator schema.tql -o ./myapp/models/ --dto
+
+# With custom DTO configuration
+python -m type_bridge.generator schema.tql -o ./myapp/models/ --dto --dto-config myapp.config:dto_config
+```
+
+### Programmatic Usage
+
+```python
+from type_bridge.generator import generate_models
+
+# Basic generation
+generate_models("schema.tql", "./myapp/models/")
+
+# With API DTOs
+generate_models("schema.tql", "./myapp/models/", generate_dto=True)
+
+# With custom DTO config
+from type_bridge.generator import DTOConfig, BaseClassConfig
+
+config = DTOConfig(
+    exclude_entities=["internal_counter"],
+    entity_union_name="GraphNode",
+)
+generate_models("schema.tql", "./myapp/models/", generate_dto=True, dto_config=config)
+```
+
+### Generated Files
+
+```text
+myapp/models/
+├── __init__.py      # Package exports
+├── attributes.py    # Attribute classes
+├── entities.py      # Entity classes
+├── relations.py     # Relation classes
+├── registry.py      # Schema metadata
+├── api_dto.py       # Pydantic DTOs (if --dto)
+└── schema.tql       # Copy of schema
+```
+
+---
+
+## API DTOs (Pydantic)
+
+Generate Pydantic models for REST APIs from your TypeDB schema.
+
+### Generated Structure
+
+```python
+# Entity DTOs
+class PersonOut(BaseDTOOut): ...    # Response with 'iid' field
+class PersonCreate(BaseDTOCreate): ...  # Create payload
+class PersonPatch(BaseDTOPatch): ...    # Partial update
+
+# Relation DTOs
+class FriendshipOut(BaseRelationOut): ...
+class FriendshipCreate(BaseRelationCreate): ...
+
+# Union types (discriminated by 'type' field)
+EntityOut = Annotated[Union[PersonOut, ...], Field(discriminator="type")]
+```
+
+### DTOConfig Options
+
+```python
+from type_bridge.generator import DTOConfig, BaseClassConfig, ValidatorConfig, FieldSyncConfig
+
+config = DTOConfig(
+    # Exclude internal entities
+    exclude_entities=["display_id_counter", "schema_status"],
+
+    # Rename IID field to 'id'
+    iid_field_name="id",
+
+    # Custom union names
+    entity_union_name="GraphNode",
+    relation_union_name="GraphRelation",
+
+    # Custom validators with regex
+    validators=[
+        ValidatorConfig(name="DisplayId", pattern=r"^[A-Z]{1,5}-\d+$"),
+    ],
+
+    # Custom base class for entity hierarchies
+    base_classes=[
+        BaseClassConfig(
+            source_entity="artifact",
+            base_name="BaseArtifact",
+            inherited_attrs=["display_id", "name", "description"],
+            extra_fields={"version": "int | None = None"},
+            field_syncs=[FieldSyncConfig("description", "content")],
+        ),
+    ],
+
+    # Custom code injection
+    preamble="...",  # After imports
+    relation_preamble="...",  # In relation section
+
+    # Custom relation structure
+    skip_relation_output=True,  # Skip relation Out classes
+    relation_create_base_class="BaseRelationCreate",  # Custom base
+)
+```
+
+### Usage in FastAPI
+
+```python
+from myapp.models.api_dto import PersonOut, PersonCreate, EntityOut
+
+@app.post("/persons", response_model=PersonOut)
+def create_person(data: PersonCreate) -> PersonOut:
+    person = Person(name=Name(data.name))
+    manager.insert(person)
+    return PersonOut(iid=person.iid, name=data.name, type="person")
+
+@app.get("/entities/{id}", response_model=EntityOut)
+def get_entity(id: str) -> EntityOut:
+    # Returns PersonOut, CompanyOut, etc. based on 'type' discriminator
+    ...
+```
