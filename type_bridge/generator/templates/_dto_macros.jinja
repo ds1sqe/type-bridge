@@ -177,6 +177,7 @@ class {{ relation.class_name }}Create({{ relation_create_base_class or 'BaseRela
 {{ comp.name }}Type = Literal[{% for ent in comp.included_entity_names %}"{{ ent }}"{% if not loop.last %}, {% endif %}{% endfor %}]
 {% endif %}
 
+{% if "out" not in comp.skip_variants %}
 
 class {{ comp.name }}Out(BaseDTOOut):
     """Output DTO for {{ comp.name }} composite."""
@@ -190,7 +191,11 @@ class {{ comp.name }}Out(BaseDTOOut):
 
 {% endfor %}
 {% for name, type_ann in comp.extra_fields.items() %}
+{% if comp.extra_fields_out and name in comp.extra_fields_out %}
+    {{ name }}: {{ comp.extra_fields_out[name] }}
+{% else %}
     {{ name }}: {{ type_ann }}
+{% endif %}
 {% endfor %}
 {% if comp.has_field_sync %}
 
@@ -203,6 +208,8 @@ class {{ comp.name }}Out(BaseDTOOut):
         return self
 {% endif %}
 
+{% endif %}
+{% if "create" not in comp.skip_variants %}
 
 class {{ comp.name }}Create(BaseDTOCreate):
     """Create DTO for {{ comp.name }} composite."""
@@ -234,6 +241,8 @@ class {{ comp.name }}Create(BaseDTOCreate):
         return self
 {% endif %}
 
+{% endif %}
+{% if "patch" not in comp.skip_variants %}
 
 class {{ comp.name }}Patch(BaseDTOPatch):
     """Patch DTO for {{ comp.name }} composite."""
@@ -253,6 +262,8 @@ class {{ comp.name }}Patch(BaseDTOPatch):
         elif self.{{ comp.field_sync_b }} is not None and self.{{ comp.field_sync_a }} is None:
             self.{{ comp.field_sync_a }} = self.{{ comp.field_sync_b }}
         return self
+{% endif %}
+
 {% endif %}
 
 {% endmacro %}

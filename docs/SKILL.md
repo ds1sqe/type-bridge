@@ -666,6 +666,16 @@ config = DTOConfig(
                             required=False, default="'proposed'"),
     ],
 
+    # Composite entities with skip_variants and extra_fields_out
+    composite_entities=[
+        CompositeEntityConfig(
+            name="GraphNode",
+            include_entities=["task", "epic"],
+            skip_variants={"out", "create", "patch"},  # Only generate type enum
+            extra_fields_out={"id": "str"},  # Required on Out, optional elsewhere
+        ),
+    ],
+
     # Custom code injection
     preamble="...",  # After imports
     relation_preamble="...",  # In relation section

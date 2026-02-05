@@ -1140,3 +1140,175 @@ class TestFieldOverrides:
         # Patch: always Optional, unchanged
         patch_section = source.split("class PersonPatch")[1].split("\n\n\n")[0]
         assert "email: Optional[str] = None" in patch_section
+
+
+class TestSkipVariants:
+    """Tests for CompositeEntityConfig.skip_variants."""
+
+    SCHEMA = """
+        define
+        entity task,
+            owns name,
+            owns status;
+        entity epic,
+            owns name;
+        attribute name, value string;
+        attribute status, value string;
+    """
+
+    def test_skip_all_variants_keeps_type_enum(self) -> None:
+        """skip_variants={out, create, patch} still generates the type Literal."""
+        schema = parse_tql_schema(self.SCHEMA)
+        config = DTOConfig(
+            composite_entities=[
+                CompositeEntityConfig(
+                    name="GraphNode",
+                    include_entities=["task", "epic"],
+                    skip_variants={"out", "create", "patch"},
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        assert "GraphNodeType = Literal[" in source
+        assert "class GraphNodeOut" not in source
+        assert "class GraphNodeCreate" not in source
+        assert "class GraphNodePatch" not in source
+
+    def test_skip_out_only(self) -> None:
+        """skip_variants={out} skips Out but keeps Create and Patch."""
+        schema = parse_tql_schema(self.SCHEMA)
+        config = DTOConfig(
+            composite_entities=[
+                CompositeEntityConfig(
+                    name="GraphNode",
+                    include_entities=["task", "epic"],
+                    common_fields=[
+                        CompositeFieldConfig("name", "str"),
+                    ],
+                    skip_variants={"out"},
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        assert "GraphNodeType = Literal[" in source
+        assert "class GraphNodeOut" not in source
+        assert "class GraphNodeCreate" in source
+        assert "class GraphNodePatch" in source
+
+    def test_skip_create_and_patch(self) -> None:
+        """skip_variants={create, patch} skips Create/Patch but keeps Out."""
+        schema = parse_tql_schema(self.SCHEMA)
+        config = DTOConfig(
+            composite_entities=[
+                CompositeEntityConfig(
+                    name="GraphNode",
+                    include_entities=["task", "epic"],
+                    common_fields=[
+                        CompositeFieldConfig("name", "str"),
+                    ],
+                    skip_variants={"create", "patch"},
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        assert "GraphNodeType = Literal[" in source
+        assert "class GraphNodeOut" in source
+        assert "class GraphNodeCreate" not in source
+        assert "class GraphNodePatch" not in source
+
+    def test_empty_skip_variants_generates_all(self) -> None:
+        """Empty skip_variants generates all three variant classes."""
+        schema = parse_tql_schema(self.SCHEMA)
+        config = DTOConfig(
+            composite_entities=[
+                CompositeEntityConfig(
+                    name="GraphNode",
+                    include_entities=["task", "epic"],
+                    common_fields=[
+                        CompositeFieldConfig("name", "str"),
+                    ],
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        assert "class GraphNodeOut" in source
+        assert "class GraphNodeCreate" in source
+        assert "class GraphNodePatch" in source
+
+
+class TestExtraFieldsOut:
+    """Tests for CompositeEntityConfig.extra_fields_out."""
+
+    SCHEMA = """
+        define
+        entity task,
+            owns name;
+        entity epic,
+            owns name;
+        attribute name, value string;
+    """
+
+    def test_extra_fields_out_overrides_on_out_variant(self) -> None:
+        """extra_fields_out overrides the annotation on Out but not Create/Patch."""
+        schema = parse_tql_schema(self.SCHEMA)
+        config = DTOConfig(
+            composite_entities=[
+                CompositeEntityConfig(
+                    name="GraphNode",
+                    include_entities=["task", "epic"],
+                    common_fields=[
+                        CompositeFieldConfig("name", "str"),
+                    ],
+                    extra_fields={
+                        "id": "Optional[str] = None",
+                        "version": "int | None = None",
+                    },
+                    extra_fields_out={
+                        "id": "str",  # Required on Out
+                    },
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        out_section = source.split("class GraphNodeOut")[1].split("class GraphNodeCreate")[0]
+        create_section = source.split("class GraphNodeCreate")[1].split("class GraphNodePatch")[0]
+
+        # Out uses the override
+        assert "id: str" in out_section
+        # Out still has version from extra_fields (not overridden)
+        assert "version: int | None = None" in out_section
+
+        # Create uses the default from extra_fields
+        assert "id: Optional[str] = None" in create_section
+        assert "version: int | None = None" in create_section
+
+    def test_extra_fields_out_without_base_extra_field(self) -> None:
+        """extra_fields_out for a field not in extra_fields is ignored."""
+        schema = parse_tql_schema(self.SCHEMA)
+        config = DTOConfig(
+            composite_entities=[
+                CompositeEntityConfig(
+                    name="GraphNode",
+                    include_entities=["task", "epic"],
+                    common_fields=[
+                        CompositeFieldConfig("name", "str"),
+                    ],
+                    extra_fields={
+                        "version": "int | None = None",
+                    },
+                    extra_fields_out={
+                        "phantom": "str",  # Not in extra_fields
+                    },
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        # phantom should not appear (only overrides, doesn't add)
+        out_section = source.split("class GraphNodeOut")[1].split("class GraphNodeCreate")[0]
+        assert "phantom" not in out_section

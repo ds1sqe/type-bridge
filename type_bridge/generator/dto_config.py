@@ -157,7 +157,17 @@ class CompositeEntityConfig:
         common_fields: Fields that appear on all variants with specified types.
             These are required (or have defaults) in Create, present in Out/Patch.
         field_syncs: Field sync configurations for the composite
-        extra_fields: Additional fields not in schema (e.g., computed fields)
+        extra_fields: Additional fields not in schema (e.g., computed fields).
+            Applied to all variants (Out, Create, Patch) unless overridden.
+        extra_fields_out: Per-variant override for extra_fields on Out DTOs.
+            If a field name appears here, the Out variant uses this annotation
+            instead of the one from extra_fields. Useful when Out fields have
+            different requiredness (e.g., ``id`` required on Out but optional
+            on Create).
+        skip_variants: Set of variant names to skip generating (e.g.,
+            ``{"out"}`` to skip the Out class). Valid values: ``"out"``,
+            ``"create"``, ``"patch"``. The type enum is always generated
+            regardless of this setting.
         id_field_name: Name of the ID field (default: "id")
         type_field_name: Name of the type discriminator field (default: "type")
         type_enum_from_registry: If True, generate dynamic enum from registry
@@ -184,6 +194,8 @@ class CompositeEntityConfig:
     common_fields: list[CompositeFieldConfig] = field(default_factory=list)
     field_syncs: list[FieldSyncConfig] = field(default_factory=list)
     extra_fields: dict[str, str] = field(default_factory=dict)
+    extra_fields_out: dict[str, str] = field(default_factory=dict)
+    skip_variants: set[str] = field(default_factory=set)
     id_field_name: str = "id"
     type_field_name: str = "type"
     type_enum_from_registry: bool = True
