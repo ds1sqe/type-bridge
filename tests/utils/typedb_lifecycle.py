@@ -2,7 +2,6 @@ import os
 import shutil
 import subprocess
 import time
-from contextlib import contextmanager
 
 
 def _detect_container_tool() -> str:
@@ -32,32 +31,6 @@ CONTAINER_TOOL = _detect_container_tool()
 TEST_DB_NAME = "type_bridge_test"
 # Allow overriding port/address via environment (for local conflicts or Podman/Docker remaps)
 TEST_DB_ADDRESS = os.getenv("TYPEDB_ADDRESS", "localhost:1730")
-
-
-@contextmanager
-def suppress_stderr():
-    """Suppress stderr at the file descriptor level.
-
-    This is needed to silence the TypeDB driver's Rust logging initialization
-    warning which writes directly to fd 2, bypassing Python's sys.stderr.
-    """
-    # Always use fd 2 directly (actual stderr) since Rust writes there
-    stderr_fd = 2
-    try:
-        saved_stderr = os.dup(stderr_fd)
-    except OSError:
-        # In some environments, fd 2 might not be available for dup
-        yield
-        return
-
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull, stderr_fd)
-    os.close(devnull)
-    try:
-        yield
-    finally:
-        os.dup2(saved_stderr, stderr_fd)
-        os.close(saved_stderr)
 
 
 def start_typedb_container():

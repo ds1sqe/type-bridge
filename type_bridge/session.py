@@ -196,7 +196,7 @@ class Database:
             driver_options = DriverOptions(is_tls_enabled=is_tls_enabled)
             logger.debug(f"TLS enabled: {is_tls_enabled}")
 
-            # Connect to TypeDB (suppress Rust logging warning)
+            # Connect to TypeDB
             try:
                 if credentials:
                     logger.debug("Using provided credentials for authentication")

@@ -1,7 +1,6 @@
 """Pytest fixtures for integration tests."""
 
 import pytest
-from type_bridge import Credentials, Database, TypeDB
 from typedb.driver import DriverOptions
 
 from tests.utils.typedb_lifecycle import (
@@ -9,8 +8,8 @@ from tests.utils.typedb_lifecycle import (
     TEST_DB_NAME,
     start_typedb_container,
     stop_typedb_container,
-    suppress_stderr,
 )
+from type_bridge import Credentials, Database, TypeDB
 
 
 @pytest.fixture(scope="session")
@@ -43,12 +42,11 @@ def typedb_driver(docker_typedb):
         ConnectionError: If TypeDB server is not running
     """
     try:
-        with suppress_stderr():
-            driver = TypeDB.driver(
-                address=TEST_DB_ADDRESS,
-                credentials=Credentials(username="admin", password="password"),
-                driver_options=DriverOptions(is_tls_enabled=False),
-            )
+        driver = TypeDB.driver(
+            address=TEST_DB_ADDRESS,
+            credentials=Credentials(username="admin", password="password"),
+            driver_options=DriverOptions(is_tls_enabled=False),
+        )
         yield driver
         driver.close()
     except Exception as e:
