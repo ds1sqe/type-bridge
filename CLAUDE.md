@@ -111,6 +111,7 @@ type_bridge/
     ├── annotations.py    # Type annotations handling
     └── render/           # Code renderers
         ├── __init__.py   # Render module exports
+        ├── api_dto.py    # Pydantic API DTO generation
         ├── attributes.py # Attribute class generation
         ├── entities.py   # Entity class generation
         ├── relations.py  # Relation class generation
