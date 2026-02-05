@@ -51,8 +51,7 @@ class BooleanExpr(Expression):
         return result
 
     def to_ast(self, var: str) -> list[Pattern]:
-        """Generate AST patterns for this boolean expression.
-        """
+        """Generate AST patterns for this boolean expression."""
         from type_bridge.query.ast import NotPattern, OrPattern
 
         if self.operation == "and":
