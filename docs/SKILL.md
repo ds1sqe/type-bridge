@@ -624,7 +624,10 @@ EntityOut = Annotated[Union[PersonOut, ...], Field(discriminator="type")]
 ### DTOConfig Options
 
 ```python
-from type_bridge.generator import DTOConfig, BaseClassConfig, ValidatorConfig, FieldSyncConfig
+from type_bridge.generator import (
+    DTOConfig, BaseClassConfig, ValidatorConfig, FieldSyncConfig,
+    FieldOverride, EntityFieldOverride,
+)
 
 config = DTOConfig(
     # Exclude internal entities
@@ -650,7 +653,17 @@ config = DTOConfig(
             inherited_attrs=["display_id", "name", "description"],
             extra_fields={"version": "int | None = None"},
             field_syncs=[FieldSyncConfig("description", "content")],
+            # Make @key field optional on Create (server auto-generates)
+            create_field_overrides={
+                "display_id": FieldOverride(required=False),
+            },
         ),
+    ],
+
+    # Per-entity field overrides (target specific entity + field + variant)
+    entity_field_overrides=[
+        EntityFieldOverride(entity="task", field="status", variant="create",
+                            required=False, default="'proposed'"),
     ],
 
     # Custom code injection

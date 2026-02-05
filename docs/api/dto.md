@@ -139,16 +139,18 @@ dto_config = DTOConfig(
 | `relation_preamble`          | `str \| None`                 | `None`       | Python code injected in relation section     |
 | `composite_entities`         | `list[CompositeEntityConfig]` | `[]`         | Composite (flat/merged) DTOs configuration   |
 | `strict_out_models`          | `bool`                        | `False`      | Required fields are non-Optional in Out DTOs |
+| `entity_field_overrides`     | `list[EntityFieldOverride]`   | `[]`         | Per-entity, per-variant field overrides      |
 
 ### BaseClassConfig Reference
 
-| Option            | Type                    | Default  | Description                                      |
-| ----------------- | ----------------------- | -------- | ------------------------------------------------ |
-| `source_entity`   | `str`                   | Required | Schema entity that triggers this base class      |
-| `base_name`       | `str`                   | Required | Base class name prefix (e.g., `"BaseArtifact"`)  |
-| `inherited_attrs` | `list[str]`             | `[]`     | Attributes defined in base (skipped in children) |
-| `extra_fields`    | `dict[str, str]`        | `{}`     | Additional fields as `{name: type_annotation}`   |
-| `field_syncs`     | `list[FieldSyncConfig]` | `[]`     | Field sync validators for this base              |
+| Option                   | Type                       | Default  | Description                                      |
+| ------------------------ | -------------------------- | -------- | ------------------------------------------------ |
+| `source_entity`          | `str`                      | Required | Schema entity that triggers this base class      |
+| `base_name`              | `str`                      | Required | Base class name prefix (e.g., `"BaseArtifact"`)  |
+| `inherited_attrs`        | `list[str]`                | `[]`     | Attributes defined in base (skipped in children) |
+| `extra_fields`           | `dict[str, str]`           | `{}`     | Additional fields as `{name: type_annotation}`   |
+| `field_syncs`            | `list[FieldSyncConfig]`    | `[]`     | Field sync validators for this base              |
+| `create_field_overrides` | `dict[str, FieldOverride]` | `{}`     | Per-field overrides for Create variant           |
 
 ### ValidatorConfig Reference
 
@@ -195,6 +197,27 @@ Use `base_entity` OR `include_entities`, not both. When using `base_entity`, all
 | `description`     | `str \| None` | `None`   | Optional field description                      |
 
 If `default` is `None`, the field is required in Create DTOs.
+
+### FieldOverride Reference
+
+Override the requiredness or default of a single field on a specific DTO variant (used in `BaseClassConfig.create_field_overrides`).
+
+| Option     | Type           | Default | Description                                         |
+| ---------- | -------------- | ------- | --------------------------------------------------- |
+| `required` | `bool \| None` | `None`  | Override requiredness (`None` keeps schema default) |
+| `default`  | `str \| None`  | `None`  | Override default value as Python literal string     |
+
+### EntityFieldOverride Reference
+
+Per-entity, per-variant override targeting a specific `(entity, field, variant)` combination (used in `DTOConfig.entity_field_overrides`).
+
+| Option     | Type           | Default  | Description                                         |
+| ---------- | -------------- | -------- | --------------------------------------------------- |
+| `entity`   | `str`          | Required | TypeDB entity name (e.g., `"task"`)                 |
+| `field`    | `str`          | Required | TypeDB attribute name (e.g., `"display_id"`)        |
+| `variant`  | `str`          | Required | DTO variant: `"create"`, `"out"`, or `"patch"`      |
+| `required` | `bool \| None` | `None`   | Override requiredness (`None` keeps schema default) |
+| `default`  | `str \| None`  | `None`   | Override default value as Python literal string     |
 
 ## Common Patterns
 
@@ -260,6 +283,49 @@ Composite DTOs are generated **alongside** per-entity DTOs, giving you both:
 
 - Per-entity DTOs (`TaskOut`, `EpicOut`) for type-specific endpoints
 - Composite DTOs (`GraphNodeOut`) for polymorphic endpoints
+
+### Field Requiredness Overrides
+
+`@key` fields are required on Create DTOs by default, but servers often auto-generate keys. Use overrides to make them optional on specific variants.
+
+**Base class level** (applies to all entities using this base):
+
+```python
+from type_bridge.generator import DTOConfig, BaseClassConfig, FieldOverride
+
+config = DTOConfig(
+    base_classes=[
+        BaseClassConfig(
+            source_entity="artifact",
+            base_name="BaseArtifact",
+            inherited_attrs=["display_id", "name"],
+            create_field_overrides={
+                "display_id": FieldOverride(required=False),  # Server auto-generates
+            },
+        ),
+    ],
+)
+```
+
+**Per-entity level** (targets a specific entity + field + variant):
+
+```python
+from type_bridge.generator import DTOConfig, EntityFieldOverride
+
+config = DTOConfig(
+    entity_field_overrides=[
+        EntityFieldOverride(
+            entity="person",
+            field="email",
+            variant="create",
+            required=False,
+            default="None",
+        ),
+    ],
+)
+```
+
+Overrides are scoped: a Create override does not affect Out or Patch variants, and a per-entity override does not leak to other entities.
 
 ### Relation Role Field Naming
 
