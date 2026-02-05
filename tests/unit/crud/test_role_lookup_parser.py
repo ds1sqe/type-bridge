@@ -1,6 +1,7 @@
 """Unit tests for role-player lookup filter parsing."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.crud.lookup import build_lookup_expression
 from type_bridge.crud.role_lookup import parse_role_lookup_filters

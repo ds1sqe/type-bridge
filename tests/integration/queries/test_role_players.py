@@ -1,6 +1,7 @@
 """Integration tests for querying relations by role players."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
 
 

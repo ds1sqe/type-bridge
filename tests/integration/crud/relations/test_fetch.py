@@ -1,6 +1,7 @@
 """Integration tests for relation fetch operations."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
 
 

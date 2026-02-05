@@ -1,6 +1,7 @@
 """Integration tests for filter validation with attribute ownership checking."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, SchemaManager, String, TypeFlags
 
 

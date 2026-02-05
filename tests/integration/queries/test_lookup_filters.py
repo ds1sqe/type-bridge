@@ -1,6 +1,7 @@
 """Integration tests for Django-style lookup filters on EntityManager."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
 
 

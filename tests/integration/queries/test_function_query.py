@@ -4,6 +4,7 @@ Tests that FunctionQuery generates valid TypeQL that executes correctly.
 """
 
 import pytest
+
 from type_bridge import Database, Entity, TypeFlags
 from type_bridge.attribute import AttributeFlags, Integer, String
 from type_bridge.attribute.flags import Flag, Key
@@ -71,10 +72,10 @@ fun get-artifacts-with-score($min_score: integer) -> { artifact-id, artifact-sco
 @pytest.fixture
 def db(docker_typedb):
     """Provide database connection."""
-    from type_bridge import Credentials, TypeDB
     from typedb.driver import DriverOptions
 
     from tests.integration.conftest import TEST_DB_ADDRESS
+    from type_bridge import Credentials, TypeDB
 
     # Create database if needed
     driver = TypeDB.driver(

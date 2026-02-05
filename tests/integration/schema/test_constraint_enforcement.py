@@ -5,6 +5,8 @@ are not just synced to the database but actually enforced at runtime.
 """
 
 import pytest
+from typedb.driver import TypeDBDriverException
+
 from type_bridge import (
     Card,
     Database,
@@ -17,7 +19,6 @@ from type_bridge import (
     TypeFlags,
     Unique,
 )
-from typedb.driver import TypeDBDriverException
 
 
 @pytest.mark.integration

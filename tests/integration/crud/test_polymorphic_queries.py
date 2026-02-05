@@ -6,6 +6,7 @@ concrete subtype class.
 """
 
 import pytest
+
 from type_bridge import (
     Entity,
     Flag,

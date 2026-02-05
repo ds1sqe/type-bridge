@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from type_bridge.generator import parse_tql_schema
 from type_bridge.generator.models import Cardinality
 

@@ -6,6 +6,7 @@ Based on TypeDB IAM example schema.
 """
 
 import pytest
+
 from type_bridge import (
     Boolean,
     Card,

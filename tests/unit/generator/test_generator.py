@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from type_bridge.generator import generate_models, parse_tql_schema
 from type_bridge.generator.naming import build_class_name_map
 from type_bridge.generator.render import (
@@ -276,7 +277,7 @@ class TestRenderRelations:
         source = render_relations(schema, attr_names, entity_names, relation_names)
 
         # Without @card constraint, attribute should be optional
-        assert "sequence_index: attributes.Sequence_index | None = None" in source
+        assert "sequence_index: attributes.SequenceIndex | None = None" in source
 
     def test_relation_required_attribute(self) -> None:
         """Render relation with required attribute (@card(1))."""
@@ -319,7 +320,7 @@ class TestRenderRelations:
         source = render_relations(schema, attr_names, entity_names, relation_names)
 
         # With @key, attribute should use Flag(Key)
-        assert "edge_id: attributes.Edge_id = Flag(Key)" in source
+        assert "edge_id: attributes.EdgeId = Flag(Key)" in source
         assert "from type_bridge import" in source
         assert "Flag" in source
         assert "Key" in source
@@ -369,8 +370,8 @@ class TestRenderRelations:
         source = render_relations(schema, attr_names, entity_names, relation_names)
 
         # Child should inherit @key from parent
-        assert "class Child_rel(Base_rel):" in source
-        assert "rel_id: attributes.Rel_id = Flag(Key)" in source
+        assert "class ChildRel(BaseRel):" in source
+        assert "rel_id: attributes.RelId = Flag(Key)" in source
 
     def test_relation_inherits_cardinality_from_parent(self) -> None:
         """Child relation inherits cardinality constraint from parent."""
@@ -396,7 +397,7 @@ class TestRenderRelations:
 
         # Child should inherit required cardinality from parent
         # The parent declares weight as required, child should not have it optional
-        assert "class Weighted_edge(Base_edge):" in source
+        assert "class WeightedEdge(BaseEdge):" in source
         # weight should NOT be in child since it's inherited from parent
         # But if it were re-declared, it should still be required
 

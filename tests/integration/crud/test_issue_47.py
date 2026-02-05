@@ -1,4 +1,5 @@
 import pytest
+
 from type_bridge import Entity, Flag, Key, SchemaManager, String, TypeFlags
 
 

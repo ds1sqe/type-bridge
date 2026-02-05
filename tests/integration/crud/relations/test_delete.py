@@ -7,6 +7,7 @@ using role players' @key attributes to identify the relation.
 from typing import Any, cast
 
 import pytest
+
 from type_bridge import (
     Entity,
     Flag,

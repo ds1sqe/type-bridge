@@ -1,6 +1,7 @@
 """Integration tests for schema diff and comparison functionality."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.migration.diff import (
     AttributeFlagChange,

@@ -4,6 +4,8 @@ These tests verify that the generated TypeQL syntax works correctly with TypeDB.
 """
 
 import pytest
+
+from tests.integration.conftest import TEST_DB_ADDRESS
 from type_bridge import (
     Database,
     Entity,
@@ -15,8 +17,6 @@ from type_bridge import (
     TypeFlags,
 )
 from type_bridge.expressions.builtin import abs_, iid, label
-
-from tests.integration.conftest import TEST_DB_ADDRESS
 
 
 # Test schema

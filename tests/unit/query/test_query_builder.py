@@ -3,6 +3,7 @@
 from datetime import UTC
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.crud.utils import format_value
 from type_bridge.query import Query, QueryBuilder

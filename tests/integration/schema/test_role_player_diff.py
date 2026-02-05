@@ -1,6 +1,7 @@
 """Integration tests for role player change detection."""
 
 import pytest
+
 from type_bridge import (
     BreakingChangeAnalyzer,
     ChangeCategory,

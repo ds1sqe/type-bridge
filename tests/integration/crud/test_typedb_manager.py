@@ -5,6 +5,7 @@ before switching it to be the default manager.
 """
 
 import pytest
+
 from type_bridge import (
     Card,
     Entity,

@@ -1,6 +1,7 @@
 """Unit tests for exception classes."""
 
 import pytest
+
 from type_bridge.crud.exceptions import (
     EntityNotFoundError,
     KeyAttributeError,

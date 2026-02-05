@@ -5,6 +5,7 @@ and successfully insert/query with concrete entity instances.
 """
 
 import pytest
+
 from type_bridge import (
     Database,
     Entity,

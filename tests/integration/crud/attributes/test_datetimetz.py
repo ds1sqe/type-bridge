@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 import pytest
+
 from type_bridge import DateTimeTZ, Entity, Flag, Key, SchemaManager, String, TypeFlags
 
 

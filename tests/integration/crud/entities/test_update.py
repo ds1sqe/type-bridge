@@ -1,6 +1,7 @@
 """Integration tests for entity update operations."""
 
 import pytest
+
 from type_bridge import (
     Card,
     Entity,

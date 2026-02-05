@@ -5,6 +5,7 @@ and multi-value attribute operations.
 """
 
 import pytest
+
 from type_bridge import (
     Card,
     Database,

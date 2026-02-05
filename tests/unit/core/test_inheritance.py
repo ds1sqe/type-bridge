@@ -1,6 +1,7 @@
 """Tests for inheritance edge cases and built-in type name collisions."""
 
 import pytest
+
 import type_bridge as tbg
 from type_bridge import Flag, Integer, Key, Role, String, TypeFlags
 

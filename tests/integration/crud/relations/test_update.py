@@ -5,6 +5,7 @@ supporting both attribute and role player filters.
 """
 
 import pytest
+
 from type_bridge import (
     Entity,
     Flag,

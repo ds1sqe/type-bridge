@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+
 from type_bridge import Database, SchemaManager
 from type_bridge.generator import generate_models
 
@@ -214,16 +215,16 @@ class TestGeneratorInsertQueryCycle:
         entities.Memory.manager(db).insert(memory2)
 
         # Create similarity relation with exactly 2 players (card 2..2)
-        similarity = relations.Is_similar_to(
+        similarity = relations.IsSimilarTo(
             similar_memory=[memory1, memory2],
             score=attributes.Score(0.85),
         )
 
         # Insert relation
-        relations.Is_similar_to.manager(db).insert(similarity)
+        relations.IsSimilarTo.manager(db).insert(similarity)
 
         # Query back
-        similarities = relations.Is_similar_to.manager(db).all()
+        similarities = relations.IsSimilarTo.manager(db).all()
 
         assert len(similarities) == 1
         fetched = similarities[0]
@@ -283,16 +284,16 @@ class TestGeneratorInsertQueryCycle:
         entities.Person.manager(db).insert(member3)
 
         # Create membership with 3 members (min 2, unbounded max)
-        membership = relations.Group_membership(
+        membership = relations.GroupMembership(
             group=group,
             member=[member1, member2, member3],
         )
 
         # Insert relation
-        relations.Group_membership.manager(db).insert(membership)
+        relations.GroupMembership.manager(db).insert(membership)
 
         # Query back
-        memberships = relations.Group_membership.manager(db).all()
+        memberships = relations.GroupMembership.manager(db).all()
 
         assert len(memberships) == 1
 

@@ -1,6 +1,7 @@
 """Unit tests for RoleRef and RolePlayerFieldRef classes."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.expressions import RolePlayerExpr
 from type_bridge.fields.role import (

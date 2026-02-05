@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal as PyDecimal
 
 import pytest
+
 from type_bridge import (
     Boolean,
     Card,

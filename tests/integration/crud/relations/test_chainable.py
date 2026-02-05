@@ -1,6 +1,7 @@
 """Integration tests for chainable RelationQuery operations (delete and update_with)."""
 
 import pytest
+
 from type_bridge import (
     Card,
     Entity,

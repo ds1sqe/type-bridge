@@ -5,6 +5,7 @@ Tests the new type-safe syntax for filtering role player attributes:
 """
 
 import pytest
+
 from type_bridge import (
     Entity,
     Flag,

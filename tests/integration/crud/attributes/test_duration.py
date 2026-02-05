@@ -3,6 +3,7 @@
 from datetime import timedelta
 
 import pytest
+
 from type_bridge import Duration, Entity, Flag, Key, SchemaManager, String, TypeFlags
 
 

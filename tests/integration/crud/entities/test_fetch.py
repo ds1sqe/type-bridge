@@ -1,6 +1,7 @@
 """Integration tests for entity fetch operations."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
 
 

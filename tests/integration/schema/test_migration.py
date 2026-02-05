@@ -1,6 +1,7 @@
 """Integration tests for schema migration functionality."""
 
 import pytest
+
 from type_bridge import (
     AttributeFlags,
     Entity,

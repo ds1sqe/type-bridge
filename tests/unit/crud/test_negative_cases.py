@@ -3,6 +3,8 @@
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+from typedb.driver import TransactionType
+
 from type_bridge import (
     Card,
     Database,
@@ -18,7 +20,6 @@ from type_bridge import (
 from type_bridge.crud import TypeDBManager
 from type_bridge.crud.utils import format_value
 from type_bridge.models.base import TypeDBType
-from typedb.driver import TransactionType
 
 
 class _RecordingTypeDBManager[T: TypeDBType](TypeDBManager[T]):

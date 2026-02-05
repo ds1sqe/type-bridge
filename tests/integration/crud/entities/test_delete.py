@@ -1,6 +1,7 @@
 """Integration tests for entity delete operations."""
 
 import pytest
+
 from type_bridge import (
     Entity,
     EntityNotFoundError,

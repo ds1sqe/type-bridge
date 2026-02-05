@@ -1,6 +1,7 @@
 """Integration tests for schema creation and updates."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, SchemaManager, String, TypeFlags
 
 

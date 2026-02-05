@@ -4,6 +4,7 @@ Tests for issue #62: Expose TypeDB IID on entity instances.
 """
 
 import pytest
+
 from type_bridge import (
     Entity,
     Flag,

@@ -1,6 +1,7 @@
 """Tests for Entity.to_dict() and Entity.from_dict()."""
 
 import pytest
+
 from type_bridge import (
     AttributeFlags,
     Card,

@@ -1,6 +1,7 @@
 """Integration tests for schema cardinality constraints."""
 
 import pytest
+
 from type_bridge import (
     Card,
     Entity,

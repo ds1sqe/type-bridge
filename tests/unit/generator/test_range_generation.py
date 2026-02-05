@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from type_bridge.generator import generate_models
 
 

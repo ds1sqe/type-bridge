@@ -1,6 +1,8 @@
 """Integration tests for session and transaction lifecycle."""
 
 import pytest
+from typedb.driver import TransactionType
+
 from type_bridge import (
     Database,
     Entity,
@@ -11,7 +13,6 @@ from type_bridge import (
     String,
     TypeFlags,
 )
-from typedb.driver import TransactionType
 
 
 # Attribute and entity types for session lifecycle tests

@@ -4,6 +4,7 @@ Tests iid(), label() functions and Unicode identifier support.
 """
 
 import pytest
+
 from type_bridge import (
     Database,
     Entity,

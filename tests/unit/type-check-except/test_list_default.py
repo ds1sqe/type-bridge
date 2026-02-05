@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 import pytest
+
 from type_bridge.attribute.datetime import DateTime
 from type_bridge.attribute.flags import Card, Flag, Key
 from type_bridge.attribute.string import String

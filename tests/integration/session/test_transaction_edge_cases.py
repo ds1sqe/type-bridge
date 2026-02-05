@@ -5,6 +5,7 @@ in transaction scenarios.
 """
 
 import pytest
+
 from type_bridge import (
     Database,
     Entity,

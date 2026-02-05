@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from isodate import Duration as IsodateDuration
+
 from type_bridge import (
     DateTime,
     DateTimeTZ,

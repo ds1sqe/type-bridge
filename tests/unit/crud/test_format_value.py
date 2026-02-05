@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import isodate
+
 from type_bridge import Integer, String
 from type_bridge.attribute import AttributeFlags
 from type_bridge.crud.utils import format_value, is_multi_value_attribute

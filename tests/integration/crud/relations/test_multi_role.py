@@ -1,6 +1,7 @@
 """Integration tests for multi-role player relations."""
 
 import pytest
+
 from type_bridge import (
     Entity,
     Flag,

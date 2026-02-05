@@ -1,6 +1,7 @@
 """Integration tests for Double attribute CRUD operations."""
 
 import pytest
+
 from type_bridge import Double, Entity, Flag, Key, SchemaManager, String, TypeFlags
 
 

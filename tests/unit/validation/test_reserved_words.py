@@ -1,6 +1,7 @@
 """Unit tests for TypeQL reserved words validation."""
 
 import pytest
+
 from type_bridge import Entity, Integer, Relation, Role, String, TypeFlags
 from type_bridge.reserved_words import get_reserved_words, is_reserved_word
 from type_bridge.validation import (

@@ -8,6 +8,7 @@ get_owned_attributes() only returns directly-owned attributes.
 """
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, SchemaManager, String, TypeFlags
 
 

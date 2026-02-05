@@ -1,6 +1,7 @@
 """Integration tests for relation put operations."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 
 

@@ -5,6 +5,7 @@ expression-based filtering, limit/offset, and aggregations.
 """
 
 import pytest
+
 from type_bridge import (
     Entity,
     Flag,

@@ -1,6 +1,7 @@
 """Integration tests for schema conflict detection."""
 
 import pytest
+
 from type_bridge import (
     Entity,
     Flag,

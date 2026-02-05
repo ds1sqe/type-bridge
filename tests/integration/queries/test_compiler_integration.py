@@ -6,6 +6,7 @@ supported AST node types.
 """
 
 import pytest
+
 from type_bridge import Database, Entity, Relation, TypeFlags
 from type_bridge.attribute import AttributeFlags, Integer, String
 from type_bridge.attribute.flags import Card, Flag, Key
@@ -114,10 +115,10 @@ fun list-test-person-names() -> { person-name }:
 @pytest.fixture
 def db(docker_typedb):
     """Provide database connection."""
-    from type_bridge import Credentials, TypeDB
     from typedb.driver import DriverOptions
 
     from tests.integration.conftest import TEST_DB_ADDRESS
+    from type_bridge import Credentials, TypeDB
 
     driver = TypeDB.driver(
         address=TEST_DB_ADDRESS,

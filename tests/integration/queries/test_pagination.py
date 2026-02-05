@@ -1,6 +1,7 @@
 """Integration tests for query pagination."""
 
 import pytest
+
 from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
 
 
