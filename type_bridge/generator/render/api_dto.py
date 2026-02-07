@@ -120,6 +120,8 @@ class CompositeContext:
     has_field_sync: bool  # Whether to generate field sync validator
     field_sync_a: str | None = None  # First field to sync
     field_sync_b: str | None = None  # Second field to sync
+    extra_fields_out: dict[str, str] | None = None  # Per-variant overrides for Out
+    skip_variants: set[str] = field(default_factory=set)  # Variants to skip generating
 
 
 def _is_required_attribute(attr_name: str, spec: EntitySpec | RelationSpec) -> bool:
@@ -345,6 +347,8 @@ def _build_composite_contexts(
                 has_field_sync=has_field_sync,
                 field_sync_a=field_sync_a,
                 field_sync_b=field_sync_b,
+                extra_fields_out=comp.extra_fields_out or None,
+                skip_variants=comp.skip_variants,
             )
         )
 

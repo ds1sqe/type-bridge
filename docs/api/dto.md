@@ -172,18 +172,20 @@ When one field is set but not the other, the value is copied automatically.
 
 Composite entities create a "flat" DTO that merges multiple entity types into one class. Useful for polymorphic APIs where one endpoint handles all node types.
 
-| Option                    | Type                         | Default  | Description                                         |
-| ------------------------- | ---------------------------- | -------- | --------------------------------------------------- |
-| `name`                    | `str`                        | Required | Name prefix (e.g., `"GraphNode"` → `GraphNodeOut`)  |
-| `base_entity`             | `str \| None`                | `None`   | Entity name - include all inheriting entities       |
-| `include_entities`        | `list[str]`                  | `[]`     | Explicit list of entities to include                |
-| `exclude_entities`        | `list[str]`                  | `[]`     | Entities to exclude from the composite              |
-| `common_fields`           | `list[CompositeFieldConfig]` | `[]`     | Explicitly configured common fields                 |
-| `field_syncs`             | `list[FieldSyncConfig]`      | `[]`     | Field sync validators for the composite             |
-| `extra_fields`            | `dict[str, str]`             | `{}`     | Additional fields as `{name: type_annotation}`      |
-| `id_field_name`           | `str`                        | `"id"`   | Name of the ID field                                |
-| `type_field_name`         | `str`                        | `"type"` | Name of the type discriminator field                |
-| `type_enum_from_registry` | `bool`                       | `True`   | Generate `Literal` type enum from included entities |
+| Option                    | Type                         | Default  | Description                                                       |
+| ------------------------- | ---------------------------- | -------- | ----------------------------------------------------------------- |
+| `name`                    | `str`                        | Required | Name prefix (e.g., `"GraphNode"` → `GraphNodeOut`)                |
+| `base_entity`             | `str \| None`                | `None`   | Entity name - include all inheriting entities                     |
+| `include_entities`        | `list[str]`                  | `[]`     | Explicit list of entities to include                              |
+| `exclude_entities`        | `list[str]`                  | `[]`     | Entities to exclude from the composite                            |
+| `common_fields`           | `list[CompositeFieldConfig]` | `[]`     | Explicitly configured common fields                               |
+| `field_syncs`             | `list[FieldSyncConfig]`      | `[]`     | Field sync validators for the composite                           |
+| `extra_fields`            | `dict[str, str]`             | `{}`     | Additional fields as `{name: type_annotation}`                    |
+| `extra_fields_out`        | `dict[str, str]`             | `{}`     | Per-variant overrides for extra_fields on Out DTOs                |
+| `skip_variants`           | `set[str]`                   | `{}`     | Variant names to skip generating (`"out"`, `"create"`, `"patch"`) |
+| `id_field_name`           | `str`                        | `"id"`   | Name of the ID field                                              |
+| `type_field_name`         | `str`                        | `"type"` | Name of the type discriminator field                              |
+| `type_enum_from_registry` | `bool`                       | `True`   | Generate `Literal` type enum from included entities               |
 
 Use `base_entity` OR `include_entities`, not both. When using `base_entity`, all non-abstract entities inheriting from it are included.
 
@@ -283,6 +285,62 @@ Composite DTOs are generated **alongside** per-entity DTOs, giving you both:
 
 - Per-entity DTOs (`TaskOut`, `EpicOut`) for type-specific endpoints
 - Composite DTOs (`GraphNodeOut`) for polymorphic endpoints
+
+### Skipping Composite Variants
+
+When you use **discriminated unions** (per-entity DTOs) instead of flat composite models, you can skip generating the composite Out/Create/Patch classes while keeping the type enum:
+
+```python
+CompositeEntityConfig(
+    name="GraphNode",
+    include_entities=["task", "epic", "story"],
+    # Only generate GraphNodeType Literal enum;
+    # skip GraphNodeOut, GraphNodeCreate, GraphNodePatch
+    skip_variants={"out", "create", "patch"},
+)
+```
+
+This generates just:
+
+```python
+GraphNodeType = Literal["task", "epic", "story"]
+```
+
+Without the composite `GraphNodeOut`, `GraphNodeCreate`, and `GraphNodePatch` classes. You can then build your own discriminated unions from the per-entity DTOs:
+
+```python
+GraphNodeUnionOut = Annotated[Union[TaskOut, EpicOut, StoryOut], Field(discriminator="type")]
+```
+
+### Per-Variant Extra Fields on Composites
+
+When a composite's `extra_fields` need different type annotations per variant (e.g., `id` is required on Out but optional on Create), use `extra_fields_out`:
+
+```python
+CompositeEntityConfig(
+    name="GraphNode",
+    include_entities=["task", "epic"],
+    extra_fields={
+        "id": "Optional[str] = None",      # Default: optional (used for Create/Patch)
+        "version": "int | None = None",
+    },
+    extra_fields_out={
+        "id": "str",                        # Override: required on Out
+    },
+)
+```
+
+This generates:
+
+```python
+class GraphNodeOut(BaseDTOOut):
+    id: str                        # Required (from extra_fields_out)
+    version: int | None = None     # From extra_fields
+
+class GraphNodeCreate(BaseDTOCreate):
+    id: Optional[str] = None       # Optional (from extra_fields)
+    version: int | None = None
+```
 
 ### Field Requiredness Overrides
 

@@ -813,6 +813,13 @@ dto_config = DTOConfig(
 | `strict_out_models`          | `bool`                        | `False`      | Required fields are non-Optional in Out DTOs                |
 | `entity_field_overrides`     | `list[EntityFieldOverride]`   | `[]`         | Per-entity, per-variant field requiredness overrides        |
 
+### CompositeEntityConfig Highlights
+
+In addition to the options documented in [dto.md](dto.md), composites support:
+
+- **`skip_variants`** (`set[str]`): Skip generating specific variant classes (`"out"`, `"create"`, `"patch"`). The type `Literal` enum is always generated. Useful when you prefer discriminated unions over flat composite models.
+- **`extra_fields_out`** (`dict[str, str]`): Per-variant override for `extra_fields` on Out DTOs. When a field name appears here, the Out variant uses this annotation instead of the one from `extra_fields`. Useful when Out fields have different requiredness (e.g., `id` required on Out but optional on Create).
+
 ### BaseClassConfig Reference
 
 | Option                   | Type                       | Default  | Description                                            |
