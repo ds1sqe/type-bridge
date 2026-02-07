@@ -7,10 +7,12 @@
 class {{ bc.base_name }}Out(BaseDTOOut):
     """Base for {{ bc.source_entity }} output DTOs."""
 {% for attr in bc.fields %}
-{% if strict_out_models and attr.required %}
+{% set eff_required = attr.out_required if attr.out_required is not none else attr.required %}
+{% set eff_default = attr.out_default if attr.out_default is not none else attr.default %}
+{% if strict_out_models and eff_required %}
     {{ attr.python_name }}: {{ attr.python_type }}
 {% else %}
-    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ eff_default }}
 {% endif %}
 {% endfor %}
 {% for name, type_ann in bc.extra_fields.items() %}
@@ -31,10 +33,12 @@ class {{ bc.base_name }}Out(BaseDTOOut):
 class {{ bc.base_name }}Create(BaseDTOCreate):
     """Base for {{ bc.source_entity }} create DTOs."""
 {% for attr in bc.fields %}
-{% if attr.required %}
+{% set eff_required = attr.create_required if attr.create_required is not none else attr.required %}
+{% set eff_default = attr.create_default if attr.create_default is not none else attr.default %}
+{% if eff_required %}
     {{ attr.python_name }}: {{ attr.python_type }}
 {% else %}
-    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ eff_default }}
 {% endif %}
 {% endfor %}
 {% for name, type_ann in bc.extra_fields.items() %}
@@ -81,10 +85,12 @@ class {{ entity.class_name }}Out({{ entity.parent_class }}Out):
     """Output DTO for {{ entity.name }}."""
     type: Literal["{{ entity.name }}"] = "{{ entity.name }}"
 {% for attr in entity.own_attributes %}
-{% if strict_out_models and attr.required %}
+{% set eff_required = attr.out_required if attr.out_required is not none else attr.required %}
+{% set eff_default = attr.out_default if attr.out_default is not none else attr.default %}
+{% if strict_out_models and eff_required %}
     {{ attr.python_name }}: {{ attr.python_type }}
 {% else %}
-    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ eff_default }}
 {% endif %}
 {% endfor %}
 {% if not entity.own_attributes %}
@@ -96,10 +102,12 @@ class {{ entity.class_name }}Create({{ entity.parent_class }}Create):
     """Create DTO for {{ entity.name }}."""
     type: Literal["{{ entity.name }}"] = "{{ entity.name }}"
 {% for attr in entity.own_attributes %}
-{% if attr.required %}
+{% set eff_required = attr.create_required if attr.create_required is not none else attr.required %}
+{% set eff_default = attr.create_default if attr.create_default is not none else attr.default %}
+{% if eff_required %}
     {{ attr.python_name }}: {{ attr.python_type }}
 {% else %}
-    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ attr.default }}
+    {{ attr.python_name }}: Optional[{{ attr.python_type }}] = {{ eff_default }}
 {% endif %}
 {% endfor %}
 {% if not entity.own_attributes %}

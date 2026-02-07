@@ -36,6 +36,10 @@ class AttrContext:
     python_type: str  # Python type annotation
     default: str  # Default value as string
     required: bool  # Whether the field is required
+    create_required: bool | None = None  # Per-variant override for Create
+    create_default: str | None = None  # Per-variant default for Create
+    out_required: bool | None = None  # Per-variant override for Out
+    out_default: str | None = None  # Per-variant default for Out
 
 
 @dataclass
@@ -220,6 +224,13 @@ def _build_base_class_contexts(
         for attr_name in bc.inherited_attrs:
             if attr_name in entity_spec.owns:
                 attr_ctx = _get_attribute_context(attr_name, schema, entity_spec)
+                # Apply create_field_overrides from base class config
+                override = bc.create_field_overrides.get(attr_name)
+                if override:
+                    if override.required is not None:
+                        attr_ctx.create_required = override.required
+                    if override.default is not None:
+                        attr_ctx.create_default = override.default
                 fields.append(attr_ctx)
 
         # Check for field sync
@@ -436,6 +447,19 @@ def render_api_dto(
             if attr_name in skip_attrs:
                 continue
             attr_ctx = _get_attribute_context(attr_name, schema, spec)
+            # Apply entity_field_overrides
+            for efo in effective_config.entity_field_overrides:
+                if efo.entity == name and efo.field == attr_name:
+                    if efo.variant == "create":
+                        if efo.required is not None:
+                            attr_ctx.create_required = efo.required
+                        if efo.default is not None:
+                            attr_ctx.create_default = efo.default
+                    elif efo.variant == "out":
+                        if efo.required is not None:
+                            attr_ctx.out_required = efo.required
+                        if efo.default is not None:
+                            attr_ctx.out_default = efo.default
             own_attrs.append(attr_ctx)
 
         entities.append(

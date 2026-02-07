@@ -42,6 +42,18 @@ class LiteralValue(Value):
 
 
 @dataclass
+class ArithmeticValue(Value):
+    """A binary arithmetic operation that is itself a Value.
+
+    Supports TypeQL infix operators: +, -, *, /, %, ^
+    """
+
+    left: Value | str  # Variable or nested expression
+    operator: str  # "+", "-", "*", "/", "%", "^"
+    right: Value | str  # Variable or nested expression
+
+
+@dataclass
 class RolePlayer(QueryNode):
     """A role player in a relation."""
 

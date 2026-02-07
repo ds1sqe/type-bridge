@@ -39,6 +39,8 @@ from .dto_config import (
     CompositeEntityConfig,
     CompositeFieldConfig,
     DTOConfig,
+    EntityFieldOverride,
+    FieldOverride,
     FieldSyncConfig,
     ValidatorConfig,
 )
@@ -64,6 +66,8 @@ __all__ = [
     "CompositeEntityConfig",
     "CompositeFieldConfig",
     "DTOConfig",
+    "EntityFieldOverride",
+    "FieldOverride",
     "FieldSyncConfig",
     "ParsedSchema",
     "ValidatorConfig",

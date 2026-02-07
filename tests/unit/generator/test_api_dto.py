@@ -8,6 +8,8 @@ from type_bridge.generator.dto_config import (
     CompositeEntityConfig,
     CompositeFieldConfig,
     DTOConfig,
+    EntityFieldOverride,
+    FieldOverride,
     FieldSyncConfig,
     ValidatorConfig,
 )
@@ -964,3 +966,177 @@ class TestCompositeEntityConfigMethods:
         assert "task" in result
         assert "epic" in result
         assert "story" not in result
+
+
+class TestFieldOverrides:
+    """Tests for per-variant field requiredness overrides."""
+
+    SCHEMA_WITH_KEY = """
+        define
+        entity artifact @abstract,
+            owns display_id @key,
+            owns name;
+        entity task sub artifact,
+            owns status;
+        attribute display_id, value string;
+        attribute name, value string;
+        attribute status, value string;
+    """
+
+    def test_base_class_override_makes_key_optional_on_create(self) -> None:
+        """Base class create_field_overrides makes @key optional on Create."""
+        schema = parse_tql_schema(self.SCHEMA_WITH_KEY)
+        config = DTOConfig(
+            base_classes=[
+                BaseClassConfig(
+                    source_entity="artifact",
+                    base_name="BaseArtifact",
+                    inherited_attrs=["display_id", "name"],
+                    create_field_overrides={
+                        "display_id": FieldOverride(required=False),
+                    },
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        # In BaseArtifactCreate, display_id should be Optional (overridden)
+        create_section = source.split("class BaseArtifactCreate")[1].split("class ")[0]
+        assert "display_id: Optional[str]" in create_section
+
+    def test_base_class_override_with_custom_default(self) -> None:
+        """Base class create_field_overrides with a custom default value."""
+        schema = parse_tql_schema(self.SCHEMA_WITH_KEY)
+        config = DTOConfig(
+            base_classes=[
+                BaseClassConfig(
+                    source_entity="artifact",
+                    base_name="BaseArtifact",
+                    inherited_attrs=["display_id", "name"],
+                    create_field_overrides={
+                        "display_id": FieldOverride(required=False, default='"AUTO"'),
+                    },
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        create_section = source.split("class BaseArtifactCreate")[1].split("class ")[0]
+        assert 'display_id: Optional[str] = "AUTO"' in create_section
+
+    def test_per_entity_override_on_create(self) -> None:
+        """Per-entity override makes @key optional on Create for a specific entity."""
+        schema = parse_tql_schema("""
+            define
+            entity person,
+                owns email @key,
+                owns name;
+            attribute email, value string;
+            attribute name, value string;
+        """)
+        config = DTOConfig(
+            entity_field_overrides=[
+                EntityFieldOverride(
+                    entity="person",
+                    field="email",
+                    variant="create",
+                    required=False,
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        create_section = source.split("class PersonCreate")[1].split("class PersonPatch")[0]
+        assert "email: Optional[str]" in create_section
+
+    def test_per_entity_override_on_out_with_strict(self) -> None:
+        """Per-entity override on Out variant with strict_out_models."""
+        schema = parse_tql_schema("""
+            define
+            entity person,
+                owns email @key,
+                owns name;
+            attribute email, value string;
+            attribute name, value string;
+        """)
+        config = DTOConfig(
+            strict_out_models=True,
+            entity_field_overrides=[
+                EntityFieldOverride(
+                    entity="person",
+                    field="email",
+                    variant="out",
+                    required=False,
+                ),
+            ],
+        )
+        source = render_api_dto(schema, config)
+
+        out_section = source.split("class PersonOut")[1].split("class PersonCreate")[0]
+        # email should be Optional in Out even though strict_out_models=True
+        assert "email: Optional[str]" in out_section
+        # name should still be Optional (not @key, strict doesn't affect non-required)
+        assert "name: Optional[str]" in out_section
+
+    def test_override_scoped_to_one_entity(self) -> None:
+        """Override scoped to one entity doesn't leak to another."""
+        schema = parse_tql_schema("""
+            define
+            entity person,
+                owns email @key;
+            entity company,
+                owns email @key;
+            attribute email, value string;
+        """)
+        config = DTOConfig(
+            entity_field_overrides=[
+                EntityFieldOverride(
+                    entity="person",
+                    field="email",
+                    variant="create",
+                    required=False,
+                ),
+            ]
+        )
+        source = render_api_dto(schema, config)
+
+        # Person's email should be optional on Create
+        person_create = source.split("class PersonCreate")[1].split("class PersonPatch")[0]
+        assert "email: Optional[str]" in person_create
+
+        # Company's email should still be required on Create
+        company_create = source.split("class CompanyCreate")[1].split("class CompanyPatch")[0]
+        assert "email: str" in company_create
+
+    def test_create_override_does_not_bleed_into_out_or_patch(self) -> None:
+        """Create override doesn't affect Out or Patch variants."""
+        schema = parse_tql_schema("""
+            define
+            entity person,
+                owns email @key;
+            attribute email, value string;
+        """)
+        config = DTOConfig(
+            strict_out_models=True,
+            entity_field_overrides=[
+                EntityFieldOverride(
+                    entity="person",
+                    field="email",
+                    variant="create",
+                    required=False,
+                ),
+            ],
+        )
+        source = render_api_dto(schema, config)
+
+        # Create: email should be Optional (overridden)
+        create_section = source.split("class PersonCreate")[1].split("class PersonPatch")[0]
+        assert "email: Optional[str]" in create_section
+
+        # Out: email should still be required (strict_out_models + @key)
+        out_section = source.split("class PersonOut")[1].split("class PersonCreate")[0]
+        assert "email: str" in out_section
+
+        # Patch: always Optional, unchanged
+        patch_section = source.split("class PersonPatch")[1].split("\n\n\n")[0]
+        assert "email: Optional[str] = None" in patch_section

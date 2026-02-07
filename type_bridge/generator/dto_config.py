@@ -27,6 +27,45 @@ from typing import Any
 
 
 @dataclass
+class FieldOverride:
+    """Per-variant override for a single field's requiredness or default.
+
+    Use this inside ``BaseClassConfig.create_field_overrides`` to make a
+    normally-required field optional (or vice-versa) on a specific DTO variant.
+
+    Attributes:
+        required: Override requiredness. ``None`` keeps the schema default.
+        default: Override default value as a Python literal string
+            (e.g., ``"None"``). ``None`` keeps the schema default.
+    """
+
+    required: bool | None = None
+    default: str | None = None
+
+
+@dataclass
+class EntityFieldOverride:
+    """Per-entity, per-variant field override.
+
+    Allows targeting a specific entity + field + variant combination.
+
+    Attributes:
+        entity: TypeDB entity name (e.g., ``"task"``)
+        field: TypeDB attribute name (e.g., ``"display_id"``)
+        variant: DTO variant to override (``"create"``, ``"out"``, ``"patch"``)
+        required: Override requiredness. ``None`` keeps the schema default.
+        default: Override default value as a Python literal string.
+            ``None`` keeps the schema default.
+    """
+
+    entity: str
+    field: str
+    variant: str  # "create", "out", or "patch"
+    required: bool | None = None
+    default: str | None = None
+
+
+@dataclass
 class ValidatorConfig:
     """Configuration for a custom Pydantic validator type.
 
@@ -222,6 +261,7 @@ class BaseClassConfig:
     extra_fields: dict[str, str] = field(default_factory=dict)
     field_syncs: list[FieldSyncConfig] = field(default_factory=list)
     validators: list[str] = field(default_factory=list)
+    create_field_overrides: dict[str, FieldOverride] = field(default_factory=dict)
 
 
 @dataclass
@@ -292,6 +332,7 @@ class DTOConfig:
     relation_preamble: str | None = None
     composite_entities: list[CompositeEntityConfig] = field(default_factory=list)
     strict_out_models: bool = False
+    entity_field_overrides: list[EntityFieldOverride] = field(default_factory=list)
 
     def get_base_class_for_entity(
         self, entity_name: str, schema_entities: dict[str, Any]

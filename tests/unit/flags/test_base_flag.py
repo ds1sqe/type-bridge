@@ -1,5 +1,7 @@
 """Tests for base flag functionality."""
 
+import warnings
+
 import type_bridge as tbg
 from type_bridge import Role, String, TypeFlags
 
@@ -134,8 +136,12 @@ class TestBaseFlag:
             flags = TypeFlags(base=True)
             name: Name
 
-        class Child(BaseWithAttrs):
-            flags = TypeFlags(name="child")
+        # Pydantic warns about field shadowing when base=True attrs are absorbed
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Field name.*shadows", category=UserWarning)
+
+            class Child(BaseWithAttrs):
+                flags = TypeFlags(name="child")
 
         # Base class doesn't generate schema
         assert BaseWithAttrs.to_schema_definition() is None

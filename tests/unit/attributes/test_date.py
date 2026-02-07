@@ -304,6 +304,85 @@ def test_date_ordering():
     assert late.value > early.value
 
 
+def test_date_add_duration():
+    """Test adding Duration to Date."""
+    from type_bridge import Duration
+
+    class EventDate(Date):
+        pass
+
+    class Interval(Duration):
+        pass
+
+    d = EventDate(date(2024, 1, 31))
+    duration = Interval("P1M")
+
+    # Add 1 month: Jan 31 -> Feb 29 (2024 is leap year)
+    result = d + duration
+    assert isinstance(result, Date)
+    assert result.value == date(2024, 2, 29)
+
+
+def test_date_radd_duration():
+    """Test reverse addition: Duration + Date."""
+    from type_bridge import Duration
+
+    class EventDate(Date):
+        pass
+
+    class Interval(Duration):
+        pass
+
+    d = EventDate(date(2024, 3, 15))
+    duration = Interval("P10D")
+
+    # Duration + Date (reverse)
+    result = duration + d
+    assert isinstance(result, Date)
+    assert result.value == date(2024, 3, 25)
+
+
+def test_date_sub_duration():
+    """Test subtracting Duration from Date."""
+    from type_bridge import Duration
+
+    class EventDate(Date):
+        pass
+
+    class Interval(Duration):
+        pass
+
+    d = EventDate(date(2024, 3, 31))
+    duration = Interval("P1M")
+
+    # Subtract 1 month: Mar 31 -> Feb 29 (2024 is leap year)
+    result = d - duration
+    assert isinstance(result, Date)
+    assert result.value.month == 2
+
+
+def test_date_add_invalid_type():
+    """Test that adding non-Duration returns NotImplemented."""
+
+    class EventDate(Date):
+        pass
+
+    d = EventDate(date(2024, 1, 1))
+    result = d.__add__(42)
+    assert result is NotImplemented
+
+
+def test_date_sub_invalid_type():
+    """Test that subtracting non-Duration returns NotImplemented."""
+
+    class EventDate(Date):
+        pass
+
+    d = EventDate(date(2024, 1, 1))
+    result = d.__sub__("not a duration")
+    assert result is NotImplemented
+
+
 def test_date_vs_datetime_distinction():
     """Test that Date and DateTime are distinct types."""
     from type_bridge import DateTime

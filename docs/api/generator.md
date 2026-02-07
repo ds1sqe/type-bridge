@@ -797,29 +797,33 @@ dto_config = DTOConfig(
 
 ### DTOConfig Reference
 
-| Option                       | Type                    | Default      | Description                                                 |
-| ---------------------------- | ----------------------- | ------------ | ----------------------------------------------------------- |
-| `base_classes`               | `list[BaseClassConfig]` | `[]`         | Custom base classes for entity hierarchies                  |
-| `validators`                 | `list[ValidatorConfig]` | `[]`         | Custom validator types with regex patterns                  |
-| `preamble`                   | `str \| None`           | `None`       | Python code injected after imports                          |
-| `entity_union_name`          | `str`                   | `"Entity"`   | Name prefix for entity union types                          |
-| `relation_union_name`        | `str`                   | `"Relation"` | Name prefix for relation union types                        |
-| `exclude_entities`           | `list[str]`             | `[]`         | Entity names to exclude from generation                     |
-| `iid_field_name`             | `str`                   | `"iid"`      | Field name for TypeDB IID (use `"id"` for REST conventions) |
-| `skip_relation_output`       | `bool`                  | `False`      | Skip generating relation Out classes                        |
-| `relation_create_base_class` | `str \| None`           | `None`       | Custom base class for relation Create DTOs                  |
-| `relation_preamble`          | `str \| None`           | `None`       | Python code injected in relation section                    |
+| Option                       | Type                          | Default      | Description                                                 |
+| ---------------------------- | ----------------------------- | ------------ | ----------------------------------------------------------- |
+| `base_classes`               | `list[BaseClassConfig]`       | `[]`         | Custom base classes for entity hierarchies                  |
+| `validators`                 | `list[ValidatorConfig]`       | `[]`         | Custom validator types with regex patterns                  |
+| `preamble`                   | `str \| None`                 | `None`       | Python code injected after imports                          |
+| `entity_union_name`          | `str`                         | `"Entity"`   | Name prefix for entity union types                          |
+| `relation_union_name`        | `str`                         | `"Relation"` | Name prefix for relation union types                        |
+| `exclude_entities`           | `list[str]`                   | `[]`         | Entity names to exclude from generation                     |
+| `iid_field_name`             | `str`                         | `"iid"`      | Field name for TypeDB IID (use `"id"` for REST conventions) |
+| `skip_relation_output`       | `bool`                        | `False`      | Skip generating relation Out classes                        |
+| `relation_create_base_class` | `str \| None`                 | `None`       | Custom base class for relation Create DTOs                  |
+| `relation_preamble`          | `str \| None`                 | `None`       | Python code injected in relation section                    |
+| `composite_entities`         | `list[CompositeEntityConfig]` | `[]`         | Composite (flat/merged) DTOs configuration                  |
+| `strict_out_models`          | `bool`                        | `False`      | Required fields are non-Optional in Out DTOs                |
+| `entity_field_overrides`     | `list[EntityFieldOverride]`   | `[]`         | Per-entity, per-variant field requiredness overrides        |
 
 ### BaseClassConfig Reference
 
-| Option            | Type                    | Default  | Description                                            |
-| ----------------- | ----------------------- | -------- | ------------------------------------------------------ |
-| `source_entity`   | `str`                   | Required | Schema entity that triggers this base class            |
-| `base_name`       | `str`                   | Required | Base class name prefix (e.g., `"BaseArtifact"`)        |
-| `inherited_attrs` | `list[str]`             | `[]`     | Attributes defined in base class (skipped in children) |
-| `extra_fields`    | `dict[str, str]`        | `{}`     | Additional fields as `{name: type_annotation}`         |
-| `field_syncs`     | `list[FieldSyncConfig]` | `[]`     | Field sync validators for this base                    |
-| `validators`      | `list[str]`             | `[]`     | Validator names to apply to fields                     |
+| Option                   | Type                       | Default  | Description                                            |
+| ------------------------ | -------------------------- | -------- | ------------------------------------------------------ |
+| `source_entity`          | `str`                      | Required | Schema entity that triggers this base class            |
+| `base_name`              | `str`                      | Required | Base class name prefix (e.g., `"BaseArtifact"`)        |
+| `inherited_attrs`        | `list[str]`                | `[]`     | Attributes defined in base class (skipped in children) |
+| `extra_fields`           | `dict[str, str]`           | `{}`     | Additional fields as `{name: type_annotation}`         |
+| `field_syncs`            | `list[FieldSyncConfig]`    | `[]`     | Field sync validators for this base                    |
+| `validators`             | `list[str]`                | `[]`     | Validator names to apply to fields                     |
+| `create_field_overrides` | `dict[str, FieldOverride]` | `{}`     | Per-field overrides for Create variant                 |
 
 ## Best Practices
 
