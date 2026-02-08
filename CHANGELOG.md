@@ -2,6 +2,37 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [1.3.0] - 2026-02-09
+
+### New Features
+
+#### API DTO Generator (PRs #96, #97, #99, #100)
+- **Pydantic DTO generation from TypeQL schemas** — Generate typed Create/Out/Patch DTOs directly from parsed schemas
+- **Composite DTOs** — `CompositeEntityConfig` for flat/merged DTOs across entity types with name clash validation
+- **Per-variant field requiredness overrides** — `FieldOverride` and `EntityFieldOverride` to control field requiredness per DTO variant (Create, Out, Patch)
+- **`skip_variants`** — Skip generating specific variant classes while keeping the type Literal enum
+- **`extra_fields_out`** — Per-variant override for extra fields on Out DTOs
+- **`strict_out_models`** — Flag for required fields in Out DTOs
+- **Reusable Jinja macros** — Refactored templates into `_dto_macros.jinja`
+- **CLI support** — `python -m type_bridge.generator` now supports DTO generation
+
+#### Date Arithmetic and Query-Level Arithmetic Expressions
+- **Date arithmetic** — `__add__`, `__radd__`, `__sub__` on `Date` for Duration arithmetic, matching DateTime/DateTimeTZ
+- **ArithmeticExpr** — New expression class with helpers (`add`, `sub`, `mul`, `div`, `mod`, `pow_`) for TypeQL infix operators
+- **ArithmeticValue AST node** and compiler support
+
+### Improvements
+
+- **TypeDB 3.8.0 stable** — Bumped from 3.8.0-rc0 to 3.8.0 release
+- **TypeDB driver 3.8.0** — Upgraded `typedb-driver` dependency to 3.8.0
+- **Expression module cleanup** — Improved handling across boolean, comparison, and string expression modules
+- **Field module cleanup** — Enhanced field handling in base and role modules
+
+### Housekeeping
+
+- Applied ruff formatting to all test files
+- Added `.coverage` to `.gitignore` (was accidentally tracked)
+
 ## [1.2.7] - 2026-02-03
 
 ### New Features

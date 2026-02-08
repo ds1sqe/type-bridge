@@ -19,6 +19,10 @@ packages/typescript/dist/
 .idea/
 .vscode/
 
+# Coverage
+.coverage
+htmlcov/
+
 # Temporary
 tmp/
 
