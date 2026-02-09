@@ -17,6 +17,15 @@ impl ValidationEngine {
         }
     }
 
+    fn validate_type_name(&self, name: String, context: String) -> PyResult<bool> {
+        let result = self.inner.validate_type_name(&name, &context);
+        if !result.is_valid {
+            // Ideally we'd raise a custom exception here
+            return Err(pyo3::exceptions::PyValueError::new_err(result.errors[0].message.clone()));
+        }
+        Ok(true)
+    }
+
     // Placeholder for validate method that takes a Python AST node
     fn validate(&self, _node: PyObject) -> PyResult<bool> {
         Ok(true)

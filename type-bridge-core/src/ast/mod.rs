@@ -13,7 +13,7 @@ impl LiteralValue {
         LiteralValue { value, value_type }
     }
 
-    fn to_core(&self, py: Python<'_>) -> PyResult<String> {
+    fn to_core(&self, _py: Python<'_>) -> PyResult<String> {
         // Simple placeholder: return JSON representation or similar
         // Real implementation would convert to crate::core::ast::LiteralValue
         Ok(format!("{:?}:{}", self.value, self.value_type))

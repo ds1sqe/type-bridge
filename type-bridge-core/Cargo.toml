@@ -8,6 +8,13 @@ name = "type_bridge_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+
 pyo3 = { version = "0.23", features = ["extension-module"] }
+
 serde = { version = "1.0", features = ["derive"] }
+
 serde_json = "1.0"
+
+once_cell = "1.19"
+
+unicode-ident = "1.0"
