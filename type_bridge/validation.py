@@ -6,11 +6,20 @@ and role names don't conflict with TypeQL reserved words/keywords.
 
 import logging
 import unicodedata
-from typing import Literal
+from typing import Any, Literal
 
 from type_bridge.reserved_words import is_reserved_word
 
 logger = logging.getLogger(__name__)
+
+try:
+    from type_bridge_core import (
+        ValidationEngine as _RustValidationEngine,  # type: ignore[import-not-found]
+    )
+
+    _rust_validator: Any = _RustValidationEngine()
+except ImportError:
+    _rust_validator = None
 
 
 def _is_xid_start(char: str) -> bool:
@@ -162,6 +171,19 @@ def validate_type_name(
     """
     logger.debug(f"Validating {context} name: {name}")
 
+    # Try Rust validation engine first
+    if _rust_validator is not None:
+        try:
+            _rust_validator.validate_type_name(name, context)
+            return
+        except ValueError as exc:
+            msg = str(exc)
+            # Map Rust errors back to the correct Python exception types
+            if "reserved word" in msg.lower():
+                raise ReservedWordError(name, context) from exc
+            raise ValidationError(msg) from exc
+
+    # Python fallback
     if not name:
         logger.warning(f"Empty {context} name attempted")
         raise ValidationError(f"Empty {context} name is not allowed")

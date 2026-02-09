@@ -28,3 +28,4 @@ tmp/
 
 # Reference repos
 typeql-ref/
+type-bridge-core/target/
