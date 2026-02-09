@@ -51,10 +51,10 @@ class Query:
         if pattern:
             # Clean string pattern
             clean_pattern = pattern.strip().rstrip(";")
-            # RawPattern doesn't strictly require 'variable' if handled by compiler as raw string
-            # But we made it subclass Pattern again with 'variable' moved to subclasses.
-            # RawPattern definition: content: str
-            self.match_clause.patterns.append(RawPattern(content=clean_pattern))
+            # Get patterns list, append, and re-assign (required for Rust-backed nodes)
+            patterns = self.match_clause.patterns
+            patterns.append(RawPattern(content=clean_pattern))
+            self.match_clause.patterns = patterns
         return self
 
     def fetch(self, variable: str, *attributes: str) -> Query:
@@ -76,7 +76,9 @@ class Query:
         # For TypeQL 3.x, default to wildcard fetch
         # Use variable name (without $) as the key
         key = variable.lstrip("$")
-        self.fetch_clause.items.append(FetchWildcard(key=key, var=variable))
+        items = self.fetch_clause.items
+        items.append(FetchWildcard(key=key, var=variable))
+        self.fetch_clause.items = items
         return self
 
     def delete(self, pattern: str) -> Query:
@@ -90,7 +92,9 @@ class Query:
         """
         if pattern:
             clean_pattern = pattern.strip().rstrip(";")
-            self.delete_clause.statements.append(RawStatement(content=clean_pattern))
+            statements = self.delete_clause.statements
+            statements.append(RawStatement(content=clean_pattern))
+            self.delete_clause.statements = statements
         return self
 
     def insert(self, pattern: str) -> Query:
@@ -104,7 +108,9 @@ class Query:
         """
         if pattern:
             clean_pattern = pattern.strip().rstrip(";")
-            self.insert_clause.statements.append(RawStatement(content=clean_pattern))
+            statements = self.insert_clause.statements
+            statements.append(RawStatement(content=clean_pattern))
+            self.insert_clause.statements = statements
         return self
 
     def limit(self, limit: int) -> Query:

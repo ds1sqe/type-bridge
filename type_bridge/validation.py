@@ -8,6 +8,14 @@ import logging
 import unicodedata
 from typing import Literal
 
+try:
+    from type_bridge_core import ValidationEngine
+    _CORE_AVAILABLE = True
+    _validation_engine = ValidationEngine()
+except ImportError:
+    _CORE_AVAILABLE = False
+    _validation_engine = None
+
 from type_bridge.reserved_words import is_reserved_word
 
 logger = logging.getLogger(__name__)
@@ -161,6 +169,16 @@ def validate_type_name(
         ValidationError: If the name is invalid for other reasons
     """
     logger.debug(f"Validating {context} name: {name}")
+
+    if _CORE_AVAILABLE and _validation_engine:
+        try:
+            _validation_engine.validate_type_name(name, context)
+            return
+        except ValueError as e:
+            msg = str(e)
+            if "reserved word" in msg.lower():
+                raise ReservedWordError(name, context)
+            raise ValidationError(msg)
 
     if not name:
         logger.warning(f"Empty {context} name attempted")

@@ -4,6 +4,14 @@ from __future__ import annotations
 
 import logging
 
+try:
+    from type_bridge_core import QueryCompiler as _CoreQueryCompiler
+    _CORE_AVAILABLE = True
+    _core_compiler = _CoreQueryCompiler()
+except ImportError:
+    _CORE_AVAILABLE = False
+    _core_compiler = None
+
 from type_bridge.query.ast import (
     ArithmeticValue,
     AttributePattern,
@@ -58,6 +66,12 @@ class QueryCompiler:
 
     def compile(self, node: QueryNode) -> str:
         """Compile a single node to TypeQL."""
+        if _CORE_AVAILABLE and _core_compiler and isinstance(node, Clause):
+            try:
+                return _core_compiler.compile([node])
+            except Exception as e:
+                logger.debug(f"Rust compiler failed for {type(node).__name__}: {e}. Falling back to Python.")
+
         if isinstance(node, Clause):
             return self._compile_clause(node)
         elif isinstance(node, Pattern):
@@ -79,6 +93,12 @@ class QueryCompiler:
             operation: Optional operation keyword (e.g., "match", "insert") to prepend
                        if the nodes are just raw patterns/statements.
         """
+        if _CORE_AVAILABLE and _core_compiler and not operation and all(isinstance(n, Clause) for n in nodes):
+            try:
+                return _core_compiler.compile(nodes)
+            except Exception as e:
+                logger.debug(f"Rust compiler failed for batch: {e}. Falling back to Python.")
+
         parts = [self.compile(node) for node in nodes]
         query = "\n".join(parts)
         if operation:

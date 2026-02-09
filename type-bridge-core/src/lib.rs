@@ -20,21 +20,51 @@ impl ValidationEngine {
     fn validate_type_name(&self, name: String, context: String) -> PyResult<bool> {
         let result = self.inner.validate_type_name(&name, &context);
         if !result.is_valid {
-            // Ideally we'd raise a custom exception here
             return Err(pyo3::exceptions::PyValueError::new_err(result.errors[0].message.clone()));
         }
         Ok(true)
     }
 
-    // Placeholder for validate method that takes a Python AST node
-    fn validate(&self, _node: PyObject) -> PyResult<bool> {
-        Ok(true)
+    fn validate_pattern(&self, pattern: Bound<'_, PyAny>) -> PyResult<bool> {
+        let core_pattern = pattern.extract::<core::ast::Pattern>()?;
+        let result = self.inner.validate_pattern(&core_pattern);
+        Ok(result.is_valid)
+    }
+
+    fn validate_statement(&self, statement: Bound<'_, PyAny>) -> PyResult<bool> {
+        let core_statement = statement.extract::<core::ast::Statement>()?;
+        let result = self.inner.validate_statement(&core_statement);
+        Ok(result.is_valid)
+    }
+}
+
+#[pyclass]
+pub struct QueryCompiler {
+    inner: core::compiler::QueryCompiler,
+}
+
+#[pymethods]
+impl QueryCompiler {
+    #[new]
+    fn new() -> Self {
+        QueryCompiler {
+            inner: core::compiler::QueryCompiler::new(),
+        }
+    }
+
+    fn compile(&self, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+        let mut core_clauses = Vec::new();
+        for clause in clauses {
+            core_clauses.push(clause.extract::<core::ast::Clause>()?);
+        }
+        Ok(self.inner.compile(&core_clauses))
     }
 }
 
 #[pymodule]
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationEngine>()?;
+    m.add_class::<QueryCompiler>()?;
 
     // Values
     m.add_class::<ast::LiteralValue>()?;
