@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::core::ast::{Pattern, Statement, Constraint, Value, RolePlayer};
+use crate::core::ast::{Pattern, Statement, Constraint, Value};
 use crate::core::reserved_words::is_reserved_word;
 use unicode_ident::{is_xid_start, is_xid_continue};
 

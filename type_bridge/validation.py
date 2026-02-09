@@ -6,19 +6,20 @@ and role names don't conflict with TypeQL reserved words/keywords.
 
 import logging
 import unicodedata
-from typing import Literal
-
-try:
-    from type_bridge_core import ValidationEngine
-    _CORE_AVAILABLE = True
-    _validation_engine = ValidationEngine()
-except ImportError:
-    _CORE_AVAILABLE = False
-    _validation_engine = None
+from typing import Any, Literal
 
 from type_bridge.reserved_words import is_reserved_word
 
 logger = logging.getLogger(__name__)
+
+try:
+    from type_bridge_core import (
+        ValidationEngine as _RustValidationEngine,  # type: ignore[import-not-found]
+    )
+
+    _rust_validator: Any = _RustValidationEngine()
+except ImportError:
+    _rust_validator = None
 
 
 def _is_xid_start(char: str) -> bool:
@@ -170,16 +171,19 @@ def validate_type_name(
     """
     logger.debug(f"Validating {context} name: {name}")
 
-    if _CORE_AVAILABLE and _validation_engine:
+    # Try Rust validation engine first
+    if _rust_validator is not None:
         try:
-            _validation_engine.validate_type_name(name, context)
+            _rust_validator.validate_type_name(name, context)
             return
-        except ValueError as e:
-            msg = str(e)
+        except ValueError as exc:
+            msg = str(exc)
+            # Map Rust errors back to the correct Python exception types
             if "reserved word" in msg.lower():
-                raise ReservedWordError(name, context)
-            raise ValidationError(msg)
+                raise ReservedWordError(name, context) from exc
+            raise ValidationError(msg) from exc
 
+    # Python fallback
     if not name:
         logger.warning(f"Empty {context} name attempted")
         raise ValidationError(f"Empty {context} name is not allowed")

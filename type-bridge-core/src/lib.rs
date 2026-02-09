@@ -2,6 +2,7 @@ pub mod ast;
 pub mod core;
 
 use pyo3::prelude::*;
+use pythonize::depythonize;
 
 #[pyclass]
 pub struct ValidationEngine {
@@ -56,6 +57,18 @@ impl QueryCompiler {
         let mut core_clauses = Vec::new();
         for clause in clauses {
             core_clauses.push(clause.extract::<core::ast::Clause>()?);
+        }
+        Ok(self.inner.compile(&core_clauses))
+    }
+
+    /// Compile from Python dicts matching the serde-tagged-enum format.
+    /// This accepts Python dataclasses that have been converted to dicts.
+    fn compile_dicts(&self, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+        let mut core_clauses = Vec::new();
+        for clause in &clauses {
+            let c: core::ast::Clause = depythonize(clause)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize clause: {}", e)))?;
+            core_clauses.push(c);
         }
         Ok(self.inner.compile(&core_clauses))
     }

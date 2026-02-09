@@ -371,18 +371,18 @@ class TestRoleCardinalitySchema:
         """Expected relation classes with role cardinality are generated."""
         relations = generated_package["relations"]
 
-        # Note: Generator uses underscores for multi-word names (e.g., is_similar_to -> Is_similar_to)
-        assert hasattr(relations, "Is_similar_to")
+        # Generator uses PascalCase for class names (e.g., is_similar_to -> IsSimilarTo)
+        assert hasattr(relations, "IsSimilarTo")
         assert hasattr(relations, "Friendship")
-        assert hasattr(relations, "Group_membership")
+        assert hasattr(relations, "GroupMembership")
         assert hasattr(relations, "Review")
 
     def test_role_has_card_attribute(self, generated_package: dict[str, ModuleType]) -> None:
         """Roles with cardinality have Card in their definition."""
         relations = generated_package["relations"]
 
-        # Check that Is_similar_to has a similar_memory role with cardinality
-        is_similar_to = relations.Is_similar_to
+        # Check that IsSimilarTo has a similar_memory role with cardinality
+        is_similar_to = relations.IsSimilarTo
         roles = is_similar_to.get_roles()
         assert "similar_memory" in roles
 
@@ -406,10 +406,10 @@ class TestRoleCardinalitySchema:
         assert friend_role.cardinality.max == 2
 
     def test_unbounded_cardinality_role(self, generated_package: dict[str, ModuleType]) -> None:
-        """Group_membership has @card(2..) on member role (unbounded)."""
+        """GroupMembership has @card(2..) on member role (unbounded)."""
         relations = generated_package["relations"]
 
-        membership = relations.Group_membership
+        membership = relations.GroupMembership
         roles = membership.get_roles()
 
         # group role has default cardinality (1..1) - not emitted, so None
@@ -456,7 +456,7 @@ class TestRoleCardinalitySchema:
         )
 
         # Create similarity relation with list of players
-        similarity = relations.Is_similar_to(
+        similarity = relations.IsSimilarTo(
             similar_memory=[memory1, memory2], score=attributes.Score(0.95)
         )
 
@@ -492,7 +492,7 @@ class TestRoleCardinalitySchema:
         member2 = entities.Person(name=attributes.Name("Member 2"))
         member3 = entities.Person(name=attributes.Name("Member 3"))
 
-        membership = relations.Group_membership(group=group, member=[member1, member2, member3])
+        membership = relations.GroupMembership(group=group, member=[member1, member2, member3])
 
         assert membership.group == group
         assert len(membership.member) == 3

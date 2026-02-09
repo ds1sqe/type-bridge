@@ -592,9 +592,7 @@ class TypeDBManager[T: "TypeDBType"]:
                 # Add sub constraint as a new pattern
                 from type_bridge.query.ast import SubTypePattern
 
-                patterns = match_clause.patterns
-                patterns.append(SubTypePattern(variable="$t", parent_type=base_type))
-                match_clause.patterns = patterns
+                match_clause.patterns.append(SubTypePattern(variable="$t", parent_type=base_type))
                 break
 
         match_str = self.compiler.compile(match_clause)
@@ -1536,10 +1534,8 @@ class TypeDBQuery[T: "TypeDBType"]:
 
         # Add expression patterns to match clause (includes parsed lookup expressions)
         if all_expressions:
-            patterns = match_clause.patterns
             for expr in all_expressions:
-                patterns.extend(expr.to_ast(var))
-            match_clause.patterns = patterns
+                match_clause.patterns.extend(expr.to_ast(var))
 
         # Add type variable binding for polymorphic resolution
         # Transform "$x isa type" to "$x isa! $t; $t sub type"
@@ -1552,9 +1548,7 @@ class TypeDBQuery[T: "TypeDBType"]:
             ):
                 pattern.type_name = "$t"
                 pattern.is_strict = True
-                patterns = match_clause.patterns
-                patterns.append(SubTypePattern(variable="$t", parent_type=base_type))
-                match_clause.patterns = patterns
+                match_clause.patterns.append(SubTypePattern(variable="$t", parent_type=base_type))
                 break
 
         # Add sort variable bindings to match clause (TypeDB 3.x requirement)
@@ -1563,7 +1557,6 @@ class TypeDBQuery[T: "TypeDBType"]:
         sort_parts = []
         all_attrs = model_class.get_all_attributes()
         if self._order_fields:
-            patterns = match_clause.patterns
             for i, (field_name, desc) in enumerate(self._order_fields):
                 if field_name in all_attrs:
                     attr_name = all_attrs[field_name].typ.get_attribute_name()
@@ -1571,12 +1564,11 @@ class TypeDBQuery[T: "TypeDBType"]:
                     # Bind attribute to variable in match clause
                     from type_bridge.query.ast import HasPattern
 
-                    patterns.append(
+                    match_clause.patterns.append(
                         HasPattern(thing_var=var, attr_type=attr_name, attr_var=sort_var)
                     )
                     direction = "desc" if desc else "asc"
                     sort_parts.append(f"{sort_var} {direction}")
-            match_clause.patterns = patterns
             if sort_parts:
                 modifier_clauses.append(f"sort {', '.join(sort_parts)};")
 
@@ -1759,12 +1751,10 @@ class TypeDBQuery[T: "TypeDBType"]:
         if self._expressions:
             from type_bridge.query.ast import RawPattern
 
-            patterns = match_clause.patterns
             for expr in self._expressions:
                 # Add expressions as RawPatterns to the AST
                 pattern_str = expr.to_typeql(var)
-                patterns.append(RawPattern(content=pattern_str))
-            match_clause.patterns = patterns
+                match_clause.patterns.append(RawPattern(content=pattern_str))
 
         match_str = self._manager.compiler.compile(match_clause)
 
@@ -1855,13 +1845,11 @@ class TypeDBQuery[T: "TypeDBType"]:
         match_clause = self._manager.strategy.build_match_all(model_class, var, self._filters)
 
         # Add expression-based filters as AST patterns
-        patterns = match_clause.patterns
         for expr in self._expressions:
-            patterns.extend(expr.to_ast(var))
+            match_clause.patterns.extend(expr.to_ast(var))
 
         # Build reduce assignments for each aggregation
         reduce_assignments = []
-        patterns = match_clause.patterns
         for agg in aggregates:
             if not isinstance(agg, AggregateExpr):
                 raise TypeError(f"Expected AggregateExpr, got {type(agg).__name__}")
@@ -1870,7 +1858,7 @@ class TypeDBQuery[T: "TypeDBType"]:
             if agg.attr_type is not None:
                 attr_name = agg.attr_type.get_attribute_name()
                 attr_var = generate_attr_var(var, agg.attr_type)
-                patterns.append(
+                match_clause.patterns.append(
                     HasPattern(thing_var=var, attr_type=attr_name, attr_var=attr_var)
                 )
 
@@ -1880,7 +1868,6 @@ class TypeDBQuery[T: "TypeDBType"]:
             reduce_assignments.append(
                 ReduceAssignment(variable=result_var, expression=agg.to_typeql(var))
             )
-        match_clause.patterns = patterns
 
         # Compile and execute
         match_str = self._manager.compiler.compile(match_clause)
@@ -1970,9 +1957,8 @@ class GroupByQuery[T: "TypeDBType"]:
         match_clause = self._manager.strategy.build_match_all(model_class, var, self._filters)
 
         # Add expression-based filters as AST patterns
-        patterns = match_clause.patterns
         for expr in self._expressions:
-            patterns.extend(expr.to_ast(var))
+            match_clause.patterns.extend(expr.to_ast(var))
 
         # Add group-by fields to match clause as AST patterns
         group_vars = []
@@ -1984,7 +1970,7 @@ class GroupByQuery[T: "TypeDBType"]:
             else:
                 # Assume it's a field descriptor with attr_type attribute
                 attr_name = field.attr_type.get_attribute_name()
-            patterns.append(
+            match_clause.patterns.append(
                 HasPattern(thing_var=var, attr_type=attr_name, attr_var=var_name)
             )
             group_vars.append(var_name)
@@ -1999,7 +1985,7 @@ class GroupByQuery[T: "TypeDBType"]:
             if agg.attr_type is not None:
                 attr_name = agg.attr_type.get_attribute_name()
                 attr_var = generate_attr_var(var, agg.attr_type)
-                patterns.append(
+                match_clause.patterns.append(
                     HasPattern(thing_var=var, attr_type=attr_name, attr_var=attr_var)
                 )
 
@@ -2008,7 +1994,6 @@ class GroupByQuery[T: "TypeDBType"]:
             reduce_assignments.append(
                 ReduceAssignment(variable=result_var, expression=agg.to_typeql(var))
             )
-        match_clause.patterns = patterns
 
         # Compile and execute with group-by
         match_str = self._manager.compiler.compile(match_clause)
