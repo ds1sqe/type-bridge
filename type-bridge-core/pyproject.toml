@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "type-bridge-core"
-version = "0.1.0"
+version = "0.1.0.dev0"
 description = "Rust core for type-bridge ORM"
 requires-python = ">=3.13"
 classifiers = [

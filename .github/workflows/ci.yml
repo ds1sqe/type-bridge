@@ -7,6 +7,95 @@ on:
     branches: [master, develop]
 
 jobs:
+  # Rust crate: compile, test, lint (parallel with Python jobs)
+  rust-check:
+    name: Rust ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo check
+        working-directory: type-bridge-core
+        run: cargo check --all-targets
+
+      - name: cargo test
+        working-directory: type-bridge-core
+        run: cargo test --all-targets
+
+      - name: cargo clippy
+        working-directory: type-bridge-core
+        run: cargo clippy --all-targets -- -D warnings
+
+  # Build maturin wheels for all platforms (parallel with other jobs)
+  build-wheels:
+    name: Build wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact: wheels-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact: wheels-linux-aarch64
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            artifact: wheels-macos-x86_64
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            artifact: wheels-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact: wheels-windows-x86_64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (Linux aarch64 cross-compilation)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Python
+        if: runner.os != 'Linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist -i python3.13
+          manylinux: auto
+          working-directory: type-bridge-core
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: type-bridge-core/dist/*.whl
+
   # Code quality: linting and formatting (parallel)
   lint:
     name: Python ${{ matrix.check }}
@@ -22,6 +111,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -55,6 +147,9 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -84,6 +179,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -122,6 +220,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
