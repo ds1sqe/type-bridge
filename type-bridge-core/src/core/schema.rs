@@ -162,6 +162,12 @@ pub struct TypeSchema {
     pub attributes: BTreeMap<String, AttributeType>,
 }
 
+impl Default for TypeSchema {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeSchema {
     pub fn new() -> Self {
         TypeSchema {
@@ -263,18 +269,17 @@ impl TypeSchema {
     /// Check all @card annotations for min > max.
     fn validate_cardinalities(&self) -> Result<(), SchemaError> {
         fn check_card(card: &Option<Cardinality>) -> Result<(), SchemaError> {
-            if let Some(c) = card {
-                if let Some(max) = c.max {
-                    if c.min > max {
-                        return Err(SchemaError::ValidationError {
-                            message: format!(
-                                "Invalid @card annotation: minimum ({}) cannot be greater \
-                                 than maximum ({}). Use '@card({}..{})' instead.",
-                                c.min, max, max, c.min
-                            ),
-                        });
-                    }
-                }
+            if let Some(c) = card
+                && let Some(max) = c.max
+                && c.min > max
+            {
+                return Err(SchemaError::ValidationError {
+                    message: format!(
+                        "Invalid @card annotation: minimum ({}) cannot be greater \
+                         than maximum ({}). Use '@card({}..{})' instead.",
+                        c.min, max, max, c.min
+                    ),
+                });
             }
             Ok(())
         }
@@ -304,16 +309,16 @@ impl TypeSchema {
     /// Check all @regex patterns are valid.
     fn validate_regex_patterns(&self) -> Result<(), SchemaError> {
         for attr in self.attributes.values() {
-            if let Some(ref pattern) = attr.regex {
-                if let Err(e) = regex::Regex::new(pattern) {
-                    return Err(SchemaError::ValidationError {
-                        message: format!(
-                            "Invalid @regex pattern: '{}'. \
-                             Must be a valid regular expression. Error: {}",
-                            pattern, e
-                        ),
-                    });
-                }
+            if let Some(ref pattern) = attr.regex
+                && let Err(e) = regex::Regex::new(pattern)
+            {
+                return Err(SchemaError::ValidationError {
+                    message: format!(
+                        "Invalid @regex pattern: '{}'. \
+                         Must be a valid regular expression. Error: {}",
+                        pattern, e
+                    ),
+                });
             }
         }
         Ok(())

@@ -80,6 +80,15 @@ impl QueryCompiler {
         }
         Ok(self.inner.compile(&core_clauses))
     }
+
+    /// Parse a TypeQL query string into a list of clause dicts (serde-tagged-enum format).
+    fn parse(&self, py: Python<'_>, input: &str) -> PyResult<PyObject> {
+        let clauses = core::query_parser::parse_typeql_query(input)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        pythonize(py, &clauses)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
 }
 
 #[pyclass]
@@ -101,7 +110,7 @@ impl TypeSchema {
     #[staticmethod]
     fn from_json(json: &str) -> PyResult<Self> {
         let schema = core::schema::TypeSchema::from_json(json)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(TypeSchema { inner: schema })
     }
 
@@ -109,7 +118,7 @@ impl TypeSchema {
     fn to_json(&self) -> PyResult<String> {
         self.inner
             .to_json()
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Check if a type (entity, relation, or attribute) is abstract.
@@ -166,11 +175,24 @@ impl TypeSchema {
     }
 }
 
+/// Parse a TypeQL query string into a list of clause dicts.
+///
+/// Standalone function equivalent to `QueryCompiler().parse(input)`.
+#[pyfunction]
+fn parse_typeql_query(py: Python<'_>, input: &str) -> PyResult<PyObject> {
+    let clauses = core::query_parser::parse_typeql_query(input)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    pythonize(py, &clauses)
+        .map(|obj| obj.unbind())
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
 #[pymodule]
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationEngine>()?;
     m.add_class::<QueryCompiler>()?;
     m.add_class::<TypeSchema>()?;
+    m.add_function(wrap_pyfunction!(parse_typeql_query, m)?)?;
 
     // Values
     m.add_class::<ast::LiteralValue>()?;

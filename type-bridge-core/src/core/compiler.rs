@@ -3,6 +3,12 @@ use crate::core::ast::{Clause, Pattern, Statement, Constraint, Value, LiteralVal
 pub struct QueryCompiler {
 }
 
+impl Default for QueryCompiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QueryCompiler {
     pub fn new() -> Self {
         QueryCompiler {}
@@ -108,14 +114,13 @@ impl QueryCompiler {
                 format!("not {{ {}; }}", inner)
             }
             Pattern::Or(alternatives) => {
-                let blocks = alternatives.iter()
+                alternatives.iter()
                     .map(|alt| {
                         let inner = alt.iter().map(|p| self.compile_pattern(p)).collect::<Vec<_>>().join("; ");
                         format!("{{ {}; }}", inner)
                     })
                     .collect::<Vec<_>>()
-                    .join(" or ");
-                blocks
+                    .join(" or ")
             }
             Pattern::Iid { variable, iid } => format!("{} iid {}", variable, iid),
             Pattern::Attribute { variable, type_name, value } => {

@@ -20,6 +20,12 @@ pub struct ValidationEngine {
     // Placeholder for schema and rules
 }
 
+impl Default for ValidationEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ValidationEngine {
     pub fn new() -> Self {
         ValidationEngine {}
@@ -64,14 +70,14 @@ impl ValidationEngine {
         }
 
         let mut chars = name.chars();
-        if let Some(first) = chars.next() {
-            if !is_xid_start(first) && first != '_' {
-                errors.push(ValidationError {
-                    code: "INVALID_START".to_string(),
-                    message: format!("{} name '{}' must start with a letter or underscore", context, name),
-                    path: "".to_string(),
-                });
-            }
+        if let Some(first) = chars.next()
+            && !is_xid_start(first) && first != '_'
+        {
+            errors.push(ValidationError {
+                code: "INVALID_START".to_string(),
+                message: format!("{} name '{}' must start with a letter or underscore", context, name),
+                path: "".to_string(),
+            });
         }
 
         for c in chars {

@@ -15,6 +15,7 @@ from type_bridge.query.ast import (
     RawStatement,
 )
 from type_bridge.query.compiler import QueryCompiler
+from type_bridge.query.parser import parse_typeql_query as parse_typeql_query
 
 if TYPE_CHECKING:
     from type_bridge.models import Entity, Relation

@@ -629,11 +629,11 @@ fn ws_comments(input: &mut &str) {
             continue;
         }
 
-        if input.starts_with("/*") {
-            if let Some(pos) = input.find("*/") {
-                *input = &input[pos + 2..];
-                continue;
-            }
+        if input.starts_with("/*")
+            && let Some(pos) = input.find("*/")
+        {
+            *input = &input[pos + 2..];
+            continue;
         }
 
         if *input == before {

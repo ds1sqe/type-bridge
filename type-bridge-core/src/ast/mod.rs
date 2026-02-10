@@ -575,7 +575,7 @@ impl FromPyObject<'_> for core::ast::Value {
         let py = ob.py();
         if let Ok(lit) = ob.downcast::<LiteralValue>() {
             let lit = lit.borrow();
-            let json_val = depythonize(&lit.value.bind(py))?;
+            let json_val = depythonize(lit.value.bind(py))?;
             Ok(core::ast::Value::Literal(core::ast::LiteralValue {
                 value: json_val,
                 value_type: lit.value_type.clone(),
