@@ -26,6 +26,10 @@ htmlcov/
 # Temporary
 tmp/
 
+# Benchmarks
+benchmarks/.results/
+.benchmarks/
+
 # Reference repos
 typeql-ref/
 type-bridge-core/target/

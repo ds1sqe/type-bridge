@@ -26,6 +26,14 @@ impl ValidationEngine {
         Ok(true)
     }
 
+    fn validate_variable_name(&self, name: String, context: String) -> PyResult<bool> {
+        let errors = self.inner.validate_variable_name(&name, &context, "");
+        if !errors.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(errors[0].message.clone()));
+        }
+        Ok(true)
+    }
+
     fn validate_pattern(&self, pattern: Bound<'_, PyAny>) -> PyResult<bool> {
         let core_pattern = pattern.extract::<core::ast::Pattern>()?;
         let result = self.inner.validate_pattern(&core_pattern);
