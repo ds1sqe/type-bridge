@@ -549,6 +549,7 @@ dependencies = [
  "once_cell",
  "pyo3",
  "pythonize",
+ "regex",
  "serde",
  "serde_json",
  "unicode-ident",

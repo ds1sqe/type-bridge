@@ -306,6 +306,28 @@ class TestRustSchemaErrors:
         with pytest.raises(ValueError):
             TypeSchema.from_json("{invalid json")
 
+    def test_card_min_gt_max_error(self) -> None:
+        with pytest.raises(ValueError, match="minimum.*5.*maximum.*1"):
+            TypeSchema.from_typeql("define\nentity person, owns name @card(5..1);")
+
+    def test_regex_invalid_error(self) -> None:
+        with pytest.raises(ValueError, match="[Rr]egex"):
+            TypeSchema.from_typeql('define\nattribute email, value string, @regex("[invalid(");')
+
+    def test_values_duplicate_error(self) -> None:
+        with pytest.raises(ValueError, match="[Dd]uplicate"):
+            TypeSchema.from_typeql(
+                'define\nattribute status, value string, @values("active", "inactive", "active");'
+            )
+
+    def test_range_no_dotdot_error(self) -> None:
+        with pytest.raises(ValueError):
+            TypeSchema.from_typeql("define\nattribute age, value integer, @range(100);")
+
+    def test_range_comma_error(self) -> None:
+        with pytest.raises(ValueError):
+            TypeSchema.from_typeql("define\nattribute age, value integer, @range(1, 5);")
+
 
 # ---------------------------------------------------------------------------
 # Complex schema (mimics real-world usage)

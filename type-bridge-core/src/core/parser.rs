@@ -195,6 +195,9 @@ fn parse_attribute_opt<'a>(input: &mut &'a str, attr: &mut AttributeType) -> PRe
                 if !max_s.is_empty() {
                     attr.range_max = Some(max_s.to_string());
                 }
+            } else {
+                // @range without ".." is invalid (e.g. @range(100) or @range(1, 5))
+                return Err(ContextError::new());
             }
             Ok(())
         },
@@ -1203,5 +1206,43 @@ entity person
         assert!(person.owns[2].is_unique);
         assert_eq!(person.plays[0].cardinality, Some(Cardinality { min: 0, max: Some(10) }));
         assert!(person.plays[1].cardinality.is_none());
+    }
+
+    // --- @range validation tests ---
+
+    #[test]
+    fn test_range_no_dotdot_fails() {
+        let result = parse_typeql("define\nattribute age, value integer, @range(100);");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_range_comma_fails() {
+        let result = parse_typeql("define\nattribute age, value integer, @range(1, 5);");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_range_valid_passes() {
+        let schema = parse_typeql("define\nattribute age, value integer, @range(0..150);").unwrap();
+        let attr = schema.attributes.get("age").unwrap();
+        assert_eq!(attr.range_min.as_deref(), Some("0"));
+        assert_eq!(attr.range_max.as_deref(), Some("150"));
+    }
+
+    #[test]
+    fn test_range_open_ended_min() {
+        let schema = parse_typeql("define\nattribute age, value integer, @range(0..);").unwrap();
+        let attr = schema.attributes.get("age").unwrap();
+        assert_eq!(attr.range_min.as_deref(), Some("0"));
+        assert!(attr.range_max.is_none());
+    }
+
+    #[test]
+    fn test_range_open_ended_max() {
+        let schema = parse_typeql("define\nattribute age, value integer, @range(..150);").unwrap();
+        let attr = schema.attributes.get("age").unwrap();
+        assert!(attr.range_min.is_none());
+        assert_eq!(attr.range_max.as_deref(), Some("150"));
     }
 }

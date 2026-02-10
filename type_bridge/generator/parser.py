@@ -1,8 +1,9 @@
-"""Lark-based TQL schema parser."""
+"""TQL schema parser with Rust core acceleration and Lark fallback."""
 
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,18 @@ logger = logging.getLogger(__name__)
 
 # Load grammar
 GRAMMAR_PATH = Path(__file__).parent / "typeql.lark"
+
+# Rust core availability
+try:
+    from type_bridge_core import TypeSchema as _RustTypeSchema  # type: ignore[import-not-found]
+
+    _RUST_SCHEMA_AVAILABLE = True
+except ImportError:
+    _RustTypeSchema = None  # type: ignore[assignment, misc]
+    _RUST_SCHEMA_AVAILABLE = False
+
+# Pattern to detect function/struct definitions in schema text
+_HAS_FUN_OR_STRUCT = re.compile(r"(?:^|\s)(?:fun|struct)\s", re.MULTILINE)
 
 
 def _unquote_string(raw: str) -> str:
@@ -578,20 +591,19 @@ class SchemaTransformer(Transformer):
     # For now, we accept losing docstrings in the migration or add them later.
 
 
-def parse_tql_schema(schema_content: str) -> ParsedSchema:
-    """Parse TQL schema using Lark.
-
-    First extracts custom annotations from comments (# @key(value)),
-    then parses the schema structure and associates annotations with definitions.
-    """
-    # Extract annotations from comments before parsing
-    entity_annots, attr_annots, rel_annots, role_annots = extract_annotations(schema_content)
-
+def _parse_with_lark(
+    schema_content: str,
+    entity_annots: dict[str, dict[str, AnnotationValue]],
+    attr_annots: dict[str, dict[str, AnnotationValue]],
+    rel_annots: dict[str, dict[str, AnnotationValue]],
+    role_annots: dict[str, dict[str, dict[str, AnnotationValue]]],
+) -> ParsedSchema:
+    """Parse TQL schema using Lark (original implementation)."""
     with open(GRAMMAR_PATH, encoding="utf-8") as f:
         grammar = f.read()
 
-    parser = Lark(grammar, start="start", parser="lalr")
-    tree = parser.parse(schema_content)
+    lark_parser = Lark(grammar, start="start", parser="lalr")
+    tree = lark_parser.parse(schema_content)
 
     transformer = SchemaTransformer(
         entity_annotations=entity_annots,
@@ -600,3 +612,228 @@ def parse_tql_schema(schema_content: str) -> ParsedSchema:
         role_annotations=role_annots,
     )
     return transformer.transform(tree)
+
+
+# ---------------------------------------------------------------------------
+# Rust TypeSchema → ParsedSchema conversion
+# ---------------------------------------------------------------------------
+
+
+def _convert_cardinality(card_dict: dict[str, Any] | None) -> Cardinality | None:
+    """Convert a Rust cardinality dict ``{min, max}`` to a Python ``Cardinality``."""
+    if card_dict is None:
+        return None
+    return Cardinality(min=card_dict["min"], max=card_dict["max"])
+
+
+def _convert_owned_attributes(
+    owns_list: list[dict[str, Any]],
+    owns_order: list[str],
+) -> tuple[
+    set[str],
+    list[str],
+    set[str],
+    set[str],
+    set[str],
+    dict[str, str],
+    dict[str, Cardinality],
+]:
+    """Decompose ``Vec<OwnedAttribute>`` dicts into separate Python collections.
+
+    Returns (owns, owns_order, keys, uniques, cascades, subkeys, cardinalities).
+    """
+    owns: set[str] = set()
+    keys: set[str] = set()
+    uniques: set[str] = set()
+    cascades: set[str] = set()
+    subkeys: dict[str, str] = {}
+    cardinalities: dict[str, Cardinality] = {}
+
+    for attr_dict in owns_list:
+        name = attr_dict["name"]
+        owns.add(name)
+        if attr_dict["is_key"]:
+            keys.add(name)
+        if attr_dict["is_unique"]:
+            uniques.add(name)
+        if attr_dict["is_cascade"]:
+            cascades.add(name)
+        if attr_dict["subkey_group"] is not None:
+            subkeys[name] = attr_dict["subkey_group"]
+        card = _convert_cardinality(attr_dict.get("cardinality"))
+        if card is not None:
+            cardinalities[name] = card
+
+    return owns, list(owns_order), keys, uniques, cascades, subkeys, cardinalities
+
+
+def _convert_played_roles(
+    plays_list: list[dict[str, Any]],
+) -> tuple[set[str], dict[str, Cardinality]]:
+    """Decompose ``Vec<PlayedRole>`` dicts into plays set + plays_cardinalities dict."""
+    plays: set[str] = set()
+    plays_cardinalities: dict[str, Cardinality] = {}
+
+    for play_dict in plays_list:
+        role_ref = play_dict["role_ref"]
+        plays.add(role_ref)
+        card = _convert_cardinality(play_dict.get("cardinality"))
+        if card is not None:
+            plays_cardinalities[role_ref] = card
+
+    return plays, plays_cardinalities
+
+
+def _rust_schema_to_parsed(
+    rust_schema: Any,
+    entity_annots: dict[str, dict[str, AnnotationValue]],
+    attr_annots: dict[str, dict[str, AnnotationValue]],
+    rel_annots: dict[str, dict[str, AnnotationValue]],
+    role_annots: dict[str, dict[str, dict[str, AnnotationValue]]],
+) -> ParsedSchema:
+    """Convert Rust ``TypeSchema`` output to a ``ParsedSchema``.
+
+    The Rust parser returns pythonize'd dicts via PyO3.  This function
+    transforms them into the dataclass-based ``ParsedSchema`` that
+    renderers expect, including annotation/docstring application.
+    """
+    schema = ParsedSchema()
+
+    # --- Attributes ---
+    for name, attr_dict in rust_schema.attributes.items():
+        annots = attr_annots.get(name, {}).copy()
+        docstring = annots.pop("_docstring", None)
+        attr_docstring: str | None = docstring if isinstance(docstring, str) else None
+
+        allowed_values = attr_dict.get("allowed_values")
+        schema.attributes[name] = AttributeSpec(
+            name=name,
+            value_type=attr_dict.get("value_type", ""),
+            parent=attr_dict.get("parent"),
+            abstract=attr_dict.get("is_abstract", False),
+            independent=attr_dict.get("is_independent", False),
+            regex=attr_dict.get("regex"),
+            allowed_values=tuple(allowed_values) if allowed_values is not None else None,
+            range_min=attr_dict.get("range_min"),
+            range_max=attr_dict.get("range_max"),
+            docstring=attr_docstring,
+            annotations=annots,
+        )
+
+    # --- Entities ---
+    for name, ent_dict in rust_schema.entities.items():
+        owns, owns_order, keys, uniques, cascades, subkeys, cardinalities = (
+            _convert_owned_attributes(ent_dict.get("owns", []), ent_dict.get("owns_order", []))
+        )
+        plays, plays_cardinalities = _convert_played_roles(ent_dict.get("plays", []))
+
+        annots = entity_annots.get(name, {}).copy()
+        docstring = annots.pop("_docstring", None)
+        entity_docstring: str | None = docstring if isinstance(docstring, str) else None
+
+        schema.entities[name] = EntitySpec(
+            name=name,
+            parent=ent_dict.get("parent"),
+            owns=owns,
+            owns_order=owns_order,
+            plays=plays,
+            abstract=ent_dict.get("is_abstract", False),
+            keys=keys,
+            uniques=uniques,
+            cascades=cascades,
+            subkeys=subkeys,
+            cardinalities=cardinalities,
+            plays_cardinalities=plays_cardinalities,
+            docstring=entity_docstring,
+            annotations=annots,
+        )
+
+    # --- Relations ---
+    for name, rel_dict in rust_schema.relations.items():
+        owns, owns_order, keys, uniques, cascades, subkeys, cardinalities = (
+            _convert_owned_attributes(rel_dict.get("owns", []), rel_dict.get("owns_order", []))
+        )
+
+        # Convert role dicts → RoleSpec dataclasses
+        roles: list[RoleSpec] = []
+        for role_dict in rel_dict.get("roles", []):
+            role = RoleSpec(
+                name=role_dict["name"],
+                overrides=role_dict.get("overrides"),
+                cardinality=_convert_cardinality(role_dict.get("cardinality")),
+                distinct=role_dict.get("distinct", False),
+            )
+            roles.append(role)
+
+        # Apply role annotations
+        r_annots = role_annots.get(name, {})
+        for role in roles:
+            if role.name in r_annots:
+                role.annotations.update(r_annots[role.name])
+
+        annots = rel_annots.get(name, {}).copy()
+        docstring = annots.pop("_docstring", None)
+        rel_docstring: str | None = docstring if isinstance(docstring, str) else None
+
+        schema.relations[name] = RelationSpec(
+            name=name,
+            parent=rel_dict.get("parent"),
+            roles=roles,
+            owns=owns,
+            owns_order=owns_order,
+            abstract=rel_dict.get("is_abstract", False),
+            keys=keys,
+            uniques=uniques,
+            cascades=cascades,
+            subkeys=subkeys,
+            cardinalities=cardinalities,
+            docstring=rel_docstring,
+            annotations=annots,
+        )
+        # Note: RelationType.plays is ignored — Python RelationSpec has no plays field
+
+    # No accumulate_inheritance() needed — Rust already resolved it
+    return schema
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def parse_tql_schema(schema_content: str) -> ParsedSchema:
+    """Parse a TQL schema string into a :class:`ParsedSchema`.
+
+    Uses the Rust ``TypeSchema`` parser when available for speed, falling
+    back to the Lark-based parser otherwise.  Annotations and docstrings
+    (extracted from comments) are always applied on the Python side.
+    """
+    # Step 1: Always extract annotations from comments first
+    entity_annots, attr_annots, rel_annots, role_annots = extract_annotations(schema_content)
+
+    # Step 2: Try Rust parser
+    if _RUST_SCHEMA_AVAILABLE:
+        try:
+            rust_schema = _RustTypeSchema.from_typeql(schema_content)  # type: ignore[union-attr]
+            schema = _rust_schema_to_parsed(
+                rust_schema, entity_annots, attr_annots, rel_annots, role_annots
+            )
+            logger.debug("Parsed schema using Rust core")
+
+            # Step 3: If functions/structs present, supplement with Lark
+            if _HAS_FUN_OR_STRUCT.search(schema_content):
+                logger.debug("Schema contains functions/structs, supplementing with Lark parser")
+                lark_schema = _parse_with_lark(
+                    schema_content, entity_annots, attr_annots, rel_annots, role_annots
+                )
+                schema.functions = lark_schema.functions
+                schema.structs = lark_schema.structs
+
+            return schema
+        except Exception:
+            logger.warning("Rust parser failed, falling back to Lark parser", exc_info=True)
+
+    # Step 4: Full Lark fallback
+    if not _RUST_SCHEMA_AVAILABLE:
+        logger.debug("Rust core not available, using Lark parser")
+    return _parse_with_lark(schema_content, entity_annots, attr_annots, rel_annots, role_annots)

@@ -24,6 +24,9 @@ pub enum SchemaError {
         name: String,
         kind: String,
     },
+    ValidationError {
+        message: String,
+    },
 }
 
 impl fmt::Display for SchemaError {
@@ -46,6 +49,9 @@ impl fmt::Display for SchemaError {
             }
             SchemaError::DuplicateDefinition { name, kind } => {
                 write!(f, "Duplicate {} definition: '{}'", kind, name)
+            }
+            SchemaError::ValidationError { message } => {
+                write!(f, "Validation error: {}", message)
             }
         }
     }
@@ -168,6 +174,7 @@ impl TypeSchema {
     /// Parse a TypeQL `define` block into a fully-resolved `TypeSchema`.
     pub fn from_typeql(input: &str) -> Result<TypeSchema, SchemaError> {
         let mut schema = super::parser::parse_typeql(input)?;
+        schema.validate()?;
         schema.resolve_inheritance()?;
         Ok(schema)
     }
@@ -239,6 +246,151 @@ impl TypeSchema {
     /// Get an attribute type by name.
     pub fn get_attribute(&self, name: &str) -> Option<&AttributeType> {
         self.attributes.get(name)
+    }
+
+    // -----------------------------------------------------------------------
+    // Semantic validation
+    // -----------------------------------------------------------------------
+
+    fn validate(&self) -> Result<(), SchemaError> {
+        self.validate_cardinalities()?;
+        self.validate_regex_patterns()?;
+        self.validate_values()?;
+        self.validate_subkeys()?;
+        Ok(())
+    }
+
+    /// Check all @card annotations for min > max.
+    fn validate_cardinalities(&self) -> Result<(), SchemaError> {
+        fn check_card(card: &Option<Cardinality>) -> Result<(), SchemaError> {
+            if let Some(c) = card {
+                if let Some(max) = c.max {
+                    if c.min > max {
+                        return Err(SchemaError::ValidationError {
+                            message: format!(
+                                "Invalid @card annotation: minimum ({}) cannot be greater \
+                                 than maximum ({}). Use '@card({}..{})' instead.",
+                                c.min, max, max, c.min
+                            ),
+                        });
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        for entity in self.entities.values() {
+            for own in &entity.owns {
+                check_card(&own.cardinality)?;
+            }
+            for play in &entity.plays {
+                check_card(&play.cardinality)?;
+            }
+        }
+        for relation in self.relations.values() {
+            for own in &relation.owns {
+                check_card(&own.cardinality)?;
+            }
+            for play in &relation.plays {
+                check_card(&play.cardinality)?;
+            }
+            for role in &relation.roles {
+                check_card(&role.cardinality)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Check all @regex patterns are valid.
+    fn validate_regex_patterns(&self) -> Result<(), SchemaError> {
+        for attr in self.attributes.values() {
+            if let Some(ref pattern) = attr.regex {
+                if let Err(e) = regex::Regex::new(pattern) {
+                    return Err(SchemaError::ValidationError {
+                        message: format!(
+                            "Invalid @regex pattern: '{}'. \
+                             Must be a valid regular expression. Error: {}",
+                            pattern, e
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check all @values for duplicates.
+    fn validate_values(&self) -> Result<(), SchemaError> {
+        for attr in self.attributes.values() {
+            if let Some(ref values) = attr.allowed_values {
+                let mut seen = HashSet::new();
+                let mut duplicates = Vec::new();
+                for v in values {
+                    if !seen.insert(v.as_str()) {
+                        duplicates.push(v.clone());
+                    }
+                }
+                if !duplicates.is_empty() {
+                    return Err(SchemaError::ValidationError {
+                        message: format!(
+                            "Invalid @values annotation: duplicate values found: {:?}. \
+                             Each value must be unique.",
+                            duplicates
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check all @subkey identifiers are valid.
+    fn validate_subkeys(&self) -> Result<(), SchemaError> {
+        fn check_subkey(id: &str) -> Result<(), SchemaError> {
+            if id.is_empty() {
+                return Err(SchemaError::ValidationError {
+                    message: "Invalid @subkey identifier: empty string.".to_string(),
+                });
+            }
+            let first = id.chars().next().unwrap();
+            if !unicode_ident::is_xid_start(first) && first != '_' {
+                return Err(SchemaError::ValidationError {
+                    message: format!(
+                        "Invalid @subkey identifier: '{}'. \
+                         Must start with a letter or underscore.",
+                        id
+                    ),
+                });
+            }
+            for ch in id[first.len_utf8()..].chars() {
+                if !unicode_ident::is_xid_continue(ch) && ch != '-' {
+                    return Err(SchemaError::ValidationError {
+                        message: format!(
+                            "Invalid @subkey identifier: '{}'. \
+                             Contains invalid character '{}'.",
+                            id, ch
+                        ),
+                    });
+                }
+            }
+            Ok(())
+        }
+
+        for entity in self.entities.values() {
+            for own in &entity.owns {
+                if let Some(ref id) = own.subkey_group {
+                    check_subkey(id)?;
+                }
+            }
+        }
+        for relation in self.relations.values() {
+            for own in &relation.owns {
+                if let Some(ref id) = own.subkey_group {
+                    check_subkey(id)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -719,5 +871,156 @@ mod tests {
             SchemaError::InheritanceCycle { .. } => {}
             other => panic!("Expected InheritanceCycle, got {:?}", other),
         }
+    }
+
+    // --- Validation tests ---
+
+    #[test]
+    fn test_validate_card_min_gt_max() {
+        let result = TypeSchema::from_typeql(
+            "define\nentity person, owns name @card(5..1);",
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("minimum (5)"), "expected min in msg: {}", msg);
+        assert!(msg.contains("maximum (1)"), "expected max in msg: {}", msg);
+    }
+
+    #[test]
+    fn test_validate_card_valid_passes() {
+        let result = TypeSchema::from_typeql(
+            "define\nentity person, owns name @card(1..5);",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_card_exact_passes() {
+        let result = TypeSchema::from_typeql(
+            "define\nentity person, owns name @card(3);",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_card_unbounded_passes() {
+        let result = TypeSchema::from_typeql(
+            "define\nentity person, owns name @card(1..);",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_regex_invalid() {
+        let result = TypeSchema::from_typeql(
+            "define\nattribute email, value string, @regex(\"[invalid(\");",
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("regex"), "expected 'regex' in msg: {}", msg);
+    }
+
+    #[test]
+    fn test_validate_regex_valid_passes() {
+        let result = TypeSchema::from_typeql(
+            "define\nattribute email, value string, @regex(\"^[a-z]+@[a-z]+\\\\.[a-z]+$\");",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_values_duplicate() {
+        let result = TypeSchema::from_typeql(
+            "define\nattribute status, value string, @values(\"active\", \"inactive\", \"active\");",
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("duplicate"), "expected 'duplicate' in msg: {}", msg);
+    }
+
+    #[test]
+    fn test_validate_values_valid_passes() {
+        let result = TypeSchema::from_typeql(
+            "define\nattribute status, value string, @values(\"active\", \"inactive\");",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_subkey_invalid_start() {
+        let mut schema = TypeSchema::new();
+        schema.entities.insert(
+            "person".to_string(),
+            EntityType {
+                name: "person".to_string(),
+                parent: None,
+                is_abstract: false,
+                owns: vec![OwnedAttribute {
+                    name: "name".to_string(),
+                    is_key: false,
+                    is_unique: false,
+                    is_cascade: false,
+                    subkey_group: Some("123abc".to_string()),
+                    cardinality: None,
+                }],
+                owns_order: vec!["name".to_string()],
+                plays: vec![],
+            },
+        );
+        let result = schema.validate();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("start with a letter"), "expected start msg: {}", msg);
+    }
+
+    #[test]
+    fn test_validate_subkey_invalid_char() {
+        let mut schema = TypeSchema::new();
+        schema.entities.insert(
+            "person".to_string(),
+            EntityType {
+                name: "person".to_string(),
+                parent: None,
+                is_abstract: false,
+                owns: vec![OwnedAttribute {
+                    name: "name".to_string(),
+                    is_key: false,
+                    is_unique: false,
+                    is_cascade: false,
+                    subkey_group: Some("invalid@char".to_string()),
+                    cardinality: None,
+                }],
+                owns_order: vec!["name".to_string()],
+                plays: vec![],
+            },
+        );
+        let result = schema.validate();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("invalid character"), "expected char msg: {}", msg);
+    }
+
+    #[test]
+    fn test_validate_subkey_valid_passes() {
+        let mut schema = TypeSchema::new();
+        schema.entities.insert(
+            "person".to_string(),
+            EntityType {
+                name: "person".to_string(),
+                parent: None,
+                is_abstract: false,
+                owns: vec![OwnedAttribute {
+                    name: "name".to_string(),
+                    is_key: false,
+                    is_unique: false,
+                    is_cascade: false,
+                    subkey_group: Some("user-id".to_string()),
+                    cardinality: None,
+                }],
+                owns_order: vec!["name".to_string()],
+                plays: vec![],
+            },
+        );
+        assert!(schema.validate().is_ok());
     }
 }
