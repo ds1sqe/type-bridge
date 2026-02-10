@@ -2,7 +2,7 @@ pub mod ast;
 pub mod core;
 
 use pyo3::prelude::*;
-use pythonize::depythonize;
+use pythonize::{depythonize, pythonize};
 
 #[pyclass]
 pub struct ValidationEngine {
@@ -82,10 +82,95 @@ impl QueryCompiler {
     }
 }
 
+#[pyclass]
+pub struct TypeSchema {
+    inner: core::schema::TypeSchema,
+}
+
+#[pymethods]
+impl TypeSchema {
+    /// Parse a TypeQL define-block string and resolve inheritance.
+    #[staticmethod]
+    fn from_typeql(input: &str) -> PyResult<Self> {
+        let schema = core::schema::TypeSchema::from_typeql(input)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(TypeSchema { inner: schema })
+    }
+
+    /// Deserialize from a JSON string.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let schema = core::schema::TypeSchema::from_json(json)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        Ok(TypeSchema { inner: schema })
+    }
+
+    /// Serialize to a JSON string.
+    fn to_json(&self) -> PyResult<String> {
+        self.inner
+            .to_json()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Check if a type (entity, relation, or attribute) is abstract.
+    fn is_abstract(&self, type_name: &str) -> bool {
+        self.inner.is_abstract(type_name)
+    }
+
+    /// Get all owned attributes for an entity or relation (as list of dicts).
+    fn get_all_owned_attributes(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+        let attrs = self.inner.get_all_owned_attributes(name);
+        pythonize(py, &attrs)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Get all played roles for an entity or relation (as list of dicts).
+    fn get_all_plays_roles(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+        let roles = self.inner.get_all_plays_roles(name);
+        pythonize(py, &roles)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Get all relates (role specs) for a relation (as list of dicts).
+    fn get_all_relates(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+        let roles = self.inner.get_all_relates(name);
+        pythonize(py, &roles)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Get the entities map as a Python dict.
+    #[getter]
+    fn entities(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pythonize(py, &self.inner.entities)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Get the relations map as a Python dict.
+    #[getter]
+    fn relations(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pythonize(py, &self.inner.relations)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Get the attributes map as a Python dict.
+    #[getter]
+    fn attributes(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pythonize(py, &self.inner.attributes)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+}
+
 #[pymodule]
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationEngine>()?;
     m.add_class::<QueryCompiler>()?;
+    m.add_class::<TypeSchema>()?;
 
     // Values
     m.add_class::<ast::LiteralValue>()?;

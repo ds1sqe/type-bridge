@@ -19,6 +19,7 @@ once_cell = "1.19"
 
 unicode-ident = "1.0"
 pythonize = "0.23"
+winnow = "0.7"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -29,4 +30,8 @@ harness = false
 
 [[bench]]
 name = "compilation"
+harness = false
+
+[[bench]]
+name = "schema"
 harness = false
