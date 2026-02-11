@@ -103,11 +103,69 @@ fn value_types_compatible(literal_type: &str, schema_type: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Custom validation rules (JSON DSL)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum RuleTarget {
+    /// Applies to any instance of this attribute type.
+    Attribute { attribute: String },
+    /// Applies only when a specific entity/relation owns the attribute.
+    EntityAttribute { entity: String, attribute: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum RuleType {
+    /// Attribute must be present (non-null, non-missing).
+    Required,
+    /// String must match the given regex pattern.
+    Regex { pattern: String },
+    /// Numeric value must be within [min, max]. Either bound can be None.
+    Range { min: Option<f64>, max: Option<f64> },
+    /// Value must be one of the allowed values.
+    Values { allowed: Vec<serde_json::Value> },
+    /// Multi-value attribute count must be within [min, max].
+    Cardinality { min: u32, max: Option<u32> },
+    /// String length must be within [min, max].
+    Length { min: Option<u32>, max: Option<u32> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationRule {
+    pub id: String,
+    pub target: RuleTarget,
+    pub rule_type: RuleType,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationRuleSet {
+    pub rules: Vec<ValidationRule>,
+}
+
+/// Extract attribute values from entity data, normalizing single values to a vec.
+fn extract_values<'a>(
+    data: &'a serde_json::Map<String, serde_json::Value>,
+    attr_name: &str,
+) -> Vec<&'a serde_json::Value> {
+    match data.get(attr_name) {
+        Some(serde_json::Value::Array(arr)) => arr.iter().collect(),
+        Some(v) if !v.is_null() => vec![v],
+        _ => Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ValidationEngine
 // ---------------------------------------------------------------------------
 
 pub struct ValidationEngine {
-    // Stateless — all state lives in method arguments.
+    rules: Vec<ValidationRule>,
+    /// Pre-compiled regex cache: rule_id → compiled Regex.
+    regex_cache: HashMap<String, regex::Regex>,
 }
 
 impl Default for ValidationEngine {
@@ -118,7 +176,55 @@ impl Default for ValidationEngine {
 
 impl ValidationEngine {
     pub fn new() -> Self {
-        ValidationEngine {}
+        ValidationEngine {
+            rules: Vec::new(),
+            regex_cache: HashMap::new(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Rule management
+    // -----------------------------------------------------------------------
+
+    /// Add a single validation rule. Pre-compiles regex patterns.
+    pub fn add_rule(&mut self, rule: ValidationRule) -> Result<(), String> {
+        if let RuleType::Regex { ref pattern } = rule.rule_type {
+            let compiled = regex::Regex::new(pattern)
+                .map_err(|e| format!("Invalid regex in rule '{}': {}", rule.id, e))?;
+            self.regex_cache.insert(rule.id.clone(), compiled);
+        }
+        self.rules.push(rule);
+        Ok(())
+    }
+
+    /// Load rules from a JSON string. Returns list of warnings for invalid rules.
+    pub fn load_rules(&mut self, json_str: &str) -> Result<Vec<String>, String> {
+        let ruleset: ValidationRuleSet = serde_json::from_str(json_str)
+            .map_err(|e| format!("Failed to parse rules JSON: {}", e))?;
+        let mut warnings = Vec::new();
+        for rule in ruleset.rules {
+            if let Err(e) = self.add_rule(rule) {
+                warnings.push(e);
+            }
+        }
+        Ok(warnings)
+    }
+
+    /// Export current rules as a JSON string.
+    pub fn export_rules(&self) -> Result<String, String> {
+        let ruleset = ValidationRuleSet { rules: self.rules.clone() };
+        serde_json::to_string_pretty(&ruleset).map_err(|e| e.to_string())
+    }
+
+    /// Remove all rules.
+    pub fn clear_rules(&mut self) {
+        self.rules.clear();
+        self.regex_cache.clear();
+    }
+
+    /// Get the number of loaded rules.
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
     }
 
     // -----------------------------------------------------------------------
@@ -820,6 +926,252 @@ impl ValidationEngine {
                 path,
             ));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Entity data validation (custom rules)
+    // -----------------------------------------------------------------------
+
+    /// Validate entity data against loaded rules and optionally a schema.
+    ///
+    /// `entity_data` is a JSON object with `__type__` (entity type name) and
+    /// attribute_name → value(s) pairs.
+    pub fn validate_entity(
+        &self,
+        entity_data: &serde_json::Value,
+        schema: Option<&TypeSchema>,
+    ) -> ValidationResult {
+        let mut errors = Vec::new();
+
+        let obj = match entity_data.as_object() {
+            Some(o) => o,
+            None => {
+                errors.push(error("INVALID_ENTITY_DATA", "Entity data must be a JSON object".into(), ""));
+                return make_result(errors);
+            }
+        };
+
+        let entity_type = obj.get("__type__")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        for rule in &self.rules {
+            errors.extend(self.apply_rule(rule, entity_type, obj, schema));
+        }
+
+        make_result(errors)
+    }
+
+    fn apply_rule(
+        &self,
+        rule: &ValidationRule,
+        entity_type: &str,
+        data: &serde_json::Map<String, serde_json::Value>,
+        schema: Option<&TypeSchema>,
+    ) -> Vec<ValidationError> {
+        let (applies, attr_name) = match &rule.target {
+            RuleTarget::Attribute { attribute } => {
+                let owns = data.contains_key(attribute)
+                    || schema.is_some_and(|s| {
+                        s.get_all_owned_attributes(entity_type)
+                            .iter()
+                            .any(|a| a.name == *attribute)
+                    });
+                (owns, attribute.as_str())
+            }
+            RuleTarget::EntityAttribute { entity, attribute } => {
+                (entity == entity_type, attribute.as_str())
+            }
+        };
+
+        if !applies {
+            return Vec::new();
+        }
+
+        let path = format!("{}.{}", entity_type, attr_name);
+        let custom_msg = rule.error_message.as_deref();
+
+        match &rule.rule_type {
+            RuleType::Required => self.check_required(data, attr_name, &path, custom_msg),
+            RuleType::Regex { .. } => self.check_regex(data, attr_name, &rule.id, &path, custom_msg),
+            RuleType::Range { min, max } => self.check_range_rule(data, attr_name, *min, *max, &path, custom_msg),
+            RuleType::Values { allowed } => self.check_values(data, attr_name, allowed, &path, custom_msg),
+            RuleType::Cardinality { min, max } => self.check_cardinality_rule(data, attr_name, *min, *max, &path, custom_msg),
+            RuleType::Length { min, max } => self.check_length(data, attr_name, *min, *max, &path, custom_msg),
+        }
+    }
+
+    fn check_required(
+        &self,
+        data: &serde_json::Map<String, serde_json::Value>,
+        attr_name: &str,
+        path: &str,
+        custom_msg: Option<&str>,
+    ) -> Vec<ValidationError> {
+        match data.get(attr_name) {
+            None | Some(serde_json::Value::Null) => {
+                let msg = custom_msg
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| format!("'{}' is required", attr_name));
+                vec![error("RULE_REQUIRED", msg, path)]
+            }
+            Some(serde_json::Value::Array(arr)) if arr.is_empty() => {
+                let msg = custom_msg
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| format!("'{}' is required (empty list)", attr_name));
+                vec![error("RULE_REQUIRED", msg, path)]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn check_regex(
+        &self,
+        data: &serde_json::Map<String, serde_json::Value>,
+        attr_name: &str,
+        rule_id: &str,
+        path: &str,
+        custom_msg: Option<&str>,
+    ) -> Vec<ValidationError> {
+        let compiled = match self.regex_cache.get(rule_id) {
+            Some(r) => r,
+            None => return Vec::new(),
+        };
+        let values = extract_values(data, attr_name);
+        let mut errors = Vec::new();
+        for val in values {
+            if let Some(s) = val.as_str() {
+                if !compiled.is_match(s) {
+                    let msg = custom_msg
+                        .map(|m| m.to_string())
+                        .unwrap_or_else(|| format!("'{}' value '{}' does not match required pattern", attr_name, s));
+                    errors.push(error("RULE_REGEX_MISMATCH", msg, path));
+                }
+            }
+        }
+        errors
+    }
+
+    fn check_range_rule(
+        &self,
+        data: &serde_json::Map<String, serde_json::Value>,
+        attr_name: &str,
+        min: Option<f64>,
+        max: Option<f64>,
+        path: &str,
+        custom_msg: Option<&str>,
+    ) -> Vec<ValidationError> {
+        let values = extract_values(data, attr_name);
+        let mut errors = Vec::new();
+        for val in values {
+            if let Some(n) = val.as_f64() {
+                if let Some(lo) = min {
+                    if n < lo {
+                        let msg = custom_msg
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| format!("'{}' value {} is below minimum {}", attr_name, n, lo));
+                        errors.push(error("RULE_RANGE_VIOLATION", msg, path));
+                    }
+                }
+                if let Some(hi) = max {
+                    if n > hi {
+                        let msg = custom_msg
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| format!("'{}' value {} is above maximum {}", attr_name, n, hi));
+                        errors.push(error("RULE_RANGE_VIOLATION", msg, path));
+                    }
+                }
+            }
+        }
+        errors
+    }
+
+    fn check_values(
+        &self,
+        data: &serde_json::Map<String, serde_json::Value>,
+        attr_name: &str,
+        allowed: &[serde_json::Value],
+        path: &str,
+        custom_msg: Option<&str>,
+    ) -> Vec<ValidationError> {
+        let values = extract_values(data, attr_name);
+        let mut errors = Vec::new();
+        for val in values {
+            if !allowed.contains(val) {
+                let msg = custom_msg
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| format!("'{}' value {} is not in allowed values", attr_name, val));
+                errors.push(error("RULE_VALUES_VIOLATION", msg, path));
+            }
+        }
+        errors
+    }
+
+    fn check_cardinality_rule(
+        &self,
+        data: &serde_json::Map<String, serde_json::Value>,
+        attr_name: &str,
+        min: u32,
+        max: Option<u32>,
+        path: &str,
+        custom_msg: Option<&str>,
+    ) -> Vec<ValidationError> {
+        let count = match data.get(attr_name) {
+            Some(serde_json::Value::Array(arr)) => arr.len() as u32,
+            Some(serde_json::Value::Null) | None => 0,
+            Some(_) => 1,
+        };
+        let mut errors = Vec::new();
+        if count < min {
+            let msg = custom_msg
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| format!("'{}' has {} values, minimum is {}", attr_name, count, min));
+            errors.push(error("RULE_CARDINALITY_VIOLATION", msg, path));
+        }
+        if let Some(mx) = max {
+            if count > mx {
+                let msg = custom_msg
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| format!("'{}' has {} values, maximum is {}", attr_name, count, mx));
+                errors.push(error("RULE_CARDINALITY_VIOLATION", msg, path));
+            }
+        }
+        errors
+    }
+
+    fn check_length(
+        &self,
+        data: &serde_json::Map<String, serde_json::Value>,
+        attr_name: &str,
+        min: Option<u32>,
+        max: Option<u32>,
+        path: &str,
+        custom_msg: Option<&str>,
+    ) -> Vec<ValidationError> {
+        let values = extract_values(data, attr_name);
+        let mut errors = Vec::new();
+        for val in values {
+            if let Some(s) = val.as_str() {
+                let len = s.len() as u32;
+                if let Some(lo) = min {
+                    if len < lo {
+                        let msg = custom_msg
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| format!("'{}' value has length {}, minimum is {}", attr_name, len, lo));
+                        errors.push(error("RULE_LENGTH_VIOLATION", msg, path));
+                    }
+                }
+                if let Some(hi) = max {
+                    if len > hi {
+                        let msg = custom_msg
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| format!("'{}' value has length {}, maximum is {}", attr_name, len, hi));
+                        errors.push(error("RULE_LENGTH_VIOLATION", msg, path));
+                    }
+                }
+            }
+        }
+        errors
     }
 }
 
@@ -1644,5 +1996,242 @@ mod schema_validation_tests {
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP"));
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_rules_json() -> String {
+        json!({
+            "rules": [
+                {
+                    "id": "name-required",
+                    "target": { "type": "EntityAttribute", "data": { "entity": "person", "attribute": "name" } },
+                    "rule_type": { "type": "Required" },
+                    "error_message": "Person must have a name"
+                },
+                {
+                    "id": "email-regex",
+                    "target": { "type": "Attribute", "data": { "attribute": "email" } },
+                    "rule_type": { "type": "Regex", "data": { "pattern": "^.+@.+\\..+$" } }
+                },
+                {
+                    "id": "age-range",
+                    "target": { "type": "Attribute", "data": { "attribute": "age" } },
+                    "rule_type": { "type": "Range", "data": { "min": 0.0, "max": 150.0 } }
+                },
+                {
+                    "id": "name-length",
+                    "target": { "type": "Attribute", "data": { "attribute": "name" } },
+                    "rule_type": { "type": "Length", "data": { "min": 1, "max": 100 } }
+                }
+            ]
+        }).to_string()
+    }
+
+    #[test]
+    fn test_load_rules() {
+        let mut engine = ValidationEngine::new();
+        let warnings = engine.load_rules(&sample_rules_json()).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(engine.rule_count(), 4);
+    }
+
+    #[test]
+    fn test_export_roundtrip() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let exported = engine.export_rules().unwrap();
+        let mut engine2 = ValidationEngine::new();
+        engine2.load_rules(&exported).unwrap();
+        assert_eq!(engine2.rule_count(), 4);
+    }
+
+    #[test]
+    fn test_required_passes() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "name": "Alice", "age": 30 });
+        let result = engine.validate_entity(&data, None);
+        assert!(result.is_valid);
+    }
+
+    #[test]
+    fn test_required_fails_missing() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "age": 30 });
+        let result = engine.validate_entity(&data, None);
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.code == "RULE_REQUIRED"));
+    }
+
+    #[test]
+    fn test_required_fails_null() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "name": null, "age": 30 });
+        let result = engine.validate_entity(&data, None);
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.code == "RULE_REQUIRED"));
+    }
+
+    #[test]
+    fn test_required_custom_message() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "age": 30 });
+        let result = engine.validate_entity(&data, None);
+        let req_error = result.errors.iter().find(|e| e.code == "RULE_REQUIRED").unwrap();
+        assert_eq!(req_error.message, "Person must have a name");
+    }
+
+    #[test]
+    fn test_regex_passes() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "name": "Alice", "email": "alice@example.com" });
+        let result = engine.validate_entity(&data, None);
+        assert!(result.is_valid);
+    }
+
+    #[test]
+    fn test_regex_fails() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "name": "Alice", "email": "not-an-email" });
+        let result = engine.validate_entity(&data, None);
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.code == "RULE_REGEX_MISMATCH"));
+    }
+
+    #[test]
+    fn test_range_passes() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "name": "Alice", "age": 30 });
+        let result = engine.validate_entity(&data, None);
+        assert!(result.is_valid);
+    }
+
+    #[test]
+    fn test_range_fails_below() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "name": "Alice", "age": -1 });
+        let result = engine.validate_entity(&data, None);
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.code == "RULE_RANGE_VIOLATION"));
+    }
+
+    #[test]
+    fn test_range_fails_above() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "name": "Alice", "age": 200 });
+        let result = engine.validate_entity(&data, None);
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.code == "RULE_RANGE_VIOLATION"));
+    }
+
+    #[test]
+    fn test_length_fails_too_short() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        let data = json!({ "__type__": "person", "name": "" });
+        let result = engine.validate_entity(&data, None);
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.code == "RULE_LENGTH_VIOLATION"));
+    }
+
+    #[test]
+    fn test_values_rule() {
+        let rules = json!({
+            "rules": [{
+                "id": "status-values",
+                "target": { "type": "Attribute", "data": { "attribute": "status" } },
+                "rule_type": { "type": "Values", "data": { "allowed": ["active", "inactive"] } }
+            }]
+        }).to_string();
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&rules).unwrap();
+
+        let valid = json!({ "__type__": "person", "status": "active" });
+        assert!(engine.validate_entity(&valid, None).is_valid);
+
+        let invalid = json!({ "__type__": "person", "status": "deleted" });
+        let result = engine.validate_entity(&invalid, None);
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.code == "RULE_VALUES_VIOLATION"));
+    }
+
+    #[test]
+    fn test_cardinality_rule() {
+        let rules = json!({
+            "rules": [{
+                "id": "tags-card",
+                "target": { "type": "EntityAttribute", "data": { "entity": "person", "attribute": "tags" } },
+                "rule_type": { "type": "Cardinality", "data": { "min": 1, "max": 3 } }
+            }]
+        }).to_string();
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&rules).unwrap();
+
+        let valid = json!({ "__type__": "person", "tags": ["a", "b"] });
+        assert!(engine.validate_entity(&valid, None).is_valid);
+
+        let too_few = json!({ "__type__": "person", "tags": [] });
+        assert!(!engine.validate_entity(&too_few, None).is_valid);
+
+        let too_many = json!({ "__type__": "person", "tags": ["a", "b", "c", "d"] });
+        assert!(!engine.validate_entity(&too_many, None).is_valid);
+    }
+
+    #[test]
+    fn test_entity_attribute_scoping() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        // name-required targets person, should not fire on company
+        let data = json!({ "__type__": "company", "age": 30 });
+        let result = engine.validate_entity(&data, None);
+        assert!(result.is_valid);
+    }
+
+    #[test]
+    fn test_clear_rules() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        assert_eq!(engine.rule_count(), 4);
+        engine.clear_rules();
+        assert_eq!(engine.rule_count(), 0);
+        // No rules → always valid
+        let data = json!({ "__type__": "person" });
+        assert!(engine.validate_entity(&data, None).is_valid);
+    }
+
+    #[test]
+    fn test_invalid_regex_rejected() {
+        let rules = json!({
+            "rules": [{
+                "id": "bad-regex",
+                "target": { "type": "Attribute", "data": { "attribute": "name" } },
+                "rule_type": { "type": "Regex", "data": { "pattern": "[invalid(" } }
+            }]
+        }).to_string();
+        let mut engine = ValidationEngine::new();
+        let warnings = engine.load_rules(&rules).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(engine.rule_count(), 0);
+    }
+
+    #[test]
+    fn test_existing_methods_still_work() {
+        let mut engine = ValidationEngine::new();
+        engine.load_rules(&sample_rules_json()).unwrap();
+        assert!(engine.validate_type_name("person", "entity").is_valid);
+        assert!(!engine.validate_type_name("define", "entity").is_valid);
     }
 }

@@ -260,3 +260,36 @@ def validate_query_against_schema(
             ) from None
         # Graceful skip: return valid with no errors.
         return {"is_valid": True, "errors": []}
+
+
+def validate_entity_data(
+    entity_data: dict[str, Any],
+    rules_json: str,
+    schema: Any = None,
+) -> dict[str, Any]:
+    """Validate entity data against custom validation rules.
+
+    Uses the Rust ``ValidationEngine`` to evaluate rules defined in the
+    portable JSON DSL (see :class:`~type_bridge.rules.RuleBuilder`).
+
+    Args:
+        entity_data: Dict with ``__type__`` key and attribute values.
+        rules_json: JSON string of validation rules.
+        schema: Optional ``TypeSchema`` instance for ownership checks.
+
+    Returns:
+        Dict with ``is_valid`` (bool) and ``errors`` (list of error dicts).
+    """
+    try:
+        from type_bridge_core import (
+            ValidationEngine as _RustEngine,  # type: ignore[import-not-found]
+        )
+
+        engine = _RustEngine()
+        engine.load_rules(rules_json)
+        result: dict[str, Any] = engine.validate_entity(entity_data, schema)
+        return result
+
+    except ImportError:
+        # Graceful skip: return valid with no errors.
+        return {"is_valid": True, "errors": []}

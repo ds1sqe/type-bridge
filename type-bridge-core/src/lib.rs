@@ -72,6 +72,64 @@ impl ValidationEngine {
             .map(|obj| obj.unbind())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
+
+    // -------------------------------------------------------------------
+    // Custom validation rules (JSON DSL)
+    // -------------------------------------------------------------------
+
+    /// Add a single rule from a Python dict.
+    fn add_rule(&mut self, rule_dict: Bound<'_, PyAny>) -> PyResult<()> {
+        let rule: core::validation::ValidationRule = depythonize(&rule_dict)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(
+                format!("Failed to deserialize rule: {}", e)
+            ))?;
+        self.inner.add_rule(rule)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Load rules from a JSON string. Returns list of warning strings.
+    fn load_rules(&mut self, json_str: &str) -> PyResult<Vec<String>> {
+        self.inner.load_rules(json_str)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Export current rules as a JSON string.
+    fn export_rules(&self) -> PyResult<String> {
+        self.inner.export_rules()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Remove all rules.
+    fn clear_rules(&mut self) {
+        self.inner.clear_rules();
+    }
+
+    /// Get the number of loaded rules.
+    fn rule_count(&self) -> usize {
+        self.inner.rule_count()
+    }
+
+    /// Validate entity data (as a Python dict) against loaded rules.
+    ///
+    /// Returns a dict with `is_valid` and `errors` keys.
+    fn validate_entity(
+        &self,
+        py: Python<'_>,
+        entity_data: Bound<'_, PyAny>,
+        schema: Option<&TypeSchema>,
+    ) -> PyResult<PyObject> {
+        let json_data: serde_json::Value = depythonize(&entity_data)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(
+                format!("Failed to deserialize entity data: {}", e)
+            ))?;
+
+        let schema_ref = schema.map(|s| &s.inner);
+        let result = self.inner.validate_entity(&json_data, schema_ref);
+
+        pythonize(py, &result)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
 }
 
 #[pyclass]
