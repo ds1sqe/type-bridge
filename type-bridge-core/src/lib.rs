@@ -2,6 +2,7 @@ pub mod ast;
 pub mod core;
 
 use pyo3::prelude::*;
+use pyo3::types::PyBool;
 use pythonize::{depythonize, pythonize};
 
 #[pyclass]
@@ -175,6 +176,199 @@ impl TypeSchema {
     }
 }
 
+#[pyclass]
+pub struct ValueCoercer {
+    inner: core::value_coercion::ValueCoercer,
+}
+
+#[pymethods]
+impl ValueCoercer {
+    #[new]
+    fn new() -> Self {
+        ValueCoercer {
+            inner: core::value_coercion::ValueCoercer::new(),
+        }
+    }
+
+    /// Coerce a value to a target TypeDB type. Returns dict with "value" and "value_type".
+    fn coerce(&self, py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> PyResult<PyObject> {
+        let json_val = py_to_json_value(&value)?;
+        let coerced = self.inner.coerce(&json_val, target_type)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        pythonize(py, &coerced)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Batch coerce. Takes list of (value, type) tuples, returns list of dicts.
+    fn coerce_batch(&self, py: Python<'_>, pairs: Vec<(Bound<'_, PyAny>, String)>) -> PyResult<PyObject> {
+        let json_pairs: Vec<(serde_json::Value, String)> = pairs
+            .iter()
+            .map(|(v, t)| Ok((py_to_json_value(v)?, t.clone())))
+            .collect::<PyResult<Vec<_>>>()?;
+        let results = self.inner.coerce_batch(&json_pairs);
+        let py_results: Vec<PyObject> = results
+            .into_iter()
+            .map(|r| match r {
+                Ok(cv) => pythonize(py, &cv)
+                    .map(|obj| obj.unbind())
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
+                Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e.to_string())),
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(pyo3::types::PyList::new(py, &py_results)?.into_any().unbind())
+    }
+
+    /// Format a value for TypeQL given its known type. Returns TypeQL literal string.
+    fn format_typeql(&self, value: Bound<'_, PyAny>, value_type: &str) -> PyResult<String> {
+        let json_val = py_to_json_value(&value)?;
+        let coerced = core::value_coercion::CoercedValue {
+            value: json_val,
+            value_type: value_type.to_string(),
+        };
+        Ok(self.inner.format_typeql(&coerced))
+    }
+}
+
+/// Convert a Python object to a serde_json::Value for Rust processing.
+fn py_to_json_value(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+    // Check bool before int (Python bool is subclass of int)
+    if value.is_instance_of::<PyBool>() {
+        return Ok(serde_json::Value::Bool(value.extract::<bool>()?));
+    }
+    if value.is_none() {
+        return Ok(serde_json::Value::Null);
+    }
+    if let Ok(s) = value.extract::<String>() {
+        return Ok(serde_json::Value::String(s));
+    }
+    if let Ok(i) = value.extract::<i64>() {
+        return Ok(serde_json::json!(i));
+    }
+    if let Ok(f) = value.extract::<f64>() {
+        return Ok(serde_json::json!(f));
+    }
+    // Fallback: convert to string
+    let s = value.str()?.to_string();
+    Ok(serde_json::Value::String(s))
+}
+
+/// Detect the TypeDB value type from a Python object and return (formatted_string, type_hint).
+/// This handles the Python type dispatch that cannot be done in pure Rust.
+fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
+    let py = value.py();
+
+    // 1. Unwrap Attribute instances (extract .value)
+    let value = if value.hasattr("value")? {
+        let inner = value.getattr("value")?;
+        // Guard: don't unwrap if .value is a method or the object is a string/bool/int
+        // (strings have .value... no they don't in Python, but be safe)
+        if inner.is_none() {
+            return Ok("\"None\"".to_string());
+        }
+        inner
+    } else {
+        value.clone()
+    };
+
+    // 2. Check bool BEFORE int (Python bool is subclass of int)
+    if value.is_instance_of::<PyBool>() {
+        let b: bool = value.extract()?;
+        return Ok(if b {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        });
+    }
+
+    // 3. Check for Decimal (from decimal module)
+    let decimal_mod = py.import("decimal")?;
+    let decimal_type = decimal_mod.getattr("Decimal")?;
+    if value.is_instance(&decimal_type)? {
+        let s = value.str()?.to_string();
+        return Ok(format!("{}dec", s));
+    }
+
+    // 4. Check float BEFORE int (0.0 must format as "0.0", not "0")
+    //    Python's str(0.0) returns "0.0" but Rust's f64::to_string() returns "0"
+    //    So we must match Python's behavior by calling Python's str() on the float.
+    if value.is_instance_of::<pyo3::types::PyFloat>() {
+        let s = value.str()?.to_string();
+        return Ok(s);
+    }
+
+    // 5. Check int
+    if let Ok(i) = value.extract::<i64>() {
+        return Ok(i.to_string());
+    }
+
+    // 6. Check datetime (before date, since datetime is subclass of date)
+    let datetime_mod = py.import("datetime")?;
+    let datetime_type = datetime_mod.getattr("datetime")?;
+    if value.is_instance(&datetime_type)? {
+        let iso: String = value.call_method0("isoformat")?.extract()?;
+        return Ok(iso);
+    }
+
+    // 7. Check date
+    let date_type = datetime_mod.getattr("date")?;
+    if value.is_instance(&date_type)? {
+        let iso: String = value.call_method0("isoformat")?.extract()?;
+        return Ok(iso);
+    }
+
+    // 8. Check timedelta / isodate.Duration
+    let timedelta_type = datetime_mod.getattr("timedelta")?;
+    if value.is_instance(&timedelta_type)? {
+        // Use isodate.duration_isoformat() for formatting
+        let isodate_mod = py.import("isodate")?;
+        let formatted: String = isodate_mod
+            .call_method1("duration_isoformat", (&value,))?
+            .extract()?;
+        return Ok(formatted);
+    }
+
+    // 9. Check for isodate.Duration explicitly (it may not be a timedelta subclass)
+    if let Ok(isodate_mod) = py.import("isodate")
+        && let Ok(duration_type) = isodate_mod.getattr("Duration")
+        && value.is_instance(&duration_type)?
+    {
+        let formatted: String = isodate_mod
+            .call_method1("duration_isoformat", (&value,))?
+            .extract()?;
+        return Ok(formatted);
+    }
+
+    // 10. String (check last among common types)
+    if let Ok(s) = value.extract::<String>() {
+        return Ok(core::value_coercion::format_string_literal(&s));
+    }
+
+    // 11. Fallback: convert to string, then quote+escape
+    let s = value.str()?.to_string();
+    Ok(core::value_coercion::format_string_literal(&s))
+}
+
+/// Standalone function: format a Python value for TypeQL (infers type).
+/// Direct replacement for Python's format_value().
+#[pyfunction]
+fn format_value(value: Bound<'_, PyAny>) -> PyResult<String> {
+    detect_type_and_format(&value)
+}
+
+/// Standalone coerce function.
+#[pyfunction]
+fn coerce_value(py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> PyResult<PyObject> {
+    let coercer = core::value_coercion::ValueCoercer::new();
+    let json_val = py_to_json_value(&value)?;
+    let coerced = coercer
+        .coerce(&json_val, target_type)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    pythonize(py, &coerced)
+        .map(|obj| obj.unbind())
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
 /// Parse a TypeQL query string into a list of clause dicts.
 ///
 /// Standalone function equivalent to `QueryCompiler().parse(input)`.
@@ -192,7 +386,10 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationEngine>()?;
     m.add_class::<QueryCompiler>()?;
     m.add_class::<TypeSchema>()?;
+    m.add_class::<ValueCoercer>()?;
     m.add_function(wrap_pyfunction!(parse_typeql_query, m)?)?;
+    m.add_function(wrap_pyfunction!(format_value, m)?)?;
+    m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
 
     // Values
     m.add_class::<ast::LiteralValue>()?;
