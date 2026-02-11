@@ -63,10 +63,67 @@ fn parse_schema(input: &mut &str) -> PResult<TypeSchema> {
                     schema.attributes.insert(attr.name.clone(), attr);
                 }
                 Statement::Entity(entity) => {
-                    schema.entities.insert(entity.name.clone(), entity);
+                    let name = entity.name.clone();
+                    if let Some(existing) = schema.entities.get_mut(&name) {
+                        // Merge: TypeQL allows split definitions for the same type
+                        if entity.parent.is_some() {
+                            existing.parent = entity.parent;
+                        }
+                        if entity.is_abstract {
+                            existing.is_abstract = true;
+                        }
+                        for own in entity.owns {
+                            if !existing.owns.iter().any(|o| o.name == own.name) {
+                                existing.owns.push(own);
+                            }
+                        }
+                        for order in entity.owns_order {
+                            if !existing.owns_order.contains(&order) {
+                                existing.owns_order.push(order);
+                            }
+                        }
+                        for play in entity.plays {
+                            if !existing.plays.iter().any(|p| p.role_ref == play.role_ref) {
+                                existing.plays.push(play);
+                            }
+                        }
+                    } else {
+                        schema.entities.insert(name, entity);
+                    }
                 }
                 Statement::Relation(relation) => {
-                    schema.relations.insert(relation.name.clone(), relation);
+                    let name = relation.name.clone();
+                    if let Some(existing) = schema.relations.get_mut(&name) {
+                        // Merge: TypeQL allows split definitions for the same type
+                        if relation.parent.is_some() {
+                            existing.parent = relation.parent;
+                        }
+                        if relation.is_abstract {
+                            existing.is_abstract = true;
+                        }
+                        for own in relation.owns {
+                            if !existing.owns.iter().any(|o| o.name == own.name) {
+                                existing.owns.push(own);
+                            }
+                        }
+                        for order in relation.owns_order {
+                            if !existing.owns_order.contains(&order) {
+                                existing.owns_order.push(order);
+                            }
+                        }
+                        for play in relation.plays {
+                            if !existing.plays.iter().any(|p| p.role_ref == play.role_ref) {
+                                existing.plays.push(play);
+                            }
+                        }
+                        for role in relation.roles {
+                            if !existing.roles.iter().any(|r| r.name == role.name) {
+                                existing.roles.push(role);
+                            }
+                        }
+                    } else {
+                        schema.relations.insert(name, relation);
+                    }
                 }
             }
         }

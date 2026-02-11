@@ -46,6 +46,32 @@ impl ValidationEngine {
         let result = self.inner.validate_statement(&core_statement);
         Ok(result.is_valid)
     }
+
+    /// Validate a query (as list of clause dicts) against a TypeSchema.
+    ///
+    /// Returns a dict with `is_valid`, `errors` keys.
+    /// Each error has `code`, `message`, `path`, `severity` fields.
+    fn validate_query(
+        &self,
+        py: Python<'_>,
+        clauses: Vec<Bound<'_, PyAny>>,
+        schema: &TypeSchema,
+    ) -> PyResult<PyObject> {
+        let mut core_clauses = Vec::new();
+        for clause in &clauses {
+            let c: core::ast::Clause = depythonize(clause)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(
+                    format!("Failed to deserialize clause: {}", e)
+                ))?;
+            core_clauses.push(c);
+        }
+
+        let result = self.inner.validate_query(&core_clauses, &schema.inner);
+
+        pythonize(py, &result)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
 }
 
 #[pyclass]
@@ -171,6 +197,31 @@ impl TypeSchema {
     #[getter]
     fn attributes(&self, py: Python<'_>) -> PyResult<PyObject> {
         pythonize(py, &self.inner.attributes)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Validate a query (as list of clause dicts) against this schema.
+    ///
+    /// Convenience method equivalent to `ValidationEngine().validate_query(clauses, schema)`.
+    fn validate_query(
+        &self,
+        py: Python<'_>,
+        clauses: Vec<Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        let engine = core::validation::ValidationEngine::new();
+        let mut core_clauses = Vec::new();
+        for clause in &clauses {
+            let c: core::ast::Clause = depythonize(clause)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(
+                    format!("Failed to deserialize clause: {}", e)
+                ))?;
+            core_clauses.push(c);
+        }
+
+        let result = engine.validate_query(&core_clauses, &self.inner);
+
+        pythonize(py, &result)
             .map(|obj| obj.unbind())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }

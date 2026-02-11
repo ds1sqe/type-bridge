@@ -254,6 +254,26 @@ impl TypeSchema {
         self.attributes.get(name)
     }
 
+    /// Check if a type name exists anywhere (entity, relation, or attribute).
+    pub fn type_exists(&self, name: &str) -> bool {
+        self.entities.contains_key(name)
+            || self.relations.contains_key(name)
+            || self.attributes.contains_key(name)
+    }
+
+    /// Get the kind of a type: `"entity"`, `"relation"`, `"attribute"`, or `None`.
+    pub fn type_kind(&self, name: &str) -> Option<&'static str> {
+        if self.entities.contains_key(name) {
+            Some("entity")
+        } else if self.relations.contains_key(name) {
+            Some("relation")
+        } else if self.attributes.contains_key(name) {
+            Some("attribute")
+        } else {
+            None
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Semantic validation
     // -----------------------------------------------------------------------

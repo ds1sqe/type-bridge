@@ -214,3 +214,49 @@ def validate_type_name(
                 f"{context.capitalize()} name '{name}' contains invalid character '{char}'. "
                 f"Only letters, numbers, underscores, hyphens, and combining marks are allowed."
             )
+
+
+def validate_query_against_schema(
+    clauses: list[dict[str, Any]],
+    schema: Any,
+    *,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Validate parsed query clauses against a TypeSchema.
+
+    This performs semantic validation: ownership checks, role validation,
+    value type compatibility, abstract type instantiation, and cardinality hints.
+
+    Args:
+        clauses: Parsed clauses (from ``QueryCompiler().parse()`` or manual construction).
+        schema: A ``TypeSchema`` instance from ``type_bridge_core``.
+        strict: If ``True``, raise ``ImportError`` when the Rust core is unavailable
+            and treat warnings as errors.
+
+    Returns:
+        Dict with ``is_valid`` (bool) and ``errors`` (list of error dicts).
+        Each error dict has ``code``, ``message``, ``path``, ``severity`` keys.
+    """
+    try:
+        from type_bridge_core import (
+            ValidationEngine as _RustEngine,  # type: ignore[import-not-found]
+        )
+
+        engine = _RustEngine()
+        result: dict[str, Any] = engine.validate_query(clauses, schema)
+
+        if strict:
+            has_issues = any(
+                e.get("severity") in ("Error", "Warning") for e in result.get("errors", [])
+            )
+            result["is_valid"] = not has_issues
+
+        return result
+
+    except ImportError:
+        if strict:
+            raise ImportError(
+                "Schema-aware query validation requires the type-bridge-core Rust extension"
+            ) from None
+        # Graceful skip: return valid with no errors.
+        return {"is_valid": True, "errors": []}
