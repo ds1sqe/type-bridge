@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use type_bridge_core::core::schema::TypeSchema;
+use type_bridge_core_lib::schema::TypeSchema;
 
 const SMALL_SCHEMA: &str = r#"
 define

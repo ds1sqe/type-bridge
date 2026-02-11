@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use serde_json::json;
-use type_bridge_core::core::ast::{Constraint, Pattern, Statement, Value, LiteralValue, RolePlayer};
-use type_bridge_core::core::validation::ValidationEngine;
+use type_bridge_core_lib::ast::{Constraint, Pattern, Statement, Value, LiteralValue, RolePlayer};
+use type_bridge_core_lib::validation::ValidationEngine;
 
 fn bench_validate_single_name(c: &mut Criterion) {
     let engine = ValidationEngine::new();

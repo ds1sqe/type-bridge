@@ -1,10 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use serde_json::json;
-use type_bridge_core::core::ast::{
+use type_bridge_core_lib::ast::{
     ArithmeticValue, Clause, Constraint, FetchItem, FunctionCallValue, LetAssignment, LiteralValue,
     Pattern, ReduceAssignment, RolePlayer, Statement, Value,
 };
-use type_bridge_core::core::compiler::QueryCompiler;
+use type_bridge_core_lib::compiler::QueryCompiler;
 
 fn make_simple_match() -> Clause {
     Clause::Match(vec![Pattern::Entity {

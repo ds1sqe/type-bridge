@@ -14,5 +14,6 @@ classifiers = [
 ]
 
 [tool.maturin]
+manifest-path = "crates/python/Cargo.toml"
 features = ["pyo3/extension-module"]
 module-name = "type_bridge_core"

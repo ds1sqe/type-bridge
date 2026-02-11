@@ -10,7 +10,7 @@ use winnow::error::ContextError;
 use winnow::prelude::*;
 use winnow::token::{literal, take_while};
 
-use super::ast::{
+use crate::ast::{
     Clause, Constraint, FetchItem, LetAssignment, LiteralValue, Pattern, ReduceAssignment,
     RolePlayer, Statement, Value,
 };
@@ -1317,7 +1317,7 @@ fn parse_reduce_clause(input: &mut &str) -> PResult<Clause> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::compiler::QueryCompiler;
+    use crate::compiler::QueryCompiler;
     use serde_json::json;
 
     // === Token tests ===

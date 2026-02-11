@@ -8,7 +8,7 @@ use winnow::error::ContextError;
 use winnow::prelude::*;
 use winnow::token::{literal, take_until, take_while};
 
-use super::schema::{
+use crate::schema::{
     AttributeType, Cardinality, EntityType, OwnedAttribute, PlayedRole, RelationType, RoleSpec,
     SchemaError, TypeSchema,
 };

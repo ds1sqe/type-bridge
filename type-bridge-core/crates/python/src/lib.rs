@@ -1,5 +1,6 @@
 pub mod ast;
-pub mod core;
+
+use type_bridge_core_lib as core;
 
 use pyo3::prelude::*;
 use pyo3::types::PyBool;
@@ -36,13 +37,15 @@ impl ValidationEngine {
     }
 
     fn validate_pattern(&self, pattern: Bound<'_, PyAny>) -> PyResult<bool> {
-        let core_pattern = pattern.extract::<core::ast::Pattern>()?;
+        let core_pattern: core::ast::Pattern = depythonize(&pattern)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize pattern: {}", e)))?;
         let result = self.inner.validate_pattern(&core_pattern);
         Ok(result.is_valid)
     }
 
     fn validate_statement(&self, statement: Bound<'_, PyAny>) -> PyResult<bool> {
-        let core_statement = statement.extract::<core::ast::Statement>()?;
+        let core_statement: core::ast::Statement = depythonize(&statement)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize statement: {}", e)))?;
         let result = self.inner.validate_statement(&core_statement);
         Ok(result.is_valid)
     }
@@ -112,6 +115,7 @@ impl ValidationEngine {
     /// Validate entity data (as a Python dict) against loaded rules.
     ///
     /// Returns a dict with `is_valid` and `errors` keys.
+    #[pyo3(signature = (entity_data, schema=None))]
     fn validate_entity(
         &self,
         py: Python<'_>,
@@ -148,8 +152,10 @@ impl QueryCompiler {
 
     fn compile(&self, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
         let mut core_clauses = Vec::new();
-        for clause in clauses {
-            core_clauses.push(clause.extract::<core::ast::Clause>()?);
+        for clause in &clauses {
+            let c: core::ast::Clause = depythonize(clause)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize clause: {}", e)))?;
+            core_clauses.push(c);
         }
         Ok(self.inner.compile(&core_clauses))
     }

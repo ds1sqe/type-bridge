@@ -1,4 +1,4 @@
-use crate::core::ast::{Clause, Pattern, Statement, Constraint, Value, LiteralValue, LetAssignment, FetchItem, ReduceAssignment};
+use crate::ast::{Clause, Pattern, Statement, Constraint, Value, LiteralValue, LetAssignment, FetchItem, ReduceAssignment};
 
 pub struct QueryCompiler {
 }

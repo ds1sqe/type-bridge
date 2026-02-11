@@ -14,6 +14,8 @@ from typedb.driver import (
     Transaction as TypeDBTransaction,
 )
 
+from type_bridge.proxy import ProxyDatabase, ProxyTransaction, ProxyTransactionContext
+
 logger = logging.getLogger(__name__)
 
 
@@ -500,29 +502,36 @@ class TransactionContext:
         raise TypeError("manager() expects an Entity or Relation subclass")
 
 
-# Type alias for unified connection type
-Connection = Database | Transaction | TransactionContext
+# Type alias for unified connection type (includes proxy equivalents)
+Connection = (
+    Database
+    | Transaction
+    | TransactionContext
+    | ProxyDatabase
+    | ProxyTransaction
+    | ProxyTransactionContext
+)
 
 
 class ConnectionExecutor:
     """Delegate that handles query execution across connection types.
 
     This class encapsulates the logic for executing queries against different
-    connection types (Database, Transaction, or TransactionContext), providing
-    a unified interface for CRUD operations.
+    connection types (Database, Transaction, TransactionContext, or proxy equivalents),
+    providing a unified interface for CRUD operations.
     """
 
     def __init__(self, connection: Connection):
         """Initialize the executor with a connection.
 
         Args:
-            connection: Database, Transaction, or TransactionContext
+            connection: Database, Transaction, TransactionContext, or proxy equivalent
         """
-        if isinstance(connection, TransactionContext):
+        if isinstance(connection, (TransactionContext, ProxyTransactionContext)):
             logger.debug("ConnectionExecutor initialized with TransactionContext")
-            self._transaction: Transaction | None = connection.transaction
-            self._database: Database | None = None
-        elif isinstance(connection, Transaction):
+            self._transaction: Transaction | ProxyTransaction | None = connection.transaction
+            self._database: Database | ProxyDatabase | None = None
+        elif isinstance(connection, (Transaction, ProxyTransaction)):
             logger.debug("ConnectionExecutor initialized with Transaction")
             self._transaction = connection
             self._database = None
@@ -555,11 +564,11 @@ class ConnectionExecutor:
         return self._transaction is not None
 
     @property
-    def database(self) -> Database | None:
+    def database(self) -> Database | ProxyDatabase | None:
         """Get database if available (for creating new transactions)."""
         return self._database
 
     @property
-    def transaction(self) -> Transaction | None:
+    def transaction(self) -> Transaction | ProxyTransaction | None:
         """Get transaction if available."""
         return self._transaction

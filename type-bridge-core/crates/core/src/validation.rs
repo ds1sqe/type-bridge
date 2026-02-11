@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use crate::core::ast::{Clause, Constraint, FetchItem, Pattern, Statement, Value};
-use crate::core::reserved_words::is_reserved_word;
-use crate::core::schema::TypeSchema;
+use crate::ast::{Clause, Constraint, FetchItem, Pattern, Statement, Value};
+use crate::reserved_words::is_reserved_word;
+use crate::schema::TypeSchema;
 use unicode_ident::{is_xid_start, is_xid_continue};
 
 // ---------------------------------------------------------------------------
@@ -1182,7 +1182,7 @@ impl ValidationEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ast::{Constraint, LiteralValue, Value};
+    use crate::ast::{Constraint, LiteralValue, Value};
     use serde_json::json;
 
     #[test]
@@ -1250,8 +1250,8 @@ mod tests {
 #[cfg(test)]
 mod schema_validation_tests {
     use super::*;
-    use crate::core::ast::*;
-    use crate::core::schema::*;
+    use crate::ast::*;
+    use crate::schema::*;
     use serde_json::json;
 
     /// Build a test schema:
