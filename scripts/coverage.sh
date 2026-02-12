@@ -84,6 +84,7 @@ cd "$WORKSPACE_ROOT"
 
 if $LCOV; then
   OUTPUT_PATH="target/llvm-cov/lcov.${MODE}.info"
+  mkdir -p "$(dirname "$OUTPUT_PATH")"
   RUSTFLAGS="$EXTRA_RUSTFLAGS" cargo +nightly llvm-cov "${MODE_FLAG[@]}" \
     "${PACKAGES[@]}" "$IGNORE_REGEX" \
     --lcov --output-path "$OUTPUT_PATH"
