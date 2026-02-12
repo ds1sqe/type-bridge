@@ -240,92 +240,711 @@ impl QueryCompiler {
 
     
 
-    #[cfg(test)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{ArithmeticValue, FunctionCallValue, RolePlayer};
+    use serde_json::json;
 
-    mod tests {
-
-        use super::*;
-
-        use serde_json::json;
-
-    
-
-        #[test]
-
-        fn test_compile_literal() {
-
-            let compiler = QueryCompiler::new();
-
-            
-
-            let s = LiteralValue { value: json!("hello"), value_type: "string".to_string() };
-
-            assert_eq!(compiler.format_literal(&s), "\"hello\"");
-
-            
-
-            let b = LiteralValue { value: json!(true), value_type: "boolean".to_string() };
-
-            assert_eq!(compiler.format_literal(&b), "true");
-
-            
-
-            let i = LiteralValue { value: json!(42), value_type: "long".to_string() };
-
-            assert_eq!(compiler.format_literal(&i), "42");
-
-        }
-
-    
-
-        #[test]
-
-        fn test_compile_match() {
-
-            let compiler = QueryCompiler::new();
-
-            
-
-            let patterns = vec![
-
-                Pattern::Entity {
-
-                    variable: "$p".to_string(),
-
-                    type_name: "person".to_string(),
-
-                    constraints: vec![
-
-                        Constraint::Has {
-
-                            attr_name: "name".to_string(),
-
-                            value: Value::Literal(LiteralValue {
-
-                                value: json!("Alice"),
-
-                                value_type: "string".to_string(),
-
-                            }),
-
-                        }
-
-                    ],
-
-                    is_strict: false,
-
-                }
-
-            ];
-
-            
-
-            let clause = Clause::Match(patterns);
-
-            assert_eq!(compiler.compile_clause(&clause), "match\n$p isa person, has name \"Alice\";");
-
-        }
-
+    fn compiler() -> QueryCompiler {
+        QueryCompiler::new()
     }
 
-    
+    fn lit(value: serde_json::Value, value_type: &str) -> Value {
+        Value::Literal(LiteralValue {
+            value,
+            value_type: value_type.to_string(),
+        })
+    }
+
+    // ── Literal formatting ──────────────────────────────────────────────
+
+    #[test]
+    fn test_literal_string() {
+        let c = compiler();
+        let l = LiteralValue { value: json!("hello"), value_type: "string".into() };
+        assert_eq!(c.format_literal(&l), "\"hello\"");
+    }
+
+    #[test]
+    fn test_literal_string_escapes() {
+        let c = compiler();
+        let l = LiteralValue { value: json!("a\"b\\c\nd"), value_type: "string".into() };
+        assert_eq!(c.format_literal(&l), "\"a\\\"b\\\\c\\nd\"");
+    }
+
+    #[test]
+    fn test_literal_boolean() {
+        let c = compiler();
+        assert_eq!(c.format_literal(&LiteralValue { value: json!(true), value_type: "boolean".into() }), "true");
+        assert_eq!(c.format_literal(&LiteralValue { value: json!(false), value_type: "boolean".into() }), "false");
+    }
+
+    #[test]
+    fn test_literal_long() {
+        let c = compiler();
+        assert_eq!(c.format_literal(&LiteralValue { value: json!(42), value_type: "long".into() }), "42");
+        assert_eq!(c.format_literal(&LiteralValue { value: json!(-7), value_type: "long".into() }), "-7");
+    }
+
+    #[test]
+    fn test_literal_double() {
+        let c = compiler();
+        assert_eq!(c.format_literal(&LiteralValue { value: json!(3.14), value_type: "double".into() }), "3.14");
+    }
+
+    #[test]
+    fn test_literal_decimal() {
+        let c = compiler();
+        assert_eq!(c.format_literal(&LiteralValue { value: json!(42), value_type: "decimal".into() }), "42dec");
+        assert_eq!(c.format_literal(&LiteralValue { value: json!(3.14), value_type: "decimal".into() }), "3.14dec");
+    }
+
+    #[test]
+    fn test_literal_date() {
+        let c = compiler();
+        assert_eq!(c.format_literal(&LiteralValue { value: json!("2024-01-15"), value_type: "date".into() }), "2024-01-15");
+    }
+
+    #[test]
+    fn test_literal_datetime() {
+        let c = compiler();
+        assert_eq!(c.format_literal(&LiteralValue { value: json!("2024-01-15T10:30:00"), value_type: "datetime".into() }), "2024-01-15T10:30:00");
+    }
+
+    #[test]
+    fn test_literal_datetime_tz() {
+        let c = compiler();
+        assert_eq!(c.format_literal(&LiteralValue { value: json!("2024-01-15T10:30:00+09:00"), value_type: "datetime-tz".into() }), "2024-01-15T10:30:00+09:00");
+    }
+
+    #[test]
+    fn test_literal_duration() {
+        let c = compiler();
+        assert_eq!(c.format_literal(&LiteralValue { value: json!("P1Y2M3D"), value_type: "duration".into() }), "P1Y2M3D");
+    }
+
+    // ── Values ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_value_variable() {
+        let c = compiler();
+        assert_eq!(c.compile_value(&Value::Variable("$x".into())), "$x");
+    }
+
+    #[test]
+    fn test_value_function_call() {
+        let c = compiler();
+        let v = Value::FunctionCall(FunctionCallValue {
+            function: "count".into(),
+            args: vec![Value::Variable("$p".into())],
+        });
+        assert_eq!(c.compile_value(&v), "count($p)");
+    }
+
+    #[test]
+    fn test_value_function_call_multiple_args() {
+        let c = compiler();
+        let v = Value::FunctionCall(FunctionCallValue {
+            function: "max".into(),
+            args: vec![Value::Variable("$a".into()), Value::Variable("$b".into())],
+        });
+        assert_eq!(c.compile_value(&v), "max($a, $b)");
+    }
+
+    #[test]
+    fn test_value_arithmetic() {
+        let c = compiler();
+        let v = Value::Arithmetic(ArithmeticValue {
+            left: Box::new(Value::Variable("$x".into())),
+            operator: "+".into(),
+            right: Box::new(lit(json!(1), "long")),
+        });
+        assert_eq!(c.compile_value(&v), "($x + 1)");
+    }
+
+    #[test]
+    fn test_value_nested_arithmetic() {
+        let c = compiler();
+        let v = Value::Arithmetic(ArithmeticValue {
+            left: Box::new(Value::Arithmetic(ArithmeticValue {
+                left: Box::new(Value::Variable("$a".into())),
+                operator: "+".into(),
+                right: Box::new(Value::Variable("$b".into())),
+            })),
+            operator: "*".into(),
+            right: Box::new(lit(json!(2), "long")),
+        });
+        assert_eq!(c.compile_value(&v), "(($a + $b) * 2)");
+    }
+
+    // ── Constraints ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_constraint_iid() {
+        let c = compiler();
+        assert_eq!(c.compile_constraint(&Constraint::Iid("0xabc".into())), "iid 0xabc");
+    }
+
+    #[test]
+    fn test_constraint_has() {
+        let c = compiler();
+        let con = Constraint::Has { attr_name: "age".into(), value: lit(json!(30), "long") };
+        assert_eq!(c.compile_constraint(&con), "has age 30");
+    }
+
+    #[test]
+    fn test_constraint_isa() {
+        let c = compiler();
+        assert_eq!(c.compile_constraint(&Constraint::Isa { type_name: "person".into(), strict: false }), "isa person");
+        assert_eq!(c.compile_constraint(&Constraint::Isa { type_name: "person".into(), strict: true }), "isa! person");
+    }
+
+    // ── Patterns ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_pattern_entity_no_constraints() {
+        let c = compiler();
+        let p = Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false };
+        assert_eq!(c.compile_pattern(&p), "$p isa person");
+    }
+
+    #[test]
+    fn test_pattern_entity_strict() {
+        let c = compiler();
+        let p = Pattern::Entity { variable: "$e".into(), type_name: "employee".into(), constraints: vec![], is_strict: true };
+        assert_eq!(c.compile_pattern(&p), "$e isa! employee");
+    }
+
+    #[test]
+    fn test_pattern_entity_multiple_constraints() {
+        let c = compiler();
+        let p = Pattern::Entity {
+            variable: "$p".into(),
+            type_name: "person".into(),
+            constraints: vec![
+                Constraint::Has { attr_name: "name".into(), value: lit(json!("Alice"), "string") },
+                Constraint::Has { attr_name: "age".into(), value: lit(json!(30), "long") },
+            ],
+            is_strict: false,
+        };
+        assert_eq!(c.compile_pattern(&p), "$p isa person, has name \"Alice\", has age 30");
+    }
+
+    #[test]
+    fn test_pattern_relation() {
+        let c = compiler();
+        let p = Pattern::Relation {
+            variable: "$r".into(),
+            type_name: "employment".into(),
+            role_players: vec![
+                RolePlayer { role: "employee".into(), player_var: "$p".into() },
+                RolePlayer { role: "employer".into(), player_var: "$c".into() },
+            ],
+            constraints: vec![],
+        };
+        assert_eq!(c.compile_pattern(&p), "$r isa employment (employee: $p, employer: $c)");
+    }
+
+    #[test]
+    fn test_pattern_relation_with_constraint() {
+        let c = compiler();
+        let p = Pattern::Relation {
+            variable: "$r".into(),
+            type_name: "friendship".into(),
+            role_players: vec![RolePlayer { role: "friend".into(), player_var: "$a".into() }],
+            constraints: vec![Constraint::Has { attr_name: "since".into(), value: lit(json!("2024-01-01"), "date") }],
+        };
+        assert_eq!(c.compile_pattern(&p), "$r isa friendship (friend: $a), has since 2024-01-01");
+    }
+
+    #[test]
+    fn test_pattern_subtype() {
+        let c = compiler();
+        let p = Pattern::SubType { variable: "$t".into(), parent_type: "entity".into() };
+        assert_eq!(c.compile_pattern(&p), "$t sub entity");
+    }
+
+    #[test]
+    fn test_pattern_attribute_without_value() {
+        let c = compiler();
+        let p = Pattern::Attribute { variable: "$a".into(), type_name: "name".into(), value: None };
+        assert_eq!(c.compile_pattern(&p), "$a isa name");
+    }
+
+    #[test]
+    fn test_pattern_attribute_with_value() {
+        let c = compiler();
+        let p = Pattern::Attribute { variable: "$a".into(), type_name: "name".into(), value: Some(lit(json!("John"), "string")) };
+        assert_eq!(c.compile_pattern(&p), "$a isa name; $a \"John\"");
+    }
+
+    #[test]
+    fn test_pattern_has() {
+        let c = compiler();
+        let p = Pattern::Has { thing_var: "$p".into(), attr_type: "name".into(), attr_var: "$n".into() };
+        assert_eq!(c.compile_pattern(&p), "$p has name $n");
+    }
+
+    #[test]
+    fn test_pattern_value_comparison_all_operators() {
+        let c = compiler();
+        for (op, expected) in [(">", "$x > 5"), ("<", "$x < 5"), (">=", "$x >= 5"), ("<=", "$x <= 5"), ("==", "$x == 5"), ("!=", "$x != 5")] {
+            let p = Pattern::ValueComparison { var: "$x".into(), operator: op.into(), value: lit(json!(5), "long") };
+            assert_eq!(c.compile_pattern(&p), expected);
+        }
+    }
+
+    #[test]
+    fn test_pattern_not() {
+        let c = compiler();
+        let p = Pattern::Not(vec![
+            Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false },
+        ]);
+        assert_eq!(c.compile_pattern(&p), "not { $p isa person; }");
+    }
+
+    #[test]
+    fn test_pattern_or() {
+        let c = compiler();
+        let p = Pattern::Or(vec![
+            vec![Pattern::Entity { variable: "$x".into(), type_name: "a".into(), constraints: vec![], is_strict: false }],
+            vec![Pattern::Entity { variable: "$x".into(), type_name: "b".into(), constraints: vec![], is_strict: false }],
+        ]);
+        assert_eq!(c.compile_pattern(&p), "{ $x isa a; } or { $x isa b; }");
+    }
+
+    #[test]
+    fn test_pattern_or_three_alternatives() {
+        let c = compiler();
+        let p = Pattern::Or(vec![
+            vec![Pattern::Entity { variable: "$x".into(), type_name: "a".into(), constraints: vec![], is_strict: false }],
+            vec![Pattern::Entity { variable: "$x".into(), type_name: "b".into(), constraints: vec![], is_strict: false }],
+            vec![Pattern::Entity { variable: "$x".into(), type_name: "c".into(), constraints: vec![], is_strict: false }],
+        ]);
+        assert_eq!(c.compile_pattern(&p), "{ $x isa a; } or { $x isa b; } or { $x isa c; }");
+    }
+
+    #[test]
+    fn test_pattern_iid() {
+        let c = compiler();
+        let p = Pattern::Iid { variable: "$p".into(), iid: "0x1234".into() };
+        assert_eq!(c.compile_pattern(&p), "$p iid 0x1234");
+    }
+
+    #[test]
+    fn test_pattern_raw() {
+        let c = compiler();
+        let p = Pattern::Raw("some raw content".into());
+        assert_eq!(c.compile_pattern(&p), "some raw content");
+    }
+
+    // ── Statements ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_statement_has() {
+        let c = compiler();
+        let s = Statement::Has { subject_var: "$p".into(), attr_name: "name".into(), value: lit(json!("Alice"), "string") };
+        assert_eq!(c.compile_statement(&s), "$p has name \"Alice\"");
+    }
+
+    #[test]
+    fn test_statement_isa() {
+        let c = compiler();
+        let s = Statement::Isa { variable: "$p".into(), type_name: "person".into() };
+        assert_eq!(c.compile_statement(&s), "$p isa person");
+    }
+
+    #[test]
+    fn test_statement_relation_with_variable() {
+        let c = compiler();
+        let s = Statement::Relation {
+            variable: "$r".into(),
+            type_name: "employment".into(),
+            role_players: vec![
+                RolePlayer { role: "employee".into(), player_var: "$p".into() },
+                RolePlayer { role: "employer".into(), player_var: "$c".into() },
+            ],
+            include_variable: true,
+            attributes: vec![],
+        };
+        assert_eq!(c.compile_statement(&s), "$r isa employment, links (employee: $p, employer: $c)");
+    }
+
+    #[test]
+    fn test_statement_relation_without_variable() {
+        let c = compiler();
+        let s = Statement::Relation {
+            variable: "".into(),
+            type_name: "employment".into(),
+            role_players: vec![RolePlayer { role: "employee".into(), player_var: "$p".into() }],
+            include_variable: false,
+            attributes: vec![],
+        };
+        assert_eq!(c.compile_statement(&s), "(employee: $p) isa employment");
+    }
+
+    #[test]
+    fn test_statement_relation_with_attributes() {
+        let c = compiler();
+        let s = Statement::Relation {
+            variable: "$r".into(),
+            type_name: "employment".into(),
+            role_players: vec![RolePlayer { role: "employee".into(), player_var: "$p".into() }],
+            include_variable: true,
+            attributes: vec![
+                Statement::Has { subject_var: "$r".into(), attr_name: "start-date".into(), value: lit(json!("2024-01-01"), "date") },
+            ],
+        };
+        assert_eq!(c.compile_statement(&s), "$r isa employment, links (employee: $p), has start-date 2024-01-01");
+    }
+
+    #[test]
+    fn test_statement_delete_thing() {
+        let c = compiler();
+        let s = Statement::DeleteThing("$p".into());
+        assert_eq!(c.compile_statement(&s), "$p");
+    }
+
+    #[test]
+    fn test_statement_raw() {
+        let c = compiler();
+        let s = Statement::Raw("raw statement".into());
+        assert_eq!(c.compile_statement(&s), "raw statement");
+    }
+
+    // ── Clauses ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_clause_match() {
+        let c = compiler();
+        let clause = Clause::Match(vec![
+            Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false },
+        ]);
+        assert_eq!(c.compile_clause(&clause), "match\n$p isa person;");
+    }
+
+    #[test]
+    fn test_clause_match_multiple_patterns() {
+        let c = compiler();
+        let clause = Clause::Match(vec![
+            Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false },
+            Pattern::Has { thing_var: "$p".into(), attr_type: "name".into(), attr_var: "$n".into() },
+        ]);
+        assert_eq!(c.compile_clause(&clause), "match\n$p isa person;\n$p has name $n;");
+    }
+
+    #[test]
+    fn test_clause_insert() {
+        let c = compiler();
+        let clause = Clause::Insert(vec![
+            Statement::Has { subject_var: "$p".into(), attr_name: "name".into(), value: lit(json!("Alice"), "string") },
+        ]);
+        assert_eq!(c.compile_clause(&clause), "insert\n$p has name \"Alice\";");
+    }
+
+    #[test]
+    fn test_clause_delete() {
+        let c = compiler();
+        let clause = Clause::Delete(vec![Statement::DeleteThing("$p".into())]);
+        assert_eq!(c.compile_clause(&clause), "delete\n$p;");
+    }
+
+    #[test]
+    fn test_clause_update() {
+        let c = compiler();
+        let clause = Clause::Update(vec![
+            Statement::Has { subject_var: "$p".into(), attr_name: "age".into(), value: lit(json!(31), "long") },
+        ]);
+        assert_eq!(c.compile_clause(&clause), "update\n$p has age 31;");
+    }
+
+    #[test]
+    fn test_clause_fetch() {
+        let c = compiler();
+        let clause = Clause::Fetch(vec![
+            FetchItem::Attribute { key: "name".into(), var: "$p".into(), attr_name: "name".into() },
+            FetchItem::Variable { key: "person".into(), var: "$p".into() },
+        ]);
+        assert_eq!(c.compile_clause(&clause), "fetch {\n  \"name\": $p.name,\n  \"person\": $p\n};");
+    }
+
+    #[test]
+    fn test_clause_fetch_all_item_types() {
+        let c = compiler();
+        let clause = Clause::Fetch(vec![
+            FetchItem::Attribute { key: "name".into(), var: "$p".into(), attr_name: "name".into() },
+            FetchItem::Variable { key: "person".into(), var: "$p".into() },
+            FetchItem::AttributeList { key: "emails".into(), var: "$p".into(), attr_name: "email".into() },
+            FetchItem::Function { key: "count".into(), func_name: "count".into(), var: "$p".into() },
+            FetchItem::Wildcard { key: "all".into(), var: "$p".into() },
+            FetchItem::NestedWildcard { key: "nested".into(), var: "$p".into() },
+        ]);
+        let result = c.compile_clause(&clause);
+        assert!(result.contains("\"name\": $p.name"));
+        assert!(result.contains("\"person\": $p"));
+        assert!(result.contains("\"emails\": [$p.email]"));
+        assert!(result.contains("\"count\": count($p)"));
+        assert!(result.contains("\"all\": $p.*"));
+        assert!(result.contains("\"nested\": { $p.* }"));
+    }
+
+    #[test]
+    fn test_clause_match_let() {
+        let c = compiler();
+        let clause = Clause::MatchLet(vec![
+            LetAssignment {
+                variables: vec!["$x".into()],
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "count".into(),
+                    args: vec![Value::Variable("$p".into())],
+                }),
+                is_stream: false,
+            },
+        ]);
+        assert_eq!(c.compile_clause(&clause), "match\nlet $x = count($p);");
+    }
+
+    #[test]
+    fn test_clause_match_let_stream() {
+        let c = compiler();
+        let clause = Clause::MatchLet(vec![
+            LetAssignment {
+                variables: vec!["$x".into()],
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "fetch".into(),
+                    args: vec![Value::Variable("$p".into())],
+                }),
+                is_stream: true,
+            },
+        ]);
+        assert_eq!(c.compile_clause(&clause), "match\nlet $x in fetch($p);");
+    }
+
+    #[test]
+    fn test_clause_reduce() {
+        let c = compiler();
+        let clause = Clause::Reduce {
+            assignments: vec![ReduceAssignment {
+                variable: "$count".into(),
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "count".into(),
+                    args: vec![Value::Variable("$p".into())],
+                }),
+            }],
+            group_by: None,
+        };
+        assert_eq!(c.compile_clause(&clause), "reduce $count = count($p);");
+    }
+
+    #[test]
+    fn test_clause_reduce_with_groupby() {
+        let c = compiler();
+        let clause = Clause::Reduce {
+            assignments: vec![ReduceAssignment {
+                variable: "$count".into(),
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "count".into(),
+                    args: vec![Value::Variable("$p".into())],
+                }),
+            }],
+            group_by: Some("$city".into()),
+        };
+        assert_eq!(c.compile_clause(&clause), "reduce $count = count($p) groupby $city;");
+    }
+
+    #[test]
+    fn test_clause_reduce_multiple_assignments() {
+        let c = compiler();
+        let clause = Clause::Reduce {
+            assignments: vec![
+                ReduceAssignment { variable: "$count".into(), expression: Value::FunctionCall(FunctionCallValue { function: "count".into(), args: vec![Value::Variable("$p".into())] }) },
+                ReduceAssignment { variable: "$sum".into(), expression: Value::FunctionCall(FunctionCallValue { function: "sum".into(), args: vec![Value::Variable("$a".into())] }) },
+            ],
+            group_by: None,
+        };
+        assert_eq!(c.compile_clause(&clause), "reduce $count = count($p), $sum = sum($a);");
+    }
+
+    // ── Multi-clause ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_multi_clause_match_insert() {
+        let c = compiler();
+        let clauses = vec![
+            Clause::Match(vec![Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false }]),
+            Clause::Insert(vec![Statement::Has { subject_var: "$p".into(), attr_name: "age".into(), value: lit(json!(30), "long") }]),
+        ];
+        let result = c.compile(&clauses);
+        assert!(result.starts_with("match\n"));
+        assert!(result.contains("insert\n"));
+    }
+
+    #[test]
+    fn test_multi_clause_match_delete() {
+        let c = compiler();
+        let clauses = vec![
+            Clause::Match(vec![Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false }]),
+            Clause::Delete(vec![Statement::DeleteThing("$p".into())]),
+        ];
+        let result = c.compile(&clauses);
+        assert_eq!(result, "match\n$p isa person;\ndelete\n$p;");
+    }
+
+    #[test]
+    fn test_multi_clause_match_fetch() {
+        let c = compiler();
+        let clauses = vec![
+            Clause::Match(vec![Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false }]),
+            Clause::Fetch(vec![FetchItem::Wildcard { key: "".into(), var: "$p".into() }]),
+        ];
+        let result = c.compile(&clauses);
+        assert!(result.starts_with("match\n"));
+        assert!(result.contains("fetch {"));
+    }
+
+    #[test]
+    fn test_multi_clause_match_reduce() {
+        let c = compiler();
+        let clauses = vec![
+            Clause::Match(vec![Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false }]),
+            Clause::Reduce {
+                assignments: vec![ReduceAssignment { variable: "$c".into(), expression: Value::FunctionCall(FunctionCallValue { function: "count".into(), args: vec![Value::Variable("$p".into())] }) }],
+                group_by: None,
+            },
+        ];
+        let result = c.compile(&clauses);
+        assert!(result.starts_with("match\n"));
+        assert!(result.contains("reduce $c = count($p);"));
+    }
+
+    // ── Roundtrip tests (parse → compile → parse → compare ASTs) ──────
+
+    fn roundtrip(tql: &str) {
+        let ast1 = crate::query_parser::parse_typeql_query(tql)
+            .unwrap_or_else(|e| panic!("First parse failed for: {tql}\n{e}"));
+        let compiled = compiler().compile(&ast1);
+        let ast2 = crate::query_parser::parse_typeql_query(&compiled)
+            .unwrap_or_else(|e| panic!("Second parse failed for compiled: {compiled}\n{e}"));
+        assert_eq!(ast1, ast2, "AST mismatch for roundtrip.\nOriginal: {tql}\nCompiled: {compiled}");
+    }
+
+    #[test]
+    fn test_roundtrip_simple_match() {
+        roundtrip("match $p isa person;");
+    }
+
+    #[test]
+    fn test_roundtrip_match_with_constraints() {
+        roundtrip("match $p isa person, has name \"Alice\", has age 30;");
+    }
+
+    #[test]
+    fn test_roundtrip_match_strict() {
+        roundtrip("match $e isa! employee;");
+    }
+
+    #[test]
+    fn test_roundtrip_match_iid() {
+        roundtrip("match $p iid 0x1234abcd;");
+    }
+
+    #[test]
+    fn test_roundtrip_match_subtype() {
+        roundtrip("match $t sub entity;");
+    }
+
+    #[test]
+    fn test_roundtrip_match_has_variable() {
+        roundtrip("match $p has name $n;");
+    }
+
+    #[test]
+    fn test_roundtrip_match_value_comparison() {
+        roundtrip("match $x > 5;");
+        roundtrip("match $x <= 100;");
+        roundtrip("match $x == 42;");
+        roundtrip("match $x != 0;");
+    }
+
+    #[test]
+    fn test_roundtrip_match_not() {
+        roundtrip("match not { $p isa person; };");
+    }
+
+    #[test]
+    fn test_roundtrip_match_or() {
+        roundtrip("match { $x isa a; } or { $x isa b; };");
+    }
+
+    #[test]
+    fn test_roundtrip_relation_match() {
+        roundtrip("match $r isa employment (employee: $p, employer: $c);");
+    }
+
+    #[test]
+    fn test_roundtrip_insert() {
+        roundtrip("insert\n$p isa person;\n$p has name \"Alice\";");
+    }
+
+    #[test]
+    fn test_roundtrip_relation_insert() {
+        roundtrip("insert\n$r isa employment, links (employee: $p, employer: $c);");
+    }
+
+    #[test]
+    fn test_roundtrip_match_delete() {
+        roundtrip("match $p isa person, has name \"Alice\";\ndelete $p;");
+    }
+
+    #[test]
+    fn test_roundtrip_match_fetch_attribute() {
+        roundtrip("match $p isa person;\nfetch {\n  \"name\": $p.name\n};");
+    }
+
+    #[test]
+    fn test_roundtrip_match_fetch_wildcard() {
+        roundtrip("match $p isa person;\nfetch {\n  \"\": $p.*\n};");
+    }
+
+    #[test]
+    fn test_roundtrip_match_fetch_nested_wildcard() {
+        roundtrip("match $p isa person;\nfetch {\n  \"\": { $p.* }\n};");
+    }
+
+    #[test]
+    fn test_roundtrip_reduce() {
+        roundtrip("match $p isa person;\nreduce $count = count($p);");
+    }
+
+    #[test]
+    fn test_roundtrip_reduce_groupby() {
+        roundtrip("match $p isa person;\nreduce $count = count($p) groupby $city;");
+    }
+
+    #[test]
+    fn test_roundtrip_boolean_values() {
+        roundtrip("match $p isa person, has active true;");
+        roundtrip("match $p isa person, has active false;");
+    }
+
+    #[test]
+    fn test_roundtrip_decimal_value() {
+        roundtrip("match $p isa person, has score 42dec;");
+    }
+
+    #[test]
+    fn test_roundtrip_date_value() {
+        roundtrip("match $p isa person, has birthday 2024-01-15;");
+    }
+
+    #[test]
+    fn test_roundtrip_datetime_value() {
+        roundtrip("match $p isa event, has start-time 2024-01-15T10:30:00;");
+    }
+
+    #[test]
+    fn test_roundtrip_string_with_escapes() {
+        roundtrip("match $p isa person, has bio \"line1\\nline2\";");
+    }
+}

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum Value {
     Literal(LiteralValue),
@@ -9,32 +9,32 @@ pub enum Value {
     Variable(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiteralValue {
     pub value: serde_json::Value,
     pub value_type: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionCallValue {
     pub function: String,
     pub args: Vec<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArithmeticValue {
     pub left: Box<Value>,
     pub operator: String,
     pub right: Box<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RolePlayer {
     pub role: String,
     pub player_var: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum Constraint {
     Iid(String),
@@ -48,7 +48,7 @@ pub enum Constraint {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum Pattern {
     Entity {
@@ -91,7 +91,7 @@ pub enum Pattern {
     Raw(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum Statement {
     Has {
@@ -114,7 +114,7 @@ pub enum Statement {
     Raw(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Clause {
     Match(Vec<Pattern>),
     MatchLet(Vec<LetAssignment>),
@@ -128,14 +128,14 @@ pub enum Clause {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LetAssignment {
     pub variables: Vec<String>,
     pub expression: Value,
     pub is_stream: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FetchItem {
     Attribute { key: String, var: String, attr_name: String },
     Variable { key: String, var: String },
@@ -145,7 +145,7 @@ pub enum FetchItem {
     NestedWildcard { key: String, var: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReduceAssignment {
     pub variable: String,
     pub expression: Value,

@@ -3,14 +3,23 @@ name = "type-bridge-server"
 version = "0.1.0-dev.0"
 edition = "2024"
 
+[lib]
+name = "type_bridge_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "type-bridge-server"
 path = "src/main.rs"
+required-features = ["typedb", "axum-transport"]
+
+[features]
+default = ["typedb", "axum-transport"]
+typedb = ["dep:typedb-driver", "dep:futures"]
+axum-transport = ["dep:axum", "dep:tower-http"]
 
 [dependencies]
 type-bridge-core-lib = { path = "../core" }
 tokio = { version = "1", features = ["full"] }
-axum = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
@@ -19,6 +28,13 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
 clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
+
+# Optional: TypeDB backend
+typedb-driver = { version = "3", optional = true }
+futures = { version = "0.3", optional = true }
+
+# Optional: Axum HTTP transport
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }

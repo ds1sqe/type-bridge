@@ -21,7 +21,6 @@ pub struct ServerSection {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // fields used once TypeDB driver is integrated
 pub struct TypeDBSection {
     pub address: String,
     pub database: String,

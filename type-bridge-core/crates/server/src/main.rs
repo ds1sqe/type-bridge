@@ -1,13 +1,14 @@
-mod config;
-mod error;
-mod interceptor;
-mod server;
-mod transport;
-
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
+use type_bridge_server::config::{AuditLogConfig, ServerConfig};
+use type_bridge_server::interceptor::audit_log::AuditLogInterceptor;
+use type_bridge_server::pipeline::PipelineBuilder;
+use type_bridge_server::schema_source::FileSchemaSource;
+use type_bridge_server::transport;
+use type_bridge_server::typedb::TypeDBClient;
 
 #[derive(Parser)]
 #[command(name = "type-bridge-server", version, about = "TypeDB query proxy server")]
@@ -20,9 +21,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-
-    // Load config
-    let config = config::ServerConfig::from_file(&cli.config)?;
+    let config = ServerConfig::from_file(&cli.config)?;
 
     // Initialize logging
     let filter = EnvFilter::try_from_default_env()
@@ -49,13 +48,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Starting type-bridge-server"
     );
 
-    // Build application state
-    let state = server::build_app_state(&config)?;
+    // Connect to TypeDB
+    let client = TypeDBClient::connect(&config.typedb).await
+        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+    tracing::info!("TypeDB driver connected successfully");
 
-    // Build router
-    let router = transport::http::create_router(state);
+    // Build pipeline
+    let mut builder = PipelineBuilder::new(client)
+        .with_default_database(&config.typedb.database);
 
-    // Start server
+    if !config.schema.source_file.is_empty() {
+        builder = builder.with_schema_source(FileSchemaSource::new(&config.schema.source_file));
+        tracing::info!(file = config.schema.source_file.as_str(), "Loading schema");
+    }
+
+    for name in &config.interceptors.enabled {
+        match name.as_str() {
+            "audit-log" => {
+                let audit_config = config.interceptors.audit_log.clone().unwrap_or(AuditLogConfig {
+                    output: "stdout".to_string(),
+                    file_path: String::new(),
+                });
+                let interceptor = AuditLogInterceptor::new(&audit_config)
+                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                builder = builder.with_interceptor(interceptor);
+                tracing::info!("Enabled interceptor: audit-log");
+            }
+            other => {
+                tracing::warn!(name = other, "Unknown interceptor, skipping");
+            }
+        }
+    }
+
+    let pipeline = builder.build()
+        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+
+    // Build router and serve
+    let router = transport::http::create_router(Arc::new(pipeline));
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
         .parse()
         .map_err(|e| format!("Invalid listen address: {}", e))?;
