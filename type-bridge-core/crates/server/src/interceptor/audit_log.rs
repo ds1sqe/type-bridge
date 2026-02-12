@@ -28,7 +28,7 @@ impl AuditWriter {
     #[cfg_attr(coverage_nightly, coverage(off))]
     fn write_entry(&mut self, entry: &AuditEntry) -> Result<(), std::io::Error> {
         let json = serde_json::to_string(entry)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         match self {
             AuditWriter::Stdout => {
                 println!("{}", json);

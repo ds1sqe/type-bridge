@@ -1412,7 +1412,7 @@ mod tests {
 
     #[test]
     fn test_parse_double_value() {
-        let mut input = "3.14";
+        let mut input = "3.15";
         let val = parse_value(&mut input).unwrap();
         match val {
             Value::Literal(lit) => {

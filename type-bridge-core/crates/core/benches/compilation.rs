@@ -751,7 +751,7 @@ fn make_large_batch() -> Vec<Clause> {
                 subject_var: var.clone(),
                 attr_name: "value".to_string(),
                 value: Value::Literal(LiteralValue {
-                    value: json!(i as f64 * 3.14),
+                    value: json!(i as f64 * 3.15),
                     value_type: "double".to_string(),
                 }),
             },

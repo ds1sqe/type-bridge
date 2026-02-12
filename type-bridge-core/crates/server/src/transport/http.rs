@@ -557,7 +557,7 @@ mod tests {
     #[tokio::test]
     async fn validate_valid_query() {
         let router = app(MockExecutor::new(), true);
-        let clauses = serde_json::to_value(&make_simple_clauses()).unwrap();
+        let clauses = serde_json::to_value(make_simple_clauses()).unwrap();
         let body = serde_json::json!({
             "clauses": clauses
         });

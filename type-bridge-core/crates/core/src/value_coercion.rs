@@ -971,14 +971,14 @@ mod tests {
         assert_eq!(result.value, json!(123));
 
         // Float to long should error
-        assert!(c.coerce(&json!(3.14), "long").is_err());
+        assert!(c.coerce(&json!(3.15), "long").is_err());
     }
 
     #[test]
     fn test_coerce_double() {
         let c = ValueCoercer::new();
         // Float
-        let result = c.coerce(&json!(3.14), "double").unwrap();
+        let result = c.coerce(&json!(3.15), "double").unwrap();
         assert_eq!(result.value_type, "double");
 
         // Int to double (valid coercion)
@@ -987,7 +987,7 @@ mod tests {
         assert_eq!(result.value_type, "double");
 
         // String to double
-        let result = c.coerce(&json!("3.14"), "double").unwrap();
+        let result = c.coerce(&json!("3.15"), "double").unwrap();
         assert_eq!(result.value_type, "double");
     }
 
@@ -1179,7 +1179,7 @@ mod tests {
         assert_eq!(c.format_value(&json!(true)), "true");
         assert_eq!(c.format_value(&json!(false)), "false");
         assert_eq!(c.format_value(&json!(42)), "42");
-        assert_eq!(c.format_value(&json!(3.14)), "3.14");
+        assert_eq!(c.format_value(&json!(3.15)), "3.15");
     }
 
     #[test]
@@ -1207,9 +1207,9 @@ mod tests {
     fn test_format_typeql_double() {
         let c = ValueCoercer::new();
         let cv = CoercedValue {
-            value: json!(3.14),
+            value: json!(3.15),
             value_type: "double".to_string(),
         };
-        assert_eq!(c.format_typeql(&cv), "3.14");
+        assert_eq!(c.format_typeql(&cv), "3.15");
     }
 }

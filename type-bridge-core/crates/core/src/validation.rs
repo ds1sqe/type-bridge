@@ -775,24 +775,20 @@ impl ValidationEngine {
 
         // Cardinality warnings.
         for ((var, attr_name), count) in &attr_counts {
-            if let Some(owner_type) = env.get_type(var) {
-                let owned = schema.get_all_owned_attributes(owner_type);
-                if let Some(attr) = owned.iter().find(|a| a.name == *attr_name) {
-                    if let Some(ref card) = attr.cardinality {
-                        if let Some(max) = card.max {
-                            if *count as u32 > max {
-                                errors.push(warning(
-                                    "CARDINALITY_EXCEEDED",
-                                    format!(
-                                        "Inserting {} values for '{}.{}' but @card allows max {}",
-                                        count, owner_type, attr_name, max
-                                    ),
-                                    path,
-                                ));
-                            }
-                        }
-                    }
-                }
+            if let Some(owner_type) = env.get_type(var)
+                && let Some(attr) = schema.get_all_owned_attributes(owner_type).iter().find(|a| a.name == *attr_name)
+                && let Some(ref card) = attr.cardinality
+                && let Some(max) = card.max
+                && *count as u32 > max
+            {
+                errors.push(warning(
+                    "CARDINALITY_EXCEEDED",
+                    format!(
+                        "Inserting {} values for '{}.{}' but @card allows max {}",
+                        count, owner_type, attr_name, max
+                    ),
+                    path,
+                ));
             }
         }
     }
@@ -845,19 +841,18 @@ impl ValidationEngine {
         self.validate_ownership(owner_type, attr_name, schema, path, errors);
 
         // Check value type compatibility.
-        if let Value::Literal(lit) = value {
-            if let Some(attr_type) = schema.attributes.get(attr_name) {
-                if !value_types_compatible(&lit.value_type, &attr_type.value_type) {
-                    errors.push(error(
-                        "VALUE_TYPE_MISMATCH",
-                        format!(
-                            "Attribute '{}' expects value type '{}', but got '{}'",
-                            attr_name, attr_type.value_type, lit.value_type
-                        ),
-                        path,
-                    ));
-                }
-            }
+        if let Value::Literal(lit) = value
+            && let Some(attr_type) = schema.attributes.get(attr_name)
+            && !value_types_compatible(&lit.value_type, &attr_type.value_type)
+        {
+            errors.push(error(
+                "VALUE_TYPE_MISMATCH",
+                format!(
+                    "Attribute '{}' expects value type '{}', but got '{}'",
+                    attr_name, attr_type.value_type, lit.value_type
+                ),
+                path,
+            ));
         }
     }
 
@@ -1040,13 +1035,13 @@ impl ValidationEngine {
         let values = extract_values(data, attr_name);
         let mut errors = Vec::new();
         for val in values {
-            if let Some(s) = val.as_str() {
-                if !compiled.is_match(s) {
-                    let msg = custom_msg
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| format!("'{}' value '{}' does not match required pattern", attr_name, s));
-                    errors.push(error("RULE_REGEX_MISMATCH", msg, path));
-                }
+            if let Some(s) = val.as_str()
+                && !compiled.is_match(s)
+            {
+                let msg = custom_msg
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| format!("'{}' value '{}' does not match required pattern", attr_name, s));
+                errors.push(error("RULE_REGEX_MISMATCH", msg, path));
             }
         }
         errors
@@ -1065,21 +1060,21 @@ impl ValidationEngine {
         let mut errors = Vec::new();
         for val in values {
             if let Some(n) = val.as_f64() {
-                if let Some(lo) = min {
-                    if n < lo {
-                        let msg = custom_msg
-                            .map(|m| m.to_string())
-                            .unwrap_or_else(|| format!("'{}' value {} is below minimum {}", attr_name, n, lo));
-                        errors.push(error("RULE_RANGE_VIOLATION", msg, path));
-                    }
+                if let Some(lo) = min
+                    && n < lo
+                {
+                    let msg = custom_msg
+                        .map(|m| m.to_string())
+                        .unwrap_or_else(|| format!("'{}' value {} is below minimum {}", attr_name, n, lo));
+                    errors.push(error("RULE_RANGE_VIOLATION", msg, path));
                 }
-                if let Some(hi) = max {
-                    if n > hi {
-                        let msg = custom_msg
-                            .map(|m| m.to_string())
-                            .unwrap_or_else(|| format!("'{}' value {} is above maximum {}", attr_name, n, hi));
-                        errors.push(error("RULE_RANGE_VIOLATION", msg, path));
-                    }
+                if let Some(hi) = max
+                    && n > hi
+                {
+                    let msg = custom_msg
+                        .map(|m| m.to_string())
+                        .unwrap_or_else(|| format!("'{}' value {} is above maximum {}", attr_name, n, hi));
+                    errors.push(error("RULE_RANGE_VIOLATION", msg, path));
                 }
             }
         }
@@ -1128,13 +1123,13 @@ impl ValidationEngine {
                 .unwrap_or_else(|| format!("'{}' has {} values, minimum is {}", attr_name, count, min));
             errors.push(error("RULE_CARDINALITY_VIOLATION", msg, path));
         }
-        if let Some(mx) = max {
-            if count > mx {
-                let msg = custom_msg
-                    .map(|m| m.to_string())
-                    .unwrap_or_else(|| format!("'{}' has {} values, maximum is {}", attr_name, count, mx));
-                errors.push(error("RULE_CARDINALITY_VIOLATION", msg, path));
-            }
+        if let Some(mx) = max
+            && count > mx
+        {
+            let msg = custom_msg
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| format!("'{}' has {} values, maximum is {}", attr_name, count, mx));
+            errors.push(error("RULE_CARDINALITY_VIOLATION", msg, path));
         }
         errors
     }
@@ -1153,21 +1148,21 @@ impl ValidationEngine {
         for val in values {
             if let Some(s) = val.as_str() {
                 let len = s.len() as u32;
-                if let Some(lo) = min {
-                    if len < lo {
-                        let msg = custom_msg
-                            .map(|m| m.to_string())
-                            .unwrap_or_else(|| format!("'{}' value has length {}, minimum is {}", attr_name, len, lo));
-                        errors.push(error("RULE_LENGTH_VIOLATION", msg, path));
-                    }
+                if let Some(lo) = min
+                    && len < lo
+                {
+                    let msg = custom_msg
+                        .map(|m| m.to_string())
+                        .unwrap_or_else(|| format!("'{}' value has length {}, minimum is {}", attr_name, len, lo));
+                    errors.push(error("RULE_LENGTH_VIOLATION", msg, path));
                 }
-                if let Some(hi) = max {
-                    if len > hi {
-                        let msg = custom_msg
-                            .map(|m| m.to_string())
-                            .unwrap_or_else(|| format!("'{}' value has length {}, maximum is {}", attr_name, len, hi));
-                        errors.push(error("RULE_LENGTH_VIOLATION", msg, path));
-                    }
+                if let Some(hi) = max
+                    && len > hi
+                {
+                    let msg = custom_msg
+                        .map(|m| m.to_string())
+                        .unwrap_or_else(|| format!("'{}' value has length {}, maximum is {}", attr_name, len, hi));
+                    errors.push(error("RULE_LENGTH_VIOLATION", msg, path));
                 }
             }
         }

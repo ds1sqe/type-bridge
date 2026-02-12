@@ -5,6 +5,9 @@ use typedb_driver::TransactionType;
 
 use crate::error::PipelineError;
 
+/// Boxed future returned by async trait methods.
+pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 /// Result of a query, already processed from TypeDB stream types to JSON.
 #[derive(Debug, Clone)]
 pub(crate) enum QueryResultKind {
@@ -25,12 +28,12 @@ pub(crate) trait TransactionOps: Send {
     fn query(
         &mut self,
         typeql: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<QueryResultKind, PipelineError>> + Send + '_>>;
+    ) -> BoxFuture<'_, Result<QueryResultKind, PipelineError>>;
 
     /// Commit this transaction.
     fn commit(
         &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), PipelineError>> + Send + '_>>;
+    ) -> BoxFuture<'_, Result<(), PipelineError>>;
 }
 
 /// Abstraction over a TypeDB driver connection.
@@ -43,7 +46,7 @@ pub(crate) trait DriverBackend: Send + Sync {
         &self,
         database: &str,
         tx_type: TransactionType,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransactionOps>, PipelineError>> + Send + '_>>;
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, PipelineError>>;
 
     /// Check if the driver connection is open.
     fn is_open(&self) -> bool;

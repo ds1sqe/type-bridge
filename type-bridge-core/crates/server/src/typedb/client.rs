@@ -594,9 +594,9 @@ mod tests {
 
     #[test]
     fn value_to_json_double() {
-        let value = Value::Double(3.14);
+        let value = Value::Double(3.15);
         let json = value_to_json(&value);
-        assert_eq!(json, serde_json::json!(3.14));
+        assert_eq!(json, serde_json::json!(3.15));
     }
 
     #[test]

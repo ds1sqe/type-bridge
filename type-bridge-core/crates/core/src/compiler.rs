@@ -290,14 +290,14 @@ mod tests {
     #[test]
     fn test_literal_double() {
         let c = compiler();
-        assert_eq!(c.format_literal(&LiteralValue { value: json!(3.14), value_type: "double".into() }), "3.14");
+        assert_eq!(c.format_literal(&LiteralValue { value: json!(3.15), value_type: "double".into() }), "3.15");
     }
 
     #[test]
     fn test_literal_decimal() {
         let c = compiler();
         assert_eq!(c.format_literal(&LiteralValue { value: json!(42), value_type: "decimal".into() }), "42dec");
-        assert_eq!(c.format_literal(&LiteralValue { value: json!(3.14), value_type: "decimal".into() }), "3.14dec");
+        assert_eq!(c.format_literal(&LiteralValue { value: json!(3.15), value_type: "decimal".into() }), "3.15dec");
     }
 
     #[test]

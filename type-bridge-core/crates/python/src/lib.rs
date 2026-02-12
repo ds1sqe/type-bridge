@@ -87,19 +87,19 @@ impl ValidationEngine {
                 format!("Failed to deserialize rule: {}", e)
             ))?;
         self.inner.add_rule(rule)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Load rules from a JSON string. Returns list of warning strings.
     fn load_rules(&mut self, json_str: &str) -> PyResult<Vec<String>> {
         self.inner.load_rules(json_str)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Export current rules as a JSON string.
     fn export_rules(&self) -> PyResult<String> {
         self.inner.export_rules()
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Remove all rules.
