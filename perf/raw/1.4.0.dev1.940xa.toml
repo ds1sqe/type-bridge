@@ -1,0 +1,1294 @@
+[metadata]
+timestamp = "2026-02-12T08:12:51Z"
+save_name = "1.4.0.dev1.940xa"
+
+[metadata.commit]
+hash = "5689e57b28a7f998f8570c02bf9f42d41cb29f4d"
+short = "5689e57"
+dirty = true
+branch = "rust-core"
+
+[metadata.environment]
+host = "940xa"
+os = "Linux"
+kernel = "6.18.4-arch1-1"
+arch = "x86_64"
+cpu = "Intel(R) Xeon(R) Gold 5220 CPU @ 2.20GHz"
+cpu_cores = 144
+python = "CPython 3.13.11"
+python_compiler = "Clang 21.1.4 "
+rust = "1.95.0-nightly (db3e99bba 2026-02-04)"
+
+[[benchmarks]]
+name = "test_compile_simple_match_python"
+group = "compilation"
+impl = "python"
+mean = 8.356996752384633e-07
+median = 8.291099220514297e-07
+stddev = 2.258435500792123e-07
+ci_lower = 8.336452398633233e-07
+ci_upper = 8.377541106136032e-07
+min = 7.781200110912323e-07
+max = 3.002397716045380e-05
+rounds = 46424
+
+[[benchmarks]]
+name = "test_compile_simple_match_rust"
+group = "compilation"
+impl = "rust"
+mean = 2.668671649736263e-06
+median = 2.629123628139496e-06
+stddev = 5.326976455975316e-07
+ci_lower = 2.657947114104502e-06
+ci_upper = 2.679396185368024e-06
+min = 2.443091943860054e-06
+max = 2.798810601234436e-05
+rounds = 9478
+
+[[benchmarks]]
+name = "test_compile_constrained_match_python"
+group = "compilation"
+impl = "python"
+mean = 9.815685634077792e-06
+median = 9.735813364386559e-06
+stddev = 8.124384597393320e-07
+ci_lower = 9.798482530008964e-06
+ci_upper = 9.832888738146620e-06
+min = 9.279930964112282e-06
+max = 4.566297866404057e-05
+rounds = 8568
+
+[[benchmarks]]
+name = "test_compile_constrained_match_rust"
+group = "compilation"
+impl = "rust"
+mean = 7.067779907661250e-06
+median = 6.980961188673973e-06
+stddev = 7.407554643543717e-07
+ci_lower = 7.054389842942964e-06
+ci_upper = 7.081169972379537e-06
+min = 6.729969754815102e-06
+max = 4.113907925784588e-05
+rounds = 11757
+
+[[benchmarks]]
+name = "test_compile_complex_query_python"
+group = "compilation"
+impl = "python"
+mean = 4.099118372514134e-05
+median = 4.064908716827631e-05
+stddev = 1.681249261741687e-06
+ci_lower = 4.094570497442319e-05
+ci_upper = 4.103666247585949e-05
+min = 3.959401510655880e-05
+max = 7.314584217965603e-05
+rounds = 5250
+
+[[benchmarks]]
+name = "test_compile_complex_query_rust"
+group = "compilation"
+impl = "rust"
+mean = 2.942780847661197e-05
+median = 2.873595803976059e-05
+stddev = 3.246102284513083e-05
+ci_lower = 2.867590557548008e-05
+ci_upper = 3.017971137774386e-05
+min = 2.737995237112045e-05
+max = 2.770446008071303e-03
+rounds = 7160
+
+[[benchmarks]]
+name = "test_compile_relation_insert_python"
+group = "compilation"
+impl = "python"
+mean = 1.020002654364342e-05
+median = 1.006410457193851e-05
+stddev = 1.179113814327234e-06
+ci_lower = 1.015509856507369e-05
+ci_upper = 1.024495452221316e-05
+min = 9.694136679172516e-06
+max = 3.878911957144737e-05
+rounds = 2646
+
+[[benchmarks]]
+name = "test_compile_relation_insert_rust"
+group = "compilation"
+impl = "rust"
+mean = 8.376501557325329e-06
+median = 8.289935067296028e-06
+stddev = 7.268114269773629e-07
+ci_lower = 8.363664643967417e-06
+ci_upper = 8.389338470683241e-06
+min = 8.052214980125427e-06
+max = 3.484589979052544e-05
+rounds = 12315
+
+[[benchmarks]]
+name = "test_compile_batch_python"
+group = "compilation"
+impl = "python"
+mean = 2.092240067371788e-04
+median = 2.078320831060410e-04
+stddev = 1.189797822452437e-05
+ci_lower = 2.087125581344700e-04
+ci_upper = 2.097354553398876e-04
+min = 2.040250692516565e-04
+max = 7.160240784287453e-04
+rounds = 2079
+
+[[benchmarks]]
+name = "test_compile_batch_rust"
+group = "compilation"
+impl = "rust"
+mean = 1.328750376235775e-04
+median = 1.318524591624737e-04
+stddev = 5.226564267913219e-06
+ci_lower = 1.326357007400210e-04
+ci_upper = 1.331143745071340e-04
+min = 1.289728097617626e-04
+max = 2.432891633361578e-04
+rounds = 1832
+
+[[benchmarks]]
+name = "test_serde_conversion_overhead_simple"
+group = "serde_overhead"
+impl = "serde"
+mean = 6.610440216912388e-07
+median = 6.567570380866528e-07
+stddev = 4.650759469394458e-08
+ci_lower = 6.607070091441546e-07
+ci_upper = 6.613810342383230e-07
+min = 6.471993401646614e-07
+max = 5.529390182346105e-06
+rounds = 73159
+
+[[benchmarks]]
+name = "test_serde_conversion_overhead_complex"
+group = "serde_overhead"
+impl = "serde"
+mean = 1.999979892580890e-05
+median = 1.981318928301334e-05
+stddev = 6.254905356074988e-06
+ci_lower = 1.990749343759698e-05
+ci_upper = 2.009210441402083e-05
+min = 1.951609738171101e-05
+max = 8.410532027482986e-04
+rounds = 17640
+
+[[benchmarks]]
+name = "test_serde_conversion_overhead_batch"
+group = "serde_overhead"
+impl = "serde"
+mean = 8.530711570046124e-05
+median = 8.465908467769623e-05
+stddev = 6.082286330025405e-06
+ci_lower = 8.518981683979334e-05
+ci_upper = 8.542441456112915e-05
+min = 8.417619392275810e-05
+max = 5.681358743458986e-04
+rounds = 10329
+
+[[benchmarks]]
+name = "test_compile_e2e_complex_rust"
+group = "compilation"
+impl = "rust"
+mean = 5.215844789423746e-05
+median = 5.176803097128868e-05
+stddev = 2.699871605877804e-06
+ci_lower = 5.210536292892084e-05
+ci_upper = 5.221153285955409e-05
+min = 5.075684748589993e-05
+max = 1.973721664398909e-04
+rounds = 9937
+
+[[benchmarks]]
+name = "test_compile_e2e_batch_rust"
+group = "compilation"
+impl = "rust"
+mean = 2.307486559424201e-04
+median = 2.295020967721939e-04
+stddev = 3.758668485358857e-06
+ci_lower = 2.306209345355997e-04
+ci_upper = 2.308763773492405e-04
+min = 2.263879869133234e-04
+max = 3.180392086505890e-04
+rounds = 3327
+
+[[benchmarks]]
+name = "test_compile_long_query_python"
+group = "compilation"
+impl = "python"
+mean = 1.562410021304256e-04
+median = 1.550088636577129e-04
+stddev = 9.632163655963297e-06
+ci_lower = 1.558997155507192e-04
+ci_upper = 1.565822887101321e-04
+min = 1.519671641290188e-04
+max = 6.392530631273985e-04
+rounds = 3060
+
+[[benchmarks]]
+name = "test_compile_long_query_rust"
+group = "compilation"
+impl = "rust"
+mean = 8.760602427964603e-05
+median = 8.695898577570915e-05
+stddev = 2.790144744249420e-06
+ci_lower = 8.753709798410423e-05
+ci_upper = 8.767495057518783e-05
+min = 8.483417332172394e-05
+max = 1.696769613772631e-04
+rounds = 6295
+
+[[benchmarks]]
+name = "test_compile_long_query_e2e_rust"
+group = "compilation"
+impl = "rust_e2e"
+mean = 1.545727139781972e-04
+median = 1.533699687570333e-04
+stddev = 1.320079220986421e-05
+ci_lower = 1.542013827712116e-04
+ci_upper = 1.549440451851828e-04
+min = 1.509259454905987e-04
+max = 1.038069836795330e-03
+rounds = 4855
+
+[[benchmarks]]
+name = "test_compile_deeply_nested_python"
+group = "compilation"
+impl = "python"
+mean = 1.191852196545896e-04
+median = 1.181331463158131e-04
+stddev = 4.567610044356652e-06
+ci_lower = 1.190521766998334e-04
+ci_upper = 1.193182626093459e-04
+min = 1.159398816525936e-04
+max = 2.987331245094538e-04
+rounds = 4528
+
+[[benchmarks]]
+name = "test_compile_deeply_nested_rust"
+group = "compilation"
+impl = "rust"
+mean = 7.692316216695258e-05
+median = 7.637846283614635e-05
+stddev = 2.691475041041386e-06
+ci_lower = 7.685912391028031e-05
+ci_upper = 7.698720042362484e-05
+min = 7.438194006681442e-05
+max = 1.622280105948448e-04
+rounds = 6786
+
+[[benchmarks]]
+name = "test_compile_deeply_nested_e2e_rust"
+group = "compilation"
+impl = "rust_e2e"
+mean = 1.335938427728466e-04
+median = 1.325961202383041e-04
+stddev = 3.475749228448542e-06
+ci_lower = 1.335013421481011e-04
+ci_upper = 1.336863433975921e-04
+min = 1.300149597227573e-04
+max = 2.271451521664858e-04
+rounds = 5424
+
+[[benchmarks]]
+name = "test_compile_graph_traversal_python"
+group = "compilation"
+impl = "python"
+mean = 9.543921132891053e-05
+median = 9.470595978200436e-05
+stddev = 6.437825889907793e-06
+ci_lower = 9.528750453874165e-05
+ci_upper = 9.559091811907940e-05
+min = 9.316997602581978e-05
+max = 5.875700153410435e-04
+rounds = 6918
+
+[[benchmarks]]
+name = "test_compile_graph_traversal_rust"
+group = "compilation"
+impl = "rust"
+mean = 6.866937850142037e-05
+median = 6.815791130065918e-05
+stddev = 2.246309693387811e-06
+ci_lower = 6.861791142487356e-05
+ci_upper = 6.872084557796718e-05
+min = 6.662704981863499e-05
+max = 1.451841089874506e-04
+rounds = 7318
+
+[[benchmarks]]
+name = "test_compile_graph_traversal_e2e_rust"
+group = "compilation"
+impl = "rust_e2e"
+mean = 1.154952905599462e-04
+median = 1.146451104432344e-04
+stddev = 3.126731253666632e-06
+ci_lower = 1.154181106832122e-04
+ci_upper = 1.155724704366802e-04
+min = 1.125780399888754e-04
+max = 1.983069814741611e-04
+rounds = 6305
+
+[[benchmarks]]
+name = "test_compile_heavy_insert_python"
+group = "compilation"
+impl = "python"
+mean = 1.712632573006915e-03
+median = 1.710337935946882e-03
+stddev = 2.798486014327135e-05
+ci_lower = 1.710169720670393e-03
+ci_upper = 1.715095425343438e-03
+min = 1.675425097346306e-03
+max = 2.193458843976259e-03
+rounds = 496
+
+[[benchmarks]]
+name = "test_compile_heavy_insert_rust"
+group = "compilation"
+impl = "rust"
+mean = 8.961930082039667e-04
+median = 8.947991300374269e-04
+stddev = 1.275893931586752e-05
+ci_lower = 8.953879876175332e-04
+ci_upper = 8.969980287904002e-04
+min = 8.838549256324768e-04
+max = 1.067546894773841e-03
+rounds = 965
+
+[[benchmarks]]
+name = "test_compile_heavy_insert_e2e_rust"
+group = "compilation"
+impl = "rust_e2e"
+mean = 1.530986041531548e-03
+median = 1.365764066576958e-03
+stddev = 2.153243737154106e-03
+ci_lower = 1.367573137819362e-03
+ci_upper = 1.694398945243733e-03
+min = 1.352853141725063e-03
+max = 4.877931997179985e-02
+rounds = 667
+
+[[benchmarks]]
+name = "test_compile_large_fetch_python"
+group = "compilation"
+impl = "python"
+mean = 1.798595084275977e-05
+median = 1.785601489245892e-05
+stddev = 1.610883338828800e-06
+ci_lower = 1.796214615151678e-05
+ci_upper = 1.800975553400277e-05
+min = 1.766905188560486e-05
+max = 1.568049192428589e-04
+rounds = 17592
+
+[[benchmarks]]
+name = "test_compile_large_fetch_rust"
+group = "compilation"
+impl = "rust"
+mean = 1.663159413642312e-05
+median = 1.643900759518147e-05
+stddev = 4.702913125643662e-06
+ci_lower = 1.657123669500290e-05
+ci_upper = 1.669195157784333e-05
+min = 1.602806150913239e-05
+max = 6.333750206977129e-04
+rounds = 23323
+
+[[benchmarks]]
+name = "test_compile_reduce_python"
+group = "compilation"
+impl = "python"
+mean = 8.207111782566696e-06
+median = 8.126953616738319e-06
+stddev = 1.093304674515369e-06
+ci_lower = 8.192887754029631e-06
+ci_upper = 8.221335811103761e-06
+min = 7.969094440340996e-06
+max = 9.415391832590103e-05
+rounds = 22696
+
+[[benchmarks]]
+name = "test_compile_reduce_rust"
+group = "compilation"
+impl = "rust"
+mean = 1.009526872007650e-05
+median = 1.003197394311428e-05
+stddev = 7.493618884123708e-07
+ci_lower = 1.008561174565255e-05
+ci_upper = 1.010492569450045e-05
+min = 9.665032848715782e-06
+max = 6.152689456939697e-05
+rounds = 23132
+
+[[benchmarks]]
+name = "test_compile_realistic_pipeline_python"
+group = "compilation"
+impl = "python"
+mean = 3.683129608764159e-05
+median = 3.658188506960869e-05
+stddev = 1.568233243300229e-06
+ci_lower = 3.680427311299843e-05
+ci_upper = 3.685831906228476e-05
+min = 3.569200634956360e-05
+max = 1.077242195606232e-04
+rounds = 12938
+
+[[benchmarks]]
+name = "test_compile_realistic_pipeline_rust"
+group = "compilation"
+impl = "rust"
+mean = 2.465644246980224e-05
+median = 2.440786920487881e-05
+stddev = 5.209463725038632e-06
+ci_lower = 2.456513115272281e-05
+ci_upper = 2.474775378688167e-05
+min = 2.368609420955181e-05
+max = 5.858510266989470e-04
+rounds = 12504
+
+[[benchmarks]]
+name = "test_compile_realistic_pipeline_e2e_rust"
+group = "compilation"
+impl = "rust_e2e"
+mean = 4.816800626851149e-05
+median = 4.756101407110691e-05
+stddev = 2.200122351056139e-06
+ci_lower = 4.812589101703492e-05
+ci_upper = 4.821012151998806e-05
+min = 4.645995795726776e-05
+max = 1.728299539536238e-04
+rounds = 10484
+
+[[benchmarks]]
+name = "test_compile_large_batch_python"
+group = "compilation"
+impl = "python"
+mean = 2.259649873079840e-03
+median = 2.259392407722771e-03
+stddev = 1.487695577496567e-05
+ci_lower = 2.258220243655928e-03
+ci_upper = 2.261079502503751e-03
+min = 2.231302903965116e-03
+max = 2.367986831814051e-03
+rounds = 416
+
+[[benchmarks]]
+name = "test_compile_large_batch_rust"
+group = "compilation"
+impl = "rust"
+mean = 1.065741152401531e-03
+median = 1.065213000401855e-03
+stddev = 2.037423599434490e-05
+ci_lower = 1.064377049939819e-03
+ci_upper = 1.067105254863243e-03
+min = 1.046123914420605e-03
+max = 1.586474012583494e-03
+rounds = 857
+
+[[benchmarks]]
+name = "test_compile_large_batch_e2e_rust"
+group = "compilation"
+impl = "rust_e2e"
+mean = 2.140154788207452e-03
+median = 2.009927993640304e-03
+stddev = 1.555123848575993e-03
+ci_lower = 1.962690878632989e-03
+ci_upper = 2.317618697781915e-03
+min = 1.994821010157466e-03
+max = 2.277402114123106e-02
+rounds = 295
+
+[[benchmarks]]
+name = "test_serde_overhead_long_query"
+group = "serde_overhead"
+impl = "serde"
+mean = 6.335865199925429e-05
+median = 6.287207361310720e-05
+stddev = 4.824282734568639e-06
+ci_lower = 6.327615765114803e-05
+ci_upper = 6.344114634736056e-05
+min = 6.218114867806435e-05
+max = 5.599320866167545e-04
+rounds = 13138
+
+[[benchmarks]]
+name = "test_serde_overhead_deeply_nested"
+group = "serde_overhead"
+impl = "serde"
+mean = 5.045583159517360e-05
+median = 5.009514279663563e-05
+stddev = 1.871566011353373e-06
+ci_lower = 5.042605644595171e-05
+ci_upper = 5.048560674439548e-05
+min = 4.957197234034538e-05
+max = 1.300601288676262e-04
+rounds = 15178
+
+[[benchmarks]]
+name = "test_serde_overhead_graph_traversal"
+group = "serde_overhead"
+impl = "serde"
+mean = 4.295334217342671e-05
+median = 4.263292066752911e-05
+stddev = 1.997571712029048e-06
+ci_lower = 4.292414346731306e-05
+ci_upper = 4.298254087954036e-05
+min = 4.214188084006310e-05
+max = 1.671330537647009e-04
+rounds = 17980
+
+[[benchmarks]]
+name = "test_serde_overhead_heavy_insert"
+group = "serde_overhead"
+impl = "serde"
+mean = 5.817665096440757e-04
+median = 4.540199879556894e-04
+stddev = 1.454377877112850e-03
+ci_lower = 4.880906175221156e-04
+ci_upper = 6.754424017660358e-04
+min = 4.475158639252186e-04
+max = 2.017546794377267e-02
+rounds = 926
+
+[[benchmarks]]
+name = "test_serde_overhead_large_batch"
+group = "serde_overhead"
+impl = "serde"
+mean = 7.416909090608083e-04
+median = 7.416359148919582e-04
+stddev = 6.820119053726070e-06
+ci_lower = 7.413204480263318e-04
+ci_upper = 7.420613700952848e-04
+min = 7.350209634751081e-04
+max = 8.887359872460365e-04
+rounds = 1302
+
+[[benchmarks]]
+name = "test_compile_arithmetic_match_python"
+group = "compilation"
+impl = "python"
+mean = 1.536401660644047e-05
+median = 1.523992978036404e-05
+stddev = 1.858491631535857e-06
+ci_lower = 1.533272477309559e-05
+ci_upper = 1.539530843978535e-05
+min = 1.476192846894264e-05
+max = 1.801869366317987e-04
+rounds = 13551
+
+[[benchmarks]]
+name = "test_compile_arithmetic_match_rust"
+group = "compilation"
+impl = "rust"
+mean = 1.271156352163221e-05
+median = 1.259311102330685e-05
+stddev = 8.618943771049366e-07
+ci_lower = 1.269576519732148e-05
+ci_upper = 1.272736184594294e-05
+min = 1.225410960614681e-05
+max = 3.700284287333488e-05
+rounds = 11434
+
+[[benchmarks]]
+name = "test_compile_nested_arithmetic_python"
+group = "compilation"
+impl = "python"
+mean = 1.502070069323345e-05
+median = 1.490791328251362e-05
+stddev = 1.071842101653535e-06
+ci_lower = 1.500710627493246e-05
+ci_upper = 1.503429511153444e-05
+min = 1.462199725210667e-05
+max = 8.312193676829338e-05
+rounds = 23881
+
+[[benchmarks]]
+name = "test_compile_nested_arithmetic_rust"
+group = "compilation"
+impl = "rust"
+mean = 1.714296267662199e-05
+median = 1.696799881756306e-05
+stddev = 3.803463359269826e-06
+ci_lower = 1.708821461703912e-05
+ci_upper = 1.719771073620487e-05
+min = 1.652794890105724e-05
+max = 5.090418271720409e-04
+rounds = 18541
+
+[[benchmarks]]
+name = "test_compile_match_let_single_python"
+group = "compilation"
+impl = "python"
+mean = 2.053634726413365e-06
+median = 2.034008502960205e-06
+stddev = 3.308009600764976e-07
+ci_lower = 2.050888825779655e-06
+ci_upper = 2.056380627047075e-06
+min = 1.947861164808273e-06
+max = 3.172503784298897e-05
+rounds = 55754
+
+[[benchmarks]]
+name = "test_compile_match_let_single_rust"
+group = "compilation"
+impl = "rust"
+mean = 3.546507789778425e-06
+median = 3.502005711197853e-06
+stddev = 6.267897947766718e-07
+ci_lower = 3.540657619035406e-06
+ci_upper = 3.552357960521444e-06
+min = 3.271037712693214e-06
+max = 8.243485353887081e-05
+rounds = 44098
+
+[[benchmarks]]
+name = "test_compile_match_let_multiple_python"
+group = "compilation"
+impl = "python"
+mean = 4.717946626972023e-06
+median = 4.654051735997200e-06
+stddev = 2.413842613490159e-06
+ci_lower = 4.702087927171161e-06
+ci_upper = 4.733805326772884e-06
+min = 4.523899406194687e-06
+max = 6.163988728076220e-04
+rounds = 89001
+
+[[benchmarks]]
+name = "test_compile_match_let_multiple_rust"
+group = "compilation"
+impl = "rust"
+mean = 7.096469229010772e-06
+median = 7.017981261014938e-06
+stddev = 1.133409229265456e-06
+ci_lower = 7.082728862042192e-06
+ci_upper = 7.110209595979353e-06
+min = 6.730901077389717e-06
+max = 1.330799423158169e-04
+rounds = 26139
+
+[[benchmarks]]
+name = "test_compile_fetch_variable_python"
+group = "compilation"
+impl = "python"
+mean = 4.004792843703555e-06
+median = 3.976980224251747e-06
+stddev = 4.161140471080920e-07
+ci_lower = 4.001348925485788e-06
+ci_upper = 4.008236761921323e-06
+min = 3.877095878124237e-06
+max = 2.892408519983292e-05
+rounds = 56083
+
+[[benchmarks]]
+name = "test_compile_fetch_variable_rust"
+group = "compilation"
+impl = "rust"
+mean = 3.984579945597584e-06
+median = 3.932043910026550e-06
+stddev = 5.267712542873001e-07
+ci_lower = 3.979705130071144e-06
+ci_upper = 3.989454761124024e-06
+min = 3.707129508256912e-06
+max = 2.982188016176224e-05
+rounds = 44858
+
+[[benchmarks]]
+name = "test_compile_isa_constraint_python"
+group = "compilation"
+impl = "python"
+mean = 1.301066121522707e-05
+median = 1.287995837628841e-05
+stddev = 3.612701986600414e-06
+ci_lower = 1.296210266325895e-05
+ci_upper = 1.305921976719520e-05
+min = 1.247995533049107e-05
+max = 5.144451279193163e-04
+rounds = 21264
+
+[[benchmarks]]
+name = "test_compile_isa_constraint_rust"
+group = "compilation"
+impl = "rust"
+mean = 1.079851065613630e-05
+median = 1.067295670509338e-05
+stddev = 8.143074849141806e-07
+ci_lower = 1.078825196499711e-05
+ci_upper = 1.080876934727548e-05
+min = 1.035793684422970e-05
+max = 3.714696504175663e-05
+rounds = 24205
+
+[[benchmarks]]
+name = "test_compile_standalone_insert_python"
+group = "compilation"
+impl = "python"
+mean = 4.893106413671077e-05
+median = 4.865205846726894e-05
+stddev = 1.864086330662609e-06
+ci_lower = 4.889778619171481e-05
+ci_upper = 4.896434208170673e-05
+min = 4.717893898487091e-05
+max = 1.364618074148893e-04
+rounds = 12054
+
+[[benchmarks]]
+name = "test_compile_standalone_insert_rust"
+group = "compilation"
+impl = "rust"
+mean = 3.224447179562428e-05
+median = 3.197393380105495e-05
+stddev = 2.308153661430988e-06
+ci_lower = 3.220678503589700e-05
+ci_upper = 3.228215855535156e-05
+min = 3.128894604742527e-05
+max = 2.240019384771585e-04
+rounds = 14410
+
+[[benchmarks]]
+name = "test_compile_standalone_delete_python"
+group = "compilation"
+impl = "python"
+mean = 9.271293236220096e-06
+median = 9.187962859869003e-06
+stddev = 4.052161198763715e-06
+ci_lower = 9.241050208597901e-06
+ci_upper = 9.301536263842290e-06
+min = 9.058974683284760e-06
+max = 9.181739296764135e-04
+rounds = 68966
+
+[[benchmarks]]
+name = "test_compile_standalone_delete_rust"
+group = "compilation"
+impl = "rust"
+mean = 6.232535275728309e-06
+median = 6.186077371239662e-06
+stddev = 6.139332012483218e-07
+ci_lower = 6.227394478134684e-06
+ci_upper = 6.237676073321934e-06
+min = 5.844980478286743e-06
+max = 6.078812293708324e-05
+rounds = 54789
+
+[[benchmarks]]
+name = "test_compile_standalone_update_python"
+group = "compilation"
+impl = "python"
+mean = 9.328174228573764e-05
+median = 9.257788769900799e-05
+stddev = 3.466376981465865e-06
+ci_lower = 9.320755516058302e-05
+ci_upper = 9.335592941089226e-05
+min = 8.992105722427368e-05
+max = 2.484009601175785e-04
+rounds = 8387
+
+[[benchmarks]]
+name = "test_compile_standalone_update_rust"
+group = "compilation"
+impl = "rust"
+mean = 3.782175044627106e-05
+median = 3.759213723242283e-05
+stddev = 1.256356056998529e-06
+ci_lower = 3.780300921605446e-05
+ci_upper = 3.784049167648765e-05
+min = 3.661611117422581e-05
+max = 8.355989120900631e-05
+rounds = 17264
+
+[[benchmarks]]
+name = "test_serde_overhead_arithmetic"
+group = "serde_overhead"
+impl = "serde"
+mean = 9.401861352393411e-06
+median = 9.317882359027863e-06
+stddev = 2.541610001342785e-06
+ci_lower = 9.379374181104317e-06
+ci_upper = 9.424348523682506e-06
+min = 9.180977940559387e-06
+max = 5.075109656900167e-04
+rounds = 49075
+
+[[benchmarks]]
+name = "test_serde_overhead_match_let"
+group = "serde_overhead"
+impl = "serde"
+mean = 4.231731360245685e-06
+median = 4.187924787402153e-06
+stddev = 5.950146735511793e-07
+ci_lower = 4.228001447190867e-06
+ci_upper = 4.235461273300504e-06
+min = 4.085944965481758e-06
+max = 1.096727792173624e-04
+rounds = 97762
+
+[[benchmarks]]
+name = "test_serde_overhead_fetch_variable"
+group = "serde_overhead"
+impl = "serde"
+mean = 3.902302002571196e-06
+median = 3.874069079756737e-06
+stddev = 7.225908493116608e-07
+ci_lower = 3.897541961989804e-06
+ci_upper = 3.907062043152588e-06
+min = 3.783963620662689e-06
+max = 9.939097799360752e-05
+rounds = 88527
+
+[[benchmarks]]
+name = "test_serde_overhead_standalone_insert"
+group = "serde_overhead"
+impl = "serde"
+mean = 1.134443435793131e-05
+median = 1.128204166889191e-05
+stddev = 6.590770353999488e-07
+ci_lower = 1.133862049102225e-05
+ci_upper = 1.135024822484038e-05
+min = 1.107482239603996e-05
+max = 5.852687172591686e-05
+rounds = 49369
+
+[[benchmarks]]
+name = "test_serde_overhead_standalone_delete"
+group = "serde_overhead"
+impl = "serde"
+mean = 9.674470991723828e-06
+median = 9.602867066860199e-06
+stddev = 1.968634589808019e-06
+ci_lower = 9.659800540899392e-06
+ci_upper = 9.689141442548264e-06
+min = 9.485054761171341e-06
+max = 4.942661616951227e-04
+rounds = 69176
+
+[[benchmarks]]
+name = "test_serde_overhead_standalone_update"
+group = "serde_overhead"
+impl = "serde"
+mean = 1.198228616245031e-05
+median = 1.190090551972389e-05
+stddev = 8.302116784171389e-07
+ci_lower = 1.197480998733347e-05
+ci_upper = 1.198976233756715e-05
+min = 1.164106652140617e-05
+max = 7.568486034870148e-05
+rounds = 47373
+
+[[benchmarks]]
+name = "test_validate_single_name_python"
+group = "validation"
+impl = "python"
+mean = 1.894679231250128e-06
+median = 1.882901415228844e-06
+stddev = 4.652502855680354e-07
+ci_lower = 1.891008395551648e-06
+ci_upper = 1.898350066948608e-06
+min = 1.773936673998833e-06
+max = 6.935908459126949e-05
+rounds = 61710
+
+[[benchmarks]]
+name = "test_validate_single_name_rust"
+group = "validation"
+impl = "rust"
+mean = 3.547495732866540e-07
+median = 3.480818122625351e-07
+stddev = 2.081304412005215e-07
+ci_lower = 3.520324766385102e-07
+ci_upper = 3.574666699347979e-07
+min = 3.359746187925339e-07
+max = 2.474710345268250e-05
+rounds = 22541
+
+[[benchmarks]]
+name = "test_validate_long_name_python"
+group = "validation"
+impl = "python"
+mean = 2.489626785069669e-05
+median = 2.472708001732826e-05
+stddev = 2.924076577908452e-06
+ci_lower = 2.486510626916395e-05
+ci_upper = 2.492742943222943e-05
+min = 2.416293136775494e-05
+max = 5.157040432095528e-04
+rounds = 33826
+
+[[benchmarks]]
+name = "test_validate_long_name_rust"
+group = "validation"
+impl = "rust"
+mean = 6.205168444492477e-07
+median = 6.130430847406387e-07
+stddev = 1.659292206643499e-07
+ci_lower = 6.195764585842271e-07
+ci_upper = 6.214572303142682e-07
+min = 5.818437784910202e-07
+max = 2.475408837199211e-05
+rounds = 119604
+
+[[benchmarks]]
+name = "test_validate_unicode_name_python"
+group = "validation"
+impl = "python"
+mean = 1.781531719465924e-06
+median = 1.767883077263832e-06
+stddev = 3.019730090675951e-07
+ci_lower = 1.778580525420733e-06
+ci_upper = 1.784482913511116e-06
+min = 1.674983650445938e-06
+max = 2.370192669332027e-05
+rounds = 40221
+
+[[benchmarks]]
+name = "test_validate_unicode_name_rust"
+group = "validation"
+impl = "rust"
+mean = 4.269776011036043e-07
+median = 4.169996827840805e-07
+stddev = 1.624573067721432e-07
+ci_lower = 4.256548447930079e-07
+ci_upper = 4.283003574142008e-07
+min = 4.030298441648483e-07
+max = 2.271588891744614e-05
+rounds = 57947
+
+[[benchmarks]]
+name = "test_validate_reserved_word_python"
+group = "validation"
+impl = "python"
+mean = 2.110863313047927e-07
+median = 2.094602677971125e-07
+stddev = 6.611404833252653e-08
+ci_lower = 2.107935191213207e-07
+ci_upper = 2.113791434882646e-07
+min = 2.033775672316551e-07
+max = 2.577578804145257e-05
+rounds = 195849
+
+[[benchmarks]]
+name = "test_validate_reserved_word_rust"
+group = "validation"
+impl = "rust"
+mean = 8.979924919056377e-07
+median = 8.861534297466278e-07
+stddev = 2.139666492599125e-07
+ci_lower = 8.965065152281087e-07
+ci_upper = 8.994784685831667e-07
+min = 8.370261639356613e-07
+max = 2.673803828656673e-05
+rounds = 79649
+
+[[benchmarks]]
+name = "test_validate_batch_python"
+group = "validation"
+impl = "python"
+mean = 5.316014299517806e-03
+median = 5.311721004545689e-03
+stddev = 3.429629106616370e-05
+ci_lower = 5.311098632864128e-03
+ci_upper = 5.320929966171485e-03
+min = 5.300521152094007e-03
+max = 5.762084852904081e-03
+rounds = 187
+
+[[benchmarks]]
+name = "test_validate_batch_rust"
+group = "validation"
+impl = "rust"
+mean = 2.668031455176428e-04
+median = 2.654055133461952e-04
+stddev = 3.883562686735501e-06
+ci_lower = 2.666754641048907e-04
+ci_upper = 2.669308269303950e-04
+min = 2.632800024002790e-04
+max = 3.691711463034153e-04
+rounds = 3554
+
+[[benchmarks]]
+name = "test_validate_variable_valid_python"
+group = "validation"
+impl = "python"
+mean = 1.388691827586799e-07
+median = 1.378357410430908e-07
+stddev = 1.927263880590450e-08
+ci_lower = 1.387845317420530e-07
+ci_upper = 1.389538337753069e-07
+min = 1.317239366471767e-07
+max = 5.794689059257507e-06
+rounds = 199127
+
+[[benchmarks]]
+name = "test_validate_variable_valid_rust"
+group = "validation"
+impl = "rust"
+mean = 1.707979411360935e-07
+median = 1.696404069662094e-07
+stddev = 1.804656239788083e-08
+ci_lower = 1.707178274413023e-07
+ci_upper = 1.708780548308847e-07
+min = 1.642309750119845e-07
+max = 2.013131355245908e-06
+rounds = 194934
+
+[[benchmarks]]
+name = "test_validate_variable_invalid_python"
+group = "validation"
+impl = "python"
+mean = 1.046472654180393e-07
+median = 1.040077768266201e-07
+stddev = 1.125728995099383e-08
+ci_lower = 1.045768837493814e-07
+ci_upper = 1.047176470866971e-07
+min = 9.740935638546944e-08
+max = 2.563549205660820e-06
+rounds = 98279
+
+[[benchmarks]]
+name = "test_validate_variable_invalid_rust"
+group = "validation"
+impl = "rust"
+mean = 7.878673649202378e-07
+median = 7.781200110912323e-07
+stddev = 1.870798176811071e-07
+ci_lower = 7.865263672238362e-07
+ci_upper = 7.892083626166393e-07
+min = 7.399357855319977e-07
+max = 1.536705531179905e-05
+rounds = 74767
+
+[[benchmarks]]
+name = "test_validate_relation_context_python"
+group = "validation"
+impl = "python"
+mean = 2.845508434370867e-06
+median = 2.824002876877785e-06
+stddev = 5.172252638298157e-07
+ci_lower = 2.842443079644078e-06
+ci_upper = 2.848573789097657e-06
+min = 2.685934305191040e-06
+max = 9.835697710514069e-05
+rounds = 109373
+
+[[benchmarks]]
+name = "test_validate_relation_context_rust"
+group = "validation"
+impl = "rust"
+mean = 3.727293076052231e-07
+median = 3.681052476167679e-07
+stddev = 1.380109159378053e-07
+ci_lower = 3.721069684975010e-07
+ci_upper = 3.733516467129452e-07
+min = 3.487803041934967e-07
+max = 2.509402111172676e-05
+rounds = 188923
+
+[[benchmarks]]
+name = "test_validate_attribute_context_python"
+group = "validation"
+impl = "python"
+mean = 2.663457554661423e-06
+median = 2.641929313540459e-06
+stddev = 3.483428248168012e-07
+ci_lower = 2.661570498510335e-06
+ci_upper = 2.665344610812511e-06
+min = 2.538086846470833e-06
+max = 2.890382893383503e-05
+rounds = 130905
+
+[[benchmarks]]
+name = "test_validate_attribute_context_rust"
+group = "validation"
+impl = "rust"
+mean = 2.618681702350370e-07
+median = 2.600595747169696e-07
+stddev = 3.152791545929263e-08
+ci_lower = 2.617289894204613e-07
+ci_upper = 2.620073510496127e-07
+min = 2.540549949595803e-07
+max = 5.262793580952443e-06
+rounds = 197126
+
+[[benchmarks]]
+name = "test_validate_empty_name_python"
+group = "validation"
+impl = "python"
+mean = 8.345517792221338e-08
+median = 8.282950147986412e-08
+stddev = 1.806049166350438e-08
+ci_lower = 8.335290751595789e-08
+ci_upper = 8.355744832846886e-08
+min = 7.816823199391365e-08
+max = 5.784409586340189e-06
+rounds = 119804
+
+[[benchmarks]]
+name = "test_validate_empty_name_rust"
+group = "validation"
+impl = "rust"
+mean = 7.782696837826139e-07
+median = 7.641501724720001e-07
+stddev = 9.821300432113744e-07
+ci_lower = 7.719283625430743e-07
+ci_upper = 7.846110050221536e-07
+min = 7.040798664093018e-07
+max = 2.783609088510275e-04
+rounds = 92149
+
+[[benchmarks]]
+name = "test_validate_digit_start_python"
+group = "validation"
+impl = "python"
+mean = 6.042493434558587e-07
+median = 5.951151251792908e-07
+stddev = 2.026760653806227e-07
+ci_lower = 6.033044346811461e-07
+ci_upper = 6.051942522305712e-07
+min = 5.608890205621719e-07
+max = 5.035405047237873e-05
+rounds = 176741
+
+[[benchmarks]]
+name = "test_validate_digit_start_rust"
+group = "validation"
+impl = "rust"
+mean = 9.094160942102824e-07
+median = 8.980277925729752e-07
+stddev = 2.120919562674083e-07
+ci_lower = 9.079402157538573e-07
+ci_upper = 9.108919726667074e-07
+min = 8.521601557731628e-07
+max = 2.527399919927120e-05
+rounds = 79334
+
+[[benchmarks]]
+name = "test_validate_batch_variable_python"
+group = "validation"
+impl = "python"
+mean = 5.005855700112653e-05
+median = 4.971702583134174e-05
+stddev = 2.073901670413049e-06
+ci_lower = 5.002849810689201e-05
+ci_upper = 5.008861589536105e-05
+min = 4.782015457749367e-05
+max = 1.713579986244440e-04
+rounds = 18287
+
+[[benchmarks]]
+name = "test_validate_batch_variable_rust"
+group = "validation"
+impl = "rust"
+mean = 6.824319521313577e-05
+median = 6.764987483620644e-05
+stddev = 7.383878976027320e-06
+ci_lower = 6.810694173618642e-05
+ci_upper = 6.837944869008512e-05
+min = 6.626010872423649e-05
+max = 6.807011086493731e-04
+rounds = 11282
+
+[[benchmarks]]
+name = "test_validate_batch_5000_python"
+group = "validation"
+impl = "python"
+mean = 2.802345165077390e-02
+median = 2.800470707006752e-02
+stddev = 7.253291857118510e-05
+ci_lower = 2.799975756404064e-02
+ci_upper = 2.804714573750715e-02
+min = 2.795183402486145e-02
+max = 2.832549693994224e-02
+rounds = 36
+
+[[benchmarks]]
+name = "test_validate_batch_5000_rust"
+group = "validation"
+impl = "rust"
+mean = 1.329874355773626e-03
+median = 1.328316051512957e-03
+stddev = 8.929047117284203e-06
+ci_lower = 1.329223489096268e-03
+ci_upper = 1.330525222450983e-03
+min = 1.320573966950178e-03
+max = 1.471959054470062e-03
+rounds = 723
+
+[[benchmarks]]
+name = "test_validate_role_context_python"
+group = "validation"
+impl = "python"
+mean = 2.382825299130778e-06
+median = 2.368120476603508e-06
+stddev = 3.066076664905048e-07
+ci_lower = 2.381228892844563e-06
+ci_upper = 2.384421705416993e-06
+min = 2.244953066110611e-06
+max = 2.691289409995079e-05
+rounds = 141707
+
+[[benchmarks]]
+name = "test_validate_role_context_rust"
+group = "validation"
+impl = "rust"
+mean = 2.572791679523958e-07
+median = 2.556014806032181e-07
+stddev = 2.680574240711546e-08
+ci_lower = 2.571181189640466e-07
+ci_upper = 2.574402169407450e-07
+min = 2.492452040314674e-07
+max = 3.377045504748821e-06
+rounds = 106427
+
+[[benchmarks]]
+name = "test_validate_pattern_simple_rust"
+group = "validation"
+impl = "rust"
+mean = 3.454747959264784e-06
+median = 3.407942131161690e-06
+stddev = 5.861138639352187e-07
+ci_lower = 3.447538291237733e-06
+ci_upper = 3.461957627291834e-06
+min = 3.259163349866867e-06
+max = 5.748099647462368e-05
+rounds = 25389
+
+[[benchmarks]]
+name = "test_validate_pattern_complex_rust"
+group = "validation"
+impl = "rust"
+mean = 9.998965576631163e-06
+median = 9.901123121380806e-06
+stddev = 1.485950620924377e-06
+ci_lower = 9.980135870062591e-06
+ci_upper = 1.001779528319974e-05
+min = 9.626848623156548e-06
+max = 2.021680120378733e-04
+rounds = 23924
+
+[[benchmarks]]
+name = "test_validate_statement_simple_rust"
+group = "validation"
+impl = "rust"
+mean = 1.062608329943315e-06
+median = 1.062173396348953e-06
+stddev = 2.191238479976196e-07
+ci_lower = 1.061142979325591e-06
+ci_upper = 1.064073680561040e-06
+min = 9.629875421524048e-07
+max = 2.522394061088562e-05
+rounds = 85903
+
+[[benchmarks]]
+name = "test_validate_statement_relation_rust"
+group = "validation"
+impl = "rust"
+mean = 6.684917575907836e-06
+median = 6.617046892642975e-06
+stddev = 6.161992986857219e-07
+ci_lower = 6.678202355576082e-06
+ci_upper = 6.691632796239590e-06
+min = 6.407033652067184e-06
+max = 3.354088403284550e-05
+rounds = 32347

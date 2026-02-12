@@ -316,16 +316,27 @@ def test_validate_role_context_rust(benchmark, rust_validator):
     reason="",
 )
 def test_validate_pattern_simple_rust(benchmark, rust_validator):
-    """Validate a simple entity pattern via Rust PyO3 extraction + validation."""
-    from type_bridge_core import EntityPattern, HasConstraint, LiteralValue
-
-    pattern = EntityPattern(
-        variable="$p",
-        type_name="person",
-        constraints=[
-            HasConstraint(attr_name="name", value=LiteralValue(value="Alice", value_type="string"))
-        ],
-    )
+    """Validate a simple entity pattern via Rust depythonize."""
+    pattern = {
+        "type": "Entity",
+        "data": {
+            "variable": "$p",
+            "type_name": "person",
+            "constraints": [
+                {
+                    "type": "Has",
+                    "data": {
+                        "attr_name": "name",
+                        "value": {
+                            "type": "Literal",
+                            "data": {"value": "Alice", "value_type": "string"},
+                        },
+                    },
+                }
+            ],
+            "is_strict": False,
+        },
+    }
     benchmark(rust_validator.validate_pattern, pattern)
 
 
@@ -335,54 +346,71 @@ def test_validate_pattern_simple_rust(benchmark, rust_validator):
 )
 def test_validate_pattern_complex_rust(benchmark, rust_validator):
     """Validate a complex nested pattern (Or + Relation + Not) via Rust."""
-    from type_bridge_core import (
-        EntityPattern,
-        HasConstraint,
-        LiteralValue,
-        NotPattern,
-        OrPattern,
-        RelationPattern,
-        RolePlayer,
-    )
-
-    pattern = OrPattern(
-        alternatives=[
+    pattern = {
+        "type": "Or",
+        "data": [
             [
-                EntityPattern(
-                    variable="$p",
-                    type_name="person",
-                    constraints=[
-                        HasConstraint(
-                            attr_name="name", value=LiteralValue(value="Alice", value_type="string")
-                        ),
-                        HasConstraint(
-                            attr_name="age", value=LiteralValue(value=30, value_type="long")
-                        ),
-                    ],
-                ),
-                RelationPattern(
-                    variable="$r",
-                    type_name="employment",
-                    role_players=[
-                        RolePlayer(role="employee", player_var="$p"),
-                        RolePlayer(role="employer", player_var="$c"),
-                    ],
-                ),
+                {
+                    "type": "Entity",
+                    "data": {
+                        "variable": "$p",
+                        "type_name": "person",
+                        "constraints": [
+                            {
+                                "type": "Has",
+                                "data": {
+                                    "attr_name": "name",
+                                    "value": {
+                                        "type": "Literal",
+                                        "data": {"value": "Alice", "value_type": "string"},
+                                    },
+                                },
+                            },
+                            {
+                                "type": "Has",
+                                "data": {
+                                    "attr_name": "age",
+                                    "value": {
+                                        "type": "Literal",
+                                        "data": {"value": 30, "value_type": "long"},
+                                    },
+                                },
+                            },
+                        ],
+                        "is_strict": False,
+                    },
+                },
+                {
+                    "type": "Relation",
+                    "data": {
+                        "variable": "$r",
+                        "type_name": "employment",
+                        "role_players": [
+                            {"role": "employee", "player_var": "$p"},
+                            {"role": "employer", "player_var": "$c"},
+                        ],
+                        "constraints": [],
+                    },
+                },
             ],
             [
-                NotPattern(
-                    patterns=[
-                        EntityPattern(
-                            variable="$p",
-                            type_name="retired-person",
-                            constraints=[],
-                            is_strict=True,
-                        ),
-                    ]
-                ),
+                {
+                    "type": "Not",
+                    "data": [
+                        {
+                            "type": "Entity",
+                            "data": {
+                                "variable": "$p",
+                                "type_name": "retired-person",
+                                "constraints": [],
+                                "is_strict": True,
+                            },
+                        }
+                    ],
+                }
             ],
-        ]
-    )
+        ],
+    }
     benchmark(rust_validator.validate_pattern, pattern)
 
 
@@ -396,10 +424,11 @@ def test_validate_pattern_complex_rust(benchmark, rust_validator):
     reason="",
 )
 def test_validate_statement_simple_rust(benchmark, rust_validator):
-    """Validate a simple IsaStatement via Rust."""
-    from type_bridge_core import IsaStatement
-
-    stmt = IsaStatement(variable="$p", type_name="person")
+    """Validate a simple Isa statement via Rust depythonize."""
+    stmt = {
+        "type": "Isa",
+        "data": {"variable": "$p", "type_name": "person"},
+    }
     benchmark(rust_validator.validate_statement, stmt)
 
 
@@ -408,27 +437,41 @@ def test_validate_statement_simple_rust(benchmark, rust_validator):
     reason="",
 )
 def test_validate_statement_relation_rust(benchmark, rust_validator):
-    """Validate a RelationStatement with role players and attributes via Rust."""
-    from type_bridge_core import HasStatement, LiteralValue, RelationStatement, RolePlayer
-
-    stmt = RelationStatement(
-        variable="$rel",
-        type_name="employment",
-        role_players=[
-            RolePlayer(role="employee", player_var="$p"),
-            RolePlayer(role="employer", player_var="$c"),
-        ],
-        attributes=[
-            HasStatement(
-                subject_var="$rel",
-                attr_name="start-date",
-                value=LiteralValue(value="2024-01-15", value_type="date"),
-            ),
-            HasStatement(
-                subject_var="$rel",
-                attr_name="salary",
-                value=LiteralValue(value=95000, value_type="long"),
-            ),
-        ],
-    )
+    """Validate a Relation statement with role players and attributes via Rust."""
+    stmt = {
+        "type": "Relation",
+        "data": {
+            "variable": "$rel",
+            "type_name": "employment",
+            "role_players": [
+                {"role": "employee", "player_var": "$p"},
+                {"role": "employer", "player_var": "$c"},
+            ],
+            "include_variable": True,
+            "attributes": [
+                {
+                    "type": "Has",
+                    "data": {
+                        "subject_var": "$rel",
+                        "attr_name": "start-date",
+                        "value": {
+                            "type": "Literal",
+                            "data": {"value": "2024-01-15", "value_type": "date"},
+                        },
+                    },
+                },
+                {
+                    "type": "Has",
+                    "data": {
+                        "subject_var": "$rel",
+                        "attr_name": "salary",
+                        "value": {
+                            "type": "Literal",
+                            "data": {"value": 95000, "value_type": "long"},
+                        },
+                    },
+                },
+            ],
+        },
+    }
     benchmark(rust_validator.validate_statement, stmt)

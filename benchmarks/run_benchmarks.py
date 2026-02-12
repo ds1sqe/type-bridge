@@ -85,8 +85,14 @@ def run_benchmarks(
         print(result.stderr, file=sys.stderr)
 
     if result.returncode != 0:
-        print(f"Benchmark run failed with exit code {result.returncode}", file=sys.stderr)
-        sys.exit(1)
+        print(
+            f"Warning: pytest exited with code {result.returncode} "
+            f"(some benchmarks may have failed)",
+            file=sys.stderr,
+        )
+        if not out_path.exists():
+            print("No benchmark JSON produced — aborting.", file=sys.stderr)
+            sys.exit(1)
 
     with open(out_path) as f:
         return json.load(f)
