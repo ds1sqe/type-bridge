@@ -104,3 +104,324 @@ impl ServerConfig {
         Ok(config)
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    const FULL_CONFIG: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 9090
+
+[typedb]
+address = "localhost:1729"
+database = "mydb"
+username = "root"
+password = "secret"
+
+[schema]
+source_file = "schema.tql"
+
+[interceptors]
+enabled = ["audit-log"]
+
+[interceptors.audit-log]
+output = "file"
+file_path = "/tmp/audit.log"
+
+[logging]
+level = "debug"
+format = "text"
+"#;
+
+    const MINIMAL_CONFIG: &str = r#"
+[server]
+
+[typedb]
+address = "localhost:1729"
+database = "mydb"
+"#;
+
+    // --- from_file tests ---
+
+    #[test]
+    fn from_file_valid_full_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(&path, FULL_CONFIG).unwrap();
+
+        let config = ServerConfig::from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 9090);
+        assert_eq!(config.typedb.address, "localhost:1729");
+        assert_eq!(config.typedb.database, "mydb");
+        assert_eq!(config.typedb.username, "root");
+        assert_eq!(config.typedb.password, "secret");
+        assert_eq!(config.schema.source_file, "schema.tql");
+        assert_eq!(config.interceptors.enabled, vec!["audit-log"]);
+        let audit = config.interceptors.audit_log.unwrap();
+        assert_eq!(audit.output, "file");
+        assert_eq!(audit.file_path, "/tmp/audit.log");
+        assert_eq!(config.logging.level, "debug");
+        assert_eq!(config.logging.format, "text");
+    }
+
+    #[test]
+    fn from_file_valid_minimal_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(&path, MINIMAL_CONFIG).unwrap();
+
+        let config = ServerConfig::from_file(path.to_str().unwrap()).unwrap();
+        // Defaults should kick in
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.typedb.username, "admin");
+        assert_eq!(config.typedb.password, "password");
+        assert_eq!(config.schema.source_file, "");
+        assert!(config.interceptors.enabled.is_empty());
+        assert!(config.interceptors.audit_log.is_none());
+        assert_eq!(config.logging.level, "info");
+        assert_eq!(config.logging.format, "json");
+    }
+
+    #[test]
+    fn from_file_missing_file() {
+        let result = ServerConfig::from_file("/nonexistent/path/server.toml");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_file_invalid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "this is not valid toml {{{}}}").unwrap();
+
+        let result = ServerConfig::from_file(path.to_str().unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_file_missing_required_typedb_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("incomplete.toml");
+        std::fs::write(&path, "[server]\n").unwrap();
+
+        let result = ServerConfig::from_file(path.to_str().unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_file_missing_required_typedb_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("incomplete.toml");
+        std::fs::write(&path, "[server]\n[typedb]\n").unwrap();
+
+        let result = ServerConfig::from_file(path.to_str().unwrap());
+        assert!(result.is_err()); // address and database are required
+    }
+
+    // --- Default function tests ---
+
+    #[test]
+    fn default_host_value() {
+        assert_eq!(default_host(), "0.0.0.0");
+    }
+
+    #[test]
+    fn default_port_value() {
+        assert_eq!(default_port(), 8080);
+    }
+
+    #[test]
+    fn default_username_value() {
+        assert_eq!(default_username(), "admin");
+    }
+
+    #[test]
+    fn default_password_value() {
+        assert_eq!(default_password(), "password");
+    }
+
+    #[test]
+    fn default_log_level_value() {
+        assert_eq!(default_log_level(), "info");
+    }
+
+    #[test]
+    fn default_log_format_value() {
+        assert_eq!(default_log_format(), "json");
+    }
+
+    #[test]
+    fn default_audit_output_value() {
+        assert_eq!(default_audit_output(), "stdout");
+    }
+
+    // --- LoggingSection default ---
+
+    #[test]
+    fn logging_section_default() {
+        let logging = LoggingSection::default();
+        assert_eq!(logging.level, "info");
+        assert_eq!(logging.format, "json");
+    }
+
+    // --- Serde deserialization edge cases ---
+
+    #[test]
+    fn server_section_custom_host_default_port() {
+        let toml = r#"
+[server]
+host = "192.168.1.1"
+
+[typedb]
+address = "localhost:1729"
+database = "db"
+"#;
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.server.host, "192.168.1.1");
+        assert_eq!(config.server.port, 8080); // default
+    }
+
+    #[test]
+    fn server_section_custom_port_default_host() {
+        let toml = r#"
+[server]
+port = 3000
+
+[typedb]
+address = "localhost:1729"
+database = "db"
+"#;
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.server.host, "0.0.0.0"); // default
+        assert_eq!(config.server.port, 3000);
+    }
+
+    #[test]
+    fn typedb_section_custom_credentials() {
+        let toml = r#"
+[server]
+
+[typedb]
+address = "remote:1729"
+database = "prod"
+username = "superuser"
+password = "hunter2"
+"#;
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.typedb.username, "superuser");
+        assert_eq!(config.typedb.password, "hunter2");
+    }
+
+    #[test]
+    fn schema_section_default_when_missing() {
+        let config: ServerConfig = toml::from_str(MINIMAL_CONFIG).unwrap();
+        assert_eq!(config.schema.source_file, "");
+    }
+
+    #[test]
+    fn schema_section_with_file() {
+        let toml = r#"
+[server]
+[typedb]
+address = "localhost:1729"
+database = "db"
+[schema]
+source_file = "my_schema.tql"
+"#;
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.schema.source_file, "my_schema.tql");
+    }
+
+    #[test]
+    fn interceptors_enabled_empty_by_default() {
+        let config: ServerConfig = toml::from_str(MINIMAL_CONFIG).unwrap();
+        assert!(config.interceptors.enabled.is_empty());
+        assert!(config.interceptors.audit_log.is_none());
+    }
+
+    #[test]
+    fn interceptors_enabled_without_audit_config() {
+        let toml = r#"
+[server]
+[typedb]
+address = "localhost:1729"
+database = "db"
+[interceptors]
+enabled = ["audit-log"]
+"#;
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.interceptors.enabled, vec!["audit-log"]);
+        assert!(config.interceptors.audit_log.is_none());
+    }
+
+    #[test]
+    fn interceptors_with_audit_config() {
+        let toml = r#"
+[server]
+[typedb]
+address = "localhost:1729"
+database = "db"
+[interceptors]
+enabled = ["audit-log"]
+[interceptors.audit-log]
+output = "file"
+file_path = "/var/log/audit.jsonl"
+"#;
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        let audit = config.interceptors.audit_log.unwrap();
+        assert_eq!(audit.output, "file");
+        assert_eq!(audit.file_path, "/var/log/audit.jsonl");
+    }
+
+    #[test]
+    fn audit_log_config_defaults() {
+        let toml = r#"
+[server]
+[typedb]
+address = "localhost:1729"
+database = "db"
+[interceptors]
+enabled = ["audit-log"]
+[interceptors.audit-log]
+"#;
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        let audit = config.interceptors.audit_log.unwrap();
+        assert_eq!(audit.output, "stdout"); // default
+        assert_eq!(audit.file_path, ""); // default
+    }
+
+    #[test]
+    fn extra_fields_ignored() {
+        let toml = r#"
+[server]
+host = "0.0.0.0"
+unknown_field = "ignored"
+
+[typedb]
+address = "localhost:1729"
+database = "db"
+"#;
+        // toml crate with serde ignores unknown fields by default
+        let result: Result<ServerConfig, _> = toml::from_str(toml);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn multiple_interceptors_enabled() {
+        let toml = r#"
+[server]
+[typedb]
+address = "localhost:1729"
+database = "db"
+[interceptors]
+enabled = ["audit-log", "rate-limiter", "custom"]
+"#;
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.interceptors.enabled.len(), 3);
+    }
+}

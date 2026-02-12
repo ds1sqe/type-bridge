@@ -44,6 +44,45 @@ jobs:
         working-directory: type-bridge-core
         run: cargo clippy --all-targets -- -D warnings
 
+  # Rust code coverage (informational, does not block CI)
+  rust-coverage:
+    name: Rust Coverage
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-nightly-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-nightly-
+
+      - name: Generate LCOV report
+        run: ./scripts/coverage.sh branch --lcov
+
+      - name: Upload Rust coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: type-bridge-core/target/llvm-cov/lcov.branch.info
+          flags: rust
+          fail_ci_if_error: false
+
   # Build maturin wheels for all platforms (parallel with other jobs)
   build-wheels:
     name: Build wheel (${{ matrix.target }})
@@ -194,8 +233,21 @@ jobs:
       - name: Install pytest-xdist for parallel execution
         run: uv pip install pytest-xdist
 
-      - name: Run unit tests in parallel
-        run: uv run pytest tests/unit/ -v --tb=short -n auto
+      - name: Run unit tests with coverage
+        run: |
+          uv run pytest tests/unit/ -v --tb=short -n auto \
+            --cov=type_bridge --cov-branch \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Upload Python coverage to Codecov
+        uses: codecov/codecov-action@v5
+        if: always()
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: python
+          fail_ci_if_error: false
 
   # Integration tests (require TypeDB server, parallel by test category)
   test-integration:
