@@ -350,7 +350,12 @@ class TypeDBManager[T: "TypeDBType"]:
 
         # Build constraints
         from type_bridge.crud.patterns import _get_literal_type
-        from type_bridge.query.ast import EntityPattern, HasConstraint, LiteralValue, MatchClause
+        from type_bridge.query.ast import (
+            EntityPattern,
+            HasConstraint,
+            LiteralValue,
+            MatchClause,
+        )
 
         constraints = []
         has_attrs = False

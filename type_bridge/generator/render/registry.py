@@ -83,6 +83,12 @@ def render_registry(
             roles.append(RoleContext(name=role.name, players=players))
         relation_roles[rel_name] = roles
 
+    # Build relation attributes
+    relation_attributes = {}
+    for name in relation_names:
+        relation = schema.relations[name]
+        relation_attributes[name] = sorted(relation.owns)
+
     # Build entity attributes
     entity_attributes = {}
     for name in entity_names:
@@ -132,6 +138,7 @@ def render_registry(
         relation_map=relation_map,
         attribute_map=attribute_map,
         relation_roles=relation_roles,
+        relation_attributes=relation_attributes,
         entity_attributes=entity_attributes,
         entity_keys=entity_keys,
         attribute_value_types=attribute_value_types,

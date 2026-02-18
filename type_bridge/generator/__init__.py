@@ -34,10 +34,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .dto_config import (
+    BaseClassConfig,
+    CompositeEntityConfig,
+    CompositeFieldConfig,
+    DTOConfig,
+    EntityFieldOverride,
+    FieldOverride,
+    FieldSyncConfig,
+    ValidatorConfig,
+)
 from .models import ParsedSchema
 from .naming import build_class_name_map
 from .parser import parse_tql_schema
 from .render import (
+    render_api_dto,
     render_attributes,
     render_entities,
     render_functions,
@@ -51,9 +62,17 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 __all__ = [
+    "BaseClassConfig",
+    "CompositeEntityConfig",
+    "CompositeFieldConfig",
+    "DTOConfig",
+    "EntityFieldOverride",
+    "FieldOverride",
+    "FieldSyncConfig",
+    "ParsedSchema",
+    "ValidatorConfig",
     "generate_models",
     "parse_tql_schema",
-    "ParsedSchema",
 ]
 
 
@@ -65,6 +84,8 @@ def generate_models(
     schema_version: str = "1.0.0",
     copy_schema: bool = True,
     schema_path: str | Path | None = None,
+    generate_dto: bool = False,
+    dto_config: DTOConfig | None = None,
 ) -> None:
     """Generate TypeBridge models from a TypeDB schema.
 
@@ -76,10 +97,8 @@ def generate_models(
         copy_schema: Whether to copy the schema file to the output directory
         schema_path: Custom path for the schema file. If relative, resolved against
             output_dir. If None and copy_schema=True, uses "schema.tql" in output_dir.
-
-    Raises:
-        FileNotFoundError: If schema is a path that doesn't exist
-        ValueError: If schema parsing fails
+        generate_dto: Whether to generate Pydantic API DTOs
+        dto_config: Configuration for DTO generation (custom base classes, validators, etc.)
     """
     # Resolve schema text
     schema_source_path: Path | None = None
@@ -154,6 +173,13 @@ def generate_models(
         ),
         encoding="utf-8",
     )
+
+    # Render Pydantic DTOs if requested
+    if generate_dto:
+        (output / "api_dto.py").write_text(
+            render_api_dto(parsed, config=dto_config),
+            encoding="utf-8",
+        )
 
     # Determine schema output location
     schema_filename: str | None = None

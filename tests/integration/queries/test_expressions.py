@@ -1,5 +1,4 @@
-"""
-Integration tests for advanced query expressions.
+"""Integration tests for advanced query expressions.
 
 Tests type-safe filtering, aggregations, and grouping against a real TypeDB instance.
 """

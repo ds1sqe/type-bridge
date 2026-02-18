@@ -1,10 +1,18 @@
-"""
-Type-safe query expression system for TypeBridge.
+"""Type-safe query expression system for TypeBridge.
 
 This module provides expression classes for building type-safe TypeQL queries.
 """
 
 from type_bridge.expressions.aggregate import AggregateExpr
+from type_bridge.expressions.arithmetic import (
+    ArithmeticExpr,
+    add,
+    div,
+    mod,
+    mul,
+    pow_,
+    sub,
+)
 from type_bridge.expressions.base import Expression
 from type_bridge.expressions.boolean import BooleanExpr
 from type_bridge.expressions.builtin import (
@@ -52,4 +60,12 @@ __all__ = [
     "len_",
     "max_",
     "min_",
+    # Arithmetic expressions (TypeQL 3.8.0+)
+    "ArithmeticExpr",
+    "add",
+    "sub",
+    "mul",
+    "div",
+    "mod",
+    "pow_",
 ]

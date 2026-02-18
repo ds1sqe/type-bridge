@@ -1,5 +1,4 @@
-"""
-Integration tests for QueryCompiler against a real TypeDB instance.
+"""Integration tests for QueryCompiler against a real TypeDB instance.
 
 Tests that compiled AST nodes produce valid TypeQL that executes correctly.
 This ensures the compiler generates syntactically correct queries for all

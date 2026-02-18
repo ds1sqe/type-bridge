@@ -12,13 +12,17 @@ from collections.abc import Mapping
 def to_class_name(label: str) -> str:
     """Convert a TypeDB name to PascalCase for Python classes.
 
+    Handles both kebab-case and snake_case inputs.
+
     Examples:
         "person" -> "Person"
         "isbn-13" -> "Isbn13"
+        "user_story" -> "UserStory"
         "order-line" -> "OrderLine"
-        "birth-date" -> "BirthDate"
     """
-    return "".join(part.capitalize() for part in label.split("-"))
+    # Split by both - and _
+    parts = label.replace("_", "-").split("-")
+    return "".join(part.capitalize() for part in parts)
 
 
 def to_python_name(label: str) -> str:

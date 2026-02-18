@@ -371,18 +371,18 @@ class TestRoleCardinalitySchema:
         """Expected relation classes with role cardinality are generated."""
         relations = generated_package["relations"]
 
-        # Note: Generator uses underscores for multi-word names (e.g., is_similar_to -> Is_similar_to)
-        assert hasattr(relations, "Is_similar_to")
+        # Generator uses PascalCase for class names (e.g., is_similar_to -> IsSimilarTo)
+        assert hasattr(relations, "IsSimilarTo")
         assert hasattr(relations, "Friendship")
-        assert hasattr(relations, "Group_membership")
+        assert hasattr(relations, "GroupMembership")
         assert hasattr(relations, "Review")
 
     def test_role_has_card_attribute(self, generated_package: dict[str, ModuleType]) -> None:
         """Roles with cardinality have Card in their definition."""
         relations = generated_package["relations"]
 
-        # Check that Is_similar_to has a similar_memory role with cardinality
-        is_similar_to = relations.Is_similar_to
+        # Check that IsSimilarTo has a similar_memory role with cardinality
+        is_similar_to = relations.IsSimilarTo
         roles = is_similar_to.get_roles()
         assert "similar_memory" in roles
 
@@ -406,10 +406,10 @@ class TestRoleCardinalitySchema:
         assert friend_role.cardinality.max == 2
 
     def test_unbounded_cardinality_role(self, generated_package: dict[str, ModuleType]) -> None:
-        """Group_membership has @card(2..) on member role (unbounded)."""
+        """GroupMembership has @card(2..) on member role (unbounded)."""
         relations = generated_package["relations"]
 
-        membership = relations.Group_membership
+        membership = relations.GroupMembership
         roles = membership.get_roles()
 
         # group role has default cardinality (1..1) - not emitted, so None
@@ -456,7 +456,7 @@ class TestRoleCardinalitySchema:
         )
 
         # Create similarity relation with list of players
-        similarity = relations.Is_similar_to(
+        similarity = relations.IsSimilarTo(
             similar_memory=[memory1, memory2], score=attributes.Score(0.95)
         )
 
@@ -492,7 +492,117 @@ class TestRoleCardinalitySchema:
         member2 = entities.Person(name=attributes.Name("Member 2"))
         member3 = entities.Person(name=attributes.Name("Member 3"))
 
-        membership = relations.Group_membership(group=group, member=[member1, member2, member3])
+        membership = relations.GroupMembership(group=group, member=[member1, member2, member3])
 
         assert membership.group == group
         assert len(membership.member) == 3
+
+
+class TestApiDtoGeneration:
+    """Integration tests for API DTO generation."""
+
+    SCHEMA_PATH = FIXTURES_DIR / "bookstore.tql"
+
+    def _import_api_dto(self, package_path: Path) -> ModuleType:
+        """Import the generated api_dto module."""
+        parent = str(package_path.parent)
+        package_name = package_path.name
+
+        if parent not in sys.path:
+            sys.path.insert(0, parent)
+
+        try:
+            mod_path = package_path / "api_dto.py"
+            mod_name = f"{package_name}.api_dto"
+            spec = importlib.util.spec_from_file_location(mod_name, mod_path)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[mod_name] = mod
+                spec.loader.exec_module(mod)
+                return mod
+            raise RuntimeError("Failed to import api_dto module")
+        finally:
+            keys_to_remove = [k for k in sys.modules if k.startswith(package_name)]
+            for key in keys_to_remove:
+                del sys.modules[key]
+            if parent in sys.path:
+                sys.path.remove(parent)
+
+    def test_generates_api_dto_file(self, tmp_path: Path) -> None:
+        """api_dto.py is generated when generate_dto=True."""
+        output = tmp_path / "bookstore_dto"
+        generate_models(self.SCHEMA_PATH, output, generate_dto=True)
+
+        assert (output / "api_dto.py").exists()
+
+    def test_api_dto_imports_successfully(self, tmp_path: Path) -> None:
+        """Generated api_dto.py imports without errors."""
+        output = tmp_path / "bookstore_dto"
+        generate_models(self.SCHEMA_PATH, output, generate_dto=True)
+
+        # This will raise if import fails
+        api_dto = self._import_api_dto(output)
+        assert api_dto is not None
+
+    def test_api_dto_has_entity_classes(self, tmp_path: Path) -> None:
+        """Generated api_dto.py has entity DTO classes."""
+        output = tmp_path / "bookstore_dto"
+        generate_models(self.SCHEMA_PATH, output, generate_dto=True)
+
+        api_dto = self._import_api_dto(output)
+
+        # Check for EbookOut, EbookCreate, EbookPatch classes (ebook sub book)
+        assert hasattr(api_dto, "EbookOut")
+        assert hasattr(api_dto, "EbookCreate")
+        assert hasattr(api_dto, "EbookPatch")
+
+        # Check for ContributorOut, ContributorCreate, ContributorPatch classes
+        assert hasattr(api_dto, "ContributorOut")
+        assert hasattr(api_dto, "ContributorCreate")
+        assert hasattr(api_dto, "ContributorPatch")
+
+        # Abstract entities (book) should NOT have DTOs
+        assert not hasattr(api_dto, "BookOut")
+
+    def test_api_dto_has_union_types(self, tmp_path: Path) -> None:
+        """Generated api_dto.py has discriminated union types."""
+        output = tmp_path / "bookstore_dto"
+        generate_models(self.SCHEMA_PATH, output, generate_dto=True)
+
+        api_dto = self._import_api_dto(output)
+
+        # Check for EntityOut, EntityCreate, EntityPatch unions
+        assert hasattr(api_dto, "EntityOut")
+        assert hasattr(api_dto, "EntityCreate")
+        assert hasattr(api_dto, "EntityPatch")
+
+    def test_api_dto_classes_are_pydantic_models(self, tmp_path: Path) -> None:
+        """Generated DTO classes are Pydantic BaseModel subclasses."""
+        from pydantic import BaseModel
+
+        output = tmp_path / "bookstore_dto"
+        generate_models(self.SCHEMA_PATH, output, generate_dto=True)
+
+        api_dto = self._import_api_dto(output)
+
+        assert issubclass(api_dto.EbookOut, BaseModel)
+        assert issubclass(api_dto.EbookCreate, BaseModel)
+        assert issubclass(api_dto.EbookPatch, BaseModel)
+
+    def test_api_dto_validates_input(self, tmp_path: Path) -> None:
+        """Generated DTOs perform Pydantic validation."""
+        output = tmp_path / "bookstore_dto"
+        generate_models(self.SCHEMA_PATH, output, generate_dto=True)
+
+        api_dto = self._import_api_dto(output)
+
+        # Create a valid DTO instance
+        # ebook has isbn_13 as @key and isbn_10 as @unique, both required
+        ebook = api_dto.EbookCreate(
+            type="ebook",
+            isbn_13="978-0-123456-78-9",
+            isbn_10="0123456789",
+        )
+        assert ebook.isbn_13 == "978-0-123456-78-9"
+        assert ebook.isbn_10 == "0123456789"
+        assert ebook.type == "ebook"

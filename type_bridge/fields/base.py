@@ -1,5 +1,4 @@
-"""
-Field reference system for type-safe query building.
+"""Field reference system for type-safe query building.
 
 This module provides field descriptors and references that enable type-safe
 query expressions like Person.age.gt(Age(30)).
@@ -20,16 +19,14 @@ T_Numeric = TypeVar("T_Numeric")
 
 
 class FieldRef[T: "Attribute"]:
-    """
-    Type-safe reference to an entity field.
+    """Type-safe reference to an entity field.
 
     Returned when accessing entity class attributes (e.g., Person.age).
     Provides query methods like .gt(), .lt(), etc. that return typed expressions.
     """
 
     def __init__(self, field_name: str, attr_type: type[T], entity_type: Any):
-        """
-        Create a field reference.
+        """Create a field reference.
 
         Args:
             field_name: Python field name
@@ -41,8 +38,7 @@ class FieldRef[T: "Attribute"]:
         self.entity_type: Any = entity_type
 
     def lt(self, value: T) -> "ComparisonExpr[T]":
-        """
-        Create a less-than comparison expression.
+        """Create a less-than comparison expression.
 
         Args:
             value: Value to compare against
@@ -54,8 +50,7 @@ class FieldRef[T: "Attribute"]:
         return self.attr_type.lt(value)
 
     def gt(self, value: T) -> "ComparisonExpr[T]":
-        """
-        Create a greater-than comparison expression.
+        """Create a greater-than comparison expression.
 
         Args:
             value: Value to compare against
@@ -67,8 +62,7 @@ class FieldRef[T: "Attribute"]:
         return self.attr_type.gt(value)
 
     def lte(self, value: T) -> "ComparisonExpr[T]":
-        """
-        Create a less-than-or-equal comparison expression.
+        """Create a less-than-or-equal comparison expression.
 
         Args:
             value: Value to compare against
@@ -80,8 +74,7 @@ class FieldRef[T: "Attribute"]:
         return self.attr_type.lte(value)
 
     def gte(self, value: T) -> "ComparisonExpr[T]":
-        """
-        Create a greater-than-or-equal comparison expression.
+        """Create a greater-than-or-equal comparison expression.
 
         Args:
             value: Value to compare against
@@ -93,8 +86,7 @@ class FieldRef[T: "Attribute"]:
         return self.attr_type.gte(value)
 
     def eq(self, value: T) -> "ComparisonExpr[T]":
-        """
-        Create an equality comparison expression.
+        """Create an equality comparison expression.
 
         Args:
             value: Value to compare against
@@ -106,8 +98,7 @@ class FieldRef[T: "Attribute"]:
         return self.attr_type.eq(value)
 
     def neq(self, value: T) -> "ComparisonExpr[T]":
-        """
-        Create a not-equal comparison expression.
+        """Create a not-equal comparison expression.
 
         Args:
             value: Value to compare against
@@ -120,15 +111,13 @@ class FieldRef[T: "Attribute"]:
 
 
 class StringFieldRef[T: "String"](FieldRef[T]):
-    """
-    Field reference for String attribute types.
+    """Field reference for String attribute types.
 
     Provides additional string-specific operations like contains, like, regex.
     """
 
     def contains(self, value: T) -> "StringExpr[T]":
-        """
-        Create a string contains expression.
+        """Create a string contains expression.
 
         Args:
             value: Substring to search for
@@ -140,8 +129,7 @@ class StringFieldRef[T: "String"](FieldRef[T]):
         return self.attr_type.contains(value)
 
     def like(self, pattern: T) -> "StringExpr[T]":
-        """
-        Create a string pattern matching expression (regex).
+        """Create a string pattern matching expression (regex).
 
         Args:
             pattern: Regex pattern to match
@@ -153,8 +141,7 @@ class StringFieldRef[T: "String"](FieldRef[T]):
         return self.attr_type.like(pattern)
 
     def regex(self, pattern: T) -> "StringExpr[T]":
-        """
-        Create a string regex expression (alias for like).
+        """Create a string regex expression (alias for like).
 
         Args:
             pattern: Regex pattern to match
@@ -167,15 +154,13 @@ class StringFieldRef[T: "String"](FieldRef[T]):
 
 
 class NumericFieldRef[T: "Attribute"](FieldRef[T]):
-    """
-    Field reference for numeric attribute types.
+    """Field reference for numeric attribute types.
 
     Provides additional numeric-specific operations like sum, avg, max, min.
     """
 
     def sum(self) -> "AggregateExpr[T]":
-        """
-        Create a sum aggregation expression.
+        """Create a sum aggregation expression.
 
         Returns:
             AggregateExpr for sum of this field
@@ -185,8 +170,7 @@ class NumericFieldRef[T: "Attribute"](FieldRef[T]):
         return AggregateExpr(attr_type=self.attr_type, function="sum", field_name=self.field_name)
 
     def avg(self) -> "AggregateExpr[T]":
-        """
-        Create an average (mean) aggregation expression.
+        """Create an average (mean) aggregation expression.
 
         Returns:
             AggregateExpr for average/mean of this field
@@ -196,8 +180,7 @@ class NumericFieldRef[T: "Attribute"](FieldRef[T]):
         return AggregateExpr(attr_type=self.attr_type, function="mean", field_name=self.field_name)
 
     def max(self) -> "AggregateExpr[T]":
-        """
-        Create a maximum aggregation expression.
+        """Create a maximum aggregation expression.
 
         Returns:
             AggregateExpr for maximum of this field
@@ -207,8 +190,7 @@ class NumericFieldRef[T: "Attribute"](FieldRef[T]):
         return AggregateExpr(attr_type=self.attr_type, function="max", field_name=self.field_name)
 
     def min(self) -> "AggregateExpr[T]":
-        """
-        Create a minimum aggregation expression.
+        """Create a minimum aggregation expression.
 
         Returns:
             AggregateExpr for minimum of this field
@@ -218,8 +200,7 @@ class NumericFieldRef[T: "Attribute"](FieldRef[T]):
         return AggregateExpr(attr_type=self.attr_type, function="min", field_name=self.field_name)
 
     def median(self) -> "AggregateExpr[T]":
-        """
-        Create a median aggregation expression.
+        """Create a median aggregation expression.
 
         Returns:
             AggregateExpr for median of this field
@@ -231,8 +212,7 @@ class NumericFieldRef[T: "Attribute"](FieldRef[T]):
         )
 
     def std(self) -> "AggregateExpr[T]":
-        """
-        Create a standard deviation aggregation expression.
+        """Create a standard deviation aggregation expression.
 
         Returns:
             AggregateExpr for standard deviation of this field
@@ -243,15 +223,13 @@ class NumericFieldRef[T: "Attribute"](FieldRef[T]):
 
 
 class FieldDescriptor[T: "Attribute"]:
-    """
-    Descriptor for entity fields that supports dual behavior:
+    """Descriptor for entity fields that supports dual behavior:
     - Class-level access: Returns FieldRef[T] for query building
     - Instance-level access: Returns T (the attribute value)
     """
 
     def __init__(self, field_name: str, attr_type: type[T]):
-        """
-        Create a field descriptor.
+        """Create a field descriptor.
 
         Args:
             field_name: Python field name
@@ -267,8 +245,7 @@ class FieldDescriptor[T: "Attribute"]:
     def __get__(self, instance: "Entity", owner: Any) -> T | None: ...
 
     def __get__(self, instance: "Entity | None", owner: Any) -> "FieldRef[T] | T | None":
-        """
-        Get field value or field reference.
+        """Get field value or field reference.
 
         Args:
             instance: Entity instance (None for class-level access)
@@ -285,8 +262,7 @@ class FieldDescriptor[T: "Attribute"]:
         return instance.__dict__.get(self.field_name)
 
     def __set__(self, instance: "Entity", value: T) -> None:
-        """
-        Set field value on instance.
+        """Set field value on instance.
 
         Args:
             instance: Entity instance
@@ -302,8 +278,7 @@ class FieldDescriptor[T: "Attribute"]:
         inst_dict[self.field_name] = value
 
     def _make_field_ref(self, entity_type: Any) -> FieldRef[T]:
-        """
-        Create appropriate FieldRef subclass based on attribute type.
+        """Create appropriate FieldRef subclass based on attribute type.
 
         Args:
             entity_type: Entity class that owns this field

@@ -1,5 +1,7 @@
 """Tests for inheritance edge cases and built-in type name collisions."""
 
+import warnings
+
 import pytest
 
 import type_bridge as tbg
@@ -11,7 +13,6 @@ class TestInheritanceEdgeCases:
 
     def test_builtin_type_name_collision_entity(self):
         """Test that using 'entity' as a type name raises an error."""
-
         with pytest.raises(ValueError, match="conflicts with TypeDB built-in type"):
 
             class BadEntity(tbg.Entity):
@@ -19,7 +20,6 @@ class TestInheritanceEdgeCases:
 
     def test_builtin_type_name_collision_relation(self):
         """Test that using 'relation' as a type name raises an error."""
-
         with pytest.raises(ValueError, match="conflicts with TypeDB built-in type"):
 
             class BadRelation(tbg.Relation):
@@ -27,7 +27,6 @@ class TestInheritanceEdgeCases:
 
     def test_builtin_type_name_collision_attribute(self):
         """Test that using 'attribute' as an attribute name raises an error."""
-
         with pytest.raises(ValueError, match="conflicts with TypeDB built-in type"):
             # Class name directly conflicts (will lowercase to "attribute")
             class Attribute(String):
@@ -35,7 +34,6 @@ class TestInheritanceEdgeCases:
 
     def test_builtin_type_name_collision_thing(self):
         """Test that using 'thing' as a type name raises an error."""
-
         with pytest.raises(ValueError, match="conflicts with TypeDB built-in type"):
 
             class Thing(tbg.Entity):
@@ -69,7 +67,6 @@ class TestInheritanceEdgeCases:
 
     def test_intermediate_base_class_name_default(self):
         """Test that intermediate class with default name gets validated."""
-
         # This should raise an error because the class name is "Entity"
         # which would default to name="Entity" (which lowercases to "entity", collision)
         with pytest.raises(ValueError, match="'Entity'.*conflicts with TypeDB built-in"):
@@ -129,7 +126,6 @@ class TestInheritanceEdgeCases:
 
     def test_relation_inheritance_edge_cases(self):
         """Test relation inheritance with built-in name collision."""
-
         with pytest.raises(ValueError, match="'Relation'.*conflicts with TypeDB built-in"):
 
             class Relation(tbg.Relation):
@@ -381,9 +377,13 @@ class TestComplexInheritanceHierarchy:
             created_at: CreatedAt
 
         # Abstract TypeDB entity that also inherits from Python base
-        class Resource(Timestamped):
-            flags = TypeFlags(name="resource", abstract=True)
-            id: Id = Flag(Key)
+        # Pydantic warns about field shadowing when base=True attrs are absorbed
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Field name.*shadows", category=UserWarning)
+
+            class Resource(Timestamped):
+                flags = TypeFlags(name="resource", abstract=True)
+                id: Id = Flag(Key)
 
         # Concrete entity
         class User(Resource):

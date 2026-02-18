@@ -2,7 +2,16 @@
 
 import pytest
 
-from type_bridge import Entity, Flag, Key, Relation, Role, SchemaManager, String, TypeFlags
+from type_bridge import (
+    Entity,
+    Flag,
+    Key,
+    Relation,
+    Role,
+    SchemaManager,
+    String,
+    TypeFlags,
+)
 from type_bridge.validation import ReservedWordError, validate_type_name
 
 

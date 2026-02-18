@@ -1,0 +1,23 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[typedb]
+address = "localhost:1729"
+database = "typedb"
+username = "admin"
+password = "password"
+
+[schema]
+source_file = ""  # optional .tql path; if empty, no schema validation
+
+[interceptors]
+enabled = ["audit-log"]
+
+[interceptors.audit-log]
+output = "stdout"  # "file" | "stdout"
+file_path = ""
+
+[logging]
+level = "info"
+format = "json"

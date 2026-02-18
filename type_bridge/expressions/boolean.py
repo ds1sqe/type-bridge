@@ -12,8 +12,7 @@ if TYPE_CHECKING:
 
 
 class BooleanExpr(Expression):
-    """
-    Boolean expression for combining other expressions with AND, OR, NOT.
+    """Boolean expression for combining other expressions with AND, OR, NOT.
 
     Represents logical combinations of query constraints.
     """
@@ -23,8 +22,7 @@ class BooleanExpr(Expression):
         operation: Literal["and", "or", "not"],
         operands: list[Expression],
     ):
-        """
-        Create a boolean expression.
+        """Create a boolean expression.
 
         Args:
             operation: Boolean operation type
@@ -40,8 +38,7 @@ class BooleanExpr(Expression):
             raise ValueError(f"{operation.upper()} operation requires at least 2 operands")
 
     def get_attribute_types(self) -> set[type[Attribute]]:
-        """
-        Get all attribute types referenced by this boolean expression.
+        """Get all attribute types referenced by this boolean expression.
 
         Recursively collects attribute types from all operands.
 
@@ -54,9 +51,7 @@ class BooleanExpr(Expression):
         return result
 
     def to_ast(self, var: str) -> list[Pattern]:
-        """
-        Generate AST patterns for this boolean expression.
-        """
+        """Generate AST patterns for this boolean expression."""
         from type_bridge.query.ast import NotPattern, OrPattern
 
         if self.operation == "and":
@@ -81,8 +76,7 @@ class BooleanExpr(Expression):
         raise ValueError(f"Unknown boolean operation: {self.operation}")
 
     def and_(self, other: Expression) -> BooleanExpr:
-        """
-        Combine with another expression using AND, flattening if possible.
+        """Combine with another expression using AND, flattening if possible.
 
         If this is already an AND expression, adds the new operand to create
         a flat structure instead of a nested binary tree.
@@ -100,8 +94,7 @@ class BooleanExpr(Expression):
         return BooleanExpr("and", [self, other])
 
     def or_(self, other: Expression) -> BooleanExpr:
-        """
-        Combine with another expression using OR, flattening if possible.
+        """Combine with another expression using OR, flattening if possible.
 
         If this is already an OR expression, adds the new operand to create
         a flat structure instead of a nested binary tree. This is critical

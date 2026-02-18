@@ -43,11 +43,12 @@ from type_bridge.migration import (
 from type_bridge.migration import operations as migration_ops
 from type_bridge.migration.simple_migration import MigrationManager
 from type_bridge.models import Entity, Relation, Role, TypeDBType
+from type_bridge.proxy import ProxyDatabase, ProxyError
 from type_bridge.query import Query, QueryBuilder
 from type_bridge.session import Connection, Database, TransactionContext
 from type_bridge.typedb_driver import Credentials, TransactionType, TypeDB
 
-__version__ = "1.2.7"
+__version__ = "1.4.0.dev0"
 
 __all__ = [
     # Database and session
@@ -89,6 +90,9 @@ __all__ = [
     "QueryBuilder",
     # CRUD
     "TypeDBManager",
+    # Proxy
+    "ProxyDatabase",
+    "ProxyError",
     # CRUD Exceptions
     "EntityNotFoundError",
     "RelationNotFoundError",

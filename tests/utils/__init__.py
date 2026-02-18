@@ -18,7 +18,6 @@ from tests.utils.typedb_lifecycle import (
     TEST_DB_NAME,
     start_typedb_container,
     stop_typedb_container,
-    suppress_stderr,
 )
 
 __all__ = [
@@ -38,5 +37,4 @@ __all__ = [
     "TEST_DB_NAME",
     "start_typedb_container",
     "stop_typedb_container",
-    "suppress_stderr",
 ]

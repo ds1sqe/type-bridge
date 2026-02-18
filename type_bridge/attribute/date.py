@@ -65,6 +65,59 @@ class Date(Attribute):
         """Get the stored date value."""
         return self._value if self._value is not None else date_type.today()
 
+    def __add__(self, other: Any) -> "Date":
+        """Add a Duration to this Date.
+
+        Args:
+            other: A Duration to add to this date
+
+        Returns:
+            New Date with the duration added
+
+        Example:
+            from type_bridge import Duration
+            d = Date(date(2024, 1, 31))
+            duration = Duration("P1M")
+            result = d + duration  # Date(2024-02-29)
+        """
+        from type_bridge.attribute.duration import Duration
+
+        if isinstance(other, Duration):
+            new_date = self.value + other.value
+            # isodate returns datetime when adding Duration to date, extract .date()
+            if isinstance(new_date, datetime_type):
+                new_date = new_date.date()
+            return Date(new_date)
+        return NotImplemented
+
+    def __radd__(self, other: Any) -> "Date":
+        """Reverse addition for Duration + Date."""
+        return self.__add__(other)
+
+    def __sub__(self, other: Any) -> "Date":
+        """Subtract a Duration from this Date.
+
+        Args:
+            other: A Duration to subtract from this date
+
+        Returns:
+            New Date with the duration subtracted
+
+        Example:
+            from type_bridge import Duration
+            d = Date(date(2024, 3, 31))
+            duration = Duration("P1M")
+            result = d - duration  # Date(2024-02-29)
+        """
+        from type_bridge.attribute.duration import Duration
+
+        if isinstance(other, Duration):
+            new_date = self.value - other.value
+            if isinstance(new_date, datetime_type):
+                new_date = new_date.date()
+            return Date(new_date)
+        return NotImplemented
+
     # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
 
     @classmethod

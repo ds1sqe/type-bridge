@@ -1,5 +1,4 @@
-"""
-Advanced query expressions with type-safe filtering, aggregations, and grouping.
+"""Advanced query expressions with type-safe filtering, aggregations, and grouping.
 
 This example demonstrates the complete query expression API for building
 complex, type-safe queries with TypeBridge.

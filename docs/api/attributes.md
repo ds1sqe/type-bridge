@@ -94,6 +94,7 @@ article = Article(
 ```
 
 **Escaping rules:**
+
 - Backslashes (`\`) are escaped to `\\`
 - Double quotes (`"`) are escaped to `\"`
 - Single quotes (`'`) are NOT escaped (TypeQL uses double quotes for strings)
@@ -175,13 +176,13 @@ account = Account(balance=AccountBalance("1234.567890123456789"))
 
 Choose the right numeric type for your use case:
 
-| Feature | Double | Decimal |
-|---------|--------|---------|
-| Precision | Approximate (IEEE 754) | Exact (19 decimal digits) |
-| Use cases | Scientific, measurements | Financial, monetary |
-| Performance | Faster | Slightly slower |
-| Range | Larger | Smaller but sufficient |
-| Example | `95.5`, `37.2` | `"19.99"`, `"1234.56"` |
+| Feature     | Double                   | Decimal                   |
+| ----------- | ------------------------ | ------------------------- |
+| Precision   | Approximate (IEEE 754)   | Exact (19 decimal digits) |
+| Use cases   | Scientific, measurements | Financial, monetary       |
+| Performance | Faster                   | Slightly slower           |
+| Range       | Larger                   | Smaller but sufficient    |
+| Example     | `95.5`, `37.2`           | `"19.99"`, `"1234.56"`    |
 
 ```python
 # ✅ Use Double for scientific data
@@ -291,11 +292,11 @@ record = Record(updated_at=UpdatedAt(datetime(2024, 3, 30, 10, 30, 45, tzinfo=ti
 
 Choose the right temporal type:
 
-| Type | Time Info | Timezone | Use Cases |
-|------|-----------|----------|-----------|
-| Date | No | No | Birth dates, deadlines, anniversaries |
-| DateTime | Yes | No | Local events, single-timezone systems |
-| DateTimeTZ | Yes | Yes | Global events, distributed systems, UTC |
+| Type       | Time Info | Timezone | Use Cases                               |
+| ---------- | --------- | -------- | --------------------------------------- |
+| Date       | No        | No       | Birth dates, deadlines, anniversaries   |
+| DateTime   | Yes       | No       | Local events, single-timezone systems   |
+| DateTimeTZ | Yes       | Yes      | Global events, distributed systems, UTC |
 
 ### Duration
 
@@ -328,6 +329,7 @@ from_td = EventCadence(timedelta(hours=2, minutes=30))  # PT2H30M
 **Storage**: 32-bit months, 32-bit days, 64-bit nanoseconds
 
 **Properties**:
+
 - **Calendar-aware**: `P1D` ≠ `PT24H`, `P1M` varies by month
 - **Partially ordered**: Cannot directly compare `P1M` vs `P30D`
 
@@ -369,19 +371,28 @@ naive_jst = aware_dt.strip_timezone(jst)  # Convert to JST, then strip
 ```
 
 **Conversion semantics**:
+
 - `DateTime.add_timezone(tz=None)`: If tz is None, adds system timezone; otherwise adds specified timezone
 - `DateTimeTZ.strip_timezone(tz=None)`: If tz is None, strips timezone as-is; otherwise converts to tz first, then strips
 
 ## Duration Arithmetic
 
-Duration supports calendar-aware arithmetic with DateTime and DateTimeTZ:
+Duration supports calendar-aware arithmetic with Date, DateTime, and DateTimeTZ:
 
 ```python
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+
+# Add duration to date
+release = Date(date(2024, 1, 31))
+one_month = Duration("P1M")
+result = release + one_month  # Date(2024-02-29) (leap year, last day of month)
+
+# Subtract duration from date
+deadline = Date(date(2024, 3, 31))
+result = deadline - one_month  # Date(2024-02-29)
 
 # Add duration to datetime
 start = DateTime(datetime(2024, 1, 31, 14, 0, 0))
-one_month = Duration("P1M")
 result = start + one_month  # Feb 29, 2024 (leap year, last day of month)
 
 # Add duration to timezone-aware datetime
@@ -395,9 +406,11 @@ total = d1 + d2  # P1M15D
 ```
 
 **Important notes**:
+
 - Addition order matters: `P1M + P1D` ≠ `P1D + P1M` (calendar arithmetic)
 - Month addition respects calendar (Jan 31 + 1 month = Feb 29 if leap year)
 - Duration with DateTimeTZ respects DST and timezone changes
+- Reverse addition works: `Duration("P1D") + Date(...)` returns a `Date`
 
 ## Configuring Attribute Type Names
 
@@ -417,6 +430,7 @@ class Name(String):
 ```
 
 **Use cases**:
+
 - Interop with existing TypeDB schemas using lowercase names
 - Match legacy naming conventions
 - Simplify migration from manual TypeQL
@@ -438,6 +452,7 @@ class UserEmail(String):
 ```
 
 **Available cases**:
+
 - `TypeNameCase.CLASS_NAME` - Preserve as-is (default)
 - `TypeNameCase.LOWERCASE` - All lowercase
 - `TypeNameCase.SNAKE_CASE` - snake_case conversion
@@ -480,6 +495,7 @@ class Age(Integer):
 ## Value Constraints
 
 TypeBridge supports TypeDB's value constraint annotations. These provide two layers of validation:
+
 1. **Python-side**: Immediate validation with clear error messages
 2. **TypeDB-side**: Database-level enforcement via schema annotations
 
@@ -510,6 +526,7 @@ class Priority(Integer):
 ```
 
 **Validation behavior:**
+
 ```python
 Age(30)    # ✅ Valid
 Age(-1)    # ❌ ValueError: Age value -1 is below minimum 0
@@ -517,6 +534,7 @@ Age(200)   # ❌ ValueError: Age value 200 is above maximum 150
 ```
 
 **Generated TypeQL:**
+
 ```typeql
 attribute Age, value integer @range(0..150);
 attribute Temperature, value double @range(-50.0..50.0);
@@ -542,6 +560,7 @@ class PhoneNumber(String):
 ```
 
 **Generated TypeQL:**
+
 ```typeql
 attribute Email, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");
 ```
@@ -564,6 +583,7 @@ class Priority(String):
 ```
 
 **Generated TypeQL:**
+
 ```typeql
 attribute Status, value string @values("active", "inactive", "pending");
 ```
@@ -585,6 +605,7 @@ class GlobalCounter(Integer):
 ```
 
 **Usage:**
+
 ```python
 # Independent attributes can be inserted directly via TypeQL
 # without being owned by an entity
@@ -597,12 +618,14 @@ class Document(Entity):
 ```
 
 **Generated TypeQL:**
+
 ```typeql
 attribute Language @independent, value string;
 attribute GlobalCounter @independent, value integer;
 ```
 
 **Combining with other annotations:**
+
 ```python
 class SharedScore(Integer):
     """Independent attribute with range constraint."""
@@ -613,6 +636,7 @@ class SharedScore(Integer):
 ```
 
 **Check if attribute is independent:**
+
 ```python
 Language.is_independent()  # True
 Name.is_independent()      # False

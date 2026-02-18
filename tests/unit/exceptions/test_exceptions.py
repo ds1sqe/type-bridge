@@ -291,7 +291,6 @@ class TestBooleanExprValidation:
 
     def test_not_with_zero_operands_raises(self):
         """NOT with zero operands should raise ValueError."""
-
         with pytest.raises(ValueError, match="NOT operation requires exactly 1 operand"):
             BooleanExpr("not", [])
 

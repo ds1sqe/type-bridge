@@ -1,0 +1,6 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/python", "crates/server"]
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)', 'cfg(coverage)'] }

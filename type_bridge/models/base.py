@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast, dataclass_transform
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    Self,
+    cast,
+    dataclass_transform,
+)
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
@@ -391,7 +399,6 @@ class TypeDBType(BaseModel, ABC):
             Dictionary mapping field names to ModelAttrInfo, including
             attributes from all registered subtypes.
         """
-
         # Start with this class's attributes (including inherited)
         all_attrs = cls.get_all_attributes()
 

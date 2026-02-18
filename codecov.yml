@@ -1,0 +1,32 @@
+codecov:
+  require_ci_to_pass: false
+
+coverage:
+  status:
+    project:
+      rust:
+        flags: [rust]
+        target: auto
+        threshold: 1%
+      python:
+        flags: [python]
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: auto
+        threshold: 5%
+
+flags:
+  rust:
+    paths: [type-bridge-core/]
+    carryforward: true
+  python:
+    paths: [type_bridge/]
+    carryforward: true
+
+ignore:
+  - "tests/"
+  - "benchmarks/"
+  - "examples/"
+  - "type-bridge-core/crates/server/src/typedb/real_driver.rs"

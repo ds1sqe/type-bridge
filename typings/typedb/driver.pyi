@@ -1,4 +1,4 @@
-# ruff: noqa: F403, F405
+# ruff: noqa: F403
 from typing import Any
 
 from typedb.api.answer.concept_document_iterator import *

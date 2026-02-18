@@ -19,6 +19,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -35,12 +38,91 @@ jobs:
       - name: Run linting
         run: uv run ruff check .
 
+      - name: Run cargo test
+        working-directory: type-bridge-core
+        run: cargo test --all-targets
+
       - name: Run unit tests
         run: uv run pytest tests/unit/ -v --tb=short
 
-  # Build the package
-  build:
-    name: Build
+  # Build type-bridge-core wheels for all platforms
+  build-core-wheels:
+    name: Build core wheel (${{ matrix.target }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact: core-wheels-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact: core-wheels-linux-aarch64
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            artifact: core-wheels-macos-x86_64
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            artifact: core-wheels-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact: core-wheels-windows-x86_64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (Linux aarch64 cross-compilation)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Python
+        if: runner.os != 'Linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist -i python3.13
+          manylinux: auto
+          working-directory: type-bridge-core
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: type-bridge-core/dist/*.whl
+
+  # Build type-bridge-core sdist (fallback for exotic platforms)
+  build-core-sdist:
+    name: Build core sdist
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: type-bridge-core
+
+      - name: Upload sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-sdist
+          path: type-bridge-core/dist/*.tar.gz
+
+  # Build pure-Python type-bridge package
+  build-python:
+    name: Build type-bridge
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -57,37 +139,68 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Build package
         run: uv build
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dist
+          name: python-dist
           path: dist/
 
-  # Publish to PyPI
-  publish-pypi:
-    name: Publish to PyPI
-    needs: build
+  # Publish type-bridge-core to PyPI (must complete before type-bridge)
+  publish-core-pypi:
+    name: Publish type-bridge-core to PyPI
+    needs: [build-core-wheels, build-core-sdist]
     runs-on: ubuntu-latest
     environment: release
     permissions:
-      id-token: write  # Required for trusted publishing
+      id-token: write
+    steps:
+      - name: Download core wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: core-wheels-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Download core sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: core-sdist
+          path: dist/
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Publish type-bridge to PyPI (after core is available)
+  publish-python-pypi:
+    name: Publish type-bridge to PyPI
+    needs: [build-python, publish-core-pypi]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: dist
+          name: python-dist
           path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  # Create draft GitHub Release
+  # Create draft GitHub Release with all artifacts
   github-release:
     name: Create GitHub Release
-    needs: publish-pypi
+    needs: publish-python-pypi
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -95,10 +208,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download build artifacts
+      - name: Download core wheel artifacts
         uses: actions/download-artifact@v4
         with:
-          name: dist
+          pattern: core-wheels-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Download core sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: core-sdist
+          path: dist/
+
+      - name: Download Python build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
           path: dist/
 
       - name: Create draft release

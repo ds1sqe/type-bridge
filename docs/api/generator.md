@@ -58,6 +58,8 @@ Options:
   --version TEXT          Schema version string [default: 1.0.0]
   --no-copy-schema        Don't copy the schema file to the output directory
   --implicit-keys TEXT    Attribute names to treat as @key even if not marked
+  --dto                   Generate Pydantic API DTOs (api_dto.py)
+  --dto-config TEXT       Python module path to DTOConfig (e.g., myapp.config:dto_config)
   --help                  Show this message and exit
 ```
 
@@ -74,6 +76,7 @@ myapp/models/
 ├── structs.py       # Struct definitions (if schema has structs)
 ├── functions.py     # Function metadata (if schema has functions)
 ├── registry.py      # Pre-computed schema metadata
+├── api_dto.py       # Pydantic API DTOs (if --dto flag used)
 └── schema.tql       # Copy of original schema (unless --no-copy-schema)
 ```
 
@@ -91,6 +94,30 @@ print(SCHEMA_VERSION)  # "1.0.0"
 
 # Get original schema text
 print(schema_text())
+```
+
+### Schema Registry
+
+The generated `registry.py` provides pre-computed schema metadata for runtime queries without reflection:
+
+```python
+from myapp.models.registry import (
+    get_entity_attributes,
+    get_relation_attributes,
+    get_role_players,
+    ENTITY_ATTRIBUTES,
+    RELATION_ATTRIBUTES,
+    RELATION_ROLES,
+)
+
+# Get attributes owned by an entity type
+attrs = get_entity_attributes("person")  # frozenset({"name", "age", "email"})
+
+# Get attributes owned by a relation type
+rel_attrs = get_relation_attributes("employment")  # frozenset({"start-date", "salary"})
+
+# Get role player types for a relation role
+players = get_role_players("employment", "employee")  # ("person",)
 ```
 
 ## Supported TypeQL Features
@@ -510,6 +537,8 @@ def generate_models(
     implicit_key_attributes: Iterable[str] | None = None,
     schema_version: str = "1.0.0",
     copy_schema: bool = True,
+    schema_path: str | Path | None = None,
+    generate_dto: bool = False,
 ) -> None:
     """Generate TypeBridge models from a TypeDB schema.
 
@@ -519,6 +548,8 @@ def generate_models(
         implicit_key_attributes: Attribute names to treat as @key
         schema_version: Version string for SCHEMA_VERSION constant
         copy_schema: Whether to copy schema.tql to output directory
+        schema_path: Custom path for the schema file (relative to output_dir)
+        generate_dto: Whether to generate Pydantic API DTOs (api_dto.py)
     """
 ```
 
@@ -588,6 +619,219 @@ class ParameterSpec:
     type: str   # e.g., "date" or "user"
 ```
 
+## API DTOs (Pydantic)
+
+The generator can optionally create Pydantic-based Data Transfer Objects for building REST APIs. Enable this with `--dto` on the CLI or `generate_dto=True` programmatically.
+
+### Generated DTO Structure
+
+When enabled, `api_dto.py` is generated with:
+
+- **Base classes**: `BaseDTO`, `BaseDTOOut`, `BaseDTOCreate`, `BaseDTOPatch`
+- **Entity DTOs**: `{Entity}Out`, `{Entity}Create`, `{Entity}Patch` for each non-abstract entity
+- **Relation DTOs**: `{Relation}Out`, `{Relation}Create` for each non-abstract relation
+- **Union types**: `EntityOut`, `EntityCreate`, `EntityPatch`, `RelationOut`, `RelationCreate`
+
+### Example Usage
+
+```bash
+# Generate with Pydantic DTOs
+python -m type_bridge.generator schema.tql -o ./myapp/models/ --dto
+```
+
+```python
+# Programmatic generation
+from type_bridge.generator import generate_models
+
+generate_models("schema.tql", "./myapp/models/", generate_dto=True)
+```
+
+### Using Generated DTOs
+
+```python
+from myapp.models.api_dto import PersonOut, PersonCreate, EntityOut
+
+# Create a new person via API
+@app.post("/persons")
+def create_person(data: PersonCreate) -> PersonOut:
+    # data is validated by Pydantic
+    person = Person(name=Name(data.name), age=Age(data.age))
+    person_manager.insert(person)
+    return PersonOut(iid=person.iid, name=data.name, age=data.age, type="person")
+
+# Handle any entity type with discriminated union
+@app.get("/entities/{id}")
+def get_entity(id: str) -> EntityOut:
+    # Returns the appropriate *Out type based on "type" field
+    ...
+```
+
+### DTO Class Hierarchy
+
+```text
+BaseDTO
+├── BaseDTOOut          # For entity responses (includes 'iid' field)
+├── BaseDTOCreate       # For entity create payloads
+├── BaseDTOPatch        # For entity partial updates (extra="forbid")
+├── BaseRelationOut     # For relation responses
+└── BaseRelationCreate  # For relation create payloads
+```
+
+For each entity `Foo` in your schema:
+
+- `FooOut` - Response DTO with all attributes and a `type` discriminator
+- `FooCreate` - Create payload DTO (required fields from `@key`, `@unique`, or `@card(1)`)
+- `FooPatch` - Partial update DTO (all fields optional)
+
+For each relation `Bar` in your schema:
+
+- `BarOut` - Response DTO with role player IIDs and owned attributes
+- `BarCreate` - Create payload with role player identifiers
+
+### Features
+
+- **Schema-driven**: All DTOs are generated directly from your TypeDB schema
+- **Inheritance support**: DTO inheritance mirrors your schema's type hierarchy
+- **Required field detection**: Uses `@key`, `@unique`, and `@card` annotations
+- **Literal type discriminators**: Each DTO has a `type` field for union discrimination
+- **Pydantic validation**: All DTOs use Pydantic for automatic validation
+- **Discriminated unions**: `EntityOut`, `RelationCreate`, etc. use the `type` field
+
+### DTOConfig - Custom Configuration
+
+For advanced use cases, you can configure DTO generation with `DTOConfig`:
+
+```python
+from type_bridge.generator import (
+    DTOConfig,
+    BaseClassConfig,
+    ValidatorConfig,
+    FieldSyncConfig,
+    generate_models,
+)
+
+config = DTOConfig(
+    # Custom base classes for entity hierarchies
+    base_classes=[
+        BaseClassConfig(
+            source_entity="artifact",         # Entities inheriting from 'artifact'
+            base_name="BaseArtifact",         # Will use BaseArtifactOut, etc.
+            inherited_attrs=["display_id", "name", "description", "status"],
+            extra_fields={"version": "int | None = None"},  # Add computed fields
+            field_syncs=[FieldSyncConfig("description", "content")],
+        ),
+    ],
+
+    # Custom validators (generates Annotated types with AfterValidator)
+    validators=[
+        ValidatorConfig(name="DisplayId", pattern=r"^[A-Z]{1,10}-\d+$"),
+    ],
+
+    # Custom Python code injected after imports
+    preamble='''
+def _validate_node_id(value: str) -> str:
+    """Accept display IDs, UUIDs, or TypeDB IIDs."""
+    # Custom validation logic here
+    return value
+
+NodeId = Annotated[str, AfterValidator(_validate_node_id)]
+''',
+
+    # Customize union type names (default: "Entity", "Relation")
+    entity_union_name="GraphNode",      # GraphNodeOut, GraphNodeCreate, etc.
+    relation_union_name="GraphRelation",
+
+    # Exclude internal entities from generation
+    exclude_entities=["display_id_counter", "schema_status"],
+
+    # Rename IID field (default: "iid", use "id" for conventional REST APIs)
+    iid_field_name="id",
+
+    # Skip generating relation Out classes (use with relation_preamble for custom output)
+    skip_relation_output=True,
+
+    # Custom base class for relation creates (must be defined in preamble/relation_preamble)
+    relation_create_base_class="BaseRelationCreate",
+
+    # Custom code for relation section (custom output classes, base classes)
+    relation_preamble='''
+class GraphEdgeOut(BaseDTO):
+    """Custom edge output for graph API."""
+    iid: str
+    source: str
+    target: str
+    type: str
+
+class BaseRelationCreate(BaseDTO):
+    """Base for relation creates with generic source/target."""
+    source_id: str
+    target_id: str
+''',
+)
+
+generate_models("schema.tql", "./models/", generate_dto=True, dto_config=config)
+```
+
+**CLI usage:**
+
+```bash
+# With a config module
+python -m type_bridge.generator schema.tql -o ./models/ --dto --dto-config myapp.config:dto_config
+```
+
+The config module (`myapp/config.py`):
+
+```python
+from type_bridge.generator import DTOConfig, BaseClassConfig
+
+dto_config = DTOConfig(
+    base_classes=[
+        BaseClassConfig(
+            source_entity="artifact",
+            base_name="BaseArtifact",
+            inherited_attrs=["display_id", "name", "description"],
+        ),
+    ],
+)
+```
+
+### DTOConfig Reference
+
+| Option                       | Type                          | Default      | Description                                                 |
+| ---------------------------- | ----------------------------- | ------------ | ----------------------------------------------------------- |
+| `base_classes`               | `list[BaseClassConfig]`       | `[]`         | Custom base classes for entity hierarchies                  |
+| `validators`                 | `list[ValidatorConfig]`       | `[]`         | Custom validator types with regex patterns                  |
+| `preamble`                   | `str \| None`                 | `None`       | Python code injected after imports                          |
+| `entity_union_name`          | `str`                         | `"Entity"`   | Name prefix for entity union types                          |
+| `relation_union_name`        | `str`                         | `"Relation"` | Name prefix for relation union types                        |
+| `exclude_entities`           | `list[str]`                   | `[]`         | Entity names to exclude from generation                     |
+| `iid_field_name`             | `str`                         | `"iid"`      | Field name for TypeDB IID (use `"id"` for REST conventions) |
+| `skip_relation_output`       | `bool`                        | `False`      | Skip generating relation Out classes                        |
+| `relation_create_base_class` | `str \| None`                 | `None`       | Custom base class for relation Create DTOs                  |
+| `relation_preamble`          | `str \| None`                 | `None`       | Python code injected in relation section                    |
+| `composite_entities`         | `list[CompositeEntityConfig]` | `[]`         | Composite (flat/merged) DTOs configuration                  |
+| `strict_out_models`          | `bool`                        | `False`      | Required fields are non-Optional in Out DTOs                |
+| `entity_field_overrides`     | `list[EntityFieldOverride]`   | `[]`         | Per-entity, per-variant field requiredness overrides        |
+
+### CompositeEntityConfig Highlights
+
+In addition to the options documented in [dto.md](dto.md), composites support:
+
+- **`skip_variants`** (`set[str]`): Skip generating specific variant classes (`"out"`, `"create"`, `"patch"`). The type `Literal` enum is always generated. Useful when you prefer discriminated unions over flat composite models.
+- **`extra_fields_out`** (`dict[str, str]`): Per-variant override for `extra_fields` on Out DTOs. When a field name appears here, the Out variant uses this annotation instead of the one from `extra_fields`. Useful when Out fields have different requiredness (e.g., `id` required on Out but optional on Create).
+
+### BaseClassConfig Reference
+
+| Option                   | Type                       | Default  | Description                                            |
+| ------------------------ | -------------------------- | -------- | ------------------------------------------------------ |
+| `source_entity`          | `str`                      | Required | Schema entity that triggers this base class            |
+| `base_name`              | `str`                      | Required | Base class name prefix (e.g., `"BaseArtifact"`)        |
+| `inherited_attrs`        | `list[str]`                | `[]`     | Attributes defined in base class (skipped in children) |
+| `extra_fields`           | `dict[str, str]`           | `{}`     | Additional fields as `{name: type_annotation}`         |
+| `field_syncs`            | `list[FieldSyncConfig]`    | `[]`     | Field sync validators for this base                    |
+| `validators`             | `list[str]`                | `[]`     | Validator names to apply to fields                     |
+| `create_field_overrides` | `dict[str, FieldOverride]` | `{}`     | Per-field overrides for Create variant                 |
+
 ## Best Practices
 
 ### 1. Keep Generated Code Separate
@@ -635,6 +879,7 @@ python -m type_bridge.generator schema.tql -o ./models/ --implicit-keys id
 
 ## See Also
 
+- [API DTOs Documentation](dto.md) - Complete DTOConfig reference and examples
 - [Entities Documentation](entities.md) - Entity inheritance and ownership
 - [Relations Documentation](relations.md) - Relations, roles, and role players
 - [Attributes Documentation](attributes.md) - Attribute types and constraints

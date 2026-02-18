@@ -127,7 +127,7 @@ class TestFormatValueNumbers:
     def test_format_decimal_high_precision(self):
         """Decimal with high precision should preserve digits."""
         result = format_value(Decimal("123.456789012345"))
-        assert "123.456789012345dec" == result
+        assert result == "123.456789012345dec"
 
 
 class TestFormatValueDateTimes:
@@ -203,13 +203,13 @@ class TestFormatValueDurations:
         assert "P" in result
 
     def test_format_duration_isodate(self):
-        """isodate Duration should be ISO formatted."""
+        """Isodate Duration should be ISO formatted."""
         duration = isodate.parse_duration("P1DT2H30M")
         result = format_value(duration)
         assert "P" in result
 
     def test_format_duration_isodate_months(self):
-        """isodate Duration with months should format correctly."""
+        """Isodate Duration with months should format correctly."""
         duration = isodate.parse_duration("P1M")
         result = format_value(duration)
         assert "P" in result

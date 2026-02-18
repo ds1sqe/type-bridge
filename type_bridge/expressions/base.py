@@ -10,8 +10,7 @@ if TYPE_CHECKING:
 
 
 class Expression(ABC):
-    """
-    Base class for all query expressions.
+    """Base class for all query expressions.
 
     Expressions represent query constraints that can be composed using
     boolean operators and converted to TypeQL patterns.
@@ -19,8 +18,7 @@ class Expression(ABC):
 
     @abstractmethod
     def to_ast(self, var: str) -> list["Pattern"]:
-        """
-        Convert this expression to AST patterns.
+        """Convert this expression to AST patterns.
 
         Args:
             var: The variable name to use in the pattern (e.g., "$e")
@@ -31,8 +29,7 @@ class Expression(ABC):
         ...
 
     def to_value_ast(self, var: str | None = None) -> "Value":
-        """
-        Convert this expression to an AST Value (if applicable).
+        """Convert this expression to an AST Value (if applicable).
 
         Most expressions are patterns (filters) and cannot be converted to values.
         FunctionCall expressions and Literal wrappers are values.
@@ -61,8 +58,7 @@ class Expression(ABC):
         return compiler.compile(MatchClause(patterns=patterns)).replace("match\n", "").strip(";")
 
     def get_attribute_types(self) -> set[type["Attribute"]]:
-        """
-        Get all attribute types referenced by this expression.
+        """Get all attribute types referenced by this expression.
 
         Returns:
             Set of attribute types used in this expression
@@ -78,8 +74,7 @@ class Expression(ABC):
         return set()
 
     def and_(self, other: "Expression") -> "BooleanExpr":
-        """
-        Combine this expression with another using AND logic.
+        """Combine this expression with another using AND logic.
 
         Args:
             other: Another expression to AND with this one
@@ -92,8 +87,7 @@ class Expression(ABC):
         return BooleanExpr(operation="and", operands=[self, other])
 
     def or_(self, other: "Expression") -> "BooleanExpr":
-        """
-        Combine this expression with another using OR logic.
+        """Combine this expression with another using OR logic.
 
         Args:
             other: Another expression to OR with this one
@@ -106,8 +100,7 @@ class Expression(ABC):
         return BooleanExpr(operation="or", operands=[self, other])
 
     def not_(self) -> "BooleanExpr":
-        """
-        Negate this expression using NOT logic.
+        """Negate this expression using NOT logic.
 
         Returns:
             BooleanExpr representing the negation

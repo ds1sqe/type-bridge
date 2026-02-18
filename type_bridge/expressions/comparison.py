@@ -15,8 +15,7 @@ if TYPE_CHECKING:
 
 
 class ComparisonExpr[T: "Attribute"](Expression):
-    """
-    Type-safe comparison expression for filtering by attribute values.
+    """Type-safe comparison expression for filtering by attribute values.
 
     Represents comparisons like age > 30, score <= 100, etc.
     """
@@ -27,8 +26,7 @@ class ComparisonExpr[T: "Attribute"](Expression):
         operator: Literal[">", "<", ">=", "<=", "==", "!="],
         value: T,
     ):
-        """
-        Create a comparison expression.
+        """Create a comparison expression.
 
         Args:
             attr_type: Attribute type to filter on
@@ -40,13 +38,16 @@ class ComparisonExpr[T: "Attribute"](Expression):
         self.value = value
 
     def to_ast(self, var: str) -> list["Pattern"]:
-        """
-        Generate AST patterns for this comparison.
+        """Generate AST patterns for this comparison.
 
         Example: "$e has age $e_age; $e_age > 30"
         """
         from type_bridge.crud.patterns import _get_literal_type
-        from type_bridge.query.ast import HasPattern, LiteralValue, ValueComparisonPattern
+        from type_bridge.query.ast import (
+            HasPattern,
+            LiteralValue,
+            ValueComparisonPattern,
+        )
 
         attr_type_name = self.attr_type.get_attribute_name()
         attr_var = generate_attr_var(var, self.attr_type)

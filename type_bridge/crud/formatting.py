@@ -7,6 +7,16 @@ from typing import Any
 import isodate
 from isodate import Duration as IsodateDuration
 
+try:
+    from type_bridge_core import (
+        format_value as _rust_format_value,  # type: ignore[import-not-found]
+    )
+
+    _USE_RUST = True
+except ImportError:
+    _rust_format_value = None
+    _USE_RUST = False
+
 
 def format_value(value: Any) -> str:
     """Format a Python value for TypeQL.
@@ -30,6 +40,11 @@ def format_value(value: Any) -> str:
         >>> format_value(Decimal("123.45"))
         '123.45dec'
     """
+    # Use Rust implementation when available for performance
+    if _USE_RUST and _rust_format_value is not None:
+        return _rust_format_value(value)
+
+    # Python fallback below
     # Extract value from Attribute instances first
     if hasattr(value, "value"):
         value = value.value

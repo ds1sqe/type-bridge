@@ -2,7 +2,16 @@
 
 import pytest
 
-from type_bridge import Card, Entity, Flag, Integer, Key, SchemaManager, String, TypeFlags
+from type_bridge import (
+    Card,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    SchemaManager,
+    String,
+    TypeFlags,
+)
 
 
 @pytest.mark.integration

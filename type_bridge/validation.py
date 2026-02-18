@@ -6,11 +6,20 @@ and role names don't conflict with TypeQL reserved words/keywords.
 
 import logging
 import unicodedata
-from typing import Literal
+from typing import Any, Literal
 
 from type_bridge.reserved_words import is_reserved_word
 
 logger = logging.getLogger(__name__)
+
+try:
+    from type_bridge_core import (
+        ValidationEngine as _RustValidationEngine,  # type: ignore[import-not-found]
+    )
+
+    _rust_validator: Any = _RustValidationEngine()
+except ImportError:
+    _rust_validator = None
 
 
 def _is_xid_start(char: str) -> bool:
@@ -162,6 +171,19 @@ def validate_type_name(
     """
     logger.debug(f"Validating {context} name: {name}")
 
+    # Try Rust validation engine first
+    if _rust_validator is not None:
+        try:
+            _rust_validator.validate_type_name(name, context)
+            return
+        except ValueError as exc:
+            msg = str(exc)
+            # Map Rust errors back to the correct Python exception types
+            if "reserved word" in msg.lower():
+                raise ReservedWordError(name, context) from exc
+            raise ValidationError(msg) from exc
+
+    # Python fallback
     if not name:
         logger.warning(f"Empty {context} name attempted")
         raise ValidationError(f"Empty {context} name is not allowed")
@@ -192,3 +214,82 @@ def validate_type_name(
                 f"{context.capitalize()} name '{name}' contains invalid character '{char}'. "
                 f"Only letters, numbers, underscores, hyphens, and combining marks are allowed."
             )
+
+
+def validate_query_against_schema(
+    clauses: list[dict[str, Any]],
+    schema: Any,
+    *,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Validate parsed query clauses against a TypeSchema.
+
+    This performs semantic validation: ownership checks, role validation,
+    value type compatibility, abstract type instantiation, and cardinality hints.
+
+    Args:
+        clauses: Parsed clauses (from ``QueryCompiler().parse()`` or manual construction).
+        schema: A ``TypeSchema`` instance from ``type_bridge_core``.
+        strict: If ``True``, raise ``ImportError`` when the Rust core is unavailable
+            and treat warnings as errors.
+
+    Returns:
+        Dict with ``is_valid`` (bool) and ``errors`` (list of error dicts).
+        Each error dict has ``code``, ``message``, ``path``, ``severity`` keys.
+    """
+    try:
+        from type_bridge_core import (
+            ValidationEngine as _RustEngine,  # type: ignore[import-not-found]
+        )
+
+        engine = _RustEngine()
+        result: dict[str, Any] = engine.validate_query(clauses, schema)
+
+        if strict:
+            has_issues = any(
+                e.get("severity") in ("Error", "Warning") for e in result.get("errors", [])
+            )
+            result["is_valid"] = not has_issues
+
+        return result
+
+    except ImportError:
+        if strict:
+            raise ImportError(
+                "Schema-aware query validation requires the type-bridge-core Rust extension"
+            ) from None
+        # Graceful skip: return valid with no errors.
+        return {"is_valid": True, "errors": []}
+
+
+def validate_entity_data(
+    entity_data: dict[str, Any],
+    rules_json: str,
+    schema: Any = None,
+) -> dict[str, Any]:
+    """Validate entity data against custom validation rules.
+
+    Uses the Rust ``ValidationEngine`` to evaluate rules defined in the
+    portable JSON DSL (see :class:`~type_bridge.rules.RuleBuilder`).
+
+    Args:
+        entity_data: Dict with ``__type__`` key and attribute values.
+        rules_json: JSON string of validation rules.
+        schema: Optional ``TypeSchema`` instance for ownership checks.
+
+    Returns:
+        Dict with ``is_valid`` (bool) and ``errors`` (list of error dicts).
+    """
+    try:
+        from type_bridge_core import (
+            ValidationEngine as _RustEngine,  # type: ignore[import-not-found]
+        )
+
+        engine = _RustEngine()
+        engine.load_rules(rules_json)
+        result: dict[str, Any] = engine.validate_entity(entity_data, schema)
+        return result
+
+    except ImportError:
+        # Graceful skip: return valid with no errors.
+        return {"is_valid": True, "errors": []}

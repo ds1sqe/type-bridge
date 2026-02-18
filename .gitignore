@@ -19,8 +19,18 @@ packages/typescript/dist/
 .idea/
 .vscode/
 
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
+
 # Temporary
 tmp/
 
+# Benchmarks
+benchmarks/.results/
+.benchmarks/
+
 # Reference repos
 typeql-ref/
+type-bridge-core/target/
