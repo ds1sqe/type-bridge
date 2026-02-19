@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 use crate::entity::TypeBridgeEntity;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
+use crate::query::EntityQuery;
 use crate::session::backend::{QueryResult, TxType};
 use crate::session::Database;
 
@@ -186,6 +187,21 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
                 message: "Expected Documents from put+fetch, got Rows".into(),
             }),
         }
+    }
+
+    /// Create a chainable query builder for this entity type.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let adults = manager.query()
+    ///     .filter(Expr::gte("age", AttributeValue::Long(18)))
+    ///     .order_by("name", SortDir::Asc)
+    ///     .limit(10)
+    ///     .execute().await?;
+    /// ```
+    pub fn query(&self) -> EntityQuery<'db, T> {
+        EntityQuery::new(self.db)
     }
 
     /// Count entities matching the given filters.

@@ -248,6 +248,12 @@ pub enum Clause {
         /// An optional variable to group results by before aggregating.
         group_by: Option<String>,
     },
+    /// A sort clause ordering results by one or more variables.
+    Sort(Vec<SortField>),
+    /// A limit clause restricting the number of results.
+    Limit(u64),
+    /// An offset clause skipping a number of results.
+    Offset(u64),
 }
 
 /// A variable binding in a match-let clause.
@@ -318,6 +324,17 @@ pub enum FetchItem {
         /// The variable whose attributes and nested things are fetched.
         var: String,
     },
+}
+
+/// A sort field specifying a variable and sort direction.
+///
+/// Used within [`Clause::Sort`] to define the ordering of query results.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SortField {
+    /// The variable to sort by (e.g. `"$age"`, `"$name"`).
+    pub variable: String,
+    /// Whether to sort in ascending order (`true`) or descending (`false`).
+    pub ascending: bool,
 }
 
 /// An aggregation assignment in a reduce clause.

@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
+use crate::query::RelationQuery;
 use crate::relation::TypeBridgeRelation;
 use crate::session::backend::{QueryResult, TxType};
 use crate::session::Database;
@@ -128,6 +129,21 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     /// Count all relations of this type.
     pub async fn count(&self) -> Result<u64> {
         self.count_with_filters(&[]).await
+    }
+
+    /// Create a chainable query builder for this relation type.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let recent = manager.query()
+    ///     .filter(Expr::gte("start-date", AttributeValue::Date("2024-01-01".into())))
+    ///     .order_by("start-date", SortDir::Desc)
+    ///     .limit(5)
+    ///     .execute().await?;
+    /// ```
+    pub fn query(&self) -> RelationQuery<'db, R> {
+        RelationQuery::new(self.db)
     }
 
     /// Count relations matching the given filters.

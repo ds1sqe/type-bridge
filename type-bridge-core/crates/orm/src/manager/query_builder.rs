@@ -4,12 +4,14 @@
 //! to TypeQL strings ready for execution.
 
 use type_bridge_core_lib::ast::{
-    Clause, Constraint, FunctionCallValue, Pattern, ReduceAssignment, Statement, Value,
+    Clause, Constraint, FetchItem, FunctionCallValue, Pattern, ReduceAssignment, SortField,
+    Statement, Value,
 };
 use type_bridge_core_lib::compiler::QueryCompiler;
 
 use crate::entity::TypeBridgeEntity;
 use crate::error::Result;
+use crate::expr::{Agg, Expr, SortDir};
 use crate::filter::Filter;
 use crate::relation::TypeBridgeRelation;
 
@@ -238,6 +240,292 @@ pub fn build_relation_count<R: TypeBridgeRelation>(
     Ok(compiler.compile(&clauses))
 }
 
+// ------------------------------------------------------------------
+// Expression-aware query builders
+// ------------------------------------------------------------------
+
+/// Build the common polymorphic match patterns for entity queries.
+///
+/// Returns `(base_patterns, expr_patterns)` where `base_patterns`
+/// contains the `isa!` + `sub` patterns, and `expr_patterns` contains
+/// the filter expression patterns.
+fn build_entity_match_patterns<T: TypeBridgeEntity>(
+    var: &str,
+    filters: &[Expr],
+) -> Vec<Pattern> {
+    let mut patterns = vec![
+        Pattern::Entity {
+            variable: var.to_string(),
+            type_name: "$t".to_string(),
+            constraints: vec![],
+            is_strict: true,
+        },
+        Pattern::SubType {
+            variable: "$t".to_string(),
+            parent_type: T::TYPE_NAME.to_string(),
+        },
+    ];
+
+    let mut counter = 0;
+    for filter in filters {
+        patterns.extend(filter.to_patterns(var, &mut counter));
+    }
+
+    patterns
+}
+
+/// Build a polymorphic fetch query with expression-based filters,
+/// sorting, pagination.
+pub fn build_expr_fetch<T: TypeBridgeEntity>(
+    filters: &[Expr],
+    sort_fields: &[(String, SortDir)],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<String> {
+    let mut match_patterns = build_entity_match_patterns::<T>(var, filters);
+
+    // Add Has bindings for sort attributes
+    let mut sort_ast_fields = Vec::new();
+    for (i, (attr, dir)) in sort_fields.iter().enumerate() {
+        let sort_var = format!("$_sort{}", i);
+        match_patterns.push(Pattern::Has {
+            thing_var: var.to_string(),
+            attr_type: attr.clone(),
+            attr_var: sort_var.clone(),
+        });
+        sort_ast_fields.push(SortField {
+            variable: sort_var,
+            ascending: *dir == SortDir::Asc,
+        });
+    }
+
+    let fetch_items = vec![
+        FetchItem::Function {
+            key: "_iid".to_string(),
+            func_name: "iid".to_string(),
+            var: var.to_string(),
+        },
+        FetchItem::Function {
+            key: "_type".to_string(),
+            func_name: "label".to_string(),
+            var: "$t".to_string(),
+        },
+        FetchItem::NestedWildcard {
+            key: "attributes".to_string(),
+            var: var.to_string(),
+        },
+    ];
+
+    let mut clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Fetch(fetch_items),
+    ];
+
+    if !sort_ast_fields.is_empty() {
+        clauses.push(Clause::Sort(sort_ast_fields));
+    }
+    if let Some(n) = limit {
+        clauses.push(Clause::Limit(n));
+    }
+    if let Some(n) = offset {
+        clauses.push(Clause::Offset(n));
+    }
+
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a count query with expression-based filters.
+pub fn build_expr_count<T: TypeBridgeEntity>(
+    filters: &[Expr],
+    var: &str,
+) -> Result<String> {
+    let match_patterns = build_entity_match_patterns::<T>(var, filters);
+
+    let clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments: vec![ReduceAssignment {
+                variable: "$_count".to_string(),
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "count".into(),
+                    args: vec![Value::Variable(var.to_string())],
+                }),
+            }],
+            group_by: None,
+        },
+    ];
+
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an aggregation query with expression-based filters.
+pub fn build_expr_aggregate<T: TypeBridgeEntity>(
+    filters: &[Expr],
+    aggs: &[Agg],
+    var: &str,
+) -> Result<String> {
+    let mut match_patterns = build_entity_match_patterns::<T>(var, filters);
+
+    let mut counter = 100; // offset to avoid collisions with filter variables
+    let mut assignments = Vec::new();
+    for agg in aggs {
+        let (assign, has_pattern) = agg.to_reduce_assignment(var, &mut counter);
+        if let Some(p) = has_pattern {
+            match_patterns.push(p);
+        }
+        assignments.push(assign);
+    }
+
+    let clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments,
+            group_by: None,
+        },
+    ];
+
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+// ------------------------------------------------------------------
+// Expression-aware relation query builders
+// ------------------------------------------------------------------
+
+/// Build the common polymorphic match patterns for relation queries.
+fn build_relation_match_patterns<R: TypeBridgeRelation>(
+    var: &str,
+    filters: &[Expr],
+) -> Vec<Pattern> {
+    let mut patterns = vec![Pattern::Relation {
+        variable: var.to_string(),
+        type_name: R::TYPE_NAME.to_string(),
+        role_players: vec![],
+        constraints: vec![],
+    }];
+
+    let mut counter = 0;
+    for filter in filters {
+        patterns.extend(filter.to_patterns(var, &mut counter));
+    }
+
+    patterns
+}
+
+/// Build a polymorphic fetch query for relations with expression-based
+/// filters, sorting, and pagination.
+pub fn build_relation_expr_fetch<R: TypeBridgeRelation>(
+    filters: &[Expr],
+    sort_fields: &[(String, SortDir)],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<String> {
+    let mut match_patterns = build_relation_match_patterns::<R>(var, filters);
+
+    let mut sort_ast_fields = Vec::new();
+    for (i, (attr, dir)) in sort_fields.iter().enumerate() {
+        let sort_var = format!("$_sort{}", i);
+        match_patterns.push(Pattern::Has {
+            thing_var: var.to_string(),
+            attr_type: attr.clone(),
+            attr_var: sort_var.clone(),
+        });
+        sort_ast_fields.push(SortField {
+            variable: sort_var,
+            ascending: *dir == SortDir::Asc,
+        });
+    }
+
+    let fetch_items = vec![
+        FetchItem::Function {
+            key: "_iid".to_string(),
+            func_name: "iid".to_string(),
+            var: var.to_string(),
+        },
+        FetchItem::NestedWildcard {
+            key: "attributes".to_string(),
+            var: var.to_string(),
+        },
+    ];
+
+    let mut clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Fetch(fetch_items),
+    ];
+
+    if !sort_ast_fields.is_empty() {
+        clauses.push(Clause::Sort(sort_ast_fields));
+    }
+    if let Some(n) = limit {
+        clauses.push(Clause::Limit(n));
+    }
+    if let Some(n) = offset {
+        clauses.push(Clause::Offset(n));
+    }
+
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a count query for relations with expression-based filters.
+pub fn build_relation_expr_count<R: TypeBridgeRelation>(
+    filters: &[Expr],
+    var: &str,
+) -> Result<String> {
+    let match_patterns = build_relation_match_patterns::<R>(var, filters);
+
+    let clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments: vec![ReduceAssignment {
+                variable: "$_count".to_string(),
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "count".into(),
+                    args: vec![Value::Variable(var.to_string())],
+                }),
+            }],
+            group_by: None,
+        },
+    ];
+
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an aggregation query for relations with expression-based filters.
+pub fn build_relation_expr_aggregate<R: TypeBridgeRelation>(
+    filters: &[Expr],
+    aggs: &[Agg],
+    var: &str,
+) -> Result<String> {
+    let mut match_patterns = build_relation_match_patterns::<R>(var, filters);
+
+    let mut counter = 100;
+    let mut assignments = Vec::new();
+    for agg in aggs {
+        let (assign, has_pattern) = agg.to_reduce_assignment(var, &mut counter);
+        if let Some(p) = has_pattern {
+            match_patterns.push(p);
+        }
+        assignments.push(assign);
+    }
+
+    let clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments,
+            group_by: None,
+        },
+    ];
+
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +732,73 @@ mod tests {
         assert!(q.contains("isa person"));
         assert!(q.contains("has name"));
         assert!(q.contains("fetch"));
+    }
+
+    // ── Expression-aware query builder tests ────────────────────────
+
+    #[test]
+    fn expr_fetch_with_gt_filter() {
+        let filters = [Expr::gt("age", AttributeValue::Long(30))];
+        let q = build_expr_fetch::<TestPerson>(&filters, &[], None, None, "$e").unwrap();
+        assert!(q.contains("$e has age $_attr0"));
+        assert!(q.contains("$_attr0 > 30"));
+        assert!(q.contains("sub person"));
+        assert!(q.contains("fetch"));
+    }
+
+    #[test]
+    fn expr_fetch_with_sort() {
+        let sort = [("age".to_string(), SortDir::Asc)];
+        let q = build_expr_fetch::<TestPerson>(&[], &sort, None, None, "$e").unwrap();
+        assert!(q.contains("$e has age $_sort0"));
+        assert!(q.contains("sort $_sort0 asc;"));
+    }
+
+    #[test]
+    fn expr_fetch_with_limit_offset() {
+        let q = build_expr_fetch::<TestPerson>(&[], &[], Some(10), Some(5), "$e").unwrap();
+        assert!(q.contains("limit 10;"));
+        assert!(q.contains("offset 5;"));
+    }
+
+    #[test]
+    fn expr_fetch_full_chain() {
+        let filters = [Expr::gte("age", AttributeValue::Long(18))];
+        let sort = [("name".to_string(), SortDir::Asc), ("age".to_string(), SortDir::Desc)];
+        let q = build_expr_fetch::<TestPerson>(&filters, &sort, Some(10), Some(20), "$e").unwrap();
+        assert!(q.contains("$e has age $_attr0"));
+        assert!(q.contains("$_attr0 >= 18"));
+        assert!(q.contains("$e has name $_sort0"));
+        assert!(q.contains("$e has age $_sort1"));
+        assert!(q.contains("sort $_sort0 asc, $_sort1 desc;"));
+        assert!(q.contains("limit 10;"));
+        assert!(q.contains("offset 20;"));
+    }
+
+    #[test]
+    fn expr_count_with_filter() {
+        let filters = [Expr::eq("name", AttributeValue::String("Alice".into()))];
+        let q = build_expr_count::<TestPerson>(&filters, "$e").unwrap();
+        assert!(q.contains("$e has name $_attr0"));
+        assert!(q.contains("$_attr0 == \"Alice\""));
+        assert!(q.contains("reduce"));
+        assert!(q.contains("count"));
+    }
+
+    #[test]
+    fn expr_aggregate_sum() {
+        let aggs = [Agg::Sum("age".into())];
+        let q = build_expr_aggregate::<TestPerson>(&[], &aggs, "$e").unwrap();
+        assert!(q.contains("$e has age $_agg100"));
+        assert!(q.contains("$_sum = sum($_agg100)"));
+        assert!(q.contains("reduce"));
+    }
+
+    #[test]
+    fn expr_aggregate_count_and_sum() {
+        let aggs = [Agg::Count, Agg::Sum("age".into())];
+        let q = build_expr_aggregate::<TestPerson>(&[], &aggs, "$e").unwrap();
+        assert!(q.contains("$_count = count($e)"));
+        assert!(q.contains("$_sum = sum($_agg100)"));
     }
 }

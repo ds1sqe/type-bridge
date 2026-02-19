@@ -116,7 +116,7 @@ impl TransactionOps for RealTransaction {
                     let json_docs = docs
                         .into_iter()
                         .map(|doc| {
-                            serde_json::to_value(&doc.into_json())
+                            serde_json::to_value(doc.into_json())
                                 .unwrap_or(serde_json::Value::Null)
                         })
                         .collect();
