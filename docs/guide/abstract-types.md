@@ -2,7 +2,7 @@
 
 This document covers how to use abstract types in TypeBridge, including implementation patterns and known issues.
 
-For conceptual understanding of abstract types in TypeDB, see [docs/ABSTRACT_TYPES.md](../ABSTRACT_TYPES.md).
+For conceptual understanding of abstract types in TypeDB, see [docs/development/abstract-types.md](../development/abstract-types.md).
 
 ## Table of Contents
 
@@ -240,4 +240,4 @@ owned_attrs = entity.__class__.get_owned_attributes()
 6. **Abstract types in role definitions** enable flexible, polymorphic relations
 7. **Polymorphic queries work seamlessly** with abstract type managers
 
-For conceptual understanding, see [docs/ABSTRACT_TYPES.md](../ABSTRACT_TYPES.md).
+For conceptual understanding, see [docs/development/abstract-types.md](../development/abstract-types.md).

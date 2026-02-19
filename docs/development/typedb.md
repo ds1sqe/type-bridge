@@ -540,8 +540,8 @@ tx.close()
 
 ---
 
-For abstract types and interface hierarchies, see [ABSTRACT_TYPES.md](ABSTRACT_TYPES.md).
+For abstract types and interface hierarchies, see [abstract-types.md](abstract-types.md).
 
-For internal implementation details, see [INTERNALS.md](INTERNALS.md).
+For internal implementation details, see [internals.md](internals.md).
 
-For API reference, see [docs/api/](api/).
+For API reference, see the [User Guide](../guide/index.md).

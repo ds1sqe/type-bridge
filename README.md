@@ -256,31 +256,16 @@ The generator supports:
 - Registry module generation for schema metadata and JSON Schema fragments
 - Both `#` and `//` comment styles
 
-See [docs/api/generator.md](docs/api/generator.md) for full documentation.
+See the [Code Generator guide](https://ds1sqe.github.io/type-bridge/guide/generator/) for full documentation.
 
 ## Documentation
 
-- **[CLAUDE.md](CLAUDE.md)** - Project guidance for development, TypeDB concepts, and quick reference
-- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, commands, and code quality standards
-- **[docs/TESTING.md](docs/TESTING.md)** - Testing strategy, patterns, and execution
-- **[docs/TYPEDB.md](docs/TYPEDB.md)** - TypeDB concepts, driver API, and TypeQL syntax
-- **[docs/ABSTRACT_TYPES.md](docs/ABSTRACT_TYPES.md)** - Abstract types and interface hierarchies in TypeDB
-- **[docs/INTERNALS.md](docs/INTERNALS.md)** - Internal type system and architecture
-- **[docs/SKILL.md](docs/SKILL.md)** - AI assistant skill for using type-bridge (for Claude, GPT, etc.)
+**[https://ds1sqe.github.io/type-bridge/](https://ds1sqe.github.io/type-bridge/)** — Full documentation site with user guide, API reference, and development guides.
 
-### API Reference
-
-- **[docs/api/README.md](docs/api/README.md)** - API overview and quick reference
-- **[docs/api/attributes.md](docs/api/attributes.md)** - Attribute types and value types
-- **[docs/api/entities.md](docs/api/entities.md)** - Entity definition and ownership
-- **[docs/api/relations.md](docs/api/relations.md)** - Relations, roles, and role players
-- **[docs/api/abstract_types.md](docs/api/abstract_types.md)** - Abstract types implementation and patterns
-- **[docs/api/cardinality.md](docs/api/cardinality.md)** - Card API and Flag system
-- **[docs/api/crud.md](docs/api/crud.md)** - CRUD operations and managers
-- **[docs/api/queries.md](docs/api/queries.md)** - Query expressions and aggregations
-- **[docs/api/schema.md](docs/api/schema.md)** - Schema management and conflict detection
-- **[docs/api/generator.md](docs/api/generator.md)** - Code generator (TQL → Python)
-- **[docs/api/validation.md](docs/api/validation.md)** - Pydantic integration and type safety
+- [Getting Started](https://ds1sqe.github.io/type-bridge/getting-started/) — Installation and quick start
+- [User Guide](https://ds1sqe.github.io/type-bridge/guide/) — Attributes, entities, relations, CRUD, queries, and more
+- [API Reference](https://ds1sqe.github.io/type-bridge/reference/) — Auto-generated from source docstrings
+- [Development](https://ds1sqe.github.io/type-bridge/development/) — Setup, testing, and internals
 
 ## Pydantic Integration
 

@@ -909,7 +909,7 @@ promoted = manager.filter(Age.gte(Age(35))).update_with(promote)
 - Returns count (delete) or list of entities (update_with)
 - Type-safe and validated at runtime
 
-For detailed documentation, see [CRUD Operations - Chainable Delete](crud.md#chainable-delete) and [CRUD Operations - Bulk Update](crud.md#bulk-update-with-function).
+For detailed documentation, see [CRUD Operations - Filter-Based Delete](crud.md#filter-based-delete) and [CRUD Operations - Bulk Update](crud.md#bulk-update-with-function).
 
 ## Arithmetic Expressions
 

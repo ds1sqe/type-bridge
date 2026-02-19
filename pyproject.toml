@@ -35,7 +35,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/ds1sqe/type-bridge"
 Repository = "https://github.com/ds1sqe/type-bridge"
-Documentation = "https://github.com/ds1sqe/type-bridge/blob/master/README.md"
+Documentation = "https://ds1sqe.github.io/type-bridge/"
 Issues = "https://github.com/ds1sqe/type-bridge/issues"
 
 [project.scripts]
@@ -50,6 +50,14 @@ dev = [
     "pytest-benchmark>=5.1.0",
     "ruff>=0.14.5",
     "pyright>=1.1.407",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+    "mkdocs-gen-files>=0.5",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-section-index>=0.3",
 ]
 
 [tool.ty.environment]

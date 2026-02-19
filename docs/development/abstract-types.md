@@ -9,7 +9,7 @@ This document explains how abstract types, interface hierarchies, and polymorphi
 3. [Abstract Types in TypeDB 3.x vs 2.x](#abstract-types-in-typedb-3x-vs-2x)
 4. [Querying Abstract Types](#querying-abstract-types)
 
-For TypeBridge implementation details, patterns, and known issues, see [docs/api/abstract_types.md](api/abstract_types.md).
+For TypeBridge implementation details, patterns, and known issues, see [docs/guide/abstract-types.md](../guide/abstract-types.md).
 
 ---
 
@@ -177,4 +177,4 @@ For more details on TypeDB concepts, see:
 - [Avoiding Interface Redundancies](https://typedb.com/docs/academy/9-modeling-schemas/9.7-avoiding-interface-redundancies/)
 - [Abstract Contracts](https://typedb.com/docs/academy/9-modeling-schemas/9.8-abstract-contracts/)
 
-For TypeBridge implementation details, see [docs/api/abstract_types.md](api/abstract_types.md).
+For TypeBridge implementation details, see [docs/guide/abstract-types.md](../guide/abstract-types.md).

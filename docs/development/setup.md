@@ -380,7 +380,7 @@ uv run pytest --log-cli-level=DEBUG
 uv run pytest --log-cli-level=DEBUG -k "test_entity_insert"
 ```
 
-For more details on logging configuration, see [docs/api/logging.md](api/logging.md).
+For more details on logging configuration, see [docs/guide/logging.md](../guide/logging.md).
 
 ## Environment Setup
 
@@ -461,8 +461,8 @@ All checks must pass before merging PRs.
 
 ---
 
-For testing specifics, see [TESTING.md](TESTING.md).
+For testing specifics, see [testing.md](testing.md).
 
-For TypeDB integration details, see [TYPEDB.md](TYPEDB.md).
+For TypeDB integration details, see [typedb.md](typedb.md).
 
-For internal architecture, see [INTERNALS.md](INTERNALS.md).
+For internal architecture, see [internals.md](internals.md).

@@ -612,6 +612,6 @@ open htmlcov/index.html  # View coverage report
 
 ---
 
-For development setup, see [DEVELOPMENT.md](DEVELOPMENT.md).
+For development setup, see [setup.md](setup.md).
 
-For TypeDB-specific testing considerations, see [TYPEDB.md](TYPEDB.md).
+For TypeDB-specific testing considerations, see [typedb.md](typedb.md).
