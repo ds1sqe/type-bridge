@@ -43,6 +43,7 @@
 //!   TypeQL schemas from custom sources.
 
 pub mod config;
+pub mod crud;
 pub mod error;
 pub mod executor;
 pub mod interceptor;

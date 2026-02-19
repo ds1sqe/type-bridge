@@ -7,6 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 
+use crate::crud::handlers;
 use crate::error::PipelineError;
 use crate::pipeline::{QueryInput, QueryPipeline, RawQueryInput, ValidateInput};
 use crate::transport::types::*;
@@ -62,6 +63,26 @@ pub fn create_router(pipeline: Arc<QueryPipeline>) -> Router {
         .route("/query/validate", post(handle_validate))
         .route("/health", get(handle_health))
         .route("/schema", get(handle_schema))
+        // CRUD entity endpoints
+        .route(
+            "/entities/{type_name}",
+            post(handlers::handle_entity_insert).get(handlers::handle_entity_fetch),
+        )
+        .route(
+            "/entities/{type_name}/{iid}",
+            get(handlers::handle_entity_get_by_iid)
+                .put(handlers::handle_entity_update)
+                .delete(handlers::handle_entity_delete),
+        )
+        // CRUD relation endpoints
+        .route(
+            "/relations/{type_name}",
+            post(handlers::handle_relation_insert).get(handlers::handle_relation_fetch),
+        )
+        .route(
+            "/relations/{type_name}/{iid}",
+            axum::routing::delete(handlers::handle_relation_delete),
+        )
         .with_state(pipeline)
 }
 
@@ -754,5 +775,181 @@ mod tests {
         let resp = router.oneshot(req).await.unwrap();
         let content_type = resp.headers().get(http::header::CONTENT_TYPE).unwrap();
         assert!(content_type.to_str().unwrap().contains("application/json"));
+    }
+
+    // =============================================
+    // CRUD route tests
+    // =============================================
+
+    #[tokio::test]
+    async fn crud_entity_insert_route_exists() {
+        let router = app(MockExecutor::new(), true);
+        let body = serde_json::json!({
+            "attributes": {
+                "name": { "value": "Alice", "value_type": "string" },
+                "age": { "value": 30, "value_type": "long" }
+            }
+        });
+        let req = json_request("POST", "/entities/person", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_insert_returns_ok() {
+        let router = app(MockExecutor::new(), true);
+        let body = serde_json::json!({
+            "attributes": {
+                "name": { "value": "Alice", "value_type": "string" }
+            }
+        });
+        let req = json_request("POST", "/entities/person", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "ok");
+        assert!(json["metadata"]["typeql"].as_str().unwrap().contains("insert"));
+    }
+
+    #[tokio::test]
+    async fn crud_entity_insert_unknown_type_fails() {
+        let router = app(MockExecutor::new(), true);
+        let body = serde_json::json!({
+            "attributes": {}
+        });
+        let req = json_request("POST", "/entities/nonexistent", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_fetch_route_exists() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .uri("/entities/person")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_fetch_returns_ok() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .uri("/entities/person")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn crud_entity_get_by_iid_route_exists() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .uri("/entities/person/0xabc123")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_update_returns_ok() {
+        let router = app(MockExecutor::new(), true);
+        let body = serde_json::json!({
+            "attributes": {
+                "age": { "value": 31, "value_type": "long" }
+            }
+        });
+        let req = json_request("PUT", "/entities/person/0xabc", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_delete_returns_ok() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/entities/person/0xabc123")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn crud_relation_insert_route_exists() {
+        let router = app(MockExecutor::new(), true);
+        let body = serde_json::json!({
+            "role_players": [
+                {
+                    "role": "employee",
+                    "entity_type": "person",
+                    "iid": "0x1"
+                }
+            ],
+            "attributes": {}
+        });
+        let req = json_request("POST", "/relations/employment", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn crud_relation_delete_route_exists() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/relations/employment/0xdef")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn crud_no_schema_returns_error() {
+        let router = app(MockExecutor::new(), false);
+        let body = serde_json::json!({
+            "attributes": {}
+        });
+        let req = json_request("POST", "/entities/person", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_fetch_with_limit() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .uri("/entities/person?limit=5")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert!(json["metadata"]["typeql"].as_str().unwrap().contains("limit 5"));
+    }
+
+    #[tokio::test]
+    async fn crud_response_has_metadata() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .uri("/entities/person")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        assert!(json["metadata"]["request_id"].is_string());
+        assert!(json["metadata"]["execution_time_ms"].is_number());
+        assert!(json["metadata"]["typeql"].is_string());
     }
 }

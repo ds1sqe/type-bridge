@@ -14,9 +14,16 @@ pub const SIMPLE_SCHEMA: &str = r#"
 define
     attribute name, value string;
     attribute age, value long;
+    attribute start-date, value date;
     entity person,
         owns name @key,
         owns age;
+    entity company,
+        owns name @key;
+    relation employment,
+        relates employee,
+        relates employer,
+        owns start-date;
 "#;
 
 /// Create a simple `Vec<Clause>` for a match+fetch query.
