@@ -140,16 +140,16 @@ fn entity_owned_attributes() {
     assert_eq!(attrs.len(), 3);
 
     assert_eq!(attrs[0].attr_name, "name");
-    assert_eq!(attrs[0].value_type, "string");
-    assert!(attrs[0].is_key);
+    assert_eq!(attrs[0].value_type, ValueType::String);
+    assert!(attrs[0].is_key());
 
     assert_eq!(attrs[1].attr_name, "age");
-    assert_eq!(attrs[1].value_type, "long");
-    assert!(!attrs[1].is_key);
+    assert_eq!(attrs[1].value_type, ValueType::Long);
+    assert!(!attrs[1].is_key());
 
     assert_eq!(attrs[2].attr_name, "email");
-    assert_eq!(attrs[2].value_type, "string");
-    assert!(!attrs[2].is_key);
+    assert_eq!(attrs[2].value_type, ValueType::String);
+    assert!(!attrs[2].is_key());
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn entity_single_field() {
     assert_eq!(Company::TYPE_NAME, "company");
     let attrs = Company::owned_attributes();
     assert_eq!(attrs.len(), 1);
-    assert!(attrs[0].is_key);
+    assert!(attrs[0].is_key());
 
     let c = Company {
         iid: None,
@@ -365,10 +365,10 @@ fn relation_derive_owned_attributes() {
     let attrs = Employment::owned_attributes();
     assert_eq!(attrs.len(), 2);
     assert_eq!(attrs[0].attr_name, "position");
-    assert_eq!(attrs[0].value_type, "string");
-    assert!(!attrs[0].is_key);
+    assert_eq!(attrs[0].value_type, ValueType::String);
+    assert!(!attrs[0].is_key());
     assert_eq!(attrs[1].attr_name, "start-date");
-    assert_eq!(attrs[1].value_type, "date");
+    assert_eq!(attrs[1].value_type, ValueType::Date);
 }
 
 #[test]
@@ -516,4 +516,69 @@ fn relation_no_attributes() {
     assert_eq!(Friendship::role_info().len(), 2);
     assert_eq!(Friendship::role_info()[0].role_name, "friend");
     assert_eq!(Friendship::role_info()[1].role_name, "friend");
+}
+
+// ── Extended annotation tests ───────────────────────────────────────
+
+#[derive(DeriveAttribute, Debug, Clone, PartialEq)]
+#[attribute(name = "username", value_type = "string")]
+struct Username(pub String);
+
+#[derive(DeriveAttribute, Debug, Clone, PartialEq)]
+#[attribute(name = "tag", value_type = "string")]
+struct Tag(pub String);
+
+#[derive(DeriveAttribute, Debug, Clone, PartialEq)]
+#[attribute(name = "phone", value_type = "string")]
+struct Phone(pub String);
+
+#[derive(DeriveEntity, Debug)]
+#[entity(name = "user")]
+struct User {
+    iid: Option<String>,
+    #[field(key)]
+    name: Name,
+    #[field(unique)]
+    username: Username,
+    #[field(card_min = 1, card_max = 5)]
+    tag: Tag,
+    #[field(card_min = 0)]
+    phone: Option<Phone>,
+}
+
+#[test]
+fn entity_with_unique_attribute() {
+    let attrs = User::owned_attributes();
+    assert_eq!(attrs.len(), 4);
+
+    // name: @key
+    assert!(attrs[0].is_key());
+    assert!(!attrs[0].is_unique());
+    assert!(attrs[0].cardinality().is_none());
+
+    // username: @unique
+    assert!(!attrs[1].is_key());
+    assert!(attrs[1].is_unique());
+    assert!(attrs[1].cardinality().is_none());
+}
+
+#[test]
+fn entity_with_bounded_cardinality() {
+    let attrs = User::owned_attributes();
+
+    // tag: @card(1, 5)
+    let tag_attr = &attrs[2];
+    assert!(!tag_attr.is_key());
+    assert!(!tag_attr.is_unique());
+    assert_eq!(tag_attr.cardinality(), Some((1, Some(5))));
+}
+
+#[test]
+fn entity_with_unbounded_cardinality() {
+    let attrs = User::owned_attributes();
+
+    // phone: @card(0, None) — unbounded max
+    let phone_attr = &attrs[3];
+    assert!(!phone_attr.is_key());
+    assert_eq!(phone_attr.cardinality(), Some((0, None)));
 }

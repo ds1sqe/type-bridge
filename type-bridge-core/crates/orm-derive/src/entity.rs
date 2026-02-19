@@ -52,6 +52,9 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
             inner_ty: inner_ty.clone(),
             is_optional,
             is_key: field_attrs.is_key,
+            is_unique: field_attrs.is_unique,
+            card_min: field_attrs.card_min,
+            card_max: field_attrs.card_max,
             _custom_name: field_attrs.custom_name,
         });
     }
@@ -66,12 +69,12 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     // Generate owned_attributes()
     let owned_attrs = attr_fields.iter().map(|f| {
         let ty = &f.inner_ty;
-        let is_key = f.is_key;
+        let annots_tokens = build_annotations(f.is_key, f.is_unique, f.card_min, f.card_max);
         quote! {
             type_bridge_orm::OwnedAttributeInfo {
                 attr_name: <#ty as type_bridge_orm::TypeBridgeAttribute>::ATTR_NAME,
-                value_type: <#ty as type_bridge_orm::TypeBridgeAttribute>::VALUE_TYPE,
-                is_key: #is_key,
+                value_type: <#ty as type_bridge_orm::TypeBridgeAttribute>::VALUE_TYPE_ENUM,
+                annotations: #annots_tokens,
             }
         }
     });
@@ -199,11 +202,17 @@ struct EntityField {
     inner_ty: syn::Type,
     is_optional: bool,
     is_key: bool,
+    is_unique: bool,
+    card_min: Option<u32>,
+    card_max: Option<Option<u32>>,
     _custom_name: Option<String>,
 }
 
 struct FieldAttrs {
     is_key: bool,
+    is_unique: bool,
+    card_min: Option<u32>,
+    card_max: Option<Option<u32>>,
     custom_name: Option<String>,
 }
 
@@ -233,9 +242,13 @@ fn parse_entity_name(attrs: &[syn::Attribute]) -> syn::Result<String> {
     ))
 }
 
-/// Parse field-level attributes: `#[field(key)]`, `#[field(name = "...")]`
+/// Parse field-level attributes: `#[field(key)]`, `#[field(unique)]`,
+/// `#[field(name = "...")]`, `#[field(card_min = N)]`, `#[field(card_max = M)]`
 fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
     let mut is_key = false;
+    let mut is_unique = false;
+    let mut card_min: Option<u32> = None;
+    let mut card_max: Option<Option<u32>> = None;
     let mut custom_name: Option<String> = None;
 
     for attr in attrs {
@@ -246,20 +259,67 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
             if meta.path.is_ident("key") {
                 is_key = true;
                 Ok(())
+            } else if meta.path.is_ident("unique") {
+                is_unique = true;
+                Ok(())
             } else if meta.path.is_ident("name") {
                 let value: LitStr = meta.value()?.parse()?;
                 custom_name = Some(value.value());
                 Ok(())
+            } else if meta.path.is_ident("card_min") {
+                let value: syn::LitInt = meta.value()?.parse()?;
+                card_min = Some(value.base10_parse()?);
+                Ok(())
+            } else if meta.path.is_ident("card_max") {
+                let value: syn::LitInt = meta.value()?.parse()?;
+                card_max = Some(Some(value.base10_parse()?));
+                Ok(())
             } else {
-                Err(meta.error("expected `key` or `name`"))
+                Err(meta.error("expected `key`, `unique`, `name`, `card_min`, or `card_max`"))
             }
         })?;
     }
 
+    // If card_min is set but card_max is not, default to unbounded
+    if card_min.is_some() && card_max.is_none() {
+        card_max = Some(None);
+    }
+
     Ok(FieldAttrs {
         is_key,
+        is_unique,
+        card_min,
+        card_max,
         custom_name,
     })
+}
+
+/// Build annotation tokens from field flags.
+fn build_annotations(
+    is_key: bool,
+    is_unique: bool,
+    card_min: Option<u32>,
+    card_max: Option<Option<u32>>,
+) -> proc_macro2::TokenStream {
+    let mut annots = Vec::new();
+    if is_key {
+        annots.push(quote! { type_bridge_orm::Annotation::Key });
+    }
+    if is_unique {
+        annots.push(quote! { type_bridge_orm::Annotation::Unique });
+    }
+    if let Some(min) = card_min {
+        let max_tokens = match card_max {
+            Some(Some(m)) => quote! { Some(#m) },
+            _ => quote! { None },
+        };
+        annots.push(quote! { type_bridge_orm::Annotation::Card(#min, #max_tokens) });
+    }
+    if annots.is_empty() {
+        quote! { &[] }
+    } else {
+        quote! { &[#(#annots),*] }
+    }
 }
 
 /// Check if a type is `Option<T>` and return the inner type.

@@ -39,6 +39,20 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     // Parse #[attribute(name = "...", value_type = "...")]
     let (attr_name, value_type) = parse_attribute_attrs(&input.attrs)?;
 
+    // Map value_type string to ValueType enum variant
+    let value_type_enum = match value_type.as_str() {
+        "string" => quote! { type_bridge_orm::ValueType::String },
+        "long" => quote! { type_bridge_orm::ValueType::Long },
+        "double" => quote! { type_bridge_orm::ValueType::Double },
+        "boolean" => quote! { type_bridge_orm::ValueType::Boolean },
+        "date" => quote! { type_bridge_orm::ValueType::Date },
+        "datetime" => quote! { type_bridge_orm::ValueType::DateTime },
+        "datetime-tz" => quote! { type_bridge_orm::ValueType::DateTimeTz },
+        "decimal" => quote! { type_bridge_orm::ValueType::Decimal },
+        "duration" => quote! { type_bridge_orm::ValueType::Duration },
+        _ => quote! { type_bridge_orm::ValueType::String }, // unreachable, caught below
+    };
+
     // Generate to_value/from_value based on value_type
     let (to_value_body, from_value_body) = match value_type.as_str() {
         "string" => (
@@ -134,6 +148,7 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
         impl type_bridge_orm::TypeBridgeAttribute for #name {
             const ATTR_NAME: &'static str = #attr_name;
             const VALUE_TYPE: &'static str = #value_type;
+            const VALUE_TYPE_ENUM: type_bridge_orm::ValueType = #value_type_enum;
 
             fn to_value(&self) -> type_bridge_orm::AttributeValue {
                 #to_value_body

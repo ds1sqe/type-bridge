@@ -38,6 +38,10 @@ pub enum OrmError {
     #[error("Compilation error: {0}")]
     Compilation(String),
 
+    /// Schema management error.
+    #[error("Schema error: {0}")]
+    Schema(#[from] crate::schema::SchemaError),
+
     /// Serde JSON error.
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),

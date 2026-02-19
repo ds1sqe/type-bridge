@@ -23,13 +23,13 @@ impl TypeBridgeEntity for Person {
         &[
             OwnedAttributeInfo {
                 attr_name: "name",
-                value_type: "string",
-                is_key: true,
+                value_type: ValueType::String,
+                annotations: &[Annotation::Key],
             },
             OwnedAttributeInfo {
                 attr_name: "age",
-                value_type: "long",
-                is_key: false,
+                value_type: ValueType::Long,
+                annotations: &[],
             },
         ]
     }

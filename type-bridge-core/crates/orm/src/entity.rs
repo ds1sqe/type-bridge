@@ -2,19 +2,53 @@
 
 use type_bridge_core_lib::ast::{Clause, Constraint, FetchItem, Pattern, Statement};
 
+use crate::attribute::ValueType;
 use crate::error::Result;
 use crate::filter::Filter;
 use crate::value::AttributeValue;
+
+/// Ownership annotation on an attribute (mirrors TypeDB `@key`, `@unique`, `@card`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Annotation {
+    /// `@key` — unique identifier attribute.
+    Key,
+    /// `@unique` — unique but not identifier.
+    Unique,
+    /// `@card(min, max)` — cardinality constraint. `None` max = unbounded.
+    Card(u32, Option<u32>),
+}
 
 /// Metadata about one owned attribute on an entity type.
 #[derive(Debug, Clone)]
 pub struct OwnedAttributeInfo {
     /// TypeDB attribute type name (e.g. `"name"`, `"age"`).
     pub attr_name: &'static str,
-    /// TypeDB value type (e.g. `"string"`, `"long"`).
-    pub value_type: &'static str,
-    /// Whether this attribute is annotated with `@key`.
-    pub is_key: bool,
+    /// TypeDB value type.
+    pub value_type: ValueType,
+    /// Ownership annotations (e.g. `@key`, `@unique`, `@card`).
+    pub annotations: &'static [Annotation],
+}
+
+impl OwnedAttributeInfo {
+    /// Whether this attribute has a `@key` annotation.
+    pub fn is_key(&self) -> bool {
+        self.annotations.iter().any(|a| matches!(a, Annotation::Key))
+    }
+
+    /// Whether this attribute has a `@unique` annotation.
+    pub fn is_unique(&self) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::Unique))
+    }
+
+    /// Get the cardinality constraint, if any.
+    pub fn cardinality(&self) -> Option<(u32, Option<u32>)> {
+        self.annotations.iter().find_map(|a| match a {
+            Annotation::Card(min, max) => Some((*min, *max)),
+            _ => None,
+        })
+    }
 }
 
 /// Trait for TypeDB entity types.
@@ -110,7 +144,7 @@ pub trait TypeBridgeEntity: Sized + Send + Sync + 'static {
 
         let key_attrs: Vec<&'static str> = Self::owned_attributes()
             .iter()
-            .filter(|a| a.is_key)
+            .filter(|a| a.is_key())
             .map(|a| a.attr_name)
             .collect();
 

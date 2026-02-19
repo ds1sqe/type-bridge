@@ -113,7 +113,7 @@ pub fn build_count<T: TypeBridgeEntity>(filters: &[Filter], var: &str) -> Result
 pub fn build_update<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String> {
     let key_attrs: Vec<&'static str> = T::owned_attributes()
         .iter()
-        .filter(|a| a.is_key)
+        .filter(|a| a.is_key())
         .map(|a| a.attr_name)
         .collect();
 
@@ -529,7 +529,8 @@ pub fn build_relation_expr_aggregate<R: TypeBridgeRelation>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::OwnedAttributeInfo;
+    use crate::entity::{Annotation, OwnedAttributeInfo};
+    use crate::attribute::ValueType;
     use crate::value::AttributeValue;
 
     // Minimal test entity for query builder tests.
@@ -546,13 +547,13 @@ mod tests {
             &[
                 OwnedAttributeInfo {
                     attr_name: "name",
-                    value_type: "string",
-                    is_key: true,
+                    value_type: ValueType::String,
+                    annotations: &[Annotation::Key],
                 },
                 OwnedAttributeInfo {
                     attr_name: "age",
-                    value_type: "long",
-                    is_key: false,
+                    value_type: ValueType::Long,
+                    annotations: &[],
                 },
             ]
         }
@@ -691,8 +692,8 @@ mod tests {
             fn owned_attributes() -> &'static [OwnedAttributeInfo] {
                 &[OwnedAttributeInfo {
                     attr_name: "name",
-                    value_type: "string",
-                    is_key: true,
+                    value_type: ValueType::String,
+                    annotations: &[Annotation::Key],
                 }]
             }
             fn iid(&self) -> Option<&str> {

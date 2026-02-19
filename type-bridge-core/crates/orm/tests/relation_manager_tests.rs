@@ -25,8 +25,8 @@ impl TypeBridgeRelation for Employment {
     fn owned_attributes() -> &'static [OwnedAttributeInfo] {
         static ATTRS: [OwnedAttributeInfo; 1] = [OwnedAttributeInfo {
             attr_name: "position",
-            value_type: "string",
-            is_key: false,
+            value_type: ValueType::String,
+            annotations: &[],
         }];
         &ATTRS
     }
@@ -391,7 +391,7 @@ fn relation_owned_attributes() {
     let attrs = Employment::owned_attributes();
     assert_eq!(attrs.len(), 1);
     assert_eq!(attrs[0].attr_name, "position");
-    assert_eq!(attrs[0].value_type, "string");
+    assert_eq!(attrs[0].value_type, ValueType::String);
 }
 
 #[test]

@@ -2,6 +2,62 @@
 
 use crate::value::AttributeValue;
 
+/// TypeDB value type enum for type-safe metadata.
+///
+/// Mirrors the TypeDB value type system: `string`, `long`, `double`, `boolean`,
+/// `date`, `datetime`, `datetime-tz`, `decimal`, `duration`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValueType {
+    String,
+    Long,
+    Double,
+    Boolean,
+    Date,
+    DateTime,
+    DateTimeTz,
+    Decimal,
+    Duration,
+}
+
+impl ValueType {
+    /// Convert to the TypeDB value type string.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Long => "long",
+            Self::Double => "double",
+            Self::Boolean => "boolean",
+            Self::Date => "date",
+            Self::DateTime => "datetime",
+            Self::DateTimeTz => "datetime-tz",
+            Self::Decimal => "decimal",
+            Self::Duration => "duration",
+        }
+    }
+
+    /// Parse from a TypeDB value type string.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "string" => Some(Self::String),
+            "long" => Some(Self::Long),
+            "double" => Some(Self::Double),
+            "boolean" => Some(Self::Boolean),
+            "date" => Some(Self::Date),
+            "datetime" => Some(Self::DateTime),
+            "datetime-tz" => Some(Self::DateTimeTz),
+            "decimal" => Some(Self::Decimal),
+            "duration" => Some(Self::Duration),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ValueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Trait for TypeDB attribute types.
 ///
 /// Each attribute type in TypeDB (e.g., `name`, `age`, `email`) is represented
@@ -22,8 +78,11 @@ pub trait TypeBridgeAttribute: Clone + Send + Sync + 'static {
     /// The TypeDB attribute type name (e.g. `"name"`, `"age"`, `"email"`).
     const ATTR_NAME: &'static str;
 
-    /// The TypeDB value type (e.g. `"string"`, `"long"`, `"double"`).
+    /// The TypeDB value type as a string (e.g. `"string"`, `"long"`, `"double"`).
     const VALUE_TYPE: &'static str;
+
+    /// The TypeDB value type as a [`ValueType`] enum variant.
+    const VALUE_TYPE_ENUM: ValueType;
 
     /// Convert this attribute to a generic [`AttributeValue`].
     fn to_value(&self) -> AttributeValue;
@@ -69,6 +128,7 @@ macro_rules! define_attribute {
         impl $crate::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "string";
+            const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::String;
 
             fn to_value(&self) -> $crate::AttributeValue {
                 $crate::AttributeValue::String(self.0.clone())
@@ -89,6 +149,7 @@ macro_rules! define_attribute {
         impl $crate::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "long";
+            const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Long;
 
             fn to_value(&self) -> $crate::AttributeValue {
                 $crate::AttributeValue::Long(self.0)
@@ -109,6 +170,7 @@ macro_rules! define_attribute {
         impl $crate::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "double";
+            const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Double;
 
             fn to_value(&self) -> $crate::AttributeValue {
                 $crate::AttributeValue::Double(self.0)
@@ -129,6 +191,7 @@ macro_rules! define_attribute {
         impl $crate::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "boolean";
+            const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Boolean;
 
             fn to_value(&self) -> $crate::AttributeValue {
                 $crate::AttributeValue::Boolean(self.0)
@@ -149,6 +212,7 @@ macro_rules! define_attribute {
         impl $crate::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "date";
+            const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Date;
 
             fn to_value(&self) -> $crate::AttributeValue {
                 $crate::AttributeValue::Date(self.0.clone())
@@ -169,6 +233,7 @@ macro_rules! define_attribute {
         impl $crate::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "datetime";
+            const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::DateTime;
 
             fn to_value(&self) -> $crate::AttributeValue {
                 $crate::AttributeValue::DateTime(self.0.clone())
@@ -189,6 +254,7 @@ macro_rules! define_attribute {
         impl $crate::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "datetime-tz";
+            const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::DateTimeTz;
 
             fn to_value(&self) -> $crate::AttributeValue {
                 $crate::AttributeValue::DateTimeTZ(self.0.clone())
@@ -209,6 +275,7 @@ macro_rules! define_attribute {
         impl $crate::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "decimal";
+            const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Decimal;
 
             fn to_value(&self) -> $crate::AttributeValue {
                 $crate::AttributeValue::Decimal(self.0.clone())
@@ -229,6 +296,7 @@ macro_rules! define_attribute {
         impl $crate::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "duration";
+            const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Duration;
 
             fn to_value(&self) -> $crate::AttributeValue {
                 $crate::AttributeValue::Duration(self.0.clone())

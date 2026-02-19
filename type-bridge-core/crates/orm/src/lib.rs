@@ -40,12 +40,13 @@ pub mod filter;
 pub mod manager;
 pub mod query;
 pub mod relation;
+pub mod schema;
 pub mod session;
 pub mod value;
 
 // Re-exports for convenient access
-pub use attribute::TypeBridgeAttribute;
-pub use entity::{OwnedAttributeInfo, TypeBridgeEntity};
+pub use attribute::{TypeBridgeAttribute, ValueType};
+pub use entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};
 pub use error::{OrmError, Result};
 pub use expr::{Agg, AggResult, Expr, SortDir};
 pub use filter::Filter;
@@ -53,6 +54,7 @@ pub use manager::{EntityManager, RelationManager};
 pub use query::{EntityQuery, RelationQuery};
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use session::{Database, Transaction, TransactionContext, TxType};
+pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 pub use value::AttributeValue;
 
 // Re-export derive macros when the `derive` feature is enabled.
