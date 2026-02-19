@@ -363,3 +363,67 @@ async fn insert_with_wrapped_iid_response() {
 
     assert_eq!(iid, "0xwrapped");
 }
+
+#[tokio::test]
+async fn update_executes_query() {
+    let backend = MockBackend::new(vec![QueryResult::Ok]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let person = Person {
+        iid: Some("0xaaa".into()),
+        name: Name("Alice".into()),
+        age: Age(31),
+    };
+
+    let manager = EntityManager::<Person>::new(&db);
+    manager.update(&person).await.unwrap();
+
+    let recorded = queries.lock().unwrap();
+    assert!(!recorded.is_empty());
+    assert!(recorded[0].contains("match"));
+    assert!(recorded[0].contains("update"));
+    assert!(recorded[0].contains("has age"));
+}
+
+#[tokio::test]
+async fn put_sets_iid_and_returns_it() {
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![serde_json::json!({
+        "iid": "0xput1"
+    })])]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let mut person = Person {
+        iid: None,
+        name: Name("Alice".into()),
+        age: Age(30),
+    };
+
+    let manager = EntityManager::<Person>::new(&db);
+    let iid = manager.put(&mut person).await.unwrap();
+
+    assert_eq!(iid, "0xput1");
+    assert_eq!(person.iid(), Some("0xput1"));
+}
+
+#[tokio::test]
+async fn put_query_contains_put_keyword() {
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![serde_json::json!({
+        "iid": "0xput2"
+    })])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let mut person = Person {
+        iid: None,
+        name: Name("Bob".into()),
+        age: Age(25),
+    };
+
+    let manager = EntityManager::<Person>::new(&db);
+    let _ = manager.put(&mut person).await.unwrap();
+
+    let recorded = queries.lock().unwrap();
+    assert!(recorded[0].contains("put"));
+    assert!(!recorded[0].starts_with("insert"));
+}

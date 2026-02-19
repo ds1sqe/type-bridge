@@ -138,6 +138,56 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         self.count_with_filters(&[]).await
     }
 
+    /// Update an entity's non-key attributes in the database.
+    ///
+    /// Identifies the entity by IID or @key attributes, then updates
+    /// all other attribute values. Only non-key attributes are modified.
+    pub async fn update(&self, entity: &T) -> Result<()> {
+        let typeql = query_builder::build_update::<T>(entity, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "UPDATE");
+        self.db.execute_raw(&typeql, TxType::Write).await?;
+        Ok(())
+    }
+
+    /// Idempotent insert-or-update (put) for an entity.
+    ///
+    /// If a matching entity exists, updates it. Otherwise inserts a new one.
+    /// Returns the IID of the entity (existing or newly created).
+    pub async fn put(&self, entity: &mut T) -> Result<String> {
+        let typeql = query_builder::build_put::<T>(entity, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "PUT");
+
+        let result = self.db.execute_raw(&typeql, TxType::Write).await?;
+        match result {
+            QueryResult::Documents(docs) => {
+                let doc = docs.first().ok_or_else(|| OrmError::Hydration {
+                    type_name: T::TYPE_NAME.into(),
+                    message: "Put returned no documents".into(),
+                })?;
+
+                let iid = doc
+                    .get("iid")
+                    .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
+                    .ok_or_else(|| OrmError::Hydration {
+                        type_name: T::TYPE_NAME.into(),
+                        message: "No IID in put response".into(),
+                    })?
+                    .to_string();
+
+                entity.set_iid(iid.clone());
+                Ok(iid)
+            }
+            QueryResult::Ok => Err(OrmError::Hydration {
+                type_name: T::TYPE_NAME.into(),
+                message: "Expected Documents from put+fetch, got Ok".into(),
+            }),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: T::TYPE_NAME.into(),
+                message: "Expected Documents from put+fetch, got Rows".into(),
+            }),
+        }
+    }
+
     /// Count entities matching the given filters.
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
         let typeql = query_builder::build_count::<T>(filters, "$e")?;

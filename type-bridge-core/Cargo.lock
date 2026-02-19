@@ -2152,7 +2152,17 @@ dependencies = [
  "tokio",
  "tracing",
  "type-bridge-core-lib",
+ "type-bridge-orm-derive",
  "typedb-driver",
+]
+
+[[package]]
+name = "type-bridge-orm-derive"
+version = "0.1.0-dev.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

@@ -6,6 +6,7 @@
 
 use crate::entity::TypeBridgeEntity;
 use crate::error::{OrmError, Result};
+use crate::relation::TypeBridgeRelation;
 use crate::session::backend::QueryResult;
 
 /// Hydrate a single entity from a TypeDB fetch document.
@@ -50,6 +51,37 @@ pub fn hydrate_entity<T: TypeBridgeEntity>(doc: &serde_json::Value) -> Result<T>
         entity.set_iid(iid);
     }
     Ok(entity)
+}
+
+/// Hydrate a single relation from a TypeDB fetch document.
+///
+/// Uses the same document shape as entity hydration since relations
+/// also own attributes and have IIDs.
+pub fn hydrate_relation<R: TypeBridgeRelation>(doc: &serde_json::Value) -> Result<R> {
+    let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
+        type_name: R::TYPE_NAME.to_string(),
+        message: "Expected JSON object".into(),
+    })?;
+
+    let iid = extract_scalar_string(obj, "_iid");
+
+    let flat = if let Some(attrs) = obj.get("attributes").and_then(|v| v.as_object()) {
+        flatten_wildcard_attributes(attrs)
+    } else {
+        let mut flat = serde_json::Map::new();
+        for (k, v) in obj {
+            if !k.starts_with('_') && k != "attributes" {
+                flat.insert(k.clone(), v.clone());
+            }
+        }
+        flat
+    };
+
+    let mut relation = R::from_document(&flat)?;
+    if let Some(iid) = iid {
+        relation.set_iid(iid);
+    }
+    Ok(relation)
 }
 
 /// Flatten TypeDB wildcard attribute results.

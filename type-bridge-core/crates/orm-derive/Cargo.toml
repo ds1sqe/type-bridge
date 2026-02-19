@@ -1,0 +1,19 @@
+[package]
+name = "type-bridge-orm-derive"
+version = "0.1.0-dev.0"
+edition = "2024"
+description = "Derive macros for type-bridge-orm: TypeBridgeEntity, TypeBridgeAttribute, TypeBridgeRelation"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
+
+[lints]
+workspace = true

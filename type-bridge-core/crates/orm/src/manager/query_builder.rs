@@ -11,6 +11,7 @@ use type_bridge_core_lib::compiler::QueryCompiler;
 use crate::entity::TypeBridgeEntity;
 use crate::error::Result;
 use crate::filter::Filter;
+use crate::relation::TypeBridgeRelation;
 
 /// Build an insert + fetch-IID query for the given entity.
 ///
@@ -79,6 +80,148 @@ pub fn build_count<T: TypeBridgeEntity>(filters: &[Filter], var: &str) -> Result
             type_name: T::TYPE_NAME.to_string(),
             constraints,
             is_strict: false,
+        }]),
+        Clause::Reduce {
+            assignments: vec![ReduceAssignment {
+                variable: "$count".to_string(),
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "count".into(),
+                    args: vec![Value::Variable(var.to_string())],
+                }),
+            }],
+            group_by: None,
+        },
+    ];
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+// ------------------------------------------------------------------
+// Entity update + put query builders
+// ------------------------------------------------------------------
+
+/// Build a match + update query for a specific entity instance.
+///
+/// Matches the entity by IID or @key attributes, then updates all
+/// non-key attribute values. Produces TypeQL like:
+/// ```text
+/// match $e isa person, has name "Alice";
+/// update $e has age 31;
+/// ```
+pub fn build_update<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String> {
+    let key_attrs: Vec<&'static str> = T::owned_attributes()
+        .iter()
+        .filter(|a| a.is_key)
+        .map(|a| a.attr_name)
+        .collect();
+
+    let update_statements: Vec<Statement> = entity
+        .to_attribute_values()
+        .into_iter()
+        .filter(|(name, _)| !key_attrs.contains(name))
+        .map(|(attr_name, value)| Statement::Has {
+            subject_var: var.to_string(),
+            attr_name: attr_name.to_string(),
+            value: value.to_ast_value(),
+        })
+        .collect();
+
+    if update_statements.is_empty() {
+        return Err(crate::error::OrmError::QueryExecution(
+            "No non-key attributes to update".into(),
+        ));
+    }
+
+    let clauses = vec![
+        Clause::Match(vec![entity.to_match_pattern(var)]),
+        Clause::Update(update_statements),
+    ];
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an idempotent put query (insert-or-update) for an entity.
+///
+/// Produces TypeQL using the `put` keyword instead of `insert`.
+/// TypeDB will insert if no matching entity exists, or update if one does.
+///
+/// ```text
+/// put $e isa person, has name "Alice", has age 30;
+/// fetch { "iid": iid($e) };
+/// ```
+pub fn build_put<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String> {
+    let typeql = build_insert_with_iid::<T>(entity, var)?;
+    // Replace the first occurrence of "insert" with "put"
+    Ok(typeql.replacen("insert", "put", 1))
+}
+
+// ------------------------------------------------------------------
+// Relation query builders
+// ------------------------------------------------------------------
+
+/// Build an insert + fetch-IID query for a relation.
+///
+/// Produces TypeQL like:
+/// ```text
+/// match $rp0 isa person, has name "Alice"; $rp1 isa company, has name "Acme";
+/// insert $r isa employment, links (employee: $rp0, employer: $rp1), has position "Engineer";
+/// fetch { "iid": iid($r) };
+/// ```
+pub fn build_relation_insert_with_iid<R: TypeBridgeRelation>(
+    relation: &R,
+    var: &str,
+) -> Result<String> {
+    let clauses = relation.to_insert_with_iid_fetch(var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a polymorphic fetch query for relations with optional filters.
+pub fn build_relation_fetch<R: TypeBridgeRelation>(
+    filters: &[Filter],
+    var: &str,
+) -> Result<String> {
+    let clauses = R::build_polymorphic_fetch(var, R::TYPE_NAME, filters);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a match + delete query for a specific relation instance.
+pub fn build_relation_delete<R: TypeBridgeRelation>(
+    relation: &R,
+    var: &str,
+) -> Result<String> {
+    let match_patterns = relation.to_match_pattern(var);
+    let clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Delete(vec![Statement::Isa {
+            variable: var.to_string(),
+            type_name: R::TYPE_NAME.to_string(),
+        }]),
+    ];
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a count query for relations with optional filters.
+pub fn build_relation_count<R: TypeBridgeRelation>(
+    filters: &[Filter],
+    var: &str,
+) -> Result<String> {
+    let constraints: Vec<Constraint> = filters
+        .iter()
+        .map(|f| Constraint::Has {
+            attr_name: f.attr_name.clone(),
+            value: f.value.to_ast_value(),
+        })
+        .collect();
+
+    let clauses = vec![
+        Clause::Match(vec![Pattern::Relation {
+            variable: var.to_string(),
+            type_name: R::TYPE_NAME.to_string(),
+            role_players: vec![],
+            constraints,
         }]),
         Clause::Reduce {
             assignments: vec![ReduceAssignment {
@@ -230,5 +373,76 @@ mod tests {
         assert!(q.contains("has age"));
         assert!(q.contains("reduce"));
         assert!(q.contains("count"));
+    }
+
+    #[test]
+    fn update_query_matches_and_updates_non_key() {
+        let person = TestPerson {
+            iid: Some("0xabc".into()),
+            name: "Alice".into(),
+            age: 31,
+        };
+        let q = build_update::<TestPerson>(&person, "$e").unwrap();
+        assert!(q.contains("match"));
+        assert!(q.contains("update"));
+        assert!(q.contains("has age"));
+        // Key attributes should NOT appear in the update clause
+        assert!(!q.contains("update\n$e has name"));
+    }
+
+    #[test]
+    fn update_query_without_non_key_attrs_fails() {
+        // TestPerson has only name (key) + age (non-key)
+        // But a struct with only key attrs would fail
+        struct KeyOnly {
+            iid: Option<String>,
+            name: String,
+        }
+        impl TypeBridgeEntity for KeyOnly {
+            const TYPE_NAME: &'static str = "keyonly";
+            fn owned_attributes() -> &'static [OwnedAttributeInfo] {
+                &[OwnedAttributeInfo {
+                    attr_name: "name",
+                    value_type: "string",
+                    is_key: true,
+                }]
+            }
+            fn iid(&self) -> Option<&str> {
+                self.iid.as_deref()
+            }
+            fn set_iid(&mut self, iid: String) {
+                self.iid = Some(iid);
+            }
+            fn to_attribute_values(&self) -> Vec<(&'static str, AttributeValue)> {
+                vec![("name", AttributeValue::String(self.name.clone()))]
+            }
+            fn from_document(
+                _doc: &serde_json::Map<String, serde_json::Value>,
+            ) -> crate::error::Result<Self> {
+                unimplemented!()
+            }
+        }
+
+        let entity = KeyOnly {
+            iid: Some("0x1".into()),
+            name: "Test".into(),
+        };
+        let result = build_update::<KeyOnly>(&entity, "$e");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn put_query_uses_put_keyword() {
+        let person = TestPerson {
+            iid: None,
+            name: "Alice".into(),
+            age: 30,
+        };
+        let q = build_put::<TestPerson>(&person, "$e").unwrap();
+        assert!(q.contains("put"));
+        assert!(!q.starts_with("insert"));
+        assert!(q.contains("isa person"));
+        assert!(q.contains("has name"));
+        assert!(q.contains("fetch"));
     }
 }

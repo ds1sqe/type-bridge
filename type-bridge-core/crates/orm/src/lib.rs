@@ -3,8 +3,9 @@
 //! This crate provides:
 //!
 //! - **[`TypeBridgeEntity`]** trait for mapping Rust structs to TypeDB entity types
+//! - **[`TypeBridgeRelation`]** trait for mapping Rust structs to TypeDB relation types
 //! - **[`TypeBridgeAttribute`]** trait and [`define_attribute!`] macro for attribute types
-//! - **[`EntityManager`]** for typed insert / fetch / delete / count operations
+//! - **[`EntityManager`]** / **[`RelationManager`]** for typed CRUD operations
 //! - **[`Database`]** + [`Transaction`] + [`TransactionContext`] session layer
 //! - **[`Filter`]** for equality-based queries
 //!
@@ -36,6 +37,7 @@ pub mod entity;
 pub mod error;
 pub mod filter;
 pub mod manager;
+pub mod relation;
 pub mod session;
 pub mod value;
 
@@ -44,6 +46,15 @@ pub use attribute::TypeBridgeAttribute;
 pub use entity::{OwnedAttributeInfo, TypeBridgeEntity};
 pub use error::{OrmError, Result};
 pub use filter::Filter;
-pub use manager::EntityManager;
+pub use manager::{EntityManager, RelationManager};
+pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use value::AttributeValue;
+
+// Re-export derive macros when the `derive` feature is enabled.
+#[cfg(feature = "derive")]
+pub use type_bridge_orm_derive::TypeBridgeAttribute as DeriveAttribute;
+#[cfg(feature = "derive")]
+pub use type_bridge_orm_derive::TypeBridgeEntity as DeriveEntity;
+#[cfg(feature = "derive")]
+pub use type_bridge_orm_derive::TypeBridgeRelation as DeriveRelation;

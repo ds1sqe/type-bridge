@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [features]
 default = ["typedb"]
 typedb = ["dep:typedb-driver", "dep:futures"]
+derive = ["dep:type-bridge-orm-derive"]
 
 [dependencies]
 type-bridge-core-lib = { path = "../core" }
@@ -22,6 +23,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2"
 tracing = "0.1"
+type-bridge-orm-derive = { path = "../orm-derive", optional = true }
 
 # Optional: real TypeDB backend
 typedb-driver = { version = "3", optional = true }
