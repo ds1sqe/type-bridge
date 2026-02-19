@@ -2,6 +2,10 @@
 name = "type-bridge-core"
 version = "0.1.0-dev.0"
 edition = "2024"
+description = "PyO3 bindings exposing the type-bridge Rust core to Python"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [lib]
 name = "type_bridge_core"

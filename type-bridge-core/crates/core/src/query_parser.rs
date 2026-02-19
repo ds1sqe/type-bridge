@@ -1,7 +1,7 @@
 //! Winnow-based parser for TypeQL data-manipulation queries.
 //!
 //! Converts TypeQL query strings (match, insert, delete, update, fetch, reduce)
-//! back into [`Clause`] AST nodes — the reverse of [`QueryCompiler`].
+//! back into [`Clause`](crate::ast::Clause) AST nodes — the reverse of [`QueryCompiler`](crate::compiler::QueryCompiler).
 
 use std::fmt;
 
@@ -25,9 +25,13 @@ type PResult<T> = winnow::error::Result<T>;
 /// Error returned by [`parse_typeql_query`].
 #[derive(Debug, Clone)]
 pub enum QueryParseError {
+    /// The TypeQL query string could not be parsed.
     ParseError {
+        /// Human-readable description of the parse failure.
         message: String,
+        /// 1-based line number where the error occurred.
         line: usize,
+        /// 1-based column number where the error occurred.
         column: usize,
     },
 }

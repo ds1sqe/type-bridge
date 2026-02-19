@@ -363,6 +363,24 @@ uv run pytest -m "" -v                    # Run all tests
 ./check.sh                                # Run linting and type checking
 ```
 
+## Rust Core
+
+The project includes a Rust core (`type-bridge-core/`) that provides high-performance implementations of the query compiler, validation engine, and value coercer. When the native extension is installed, Python automatically delegates to Rust for:
+
+- **Validation** — ~8.6x faster schema-aware query validation
+- **Compilation** — ~1.3x faster AST-to-TypeQL compilation via serde bridge
+- **Value coercion** — Type-safe value coercion and TypeQL literal formatting
+
+The Rust core is a Cargo workspace with three crates:
+
+| Crate | Description |
+|-------|-------------|
+| `type-bridge-core-lib` | Pure-Rust AST, schema parser, query compiler, and validation engine |
+| `type-bridge-core` | PyO3 bindings exposing the Rust core to Python |
+| `type-bridge-server` | Transport-agnostic query pipeline with HTTP API |
+
+See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instructions and architecture details.
+
 ## Requirements
 
 - Python 3.13+

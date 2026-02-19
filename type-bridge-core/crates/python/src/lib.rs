@@ -1,3 +1,18 @@
+//! # type-bridge-core (Python)
+//!
+//! PyO3 bindings that expose the **type-bridge** Rust core to Python.
+//!
+//! This crate re-exports the core AST types as Python classes and provides
+//! thin wrappers around [`type_bridge_core_lib::validation::ValidationEngine`],
+//! [`type_bridge_core_lib::compiler::QueryCompiler`],
+//! [`type_bridge_core_lib::schema::TypeSchema`], and
+//! [`type_bridge_core_lib::value_coercion::ValueCoercer`].
+//!
+//! All complex types cross the Python ↔ Rust boundary via
+//! `pythonize` / `depythonize` using serde-tagged-enum dicts.
+
+#![warn(missing_docs)]
+
 pub mod ast;
 
 use type_bridge_core_lib as core;
@@ -6,6 +21,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBool;
 use pythonize::{depythonize, pythonize};
 
+/// Python-facing wrapper around the Rust [`type_bridge_core_lib::validation::ValidationEngine`].
 #[pyclass]
 pub struct ValidationEngine {
     inner: core::validation::ValidationEngine,
@@ -136,6 +152,7 @@ impl ValidationEngine {
     }
 }
 
+/// Python-facing wrapper around the Rust [`type_bridge_core_lib::compiler::QueryCompiler`].
 #[pyclass]
 pub struct QueryCompiler {
     inner: core::compiler::QueryCompiler,
@@ -182,6 +199,7 @@ impl QueryCompiler {
     }
 }
 
+/// Python-facing wrapper around the Rust [`type_bridge_core_lib::schema::TypeSchema`].
 #[pyclass]
 pub struct TypeSchema {
     inner: core::schema::TypeSchema,
@@ -291,6 +309,7 @@ impl TypeSchema {
     }
 }
 
+/// Python-facing wrapper around the Rust [`type_bridge_core_lib::value_coercion::ValueCoercer`].
 #[pyclass]
 pub struct ValueCoercer {
     inner: core::value_coercion::ValueCoercer,

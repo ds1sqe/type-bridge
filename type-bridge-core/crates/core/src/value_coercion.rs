@@ -1,3 +1,9 @@
+//! Value coercion and formatting for TypeDB value types.
+//!
+//! Converts JSON values to typed TypeDB values (string, long, double, boolean,
+//! decimal, date, datetime, datetime-tz, duration) with validation and range
+//! checking, and formats them as TypeQL literals.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -6,27 +12,43 @@ use std::fmt;
 // Types
 // ---------------------------------------------------------------------------
 
+/// A value that has been coerced to a specific TypeDB value type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoercedValue {
+    /// The coerced JSON value.
     pub value: serde_json::Value,
+    /// The TypeDB value type (e.g. `"string"`, `"long"`, `"datetime"`).
     pub value_type: String,
 }
 
+/// Error returned when value coercion fails.
 #[derive(Debug, Clone)]
 pub enum CoercionError {
+    /// The value's type does not match the expected TypeDB type.
     TypeMismatch {
+        /// String representation of the value.
         value: String,
+        /// The expected TypeDB value type.
         expected: String,
+        /// The actual type encountered.
         actual: String,
     },
+    /// The value's format is invalid for the target type (e.g. bad date string).
     InvalidFormat {
+        /// String representation of the value.
         value: String,
+        /// The target TypeDB value type.
         expected_type: String,
+        /// Human-readable description of the format error.
         message: String,
     },
+    /// The value is outside the allowed range for the target type.
     OutOfRange {
+        /// String representation of the value.
         value: String,
+        /// The target TypeDB value type.
         expected_type: String,
+        /// Human-readable description of the range violation.
         message: String,
     },
 }
@@ -117,6 +139,7 @@ fn parse_digits(s: &str, n: usize) -> Option<(u32, &str)> {
 }
 
 /// Validate a date string in YYYY-MM-DD format.
+/// Validate that a string is a well-formed ISO 8601 date (`YYYY-MM-DD`).
 pub fn validate_date(s: &str) -> Result<(), String> {
     let (year, rest) = parse_digits(s, 4).ok_or("Expected 4-digit year")?;
     if !rest.starts_with('-') {
@@ -186,6 +209,7 @@ fn parse_time_part(s: &str) -> Result<&str, String> {
 
 /// Validate a datetime string: YYYY-MM-DDTHH:MM:SS[.ffffff]
 /// Rejects if timezone offset is present.
+/// Validate that a string is a well-formed ISO 8601 datetime (`YYYY-MM-DDThh:mm:ss[.fff]`).
 pub fn validate_datetime(s: &str) -> Result<(), String> {
     // Parse date part
     let (year, rest) = parse_digits(s, 4).ok_or("Expected 4-digit year")?;
@@ -229,6 +253,8 @@ pub fn validate_datetime(s: &str) -> Result<(), String> {
 
 /// Validate a datetime-tz string: YYYY-MM-DDTHH:MM:SS[.ffffff](+HH:MM|-HH:MM|Z)
 /// Requires timezone offset.
+/// Validate that a string is a well-formed datetime with timezone offset
+/// (`YYYY-MM-DDThh:mm:ss[.fff]+HH:MM` or `Z` suffix).
 pub fn validate_datetime_tz(s: &str) -> Result<(), String> {
     // Parse date part
     let (year, rest) = parse_digits(s, 4).ok_or("Expected 4-digit year")?;
@@ -291,7 +317,7 @@ pub fn validate_datetime_tz(s: &str) -> Result<(), String> {
     Err("datetime-tz requires timezone offset (+HH:MM, -HH:MM, or Z)".into())
 }
 
-/// Validate an ISO 8601 duration string: P[nY][nM][nD][T[nH][nM][n.nS]]
+/// Validate that a string is a well-formed ISO 8601 duration (`PnYnMnDTnHnMnS`).
 pub fn validate_duration(s: &str) -> Result<(), String> {
     if !s.starts_with('P') {
         return Err("Duration must start with 'P'".into());
@@ -361,6 +387,9 @@ pub fn validate_duration(s: &str) -> Result<(), String> {
 // ValueCoercer
 // ---------------------------------------------------------------------------
 
+/// Coerces JSON values to typed TypeDB values and formats them as TypeQL literals.
+///
+/// Supports optional per-attribute range constraints for numeric types.
 pub struct ValueCoercer {
     range_constraints: HashMap<String, (Option<f64>, Option<f64>)>,
 }
@@ -372,6 +401,7 @@ impl Default for ValueCoercer {
 }
 
 impl ValueCoercer {
+    /// Create a new coercer with no range constraints.
     pub fn new() -> Self {
         ValueCoercer {
             range_constraints: HashMap::new(),

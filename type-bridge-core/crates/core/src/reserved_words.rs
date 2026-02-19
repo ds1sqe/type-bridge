@@ -1,6 +1,9 @@
+//! TypeQL reserved words — keywords that cannot be used as type or variable names.
+
 use std::collections::HashSet;
 use once_cell::sync::Lazy;
 
+/// The set of all TypeQL reserved words (keywords, value types, built-in functions, etc.).
 pub static TYPEQL_RESERVED_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     let mut m = HashSet::new();
     // Schema queries
@@ -105,6 +108,7 @@ pub static TYPEQL_RESERVED_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     m
 });
 
+/// Check whether `name` is a TypeQL reserved word (case-insensitive).
 pub fn is_reserved_word(name: &str) -> bool {
     TYPEQL_RESERVED_WORDS.contains(name.to_lowercase().as_str())
 }

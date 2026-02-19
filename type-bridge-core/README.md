@@ -1,30 +1,53 @@
 # type-bridge-core
 
-Rust core for the `type-bridge` TypeDB ORM.
+Rust core for the **type-bridge** TypeDB ORM — high-performance AST, schema parser, query compiler, validation engine, and value coercer.
 
-## Overview
+## Workspace structure
 
-This crate provides a high-performance, shared type system and query engine for `type-bridge`. It enables:
+```
+type-bridge-core/
+├── Cargo.toml          # Workspace root
+└── crates/
+    ├── core/           # type-bridge-core-lib  (pure Rust, no runtime deps)
+    ├── python/         # type-bridge-core      (PyO3 bindings → Python)
+    └── server/         # type-bridge-server    (query pipeline + HTTP API)
+```
 
-- **Bidirectional Validation**: Define validation rules once in Rust and enforce them on both client (Python) and server (Rust/WASM).
-- **Query Object Portability**: First-class AST objects that can be serialized and moved between runtimes.
-- **Performance**: High-speed query compilation and schema parsing.
+## Crates
 
-## Structure
-
-- `src/core`: Pure Rust implementation of the AST, schema, and validation engine. This is runtime-agnostic.
-- `src/ast`: PyO3 wrappers for the core AST nodes, providing an idiomatic Python API.
-- `src/lib.rs`: PyO3 module definition.
+| Crate | Description |
+|-------|-------------|
+| [`type-bridge-core-lib`](crates/core/) | Pure-Rust TypeQL AST, schema parser, query compiler, validation engine, and value coercer |
+| [`type-bridge-core`](crates/python/) | PyO3 bindings exposing the Rust core to Python via serde-tagged-enum dicts |
+| [`type-bridge-server`](crates/server/) | Transport-agnostic query pipeline with validation, interceptors, and HTTP API |
 
 ## Building
 
-To build the Python extension:
-
 ```bash
+# Check all crates (requires PYO3 compat flag on Python ≥ 3.14)
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check --all-targets
+
+# Build the Python extension
 cd type-bridge-core
-maturin develop
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop
+
+# Run tests
+cargo test -p type-bridge-core-lib -p type-bridge-server
+
+# Generate docs
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo doc --no-deps --open
 ```
 
-## Status
+## Local CI mirror
 
-This is an initial implementation following the RFC in issue #95. Key structures are in place, with logic being ported from Python.
+Use the project-level check script to mirror CI locally:
+
+```bash
+./scripts/check.sh rust      # Rust checks only
+./scripts/check.sh python    # Python checks only
+./scripts/check.sh           # Both
+```
+
+## License
+
+MIT

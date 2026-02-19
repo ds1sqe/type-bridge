@@ -6,29 +6,49 @@ use std::fmt;
 // Error types
 // ---------------------------------------------------------------------------
 
+/// Errors that can occur during schema parsing, validation, or inheritance resolution.
+///
+/// Each variant captures the specific context needed to produce a helpful error
+/// message (e.g. source location for parse errors, the cycle participant for
+/// inheritance cycles).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SchemaError {
+    /// A syntax error encountered while parsing a TypeQL `define` block.
     ParseError {
+        /// Human-readable description of what went wrong.
         message: String,
+        /// 1-based line number where the error was detected.
         line: usize,
+        /// 1-based column number where the error was detected.
         column: usize,
     },
+    /// A cycle was detected in the `sub` (inheritance) chain of a type.
     InheritanceCycle {
+        /// The name of the type involved in the cycle.
         type_name: String,
     },
+    /// A type declares a parent (`sub`) that does not exist in the schema.
     UnknownParent {
+        /// The child type that references a missing parent.
         child: String,
+        /// The parent type name that could not be found.
         parent: String,
     },
+    /// Two definitions with the same name and kind were found in the schema.
     DuplicateDefinition {
+        /// The duplicated type name.
         name: String,
+        /// The kind of type that was duplicated (e.g. `"entity"`, `"relation"`, `"attribute"`).
         kind: String,
     },
+    /// A semantic validation error (e.g. invalid cardinality bounds, bad regex pattern).
     ValidationError {
+        /// Human-readable description of the validation failure.
         message: String,
     },
 }
 
+/// Formats a [`SchemaError`] into a human-readable error message.
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -57,29 +77,49 @@ impl fmt::Display for SchemaError {
     }
 }
 
+/// Enables [`SchemaError`] to be used as a standard Rust error type.
 impl std::error::Error for SchemaError {}
 
 // ---------------------------------------------------------------------------
 // Cardinality
 // ---------------------------------------------------------------------------
 
+/// Ownership or role-play cardinality constraint, corresponding to the
+/// TypeQL `@card(min..max)` annotation.
+///
+/// Examples:
+/// - `@card(1..1)` -- exactly one (default for most ownership)
+/// - `@card(0..5)` -- zero to five
+/// - `@card(1..)` -- one or more (unbounded upper bound)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cardinality {
+    /// Minimum number of values or role-players required.
     pub min: u32,
-    pub max: Option<u32>, // None = unbounded
+    /// Maximum number of values or role-players allowed, or `None` for unbounded.
+    pub max: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
 // OwnedAttribute
 // ---------------------------------------------------------------------------
 
+/// An attribute ownership declaration on an entity or relation type.
+///
+/// Corresponds to a TypeQL `owns <attribute>` clause, optionally annotated
+/// with `@key`, `@unique`, `@cascade`, `@subkey`, or `@card`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnedAttribute {
+    /// The name of the owned attribute type (must exist in the schema's attributes map).
     pub name: String,
+    /// Whether this attribute is annotated with `@key`, making it a unique identifier.
     pub is_key: bool,
+    /// Whether this attribute is annotated with `@unique`.
     pub is_unique: bool,
+    /// Whether deleting this owner should cascade-delete the attribute instance.
     pub is_cascade: bool,
+    /// Optional `@subkey(<label>)` group identifier for composite key membership.
     pub subkey_group: Option<String>,
+    /// Optional `@card(min..max)` cardinality constraint on the ownership.
     pub cardinality: Option<Cardinality>,
 }
 
@@ -87,9 +127,13 @@ pub struct OwnedAttribute {
 // PlayedRole
 // ---------------------------------------------------------------------------
 
+/// A role that an entity or relation type can play, corresponding to a
+/// TypeQL `plays <relation>:<role>` clause.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayedRole {
-    pub role_ref: String, // e.g. "friendship:friend"
+    /// Fully-qualified role reference in `"<relation>:<role>"` format (e.g. `"friendship:friend"`).
+    pub role_ref: String,
+    /// Optional `@card(min..max)` cardinality constraint on playing this role.
     pub cardinality: Option<Cardinality>,
 }
 
@@ -97,11 +141,21 @@ pub struct PlayedRole {
 // RoleSpec
 // ---------------------------------------------------------------------------
 
+/// A role defined within a relation type, corresponding to a TypeQL
+/// `relates <role>` clause.
+///
+/// Roles may override a parent relation's role via the `as` keyword
+/// (e.g. `relates author as contributor`), carry a cardinality constraint,
+/// or be marked `@distinct`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleSpec {
+    /// The local name of the role (e.g. `"friend"`, `"author"`).
     pub name: String,
-    pub overrides: Option<String>, // For "relates author as contributor"
+    /// If this role overrides a parent relation's role, the parent role name (e.g. `"contributor"`).
+    pub overrides: Option<String>,
+    /// Optional `@card(min..max)` cardinality constraint on the role.
     pub cardinality: Option<Cardinality>,
+    /// Whether the role is annotated with `@distinct`, requiring unique role-players.
     pub distinct: bool,
 }
 
@@ -109,16 +163,30 @@ pub struct RoleSpec {
 // AttributeType
 // ---------------------------------------------------------------------------
 
+/// A TypeDB attribute type definition.
+///
+/// Attribute types hold the value-type information (e.g. `string`, `long`,
+/// `double`) and optional constraints such as `@regex`, `@values`, and
+/// `@range`. They may also form an inheritance hierarchy via `sub`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttributeType {
+    /// The attribute type name (e.g. `"name"`, `"email"`, `"age"`).
     pub name: String,
+    /// The TypeDB value type (e.g. `"string"`, `"long"`, `"double"`, `"boolean"`, `"datetime"`).
     pub value_type: String,
+    /// Optional parent attribute type name for inheritance (`sub` clause).
     pub parent: Option<String>,
+    /// Whether the attribute type is declared `@abstract`.
     pub is_abstract: bool,
+    /// Whether the attribute type is declared `@independent` (can exist without an owner).
     pub is_independent: bool,
+    /// Optional `@regex` pattern constraining string attribute values.
     pub regex: Option<String>,
+    /// Optional `@values` enumeration constraining allowed attribute values.
     pub allowed_values: Option<Vec<String>>,
+    /// Optional lower bound of a `@range` constraint (inclusive), as a string literal.
     pub range_min: Option<String>,
+    /// Optional upper bound of a `@range` constraint (inclusive), as a string literal.
     pub range_max: Option<String>,
 }
 
@@ -126,13 +194,24 @@ pub struct AttributeType {
 // EntityType
 // ---------------------------------------------------------------------------
 
+/// A TypeDB entity type definition.
+///
+/// Entities are independent objects in the TypeDB type system. They can own
+/// attributes, play roles in relations, and form an inheritance hierarchy
+/// via the `sub` keyword.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityType {
+    /// The entity type name (e.g. `"person"`, `"company"`).
     pub name: String,
+    /// Optional parent entity type name for inheritance (`sub` clause).
     pub parent: Option<String>,
+    /// Whether the entity type is declared `@abstract`.
     pub is_abstract: bool,
+    /// Attributes owned by this entity type (includes inherited attributes after resolution).
     pub owns: Vec<OwnedAttribute>,
+    /// Attribute names in declaration order (parent attributes first after inheritance resolution).
     pub owns_order: Vec<String>,
+    /// Roles this entity type can play (includes inherited roles after resolution).
     pub plays: Vec<PlayedRole>,
 }
 
@@ -140,14 +219,27 @@ pub struct EntityType {
 // RelationType
 // ---------------------------------------------------------------------------
 
+/// A TypeDB relation type definition.
+///
+/// Relations connect entities (and other relations) via named roles. Like
+/// entities, they can own attributes, play roles, and participate in an
+/// inheritance hierarchy. Child relations may override parent roles using
+/// the `as` keyword.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationType {
+    /// The relation type name (e.g. `"friendship"`, `"employment"`).
     pub name: String,
+    /// Optional parent relation type name for inheritance (`sub` clause).
     pub parent: Option<String>,
+    /// Whether the relation type is declared `@abstract`.
     pub is_abstract: bool,
+    /// Roles defined by this relation (includes inherited roles after resolution).
     pub roles: Vec<RoleSpec>,
+    /// Attributes owned by this relation type (includes inherited attributes after resolution).
     pub owns: Vec<OwnedAttribute>,
+    /// Attribute names in declaration order (parent attributes first after inheritance resolution).
     pub owns_order: Vec<String>,
+    /// Roles this relation type can play (includes inherited roles after resolution).
     pub plays: Vec<PlayedRole>,
 }
 
@@ -155,20 +247,39 @@ pub struct RelationType {
 // TypeSchema
 // ---------------------------------------------------------------------------
 
+/// The complete parsed TypeDB schema containing all attribute, entity, and
+/// relation type definitions.
+///
+/// This is the main entry point for working with a TypeDB schema in Rust.
+/// Create one via [`TypeSchema::from_typeql()`] to parse a TypeQL `define`
+/// block, which performs parsing, validation, and inheritance resolution in
+/// one step. Alternatively, build one programmatically and call
+/// `resolve_inheritance()` yourself.
+///
+/// After construction, use the lookup methods (`get_entity`, `get_relation`,
+/// `get_attribute`) and the inheritance-aware accessors
+/// (`get_all_owned_attributes`, `get_all_plays_roles`, `get_all_relates`)
+/// to inspect the resolved type system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeSchema {
+    /// All entity type definitions, keyed by type name. Sorted alphabetically (BTreeMap).
     pub entities: BTreeMap<String, EntityType>,
+    /// All relation type definitions, keyed by type name. Sorted alphabetically (BTreeMap).
     pub relations: BTreeMap<String, RelationType>,
+    /// All attribute type definitions, keyed by type name. Sorted alphabetically (BTreeMap).
     pub attributes: BTreeMap<String, AttributeType>,
 }
 
+/// Provides a default empty [`TypeSchema`] by delegating to [`TypeSchema::new()`].
 impl Default for TypeSchema {
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Core methods for constructing, querying, validating, and resolving a [`TypeSchema`].
 impl TypeSchema {
+    /// Creates an empty `TypeSchema` with no types defined.
     pub fn new() -> Self {
         TypeSchema {
             entities: BTreeMap::new(),

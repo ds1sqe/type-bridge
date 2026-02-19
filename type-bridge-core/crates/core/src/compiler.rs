@@ -1,5 +1,8 @@
+//! TypeQL query compiler — converts AST [`Clause`](crate::ast::Clause)s into TypeQL query strings.
+
 use crate::ast::{Clause, Pattern, Statement, Constraint, Value, LiteralValue, LetAssignment, FetchItem, ReduceAssignment};
 
+/// Compiles a sequence of [`Clause`] AST nodes into a TypeQL query string.
 pub struct QueryCompiler {
 }
 
@@ -10,10 +13,12 @@ impl Default for QueryCompiler {
 }
 
 impl QueryCompiler {
+    /// Create a new compiler instance.
     pub fn new() -> Self {
         QueryCompiler {}
     }
 
+    /// Compile a slice of clauses into a complete TypeQL query string.
     pub fn compile(&self, clauses: &[Clause]) -> String {
         clauses.iter()
             .map(|c| self.compile_clause(c))
@@ -21,6 +26,7 @@ impl QueryCompiler {
             .join("\n")
     }
 
+    /// Compile a single clause into its TypeQL string representation.
     pub fn compile_clause(&self, clause: &Clause) -> String {
         match clause {
             Clause::Match(patterns) => {

@@ -9,23 +9,52 @@ use unicode_ident::{is_xid_start, is_xid_continue};
 // Result types
 // ---------------------------------------------------------------------------
 
+/// The severity level of a validation diagnostic.
+///
+/// `Error` indicates a hard failure that makes the result invalid.
+/// `Warning` indicates a potential issue that does not invalidate the result.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ValidationSeverity {
+    /// A hard validation error. Any result containing at least one `Error`
+    /// is considered invalid (`is_valid == false`).
     Error,
+    /// A soft warning. Warnings are reported but do not cause the overall
+    /// validation result to be invalid.
     Warning,
 }
 
+/// The outcome of a validation pass.
+///
+/// Contains a boolean `is_valid` flag (true when no `Error`-severity
+/// diagnostics are present) and the full list of diagnostics (errors and
+/// warnings).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationResult {
+    /// Whether the validated input is considered valid.
+    ///
+    /// This is `true` when there are no diagnostics with
+    /// [`ValidationSeverity::Error`]; warnings alone do not invalidate.
     pub is_valid: bool,
+    /// The list of validation diagnostics (errors and warnings).
     pub errors: Vec<ValidationError>,
 }
 
+/// A single validation diagnostic produced by the engine.
+///
+/// Each error carries a machine-readable `code`, a human-readable `message`,
+/// a `path` indicating where in the query/data the issue was found, and a
+/// `severity` level.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationError {
+    /// A machine-readable error code (e.g. `"UNKNOWN_TYPE"`,
+    /// `"RULE_REQUIRED"`).
     pub code: String,
+    /// A human-readable description of the issue.
     pub message: String,
+    /// A dot-separated path indicating the location of the issue within the
+    /// validated structure (e.g. `"clauses[0].patterns[1].constraints[0]"`).
     pub path: String,
+    /// The severity of this diagnostic (`Error` or `Warning`).
     pub severity: ValidationSeverity,
 }
 
@@ -106,43 +135,98 @@ fn value_types_compatible(literal_type: &str, schema_type: &str) -> bool {
 // Custom validation rules (JSON DSL)
 // ---------------------------------------------------------------------------
 
+/// The target that a custom validation rule applies to.
+///
+/// Rules can target either any instance of a particular attribute type, or
+/// a specific entity-attribute combination.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum RuleTarget {
-    /// Applies to any instance of this attribute type.
-    Attribute { attribute: String },
-    /// Applies only when a specific entity/relation owns the attribute.
-    EntityAttribute { entity: String, attribute: String },
+    /// Applies to any instance of this attribute type, regardless of which
+    /// entity or relation owns it.
+    Attribute {
+        /// The name of the attribute type this rule targets.
+        attribute: String,
+    },
+    /// Applies only when a specific entity type owns the attribute.
+    EntityAttribute {
+        /// The name of the entity type that must own the attribute for the
+        /// rule to apply.
+        entity: String,
+        /// The name of the attribute type this rule targets.
+        attribute: String,
+    },
 }
 
+/// The kind of constraint that a custom validation rule enforces.
+///
+/// Each variant corresponds to a different check (presence, pattern matching,
+/// numeric range, allowed values, cardinality, or string length).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum RuleType {
     /// Attribute must be present (non-null, non-missing).
     Required,
     /// String must match the given regex pattern.
-    Regex { pattern: String },
+    Regex {
+        /// The regular expression pattern that the string value must match.
+        pattern: String,
+    },
     /// Numeric value must be within [min, max]. Either bound can be None.
-    Range { min: Option<f64>, max: Option<f64> },
+    Range {
+        /// The minimum allowed value (inclusive), or `None` for no lower bound.
+        min: Option<f64>,
+        /// The maximum allowed value (inclusive), or `None` for no upper bound.
+        max: Option<f64>,
+    },
     /// Value must be one of the allowed values.
-    Values { allowed: Vec<serde_json::Value> },
+    Values {
+        /// The set of allowed values. Any value not in this list is rejected.
+        allowed: Vec<serde_json::Value>,
+    },
     /// Multi-value attribute count must be within [min, max].
-    Cardinality { min: u32, max: Option<u32> },
+    Cardinality {
+        /// The minimum number of values required.
+        min: u32,
+        /// The maximum number of values allowed, or `None` for no upper bound.
+        max: Option<u32>,
+    },
     /// String length must be within [min, max].
-    Length { min: Option<u32>, max: Option<u32> },
+    Length {
+        /// The minimum string length (inclusive), or `None` for no lower bound.
+        min: Option<u32>,
+        /// The maximum string length (inclusive), or `None` for no upper bound.
+        max: Option<u32>,
+    },
 }
 
+/// A single custom validation rule.
+///
+/// Each rule has a unique `id`, a [`RuleTarget`] that determines which
+/// attributes it applies to, a [`RuleType`] that specifies the constraint,
+/// and an optional custom error message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationRule {
+    /// A unique identifier for this rule (e.g. `"email-regex"`).
     pub id: String,
+    /// The target that this rule applies to (attribute or entity-attribute).
     pub target: RuleTarget,
+    /// The type of constraint this rule enforces.
     pub rule_type: RuleType,
+    /// An optional custom error message. When set, this message is used
+    /// instead of the auto-generated default.
     #[serde(default)]
     pub error_message: Option<String>,
 }
 
+/// A named collection of custom validation rules.
+///
+/// This is the top-level structure used for JSON serialization/deserialization
+/// of rule sets via [`ValidationEngine::load_rules`] and
+/// [`ValidationEngine::export_rules`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationRuleSet {
+    /// The list of validation rules in this set.
     pub rules: Vec<ValidationRule>,
 }
 
@@ -162,6 +246,23 @@ fn extract_values<'a>(
 // ValidationEngine
 // ---------------------------------------------------------------------------
 
+/// The main validation engine for TypeQL queries and entity data.
+///
+/// `ValidationEngine` provides two categories of validation:
+///
+/// 1. **Syntactic validation** -- checks type names, variable names, patterns,
+///    and statements for well-formedness (e.g. reserved words, valid
+///    identifiers, `$`-prefixed variables).
+///
+/// 2. **Schema-aware semantic validation** -- given a [`TypeSchema`], checks
+///    that types exist, ownership is valid, role players match declared roles,
+///    value types are compatible, abstract types are not instantiated, and
+///    cardinality constraints are respected.
+///
+/// Additionally, the engine supports **custom validation rules** defined via a
+/// portable JSON DSL. Rules can enforce required fields, regex patterns,
+/// numeric ranges, allowed value sets, cardinality bounds, and string length
+/// limits on entity data.
 pub struct ValidationEngine {
     rules: Vec<ValidationRule>,
     /// Pre-compiled regex cache: rule_id → compiled Regex.
@@ -175,6 +276,7 @@ impl Default for ValidationEngine {
 }
 
 impl ValidationEngine {
+    /// Create a new `ValidationEngine` with no custom rules loaded.
     pub fn new() -> Self {
         ValidationEngine {
             rules: Vec::new(),
@@ -186,7 +288,11 @@ impl ValidationEngine {
     // Rule management
     // -----------------------------------------------------------------------
 
-    /// Add a single validation rule. Pre-compiles regex patterns.
+    /// Add a single custom validation rule to the engine.
+    ///
+    /// If the rule contains a [`RuleType::Regex`] variant, the pattern is
+    /// pre-compiled and cached. Returns `Err` with a description if the regex
+    /// pattern is invalid; in that case the rule is **not** added.
     pub fn add_rule(&mut self, rule: ValidationRule) -> Result<(), String> {
         if let RuleType::Regex { ref pattern } = rule.rule_type {
             let compiled = regex::Regex::new(pattern)
@@ -197,7 +303,12 @@ impl ValidationEngine {
         Ok(())
     }
 
-    /// Load rules from a JSON string. Returns list of warnings for invalid rules.
+    /// Load a set of custom validation rules from a JSON string.
+    ///
+    /// The JSON must conform to the [`ValidationRuleSet`] schema. Rules with
+    /// invalid regex patterns are skipped (not added) and their error messages
+    /// are returned as warnings. Returns `Err` if the JSON itself cannot be
+    /// parsed.
     pub fn load_rules(&mut self, json_str: &str) -> Result<Vec<String>, String> {
         let ruleset: ValidationRuleSet = serde_json::from_str(json_str)
             .map_err(|e| format!("Failed to parse rules JSON: {}", e))?;
@@ -210,19 +321,22 @@ impl ValidationEngine {
         Ok(warnings)
     }
 
-    /// Export current rules as a JSON string.
+    /// Export all currently loaded rules as a pretty-printed JSON string.
+    ///
+    /// The output conforms to the [`ValidationRuleSet`] schema and can be
+    /// re-loaded with [`load_rules`](Self::load_rules).
     pub fn export_rules(&self) -> Result<String, String> {
         let ruleset = ValidationRuleSet { rules: self.rules.clone() };
         serde_json::to_string_pretty(&ruleset).map_err(|e| e.to_string())
     }
 
-    /// Remove all rules.
+    /// Remove all custom validation rules and clear the regex cache.
     pub fn clear_rules(&mut self) {
         self.rules.clear();
         self.regex_cache.clear();
     }
 
-    /// Get the number of loaded rules.
+    /// Return the number of currently loaded custom validation rules.
     pub fn rule_count(&self) -> usize {
         self.rules.len()
     }
@@ -231,6 +345,18 @@ impl ValidationEngine {
     // Syntactic validation (unchanged API, now with severity field)
     // -----------------------------------------------------------------------
 
+    /// Validate that a variable name is well-formed.
+    ///
+    /// A valid variable name must start with `$` and have at least one
+    /// character after it. Returns a list of [`ValidationError`] diagnostics
+    /// (empty if the name is valid).
+    ///
+    /// # Arguments
+    ///
+    /// * `name` -- The variable name to validate (e.g. `"$p"`).
+    /// * `context` -- A human-readable context string for error messages
+    ///   (e.g. `"Entity"`, `"Relation"`).
+    /// * `path` -- The structural path for error reporting.
     pub fn validate_variable_name(&self, name: &str, context: &str, path: &str) -> Vec<ValidationError> {
         let mut errors = Vec::new();
         if !name.starts_with('$') {
@@ -241,6 +367,18 @@ impl ValidationEngine {
         errors
     }
 
+    /// Validate that a type name is well-formed.
+    ///
+    /// Checks that the name is non-empty, is not a TypeQL reserved word,
+    /// starts with a letter or underscore, and contains only valid identifier
+    /// characters (Unicode XID_Continue plus hyphen `-`).
+    ///
+    /// # Arguments
+    ///
+    /// * `name` -- The type name to validate (e.g. `"person"`,
+    ///   `"first-name"`).
+    /// * `context` -- A human-readable context string for error messages
+    ///   (e.g. `"Entity type"`, `"Attribute type"`).
     pub fn validate_type_name(&self, name: &str, context: &str) -> ValidationResult {
         let mut errors = Vec::new();
 
@@ -275,6 +413,12 @@ impl ValidationEngine {
         res.errors.into_iter().map(|mut e| { e.path = path.to_string(); e }).collect()
     }
 
+    /// Validate the syntactic structure of a single pattern.
+    ///
+    /// Recursively checks all variable names, type names, constraints, and
+    /// nested patterns (e.g. `Not`, `Or`) within the given [`Pattern`].
+    /// Does **not** perform schema-aware checks; use [`validate_query`](Self::validate_query)
+    /// for semantic validation.
     pub fn validate_pattern(&self, pattern: &Pattern) -> ValidationResult {
         let mut errors = Vec::new();
         self.validate_pattern_recursive(pattern, "pattern", &mut errors);
@@ -341,6 +485,11 @@ impl ValidationEngine {
         }
     }
 
+    /// Validate the syntactic structure of a single statement.
+    ///
+    /// Recursively checks variable names, type names, role players, and
+    /// inline attributes within the given [`Statement`]. Does **not** perform
+    /// schema-aware checks.
     pub fn validate_statement(&self, statement: &Statement) -> ValidationResult {
         let mut errors = Vec::new();
         self.validate_statement_recursive(statement, "statement", &mut errors);
@@ -416,6 +565,16 @@ impl ValidationEngine {
     ///
     /// This performs both syntactic validation (names, variables) and semantic
     /// validation (ownership, roles, value types, abstract types, cardinality).
+    ///
+    /// The engine first builds a type environment by scanning all `Match`
+    /// clauses to bind variables to their declared types, then validates each
+    /// clause against the schema and the inferred environment.
+    ///
+    /// # Arguments
+    ///
+    /// * `clauses` -- The ordered list of query clauses (Match, Insert,
+    ///   Delete, Update, Fetch, etc.).
+    /// * `schema` -- The [`TypeSchema`] describing the database's type system.
     pub fn validate_query(&self, clauses: &[Clause], schema: &TypeSchema) -> ValidationResult {
         let mut errors = Vec::new();
 
@@ -927,10 +1086,20 @@ impl ValidationEngine {
     // Entity data validation (custom rules)
     // -----------------------------------------------------------------------
 
-    /// Validate entity data against loaded rules and optionally a schema.
+    /// Validate entity data against loaded custom rules and optionally a schema.
     ///
-    /// `entity_data` is a JSON object with `__type__` (entity type name) and
-    /// attribute_name → value(s) pairs.
+    /// `entity_data` must be a JSON object containing a `__type__` field that
+    /// identifies the entity type, along with attribute-name to value(s)
+    /// mappings. Each loaded rule whose target matches the entity type and
+    /// attribute is evaluated.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity_data` -- A JSON object with `"__type__"` (entity type name)
+    ///   and attribute_name to value(s) pairs.
+    /// * `schema` -- An optional [`TypeSchema`] used to resolve ownership
+    ///   when determining whether an `Attribute`-targeted rule applies to the
+    ///   entity.
     pub fn validate_entity(
         &self,
         entity_data: &serde_json::Value,
