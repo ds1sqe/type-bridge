@@ -37,6 +37,7 @@ impl<'db> SchemaManager<'db> {
     }
 
     /// Register an entity type, extracting its metadata.
+    #[tracing::instrument(skip(self), fields(entity_type = E::TYPE_NAME))]
     pub fn register_entity<E: TypeBridgeEntity>(&mut self) {
         let owned = E::owned_attributes();
         let owned_entries: Vec<OwnedAttributeEntry> = owned
@@ -69,6 +70,7 @@ impl<'db> SchemaManager<'db> {
     }
 
     /// Register a relation type, extracting its metadata and roles.
+    #[tracing::instrument(skip(self), fields(relation_type = R::TYPE_NAME))]
     pub fn register_relation<R: TypeBridgeRelation>(&mut self) {
         let owned = R::owned_attributes();
         let owned_entries: Vec<OwnedAttributeEntry> = owned
@@ -114,6 +116,7 @@ impl<'db> SchemaManager<'db> {
     }
 
     /// Validate and generate a TypeQL `define` block.
+    #[tracing::instrument(skip(self))]
     pub fn generate_schema(&self) -> std::result::Result<String, SchemaError> {
         self.info.to_typeql()
     }
@@ -121,6 +124,7 @@ impl<'db> SchemaManager<'db> {
     /// Best-effort check whether any registered types already exist in the database.
     ///
     /// Tries a simple match query for the first registered entity or relation type.
+    #[tracing::instrument(skip(self))]
     pub async fn has_existing_schema(&self) -> Result<bool> {
         // Try matching the first entity type
         if let Some(entity_name) = self.info.entities.keys().next() {
@@ -145,6 +149,7 @@ impl<'db> SchemaManager<'db> {
     ///
     /// - `force`: Skip existence check, always execute.
     /// - `skip_if_exists`: If types already exist, return Ok silently.
+    #[tracing::instrument(skip(self), fields(force, skip_if_exists))]
     pub async fn sync_schema(
         &self,
         force: bool,

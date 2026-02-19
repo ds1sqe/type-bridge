@@ -82,6 +82,7 @@ impl Database {
     ///
     /// Opens a new transaction, executes the query, and commits if the
     /// transaction type is `Write` or `Schema`.
+    #[tracing::instrument(skip(self, typeql), fields(db = %self.database_name))]
     pub async fn execute_raw(&self, typeql: &str, tx_type: TxType) -> Result<QueryResult> {
         let mut tx = self
             .backend

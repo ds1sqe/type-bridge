@@ -71,6 +71,7 @@ impl<'db, R: TypeBridgeRelation> RelationQuery<'db, R> {
     }
 
     /// Execute the query and return matching relations.
+    #[tracing::instrument(skip(self), fields(relation_type = R::TYPE_NAME))]
     pub async fn execute(self) -> Result<Vec<R>> {
         let typeql = query_builder::build_relation_expr_fetch::<R>(
             &self.filters,
@@ -95,6 +96,7 @@ impl<'db, R: TypeBridgeRelation> RelationQuery<'db, R> {
     }
 
     /// Execute with limit(1) and return the first result, if any.
+    #[tracing::instrument(skip(self), fields(relation_type = R::TYPE_NAME))]
     pub async fn first(self) -> Result<Option<R>> {
         let mut results = self.limit(1).execute().await?;
         Ok(if results.is_empty() {
@@ -105,6 +107,7 @@ impl<'db, R: TypeBridgeRelation> RelationQuery<'db, R> {
     }
 
     /// Count matching relations.
+    #[tracing::instrument(skip(self), fields(relation_type = R::TYPE_NAME))]
     pub async fn count(self) -> Result<u64> {
         let typeql = query_builder::build_relation_expr_count::<R>(&self.filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "EXPR COUNT RELATION");
@@ -113,6 +116,7 @@ impl<'db, R: TypeBridgeRelation> RelationQuery<'db, R> {
     }
 
     /// Run aggregation queries.
+    #[tracing::instrument(skip(self, aggs), fields(relation_type = R::TYPE_NAME))]
     pub async fn aggregate(self, aggs: &[Agg]) -> Result<AggResult> {
         let typeql =
             query_builder::build_relation_expr_aggregate::<R>(&self.filters, aggs, "$r")?;

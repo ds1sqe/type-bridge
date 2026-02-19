@@ -44,6 +44,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// Insert an entity and return the assigned IID.
     ///
     /// The entity's IID is also set in-place via [`TypeBridgeEntity::set_iid`].
+    #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
     pub async fn insert(&self, entity: &mut T) -> Result<String> {
         let typeql = query_builder::build_insert_with_iid::<T>(entity, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "INSERT");
@@ -82,6 +83,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// Fetch entities matching the given filters.
     ///
     /// Returns an empty vec if no entities match.
+    #[tracing::instrument(skip(self, filters), fields(entity_type = T::TYPE_NAME))]
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<T>> {
         let typeql = query_builder::build_fetch::<T>(filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "FETCH");
@@ -103,6 +105,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     ///
     /// Returns [`OrmError::NotFound`] if no match, or a hydration error
     /// if more than one entity matches.
+    #[tracing::instrument(skip(self, filters), fields(entity_type = T::TYPE_NAME))]
     pub async fn get_one(&self, filters: &[Filter]) -> Result<T> {
         let results = self.get(filters).await?;
         match results.len() {
@@ -119,6 +122,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     }
 
     /// Fetch all entities of this type.
+    #[tracing::instrument(skip(self), fields(entity_type = T::TYPE_NAME))]
     pub async fn all(&self) -> Result<Vec<T>> {
         self.get(&[]).await
     }
@@ -127,6 +131,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     ///
     /// Identification uses the entity's IID (if available) or its @key
     /// attributes for matching.
+    #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
     pub async fn delete(&self, entity: &T) -> Result<()> {
         let typeql = query_builder::build_delete::<T>(entity, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "DELETE");
@@ -135,6 +140,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     }
 
     /// Count all entities of this type.
+    #[tracing::instrument(skip(self), fields(entity_type = T::TYPE_NAME))]
     pub async fn count(&self) -> Result<u64> {
         self.count_with_filters(&[]).await
     }
@@ -143,6 +149,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     ///
     /// Identifies the entity by IID or @key attributes, then updates
     /// all other attribute values. Only non-key attributes are modified.
+    #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
     pub async fn update(&self, entity: &T) -> Result<()> {
         let typeql = query_builder::build_update::<T>(entity, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "UPDATE");
@@ -154,6 +161,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     ///
     /// If a matching entity exists, updates it. Otherwise inserts a new one.
     /// Returns the IID of the entity (existing or newly created).
+    #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
     pub async fn put(&self, entity: &mut T) -> Result<String> {
         let typeql = query_builder::build_put::<T>(entity, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "PUT");
@@ -205,6 +213,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     }
 
     /// Count entities matching the given filters.
+    #[tracing::instrument(skip(self, filters), fields(entity_type = T::TYPE_NAME))]
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
         let typeql = query_builder::build_count::<T>(filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "COUNT");

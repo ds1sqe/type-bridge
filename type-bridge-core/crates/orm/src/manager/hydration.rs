@@ -22,6 +22,7 @@ use crate::session::backend::QueryResult;
 ///     }
 /// }
 /// ```
+#[tracing::instrument(skip(doc), fields(entity_type = T::TYPE_NAME))]
 pub fn hydrate_entity<T: TypeBridgeEntity>(doc: &serde_json::Value) -> Result<T> {
     let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
         type_name: T::TYPE_NAME.to_string(),
@@ -57,6 +58,7 @@ pub fn hydrate_entity<T: TypeBridgeEntity>(doc: &serde_json::Value) -> Result<T>
 ///
 /// Uses the same document shape as entity hydration since relations
 /// also own attributes and have IIDs.
+#[tracing::instrument(skip(doc), fields(relation_type = R::TYPE_NAME))]
 pub fn hydrate_relation<R: TypeBridgeRelation>(doc: &serde_json::Value) -> Result<R> {
     let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
         type_name: R::TYPE_NAME.to_string(),

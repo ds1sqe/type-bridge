@@ -44,6 +44,7 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     /// Insert a relation and return the assigned IID.
     ///
     /// The relation's IID is also set in-place via [`TypeBridgeRelation::set_iid`].
+    #[tracing::instrument(skip(self, relation), fields(relation_type = R::TYPE_NAME))]
     pub async fn insert(&self, relation: &mut R) -> Result<String> {
         let typeql = query_builder::build_relation_insert_with_iid::<R>(relation, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "INSERT RELATION");
@@ -80,6 +81,7 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     }
 
     /// Fetch relations matching the given filters.
+    #[tracing::instrument(skip(self, filters), fields(relation_type = R::TYPE_NAME))]
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<R>> {
         let typeql = query_builder::build_relation_fetch::<R>(filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "FETCH RELATION");
@@ -98,6 +100,7 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     }
 
     /// Fetch exactly one relation matching the filters.
+    #[tracing::instrument(skip(self, filters), fields(relation_type = R::TYPE_NAME))]
     pub async fn get_one(&self, filters: &[Filter]) -> Result<R> {
         let results = self.get(filters).await?;
         match results.len() {
@@ -114,11 +117,13 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     }
 
     /// Fetch all relations of this type.
+    #[tracing::instrument(skip(self), fields(relation_type = R::TYPE_NAME))]
     pub async fn all(&self) -> Result<Vec<R>> {
         self.get(&[]).await
     }
 
     /// Delete a specific relation instance.
+    #[tracing::instrument(skip(self, relation), fields(relation_type = R::TYPE_NAME))]
     pub async fn delete(&self, relation: &R) -> Result<()> {
         let typeql = query_builder::build_relation_delete::<R>(relation, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "DELETE RELATION");
@@ -127,6 +132,7 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     }
 
     /// Count all relations of this type.
+    #[tracing::instrument(skip(self), fields(relation_type = R::TYPE_NAME))]
     pub async fn count(&self) -> Result<u64> {
         self.count_with_filters(&[]).await
     }
@@ -147,6 +153,7 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     }
 
     /// Count relations matching the given filters.
+    #[tracing::instrument(skip(self, filters), fields(relation_type = R::TYPE_NAME))]
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
         let typeql = query_builder::build_relation_count::<R>(filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "COUNT RELATION");

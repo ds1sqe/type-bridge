@@ -72,6 +72,7 @@ impl<'db, T: TypeBridgeEntity> EntityQuery<'db, T> {
     }
 
     /// Execute the query and return matching entities.
+    #[tracing::instrument(skip(self), fields(entity_type = T::TYPE_NAME))]
     pub async fn execute(self) -> Result<Vec<T>> {
         let typeql = query_builder::build_expr_fetch::<T>(
             &self.filters,
@@ -96,6 +97,7 @@ impl<'db, T: TypeBridgeEntity> EntityQuery<'db, T> {
     }
 
     /// Execute with limit(1) and return the first result, if any.
+    #[tracing::instrument(skip(self), fields(entity_type = T::TYPE_NAME))]
     pub async fn first(self) -> Result<Option<T>> {
         let mut results = self.limit(1).execute().await?;
         Ok(if results.is_empty() {
@@ -106,6 +108,7 @@ impl<'db, T: TypeBridgeEntity> EntityQuery<'db, T> {
     }
 
     /// Count matching entities.
+    #[tracing::instrument(skip(self), fields(entity_type = T::TYPE_NAME))]
     pub async fn count(self) -> Result<u64> {
         let typeql = query_builder::build_expr_count::<T>(&self.filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "EXPR COUNT");
@@ -114,6 +117,7 @@ impl<'db, T: TypeBridgeEntity> EntityQuery<'db, T> {
     }
 
     /// Run aggregation queries.
+    #[tracing::instrument(skip(self, aggs), fields(entity_type = T::TYPE_NAME))]
     pub async fn aggregate(self, aggs: &[Agg]) -> Result<AggResult> {
         let typeql = query_builder::build_expr_aggregate::<T>(&self.filters, aggs, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "EXPR AGGREGATE");
