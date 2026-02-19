@@ -2145,6 +2145,7 @@ dependencies = [
 name = "type-bridge-orm"
 version = "0.1.0-dev.0"
 dependencies = [
+ "criterion",
  "futures",
  "serde",
  "serde_json",
@@ -2172,6 +2173,7 @@ dependencies = [
  "axum 0.8.8",
  "chrono",
  "clap",
+ "criterion",
  "futures",
  "http-body-util",
  "serde",

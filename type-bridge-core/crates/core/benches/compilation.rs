@@ -40,18 +40,27 @@ fn make_match_with_constraints() -> Clause {
     }])
 }
 
-fn make_complex_query() -> Vec<Clause> {
-    let match_clause = Clause::Match(vec![
+fn make_complex_query() -> Clause {
+    Clause::Match(vec![
         Pattern::Entity {
             variable: "$p".to_string(),
             type_name: "person".to_string(),
-            constraints: vec![Constraint::Has {
-                attr_name: "name".to_string(),
-                value: Value::Literal(LiteralValue {
-                    value: json!("Alice"),
-                    value_type: "string".to_string(),
-                }),
-            }],
+            constraints: vec![
+                Constraint::Has {
+                    attr_name: "name".to_string(),
+                    value: Value::Literal(LiteralValue {
+                        value: json!("Alice"),
+                        value_type: "string".to_string(),
+                    }),
+                },
+                Constraint::Has {
+                    attr_name: "age".to_string(),
+                    value: Value::Literal(LiteralValue {
+                        value: json!(30),
+                        value_type: "long".to_string(),
+                    }),
+                },
+            ],
             is_strict: false,
         },
         Pattern::Relation {
@@ -115,49 +124,40 @@ fn make_complex_query() -> Vec<Clause> {
         Pattern::Entity {
             variable: "$d".to_string(),
             type_name: "department".to_string(),
-            constraints: vec![
-                Constraint::Has {
-                    attr_name: "budget".to_string(),
-                    value: Value::Literal(LiteralValue {
-                        value: json!(100000.0),
-                        value_type: "double".to_string(),
-                    }),
-                },
-            ],
+            constraints: vec![Constraint::Has {
+                attr_name: "budget".to_string(),
+                value: Value::Literal(LiteralValue {
+                    value: json!(100000.0),
+                    value_type: "double".to_string(),
+                }),
+            }],
             is_strict: false,
         },
-        Pattern::Iid {
-            variable: "$x".to_string(),
-            iid: "0xabcdef".to_string(),
+        Pattern::Entity {
+            variable: "$mgr".to_string(),
+            type_name: "manager".to_string(),
+            constraints: vec![Constraint::Has {
+                attr_name: "level".to_string(),
+                value: Value::Literal(LiteralValue {
+                    value: json!(3),
+                    value_type: "long".to_string(),
+                }),
+            }],
+            is_strict: false,
         },
-        Pattern::Attribute {
-            variable: "$a".to_string(),
-            type_name: "salary".to_string(),
-            value: Some(Value::Literal(LiteralValue {
-                value: json!(75000),
-                value_type: "long".to_string(),
-            })),
+        Pattern::Entity {
+            variable: "$proj".to_string(),
+            type_name: "project".to_string(),
+            constraints: vec![Constraint::Has {
+                attr_name: "deadline".to_string(),
+                value: Value::Literal(LiteralValue {
+                    value: json!("2025-12-31"),
+                    value_type: "date".to_string(),
+                }),
+            }],
+            is_strict: false,
         },
-    ]);
-
-    let fetch_clause = Clause::Fetch(vec![
-        FetchItem::Attribute {
-            key: "name".to_string(),
-            var: "$p".to_string(),
-            attr_name: "name".to_string(),
-        },
-        FetchItem::Attribute {
-            key: "email".to_string(),
-            var: "$p".to_string(),
-            attr_name: "email".to_string(),
-        },
-        FetchItem::Wildcard {
-            key: "company".to_string(),
-            var: "$c".to_string(),
-        },
-    ]);
-
-    vec![match_clause, fetch_clause]
+    ])
 }
 
 fn make_batch_clauses() -> Vec<Clause> {
@@ -268,10 +268,10 @@ fn bench_compile_match_with_constraints(c: &mut Criterion) {
 
 fn bench_compile_complex_query(c: &mut Criterion) {
     let compiler = QueryCompiler::new();
-    let clauses = make_complex_query();
+    let clause = make_complex_query();
 
     c.bench_function("compile/complex_10_patterns", |b| {
-        b.iter(|| compiler.compile(black_box(&clauses)))
+        b.iter(|| compiler.compile_clause(black_box(&clause)))
     });
 }
 
@@ -305,10 +305,31 @@ fn bench_compile_reduce(c: &mut Criterion) {
                 }),
             },
             ReduceAssignment {
-                variable: "$total".to_string(),
+                variable: "$total_salary".to_string(),
                 expression: Value::FunctionCall(FunctionCallValue {
                     function: "sum".to_string(),
                     args: vec![Value::Variable("$salary".to_string())],
+                }),
+            },
+            ReduceAssignment {
+                variable: "$max_age".to_string(),
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "max".to_string(),
+                    args: vec![Value::Variable("$age".to_string())],
+                }),
+            },
+            ReduceAssignment {
+                variable: "$min_age".to_string(),
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "min".to_string(),
+                    args: vec![Value::Variable("$age".to_string())],
+                }),
+            },
+            ReduceAssignment {
+                variable: "$avg_score".to_string(),
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "mean".to_string(),
+                    args: vec![Value::Variable("$score".to_string())],
                 }),
             },
         ],
@@ -988,6 +1009,18 @@ fn bench_compile_isa_constraint(c: &mut Criterion) {
             type_name: "animal".to_string(),
             constraints: vec![
                 Constraint::Isa { type_name: "mammal".to_string(), strict: true },
+            ],
+            is_strict: false,
+        },
+        Pattern::Entity {
+            variable: "$v".to_string(),
+            type_name: "vehicle".to_string(),
+            constraints: vec![
+                Constraint::Isa { type_name: "electric-vehicle".to_string(), strict: false },
+                Constraint::Has {
+                    attr_name: "range".to_string(),
+                    value: Value::Literal(LiteralValue { value: json!(300), value_type: "long".to_string() }),
+                },
             ],
             is_strict: false,
         },
