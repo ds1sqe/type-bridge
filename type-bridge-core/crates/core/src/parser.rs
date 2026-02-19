@@ -1,6 +1,6 @@
 //! Winnow-based parser for TypeQL `define` blocks.
 //!
-//! Converts TypeQL schema text into [`TypeSchema`] structs.
+//! Converts TypeQL schema text into [`TypeSchema`](crate::schema::TypeSchema) structs.
 //! Reference grammar: `type_bridge/generator/typeql.lark`
 
 use winnow::combinator::{alt, delimited, opt, repeat, separated, terminated};

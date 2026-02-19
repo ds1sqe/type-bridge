@@ -2,5 +2,10 @@
 resolver = "3"
 members = ["crates/core", "crates/python", "crates/server"]
 
+[workspace.package]
+license = "MIT"
+repository = "https://github.com/ds1sqe/type-bridge"
+authors = ["ds1sqe"]
+
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)', 'cfg(coverage)'] }

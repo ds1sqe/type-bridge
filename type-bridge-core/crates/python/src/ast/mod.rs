@@ -1,3 +1,10 @@
+//! PyO3 wrapper types that mirror [`type_bridge_core_lib::ast`].
+//!
+//! These are 1:1 Python-facing re-exports of the core AST structs and are
+//! intentionally undocumented — see the core crate for semantics.
+
+#![allow(missing_docs)]
+
 use pyo3::prelude::*;
 
 #[pyclass(get_all, set_all)]

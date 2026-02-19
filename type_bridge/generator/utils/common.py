@@ -1,12 +1,10 @@
 """Common utility functions for code generation."""
 
 from collections.abc import Callable
-from typing import Any, TypeVar
-
-T = TypeVar("T")
+from typing import Any
 
 
-def topological_sort(
+def topological_sort[T](
     items: dict[str, T],
     get_parent: Callable[[T], str | None],
 ) -> list[str]:
