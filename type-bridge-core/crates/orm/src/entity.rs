@@ -73,6 +73,12 @@ pub trait TypeBridgeEntity: Sized + Send + Sync + 'static {
     /// The TypeDB entity type name (e.g. `"person"`, `"company"`).
     const TYPE_NAME: &'static str;
 
+    /// Whether this entity type is abstract (cannot be directly instantiated in TypeDB).
+    const IS_ABSTRACT: bool = false;
+
+    /// The parent type name if this entity extends another entity type (`sub` in TypeQL).
+    const PARENT_TYPE: Option<&'static str> = None;
+
     /// Static metadata for all owned attributes in declaration order.
     fn owned_attributes() -> &'static [OwnedAttributeInfo];
 

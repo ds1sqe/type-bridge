@@ -83,6 +83,12 @@ pub trait TypeBridgeRelation: Sized + Send + Sync + 'static {
     /// The TypeDB relation type name (e.g. `"employment"`, `"friendship"`).
     const TYPE_NAME: &'static str;
 
+    /// Whether this relation type is abstract.
+    const IS_ABSTRACT: bool = false;
+
+    /// The parent type name if this relation extends another relation type (`sub` in TypeQL).
+    const PARENT_TYPE: Option<&'static str> = None;
+
     /// Static metadata for all owned attributes in declaration order.
     fn owned_attributes() -> &'static [OwnedAttributeInfo];
 

@@ -26,8 +26,11 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
         }
     };
 
-    // Parse #[entity(name = "...")]
-    let type_name = parse_entity_name(&input.attrs)?;
+    // Parse #[entity(name = "...", abstract, extends = "...")]
+    let entity_attrs = parse_entity_attrs(&input.attrs)?;
+    let type_name = entity_attrs.name;
+    let is_abstract = entity_attrs.is_abstract;
+    let parent_type = entity_attrs.parent_type;
 
     // Separate iid field from attribute fields
     let mut has_iid = false;
@@ -159,9 +162,22 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
 
     let field_idents: Vec<_> = attr_fields.iter().map(|f| &f.ident).collect();
 
+    let is_abstract_tokens = if is_abstract {
+        quote! { const IS_ABSTRACT: bool = true; }
+    } else {
+        quote! {}
+    };
+
+    let parent_type_tokens = match &parent_type {
+        Some(p) => quote! { const PARENT_TYPE: Option<&'static str> = Some(#p); },
+        None => quote! {},
+    };
+
     Ok(quote! {
         impl type_bridge_orm::TypeBridgeEntity for #name {
             const TYPE_NAME: &'static str = #type_name;
+            #is_abstract_tokens
+            #parent_type_tokens
 
             fn owned_attributes() -> &'static [type_bridge_orm::OwnedAttributeInfo] {
                 static ATTRS: [type_bridge_orm::OwnedAttributeInfo; #n_attrs] = [
@@ -216,24 +232,45 @@ struct FieldAttrs {
     custom_name: Option<String>,
 }
 
-/// Parse `#[entity(name = "...")]` from struct attributes.
-fn parse_entity_name(attrs: &[syn::Attribute]) -> syn::Result<String> {
+struct EntityAttrs {
+    name: String,
+    is_abstract: bool,
+    parent_type: Option<String>,
+}
+
+/// Parse `#[entity(name = "...", abstract, extends = "...")]` from struct attributes.
+fn parse_entity_attrs(attrs: &[syn::Attribute]) -> syn::Result<EntityAttrs> {
     for attr in attrs {
         if !attr.path().is_ident("entity") {
             continue;
         }
         let mut entity_name: Option<String> = None;
+        let mut is_abstract = false;
+        let mut parent_type: Option<String> = None;
+
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
                 let value: LitStr = meta.value()?.parse()?;
                 entity_name = Some(value.value());
                 Ok(())
+            } else if meta.path.is_ident("r#abstract") || meta.path.is_ident("abstract") {
+                is_abstract = true;
+                Ok(())
+            } else if meta.path.is_ident("extends") {
+                let value: LitStr = meta.value()?.parse()?;
+                parent_type = Some(value.value());
+                Ok(())
             } else {
-                Err(meta.error("expected `name`"))
+                Err(meta.error("expected `name`, `abstract`, or `extends`"))
             }
         })?;
+
         if let Some(name) = entity_name {
-            return Ok(name);
+            return Ok(EntityAttrs {
+                name,
+                is_abstract,
+                parent_type,
+            });
         }
     }
     Err(syn::Error::new(

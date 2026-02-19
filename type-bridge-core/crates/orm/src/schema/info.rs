@@ -61,6 +61,10 @@ pub struct RoleEntry {
 pub struct EntitySchemaEntry {
     /// Entity type name.
     pub type_name: String,
+    /// Whether this entity is abstract.
+    pub is_abstract: bool,
+    /// Parent entity type name (for `sub` hierarchies).
+    pub parent_type: Option<String>,
     /// Owned attributes.
     pub owned_attributes: Vec<OwnedAttributeEntry>,
 }
@@ -70,6 +74,10 @@ pub struct EntitySchemaEntry {
 pub struct RelationSchemaEntry {
     /// Relation type name.
     pub type_name: String,
+    /// Whether this relation is abstract.
+    pub is_abstract: bool,
+    /// Parent relation type name (for `sub` hierarchies).
+    pub parent_type: Option<String>,
     /// Owned attributes.
     pub owned_attributes: Vec<OwnedAttributeEntry>,
     /// Roles and their player types.
@@ -161,6 +169,8 @@ mod tests {
             "person".into(),
             EntitySchemaEntry {
                 type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
                 owned_attributes: vec![],
             },
         );
@@ -175,6 +185,8 @@ mod tests {
             "employment".into(),
             RelationSchemaEntry {
                 type_name: "employment".into(),
+                is_abstract: false,
+                parent_type: None,
                 owned_attributes: vec![],
                 roles: vec![],
             },

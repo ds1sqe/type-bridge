@@ -61,6 +61,8 @@ impl<'db> SchemaManager<'db> {
             E::TYPE_NAME.to_string(),
             EntitySchemaEntry {
                 type_name: E::TYPE_NAME.to_string(),
+                is_abstract: E::IS_ABSTRACT,
+                parent_type: E::PARENT_TYPE.map(String::from),
                 owned_attributes: owned_entries,
             },
         );
@@ -98,6 +100,8 @@ impl<'db> SchemaManager<'db> {
             R::TYPE_NAME.to_string(),
             RelationSchemaEntry {
                 type_name: R::TYPE_NAME.to_string(),
+                is_abstract: R::IS_ABSTRACT,
+                parent_type: R::PARENT_TYPE.map(String::from),
                 owned_attributes: owned_entries,
                 roles,
             },

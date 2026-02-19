@@ -33,6 +33,7 @@
 //! ```
 
 pub mod attribute;
+pub mod codegen;
 pub mod entity;
 pub mod error;
 pub mod expr;

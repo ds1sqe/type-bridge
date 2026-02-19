@@ -13,6 +13,10 @@ pub struct EntityChanges {
     pub removed_attributes: Vec<String>,
     /// Attributes with changed flags (name, old flags, new flags).
     pub modified_attributes: Vec<(String, String, String)>,
+    /// Abstract flag changed: (old, new).
+    pub abstract_changed: Option<(bool, bool)>,
+    /// Parent type changed: (old, new).
+    pub parent_changed: Option<(Option<String>, Option<String>)>,
 }
 
 /// Changes detected for a relation type.
@@ -28,6 +32,10 @@ pub struct RelationChanges {
     pub added_roles: Vec<String>,
     /// Roles removed in the new schema.
     pub removed_roles: Vec<String>,
+    /// Abstract flag changed: (old, new).
+    pub abstract_changed: Option<(bool, bool)>,
+    /// Parent type changed: (old, new).
+    pub parent_changed: Option<(Option<String>, Option<String>)>,
 }
 
 /// Diff between two schema versions.
@@ -71,14 +79,18 @@ impl SchemaDiff {
         !self.removed_entities.is_empty()
             || !self.removed_relations.is_empty()
             || !self.removed_attributes.is_empty()
-            || self
-                .modified_entities
-                .values()
-                .any(|c| !c.removed_attributes.is_empty() || !c.modified_attributes.is_empty())
+            || self.modified_entities.values().any(|c| {
+                !c.removed_attributes.is_empty()
+                    || !c.modified_attributes.is_empty()
+                    || c.abstract_changed.is_some()
+                    || c.parent_changed.is_some()
+            })
             || self.modified_relations.values().any(|c| {
                 !c.removed_attributes.is_empty()
                     || !c.modified_attributes.is_empty()
                     || !c.removed_roles.is_empty()
+                    || c.abstract_changed.is_some()
+                    || c.parent_changed.is_some()
             })
     }
 
@@ -93,6 +105,14 @@ impl SchemaDiff {
             lines.push(format!("- entity {name}"));
         }
         for (name, changes) in &self.modified_entities {
+            if let Some((old, new)) = &changes.abstract_changed {
+                lines.push(format!("~ entity {name}: abstract ({old} -> {new})"));
+            }
+            if let Some((old, new)) = &changes.parent_changed {
+                let old_str = old.as_deref().unwrap_or("none");
+                let new_str = new.as_deref().unwrap_or("none");
+                lines.push(format!("~ entity {name}: parent ({old_str} -> {new_str})"));
+            }
             for attr in &changes.added_attributes {
                 lines.push(format!("~ entity {name}: + owns {attr}"));
             }
@@ -111,6 +131,14 @@ impl SchemaDiff {
             lines.push(format!("- relation {name}"));
         }
         for (name, changes) in &self.modified_relations {
+            if let Some((old, new)) = &changes.abstract_changed {
+                lines.push(format!("~ relation {name}: abstract ({old} -> {new})"));
+            }
+            if let Some((old, new)) = &changes.parent_changed {
+                let old_str = old.as_deref().unwrap_or("none");
+                let new_str = new.as_deref().unwrap_or("none");
+                lines.push(format!("~ relation {name}: parent ({old_str} -> {new_str})"));
+            }
             for role in &changes.added_roles {
                 lines.push(format!("~ relation {name}: + relates {role}"));
             }
@@ -156,13 +184,27 @@ impl SchemaDiff {
         }
         for (name, new_entry) in &new.entities {
             if let Some(old_entry) = old.entities.get(name) {
-                let changes = diff_owned_attributes(
+                let mut changes = diff_owned_attributes(
                     &old_entry.owned_attributes,
                     &new_entry.owned_attributes,
                 );
+
+                if old_entry.is_abstract != new_entry.is_abstract {
+                    changes.abstract_changed =
+                        Some((old_entry.is_abstract, new_entry.is_abstract));
+                }
+                if old_entry.parent_type != new_entry.parent_type {
+                    changes.parent_changed = Some((
+                        old_entry.parent_type.clone(),
+                        new_entry.parent_type.clone(),
+                    ));
+                }
+
                 if !changes.added_attributes.is_empty()
                     || !changes.removed_attributes.is_empty()
                     || !changes.modified_attributes.is_empty()
+                    || changes.abstract_changed.is_some()
+                    || changes.parent_changed.is_some()
                 {
                     diff.modified_entities.insert(name.clone(), changes);
                 }
@@ -212,11 +254,28 @@ impl SchemaDiff {
                     }
                 }
 
+                let abstract_changed =
+                    if old_entry.is_abstract != new_entry.is_abstract {
+                        Some((old_entry.is_abstract, new_entry.is_abstract))
+                    } else {
+                        None
+                    };
+                let parent_changed = if old_entry.parent_type != new_entry.parent_type {
+                    Some((
+                        old_entry.parent_type.clone(),
+                        new_entry.parent_type.clone(),
+                    ))
+                } else {
+                    None
+                };
+
                 if !attr_changes.added_attributes.is_empty()
                     || !attr_changes.removed_attributes.is_empty()
                     || !attr_changes.modified_attributes.is_empty()
                     || !added_roles.is_empty()
                     || !removed_roles.is_empty()
+                    || abstract_changed.is_some()
+                    || parent_changed.is_some()
                 {
                     diff.modified_relations.insert(
                         name.clone(),
@@ -226,6 +285,8 @@ impl SchemaDiff {
                             modified_attributes: attr_changes.modified_attributes,
                             added_roles,
                             removed_roles,
+                            abstract_changed,
+                            parent_changed,
                         },
                     );
                 }
@@ -302,6 +363,8 @@ mod tests {
     fn make_entity(name: &str, attrs: Vec<OwnedAttributeEntry>) -> EntitySchemaEntry {
         EntitySchemaEntry {
             type_name: name.into(),
+            is_abstract: false,
+            parent_type: None,
             owned_attributes: attrs,
         }
     }
@@ -313,6 +376,8 @@ mod tests {
     ) -> RelationSchemaEntry {
         RelationSchemaEntry {
             type_name: name.into(),
+            is_abstract: false,
+            parent_type: None,
             owned_attributes: attrs,
             roles: roles
                 .into_iter()
@@ -520,5 +585,117 @@ mod tests {
         let new = old.clone();
         let diff = SchemaDiff::compute(&old, &new);
         assert!(!diff.has_changes());
+    }
+
+    #[test]
+    fn detect_abstract_changed_on_entity() {
+        let mut old = SchemaInfo::default();
+        old.entities
+            .insert("animal".into(), make_entity("animal", vec![]));
+
+        let mut new = SchemaInfo::default();
+        new.entities.insert(
+            "animal".into(),
+            EntitySchemaEntry {
+                type_name: "animal".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+            },
+        );
+
+        let diff = SchemaDiff::compute(&old, &new);
+        assert!(diff.has_changes());
+        assert!(diff.has_breaking_changes());
+        let changes = diff.modified_entities.get("animal").unwrap();
+        assert_eq!(changes.abstract_changed, Some((false, true)));
+        assert!(diff.summary().contains("abstract (false -> true)"));
+    }
+
+    #[test]
+    fn detect_parent_changed_on_entity() {
+        let mut old = SchemaInfo::default();
+        old.entities
+            .insert("dog".into(), make_entity("dog", vec![]));
+
+        let mut new = SchemaInfo::default();
+        new.entities.insert(
+            "dog".into(),
+            EntitySchemaEntry {
+                type_name: "dog".into(),
+                is_abstract: false,
+                parent_type: Some("animal".into()),
+                owned_attributes: vec![],
+            },
+        );
+
+        let diff = SchemaDiff::compute(&old, &new);
+        assert!(diff.has_changes());
+        assert!(diff.has_breaking_changes());
+        let changes = diff.modified_entities.get("dog").unwrap();
+        assert_eq!(
+            changes.parent_changed,
+            Some((None, Some("animal".into())))
+        );
+        assert!(diff.summary().contains("parent (none -> animal)"));
+    }
+
+    #[test]
+    fn detect_abstract_changed_on_relation() {
+        let mut old = SchemaInfo::default();
+        old.relations.insert(
+            "connection".into(),
+            make_relation("connection", vec![], vec![]),
+        );
+
+        let mut new = SchemaInfo::default();
+        new.relations.insert(
+            "connection".into(),
+            RelationSchemaEntry {
+                type_name: "connection".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![],
+            },
+        );
+
+        let diff = SchemaDiff::compute(&old, &new);
+        assert!(diff.has_changes());
+        assert!(diff.has_breaking_changes());
+        let changes = diff.modified_relations.get("connection").unwrap();
+        assert_eq!(changes.abstract_changed, Some((false, true)));
+    }
+
+    #[test]
+    fn detect_parent_changed_on_relation() {
+        let mut old = SchemaInfo::default();
+        old.relations.insert(
+            "employment".into(),
+            make_relation("employment", vec![], vec![("employee", "person")]),
+        );
+
+        let mut new = SchemaInfo::default();
+        new.relations.insert(
+            "employment".into(),
+            RelationSchemaEntry {
+                type_name: "employment".into(),
+                is_abstract: false,
+                parent_type: Some("connection".into()),
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "employee".into(),
+                    player_type_name: "person".into(),
+                }],
+            },
+        );
+
+        let diff = SchemaDiff::compute(&old, &new);
+        assert!(diff.has_breaking_changes());
+        let changes = diff.modified_relations.get("employment").unwrap();
+        assert_eq!(
+            changes.parent_changed,
+            Some((None, Some("connection".into())))
+        );
     }
 }

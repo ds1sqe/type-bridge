@@ -363,6 +363,8 @@ fn generate_schema_with_cardinality() {
         "item".into(),
         EntitySchemaEntry {
             type_name: "item".into(),
+            is_abstract: false,
+            parent_type: None,
             owned_attributes: vec![OwnedAttributeEntry {
                 attr_name: "tag".into(),
                 value_type: ValueType::String,
@@ -467,6 +469,8 @@ fn schema_diff_detects_removed_attribute() {
         "person".into(),
         EntitySchemaEntry {
             type_name: "person".into(),
+            is_abstract: false,
+            parent_type: None,
             owned_attributes: vec![
                 OwnedAttributeEntry {
                     attr_name: "name".into(),
@@ -488,6 +492,8 @@ fn schema_diff_detects_removed_attribute() {
         "person".into(),
         EntitySchemaEntry {
             type_name: "person".into(),
+            is_abstract: false,
+            parent_type: None,
             owned_attributes: vec![OwnedAttributeEntry {
                 attr_name: "name".into(),
                 value_type: ValueType::String,

@@ -26,8 +26,11 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
         }
     };
 
-    // Parse #[relation(name = "...")]
-    let type_name = parse_relation_name(&input.attrs)?;
+    // Parse #[relation(name = "...", abstract, extends = "...")]
+    let relation_attrs = parse_relation_attrs(&input.attrs)?;
+    let type_name = relation_attrs.name;
+    let is_abstract = relation_attrs.is_abstract;
+    let parent_type = relation_attrs.parent_type;
 
     // Separate fields into iid, roles, and attributes
     let mut has_iid = false;
@@ -213,9 +216,22 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
 
     let attr_idents: Vec<_> = attr_fields.iter().map(|f| &f.ident).collect();
 
+    let is_abstract_tokens = if is_abstract {
+        quote! { const IS_ABSTRACT: bool = true; }
+    } else {
+        quote! {}
+    };
+
+    let parent_type_tokens = match &parent_type {
+        Some(p) => quote! { const PARENT_TYPE: Option<&'static str> = Some(#p); },
+        None => quote! {},
+    };
+
     Ok(quote! {
         impl type_bridge_orm::TypeBridgeRelation for #name {
             const TYPE_NAME: &'static str = #type_name;
+            #is_abstract_tokens
+            #parent_type_tokens
 
             fn owned_attributes() -> &'static [type_bridge_orm::OwnedAttributeInfo] {
                 static ATTRS: [type_bridge_orm::OwnedAttributeInfo; #n_attrs] = [
@@ -291,24 +307,45 @@ struct FieldAttrs {
     card_max: Option<Option<u32>>,
 }
 
-/// Parse `#[relation(name = "...")]` from struct attributes.
-fn parse_relation_name(attrs: &[syn::Attribute]) -> syn::Result<String> {
+struct RelationDeriveAttrs {
+    name: String,
+    is_abstract: bool,
+    parent_type: Option<String>,
+}
+
+/// Parse `#[relation(name = "...", abstract, extends = "...")]` from struct attributes.
+fn parse_relation_attrs(attrs: &[syn::Attribute]) -> syn::Result<RelationDeriveAttrs> {
     for attr in attrs {
         if !attr.path().is_ident("relation") {
             continue;
         }
         let mut relation_name: Option<String> = None;
+        let mut is_abstract = false;
+        let mut parent_type: Option<String> = None;
+
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
                 let value: LitStr = meta.value()?.parse()?;
                 relation_name = Some(value.value());
                 Ok(())
+            } else if meta.path.is_ident("r#abstract") || meta.path.is_ident("abstract") {
+                is_abstract = true;
+                Ok(())
+            } else if meta.path.is_ident("extends") {
+                let value: LitStr = meta.value()?.parse()?;
+                parent_type = Some(value.value());
+                Ok(())
             } else {
-                Err(meta.error("expected `name`"))
+                Err(meta.error("expected `name`, `abstract`, or `extends`"))
             }
         })?;
+
         if let Some(name) = relation_name {
-            return Ok(name);
+            return Ok(RelationDeriveAttrs {
+                name,
+                is_abstract,
+                parent_type,
+            });
         }
     }
     Err(syn::Error::new(

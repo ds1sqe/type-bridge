@@ -11,6 +11,10 @@ authors.workspace = true
 name = "type_bridge_orm"
 path = "src/lib.rs"
 
+[[bin]]
+name = "type-bridge-codegen"
+path = "src/bin/codegen.rs"
+
 [features]
 default = ["typedb"]
 typedb = ["dep:typedb-driver", "dep:futures"]

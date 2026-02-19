@@ -582,3 +582,182 @@ fn entity_with_unbounded_cardinality() {
     assert!(!phone_attr.is_key());
     assert_eq!(phone_attr.cardinality(), Some((0, None)));
 }
+
+// ── Abstract type and inheritance tests ─────────────────────────────
+
+#[derive(DeriveAttribute, Debug, Clone, PartialEq)]
+#[attribute(name = "breed", value_type = "string")]
+struct Breed(pub String);
+
+#[derive(DeriveEntity, Debug)]
+#[entity(name = "animal", r#abstract)]
+struct Animal {
+    iid: Option<String>,
+    #[field(key)]
+    name: Name,
+}
+
+#[derive(DeriveEntity, Debug)]
+#[entity(name = "dog", extends = "animal")]
+struct Dog {
+    iid: Option<String>,
+    #[field(key)]
+    name: Name,
+    breed: Breed,
+}
+
+#[allow(clippy::assertions_on_constants)]
+#[test]
+fn entity_abstract_flag() {
+    assert!(Animal::IS_ABSTRACT);
+    assert_eq!(Animal::TYPE_NAME, "animal");
+}
+
+#[allow(clippy::assertions_on_constants)]
+#[test]
+fn entity_non_abstract_default() {
+    // Person was defined without `abstract`, so IS_ABSTRACT defaults to false
+    assert!(!Person::IS_ABSTRACT);
+}
+
+#[allow(clippy::assertions_on_constants)]
+#[test]
+fn entity_extends_parent() {
+    assert_eq!(Dog::PARENT_TYPE, Some("animal"));
+    assert!(!Dog::IS_ABSTRACT);
+    assert_eq!(Dog::TYPE_NAME, "dog");
+}
+
+#[test]
+fn entity_no_parent_default() {
+    assert_eq!(Person::PARENT_TYPE, None);
+}
+
+// Abstract relation
+
+#[derive(DeriveRelation, Debug)]
+#[relation(name = "connection", r#abstract)]
+struct Connection {
+    iid: Option<String>,
+    #[role(name = "source", player_type = "node")]
+    source: RolePlayerRef,
+    #[role(name = "target", player_type = "node")]
+    target: RolePlayerRef,
+}
+
+#[derive(DeriveRelation, Debug)]
+#[relation(name = "link", extends = "connection")]
+struct Link {
+    iid: Option<String>,
+    #[role(name = "source", player_type = "node")]
+    source: RolePlayerRef,
+    #[role(name = "target", player_type = "node")]
+    target: RolePlayerRef,
+}
+
+#[allow(clippy::assertions_on_constants)]
+#[test]
+fn relation_abstract_flag() {
+    assert!(Connection::IS_ABSTRACT);
+    assert_eq!(Connection::TYPE_NAME, "connection");
+}
+
+#[allow(clippy::assertions_on_constants)]
+#[test]
+fn relation_non_abstract_default() {
+    assert!(!Employment::IS_ABSTRACT);
+}
+
+#[allow(clippy::assertions_on_constants)]
+#[test]
+fn relation_extends_parent() {
+    assert_eq!(Link::PARENT_TYPE, Some("connection"));
+    assert!(!Link::IS_ABSTRACT);
+}
+
+#[test]
+fn relation_no_parent_default() {
+    assert_eq!(Employment::PARENT_TYPE, None);
+}
+
+// Schema generation with abstract types and inheritance (uses mock backend)
+
+mod mock_backend {
+    use type_bridge_orm::session::backend::{
+        BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
+    };
+    use type_bridge_orm::OrmError;
+
+    struct NoopTx;
+
+    impl TransactionOps for NoopTx {
+        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            Box::pin(async { Ok(QueryResult::Ok) })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    pub struct NoopBackend;
+
+    impl DriverBackend for NoopBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            Box::pin(async { Ok(Box::new(NoopTx) as Box<dyn TransactionOps>) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+}
+
+#[test]
+fn schema_registers_abstract_entity() {
+    use type_bridge_orm::schema::manager::SchemaManager;
+    use type_bridge_orm::session::Database;
+
+    let db = Database::with_backend(Box::new(mock_backend::NoopBackend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Animal>();
+    schema.register_entity::<Dog>();
+
+    let info = schema.schema_info();
+    let animal = info.get_entity_by_name("animal").unwrap();
+    assert!(animal.is_abstract);
+    assert_eq!(animal.parent_type, None);
+
+    let dog = info.get_entity_by_name("dog").unwrap();
+    assert!(!dog.is_abstract);
+    assert_eq!(dog.parent_type.as_deref(), Some("animal"));
+}
+
+#[test]
+fn schema_generates_abstract_and_sub() {
+    use type_bridge_orm::schema::manager::SchemaManager;
+    use type_bridge_orm::session::Database;
+
+    let db = Database::with_backend(Box::new(mock_backend::NoopBackend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Animal>();
+    schema.register_entity::<Dog>();
+
+    let typeql = schema.generate_schema().unwrap();
+    assert!(
+        typeql.contains("entity animal @abstract"),
+        "should contain @abstract: {typeql}"
+    );
+    assert!(
+        typeql.contains("entity dog sub animal"),
+        "should contain sub clause: {typeql}"
+    );
+    // Dog should own breed (its own) but not re-emit inherited name
+    assert!(
+        typeql[typeql.find("entity dog").unwrap()..].contains("owns breed"),
+        "dog should own breed: {typeql}"
+    );
+}
