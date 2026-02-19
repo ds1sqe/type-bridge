@@ -31,6 +31,9 @@ tmp/
 benchmarks/.results/
 .benchmarks/
 
+# MkDocs build output
+site/
+
 # Reference repos
 typeql-ref/
 type-bridge-core/target/

@@ -199,8 +199,8 @@ entity person,
 
 ---
 
-For TypeDB integration details, see [../TYPEDB.md](../TYPEDB.md).
+For TypeDB integration details, see [docs/development/typedb.md](../development/typedb.md).
 
-For development guidelines, see [../DEVELOPMENT.md](../DEVELOPMENT.md).
+For development guidelines, see [docs/development/setup.md](../development/setup.md).
 
-For abstract types implementation, see [abstract_types.md](abstract_types.md). For TypeDB abstract types concepts, see [../ABSTRACT_TYPES.md](../ABSTRACT_TYPES.md).
+For abstract types implementation, see [abstract-types.md](abstract-types.md). For TypeDB abstract types concepts, see [docs/development/abstract-types.md](../development/abstract-types.md).

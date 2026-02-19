@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from type_bridge.query.ast import (
     DeleteClause,
@@ -203,7 +203,7 @@ class QueryBuilder:
     """Helper class for building queries with model classes."""
 
     @staticmethod
-    def match_entity(model_class: type[Entity], var: str = "$e", **filters) -> Query:
+    def match_entity(model_class: type[Entity], var: str = "$e", **filters: Any) -> Query:
         """Create a match query for an entity.
 
         Args:

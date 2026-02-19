@@ -723,6 +723,6 @@ These deprecations provide a cleaner, more consistent API following modern Pytho
 
 ---
 
-For API usage, see [docs/api/](api/).
+For API usage, see the [User Guide](../guide/index.md).
 
-For development guidelines, see [DEVELOPMENT.md](DEVELOPMENT.md).
+For development guidelines, see [setup.md](setup.md).

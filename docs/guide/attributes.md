@@ -713,6 +713,6 @@ status: Literal["active", "inactive", "pending"] | Status
 
 - [Entities](entities.md) - How entities own attributes
 - [Relations](relations.md) - How relations own attributes
-- [Abstract Types](abstract_types.md) - Abstract attribute types and inheritance patterns
+- [Abstract Types](abstract-types.md) - Abstract attribute types and inheritance patterns
 - [Cardinality](cardinality.md) - Cardinality constraints for attributes
 - [Validation](validation.md) - Type validation and Pydantic integration

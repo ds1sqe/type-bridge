@@ -745,7 +745,7 @@ salary: Salary | None
 
 - [Entities](entities.md) - How to define entities that play roles
 - [Attributes](attributes.md) - Attributes that relations can own
-- [Abstract Types](abstract_types.md) - Working with abstract relations and polymorphic roles
+- [Abstract Types](abstract-types.md) - Working with abstract relations and polymorphic roles
 - [Cardinality](cardinality.md) - Cardinality constraints for roles and attributes
 - [CRUD Operations](crud.md) - Working with relations in the database
 - [Queries](queries.md) - Querying relations and role players

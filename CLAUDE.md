@@ -187,37 +187,39 @@ The project requires:
 
 ## Documentation
 
+Full documentation site: **[https://ds1sqe.github.io/type-bridge/](https://ds1sqe.github.io/type-bridge/)**
+
 ### User Documentation
 
 - **[README.md](README.md)** - Quick start guide for users
 
 ### Development Guides
 
-- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, commands, code quality standards
-- **[docs/TESTING.md](docs/TESTING.md)** - Testing strategy, patterns, and execution
+- **[docs/development/setup.md](docs/development/setup.md)** - Development setup, commands, code quality standards
+- **[docs/development/testing.md](docs/development/testing.md)** - Testing strategy, patterns, and execution
 
 ### TypeDB Integration
 
-- **[docs/TYPEDB.md](docs/TYPEDB.md)** - TypeDB concepts, driver API, TypeQL syntax, 3.x changes
-- **[docs/ABSTRACT_TYPES.md](docs/ABSTRACT_TYPES.md)** - Abstract types and interface hierarchies in TypeDB
+- **[docs/development/typedb.md](docs/development/typedb.md)** - TypeDB concepts, driver API, TypeQL syntax, 3.x changes
+- **[docs/development/abstract-types.md](docs/development/abstract-types.md)** - Abstract types and interface hierarchies in TypeDB
 
 ### Architecture & Internals
 
-- **[docs/INTERNALS.md](docs/INTERNALS.md)** - Internal type system, ModelAttrInfo, modern Python standards
+- **[docs/development/internals.md](docs/development/internals.md)** - Internal type system, ModelAttrInfo, modern Python standards
 
-### API Reference
+### User Guide (API docs)
 
-- **[docs/api/README.md](docs/api/README.md)** - API overview and quick reference
-- **[docs/api/attributes.md](docs/api/attributes.md)** - Attribute types and value types
-- **[docs/api/entities.md](docs/api/entities.md)** - Entity definition and ownership
-- **[docs/api/relations.md](docs/api/relations.md)** - Relations, roles, and role players
-- **[docs/api/abstract_types.md](docs/api/abstract_types.md)** - Abstract types implementation and patterns
-- **[docs/api/cardinality.md](docs/api/cardinality.md)** - Card API and Flag system
-- **[docs/api/crud.md](docs/api/crud.md)** - CRUD operations and managers
-- **[docs/api/queries.md](docs/api/queries.md)** - Query expressions and aggregations
-- **[docs/api/schema.md](docs/api/schema.md)** - Schema management and conflict detection
-- **[docs/api/generator.md](docs/api/generator.md)** - Code generator (TQL → Python)
-- **[docs/api/validation.md](docs/api/validation.md)** - Pydantic integration and type safety
+- **[docs/guide/index.md](docs/guide/index.md)** - API overview and quick reference
+- **[docs/guide/attributes.md](docs/guide/attributes.md)** - Attribute types and value types
+- **[docs/guide/entities.md](docs/guide/entities.md)** - Entity definition and ownership
+- **[docs/guide/relations.md](docs/guide/relations.md)** - Relations, roles, and role players
+- **[docs/guide/abstract-types.md](docs/guide/abstract-types.md)** - Abstract types implementation and patterns
+- **[docs/guide/cardinality.md](docs/guide/cardinality.md)** - Card API and Flag system
+- **[docs/guide/crud.md](docs/guide/crud.md)** - CRUD operations and managers
+- **[docs/guide/queries.md](docs/guide/queries.md)** - Query expressions and aggregations
+- **[docs/guide/schema.md](docs/guide/schema.md)** - Schema management and conflict detection
+- **[docs/guide/generator.md](docs/guide/generator.md)** - Code generator (TQL → Python)
+- **[docs/guide/validation.md](docs/guide/validation.md)** - Pydantic integration and type safety
 
 ## Getting Help
 

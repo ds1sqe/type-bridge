@@ -526,7 +526,7 @@ entity user,
     owns tag @card(1..);
 ```
 
-**⚠️ Note**: Multi-value attributes (like `tags` above) are **unordered sets**. TypeDB has no list type - only sets. TypeBridge uses `list[Type]` syntax for convenience, but order is never preserved. See [Cardinality](cardinality.md#important-no-lists-in-typedb---only-sets) for details.
+**⚠️ Note**: Multi-value attributes (like `tags` above) are **unordered sets**. TypeDB has no list type - only sets. TypeBridge uses `list[Type]` syntax for convenience, but order is never preserved. See [Cardinality](cardinality.md#important-no-lists-in-typedb-only-sets) for details.
 
 ## Best Practices
 
@@ -599,7 +599,7 @@ age: Optional[Age] = None
 
 - [Attributes](attributes.md) - Attribute types and value types
 - [Relations](relations.md) - How to define relations
-- [Abstract Types](abstract_types.md) - Working with abstract entities and inheritance
+- [Abstract Types](abstract-types.md) - Working with abstract entities and inheritance
 - [Cardinality](cardinality.md) - Cardinality constraints
 - [CRUD Operations](crud.md) - Working with entities in the database
 - [Queries](queries.md) - Querying entities

@@ -126,7 +126,7 @@ skills: list[Skill] = Flag(Card(min=2, max=10))  # @card(2..10) - 2 to 10
 tags: list[Tag] = Flag(Card(min=0))  # @card(0..)
 ```
 
-### ⚠️ Important: No Lists in TypeDB - Only Sets
+### Important: No Lists in TypeDB - Only Sets
 
 **TypeDB does not have a list type**. Multi-value attributes are **unordered sets**. TypeBridge uses `list[Type]` syntax for convenience, but the order is never preserved.
 
