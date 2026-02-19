@@ -4,13 +4,15 @@ use type_bridge_core_lib::ast::{
     Clause, Constraint, FetchItem, Pattern, RolePlayer, Statement,
 };
 
+use serde::Serialize;
+
 use crate::entity::OwnedAttributeInfo;
 use crate::error::Result;
 use crate::filter::Filter;
 use crate::value::AttributeValue;
 
 /// Static metadata about a role in a relation type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RoleInfo {
     /// The role name within the relation (e.g. `"employee"`, `"employer"`).
     pub role_name: &'static str,
@@ -22,7 +24,7 @@ pub struct RoleInfo {
 ///
 /// Identifies an entity that plays a specific role in a relation.
 /// The entity can be identified by IID (preferred) or by a @key attribute.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RolePlayerRef {
     /// The role name this entity plays.
     pub role: &'static str,

@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 use type_bridge_core_lib::ast::{
     FunctionCallValue, Pattern, ReduceAssignment, Value,
 };
@@ -17,7 +18,7 @@ use crate::value::AttributeValue;
 // ---------------------------------------------------------------------------
 
 /// Sort direction for query results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SortDir {
     /// Ascending order (smallest first).
     Asc,
@@ -33,7 +34,7 @@ pub enum SortDir {
 ///
 /// Supports comparison operators, string operators, and boolean
 /// combinators. Multiple `Expr`s added via `filter()` are ANDed together.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
     /// Equality: `attr == value`.
     Eq { attr: String, value: AttributeValue },
@@ -216,7 +217,7 @@ impl Expr {
 // ---------------------------------------------------------------------------
 
 /// An aggregation operation for reduce clauses.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Agg {
     /// Count all matched results.
     Count,
@@ -299,7 +300,7 @@ impl Agg {
 ///
 /// Wraps a map of result variable names to JSON values with typed
 /// accessor methods.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggResult {
     values: HashMap<String, serde_json::Value>,
 }
@@ -541,5 +542,50 @@ mod tests {
         let result = AggResult::new(HashMap::new());
         assert_eq!(result.count(), None);
         assert_eq!(result.get_f64("$_sum"), None);
+    }
+
+    #[test]
+    fn expr_serde_roundtrip() {
+        let expr = Expr::and(vec![
+            Expr::eq("name", AttributeValue::String("Alice".into())),
+            Expr::or(vec![
+                Expr::gt("age", AttributeValue::Long(18)),
+                Expr::lt("age", AttributeValue::Long(65)),
+            ]),
+            Expr::not(Expr::eq("status", AttributeValue::String("inactive".into()))),
+        ]);
+        let json = serde_json::to_string(&expr).unwrap();
+        let parsed: Expr = serde_json::from_str(&json).unwrap();
+        // Verify structure is preserved
+        match parsed {
+            Expr::And(children) => {
+                assert_eq!(children.len(), 3);
+                assert!(matches!(&children[0], Expr::Eq { .. }));
+                assert!(matches!(&children[1], Expr::Or(_)));
+                assert!(matches!(&children[2], Expr::Not(_)));
+            }
+            _ => panic!("expected And"),
+        }
+    }
+
+    #[test]
+    fn agg_serde_roundtrip() {
+        for agg in [
+            Agg::Count,
+            Agg::Sum("salary".into()),
+            Agg::Min("age".into()),
+            Agg::Max("age".into()),
+            Agg::Mean("score".into()),
+        ] {
+            let json = serde_json::to_string(&agg).unwrap();
+            let _parsed: Agg = serde_json::from_str(&json).unwrap();
+        }
+    }
+
+    #[test]
+    fn sort_dir_serde_roundtrip() {
+        let json = serde_json::to_string(&SortDir::Asc).unwrap();
+        let parsed: SortDir = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, SortDir::Asc);
     }
 }

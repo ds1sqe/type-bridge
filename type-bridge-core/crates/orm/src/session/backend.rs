@@ -6,10 +6,12 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::OrmError;
 
 /// Result of a query execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryResult {
     /// No data returned (write/schema confirmation).
     Ok,
@@ -23,7 +25,7 @@ pub enum QueryResult {
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Transaction type for TypeDB operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TxType {
     /// Read-only transaction (no commit needed).
     Read,

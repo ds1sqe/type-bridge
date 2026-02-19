@@ -2,10 +2,12 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use super::info::{OwnedAttributeEntry, SchemaInfo};
 
 /// Changes detected for an entity type.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EntityChanges {
     /// Attributes added in the new schema.
     pub added_attributes: Vec<String>,
@@ -20,7 +22,7 @@ pub struct EntityChanges {
 }
 
 /// Changes detected for a relation type.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RelationChanges {
     /// Attributes added in the new schema.
     pub added_attributes: Vec<String>,
@@ -39,7 +41,7 @@ pub struct RelationChanges {
 }
 
 /// Diff between two schema versions.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchemaDiff {
     /// Entity types added in the new schema.
     pub added_entities: Vec<String>,
@@ -665,6 +667,29 @@ mod tests {
         assert!(diff.has_breaking_changes());
         let changes = diff.modified_relations.get("connection").unwrap();
         assert_eq!(changes.abstract_changed, Some((false, true)));
+    }
+
+    #[test]
+    fn schema_diff_serde_roundtrip() {
+        let mut old = SchemaInfo::default();
+        old.entities
+            .insert("person".into(), make_entity("person", vec![]));
+        let mut new = SchemaInfo::default();
+        new.entities.insert(
+            "person".into(),
+            make_entity(
+                "person",
+                vec![make_attr("age", ValueType::Long, vec![])],
+            ),
+        );
+        new.entities
+            .insert("company".into(), make_entity("company", vec![]));
+
+        let diff = SchemaDiff::compute(&old, &new);
+        let json = serde_json::to_string(&diff).unwrap();
+        let parsed: SchemaDiff = serde_json::from_str(&json).unwrap();
+        assert_eq!(diff.added_entities, parsed.added_entities);
+        assert_eq!(diff.modified_entities.len(), parsed.modified_entities.len());
     }
 
     #[test]

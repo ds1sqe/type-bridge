@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::attribute::ValueType;
 use crate::entity::Annotation;
 
@@ -14,7 +16,7 @@ use super::error::SchemaError;
 use super::generator;
 
 /// Metadata for one owned attribute in a schema entry (owned `String` version).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedAttributeEntry {
     /// Attribute type name.
     pub attr_name: String,
@@ -48,7 +50,7 @@ impl OwnedAttributeEntry {
 }
 
 /// Metadata for one role in a relation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleEntry {
     /// Role name (e.g. `"employee"`).
     pub role_name: String,
@@ -57,7 +59,7 @@ pub struct RoleEntry {
 }
 
 /// Schema entry for an entity type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntitySchemaEntry {
     /// Entity type name.
     pub type_name: String,
@@ -70,7 +72,7 @@ pub struct EntitySchemaEntry {
 }
 
 /// Schema entry for a relation type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationSchemaEntry {
     /// Relation type name.
     pub type_name: String,
@@ -85,7 +87,7 @@ pub struct RelationSchemaEntry {
 }
 
 /// Metadata for a standalone attribute type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttributeSchemaEntry {
     /// Attribute type name.
     pub attr_name: String,
@@ -94,7 +96,7 @@ pub struct AttributeSchemaEntry {
 }
 
 /// Complete schema information extracted from registered models.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchemaInfo {
     /// Registered entity types, keyed by type name.
     pub entities: BTreeMap<String, EntitySchemaEntry>,
@@ -252,5 +254,53 @@ mod tests {
             annotations: vec![Annotation::Unique, Annotation::Card(1, Some(3))],
         };
         assert_eq!(entry.flags_string(), "@unique @card(1..3)");
+    }
+
+    #[test]
+    fn schema_info_serde_roundtrip() {
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "name".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Key],
+                }],
+            },
+        );
+        info.relations.insert(
+            "employment".into(),
+            RelationSchemaEntry {
+                type_name: "employment".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "employee".into(),
+                    player_type_name: "person".into(),
+                }],
+            },
+        );
+        info.attributes.insert(
+            "name".into(),
+            AttributeSchemaEntry {
+                attr_name: "name".into(),
+                value_type: ValueType::String,
+            },
+        );
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: SchemaInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info.entities.len(), parsed.entities.len());
+        assert_eq!(info.relations.len(), parsed.relations.len());
+        assert_eq!(info.attributes.len(), parsed.attributes.len());
+        assert_eq!(
+            info.entities.get("person").unwrap().owned_attributes,
+            parsed.entities.get("person").unwrap().owned_attributes,
+        );
     }
 }

@@ -8,10 +8,12 @@ use std::fmt::Write;
 
 use type_bridge_core_lib::schema::{Cardinality, EntityType, OwnedAttribute, RelationType, TypeSchema};
 
+use serde::{Deserialize, Serialize};
+
 use super::naming::{to_pascal_case, to_snake_case};
 
 /// Generated Rust model source files.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedModels {
     /// `mod.rs` with re-exports.
     pub mod_rs: String,

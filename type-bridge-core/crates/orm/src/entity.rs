@@ -2,13 +2,15 @@
 
 use type_bridge_core_lib::ast::{Clause, Constraint, FetchItem, Pattern, Statement};
 
+use serde::{Deserialize, Serialize};
+
 use crate::attribute::ValueType;
 use crate::error::Result;
 use crate::filter::Filter;
 use crate::value::AttributeValue;
 
 /// Ownership annotation on an attribute (mirrors TypeDB `@key`, `@unique`, `@card`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Annotation {
     /// `@key` — unique identifier attribute.
     Key,
@@ -19,7 +21,7 @@ pub enum Annotation {
 }
 
 /// Metadata about one owned attribute on an entity type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct OwnedAttributeInfo {
     /// TypeDB attribute type name (e.g. `"name"`, `"age"`).
     pub attr_name: &'static str,

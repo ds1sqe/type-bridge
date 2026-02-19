@@ -1,19 +1,24 @@
 //! TypeDB attribute type trait and convenience macro.
 
+use serde::{Deserialize, Serialize};
+
 use crate::value::AttributeValue;
 
 /// TypeDB value type enum for type-safe metadata.
 ///
 /// Mirrors the TypeDB value type system: `string`, `long`, `double`, `boolean`,
 /// `date`, `datetime`, `datetime-tz`, `decimal`, `duration`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ValueType {
     String,
     Long,
     Double,
     Boolean,
     Date,
+    #[serde(rename = "datetime")]
     DateTime,
+    #[serde(rename = "datetime-tz")]
     DateTimeTz,
     Decimal,
     Duration,
@@ -122,7 +127,7 @@ pub trait TypeBridgeAttribute: Clone + Send + Sync + 'static {
 #[macro_export]
 macro_rules! define_attribute {
     ($name:ident, $attr_name:expr, "string") => {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
         impl $crate::TypeBridgeAttribute for $name {
@@ -143,7 +148,7 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "long") => {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub i64);
 
         impl $crate::TypeBridgeAttribute for $name {
@@ -164,7 +169,7 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "double") => {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub f64);
 
         impl $crate::TypeBridgeAttribute for $name {
@@ -185,7 +190,7 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "boolean") => {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub bool);
 
         impl $crate::TypeBridgeAttribute for $name {
@@ -206,7 +211,7 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "date") => {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
         impl $crate::TypeBridgeAttribute for $name {
@@ -227,7 +232,7 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "datetime") => {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
         impl $crate::TypeBridgeAttribute for $name {
@@ -248,7 +253,7 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "datetime-tz") => {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
         impl $crate::TypeBridgeAttribute for $name {
@@ -269,7 +274,7 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "decimal") => {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
         impl $crate::TypeBridgeAttribute for $name {
@@ -290,7 +295,7 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "duration") => {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
         impl $crate::TypeBridgeAttribute for $name {
@@ -310,4 +315,36 @@ macro_rules! define_attribute {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn value_type_serde_roundtrip() {
+        for vt in [
+            ValueType::String,
+            ValueType::Long,
+            ValueType::Double,
+            ValueType::Boolean,
+            ValueType::Date,
+            ValueType::DateTime,
+            ValueType::DateTimeTz,
+            ValueType::Decimal,
+            ValueType::Duration,
+        ] {
+            let json = serde_json::to_string(&vt).unwrap();
+            let parsed: ValueType = serde_json::from_str(&json).unwrap();
+            assert_eq!(vt, parsed);
+        }
+    }
+
+    #[test]
+    fn value_type_serde_names() {
+        assert_eq!(serde_json::to_string(&ValueType::String).unwrap(), "\"string\"");
+        assert_eq!(serde_json::to_string(&ValueType::Long).unwrap(), "\"long\"");
+        assert_eq!(serde_json::to_string(&ValueType::DateTime).unwrap(), "\"datetime\"");
+        assert_eq!(serde_json::to_string(&ValueType::DateTimeTz).unwrap(), "\"datetime-tz\"");
+    }
 }

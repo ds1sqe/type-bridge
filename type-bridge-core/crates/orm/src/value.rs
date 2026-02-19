@@ -1,5 +1,6 @@
 //! Typed attribute values corresponding to TypeDB value types.
 
+use serde::{Deserialize, Serialize};
 use type_bridge_core_lib::ast::{LiteralValue, Value};
 
 /// A typed TypeDB attribute value.
@@ -7,7 +8,7 @@ use type_bridge_core_lib::ast::{LiteralValue, Value};
 /// Each variant corresponds to a TypeDB value type. The ORM converts
 /// these to [`Value::Literal`] for query compilation and parses
 /// TypeDB JSON results back into these variants during hydration.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttributeValue {
     /// TypeDB `string` value.
     String(String),
@@ -115,6 +116,50 @@ mod tests {
     fn from_json_type_mismatch() {
         let json = serde_json::json!("not a number");
         assert_eq!(AttributeValue::from_json(&json, "long"), None);
+    }
+
+    #[test]
+    fn serde_string_roundtrip() {
+        let val = AttributeValue::String("hello".into());
+        let json = serde_json::to_string(&val).unwrap();
+        let parsed: AttributeValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(val, parsed);
+    }
+
+    #[test]
+    fn serde_long_roundtrip() {
+        let val = AttributeValue::Long(42);
+        let json = serde_json::to_string(&val).unwrap();
+        let parsed: AttributeValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(val, parsed);
+    }
+
+    #[test]
+    fn serde_double_roundtrip() {
+        let val = AttributeValue::Double(2.78);
+        let json = serde_json::to_string(&val).unwrap();
+        let parsed: AttributeValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(val, parsed);
+    }
+
+    #[test]
+    fn serde_all_variants() {
+        let variants = vec![
+            AttributeValue::String("test".into()),
+            AttributeValue::Long(99),
+            AttributeValue::Double(1.5),
+            AttributeValue::Boolean(true),
+            AttributeValue::Date("2024-01-15".into()),
+            AttributeValue::DateTime("2024-01-15T10:30:00".into()),
+            AttributeValue::DateTimeTZ("2024-01-15T10:30:00+05:00".into()),
+            AttributeValue::Decimal("123.456".into()),
+            AttributeValue::Duration("P1Y2M3D".into()),
+        ];
+        for val in variants {
+            let json = serde_json::to_string(&val).unwrap();
+            let parsed: AttributeValue = serde_json::from_str(&json).unwrap();
+            assert_eq!(val, parsed);
+        }
     }
 
     #[test]
