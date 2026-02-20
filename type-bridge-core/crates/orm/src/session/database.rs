@@ -1,4 +1,23 @@
 //! Primary database connection handle.
+//!
+//! # Connection Pooling
+//!
+//! The TypeDB driver manages connection pooling internally — no custom
+//! pooling layer is needed. Each [`Database`] instance wraps a single
+//! driver that efficiently reuses connections under the hood.
+//!
+//! To share a `Database` across async tasks, wrap it in `Arc`:
+//!
+//! ```ignore
+//! let db = Arc::new(Database::connect("localhost:1729", "mydb", "admin", "password").await?);
+//! let db2 = Arc::clone(&db);
+//! tokio::spawn(async move {
+//!     let manager = EntityManager::<Person>::new(&db2);
+//!     manager.all().await.unwrap();
+//! });
+//! ```
+
+use std::sync::Arc;
 
 use super::backend::{DriverBackend, QueryResult, TxType};
 use super::context::TransactionContext;
@@ -9,6 +28,9 @@ use crate::error::Result;
 ///
 /// Provides methods to create transactions and execute raw queries.
 /// Use [`EntityManager`](crate::manager::EntityManager) for typed CRUD.
+///
+/// `Database` is `Send + Sync`, so it can be shared across tasks via
+/// [`Arc`]. The TypeDB driver handles connection pooling internally.
 pub struct Database {
     backend: Box<dyn DriverBackend>,
     database_name: String,
@@ -76,6 +98,11 @@ impl Database {
     /// Check if the underlying connection is alive.
     pub fn is_connected(&self) -> bool {
         self.backend.is_open()
+    }
+
+    /// Wrap this database in an `Arc` for sharing across async tasks.
+    pub fn into_shared(self) -> Arc<Self> {
+        Arc::new(self)
     }
 
     /// Execute a raw TypeQL query, auto-managing the transaction lifecycle.
