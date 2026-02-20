@@ -2,6 +2,55 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [1.4.0] - 2026-02-20
+
+### New Features
+
+#### Rust Core Integration (PRs #95, #101–#107)
+- **TypeQL schema parser** with inheritance resolution and PyO3 bindings
+- **TypeQL query parser** with bidirectional AST roundtrip
+- **Schema-aware query validation** with PyO3 bindings
+- **Rust-backed value coercion** and `format_value`
+- **Custom validation rules** with portable JSON DSL
+- **Wired Rust core into Python** compiler and validation pipeline
+
+#### Rust ORM — `type-bridge-orm` (PR #114)
+- **Async Rust ORM** with entity CRUD and mock-testable session layer
+- **Derive macros** — `TypeBridgeEntity`, `TypeBridgeAttribute`, `TypeBridgeRelation`
+- **Relation support** with update/put operations
+- **Chainable query builders** with expression filtering and aggregation
+- **Schema management** — registration, generation, diff, and sync
+- **Abstract types, inheritance, and code generator**
+- **Batch operations** — `insert_many`, `delete_many`, `update_many`
+- **`FieldRef<A>`** for type-safe query field references
+- **`include_schema!` proc-macro** for compile-time TQL codegen
+- **Schema introspection** from live TypeDB database
+- **Group-by queries** with `GroupByResult`
+- **Role player field access** for relation query filtering
+- **Expression helpers** — `in_range`, `startswith`, `endswith`
+- **Connection pooling** with `Database::into_shared`
+- **Serde support** on all ORM model types
+- **Structured tracing spans** on all public methods
+
+#### Query Intercept Proxy Server — `type-bridge-server` (PR #109)
+- **REST CRUD endpoints** with schema-aware query building
+- **`CrudQueryBuilder` PyO3 class** for TypeQL generation
+- **Extensible library/framework architecture**
+- **207 tests** with 100% MC/DC coverage and CI codecov integration
+
+### Improvements
+
+#### Documentation & CI
+- **MkDocs + Material** documentation site with auto-generated API reference (PR #98)
+- **Rust crate CI** and multi-platform wheel builds (PR #95)
+- **Comprehensive benchmark suite** with TOML storage and diff support (PR #103)
+- Full documentation and metadata polish for Rust core
+
+### Bug Fixes
+
+- Resolve Rust 1.93.0 clippy lint errors
+- Pin Python 3.13 for Rust CI jobs and fix coverage script
+
 ## [1.3.0] - 2026-02-09
 
 ### New Features

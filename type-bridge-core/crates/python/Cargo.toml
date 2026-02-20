@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-core"
-version = "1.4.0-rc0"
+version = "1.4.0"
 edition = "2024"
 description = "PyO3 bindings exposing the type-bridge Rust core to Python"
 license.workspace = true
@@ -12,7 +12,7 @@ name = "type_bridge_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-type-bridge-core-lib = { path = "../core" }
+type-bridge-core-lib = { path = "../core", version = "1.4.0" }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 pythonize = "0.23"
 serde = { version = "1.0", features = ["derive"] }

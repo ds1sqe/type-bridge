@@ -62,7 +62,7 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p type-bridge-core-lib
+        run: cargo publish -p type-bridge-core-lib || true
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -71,7 +71,7 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p type-bridge-orm-derive
+        run: cargo publish -p type-bridge-orm-derive || true
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -80,7 +80,7 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p type-bridge-orm
+        run: cargo publish -p type-bridge-orm || true
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -89,7 +89,7 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p type-bridge-server
+        run: cargo publish -p type-bridge-server || true
 
   # Build type-bridge-core wheels for all platforms
   build-core-wheels:
@@ -224,6 +224,8 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   # Publish type-bridge to PyPI (after core is available)
   publish-python-pypi:
@@ -242,6 +244,8 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   # Create draft GitHub Release with all artifacts
   github-release:
