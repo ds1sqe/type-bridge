@@ -1,6 +1,6 @@
 //! TypeQL query compiler — converts AST [`Clause`](crate::ast::Clause)s into TypeQL query strings.
 
-use crate::ast::{Clause, Pattern, Statement, Constraint, Value, LiteralValue, LetAssignment, FetchItem, ReduceAssignment};
+use crate::ast::{Clause, Pattern, Statement, Constraint, Value, LiteralValue, LetAssignment, FetchItem, ReduceAssignment, SortField};
 
 /// Compiles a sequence of [`Clause`] AST nodes into a TypeQL query string.
 pub struct QueryCompiler {
@@ -83,6 +83,15 @@ impl QueryCompiler {
                 res.push(';');
                 res
             }
+            Clause::Sort(fields) => {
+                let f_str = fields.iter()
+                    .map(|f| self.compile_sort_field(f))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("sort {};", f_str)
+            }
+            Clause::Limit(n) => format!("limit {};", n),
+            Clause::Offset(n) => format!("offset {};", n),
         }
     }
 
@@ -236,13 +245,15 @@ impl QueryCompiler {
         }
     }
 
-        fn compile_reduce_assignment(&self, assign: &ReduceAssignment) -> String {
-
-            format!("{} = {}", assign.variable, self.compile_value(&assign.expression))
-
-        }
-
+    fn compile_reduce_assignment(&self, assign: &ReduceAssignment) -> String {
+        format!("{} = {}", assign.variable, self.compile_value(&assign.expression))
     }
+
+    fn compile_sort_field(&self, field: &SortField) -> String {
+        let dir = if field.ascending { "asc" } else { "desc" };
+        format!("{} {}", field.variable, dir)
+    }
+}
 
     
 
@@ -772,7 +783,66 @@ mod tests {
         assert_eq!(c.compile_clause(&clause), "reduce $count = count($p), $sum = sum($a);");
     }
 
+    #[test]
+    fn test_clause_sort_single() {
+        let c = compiler();
+        let clause = Clause::Sort(vec![SortField { variable: "$age".into(), ascending: true }]);
+        assert_eq!(c.compile_clause(&clause), "sort $age asc;");
+    }
+
+    #[test]
+    fn test_clause_sort_multiple() {
+        let c = compiler();
+        let clause = Clause::Sort(vec![
+            SortField { variable: "$name".into(), ascending: true },
+            SortField { variable: "$age".into(), ascending: false },
+        ]);
+        assert_eq!(c.compile_clause(&clause), "sort $name asc, $age desc;");
+    }
+
+    #[test]
+    fn test_clause_limit() {
+        let c = compiler();
+        assert_eq!(c.compile_clause(&Clause::Limit(10)), "limit 10;");
+    }
+
+    #[test]
+    fn test_clause_offset() {
+        let c = compiler();
+        assert_eq!(c.compile_clause(&Clause::Offset(20)), "offset 20;");
+    }
+
+    #[test]
+    fn test_value_comparison_contains() {
+        let c = compiler();
+        let p = Pattern::ValueComparison { var: "$name".into(), operator: "contains".into(), value: lit(json!("Ali"), "string") };
+        assert_eq!(c.compile_pattern(&p), "$name contains \"Ali\"");
+    }
+
+    #[test]
+    fn test_value_comparison_like() {
+        let c = compiler();
+        let p = Pattern::ValueComparison { var: "$name".into(), operator: "like".into(), value: lit(json!("^A.*"), "string") };
+        assert_eq!(c.compile_pattern(&p), "$name like \"^A.*\"");
+    }
+
     // ── Multi-clause ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_multi_clause_match_sort_limit_offset() {
+        let c = compiler();
+        let clauses = vec![
+            Clause::Match(vec![Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false }]),
+            Clause::Fetch(vec![FetchItem::Wildcard { key: "".into(), var: "$p".into() }]),
+            Clause::Sort(vec![SortField { variable: "$age".into(), ascending: true }]),
+            Clause::Limit(10),
+            Clause::Offset(5),
+        ];
+        let result = c.compile(&clauses);
+        assert!(result.contains("sort $age asc;"));
+        assert!(result.contains("limit 10;"));
+        assert!(result.contains("offset 5;"));
+    }
 
     #[test]
     fn test_multi_clause_match_insert() {
@@ -952,5 +1022,40 @@ mod tests {
     #[test]
     fn test_roundtrip_string_with_escapes() {
         roundtrip("match $p isa person, has bio \"line1\\nline2\";");
+    }
+
+    #[test]
+    fn test_roundtrip_sort_single() {
+        roundtrip("match $p isa person;\nsort $age asc;");
+    }
+
+    #[test]
+    fn test_roundtrip_sort_multiple() {
+        roundtrip("match $p isa person;\nsort $name asc, $age desc;");
+    }
+
+    #[test]
+    fn test_roundtrip_limit() {
+        roundtrip("match $p isa person;\nlimit 10;");
+    }
+
+    #[test]
+    fn test_roundtrip_offset() {
+        roundtrip("match $p isa person;\noffset 20;");
+    }
+
+    #[test]
+    fn test_roundtrip_sort_limit_offset() {
+        roundtrip("match $p isa person;\nsort $age asc;\nlimit 10;\noffset 5;");
+    }
+
+    #[test]
+    fn test_roundtrip_contains() {
+        roundtrip("match $name contains \"Ali\";");
+    }
+
+    #[test]
+    fn test_roundtrip_like() {
+        roundtrip("match $name like \"^A.*\";");
     }
 }

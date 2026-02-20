@@ -2117,7 +2117,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge-core"
-version = "0.1.0-dev.0"
+version = "1.4.0-rc0"
 dependencies = [
  "pyo3",
  "pythonize",
@@ -2128,7 +2128,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "0.1.0-dev.0"
+version = "1.4.0-rc0"
 dependencies = [
  "criterion",
  "once_cell",
@@ -2142,12 +2142,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "type-bridge-orm"
+version = "1.4.0-rc0"
+dependencies = [
+ "criterion",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "type-bridge-core-lib",
+ "type-bridge-orm-derive",
+ "typedb-driver",
+]
+
+[[package]]
+name = "type-bridge-orm-derive"
+version = "1.4.0-rc0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+ "type-bridge-core-lib",
+]
+
+[[package]]
 name = "type-bridge-server"
-version = "0.1.0-dev.0"
+version = "1.4.0-rc0"
 dependencies = [
  "axum 0.8.8",
  "chrono",
  "clap",
+ "criterion",
  "futures",
  "http-body-util",
  "serde",

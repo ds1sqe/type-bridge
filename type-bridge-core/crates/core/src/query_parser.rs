@@ -12,7 +12,7 @@ use winnow::token::{literal, take_while};
 
 use crate::ast::{
     Clause, Constraint, FetchItem, LetAssignment, LiteralValue, Pattern, ReduceAssignment,
-    RolePlayer, Statement, Value,
+    RolePlayer, SortField, Statement, Value,
 };
 
 /// Type alias for winnow parser results.
@@ -595,6 +595,9 @@ fn parse_patterns(input: &mut &str) -> PResult<Vec<Pattern>> {
             || input.starts_with("fetch")
             || input.starts_with("reduce")
             || input.starts_with("match")
+            || input.starts_with("sort")
+            || input.starts_with("limit")
+            || input.starts_with("offset")
         {
             break;
         }
@@ -845,6 +848,8 @@ fn parse_comparison_op<'a>(input: &mut &'a str) -> PResult<&'a str> {
         literal("=="),
         literal(">"),
         literal("<"),
+        literal("contains"),
+        literal("like"),
     ))
     .parse_next(input)
 }
@@ -896,6 +901,9 @@ fn parse_statements(input: &mut &str, ctx: StmtContext) -> PResult<Vec<Statement
             || input.starts_with("update")
             || input.starts_with("fetch")
             || input.starts_with("reduce")
+            || input.starts_with("sort")
+            || input.starts_with("limit")
+            || input.starts_with("offset")
         {
             break;
         }
@@ -1198,6 +1206,9 @@ fn parse_clause(input: &mut &str) -> PResult<Clause> {
         parse_update_clause,
         parse_fetch_clause,
         parse_reduce_clause,
+        parse_sort_clause,
+        parse_limit_clause,
+        parse_offset_clause,
     ))
     .parse_next(input)
 }
@@ -1312,6 +1323,54 @@ fn parse_reduce_clause(input: &mut &str) -> PResult<Clause> {
         assignments,
         group_by,
     })
+}
+
+/// Parse a sort clause: `sort $var asc[, $var2 desc, ...];`.
+fn parse_sort_clause(input: &mut &str) -> PResult<Clause> {
+    literal("sort").parse_next(input)?;
+    ws_comments_required(input)?;
+
+    let fields: Vec<SortField> = separated(1.., |i: &mut &str| {
+        ws_comments(i);
+        let var = variable(i)?;
+        ws_comments_required(i)?;
+        let dir = alt((literal("asc"), literal("desc"))).parse_next(i)?;
+        ws_comments(i);
+        Ok(SortField {
+            variable: var,
+            ascending: dir == "asc",
+        })
+    }, ",")
+    .parse_next(input)?;
+
+    ws_comments(input);
+    let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
+
+    Ok(Clause::Sort(fields))
+}
+
+/// Parse a limit clause: `limit N;`.
+fn parse_limit_clause(input: &mut &str) -> PResult<Clause> {
+    literal("limit").parse_next(input)?;
+    ws_comments_required(input)?;
+    let digits: &str =
+        take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+    let n: u64 = digits.parse().map_err(|_| ContextError::new())?;
+    ws_comments(input);
+    let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
+    Ok(Clause::Limit(n))
+}
+
+/// Parse an offset clause: `offset N;`.
+fn parse_offset_clause(input: &mut &str) -> PResult<Clause> {
+    literal("offset").parse_next(input)?;
+    ws_comments_required(input)?;
+    let digits: &str =
+        take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+    let n: u64 = digits.parse().map_err(|_| ContextError::new())?;
+    ws_comments(input);
+    let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
+    Ok(Clause::Offset(n))
 }
 
 // ---------------------------------------------------------------------------
@@ -2448,5 +2507,148 @@ mod tests {
             Clause::Match(patterns) => assert_eq!(patterns.len(), 3),
             _ => panic!("expected Match"),
         }
+    }
+
+    // === Sort/Limit/Offset tests ===
+
+    #[test]
+    fn test_parse_sort_clause_single() {
+        let input = "sort $age asc;";
+        let clauses = parse_typeql_query(input).unwrap();
+        assert_eq!(clauses.len(), 1);
+        match &clauses[0] {
+            Clause::Sort(fields) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].variable, "$age");
+                assert!(fields[0].ascending);
+            }
+            _ => panic!("expected Sort"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sort_clause_multiple() {
+        let input = "sort $name asc, $age desc;";
+        let clauses = parse_typeql_query(input).unwrap();
+        match &clauses[0] {
+            Clause::Sort(fields) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].variable, "$name");
+                assert!(fields[0].ascending);
+                assert_eq!(fields[1].variable, "$age");
+                assert!(!fields[1].ascending);
+            }
+            _ => panic!("expected Sort"),
+        }
+    }
+
+    #[test]
+    fn test_parse_limit_clause() {
+        let input = "limit 10;";
+        let clauses = parse_typeql_query(input).unwrap();
+        assert_eq!(clauses.len(), 1);
+        assert!(matches!(&clauses[0], Clause::Limit(10)));
+    }
+
+    #[test]
+    fn test_parse_offset_clause() {
+        let input = "offset 20;";
+        let clauses = parse_typeql_query(input).unwrap();
+        assert_eq!(clauses.len(), 1);
+        assert!(matches!(&clauses[0], Clause::Offset(20)));
+    }
+
+    #[test]
+    fn test_parse_match_sort_limit_offset() {
+        let input = "match\n$p isa person;\nsort $age asc;\nlimit 10;\noffset 5;";
+        let clauses = parse_typeql_query(input).unwrap();
+        assert_eq!(clauses.len(), 4);
+        assert!(matches!(&clauses[0], Clause::Match(_)));
+        assert!(matches!(&clauses[1], Clause::Sort(_)));
+        assert!(matches!(&clauses[2], Clause::Limit(10)));
+        assert!(matches!(&clauses[3], Clause::Offset(5)));
+    }
+
+    // === Contains/Like operator tests ===
+
+    #[test]
+    fn test_parse_contains_operator() {
+        let mut input = "contains";
+        let op = parse_comparison_op(&mut input).unwrap();
+        assert_eq!(op, "contains");
+    }
+
+    #[test]
+    fn test_parse_like_operator() {
+        let mut input = "like";
+        let op = parse_comparison_op(&mut input).unwrap();
+        assert_eq!(op, "like");
+    }
+
+    #[test]
+    fn test_parse_value_comparison_contains() {
+        let mut input = "$name contains \"Ali\"";
+        let p = parse_pattern(&mut input).unwrap();
+        match p {
+            Pattern::ValueComparison { var, operator, value } => {
+                assert_eq!(var, "$name");
+                assert_eq!(operator, "contains");
+                match value {
+                    Value::Literal(lit) => assert_eq!(lit.value, json!("Ali")),
+                    _ => panic!("expected Literal"),
+                }
+            }
+            _ => panic!("expected ValueComparison, got {:?}", p),
+        }
+    }
+
+    #[test]
+    fn test_parse_value_comparison_like() {
+        let mut input = "$name like \"^A.*\"";
+        let p = parse_pattern(&mut input).unwrap();
+        match p {
+            Pattern::ValueComparison { var, operator, .. } => {
+                assert_eq!(var, "$name");
+                assert_eq!(operator, "like");
+            }
+            _ => panic!("expected ValueComparison"),
+        }
+    }
+
+    // === Sort/Limit/Offset roundtrip tests ===
+
+    #[test]
+    fn test_roundtrip_sort_single() {
+        assert_roundtrip("match\n$p isa person;\nsort $age asc;");
+    }
+
+    #[test]
+    fn test_roundtrip_sort_multiple() {
+        assert_roundtrip("match\n$p isa person;\nsort $name asc, $age desc;");
+    }
+
+    #[test]
+    fn test_roundtrip_limit() {
+        assert_roundtrip("match\n$p isa person;\nlimit 10;");
+    }
+
+    #[test]
+    fn test_roundtrip_offset() {
+        assert_roundtrip("match\n$p isa person;\noffset 20;");
+    }
+
+    #[test]
+    fn test_roundtrip_sort_limit_offset() {
+        assert_roundtrip("match\n$p isa person;\nsort $age asc;\nlimit 10;\noffset 5;");
+    }
+
+    #[test]
+    fn test_roundtrip_contains() {
+        assert_roundtrip("match\n$name contains \"Ali\";");
+    }
+
+    #[test]
+    fn test_roundtrip_like() {
+        assert_roundtrip("match\n$name like \"^A.*\";");
     }
 }

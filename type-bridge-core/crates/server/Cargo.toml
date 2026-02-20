@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-server"
-version = "0.1.0-dev.0"
+version = "1.4.0-rc0"
 edition = "2024"
 description = "Query-intercepting proxy server for TypeDB with validation and audit logging"
 license.workspace = true
@@ -45,6 +45,11 @@ tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "crud_builder"
+harness = false
 
 [lints]
 workspace = true

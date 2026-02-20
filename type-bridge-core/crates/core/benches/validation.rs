@@ -38,9 +38,19 @@ fn bench_validate_reserved_word(c: &mut Criterion) {
 
 fn bench_validate_batch_names(c: &mut Criterion) {
     let engine = ValidationEngine::new();
-    let names: Vec<String> = (0..1000)
-        .map(|i| format!("type-name-{}", i))
-        .collect();
+    let mut names: Vec<String> = Vec::with_capacity(1000);
+    for i in 0..400 {
+        names.push(format!("entity-type-{}", i));
+    }
+    for i in 0..300 {
+        names.push(format!("my-long-attribute-name-for-testing-{}", i));
+    }
+    for i in 0..200 {
+        names.push(format!("relation-{}-data", i));
+    }
+    for i in 0..100 {
+        names.push(format!("\u{00e9}l\u{00e8}ve-{}", i));
+    }
 
     c.bench_function("validate_type_name/batch_1000", |b| {
         b.iter(|| {
@@ -240,9 +250,19 @@ fn bench_validate_statement_relation(c: &mut Criterion) {
 
 fn bench_validate_batch_5000(c: &mut Criterion) {
     let engine = ValidationEngine::new();
-    let names: Vec<String> = (0..5000)
-        .map(|i| format!("type-name-{}", i))
-        .collect();
+    let mut names: Vec<String> = Vec::with_capacity(5000);
+    for i in 0..2000 {
+        names.push(format!("entity-type-{}", i));
+    }
+    for i in 0..1500 {
+        names.push(format!("my-long-attribute-name-for-testing-{}", i));
+    }
+    for i in 0..1000 {
+        names.push(format!("relation-{}-data", i));
+    }
+    for i in 0..500 {
+        names.push(format!("\u{00e9}l\u{00e8}ve-{}", i));
+    }
 
     c.bench_function("validate_type_name/batch_5000", |b| {
         b.iter(|| {

@@ -14,6 +14,7 @@
 #![warn(missing_docs)]
 
 pub mod ast;
+pub mod orm;
 
 use type_bridge_core_lib as core;
 
@@ -576,6 +577,9 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ast::AggregateExpr>()?;
     m.add_class::<ast::ReduceAssignment>()?;
     m.add_class::<ast::ReduceClause>()?;
+
+    // ORM CRUD query builder
+    m.add_class::<orm::CrudQueryBuilder>()?;
 
     Ok(())
 }
