@@ -666,3 +666,238 @@ async fn query_multiple_sort_fields() {
     assert!(q.contains("desc"), "should contain 'desc': {q}");
     assert!(q.contains("asc"), "should contain 'asc': {q}");
 }
+
+// ── Range / startswith / endswith tests ────────────────────────────
+
+#[tokio::test]
+async fn query_with_in_range() {
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![person_doc("Alice", 30)])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let manager = EntityManager::<Person>::new(&db);
+    let _ = manager
+        .query()
+        .filter(Expr::in_range(
+            "age",
+            AttributeValue::Long(20),
+            AttributeValue::Long(40),
+        ))
+        .execute()
+        .await
+        .unwrap();
+
+    let recorded = queries.lock().unwrap();
+    let q = &recorded[0];
+    assert!(q.contains(">= 20"), "should contain '>= 20': {q}");
+    assert!(q.contains("<= 40"), "should contain '<= 40': {q}");
+}
+
+#[tokio::test]
+async fn query_with_startswith() {
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![person_doc("Alice", 30)])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let manager = EntityManager::<Person>::new(&db);
+    let _ = manager
+        .query()
+        .filter(Expr::startswith("name", "Ali"))
+        .execute()
+        .await
+        .unwrap();
+
+    let recorded = queries.lock().unwrap();
+    let q = &recorded[0];
+    assert!(q.contains("has name"), "should contain 'has name': {q}");
+    assert!(
+        q.contains(r#"like "^Ali.*""#),
+        "should contain 'like \"^Ali.*\"': {q}"
+    );
+}
+
+#[tokio::test]
+async fn query_with_endswith() {
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![person_doc("Alice", 30)])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let manager = EntityManager::<Person>::new(&db);
+    let _ = manager
+        .query()
+        .filter(Expr::endswith("name", "ice"))
+        .execute()
+        .await
+        .unwrap();
+
+    let recorded = queries.lock().unwrap();
+    let q = &recorded[0];
+    assert!(q.contains("has name"), "should contain 'has name': {q}");
+    assert!(
+        q.contains(r#"like ".*ice$""#),
+        "should contain 'like \".*ice$\"': {q}"
+    );
+}
+
+// ── Group-by tests ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn entity_group_by_aggregate() {
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![
+        serde_json::json!({"$_group0": "Engineering", "$_mean": 35.5}),
+        serde_json::json!({"$_group0": "Sales", "$_mean": 28.3}),
+    ])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let manager = EntityManager::<Person>::new(&db);
+    let result = manager
+        .query()
+        .group_by("department")
+        .aggregate(&[Agg::Mean("age".into())])
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 2);
+    assert_eq!(
+        result.get_by_str("Engineering").unwrap().get_f64("$_mean"),
+        Some(35.5)
+    );
+    assert_eq!(
+        result.get_by_str("Sales").unwrap().get_f64("$_mean"),
+        Some(28.3)
+    );
+
+    let recorded = queries.lock().unwrap();
+    let q = &recorded[0];
+    assert!(q.contains("groupby"), "should contain 'groupby': {q}");
+    assert!(q.contains("$_group0"), "should contain '$_group0': {q}");
+    assert!(
+        q.contains("has department"),
+        "should contain 'has department': {q}"
+    );
+    assert!(q.contains("mean"), "should contain 'mean': {q}");
+}
+
+#[tokio::test]
+async fn entity_group_by_with_filter() {
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![
+        serde_json::json!({"$_group0": "Engineering", "$_count": 5}),
+    ])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let manager = EntityManager::<Person>::new(&db);
+    let result = manager
+        .query()
+        .filter(Expr::gte("age", AttributeValue::Long(18)))
+        .group_by("department")
+        .aggregate(&[Agg::Count])
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result.get_by_str("Engineering").unwrap().count(),
+        Some(5)
+    );
+
+    let recorded = queries.lock().unwrap();
+    let q = &recorded[0];
+    assert!(q.contains(">= 18"), "should contain '>= 18': {q}");
+    assert!(q.contains("groupby"), "should contain 'groupby': {q}");
+}
+
+#[tokio::test]
+async fn relation_group_by_aggregate() {
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![
+        serde_json::json!({"$_group0": "2024", "$_count": 3}),
+    ])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let manager = RelationManager::<Friendship>::new(&db);
+    let result = manager
+        .query()
+        .group_by("since")
+        .aggregate(&[Agg::Count])
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result.get_by_str("2024").unwrap().count(), Some(3));
+
+    let recorded = queries.lock().unwrap();
+    let q = &recorded[0];
+    assert!(q.contains("groupby"), "should contain 'groupby': {q}");
+}
+
+// ── Role player filter tests ────────────────────────────────────────
+
+#[tokio::test]
+async fn relation_query_with_role_player_filter() {
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![friendship_doc(
+        "2024-01-01",
+    )])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let manager = RelationManager::<Friendship>::new(&db);
+    let _ = manager
+        .query()
+        .filter(Expr::role_player(
+            "friend",
+            Expr::gt("age", AttributeValue::Long(30)),
+        ))
+        .execute()
+        .await
+        .unwrap();
+
+    let recorded = queries.lock().unwrap();
+    let q = &recorded[0];
+    // Should bind role player in the relation pattern
+    assert!(
+        q.contains("friend: $friend"),
+        "should contain role binding 'friend: $friend': {q}"
+    );
+    // Inner expression should target the role player variable
+    assert!(
+        q.contains("$friend has age"),
+        "should contain '$friend has age': {q}"
+    );
+    assert!(q.contains("> 30"), "should contain '> 30': {q}");
+}
+
+#[tokio::test]
+async fn relation_query_with_multiple_role_player_filters() {
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![friendship_doc(
+        "2024-01-01",
+    )])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let manager = RelationManager::<Friendship>::new(&db);
+    let _ = manager
+        .query()
+        .filter(Expr::role_player(
+            "friend",
+            Expr::gt("age", AttributeValue::Long(18)),
+        ))
+        .filter(Expr::eq("since", AttributeValue::String("2024-01-01".into())))
+        .execute()
+        .await
+        .unwrap();
+
+    let recorded = queries.lock().unwrap();
+    let q = &recorded[0];
+    assert!(
+        q.contains("friend: $friend"),
+        "should bind role player: {q}"
+    );
+    assert!(
+        q.contains("$friend has age"),
+        "role player filter should target $friend: {q}"
+    );
+    // Also has a direct relation attribute filter
+    assert!(q.contains("has since"), "should have direct filter: {q}");
+}

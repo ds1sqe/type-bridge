@@ -3,9 +3,11 @@
 //! Constructs AST clauses from entity trait methods and compiles them
 //! to TypeQL strings ready for execution.
 
+use std::collections::HashSet;
+
 use type_bridge_core_lib::ast::{
-    Clause, Constraint, FetchItem, FunctionCallValue, Pattern, ReduceAssignment, SortField,
-    Statement, Value,
+    Clause, Constraint, FetchItem, FunctionCallValue, Pattern, ReduceAssignment, RolePlayer,
+    SortField, Statement, Value,
 };
 use type_bridge_core_lib::compiler::QueryCompiler;
 
@@ -395,15 +397,33 @@ pub fn build_expr_aggregate<T: TypeBridgeEntity>(
 // Expression-aware relation query builders
 // ------------------------------------------------------------------
 
+/// Collect role player bindings needed from filters.
+fn collect_role_bindings(filters: &[Expr]) -> Vec<RolePlayer> {
+    let mut roles = Vec::new();
+    let mut seen = HashSet::new();
+    for filter in filters {
+        filter.collect_roles(&mut roles, &mut seen);
+    }
+    roles
+        .into_iter()
+        .map(|role| RolePlayer {
+            role: role.clone(),
+            player_var: format!("${}", role),
+        })
+        .collect()
+}
+
 /// Build the common polymorphic match patterns for relation queries.
 fn build_relation_match_patterns<R: TypeBridgeRelation>(
     var: &str,
     filters: &[Expr],
 ) -> Vec<Pattern> {
+    let role_players = collect_role_bindings(filters);
+
     let mut patterns = vec![Pattern::Relation {
         variable: var.to_string(),
         type_name: R::TYPE_NAME.to_string(),
-        role_players: vec![],
+        role_players,
         constraints: vec![],
     }];
 
@@ -519,6 +539,86 @@ pub fn build_relation_expr_aggregate<R: TypeBridgeRelation>(
         Clause::Reduce {
             assignments,
             group_by: None,
+        },
+    ];
+
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+// ------------------------------------------------------------------
+// Group-by aggregate query builders
+// ------------------------------------------------------------------
+
+/// Build a group-by aggregation query for entities.
+pub fn build_expr_group_by_aggregate<T: TypeBridgeEntity>(
+    filters: &[Expr],
+    group_field: &str,
+    aggs: &[Agg],
+    var: &str,
+) -> Result<String> {
+    let mut match_patterns = build_entity_match_patterns::<T>(var, filters);
+
+    let group_var = "$_group0".to_string();
+    match_patterns.push(Pattern::Has {
+        thing_var: var.to_string(),
+        attr_type: group_field.to_string(),
+        attr_var: group_var.clone(),
+    });
+
+    let mut counter = 100;
+    let mut assignments = Vec::new();
+    for agg in aggs {
+        let (assign, has_pattern) = agg.to_reduce_assignment(var, &mut counter);
+        if let Some(p) = has_pattern {
+            match_patterns.push(p);
+        }
+        assignments.push(assign);
+    }
+
+    let clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments,
+            group_by: Some(group_var),
+        },
+    ];
+
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a group-by aggregation query for relations.
+pub fn build_relation_group_by_aggregate<R: TypeBridgeRelation>(
+    filters: &[Expr],
+    group_field: &str,
+    aggs: &[Agg],
+    var: &str,
+) -> Result<String> {
+    let mut match_patterns = build_relation_match_patterns::<R>(var, filters);
+
+    let group_var = "$_group0".to_string();
+    match_patterns.push(Pattern::Has {
+        thing_var: var.to_string(),
+        attr_type: group_field.to_string(),
+        attr_var: group_var.clone(),
+    });
+
+    let mut counter = 100;
+    let mut assignments = Vec::new();
+    for agg in aggs {
+        let (assign, has_pattern) = agg.to_reduce_assignment(var, &mut counter);
+        if let Some(p) = has_pattern {
+            match_patterns.push(p);
+        }
+        assignments.push(assign);
+    }
+
+    let clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments,
+            group_by: Some(group_var),
         },
     ];
 

@@ -50,15 +50,15 @@ pub mod value;
 pub use attribute::{TypeBridgeAttribute, ValueType};
 pub use entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};
 pub use error::{OrmError, Result};
-pub use expr::{Agg, AggResult, Expr, SortDir};
+pub use expr::{Agg, AggResult, Expr, GroupByResult, SortDir};
 pub use filter::Filter;
 pub use manager::{EntityManager, RelationManager};
-pub use query::{EntityQuery, RelationQuery};
+pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 pub use value::AttributeValue;
-pub use field_ref::FieldRef;
+pub use field_ref::{FieldRef, RolePlayerFieldRef, RoleRef};
 
 // Re-export derive macros when the `derive` feature is enabled.
 #[cfg(feature = "derive")]

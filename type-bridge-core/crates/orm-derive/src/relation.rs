@@ -227,19 +227,25 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
         None => quote! {},
     };
 
-    // Generate XxxFields struct for type-safe field references (attribute fields only)
+    // Generate XxxFields struct for type-safe field references (attribute + role fields)
     let fields_struct_name = syn::Ident::new(
         &format!("{}Fields", name),
         name.span(),
     );
-    let fields_struct_fields = attr_fields.iter().map(|f| {
+    let fields_struct_attr_fields = attr_fields.iter().map(|f| {
         let ident = &f.ident;
         let ty = &f.inner_ty;
         quote! {
             pub #ident: type_bridge_orm::FieldRef<#ty>
         }
     });
-    let fields_struct_init = attr_fields.iter().map(|f| {
+    let fields_struct_role_fields = role_fields.iter().map(|r| {
+        let ident = &r.ident;
+        quote! {
+            pub #ident: type_bridge_orm::RoleRef
+        }
+    });
+    let fields_struct_attr_init = attr_fields.iter().map(|f| {
         let ident = &f.ident;
         let ty = &f.inner_ty;
         quote! {
@@ -248,18 +254,27 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
             )
         }
     });
+    let fields_struct_role_init = role_fields.iter().map(|r| {
+        let ident = &r.ident;
+        let role_name = &r.role_name;
+        quote! {
+            #ident: type_bridge_orm::RoleRef::new(#role_name)
+        }
+    });
 
     Ok(quote! {
         /// Type-safe field references for [`#name`].
         pub struct #fields_struct_name {
-            #(#fields_struct_fields),*
+            #(#fields_struct_attr_fields,)*
+            #(#fields_struct_role_fields),*
         }
 
         impl #name {
             /// Get type-safe field references for building expressions.
             pub fn fields() -> #fields_struct_name {
                 #fields_struct_name {
-                    #(#fields_struct_init),*
+                    #(#fields_struct_attr_init,)*
+                    #(#fields_struct_role_init),*
                 }
             }
         }

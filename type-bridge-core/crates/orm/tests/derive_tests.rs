@@ -828,3 +828,41 @@ fn relation_fields_work() {
         _ => panic!("expected Eq"),
     }
 }
+
+#[test]
+fn relation_fields_have_role_refs() {
+    let fields = Employment::fields();
+    let expr = fields.employee.attr::<Age>("age").gte(Age(30));
+    match expr {
+        Expr::RolePlayer { role, inner } => {
+            assert_eq!(role, "employee");
+            match *inner {
+                Expr::Gte { ref attr, ref value } => {
+                    assert_eq!(attr, "age");
+                    assert_eq!(*value, AttributeValue::Long(30));
+                }
+                _ => panic!("expected Gte inside RolePlayer"),
+            }
+        }
+        _ => panic!("expected RolePlayer"),
+    }
+}
+
+#[test]
+fn relation_fields_employer_role_ref() {
+    let fields = Employment::fields();
+    let expr = fields.employer.attr::<Name>("name").contains("Corp");
+    match expr {
+        Expr::RolePlayer { role, inner } => {
+            assert_eq!(role, "employer");
+            match *inner {
+                Expr::Contains { ref attr, ref substring } => {
+                    assert_eq!(attr, "name");
+                    assert_eq!(substring, "Corp");
+                }
+                _ => panic!("expected Contains inside RolePlayer"),
+            }
+        }
+        _ => panic!("expected RolePlayer"),
+    }
+}
