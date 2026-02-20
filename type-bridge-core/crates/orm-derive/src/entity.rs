@@ -173,7 +173,43 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
         None => quote! {},
     };
 
+    // Generate XxxFields struct for type-safe field references
+    let fields_struct_name = syn::Ident::new(
+        &format!("{}Fields", name),
+        name.span(),
+    );
+    let fields_struct_fields = attr_fields.iter().map(|f| {
+        let ident = &f.ident;
+        let ty = &f.inner_ty;
+        quote! {
+            pub #ident: type_bridge_orm::FieldRef<#ty>
+        }
+    });
+    let fields_struct_init = attr_fields.iter().map(|f| {
+        let ident = &f.ident;
+        let ty = &f.inner_ty;
+        quote! {
+            #ident: type_bridge_orm::FieldRef::<#ty>::new(
+                <#ty as type_bridge_orm::TypeBridgeAttribute>::ATTR_NAME
+            )
+        }
+    });
+
     Ok(quote! {
+        /// Type-safe field references for [`#name`].
+        pub struct #fields_struct_name {
+            #(#fields_struct_fields),*
+        }
+
+        impl #name {
+            /// Get type-safe field references for building expressions.
+            pub fn fields() -> #fields_struct_name {
+                #fields_struct_name {
+                    #(#fields_struct_init),*
+                }
+            }
+        }
+
         impl type_bridge_orm::TypeBridgeEntity for #name {
             const TYPE_NAME: &'static str = #type_name;
             #is_abstract_tokens

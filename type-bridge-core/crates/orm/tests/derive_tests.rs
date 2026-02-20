@@ -1,5 +1,7 @@
 //! Integration tests for `#[derive(TypeBridgeAttribute)]` and `#[derive(TypeBridgeEntity)]`.
 
+#![cfg(feature = "derive")]
+
 use type_bridge_orm::*;
 
 // ── Attribute derive tests ───────────────────────────────────────────
@@ -760,4 +762,69 @@ fn schema_generates_abstract_and_sub() {
         typeql[typeql.find("entity dog").unwrap()..].contains("owns breed"),
         "dog should own breed: {typeql}"
     );
+}
+
+// ── Field reference tests ───────────────────────────────────────────
+
+#[test]
+fn entity_fields_eq() {
+    let fields = Person::fields();
+    let expr = fields.name.eq(Name("Alice".into()));
+    match expr {
+        Expr::Eq { attr, value } => {
+            assert_eq!(attr, "name");
+            assert_eq!(value, AttributeValue::String("Alice".into()));
+        }
+        _ => panic!("expected Eq"),
+    }
+}
+
+#[test]
+fn entity_fields_comparison_ops() {
+    let fields = Person::fields();
+    assert!(matches!(fields.age.gt(Age(18)), Expr::Gt { .. }));
+    assert!(matches!(fields.age.gte(Age(18)), Expr::Gte { .. }));
+    assert!(matches!(fields.age.lt(Age(65)), Expr::Lt { .. }));
+    assert!(matches!(fields.age.lte(Age(65)), Expr::Lte { .. }));
+    assert!(matches!(fields.age.neq(Age(0)), Expr::Neq { .. }));
+}
+
+#[test]
+fn entity_fields_string_ops() {
+    let fields = Person::fields();
+    assert!(matches!(fields.name.contains("Ali"), Expr::Contains { .. }));
+    assert!(matches!(fields.name.like("^A.*"), Expr::Like { .. }));
+}
+
+#[test]
+fn entity_fields_sort() {
+    let fields = Person::fields();
+    let (attr, dir) = fields.age.asc();
+    assert_eq!(attr, "age");
+    assert_eq!(dir, SortDir::Asc);
+    let (attr, dir) = fields.name.desc();
+    assert_eq!(attr, "name");
+    assert_eq!(dir, SortDir::Desc);
+}
+
+#[test]
+fn entity_fields_aggregations() {
+    let fields = Person::fields();
+    assert!(matches!(fields.age.sum(), Agg::Sum(ref a) if a == "age"));
+    assert!(matches!(fields.age.min(), Agg::Min(ref a) if a == "age"));
+    assert!(matches!(fields.age.max(), Agg::Max(ref a) if a == "age"));
+    assert!(matches!(fields.age.mean(), Agg::Mean(ref a) if a == "age"));
+}
+
+#[test]
+fn relation_fields_work() {
+    let fields = Employment::fields();
+    let expr = fields.position.eq(Position("Engineer".into()));
+    match expr {
+        Expr::Eq { attr, value } => {
+            assert_eq!(attr, "position");
+            assert_eq!(value, AttributeValue::String("Engineer".into()));
+        }
+        _ => panic!("expected Eq"),
+    }
 }

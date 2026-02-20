@@ -37,6 +37,7 @@ pub mod codegen;
 pub mod entity;
 pub mod error;
 pub mod expr;
+pub mod field_ref;
 pub mod filter;
 pub mod manager;
 pub mod query;
@@ -57,6 +58,7 @@ pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 pub use value::AttributeValue;
+pub use field_ref::FieldRef;
 
 // Re-export derive macros when the `derive` feature is enabled.
 #[cfg(feature = "derive")]
@@ -65,3 +67,5 @@ pub use type_bridge_orm_derive::TypeBridgeAttribute as DeriveAttribute;
 pub use type_bridge_orm_derive::TypeBridgeEntity as DeriveEntity;
 #[cfg(feature = "derive")]
 pub use type_bridge_orm_derive::TypeBridgeRelation as DeriveRelation;
+#[cfg(feature = "derive")]
+pub use type_bridge_orm_derive::include_schema;
