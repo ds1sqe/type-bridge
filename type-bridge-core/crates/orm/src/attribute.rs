@@ -11,16 +11,25 @@ use crate::value::AttributeValue;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ValueType {
+    /// UTF-8 string value.
     String,
+    /// 64-bit signed integer.
     Long,
+    /// 64-bit floating-point number.
     Double,
+    /// Boolean true/false.
     Boolean,
+    /// Calendar date (ISO 8601).
     Date,
+    /// Date and time without timezone (ISO 8601).
     #[serde(rename = "datetime")]
     DateTime,
+    /// Date and time with timezone (ISO 8601).
     #[serde(rename = "datetime-tz")]
     DateTimeTz,
+    /// Arbitrary-precision decimal number.
     Decimal,
+    /// ISO 8601 duration.
     Duration,
 }
 

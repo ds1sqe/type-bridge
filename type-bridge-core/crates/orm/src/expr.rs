@@ -37,21 +37,61 @@ pub enum SortDir {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
     /// Equality: `attr == value`.
-    Eq { attr: String, value: AttributeValue },
+    Eq {
+        /// Attribute name.
+        attr: String,
+        /// Value to compare against.
+        value: AttributeValue,
+    },
     /// Greater than: `attr > value`.
-    Gt { attr: String, value: AttributeValue },
+    Gt {
+        /// Attribute name.
+        attr: String,
+        /// Value to compare against.
+        value: AttributeValue,
+    },
     /// Less than: `attr < value`.
-    Lt { attr: String, value: AttributeValue },
+    Lt {
+        /// Attribute name.
+        attr: String,
+        /// Value to compare against.
+        value: AttributeValue,
+    },
     /// Greater than or equal: `attr >= value`.
-    Gte { attr: String, value: AttributeValue },
+    Gte {
+        /// Attribute name.
+        attr: String,
+        /// Value to compare against.
+        value: AttributeValue,
+    },
     /// Less than or equal: `attr <= value`.
-    Lte { attr: String, value: AttributeValue },
+    Lte {
+        /// Attribute name.
+        attr: String,
+        /// Value to compare against.
+        value: AttributeValue,
+    },
     /// Not equal: `attr != value`.
-    Neq { attr: String, value: AttributeValue },
+    Neq {
+        /// Attribute name.
+        attr: String,
+        /// Value to compare against.
+        value: AttributeValue,
+    },
     /// String contains: `attr contains substring`.
-    Contains { attr: String, substring: String },
+    Contains {
+        /// Attribute name.
+        attr: String,
+        /// Substring to search for.
+        substring: String,
+    },
     /// String like (regex): `attr like pattern`.
-    Like { attr: String, pattern: String },
+    Like {
+        /// Attribute name.
+        attr: String,
+        /// Regex pattern to match.
+        pattern: String,
+    },
     /// All child expressions must match.
     And(Vec<Expr>),
     /// At least one child expression must match.
