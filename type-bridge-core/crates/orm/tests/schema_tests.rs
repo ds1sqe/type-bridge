@@ -587,3 +587,103 @@ fn schema_info_validate_passes_for_registered_models() {
 
     assert!(schema.schema_info().validate().is_ok());
 }
+
+// ── Schema introspection tests ─────────────────────────────────────
+
+#[tokio::test]
+async fn introspect_builds_schema_info() {
+    // Responses are popped LIFO. The introspect method issues queries in order:
+    // 1. attribute types, 2. entity types, 3. per-entity owned attrs,
+    // 4. relation types, 5. per-relation owned attrs, 6. per-relation roles
+    let backend = MockBackend::new(vec![
+        // 6. employment roles (popped last)
+        QueryResult::Documents(vec![
+            serde_json::json!({"role": "employee"}),
+            serde_json::json!({"role": "employer"}),
+        ]),
+        // 5. employment owned attributes
+        QueryResult::Documents(vec![serde_json::json!({"attr": "position"})]),
+        // 4. relation types
+        QueryResult::Documents(vec![serde_json::json!({"name": "employment"})]),
+        // 3. person owned attributes
+        QueryResult::Documents(vec![
+            serde_json::json!({"attr": "name"}),
+            serde_json::json!({"attr": "age"}),
+        ]),
+        // 2. entity types
+        QueryResult::Documents(vec![serde_json::json!({"name": "person"})]),
+        // 1. attribute types (popped first)
+        QueryResult::Documents(vec![
+            serde_json::json!({"name": "name", "value_type": "string"}),
+            serde_json::json!({"name": "age", "value_type": "long"}),
+            serde_json::json!({"name": "position", "value_type": "string"}),
+        ]),
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let schema = SchemaManager::new(&db);
+
+    let info = schema.introspect().await.unwrap();
+
+    // Attribute types
+    assert_eq!(info.attributes.len(), 3);
+    assert_eq!(info.attributes["name"].value_type, ValueType::String);
+    assert_eq!(info.attributes["age"].value_type, ValueType::Long);
+    assert_eq!(info.attributes["position"].value_type, ValueType::String);
+
+    // Entity types
+    assert_eq!(info.entities.len(), 1);
+    let person = &info.entities["person"];
+    assert_eq!(person.type_name, "person");
+    assert_eq!(person.owned_attributes.len(), 2);
+
+    // Relation types
+    assert_eq!(info.relations.len(), 1);
+    let employment = &info.relations["employment"];
+    assert_eq!(employment.type_name, "employment");
+    assert_eq!(employment.owned_attributes.len(), 1);
+    assert_eq!(employment.roles.len(), 2);
+    assert_eq!(employment.roles[0].role_name, "employee");
+    assert_eq!(employment.roles[1].role_name, "employer");
+}
+
+#[tokio::test]
+async fn introspect_empty_database() {
+    // All introspection queries return empty results
+    let backend = MockBackend::new(vec![
+        QueryResult::Documents(vec![]), // relation types
+        QueryResult::Documents(vec![]), // entity types
+        QueryResult::Documents(vec![]), // attribute types
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let schema = SchemaManager::new(&db);
+
+    let info = schema.introspect().await.unwrap();
+    assert!(info.attributes.is_empty());
+    assert!(info.entities.is_empty());
+    assert!(info.relations.is_empty());
+}
+
+#[tokio::test]
+async fn introspect_with_wrapped_values() {
+    // TypeDB may return values wrapped in {"value": "..."}
+    let backend = MockBackend::new(vec![
+        QueryResult::Documents(vec![]), // relation types
+        QueryResult::Documents(vec![
+            serde_json::json!({"attr": {"value": "email"}}),
+        ]),
+        QueryResult::Documents(vec![
+            serde_json::json!({"name": {"value": "user"}}),
+        ]),
+        QueryResult::Documents(vec![
+            serde_json::json!({"name": {"value": "email"}, "value_type": {"value": "string"}}),
+        ]),
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let schema = SchemaManager::new(&db);
+
+    let info = schema.introspect().await.unwrap();
+    assert!(info.attributes.contains_key("email"));
+    assert!(info.entities.contains_key("user"));
+    assert_eq!(info.entities["user"].owned_attributes.len(), 1);
+    assert_eq!(info.entities["user"].owned_attributes[0].attr_name, "email");
+}

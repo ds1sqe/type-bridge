@@ -145,6 +145,168 @@ impl<'db> SchemaManager<'db> {
         Ok(false)
     }
 
+    /// Read the existing schema from the database and return it as [`SchemaInfo`].
+    ///
+    /// Queries TypeDB's type system for all entity types, relation types,
+    /// attribute types, ownership, and roles, then assembles them into a
+    /// [`SchemaInfo`] that can be compared against the registered (desired) schema.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let schema = SchemaManager::new(&db);
+    /// let live = schema.introspect().await?;
+    /// let diff = schema.schema_info().compare(&live);
+    /// println!("{}", diff.summary());
+    /// ```
+    #[tracing::instrument(skip(self))]
+    pub async fn introspect(&self) -> Result<SchemaInfo> {
+        use crate::session::backend::QueryResult;
+
+        let mut info = SchemaInfo::default();
+
+        // ── 1. Query all user-defined attribute types ──────────────
+        let attr_query =
+            r#"match $t sub! attribute; fetch { "name": label($t), "value_type": value_type($t) };"#;
+        if let Ok(QueryResult::Documents(docs)) =
+            self.db.execute_raw(attr_query, TxType::Read).await
+        {
+            for doc in &docs {
+                if let (Some(name), Some(vt_str)) = (
+                    doc.get("name")
+                        .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str())),
+                    doc.get("value_type")
+                        .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str())),
+                )
+                    && let Some(vt) = parse_value_type(vt_str)
+                {
+                    info.attributes.insert(
+                        name.to_string(),
+                        AttributeSchemaEntry {
+                            attr_name: name.to_string(),
+                            value_type: vt,
+                        },
+                    );
+                }
+            }
+        }
+
+        // ── 2. Query all entity types with owned attributes ────────
+        let entity_query = r#"match $t sub! entity; fetch { "name": label($t) };"#;
+        if let Ok(QueryResult::Documents(docs)) =
+            self.db.execute_raw(entity_query, TxType::Read).await
+        {
+            for doc in &docs {
+                if let Some(name) = doc
+                    .get("name")
+                    .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
+                {
+                    let owned =
+                        self.introspect_owned_attributes(name, &info.attributes).await;
+                    info.entities.insert(
+                        name.to_string(),
+                        EntitySchemaEntry {
+                            type_name: name.to_string(),
+                            is_abstract: false,
+                            parent_type: None,
+                            owned_attributes: owned,
+                        },
+                    );
+                }
+            }
+        }
+
+        // ── 3. Query all relation types with roles and attributes ──
+        let relation_query = r#"match $t sub! relation; fetch { "name": label($t) };"#;
+        if let Ok(QueryResult::Documents(docs)) =
+            self.db.execute_raw(relation_query, TxType::Read).await
+        {
+            for doc in &docs {
+                if let Some(name) = doc
+                    .get("name")
+                    .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
+                {
+                    let owned =
+                        self.introspect_owned_attributes(name, &info.attributes).await;
+                    let roles = self.introspect_roles(name).await;
+                    info.relations.insert(
+                        name.to_string(),
+                        RelationSchemaEntry {
+                            type_name: name.to_string(),
+                            is_abstract: false,
+                            parent_type: None,
+                            owned_attributes: owned,
+                            roles,
+                        },
+                    );
+                }
+            }
+        }
+
+        Ok(info)
+    }
+
+    /// Query the owned attributes of a specific type.
+    async fn introspect_owned_attributes(
+        &self,
+        type_name: &str,
+        known_attrs: &std::collections::BTreeMap<String, AttributeSchemaEntry>,
+    ) -> Vec<OwnedAttributeEntry> {
+        use crate::session::backend::QueryResult;
+
+        let query = format!(
+            r#"match $t type {type_name}; $t owns $a; fetch {{ "attr": label($a) }};"#
+        );
+        let mut entries = Vec::new();
+        if let Ok(QueryResult::Documents(docs)) =
+            self.db.execute_raw(&query, TxType::Read).await
+        {
+            for doc in &docs {
+                if let Some(attr_name) = doc
+                    .get("attr")
+                    .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
+                {
+                    let value_type = known_attrs
+                        .get(attr_name)
+                        .map(|a| a.value_type)
+                        .unwrap_or(crate::attribute::ValueType::String);
+                    entries.push(OwnedAttributeEntry {
+                        attr_name: attr_name.to_string(),
+                        value_type,
+                        annotations: vec![],
+                    });
+                }
+            }
+        }
+        entries
+    }
+
+    /// Query the roles of a relation type.
+    async fn introspect_roles(&self, relation_name: &str) -> Vec<RoleEntry> {
+        use crate::session::backend::QueryResult;
+
+        let query = format!(
+            r#"match $t type {relation_name}; $t relates $r; fetch {{ "role": label($r) }};"#
+        );
+        let mut entries = Vec::new();
+        if let Ok(QueryResult::Documents(docs)) =
+            self.db.execute_raw(&query, TxType::Read).await
+        {
+            for doc in &docs {
+                if let Some(role_name) = doc
+                    .get("role")
+                    .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
+                {
+                    entries.push(RoleEntry {
+                        role_name: role_name.to_string(),
+                        player_type_name: String::new(),
+                    });
+                }
+            }
+        }
+        entries
+    }
+
     /// Synchronize the schema to the database.
     ///
     /// - `force`: Skip existence check, always execute.
@@ -177,5 +339,22 @@ impl<'db> SchemaManager<'db> {
         tracing::debug!(typeql = %typeql, "Syncing schema to database");
         self.db.execute_raw(&typeql, TxType::Schema).await?;
         Ok(())
+    }
+}
+
+/// Parse a value type string from TypeDB introspection into our enum.
+fn parse_value_type(s: &str) -> Option<crate::attribute::ValueType> {
+    use crate::attribute::ValueType;
+    match s {
+        "string" => Some(ValueType::String),
+        "long" => Some(ValueType::Long),
+        "double" => Some(ValueType::Double),
+        "boolean" => Some(ValueType::Boolean),
+        "date" => Some(ValueType::Date),
+        "datetime" => Some(ValueType::DateTime),
+        "datetime-tz" => Some(ValueType::DateTimeTz),
+        "decimal" => Some(ValueType::Decimal),
+        "duration" => Some(ValueType::Duration),
+        _ => None,
     }
 }
