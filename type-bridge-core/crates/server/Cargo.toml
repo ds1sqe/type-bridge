@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-server"
-version = "0.1.0-dev.0"
+version = "1.4.0-rc0"
 edition = "2024"
 description = "Query-intercepting proxy server for TypeDB with validation and audit logging"
 license.workspace = true

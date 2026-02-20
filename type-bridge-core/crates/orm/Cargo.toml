@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-orm"
-version = "0.1.0-dev.0"
+version = "1.4.0-rc0"
 edition = "2024"
 description = "Async ORM for TypeDB built on type-bridge-core-lib"
 license.workspace = true

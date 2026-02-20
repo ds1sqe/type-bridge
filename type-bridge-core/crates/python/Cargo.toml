@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-core"
-version = "0.1.0-dev.0"
+version = "1.4.0-rc0"
 edition = "2024"
 description = "PyO3 bindings exposing the type-bridge Rust core to Python"
 license.workspace = true
