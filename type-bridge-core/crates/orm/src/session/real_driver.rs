@@ -2,8 +2,6 @@
 //!
 //! This module is only compiled when the `typedb` feature is enabled.
 
-#![cfg(feature = "typedb")]
-
 use futures::TryStreamExt;
 use typedb_driver::answer::QueryAnswer;
 use typedb_driver::{Credentials, DriverOptions, Transaction, TransactionType, TypeDBDriver};

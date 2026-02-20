@@ -45,6 +45,52 @@ jobs:
       - name: Run unit tests
         run: uv run pytest tests/unit/ -v --tb=short
 
+  # Publish Rust crates to crates.io (dependency order)
+  publish-crates:
+    name: Publish Rust crates to crates.io
+    needs: test
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish type-bridge-core-lib
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p type-bridge-core-lib
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish type-bridge-orm-derive
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p type-bridge-orm-derive
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish type-bridge-orm
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p type-bridge-orm
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish type-bridge-server
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p type-bridge-server
+
   # Build type-bridge-core wheels for all platforms
   build-core-wheels:
     name: Build core wheel (${{ matrix.target }})
@@ -200,7 +246,7 @@ jobs:
   # Create draft GitHub Release with all artifacts
   github-release:
     name: Create GitHub Release
-    needs: publish-python-pypi
+    needs: [publish-python-pypi, publish-crates]
     runs-on: ubuntu-latest
     permissions:
       contents: write
