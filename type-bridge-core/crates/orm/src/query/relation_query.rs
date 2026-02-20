@@ -7,6 +7,7 @@ use crate::error::{OrmError, Result};
 use crate::expr::{Agg, AggResult, Expr, SortDir};
 use crate::manager::hydration::{extract_count, hydrate_relation};
 use crate::manager::query_builder;
+use crate::query::group_by_query::GroupByRelationQuery;
 use crate::relation::TypeBridgeRelation;
 use crate::session::backend::{QueryResult, TxType};
 use crate::session::Database;
@@ -68,6 +69,14 @@ impl<'db, R: TypeBridgeRelation> RelationQuery<'db, R> {
     pub fn offset(mut self, n: u64) -> Self {
         self.offset_val = Some(n);
         self
+    }
+
+    /// Transition to a group-by query.
+    ///
+    /// Returns a [`GroupByRelationQuery`] that can only be finalized via
+    /// `.aggregate()`.
+    pub fn group_by(self, attr: impl Into<String>) -> GroupByRelationQuery<'db, R> {
+        GroupByRelationQuery::new(self.db, self.filters, attr.into())
     }
 
     /// Execute the query and return matching relations.
