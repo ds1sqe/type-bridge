@@ -1,0 +1,7 @@
+define
+attribute name, value string;
+attribute age, value long;
+attribute position, value string;
+entity person, owns name @key, owns age, plays employment:employee;
+entity company, owns name @key, plays employment:employer;
+relation employment, relates employee, relates employer, owns position;

@@ -7,6 +7,7 @@ use proc_macro::TokenStream;
 
 mod attribute;
 mod entity;
+mod include_schema;
 mod relation;
 
 /// Derive `TypeBridgeAttribute` for a newtype struct.
@@ -99,6 +100,31 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(TypeBridgeRelation, attributes(relation, role, field))]
 pub fn derive_relation(input: TokenStream) -> TokenStream {
     relation::derive(input.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+/// Generate Rust model types from a TypeQL schema file at compile time.
+///
+/// Reads a `.tql` file, parses its `define` block, and expands to
+/// attribute definitions, entity structs, and relation structs — all
+/// with the appropriate derive macros applied.
+///
+/// # Example
+///
+/// ```ignore
+/// // In your crate's lib.rs or models.rs:
+/// type_bridge_orm::include_schema!("schema/social.tql");
+///
+/// // This expands to attribute types (Name, Age, ...),
+/// // entity structs (Person, Company, ...), and
+/// // relation structs (Employment, ...) with full derive macros.
+/// ```
+///
+/// The path is relative to the calling crate's `Cargo.toml` directory.
+#[proc_macro]
+pub fn include_schema(input: TokenStream) -> TokenStream {
+    include_schema::expand(input.into())
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }

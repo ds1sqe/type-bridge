@@ -2164,6 +2164,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+ "type-bridge-core-lib",
 ]
 
 [[package]]
