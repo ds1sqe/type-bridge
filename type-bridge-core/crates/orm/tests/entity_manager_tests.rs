@@ -427,3 +427,85 @@ async fn put_query_contains_put_keyword() {
     assert!(recorded[0].contains("put"));
     assert!(!recorded[0].starts_with("insert"));
 }
+
+// ── Batch operation tests ───────────────────────────────────────────
+
+#[tokio::test]
+async fn insert_many_sets_iids() {
+    // Responses are popped (LIFO), so push in reverse order
+    let backend = MockBackend::new(vec![
+        QueryResult::Documents(vec![serde_json::json!({"iid": "0xbatch3"})]),
+        QueryResult::Documents(vec![serde_json::json!({"iid": "0xbatch2"})]),
+        QueryResult::Documents(vec![serde_json::json!({"iid": "0xbatch1"})]),
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let mut entities = vec![
+        Person { iid: None, name: Name("Alice".into()), age: Age(30) },
+        Person { iid: None, name: Name("Bob".into()), age: Age(25) },
+        Person { iid: None, name: Name("Carol".into()), age: Age(35) },
+    ];
+
+    let manager = EntityManager::<Person>::new(&db);
+    let iids = manager.insert_many(&mut entities).await.unwrap();
+
+    assert_eq!(iids.len(), 3);
+    assert_eq!(iids[0], "0xbatch1");
+    assert_eq!(iids[1], "0xbatch2");
+    assert_eq!(iids[2], "0xbatch3");
+    assert_eq!(entities[0].iid(), Some("0xbatch1"));
+    assert_eq!(entities[1].iid(), Some("0xbatch2"));
+    assert_eq!(entities[2].iid(), Some("0xbatch3"));
+}
+
+#[tokio::test]
+async fn insert_many_empty_slice() {
+    let backend = MockBackend::new(vec![]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let mut entities: Vec<Person> = vec![];
+    let manager = EntityManager::<Person>::new(&db);
+    let iids = manager.insert_many(&mut entities).await.unwrap();
+    assert!(iids.is_empty());
+}
+
+#[tokio::test]
+async fn delete_many_executes_all_queries() {
+    // 2 deletes = 2 OK responses (LIFO)
+    let backend = MockBackend::new(vec![QueryResult::Ok, QueryResult::Ok]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let entities = vec![
+        Person { iid: Some("0x001".into()), name: Name("Alice".into()), age: Age(30) },
+        Person { iid: Some("0x002".into()), name: Name("Bob".into()), age: Age(25) },
+    ];
+
+    let manager = EntityManager::<Person>::new(&db);
+    manager.delete_many(&entities).await.unwrap();
+
+    let recorded = queries.lock().unwrap();
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded[0].contains("delete"));
+    assert!(recorded[1].contains("delete"));
+}
+
+#[tokio::test]
+async fn update_many_executes_all_queries() {
+    let backend = MockBackend::new(vec![QueryResult::Ok, QueryResult::Ok]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let entities = vec![
+        Person { iid: Some("0x001".into()), name: Name("Alice".into()), age: Age(31) },
+        Person { iid: Some("0x002".into()), name: Name("Bob".into()), age: Age(26) },
+    ];
+
+    let manager = EntityManager::<Person>::new(&db);
+    manager.update_many(&entities).await.unwrap();
+
+    let recorded = queries.lock().unwrap();
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded[0].contains("update"));
+    assert!(recorded[1].contains("update"));
+}

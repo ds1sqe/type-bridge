@@ -160,4 +160,60 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
         let result = self.db.execute_raw(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
+
+    /// Insert multiple relations in a single transaction.
+    ///
+    /// Each relation's IID is set in-place. Returns a vector of assigned IIDs.
+    #[tracing::instrument(skip(self, relations), fields(relation_type = R::TYPE_NAME, count = relations.len()))]
+    pub async fn insert_many(&self, relations: &mut [R]) -> Result<Vec<String>> {
+        let tx = self.db.transaction_context(TxType::Write).await?;
+        let mut iids = Vec::with_capacity(relations.len());
+
+        for relation in relations.iter_mut() {
+            let typeql = query_builder::build_relation_insert_with_iid::<R>(relation, "$r")?;
+            tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "INSERT RELATION BATCH");
+
+            let result = tx.query(&typeql).await?;
+            match result {
+                QueryResult::Documents(docs) => {
+                    let doc = docs.first().ok_or_else(|| OrmError::Hydration {
+                        type_name: R::TYPE_NAME.into(),
+                        message: "Insert returned no documents".into(),
+                    })?;
+                    let iid = doc
+                        .get("iid")
+                        .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
+                        .ok_or_else(|| OrmError::Hydration {
+                            type_name: R::TYPE_NAME.into(),
+                            message: "No IID in insert response".into(),
+                        })?
+                        .to_string();
+                    relation.set_iid(iid.clone());
+                    iids.push(iid);
+                }
+                _ => {
+                    return Err(OrmError::Hydration {
+                        type_name: R::TYPE_NAME.into(),
+                        message: "Expected Documents from insert+fetch".into(),
+                    });
+                }
+            }
+        }
+
+        tx.commit().await?;
+        Ok(iids)
+    }
+
+    /// Delete multiple relations in a single transaction.
+    #[tracing::instrument(skip(self, relations), fields(relation_type = R::TYPE_NAME, count = relations.len()))]
+    pub async fn delete_many(&self, relations: &[R]) -> Result<()> {
+        let tx = self.db.transaction_context(TxType::Write).await?;
+        for relation in relations {
+            let typeql = query_builder::build_relation_delete::<R>(relation, "$r")?;
+            tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "DELETE RELATION BATCH");
+            tx.query(&typeql).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
 }

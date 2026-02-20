@@ -466,3 +466,74 @@ fn hydration_with_nested_document() {
         assert_eq!(emp.position.as_deref(), Some("Engineer"));
     }
 }
+
+// ── Batch operation tests ───────────────────────────────────────────
+
+#[tokio::test]
+async fn insert_many_sets_iids() {
+    // Responses popped LIFO
+    let backend = MockBackend::new(vec![
+        QueryResult::Documents(vec![serde_json::json!({"iid": "0xbr2"})]),
+        QueryResult::Documents(vec![serde_json::json!({"iid": "0xbr1"})]),
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let mut relations = vec![
+        make_employment(
+            None,
+            None,
+            Some(("name", AttributeValue::String("Alice".into()))),
+            None,
+            Some(("name", AttributeValue::String("Acme".into()))),
+            Some("Engineer"),
+        ),
+        make_employment(
+            None,
+            None,
+            Some(("name", AttributeValue::String("Bob".into()))),
+            None,
+            Some(("name", AttributeValue::String("Acme".into()))),
+            Some("Manager"),
+        ),
+    ];
+
+    let manager = RelationManager::<Employment>::new(&db);
+    let iids = manager.insert_many(&mut relations).await.unwrap();
+
+    assert_eq!(iids.len(), 2);
+    assert_eq!(iids[0], "0xbr1");
+    assert_eq!(iids[1], "0xbr2");
+    assert_eq!(relations[0].iid(), Some("0xbr1"));
+    assert_eq!(relations[1].iid(), Some("0xbr2"));
+}
+
+#[tokio::test]
+async fn insert_many_empty_slice() {
+    let backend = MockBackend::new(vec![]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let mut relations: Vec<Employment> = vec![];
+    let manager = RelationManager::<Employment>::new(&db);
+    let iids = manager.insert_many(&mut relations).await.unwrap();
+    assert!(iids.is_empty());
+}
+
+#[tokio::test]
+async fn delete_many_executes_all_queries() {
+    let backend = MockBackend::new(vec![QueryResult::Ok, QueryResult::Ok]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+
+    let relations = vec![
+        make_employment(Some("0xr1"), None, None, None, None, Some("Engineer")),
+        make_employment(Some("0xr2"), None, None, None, None, Some("Manager")),
+    ];
+
+    let manager = RelationManager::<Employment>::new(&db);
+    manager.delete_many(&relations).await.unwrap();
+
+    let recorded = queries.lock().unwrap();
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded[0].contains("delete"));
+    assert!(recorded[1].contains("delete"));
+}

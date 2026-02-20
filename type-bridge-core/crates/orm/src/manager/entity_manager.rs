@@ -220,4 +220,73 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         let result = self.db.execute_raw(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
+
+    /// Insert multiple entities in a single transaction.
+    ///
+    /// Each entity's IID is set in-place. Returns a vector of assigned IIDs.
+    #[tracing::instrument(skip(self, entities), fields(entity_type = T::TYPE_NAME, count = entities.len()))]
+    pub async fn insert_many(&self, entities: &mut [T]) -> Result<Vec<String>> {
+        let tx = self.db.transaction_context(TxType::Write).await?;
+        let mut iids = Vec::with_capacity(entities.len());
+
+        for entity in entities.iter_mut() {
+            let typeql = query_builder::build_insert_with_iid::<T>(entity, "$e")?;
+            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "INSERT BATCH");
+
+            let result = tx.query(&typeql).await?;
+            match result {
+                QueryResult::Documents(docs) => {
+                    let doc = docs.first().ok_or_else(|| OrmError::Hydration {
+                        type_name: T::TYPE_NAME.into(),
+                        message: "Insert returned no documents".into(),
+                    })?;
+                    let iid = doc
+                        .get("iid")
+                        .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
+                        .ok_or_else(|| OrmError::Hydration {
+                            type_name: T::TYPE_NAME.into(),
+                            message: "No IID in insert response".into(),
+                        })?
+                        .to_string();
+                    entity.set_iid(iid.clone());
+                    iids.push(iid);
+                }
+                _ => {
+                    return Err(OrmError::Hydration {
+                        type_name: T::TYPE_NAME.into(),
+                        message: "Expected Documents from insert+fetch".into(),
+                    });
+                }
+            }
+        }
+
+        tx.commit().await?;
+        Ok(iids)
+    }
+
+    /// Delete multiple entities in a single transaction.
+    #[tracing::instrument(skip(self, entities), fields(entity_type = T::TYPE_NAME, count = entities.len()))]
+    pub async fn delete_many(&self, entities: &[T]) -> Result<()> {
+        let tx = self.db.transaction_context(TxType::Write).await?;
+        for entity in entities {
+            let typeql = query_builder::build_delete::<T>(entity, "$e")?;
+            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "DELETE BATCH");
+            tx.query(&typeql).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Update multiple entities in a single transaction.
+    #[tracing::instrument(skip(self, entities), fields(entity_type = T::TYPE_NAME, count = entities.len()))]
+    pub async fn update_many(&self, entities: &[T]) -> Result<()> {
+        let tx = self.db.transaction_context(TxType::Write).await?;
+        for entity in entities {
+            let typeql = query_builder::build_update::<T>(entity, "$e")?;
+            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "UPDATE BATCH");
+            tx.query(&typeql).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
 }
