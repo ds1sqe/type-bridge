@@ -148,6 +148,179 @@ impl<A: TypeBridgeAttribute> FieldRef<A> {
     pub fn median(&self) -> Agg {
         Agg::Median(self.attr_name.to_string())
     }
+
+    // -- Range & string convenience methods --
+
+    /// Range filter: `attr >= low AND attr <= high`.
+    pub fn in_range(&self, low: A, high: A) -> Expr {
+        Expr::And(vec![self.gte(low), self.lte(high)])
+    }
+
+    /// String starts-with: `attr like "^prefix.*"`.
+    pub fn startswith(&self, prefix: impl Into<String>) -> Expr {
+        Expr::startswith(self.attr_name, prefix)
+    }
+
+    /// String ends-with: `attr like ".*suffix$"`.
+    pub fn endswith(&self, suffix: impl Into<String>) -> Expr {
+        Expr::endswith(self.attr_name, suffix)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Role player field reference
+// ---------------------------------------------------------------------------
+
+/// A typed reference to an attribute on a role player entity.
+///
+/// Methods return [`Expr::RolePlayer`] wrapping the inner comparison,
+/// ensuring the filter targets the role player variable.
+///
+/// # Example
+///
+/// ```ignore
+/// Employment::fields().employee.attr::<Age>("age").gte(Age(30))
+/// ```
+pub struct RolePlayerFieldRef<A: TypeBridgeAttribute> {
+    role_name: &'static str,
+    attr_name: &'static str,
+    _marker: PhantomData<A>,
+}
+
+impl<A: TypeBridgeAttribute> RolePlayerFieldRef<A> {
+    /// Create a new role player field reference.
+    pub const fn new(role_name: &'static str, attr_name: &'static str) -> Self {
+        Self {
+            role_name,
+            attr_name,
+            _marker: PhantomData,
+        }
+    }
+
+    fn wrap(&self, inner: Expr) -> Expr {
+        Expr::RolePlayer {
+            role: self.role_name.to_string(),
+            inner: Box::new(inner),
+        }
+    }
+
+    /// Equality: `role_player.attr == value`.
+    pub fn eq(&self, value: A) -> Expr {
+        self.wrap(Expr::Eq {
+            attr: self.attr_name.to_string(),
+            value: value.to_value(),
+        })
+    }
+
+    /// Not equal: `role_player.attr != value`.
+    pub fn neq(&self, value: A) -> Expr {
+        self.wrap(Expr::Neq {
+            attr: self.attr_name.to_string(),
+            value: value.to_value(),
+        })
+    }
+
+    /// Greater than: `role_player.attr > value`.
+    pub fn gt(&self, value: A) -> Expr {
+        self.wrap(Expr::Gt {
+            attr: self.attr_name.to_string(),
+            value: value.to_value(),
+        })
+    }
+
+    /// Greater than or equal: `role_player.attr >= value`.
+    pub fn gte(&self, value: A) -> Expr {
+        self.wrap(Expr::Gte {
+            attr: self.attr_name.to_string(),
+            value: value.to_value(),
+        })
+    }
+
+    /// Less than: `role_player.attr < value`.
+    pub fn lt(&self, value: A) -> Expr {
+        self.wrap(Expr::Lt {
+            attr: self.attr_name.to_string(),
+            value: value.to_value(),
+        })
+    }
+
+    /// Less than or equal: `role_player.attr <= value`.
+    pub fn lte(&self, value: A) -> Expr {
+        self.wrap(Expr::Lte {
+            attr: self.attr_name.to_string(),
+            value: value.to_value(),
+        })
+    }
+
+    /// String contains: `role_player.attr contains substring`.
+    pub fn contains(&self, substring: impl Into<String>) -> Expr {
+        self.wrap(Expr::Contains {
+            attr: self.attr_name.to_string(),
+            substring: substring.into(),
+        })
+    }
+
+    /// String like (regex): `role_player.attr like pattern`.
+    pub fn like(&self, pattern: impl Into<String>) -> Expr {
+        self.wrap(Expr::Like {
+            attr: self.attr_name.to_string(),
+            pattern: pattern.into(),
+        })
+    }
+
+    /// Range filter: `role_player.attr >= low AND role_player.attr <= high`.
+    pub fn in_range(&self, low: A, high: A) -> Expr {
+        self.wrap(Expr::And(vec![
+            Expr::Gte {
+                attr: self.attr_name.to_string(),
+                value: low.to_value(),
+            },
+            Expr::Lte {
+                attr: self.attr_name.to_string(),
+                value: high.to_value(),
+            },
+        ]))
+    }
+
+    /// String starts-with: `role_player.attr like "^prefix.*"`.
+    pub fn startswith(&self, prefix: impl Into<String>) -> Expr {
+        self.wrap(Expr::startswith(self.attr_name, prefix))
+    }
+
+    /// String ends-with: `role_player.attr like ".*suffix$"`.
+    pub fn endswith(&self, suffix: impl Into<String>) -> Expr {
+        self.wrap(Expr::endswith(self.attr_name, suffix))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Role reference
+// ---------------------------------------------------------------------------
+
+/// A reference to a role in a relation.
+///
+/// Provides access to role player attributes for building filter expressions.
+///
+/// # Example
+///
+/// ```ignore
+/// // Access a role player's attribute:
+/// Employment::fields().employee.attr::<Age>("age").gte(Age(30))
+/// ```
+pub struct RoleRef {
+    role_name: &'static str,
+}
+
+impl RoleRef {
+    /// Create a new role reference.
+    pub const fn new(role_name: &'static str) -> Self {
+        Self { role_name }
+    }
+
+    /// Get a typed field reference for a role player's attribute.
+    pub fn attr<A: TypeBridgeAttribute>(&self, attr_name: &'static str) -> RolePlayerFieldRef<A> {
+        RolePlayerFieldRef::new(self.role_name, attr_name)
+    }
 }
 
 #[cfg(test)]
@@ -196,6 +369,96 @@ mod tests {
         assert_eq!(dir, SortDir::Asc);
         let (_, dir) = field.desc();
         assert_eq!(dir, SortDir::Desc);
+    }
+
+    #[test]
+    fn field_ref_in_range() {
+        let field: FieldRef<TestAge> = FieldRef::new("age");
+        let expr = field.in_range(TestAge(20), TestAge(30));
+        match expr {
+            Expr::And(children) => {
+                assert_eq!(children.len(), 2);
+                assert!(matches!(&children[0], Expr::Gte { attr, .. } if attr == "age"));
+                assert!(matches!(&children[1], Expr::Lte { attr, .. } if attr == "age"));
+            }
+            _ => panic!("expected And"),
+        }
+    }
+
+    #[test]
+    fn field_ref_startswith() {
+        let field: FieldRef<TestName> = FieldRef::new("name");
+        let expr = field.startswith("Ali");
+        match expr {
+            Expr::Like { attr, pattern } => {
+                assert_eq!(attr, "name");
+                assert_eq!(pattern, "^Ali.*");
+            }
+            _ => panic!("expected Like"),
+        }
+    }
+
+    #[test]
+    fn field_ref_endswith() {
+        let field: FieldRef<TestName> = FieldRef::new("name");
+        let expr = field.endswith("ice");
+        match expr {
+            Expr::Like { attr, pattern } => {
+                assert_eq!(attr, "name");
+                assert_eq!(pattern, ".*ice$");
+            }
+            _ => panic!("expected Like"),
+        }
+    }
+
+    #[test]
+    fn role_player_field_ref_eq() {
+        let rpf: RolePlayerFieldRef<TestAge> = RolePlayerFieldRef::new("employee", "age");
+        let expr = rpf.eq(TestAge(30));
+        match expr {
+            Expr::RolePlayer { role, inner } => {
+                assert_eq!(role, "employee");
+                assert!(matches!(*inner, Expr::Eq { ref attr, .. } if attr == "age"));
+            }
+            _ => panic!("expected RolePlayer"),
+        }
+    }
+
+    #[test]
+    fn role_player_field_ref_comparisons() {
+        let rpf: RolePlayerFieldRef<TestAge> = RolePlayerFieldRef::new("employee", "age");
+        assert!(matches!(rpf.gt(TestAge(1)), Expr::RolePlayer { .. }));
+        assert!(matches!(rpf.lt(TestAge(1)), Expr::RolePlayer { .. }));
+        assert!(matches!(rpf.gte(TestAge(1)), Expr::RolePlayer { .. }));
+        assert!(matches!(rpf.lte(TestAge(1)), Expr::RolePlayer { .. }));
+        assert!(matches!(rpf.neq(TestAge(1)), Expr::RolePlayer { .. }));
+    }
+
+    #[test]
+    fn role_player_field_ref_in_range() {
+        let rpf: RolePlayerFieldRef<TestAge> = RolePlayerFieldRef::new("employee", "age");
+        let expr = rpf.in_range(TestAge(20), TestAge(30));
+        match expr {
+            Expr::RolePlayer { role, inner } => {
+                assert_eq!(role, "employee");
+                assert!(matches!(*inner, Expr::And(_)));
+            }
+            _ => panic!("expected RolePlayer"),
+        }
+    }
+
+    #[test]
+    fn role_ref_attr() {
+        let role = RoleRef::new("employee");
+        let field: RolePlayerFieldRef<TestAge> = role.attr("age");
+        let expr = field.gte(TestAge(18));
+        match expr {
+            Expr::RolePlayer { role, inner } => {
+                assert_eq!(role, "employee");
+                assert!(matches!(*inner, Expr::Gte { ref attr, .. } if attr == "age"));
+            }
+            _ => panic!("expected RolePlayer"),
+        }
     }
 
     #[test]

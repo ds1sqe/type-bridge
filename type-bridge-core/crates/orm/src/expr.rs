@@ -98,6 +98,16 @@ pub enum Expr {
     Or(Vec<Expr>),
     /// The inner expression must not match.
     Not(Box<Expr>),
+    /// Filter on a role player's attribute within a relation query.
+    ///
+    /// Wraps an inner expression so it targets the role player variable
+    /// (`$role_name`) instead of the relation variable.
+    RolePlayer {
+        /// The role name (e.g. `"employee"`).
+        role: String,
+        /// The inner expression applied to the role player.
+        inner: Box<Expr>,
+    },
 }
 
 impl Expr {
@@ -157,6 +167,39 @@ impl Expr {
     #[allow(clippy::should_implement_trait)]
     pub fn not(expr: Expr) -> Self {
         Self::Not(Box::new(expr))
+    }
+
+    /// Range filter: `attr >= low AND attr <= high`.
+    pub fn in_range(attr: impl Into<String>, low: AttributeValue, high: AttributeValue) -> Self {
+        let a = attr.into();
+        Self::And(vec![
+            Self::gte(a.clone(), low),
+            Self::lte(a, high),
+        ])
+    }
+
+    /// String starts-with filter using regex: `attr like "^prefix.*"`.
+    pub fn startswith(attr: impl Into<String>, prefix: impl Into<String>) -> Self {
+        Self::Like {
+            attr: attr.into(),
+            pattern: format!("^{}.*", regex_escape(&prefix.into())),
+        }
+    }
+
+    /// String ends-with filter using regex: `attr like ".*suffix$"`.
+    pub fn endswith(attr: impl Into<String>, suffix: impl Into<String>) -> Self {
+        Self::Like {
+            attr: attr.into(),
+            pattern: format!(".*{}$", regex_escape(&suffix.into())),
+        }
+    }
+
+    /// Wrap an expression to target a role player's attribute.
+    pub fn role_player(role: impl Into<String>, inner: Expr) -> Self {
+        Self::RolePlayer {
+            role: role.into(),
+            inner: Box::new(inner),
+        }
     }
 
     // -- AST conversion --
@@ -248,8 +291,42 @@ impl Expr {
                 let inner_patterns = inner.to_patterns(entity_var, counter);
                 vec![Pattern::Not(inner_patterns)]
             }
+            Self::RolePlayer { role, inner } => {
+                let role_var = format!("${}", role);
+                inner.to_patterns(&role_var, counter)
+            }
         }
     }
+
+    /// Collect unique role names from role player expressions.
+    pub fn collect_roles(&self, roles: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+        match self {
+            Self::RolePlayer { role, .. } => {
+                if seen.insert(role.clone()) {
+                    roles.push(role.clone());
+                }
+            }
+            Self::And(children) | Self::Or(children) => {
+                for child in children {
+                    child.collect_roles(roles, seen);
+                }
+            }
+            Self::Not(inner) => inner.collect_roles(roles, seen),
+            _ => {}
+        }
+    }
+}
+
+/// Escape regex special characters for use in TypeQL `like` patterns.
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | '^' | '$' | '|') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +446,55 @@ impl AggResult {
     /// Get the raw JSON value by variable name.
     pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
         self.values.get(key)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group-by result
+// ---------------------------------------------------------------------------
+
+/// Result of a group-by aggregation query.
+///
+/// Each entry maps a group key value to its [`AggResult`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupByResult {
+    groups: Vec<(serde_json::Value, AggResult)>,
+}
+
+impl GroupByResult {
+    /// Create from a list of (group_key, agg_result) pairs.
+    pub fn new(groups: Vec<(serde_json::Value, AggResult)>) -> Self {
+        Self { groups }
+    }
+
+    /// Iterate over (group_key, agg_result) pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (&serde_json::Value, &AggResult)> {
+        self.groups.iter().map(|(k, v)| (k, v))
+    }
+
+    /// Number of groups.
+    pub fn len(&self) -> usize {
+        self.groups.len()
+    }
+
+    /// Whether there are no groups.
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    /// Get the aggregation result for a specific group key.
+    pub fn get(&self, key: &serde_json::Value) -> Option<&AggResult> {
+        self.groups.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+
+    /// Get aggregation result by string key.
+    pub fn get_by_str(&self, key: &str) -> Option<&AggResult> {
+        self.get(&serde_json::Value::String(key.to_string()))
+    }
+
+    /// Get aggregation result by integer key.
+    pub fn get_by_i64(&self, key: i64) -> Option<&AggResult> {
+        self.get(&serde_json::json!(key))
     }
 }
 
@@ -585,6 +711,108 @@ mod tests {
     }
 
     #[test]
+    fn test_expr_in_range() {
+        let expr = Expr::in_range("age", AttributeValue::Long(20), AttributeValue::Long(30));
+        match expr {
+            Expr::And(children) => {
+                assert_eq!(children.len(), 2);
+                assert!(matches!(&children[0], Expr::Gte { attr, .. } if attr == "age"));
+                assert!(matches!(&children[1], Expr::Lte { attr, .. } if attr == "age"));
+            }
+            _ => panic!("expected And"),
+        }
+    }
+
+    #[test]
+    fn test_expr_startswith() {
+        let expr = Expr::startswith("name", "Ali");
+        match expr {
+            Expr::Like { attr, pattern } => {
+                assert_eq!(attr, "name");
+                assert_eq!(pattern, "^Ali.*");
+            }
+            _ => panic!("expected Like"),
+        }
+    }
+
+    #[test]
+    fn test_expr_endswith() {
+        let expr = Expr::endswith("name", "ice");
+        match expr {
+            Expr::Like { attr, pattern } => {
+                assert_eq!(attr, "name");
+                assert_eq!(pattern, ".*ice$");
+            }
+            _ => panic!("expected Like"),
+        }
+    }
+
+    #[test]
+    fn test_expr_startswith_escapes_special_chars() {
+        let expr = Expr::startswith("email", "foo.bar");
+        match expr {
+            Expr::Like { pattern, .. } => {
+                assert_eq!(pattern, "^foo\\.bar.*");
+            }
+            _ => panic!("expected Like"),
+        }
+    }
+
+    #[test]
+    fn test_expr_role_player_patterns() {
+        let expr = Expr::role_player("employee", Expr::gt("age", AttributeValue::Long(30)));
+        let mut counter = 0;
+        let patterns = expr.to_patterns("$r", &mut counter);
+        // Should generate patterns against $employee, not $r
+        assert_eq!(patterns.len(), 2);
+        match &patterns[0] {
+            Pattern::Has { thing_var, attr_type, .. } => {
+                assert_eq!(thing_var, "$employee");
+                assert_eq!(attr_type, "age");
+            }
+            _ => panic!("expected Has"),
+        }
+    }
+
+    #[test]
+    fn test_collect_roles() {
+        let expr = Expr::and(vec![
+            Expr::role_player("employee", Expr::gt("age", AttributeValue::Long(30))),
+            Expr::role_player("employer", Expr::eq("name", AttributeValue::String("Corp".into()))),
+            Expr::role_player("employee", Expr::lt("age", AttributeValue::Long(65))),
+        ]);
+        let mut roles = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        expr.collect_roles(&mut roles, &mut seen);
+        assert_eq!(roles, vec!["employee", "employer"]);
+    }
+
+    #[test]
+    fn test_group_by_result() {
+        let mut values1 = HashMap::new();
+        values1.insert("$_mean".into(), json!(35.5));
+        let mut values2 = HashMap::new();
+        values2.insert("$_mean".into(), json!(28.3));
+
+        let result = GroupByResult::new(vec![
+            (json!("Engineering"), AggResult::new(values1)),
+            (json!("Sales"), AggResult::new(values2)),
+        ]);
+
+        assert_eq!(result.len(), 2);
+        assert!(!result.is_empty());
+        assert_eq!(
+            result.get_by_str("Engineering").unwrap().get_f64("$_mean"),
+            Some(35.5)
+        );
+        assert_eq!(
+            result.get_by_str("Sales").unwrap().get_f64("$_mean"),
+            Some(28.3)
+        );
+        assert!(result.get_by_str("HR").is_none());
+    }
+
+    #[test]
     fn expr_serde_roundtrip() {
         let expr = Expr::and(vec![
             Expr::eq("name", AttributeValue::String("Alice".into())),
@@ -619,6 +847,20 @@ mod tests {
         ] {
             let json = serde_json::to_string(&agg).unwrap();
             let _parsed: Agg = serde_json::from_str(&json).unwrap();
+        }
+    }
+
+    #[test]
+    fn role_player_serde_roundtrip() {
+        let expr = Expr::role_player("employee", Expr::gt("age", AttributeValue::Long(30)));
+        let json = serde_json::to_string(&expr).unwrap();
+        let parsed: Expr = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Expr::RolePlayer { role, inner } => {
+                assert_eq!(role, "employee");
+                assert!(matches!(*inner, Expr::Gt { .. }));
+            }
+            _ => panic!("expected RolePlayer"),
         }
     }
 
