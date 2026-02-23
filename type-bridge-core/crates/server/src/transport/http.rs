@@ -98,6 +98,7 @@ async fn handle_query(
             transaction_type: req.transaction_type,
             clauses: req.clauses,
             metadata: req.metadata,
+            crud_info: crate::interceptor::CrudInfo::default(),
         })
         .await?;
 
