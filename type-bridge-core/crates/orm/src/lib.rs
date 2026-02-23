@@ -39,6 +39,7 @@ pub mod error;
 pub mod expr;
 pub mod field_ref;
 pub mod filter;
+pub mod hooks;
 pub mod manager;
 pub mod query;
 pub mod relation;
@@ -59,6 +60,7 @@ pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 pub use value::AttributeValue;
 pub use field_ref::{FieldRef, RolePlayerFieldRef, RoleRef};
+pub use hooks::{CrudOperation, HookContext, HookError, HookRunner, LifecycleHook, PreHookResult, TypeKind};
 
 // Re-export derive macros when the `derive` feature is enabled.
 #[cfg(feature = "derive")]
