@@ -59,6 +59,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: crate::interceptor::CrudInfo::default(),
         }
     }
 

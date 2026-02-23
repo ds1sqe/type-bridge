@@ -4,6 +4,8 @@ use std::pin::Pin;
 
 use type_bridge_core_lib::ast::Clause;
 
+use super::crud_info::CrudInfo;
+
 /// Metadata attached to each request flowing through the interceptor chain.
 #[derive(Debug, Clone)]
 pub struct RequestContext {
@@ -13,6 +15,8 @@ pub struct RequestContext {
     pub transaction_type: String,
     pub metadata: HashMap<String, serde_json::Value>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// CRUD operation metadata. Default for non-CRUD requests.
+    pub crud_info: CrudInfo,
 }
 
 /// Errors that interceptors can produce.
@@ -97,6 +101,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: CrudInfo::default(),
         };
         let cloned = ctx.clone();
         assert_eq!(cloned.request_id, "req-1");
@@ -112,6 +117,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: CrudInfo::default(),
         };
         let debug = format!("{:?}", ctx);
         assert!(debug.contains("req-1"));
@@ -144,6 +150,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: CrudInfo::default(),
         };
         let req_result = interceptor.on_request(vec![], &mut ctx).await;
         assert!(req_result.is_ok());
@@ -177,6 +184,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: CrudInfo::default(),
         };
         let result = boxed.on_request(vec![], &mut ctx).await;
         assert!(result.unwrap().is_empty());

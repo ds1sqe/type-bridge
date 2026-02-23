@@ -9,7 +9,7 @@ use type_bridge_core_lib::validation::ValidationEngine;
 
 use crate::error::PipelineError;
 use crate::executor::QueryExecutor;
-use crate::interceptor::{Interceptor, InterceptorChain, RequestContext};
+use crate::interceptor::{CrudInfo, Interceptor, InterceptorChain, RequestContext};
 use crate::schema_source::SchemaSource;
 
 /// Input for a structured (AST-based) query.
@@ -18,6 +18,8 @@ pub struct QueryInput {
     pub transaction_type: String,
     pub clauses: Vec<Clause>,
     pub metadata: HashMap<String, serde_json::Value>,
+    /// CRUD context for interceptors. Default for non-CRUD queries.
+    pub crud_info: CrudInfo,
 }
 
 /// Input for a raw TypeQL query.
@@ -104,6 +106,7 @@ impl QueryPipeline {
             transaction_type: input.transaction_type.clone(),
             metadata: input.metadata,
             timestamp: chrono::Utc::now(),
+            crud_info: input.crud_info,
         };
 
         // Validate against schema
@@ -171,6 +174,7 @@ impl QueryPipeline {
             transaction_type: input.transaction_type,
             clauses,
             metadata: input.metadata,
+            crud_info: CrudInfo::default(),
         })
         .await
     }
@@ -294,6 +298,7 @@ mod tests {
 
     use super::*;
     use crate::interceptor::traits::InterceptError;
+    use crate::interceptor::CrudInfo;
     use crate::test_helpers::{make_pipeline, make_simple_clauses, MockExecutor};
 
     fn init_tracing() -> tracing::subscriber::DefaultGuard {
@@ -400,6 +405,7 @@ mod tests {
             transaction_type: "read".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo::default(),
         }
     }
 
@@ -409,6 +415,7 @@ mod tests {
             transaction_type: "read".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo::default(),
         }
     }
 
@@ -640,6 +647,7 @@ mod tests {
             transaction_type: "write".to_string(),
             clauses: vec![],
             metadata: HashMap::new(),
+            crud_info: CrudInfo::default(),
         };
         pipeline.execute_query(input).await.unwrap();
 

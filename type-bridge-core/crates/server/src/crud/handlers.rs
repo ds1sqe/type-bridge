@@ -10,6 +10,7 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 
 use crate::error::PipelineError;
+use crate::interceptor::CrudInfo;
 use crate::pipeline::{QueryInput, QueryPipeline};
 
 use super::builder;
@@ -37,6 +38,13 @@ pub async fn handle_entity_insert(
             transaction_type: "write".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo {
+                operation: Some("insert".to_string()),
+                type_name: Some(type_name),
+                type_kind: Some("entity".to_string()),
+                attribute_names: req.attributes.keys().cloned().collect(),
+                iid: None,
+            },
         })
         .await?;
 
@@ -80,6 +88,13 @@ pub async fn handle_entity_fetch(
             transaction_type: "read".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo {
+                operation: Some("fetch".to_string()),
+                type_name: Some(type_name),
+                type_kind: Some("entity".to_string()),
+                attribute_names: vec![],
+                iid: None,
+            },
         })
         .await?;
 
@@ -124,6 +139,13 @@ pub async fn handle_entity_get_by_iid(
             transaction_type: "read".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo {
+                operation: Some("fetch".to_string()),
+                type_name: Some(type_name),
+                type_kind: Some("entity".to_string()),
+                attribute_names: vec![],
+                iid: Some(iid),
+            },
         })
         .await?;
 
@@ -161,6 +183,13 @@ pub async fn handle_entity_update(
             transaction_type: "write".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo {
+                operation: Some("update".to_string()),
+                type_name: Some(type_name),
+                type_kind: Some("entity".to_string()),
+                attribute_names: req.attributes.keys().cloned().collect(),
+                iid: Some(iid),
+            },
         })
         .await?;
 
@@ -197,6 +226,13 @@ pub async fn handle_entity_delete(
             transaction_type: "write".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo {
+                operation: Some("delete".to_string()),
+                type_name: Some(type_name),
+                type_kind: Some("entity".to_string()),
+                attribute_names: vec![],
+                iid: Some(iid),
+            },
         })
         .await?;
 
@@ -238,6 +274,13 @@ pub async fn handle_relation_insert(
             transaction_type: "write".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo {
+                operation: Some("insert".to_string()),
+                type_name: Some(type_name),
+                type_kind: Some("relation".to_string()),
+                attribute_names: req.attributes.keys().cloned().collect(),
+                iid: None,
+            },
         })
         .await?;
 
@@ -281,6 +324,13 @@ pub async fn handle_relation_fetch(
             transaction_type: "read".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo {
+                operation: Some("fetch".to_string()),
+                type_name: Some(type_name),
+                type_kind: Some("relation".to_string()),
+                attribute_names: vec![],
+                iid: None,
+            },
         })
         .await?;
 
@@ -317,6 +367,13 @@ pub async fn handle_relation_delete(
             transaction_type: "write".to_string(),
             clauses,
             metadata: HashMap::new(),
+            crud_info: CrudInfo {
+                operation: Some("delete".to_string()),
+                type_name: Some(type_name),
+                type_kind: Some("relation".to_string()),
+                attribute_names: vec![],
+                iid: Some(iid),
+            },
         })
         .await?;
 
