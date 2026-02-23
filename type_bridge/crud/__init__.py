@@ -13,6 +13,7 @@ from .exceptions import (
     NotUniqueError,
     RelationNotFoundError,
 )
+from .hooks import CrudEvent, CrudHook, HookCancelled
 from .strategies import EntityStrategy, ModelStrategy, RelationStrategy
 from .typedb_manager import GroupByQuery, TypeDBManager, TypeDBQuery
 
@@ -25,6 +26,10 @@ __all__ = [
     "ModelStrategy",
     "EntityStrategy",
     "RelationStrategy",
+    # Hooks
+    "CrudEvent",
+    "CrudHook",
+    "HookCancelled",
     # Exceptions
     "NotFoundError",
     "EntityNotFoundError",
