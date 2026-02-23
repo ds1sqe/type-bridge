@@ -20,7 +20,9 @@ from type_bridge.attribute import (
     Unique,
 )
 from type_bridge.crud import (
+    CrudEvent,
     EntityNotFoundError,
+    HookCancelled,
     KeyAttributeError,
     NotUniqueError,
     RelationNotFoundError,
@@ -90,6 +92,9 @@ __all__ = [
     "QueryBuilder",
     # CRUD
     "TypeDBManager",
+    # Hooks
+    "CrudEvent",
+    "HookCancelled",
     # Proxy
     "ProxyDatabase",
     "ProxyError",
