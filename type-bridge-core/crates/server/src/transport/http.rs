@@ -904,6 +904,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn crud_relation_insert_returns_ok() {
+        // Schema loaded but validation skipped — the validation engine can't
+        // handle relation insert clauses, but the handler needs schema access.
+        let pipeline = Arc::new(crate::test_helpers::make_pipeline_no_validation(
+            MockExecutor::new(),
+        ));
+        let router = create_router(pipeline);
+        let body = serde_json::json!({
+            "role_players": [
+                {
+                    "role": "employee",
+                    "entity_type": "person",
+                    "key_attr": "name",
+                    "key_value": { "value": "Alice", "value_type": "string" }
+                }
+            ],
+            "attributes": {}
+        });
+        let req = json_request("POST", "/relations/employment", body);
+        let resp = router.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let json = body_json(resp).await;
+        assert_eq!(status, StatusCode::OK, "Response: {json}");
+        assert_eq!(json["status"], "ok");
+        assert!(json["metadata"]["typeql"].as_str().unwrap().contains("insert"));
+    }
+
+    #[tokio::test]
+    async fn crud_relation_fetch_returns_ok() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .uri("/relations/employment")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "ok");
+    }
+
+    #[tokio::test]
     async fn crud_relation_delete_route_exists() {
         let router = app(MockExecutor::new(), true);
         let req = Request::builder()
@@ -916,12 +958,298 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn crud_no_schema_returns_error() {
-        let router = app(MockExecutor::new(), false);
+    async fn crud_relation_delete_returns_ok() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/relations/employment/0xabc123")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "ok");
+    }
+
+    // --- CRUD error-path tests (builder / executor failures) ---
+
+    #[tokio::test]
+    async fn crud_entity_fetch_unknown_type_fails() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .uri("/entities/nonexistent")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_get_by_iid_unknown_type_fails() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .uri("/entities/nonexistent/0xabc")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_update_unknown_attr_fails() {
+        let router = app(MockExecutor::new(), true);
         let body = serde_json::json!({
+            "attributes": {
+                "nonexistent": { "value": "x", "value_type": "string" }
+            }
+        });
+        let req = json_request("PUT", "/entities/person/0xabc", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_delete_unknown_type_fails() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/entities/nonexistent/0xabc")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_relation_insert_unknown_type_fails() {
+        let router = app(MockExecutor::new(), true);
+        let body = serde_json::json!({
+            "role_players": [
+                { "role": "r", "entity_type": "person", "iid": "0x1" }
+            ],
             "attributes": {}
         });
+        let req = json_request("POST", "/relations/nonexistent", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_relation_fetch_unknown_type_fails() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .uri("/relations/nonexistent")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_relation_delete_unknown_type_fails() {
+        let router = app(MockExecutor::new(), true);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/relations/nonexistent/0xabc")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_fetch_executor_failure() {
+        let router = app(MockExecutor::failing("db crash"), true);
+        let req = Request::builder()
+            .uri("/entities/person")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_insert_executor_failure() {
+        let router = app(MockExecutor::failing("db crash"), true);
+        let body = serde_json::json!({
+            "attributes": {
+                "name": { "value": "Alice", "value_type": "string" }
+            }
+        });
         let req = json_request("POST", "/entities/person", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_get_by_iid_executor_failure() {
+        let router = app(MockExecutor::failing("db crash"), true);
+        let req = Request::builder()
+            .uri("/entities/person/0xabc")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_update_executor_failure() {
+        let router = app(MockExecutor::failing("db crash"), true);
+        let body = serde_json::json!({
+            "attributes": {
+                "age": { "value": 31, "value_type": "long" }
+            }
+        });
+        let req = json_request("PUT", "/entities/person/0xabc", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_entity_delete_executor_failure() {
+        let router = app(MockExecutor::failing("db crash"), true);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/entities/person/0xabc")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_relation_fetch_executor_failure() {
+        let router = app(MockExecutor::failing("db crash"), true);
+        let req = Request::builder()
+            .uri("/relations/employment")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_relation_delete_executor_failure() {
+        let router = app(MockExecutor::failing("db crash"), true);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/relations/employment/0xabc")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn crud_relation_insert_executor_failure() {
+        let pipeline = Arc::new(crate::test_helpers::make_pipeline_no_validation(
+            MockExecutor::failing("db crash"),
+        ));
+        let router = create_router(pipeline);
+        let body = serde_json::json!({
+            "role_players": [
+                {
+                    "role": "employee",
+                    "entity_type": "person",
+                    "key_attr": "name",
+                    "key_value": { "value": "Alice", "value_type": "string" }
+                }
+            ],
+            "attributes": {}
+        });
+        let req = json_request("POST", "/relations/employment", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // --- No-schema tests (covers ok_or_else closures per handler) ---
+
+    #[tokio::test]
+    async fn crud_no_schema_entity_insert() {
+        let router = app(MockExecutor::new(), false);
+        let body = serde_json::json!({ "attributes": {} });
+        let req = json_request("POST", "/entities/person", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn crud_no_schema_entity_fetch() {
+        let router = app(MockExecutor::new(), false);
+        let req = Request::builder()
+            .uri("/entities/person")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn crud_no_schema_entity_get_by_iid() {
+        let router = app(MockExecutor::new(), false);
+        let req = Request::builder()
+            .uri("/entities/person/0xabc")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn crud_no_schema_entity_update() {
+        let router = app(MockExecutor::new(), false);
+        let body = serde_json::json!({
+            "attributes": { "age": { "value": 31, "value_type": "long" } }
+        });
+        let req = json_request("PUT", "/entities/person/0xabc", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn crud_no_schema_entity_delete() {
+        let router = app(MockExecutor::new(), false);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/entities/person/0xabc")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn crud_no_schema_relation_insert() {
+        let router = app(MockExecutor::new(), false);
+        let body = serde_json::json!({
+            "role_players": [{ "role": "r", "entity_type": "e", "iid": "0x1" }],
+            "attributes": {}
+        });
+        let req = json_request("POST", "/relations/employment", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn crud_no_schema_relation_fetch() {
+        let router = app(MockExecutor::new(), false);
+        let req = Request::builder()
+            .uri("/relations/employment")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn crud_no_schema_relation_delete() {
+        let router = app(MockExecutor::new(), false);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/relations/employment/0xabc")
+            .body(Body::empty())
+            .unwrap();
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

@@ -88,6 +88,7 @@ pub struct QueryPipeline {
     interceptor_chain: InterceptorChain,
     default_database: String,
     executor: Box<dyn QueryExecutor>,
+    skip_validation: bool,
 }
 
 impl QueryPipeline {
@@ -110,7 +111,9 @@ impl QueryPipeline {
         };
 
         // Validate against schema
-        if let Some(schema) = &self.schema {
+        if !self.skip_validation
+            && let Some(schema) = &self.schema
+        {
             let result = self.validation_engine.validate_query(&input.clauses, schema);
             if !result.is_valid {
                 return Err(PipelineError::Validation(format!(
@@ -238,6 +241,7 @@ pub struct PipelineBuilder {
     schema_source: Option<Box<dyn SchemaSource>>,
     interceptors: Vec<Box<dyn Interceptor>>,
     default_database: String,
+    skip_validation: bool,
 }
 
 impl PipelineBuilder {
@@ -248,6 +252,7 @@ impl PipelineBuilder {
             schema_source: None,
             interceptors: Vec::new(),
             default_database: String::new(),
+            skip_validation: false,
         }
     }
 
@@ -269,6 +274,15 @@ impl PipelineBuilder {
         self
     }
 
+    /// Skip schema validation during query execution.
+    ///
+    /// The schema is still loaded (and accessible via [`QueryPipeline::schema`]),
+    /// but queries are not validated against it before execution.
+    pub fn with_skip_validation(mut self) -> Self {
+        self.skip_validation = true;
+        self
+    }
+
     /// Build the pipeline, loading the schema if a source was provided.
     pub fn build(self) -> Result<QueryPipeline, PipelineError> {
         let schema = match self.schema_source {
@@ -282,6 +296,7 @@ impl PipelineBuilder {
             interceptor_chain: InterceptorChain::new(self.interceptors),
             default_database: self.default_database,
             executor: self.executor,
+            skip_validation: self.skip_validation,
         })
     }
 }

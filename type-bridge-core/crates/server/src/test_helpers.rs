@@ -121,3 +121,16 @@ pub fn make_pipeline(executor: MockExecutor, with_schema: bool) -> QueryPipeline
 
     builder.build().expect("Failed to build test pipeline")
 }
+
+/// Build a pipeline with schema loaded but validation disabled.
+///
+/// Useful for testing CRUD handlers that need schema access but produce
+/// clauses that the validation engine cannot verify (e.g. relation inserts).
+pub fn make_pipeline_no_validation(executor: MockExecutor) -> QueryPipeline {
+    PipelineBuilder::new(executor)
+        .with_default_database("test_db")
+        .with_schema_source(InMemorySchemaSource::new(SIMPLE_SCHEMA))
+        .with_skip_validation()
+        .build()
+        .expect("Failed to build test pipeline")
+}

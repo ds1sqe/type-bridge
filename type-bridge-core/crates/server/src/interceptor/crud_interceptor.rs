@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adapter_should_intercept_false_skips_crud() {
+    async fn adapter_should_intercept_false_skips_crud_request() {
         let count = Arc::new(AtomicUsize::new(0));
         let adapter = CrudInterceptorAdapter(DeleteOnlyInterceptor { count: count.clone() });
 
@@ -266,6 +266,38 @@ mod tests {
         let mut ctx = make_crud_ctx();
         adapter.on_request(vec![], &mut ctx).await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn adapter_should_intercept_false_skips_crud_response() {
+        let adapter = CrudInterceptorAdapter(DeleteOnlyInterceptor {
+            count: Arc::new(AtomicUsize::new(0)),
+        });
+
+        // "insert" operation — should_intercept returns false for on_response too
+        let ctx = make_crud_ctx();
+        adapter.on_response(&serde_json::json!({}), &ctx).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn adapter_counting_non_crud_response_passthrough() {
+        let inner = CountingCrudInterceptor::new();
+        let resp_count = inner.response_count.clone();
+        let adapter = CrudInterceptorAdapter(inner);
+
+        let ctx = make_ctx(); // non-CRUD — is_crud() == false
+        adapter.on_response(&serde_json::json!({}), &ctx).await.unwrap();
+        assert_eq!(resp_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn adapter_delete_only_non_crud_response_passthrough() {
+        let adapter = CrudInterceptorAdapter(DeleteOnlyInterceptor {
+            count: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let ctx = make_ctx(); // non-CRUD — is_crud() == false
+        adapter.on_response(&serde_json::json!({}), &ctx).await.unwrap();
     }
 
     #[tokio::test]
@@ -280,6 +312,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn adapter_should_intercept_true_runs_crud_response() {
+        let adapter = CrudInterceptorAdapter(DeleteOnlyInterceptor {
+            count: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let mut ctx = make_crud_ctx();
+        ctx.crud_info.operation = Some("delete".to_string());
+        // DeleteOnlyInterceptor doesn't override on_crud_response → default no-op
+        adapter.on_response(&serde_json::json!({}), &ctx).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn adapter_name_delegates() {
         let adapter = CrudInterceptorAdapter(CountingCrudInterceptor::new());
         assert_eq!(adapter.name(), "counting-crud");
@@ -290,9 +334,15 @@ mod tests {
         let adapter = CrudInterceptorAdapter(RejectingCrudInterceptor);
         assert_eq!(adapter.name(), "rejecting-crud");
 
+        // CRUD context → rejected
         let mut ctx = make_crud_ctx();
         let result = adapter.on_request(vec![], &mut ctx).await;
         assert!(result.is_err());
+
+        // Non-CRUD context → passthrough
+        let mut ctx = make_ctx();
+        let result = adapter.on_request(vec![], &mut ctx).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -312,7 +362,14 @@ mod tests {
         }
 
         let adapter = CrudInterceptorAdapter(MinimalCrud);
+
+        // CRUD context → default on_crud_response (no-op)
         let ctx = make_crud_ctx();
+        let result = adapter.on_response(&serde_json::json!({}), &ctx).await;
+        assert!(result.is_ok());
+
+        // Non-CRUD context → passthrough
+        let ctx = make_ctx();
         let result = adapter.on_response(&serde_json::json!({}), &ctx).await;
         assert!(result.is_ok());
     }
