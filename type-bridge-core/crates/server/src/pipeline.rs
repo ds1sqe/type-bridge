@@ -3,13 +3,12 @@ use std::time::Instant;
 
 use type_bridge_core_lib::ast::Clause;
 use type_bridge_core_lib::compiler::QueryCompiler;
-use type_bridge_core_lib::query_parser;
 use type_bridge_core_lib::schema::TypeSchema;
 use type_bridge_core_lib::validation::ValidationEngine;
 
 use crate::error::PipelineError;
 use crate::executor::QueryExecutor;
-use crate::interceptor::{CrudInfo, Interceptor, InterceptorChain, RequestContext};
+use crate::interceptor::{Interceptor, InterceptorChain, RequestContext};
 use crate::schema_source::SchemaSource;
 
 /// Input for a structured (AST-based) query.
@@ -17,16 +16,6 @@ pub struct QueryInput {
     pub database: Option<String>,
     pub transaction_type: String,
     pub clauses: Vec<Clause>,
-    pub metadata: HashMap<String, serde_json::Value>,
-    /// CRUD context for interceptors. Default for non-CRUD queries.
-    pub crud_info: CrudInfo,
-}
-
-/// Input for a raw TypeQL query.
-pub struct RawQueryInput {
-    pub database: Option<String>,
-    pub transaction_type: String,
-    pub query: String,
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
@@ -107,7 +96,6 @@ impl QueryPipeline {
             transaction_type: input.transaction_type.clone(),
             metadata: input.metadata,
             timestamp: chrono::Utc::now(),
-            crud_info: input.crud_info,
         };
 
         // Validate against schema
@@ -165,21 +153,6 @@ impl QueryPipeline {
                 .map(String::from)
                 .collect(),
         })
-    }
-
-    /// Execute a raw TypeQL query through the full pipeline (parse → validate → intercept → compile → execute).
-    pub async fn execute_raw(&self, input: RawQueryInput) -> Result<QueryOutput, PipelineError> {
-        let clauses = query_parser::parse_typeql_query(&input.query)
-            .map_err(|e| PipelineError::Parse(e.to_string()))?;
-
-        self.execute_query(QueryInput {
-            database: input.database,
-            transaction_type: input.transaction_type,
-            clauses,
-            metadata: input.metadata,
-            crud_info: CrudInfo::default(),
-        })
-        .await
     }
 
     /// Validate clauses against the loaded schema without executing.
@@ -313,7 +286,6 @@ mod tests {
 
     use super::*;
     use crate::interceptor::traits::InterceptError;
-    use crate::interceptor::CrudInfo;
     use crate::test_helpers::{make_pipeline, make_simple_clauses, MockExecutor};
 
     fn init_tracing() -> tracing::subscriber::DefaultGuard {
@@ -420,7 +392,6 @@ mod tests {
             transaction_type: "read".to_string(),
             clauses,
             metadata: HashMap::new(),
-            crud_info: CrudInfo::default(),
         }
     }
 
@@ -430,7 +401,6 @@ mod tests {
             transaction_type: "read".to_string(),
             clauses,
             metadata: HashMap::new(),
-            crud_info: CrudInfo::default(),
         }
     }
 
@@ -489,7 +459,6 @@ mod tests {
             .unwrap();
         assert!(pipeline.schema().is_none());
 
-        // Execute a query to exercise PassthroughInterceptor's name() and on_request()
         let input = make_query_input(vec![]);
         let output = pipeline.execute_query(input).await.unwrap();
         assert_eq!(output.interceptors_applied, vec!["first", "second"]);
@@ -528,7 +497,6 @@ mod tests {
     #[tokio::test]
     async fn execute_query_skips_validation_when_no_schema() {
         let pipeline = make_pipeline(MockExecutor::new(), false);
-        // Even invalid type names pass when there's no schema
         let clauses = vec![Clause::Match(vec![Pattern::Entity {
             variable: "x".to_string(),
             type_name: "nonexistent_type".to_string(),
@@ -551,7 +519,6 @@ mod tests {
     #[tokio::test]
     async fn execute_query_validates_when_schema_present_invalid() {
         let pipeline = make_pipeline(MockExecutor::new(), true);
-        // Reference an attribute type not in schema
         let clauses = vec![Clause::Match(vec![Pattern::Entity {
             variable: "p".to_string(),
             type_name: "person".to_string(),
@@ -624,7 +591,6 @@ mod tests {
         assert!(!output.request_id.is_empty());
         assert_eq!(output.results, serde_json::json!({"ok": true}));
         assert_eq!(output.interceptors_applied, vec!["counter"]);
-        // execution_time_ms is non-negative (it's u64, always >= 0)
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
@@ -647,7 +613,6 @@ mod tests {
         pipeline.execute_query(input).await.unwrap();
 
         let recorded = calls.lock().unwrap();
-        // The compiled TypeQL should be a non-empty string
         assert!(!recorded[0].1.is_empty());
     }
 
@@ -662,81 +627,11 @@ mod tests {
             transaction_type: "write".to_string(),
             clauses: vec![],
             metadata: HashMap::new(),
-            crud_info: CrudInfo::default(),
         };
         pipeline.execute_query(input).await.unwrap();
 
         let recorded = calls.lock().unwrap();
         assert_eq!(recorded[0].2, "write");
-    }
-
-    // =============================================
-    // execute_raw tests
-    // =============================================
-
-    #[tokio::test]
-    async fn execute_raw_valid_typeql() {
-        let executor = MockExecutor::new();
-        let calls = executor.calls.clone();
-        let pipeline = make_pipeline(executor, false);
-
-        let input = RawQueryInput {
-            database: None,
-            transaction_type: "read".to_string(),
-            query: "match $p isa person;".to_string(),
-            metadata: HashMap::new(),
-        };
-        let result = pipeline.execute_raw(input).await;
-        assert!(result.is_ok());
-
-        let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn execute_raw_invalid_typeql() {
-        let pipeline = make_pipeline(MockExecutor::new(), false);
-        let input = RawQueryInput {
-            database: None,
-            transaction_type: "read".to_string(),
-            query: "this is totally invalid <<>>".to_string(),
-            metadata: HashMap::new(),
-        };
-        let result = pipeline.execute_raw(input).await;
-        let err = result.unwrap_err();
-        assert!(matches!(&err, PipelineError::Parse(_)));
-    }
-
-    #[tokio::test]
-    async fn execute_raw_database_passthrough() {
-        let executor = MockExecutor::new();
-        let calls = executor.calls.clone();
-        let pipeline = make_pipeline(executor, false);
-
-        let input = RawQueryInput {
-            database: Some("raw_db".to_string()),
-            transaction_type: "read".to_string(),
-            query: "match $p isa person;".to_string(),
-            metadata: HashMap::new(),
-        };
-        pipeline.execute_raw(input).await.unwrap();
-
-        let recorded = calls.lock().unwrap();
-        assert_eq!(recorded[0].0, "raw_db");
-    }
-
-    #[tokio::test]
-    async fn execute_raw_executor_failure() {
-        let pipeline = make_pipeline(MockExecutor::failing("raw fail"), false);
-        let input = RawQueryInput {
-            database: None,
-            transaction_type: "read".to_string(),
-            query: "match $p isa person;".to_string(),
-            metadata: HashMap::new(),
-        };
-        let result = pipeline.execute_raw(input).await;
-        let err = result.unwrap_err();
-        assert!(matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("raw fail")));
     }
 
     // =============================================

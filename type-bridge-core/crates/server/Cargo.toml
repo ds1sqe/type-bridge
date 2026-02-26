@@ -45,11 +45,6 @@ tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "crud_builder"
-harness = false
 
 [lints]
 workspace = true

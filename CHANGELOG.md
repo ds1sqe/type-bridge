@@ -2,54 +2,103 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
-## [1.4.0] - 2026-02-20
+## [Unreleased]
 
 ### New Features
 
-#### Rust Core Integration (PRs #95, #101–#107)
+#### Put (Upsert) Clause — `type-bridge-core-lib`
+- **Added `Clause::Put(Vec<Statement>)` variant** for idempotent insert (upsert) operations
+  - Parser: `parse_put_clause` with keyword lookahead in both `parse_patterns` and `parse_statements`
+  - Compiler: Generates `put\n<statements>;` TypeQL output
+  - Validation: Reuses Insert validation rules (`Clause::Insert | Clause::Put`)
+  - Full roundtrip support (parse → AST → compile → parse)
+
+### Refactoring
+
+#### Server API Simplification — `type-bridge-server`
+- **Removed CRUD convenience endpoints** (`/entities/*`, `/relations/*`) — the `/query` endpoint handles all AST-based queries
+- **Removed `/query/raw` endpoint** — raw TypeQL bypasses AST interception, defeating the middleware purpose
+- **Removed `CrudInfo` and `CrudInterceptor`** — built exclusively for CRUD handlers, dead weight without them
+- **Removed `execute_raw()` and `RawQueryInput`** from pipeline
+- **Removed `RawQueryRequest`** from transport types
+- **Removed `crud_builder` benchmark** and `criterion` dev-dependency
+- **Server now has 4 endpoints**: `POST /query`, `POST /query/validate`, `GET /health`, `GET /schema`
+
+## [1.4.0] - 2026-02-20
+
+### Highlights
+
+- 5 new Rust crates: `core-lib`, `orm`, `orm-derive`, `server`, and `python` (PyO3 bindings)
+- Up to **40x faster validation** and **2.5x faster query compilation** via the Rust backend
+- Async Rust ORM with derive macros, chainable queries, and batch operations
+- Query-intercepting proxy server with REST endpoints
+- MkDocs Material documentation site
+
+### New Features
+
+#### Rust Core — `type-bridge-core-lib` (PRs #95, #101-#108)
 - **TypeQL schema parser** with inheritance resolution and PyO3 bindings
 - **TypeQL query parser** with bidirectional AST roundtrip
-- **Schema-aware query validation** with PyO3 bindings
+- **Schema-aware query validation** with statement and pattern validators
 - **Rust-backed value coercion** and `format_value`
 - **Custom validation rules** with portable JSON DSL
 - **Wired Rust core into Python** compiler and validation pipeline
 
-#### Rust ORM — `type-bridge-orm` (PR #114)
-- **Async Rust ORM** with entity CRUD and mock-testable session layer
-- **Derive macros** — `TypeBridgeEntity`, `TypeBridgeAttribute`, `TypeBridgeRelation`
-- **Relation support** with update/put operations
+#### Async Rust ORM — `type-bridge-orm` (PR #114)
+- **Async ORM** with entity CRUD and mock-testable session layer
+- **Derive macros** — `#[derive(TypeBridgeEntity)]`, `#[derive(TypeBridgeRelation)]`, `#[derive(TypeBridgeAttribute)]`
 - **Chainable query builders** with expression filtering and aggregation
 - **Schema management** — registration, generation, diff, and sync
-- **Abstract types, inheritance, and code generator**
+- **Abstract types** with inheritance and code generation
 - **Batch operations** — `insert_many`, `delete_many`, `update_many`
 - **`FieldRef<A>`** for type-safe query field references
-- **`include_schema!` proc-macro** for compile-time TQL codegen
+- **`include_schema!`** proc-macro for compile-time TQL codegen
 - **Schema introspection** from live TypeDB database
 - **Group-by queries** with `GroupByResult`
 - **Role player field access** for relation query filtering
-- **Expression helpers** — `in_range`, `startswith`, `endswith`
-- **Connection pooling** with `Database::into_shared`
+- **Expression helpers** — `in_range()`, `startswith()`, `endswith()`
+- **Connection pooling** with `Database::into_shared()`
 - **Serde support** on all ORM model types
-- **Structured tracing spans** on all public methods
+- **Structured tracing** spans on all public methods
 
-#### Query Intercept Proxy Server — `type-bridge-server` (PR #109)
+#### Query Intercept Proxy — `type-bridge-server` (PR #109)
 - **REST CRUD endpoints** with schema-aware query building
-- **`CrudQueryBuilder` PyO3 class** for TypeQL generation
-- **Extensible library/framework architecture**
-- **207 tests** with 100% MC/DC coverage and CI codecov integration
+- **`CrudQueryBuilder` PyO3 class** for TypeQL generation from Python
+- **Extensible library/framework** — pluggable `QueryExecutor`, `Interceptor`, `SchemaSource`
+- **207 tests** with 100% MC/DC coverage
 
-### Improvements
+### Performance: Python vs Rust
 
-#### Documentation & CI
+#### Validation
+
+| Operation | Python | Rust | Speedup |
+|-----------|--------|------|---------|
+| Single type name | 1.89 us | 354.75 ns | **5.3x** |
+| Long name (100+ chars) | 24.90 us | 620.52 ns | **40.1x** |
+| Batch 1,000 names | 5.32 ms | 266.80 us | **19.9x** |
+| Batch 5,000 names | 28.02 ms | 1.33 ms | **21.1x** |
+
+#### Query Compilation (via serde bridge)
+
+| Operation | Python | Rust | Speedup |
+|-----------|--------|------|---------|
+| Standalone update | 93.28 us | 37.82 us | **2.5x** |
+| Large batch (200 clauses) | 2.26 ms | 1.07 ms | **2.1x** |
+| Heavy insert (100x6) | 1.71 ms | 896.19 us | **1.9x** |
+
+### Documentation & CI
+
 - **MkDocs + Material** documentation site with auto-generated API reference (PR #98)
-- **Rust crate CI** and multi-platform wheel builds (PR #95)
-- **Comprehensive benchmark suite** with TOML storage and diff support (PR #103)
-- Full documentation and metadata polish for Rust core
+- **Rust crate CI** with multi-platform wheel builds — Linux (x86_64, aarch64), macOS (x86_64, aarch64), Windows (x86_64) (PR #95)
+- **Comprehensive benchmark suite** with TOML storage, comparison reports, and markdown generation (PR #103)
+- **Codecov integration** for Rust coverage tracking (PR #109)
 
 ### Bug Fixes
 
 - Resolve Rust 1.93.0 clippy lint errors
 - Pin Python 3.13 for Rust CI jobs and fix coverage script
+- Add version specifiers to inter-crate path dependencies for crates.io publishing
+- Make release workflow idempotent (skip already-published packages)
 
 ## [1.3.0] - 2026-02-09
 

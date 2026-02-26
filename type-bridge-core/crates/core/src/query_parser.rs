@@ -590,6 +590,7 @@ fn parse_patterns(input: &mut &str) -> PResult<Vec<Pattern>> {
         ws_comments(input);
         if input.is_empty()
             || input.starts_with("insert")
+            || input.starts_with("put")
             || input.starts_with("delete")
             || input.starts_with("update")
             || input.starts_with("fetch")
@@ -897,6 +898,7 @@ fn parse_statements(input: &mut &str, ctx: StmtContext) -> PResult<Vec<Statement
         if input.is_empty()
             || input.starts_with("match")
             || input.starts_with("insert")
+            || input.starts_with("put")
             || input.starts_with("delete")
             || input.starts_with("update")
             || input.starts_with("fetch")
@@ -1202,6 +1204,7 @@ fn parse_clause(input: &mut &str) -> PResult<Clause> {
     alt((
         parse_match_clause,
         parse_insert_clause,
+        parse_put_clause,
         parse_delete_clause,
         parse_update_clause,
         parse_fetch_clause,
@@ -1257,6 +1260,14 @@ fn parse_insert_clause(input: &mut &str) -> PResult<Clause> {
     ws_comments(input);
     let stmts = parse_statements(input, StmtContext::Insert)?;
     Ok(Clause::Insert(stmts))
+}
+
+/// Parse a put clause: `put\n<statements>;`.
+fn parse_put_clause(input: &mut &str) -> PResult<Clause> {
+    literal("put").parse_next(input)?;
+    ws_comments(input);
+    let stmts = parse_statements(input, StmtContext::Insert)?;
+    Ok(Clause::Put(stmts))
 }
 
 /// Parse a delete clause: `delete\n<statements>;`.
@@ -2127,6 +2138,28 @@ mod tests {
             }
             _ => panic!("expected Insert"),
         }
+    }
+
+    #[test]
+    fn test_parse_put_clause() {
+        let input = "put\n$p isa person;\n$p has name \"Alice\";";
+        let clauses = parse_typeql_query(input).unwrap();
+        assert_eq!(clauses.len(), 1);
+        match &clauses[0] {
+            Clause::Put(stmts) => {
+                assert_eq!(stmts.len(), 2);
+            }
+            _ => panic!("expected Put"),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_put() {
+        let input = "match\n$p isa person;\nput\n$p has age 30;";
+        let clauses = parse_typeql_query(input).unwrap();
+        assert_eq!(clauses.len(), 2);
+        assert!(matches!(&clauses[0], Clause::Match(_)));
+        assert!(matches!(&clauses[1], Clause::Put(_)));
     }
 
     #[test]
