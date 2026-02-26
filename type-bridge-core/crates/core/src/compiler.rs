@@ -43,6 +43,13 @@ impl QueryCompiler {
                     .join(";\n");
                 format!("insert\n{};", s_str)
             }
+            Clause::Put(statements) => {
+                let s_str = statements.iter()
+                    .map(|s| self.compile_statement(s))
+                    .collect::<Vec<_>>()
+                    .join(";\n");
+                format!("put\n{};", s_str)
+            }
             Clause::Delete(statements) => {
                 let s_str = statements.iter()
                     .map(|s| self.compile_statement(s))
@@ -661,6 +668,16 @@ mod tests {
     }
 
     #[test]
+    fn test_clause_put() {
+        let c = compiler();
+        let clause = Clause::Put(vec![
+            Statement::Isa { variable: "$p".into(), type_name: "person".into() },
+            Statement::Has { subject_var: "$p".into(), attr_name: "name".into(), value: lit(json!("Alice"), "string") },
+        ]);
+        assert_eq!(c.compile_clause(&clause), "put\n$p isa person;\n$p has name \"Alice\";");
+    }
+
+    #[test]
     fn test_clause_delete() {
         let c = compiler();
         let clause = Clause::Delete(vec![Statement::DeleteThing("$p".into())]);
@@ -857,6 +874,18 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_clause_match_put() {
+        let c = compiler();
+        let clauses = vec![
+            Clause::Match(vec![Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false }]),
+            Clause::Put(vec![Statement::Has { subject_var: "$p".into(), attr_name: "age".into(), value: lit(json!(30), "long") }]),
+        ];
+        let result = c.compile(&clauses);
+        assert!(result.starts_with("match\n"));
+        assert!(result.contains("put\n"));
+    }
+
+    #[test]
     fn test_multi_clause_match_delete() {
         let c = compiler();
         let clauses = vec![
@@ -966,6 +995,16 @@ mod tests {
     #[test]
     fn test_roundtrip_relation_insert() {
         roundtrip("insert\n$r isa employment, links (employee: $p, employer: $c);");
+    }
+
+    #[test]
+    fn test_roundtrip_put() {
+        roundtrip("put\n$p isa person;\n$p has name \"Alice\";");
+    }
+
+    #[test]
+    fn test_roundtrip_match_put() {
+        roundtrip("match $p isa person, has name \"Alice\";\nput\n$p has age 30;");
     }
 
     #[test]

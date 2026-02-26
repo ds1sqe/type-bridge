@@ -235,6 +235,11 @@ pub enum Clause {
     MatchLet(Vec<LetAssignment>),
     /// An insert clause containing statements that create new data.
     Insert(Vec<Statement>),
+    /// A put clause containing statements for idempotent insert (upsert).
+    ///
+    /// Semantics: insert if not exists, otherwise return the existing match.
+    /// Uses the same statement syntax as `Insert`.
+    Put(Vec<Statement>),
     /// A delete clause containing statements that remove existing data.
     Delete(Vec<Statement>),
     /// An update clause containing statements that modify existing data.

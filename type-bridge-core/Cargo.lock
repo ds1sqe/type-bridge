@@ -2174,7 +2174,6 @@ dependencies = [
  "axum 0.8.8",
  "chrono",
  "clap",
- "criterion",
  "futures",
  "http-body-util",
  "serde",

@@ -654,7 +654,7 @@ impl ValidationEngine {
                     );
                 }
             }
-            Clause::Insert(stmts) => {
+            Clause::Insert(stmts) | Clause::Put(stmts) => {
                 self.validate_insert_stmts(stmts, schema, env, path, errors);
             }
             Clause::Delete(stmts) | Clause::Update(stmts) => {
@@ -2161,6 +2161,44 @@ mod schema_validation_tests {
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP"));
     }
+
+    // -- Put clause validation (same semantics as Insert) --------------------
+
+    #[test]
+    fn test_put_valid() {
+        let engine = ValidationEngine::new();
+        let schema = build_test_schema();
+        let clauses = vec![Clause::Put(vec![
+            Statement::Isa { variable: "$p".into(), type_name: "person".into() },
+            Statement::Has { subject_var: "$p".into(), attr_name: "name".into(), value: Value::Literal(LiteralValue { value: json!("Alice"), value_type: "string".into() }) },
+        ])];
+        let result = engine.validate_query(&clauses, &schema);
+        assert!(result.is_valid);
+    }
+
+    #[test]
+    fn test_put_unknown_type() {
+        let engine = ValidationEngine::new();
+        let schema = build_test_schema();
+        let clauses = vec![Clause::Put(vec![
+            Statement::Isa { variable: "$x".into(), type_name: "spaceship".into() },
+        ])];
+        let result = engine.validate_query(&clauses, &schema);
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_TYPE"));
+    }
+
+    #[test]
+    fn test_put_abstract_type() {
+        let engine = ValidationEngine::new();
+        let schema = build_test_schema();
+        let clauses = vec![Clause::Put(vec![
+            Statement::Isa { variable: "$a".into(), type_name: "animal".into() },
+        ])];
+        let result = engine.validate_query(&clauses, &schema);
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.code == "ABSTRACT_TYPE_INSTANTIATION"));
+    }
 }
 
 #[cfg(test)]
@@ -2398,4 +2436,5 @@ mod rule_tests {
         assert!(engine.validate_type_name("person", "entity").is_valid);
         assert!(!engine.validate_type_name("define", "entity").is_valid);
     }
+
 }
