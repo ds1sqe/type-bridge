@@ -55,6 +55,6 @@ pub mod transport;
 #[cfg(feature = "typedb")]
 pub mod typedb;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub(crate) mod test_helpers;
+pub mod test_helpers;

@@ -20,6 +20,7 @@ required-features = ["typedb", "axum-transport"]
 default = ["typedb", "axum-transport"]
 typedb = ["dep:typedb-driver", "dep:futures"]
 axum-transport = ["dep:axum", "dep:tower-http"]
+test-helpers = []
 
 [dependencies]
 type-bridge-core-lib = { path = "../core" }
@@ -42,6 +43,7 @@ axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 
 [dev-dependencies]
+type-bridge-server = { path = ".", features = ["test-helpers", "axum-transport"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
