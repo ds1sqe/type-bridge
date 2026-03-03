@@ -21,6 +21,7 @@ from type_bridge.attribute import (
 )
 from type_bridge.crud import (
     CrudEvent,
+    CrudHook,
     EntityNotFoundError,
     HookCancelled,
     KeyAttributeError,
@@ -50,7 +51,7 @@ from type_bridge.query import Query, QueryBuilder
 from type_bridge.session import Connection, Database, TransactionContext
 from type_bridge.typedb_driver import Credentials, TransactionType, TypeDB
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 __all__ = [
     # Database and session
@@ -94,6 +95,7 @@ __all__ = [
     "TypeDBManager",
     # Hooks
     "CrudEvent",
+    "CrudHook",
     "HookCancelled",
     # Proxy
     "ProxyDatabase",

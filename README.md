@@ -25,6 +25,7 @@ A modern, Pythonic ORM for [TypeDB](https://github.com/typedb/typedb) with an At
 - **Data Validation**: Automatic type checking and coercion via Pydantic, including keyword validation
 - **JSON Support**: Seamless JSON serialization/deserialization
 - **CRUD Operations**: Full CRUD with fetching API (get, filter, all, update) for entities and relations
+- **Lifecycle Hooks**: Pre/post-operation hooks for audit logging, validation, cache invalidation, and async notifications
 - **Chainable Operations**: Filter, delete, and bulk update with method chaining and lambda functions
 - **Query Builder**: Pythonic interface for building TypeQL queries
 - **Multi-player Roles**: A single role can accept multiple entity types via `Role.multi(...)`

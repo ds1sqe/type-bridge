@@ -4,7 +4,32 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-03-03
+
 ### New Features
+
+#### Lifecycle Hook System (PR #118, closes #116)
+
+Three-layer hook system for reacting to CRUD lifecycle events (audit logging, validation, cache invalidation, async notifications).
+
+##### Python ORM — `type_bridge.crud.hooks`
+- **`CrudEvent` enum** — `PRE_INSERT`, `POST_INSERT`, `PRE_UPDATE`, `POST_UPDATE`, `PRE_DELETE`, `POST_DELETE`, `PRE_PUT`, `POST_PUT`
+- **`LifecycleHook` protocol** — implement only the methods you need (`pre_insert`, `post_delete`, etc.)
+- **`HookCancelled` exception** — raise in a pre-hook to abort the operation
+- **Per-manager registration** — `manager.add_hook(hook)` / `manager.remove_hook(hook)`, chainable
+- **`should_run(event, sender)`** filtering by event type or model class
+- Pre-hooks run in registration order; post-hooks run in reverse order (middleware unwinding)
+- Zero overhead when no hooks are registered
+
+##### Rust ORM — `type-bridge-orm`
+- **`LifecycleHook` trait** with `HookContext`, `PreHookResult` (Continue/Reject), and `HookRunner`
+- Integrated into `EntityManager` and `RelationManager` via `add_hook()`
+- Same semantics as the Python layer (registration-order pre-hooks, reverse-order post-hooks)
+
+##### Rust Server — `type-bridge-server`
+- **`CrudInfo`** on `RequestContext` — operation, type_name, type_kind, attribute_names, iid
+- **`CrudInterceptor` trait** with `on_crud_request` / `on_crud_response` and `should_intercept`
+- **`CrudInterceptorAdapter`** bridges `CrudInterceptor` into the existing `Interceptor` chain
 
 #### Put (Upsert) Clause — `type-bridge-core-lib`
 - **Added `Clause::Put(Vec<Statement>)` variant** for idempotent insert (upsert) operations
@@ -16,11 +41,7 @@ All notable changes to TypeBridge will be documented in this file.
 ### Refactoring
 
 #### Server API Simplification — `type-bridge-server`
-- **Removed CRUD convenience endpoints** (`/entities/*`, `/relations/*`) — the `/query` endpoint handles all AST-based queries
-- **Removed `/query/raw` endpoint** — raw TypeQL bypasses AST interception, defeating the middleware purpose
-- **Removed `CrudInfo` and `CrudInterceptor`** — built exclusively for CRUD handlers, dead weight without them
-- **Removed `execute_raw()` and `RawQueryInput`** from pipeline
-- **Removed `RawQueryRequest`** from transport types
+- **Removed standalone CRUD module** (`/entities/*`, `/relations/*` endpoints, `CrudQueryBuilder`, raw query support) — superseded by the interceptor-based design
 - **Removed `crud_builder` benchmark** and `criterion` dev-dependency
 - **Server now has 4 endpoints**: `POST /query`, `POST /query/validate`, `GET /health`, `GET /schema`
 

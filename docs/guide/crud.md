@@ -1532,6 +1532,113 @@ def test_database_operations():
     mock_driver.databases.contains.assert_called_with("test_db")
 ```
 
+## Lifecycle Hooks
+
+Hooks let you react to CRUD events for cross-cutting concerns — audit logging, input validation, cache invalidation, auto-populating fields, and more.
+
+### Quick Example
+
+```python
+from type_bridge import CrudEvent, HookCancelled
+
+class AuditHook:
+    """Log every write operation."""
+
+    def post_insert(self, sender, instance):
+        print(f"[insert] {sender.__name__} iid={instance.iid}")
+
+    def post_update(self, sender, instance):
+        print(f"[update] {sender.__name__} iid={instance.iid}")
+
+    def post_delete(self, sender, instance):
+        print(f"[delete] {sender.__name__} iid={instance.iid}")
+
+
+manager = Person.manager(db)
+manager.add_hook(AuditHook())  # chainable — returns self
+```
+
+### Events
+
+The `CrudEvent` enum covers all eight lifecycle points:
+
+| Event | When it fires |
+|-------|---------------|
+| `PRE_INSERT` | Before inserting an entity/relation |
+| `POST_INSERT` | After a successful insert |
+| `PRE_UPDATE` | Before updating |
+| `POST_UPDATE` | After a successful update |
+| `PRE_DELETE` | Before deleting |
+| `POST_DELETE` | After a successful delete |
+| `PRE_PUT` | Before an idempotent put (upsert) |
+| `POST_PUT` | After a successful put |
+
+### Writing a Hook
+
+Hooks are **duck-typed** — implement only the methods you need. No base class required.
+
+```python
+class TimestampHook:
+    """Auto-populate created_at on insert."""
+
+    def pre_insert(self, sender, instance):
+        if hasattr(instance, "created_at") and instance.created_at is None:
+            instance.created_at = CreatedAt(datetime.now(timezone.utc))
+```
+
+### Cancelling Operations
+
+Raise `HookCancelled` in any pre-hook to abort the operation:
+
+```python
+class EmailDomainValidator:
+    def __init__(self, domain: str):
+        self.domain = domain
+
+    def pre_insert(self, sender, instance):
+        if hasattr(instance, "email"):
+            if not instance.email.value.endswith(f"@{self.domain}"):
+                raise HookCancelled(f"Email must end with @{self.domain}")
+
+    def pre_update(self, sender, instance):
+        self.pre_insert(sender, instance)  # same logic
+```
+
+### Filtering with `should_run`
+
+Implement `should_run(event, sender)` to restrict when a hook fires:
+
+```python
+class PersonOnlyHook:
+    def should_run(self, event, sender):
+        return sender.__name__ == "Person"
+
+    def post_insert(self, sender, instance):
+        print(f"New person: {instance}")
+```
+
+Without `should_run`, hooks run for every event on every model.
+
+### Registration and Composition
+
+```python
+manager = (
+    Person.manager(db)
+    .add_hook(TimestampHook())
+    .add_hook(EmailDomainValidator("company.com"))
+    .add_hook(AuditHook())
+)
+
+# Remove a hook later
+manager.remove_hook(audit_hook)
+```
+
+### Execution Order
+
+- **Pre-hooks** run in registration order. If any raises `HookCancelled`, the operation is aborted.
+- **Post-hooks** run in **reverse** registration order (middleware unwinding). Post-hook errors are logged but do not propagate.
+- **Zero overhead** when no hooks are registered — the runner short-circuits on an empty hook list.
+
 ## See Also
 
 - [Entities](entities.md) - Entity definition
