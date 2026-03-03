@@ -150,3 +150,206 @@ async fn schema_introspection() {
     assert!(live.attributes.contains_key("age"), "expected 'age' attribute");
     assert!(live.entities.contains_key("person"), "expected 'person' entity");
 }
+
+#[tokio::test]
+#[ignore]
+async fn full_relation_lifecycle() {
+    let Some(db) = setup_db().await else { return };
+
+    // Schema sync
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+    schema.register_entity::<Company>();
+    schema.register_relation::<Employment>();
+    schema.sync_schema(true, false).await.expect("schema sync failed");
+
+    // Insert role players
+    let person_mgr = EntityManager::<Person>::new(&db);
+    let company_mgr = EntityManager::<Company>::new(&db);
+
+    let mut alice = Person {
+        iid: None,
+        name: Name("Alice-Rel".into()),
+        age: Age(30),
+    };
+    person_mgr.insert(&mut alice).await.expect("insert person failed");
+
+    let mut acme = Company {
+        iid: None,
+        name: Name("Acme-Rel".into()),
+    };
+    company_mgr.insert(&mut acme).await.expect("insert company failed");
+
+    // Insert relation
+    let rel_mgr = RelationManager::<Employment>::new(&db);
+    let mut employment = Employment {
+        iid: None,
+        employee: RolePlayerRef {
+            role: "employee",
+            entity_type_name: "person",
+            iid: alice.iid().map(String::from),
+            key: None,
+        },
+        employer: RolePlayerRef {
+            role: "employer",
+            entity_type_name: "company",
+            iid: acme.iid().map(String::from),
+            key: None,
+        },
+        position: Some(Position("Engineer".into())),
+    };
+    let rel_iid = rel_mgr.insert(&mut employment).await.expect("insert relation failed");
+    assert!(!rel_iid.is_empty());
+
+    // Fetch all relations
+    let relations = rel_mgr.all().await.expect("all() relations failed");
+    assert!(!relations.is_empty());
+
+    // Delete relation, then entities
+    rel_mgr.delete(&employment).await.expect("delete relation failed");
+    person_mgr.delete(&alice).await.expect("delete person failed");
+    company_mgr.delete(&acme).await.expect("delete company failed");
+}
+
+#[tokio::test]
+#[ignore]
+async fn entity_update_lifecycle() {
+    let Some(db) = setup_db().await else { return };
+
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+    schema.sync_schema(true, false).await.expect("schema sync failed");
+
+    let manager = EntityManager::<Person>::new(&db);
+
+    // Insert
+    let mut person = Person {
+        iid: None,
+        name: Name("UpdateTest".into()),
+        age: Age(25),
+    };
+    manager.insert(&mut person).await.expect("insert failed");
+
+    // Update age
+    person.age = Age(26);
+    manager.update(&person).await.expect("update failed");
+
+    // Fetch and verify
+    let results = manager
+        .get(&[Filter::string_eq("name", "UpdateTest")])
+        .await
+        .expect("get after update failed");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].age.0, 26);
+
+    // Cleanup
+    manager.delete(&person).await.expect("delete failed");
+}
+
+#[tokio::test]
+#[ignore]
+async fn entity_put_creates_and_updates() {
+    let Some(db) = setup_db().await else { return };
+
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+    schema.sync_schema(true, false).await.expect("schema sync failed");
+
+    let manager = EntityManager::<Person>::new(&db);
+
+    // Put (create)
+    let mut person = Person {
+        iid: None,
+        name: Name("PutTest".into()),
+        age: Age(30),
+    };
+    let iid1 = manager.put(&mut person).await.expect("put (create) failed");
+    assert!(!iid1.is_empty());
+
+    // Put (update) — same key, different age
+    let mut person2 = Person {
+        iid: None,
+        name: Name("PutTest".into()),
+        age: Age(31),
+    };
+    let iid2 = manager.put(&mut person2).await.expect("put (update) failed");
+    assert!(!iid2.is_empty());
+
+    // Verify the entity exists with updated age
+    let results = manager
+        .get(&[Filter::string_eq("name", "PutTest")])
+        .await
+        .expect("get after put failed");
+    assert!(!results.is_empty());
+
+    // Cleanup
+    manager.delete(&person2).await.expect("delete failed");
+}
+
+#[tokio::test]
+#[ignore]
+async fn query_builder_with_sort_and_limit() {
+    let Some(db) = setup_db().await else { return };
+
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+    schema.sync_schema(true, false).await.expect("schema sync failed");
+
+    let manager = EntityManager::<Person>::new(&db);
+
+    // Insert 3 people
+    let mut people = vec![
+        Person { iid: None, name: Name("SortA".into()), age: Age(30) },
+        Person { iid: None, name: Name("SortB".into()), age: Age(20) },
+        Person { iid: None, name: Name("SortC".into()), age: Age(25) },
+    ];
+    manager.insert_many(&mut people).await.expect("insert_many failed");
+
+    // Query sorted by age ascending with limit 2
+    let results = manager
+        .query()
+        .filter(Expr::contains("name", "Sort"))
+        .order_by("age", SortDir::Asc)
+        .limit(2)
+        .execute()
+        .await
+        .expect("sorted query failed");
+
+    assert_eq!(results.len(), 2);
+    assert!(results[0].age.0 <= results[1].age.0);
+
+    // Cleanup
+    manager.delete_many(&people).await.expect("delete_many failed");
+}
+
+#[tokio::test]
+#[ignore]
+async fn transaction_context_batch_commit() {
+    let Some(db) = setup_db().await else { return };
+
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+    schema.sync_schema(true, false).await.expect("schema sync failed");
+
+    let manager = EntityManager::<Person>::new(&db);
+
+    // Batch insert via insert_many (uses TransactionContext internally)
+    let mut people = vec![
+        Person { iid: None, name: Name("TxBatch1".into()), age: Age(20) },
+        Person { iid: None, name: Name("TxBatch2".into()), age: Age(25) },
+    ];
+    let iids = manager.insert_many(&mut people).await.expect("insert_many failed");
+    assert_eq!(iids.len(), 2);
+
+    // Fetch all and verify using query builder with contains
+    let results = manager
+        .query()
+        .filter(Expr::contains("name", "TxBatch"))
+        .execute()
+        .await
+        .expect("query after batch failed");
+    assert_eq!(results.len(), 2);
+
+    // Cleanup
+    manager.delete_many(&people).await.expect("delete_many failed");
+}

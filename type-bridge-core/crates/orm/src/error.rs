@@ -45,6 +45,10 @@ pub enum OrmError {
     /// Serde JSON error.
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// A lifecycle hook rejected or failed the operation.
+    #[error("Hook error: {0}")]
+    Hook(#[from] crate::hooks::HookError),
 }
 
 /// Convenience Result alias for ORM operations.

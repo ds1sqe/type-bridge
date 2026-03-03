@@ -13,7 +13,7 @@
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
 //! | `typedb` | yes | TypeDB backend via [`TypeDBClient`](typedb::TypeDBClient) |
-//! | `axum-transport` | yes | HTTP server with `/query`, `/query/raw`, `/health`, `/schema` endpoints |
+//! | `axum-transport` | yes | HTTP server with `/query`, `/query/validate`, `/health`, `/schema` endpoints |
 //!
 //! Disable defaults with `--no-default-features` to use the core pipeline as
 //! a library without any transport or backend.
@@ -43,7 +43,6 @@
 //!   TypeQL schemas from custom sources.
 
 pub mod config;
-pub mod crud;
 pub mod error;
 pub mod executor;
 pub mod interceptor;
@@ -56,6 +55,6 @@ pub mod transport;
 #[cfg(feature = "typedb")]
 pub mod typedb;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub(crate) mod test_helpers;
+pub mod test_helpers;

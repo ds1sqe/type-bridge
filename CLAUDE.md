@@ -84,6 +84,7 @@ type_bridge/
 │   ├── base.py           # Type variables (E, R)
 │   ├── utils.py          # Shared utilities (format_value, is_multi_value_attribute)
 │   ├── exceptions.py     # CRUD exceptions
+│   ├── hooks.py          # Lifecycle hooks (CrudEvent, HookCancelled, CrudHook, HookRunner)
 │   ├── entity/           # Entity CRUD operations
 │   │   ├── __init__.py   # Entity module exports
 │   │   ├── manager.py    # EntityManager class

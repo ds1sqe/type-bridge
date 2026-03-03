@@ -4,10 +4,12 @@
 //! operations backed by the session layer.
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use crate::entity::TypeBridgeEntity;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
+use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
 use crate::query::EntityQuery;
 use crate::session::backend::{QueryResult, TxType};
 use crate::session::Database;
@@ -29,6 +31,7 @@ use super::query_builder;
 /// ```
 pub struct EntityManager<'db, T: TypeBridgeEntity> {
     db: &'db Database,
+    hooks: HookRunner,
     _marker: PhantomData<T>,
 }
 
@@ -37,8 +40,18 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     pub fn new(db: &'db Database) -> Self {
         Self {
             db,
+            hooks: HookRunner::new(),
             _marker: PhantomData,
         }
+    }
+
+    /// Register a lifecycle hook.
+    ///
+    /// Hooks run in registration order for pre-hooks and reverse order
+    /// for post-hooks. Returns `&mut Self` for chaining.
+    pub fn add_hook(&mut self, hook: Arc<dyn LifecycleHook>) -> &mut Self {
+        self.hooks.add_hook(hook);
+        self
     }
 
     /// Insert an entity and return the assigned IID.
@@ -46,11 +59,22 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// The entity's IID is also set in-place via [`TypeBridgeEntity::set_iid`].
     #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
     pub async fn insert(&self, entity: &mut T) -> Result<String> {
+        if self.hooks.has_hooks() {
+            let mut ctx = HookRunner::build_context(
+                T::TYPE_NAME,
+                TypeKind::Entity,
+                CrudOperation::Insert,
+                entity.to_attribute_values(),
+                entity.iid().map(String::from),
+            );
+            self.hooks.run_pre_hooks(&mut ctx).await?;
+        }
+
         let typeql = query_builder::build_insert_with_iid::<T>(entity, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "INSERT");
 
         let result = self.db.execute_raw(&typeql, TxType::Write).await?;
-        match result {
+        let iid = match result {
             QueryResult::Documents(docs) => {
                 let doc = docs.first().ok_or_else(|| OrmError::Hydration {
                     type_name: T::TYPE_NAME.into(),
@@ -77,7 +101,20 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
                 type_name: T::TYPE_NAME.into(),
                 message: "Expected Documents from insert+fetch, got Rows".into(),
             }),
+        }?;
+
+        if self.hooks.has_hooks() {
+            let ctx = HookRunner::build_context(
+                T::TYPE_NAME,
+                TypeKind::Entity,
+                CrudOperation::Insert,
+                entity.to_attribute_values(),
+                Some(iid.clone()),
+            );
+            self.hooks.run_post_hooks(&ctx).await;
         }
+
+        Ok(iid)
     }
 
     /// Fetch entities matching the given filters.
@@ -133,9 +170,32 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// attributes for matching.
     #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
     pub async fn delete(&self, entity: &T) -> Result<()> {
+        if self.hooks.has_hooks() {
+            let mut ctx = HookRunner::build_context(
+                T::TYPE_NAME,
+                TypeKind::Entity,
+                CrudOperation::Delete,
+                entity.to_attribute_values(),
+                entity.iid().map(String::from),
+            );
+            self.hooks.run_pre_hooks(&mut ctx).await?;
+        }
+
         let typeql = query_builder::build_delete::<T>(entity, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "DELETE");
         self.db.execute_raw(&typeql, TxType::Write).await?;
+
+        if self.hooks.has_hooks() {
+            let ctx = HookRunner::build_context(
+                T::TYPE_NAME,
+                TypeKind::Entity,
+                CrudOperation::Delete,
+                entity.to_attribute_values(),
+                entity.iid().map(String::from),
+            );
+            self.hooks.run_post_hooks(&ctx).await;
+        }
+
         Ok(())
     }
 
@@ -151,9 +211,32 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// all other attribute values. Only non-key attributes are modified.
     #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
     pub async fn update(&self, entity: &T) -> Result<()> {
+        if self.hooks.has_hooks() {
+            let mut ctx = HookRunner::build_context(
+                T::TYPE_NAME,
+                TypeKind::Entity,
+                CrudOperation::Update,
+                entity.to_attribute_values(),
+                entity.iid().map(String::from),
+            );
+            self.hooks.run_pre_hooks(&mut ctx).await?;
+        }
+
         let typeql = query_builder::build_update::<T>(entity, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "UPDATE");
         self.db.execute_raw(&typeql, TxType::Write).await?;
+
+        if self.hooks.has_hooks() {
+            let ctx = HookRunner::build_context(
+                T::TYPE_NAME,
+                TypeKind::Entity,
+                CrudOperation::Update,
+                entity.to_attribute_values(),
+                entity.iid().map(String::from),
+            );
+            self.hooks.run_post_hooks(&ctx).await;
+        }
+
         Ok(())
     }
 
@@ -163,11 +246,22 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// Returns the IID of the entity (existing or newly created).
     #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
     pub async fn put(&self, entity: &mut T) -> Result<String> {
+        if self.hooks.has_hooks() {
+            let mut ctx = HookRunner::build_context(
+                T::TYPE_NAME,
+                TypeKind::Entity,
+                CrudOperation::Put,
+                entity.to_attribute_values(),
+                entity.iid().map(String::from),
+            );
+            self.hooks.run_pre_hooks(&mut ctx).await?;
+        }
+
         let typeql = query_builder::build_put::<T>(entity, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "PUT");
 
         let result = self.db.execute_raw(&typeql, TxType::Write).await?;
-        match result {
+        let iid = match result {
             QueryResult::Documents(docs) => {
                 let doc = docs.first().ok_or_else(|| OrmError::Hydration {
                     type_name: T::TYPE_NAME.into(),
@@ -194,7 +288,20 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
                 type_name: T::TYPE_NAME.into(),
                 message: "Expected Documents from put+fetch, got Rows".into(),
             }),
+        }?;
+
+        if self.hooks.has_hooks() {
+            let ctx = HookRunner::build_context(
+                T::TYPE_NAME,
+                TypeKind::Entity,
+                CrudOperation::Put,
+                entity.to_attribute_values(),
+                Some(iid.clone()),
+            );
+            self.hooks.run_post_hooks(&ctx).await;
         }
+
+        Ok(iid)
     }
 
     /// Create a chainable query builder for this entity type.
@@ -224,8 +331,24 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// Insert multiple entities in a single transaction.
     ///
     /// Each entity's IID is set in-place. Returns a vector of assigned IIDs.
+    /// Pre-hooks run for ALL entities before the transaction starts; if any
+    /// rejects, the entire batch aborts. Post-hooks run after commit.
     #[tracing::instrument(skip(self, entities), fields(entity_type = T::TYPE_NAME, count = entities.len()))]
     pub async fn insert_many(&self, entities: &mut [T]) -> Result<Vec<String>> {
+        // Pre-hooks for all entities before the transaction.
+        if self.hooks.has_hooks() {
+            for entity in entities.iter() {
+                let mut ctx = HookRunner::build_context(
+                    T::TYPE_NAME,
+                    TypeKind::Entity,
+                    CrudOperation::Insert,
+                    entity.to_attribute_values(),
+                    entity.iid().map(String::from),
+                );
+                self.hooks.run_pre_hooks(&mut ctx).await?;
+            }
+        }
+
         let tx = self.db.transaction_context(TxType::Write).await?;
         let mut iids = Vec::with_capacity(entities.len());
 
@@ -261,12 +384,43 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         }
 
         tx.commit().await?;
+
+        // Post-hooks after successful commit.
+        if self.hooks.has_hooks() {
+            for entity in entities.iter() {
+                let ctx = HookRunner::build_context(
+                    T::TYPE_NAME,
+                    TypeKind::Entity,
+                    CrudOperation::Insert,
+                    entity.to_attribute_values(),
+                    entity.iid().map(String::from),
+                );
+                self.hooks.run_post_hooks(&ctx).await;
+            }
+        }
+
         Ok(iids)
     }
 
     /// Delete multiple entities in a single transaction.
+    ///
+    /// Pre-hooks run for ALL entities before the transaction. Post-hooks
+    /// run after commit.
     #[tracing::instrument(skip(self, entities), fields(entity_type = T::TYPE_NAME, count = entities.len()))]
     pub async fn delete_many(&self, entities: &[T]) -> Result<()> {
+        if self.hooks.has_hooks() {
+            for entity in entities {
+                let mut ctx = HookRunner::build_context(
+                    T::TYPE_NAME,
+                    TypeKind::Entity,
+                    CrudOperation::Delete,
+                    entity.to_attribute_values(),
+                    entity.iid().map(String::from),
+                );
+                self.hooks.run_pre_hooks(&mut ctx).await?;
+            }
+        }
+
         let tx = self.db.transaction_context(TxType::Write).await?;
         for entity in entities {
             let typeql = query_builder::build_delete::<T>(entity, "$e")?;
@@ -274,12 +428,42 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
             tx.query(&typeql).await?;
         }
         tx.commit().await?;
+
+        if self.hooks.has_hooks() {
+            for entity in entities {
+                let ctx = HookRunner::build_context(
+                    T::TYPE_NAME,
+                    TypeKind::Entity,
+                    CrudOperation::Delete,
+                    entity.to_attribute_values(),
+                    entity.iid().map(String::from),
+                );
+                self.hooks.run_post_hooks(&ctx).await;
+            }
+        }
+
         Ok(())
     }
 
     /// Update multiple entities in a single transaction.
+    ///
+    /// Pre-hooks run for ALL entities before the transaction. Post-hooks
+    /// run after commit.
     #[tracing::instrument(skip(self, entities), fields(entity_type = T::TYPE_NAME, count = entities.len()))]
     pub async fn update_many(&self, entities: &[T]) -> Result<()> {
+        if self.hooks.has_hooks() {
+            for entity in entities {
+                let mut ctx = HookRunner::build_context(
+                    T::TYPE_NAME,
+                    TypeKind::Entity,
+                    CrudOperation::Update,
+                    entity.to_attribute_values(),
+                    entity.iid().map(String::from),
+                );
+                self.hooks.run_pre_hooks(&mut ctx).await?;
+            }
+        }
+
         let tx = self.db.transaction_context(TxType::Write).await?;
         for entity in entities {
             let typeql = query_builder::build_update::<T>(entity, "$e")?;
@@ -287,6 +471,20 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
             tx.query(&typeql).await?;
         }
         tx.commit().await?;
+
+        if self.hooks.has_hooks() {
+            for entity in entities {
+                let ctx = HookRunner::build_context(
+                    T::TYPE_NAME,
+                    TypeKind::Entity,
+                    CrudOperation::Update,
+                    entity.to_attribute_values(),
+                    entity.iid().map(String::from),
+                );
+                self.hooks.run_post_hooks(&ctx).await;
+            }
+        }
+
         Ok(())
     }
 }

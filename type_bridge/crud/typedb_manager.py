@@ -8,11 +8,12 @@ implementation using the Strategy pattern.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from typedb.driver import TransactionType
 
 from type_bridge.crud.formatting import format_value
+from type_bridge.crud.hooks import CrudEvent, HookRunner
 from type_bridge.crud.strategies import EntityStrategy, ModelStrategy, RelationStrategy
 from type_bridge.crud.types import is_multi_value_attribute
 from type_bridge.models import Entity, Relation
@@ -49,6 +50,8 @@ class TypeDBManager[T: "TypeDBType"]:
         self.model_class = model_class
         self.compiler = QueryCompiler()
 
+        self._hook_runner = HookRunner()
+
         # Select strategy
         if issubclass(model_class, Entity):
             self.strategy: ModelStrategy = EntityStrategy()
@@ -56,6 +59,15 @@ class TypeDBManager[T: "TypeDBType"]:
             self.strategy = RelationStrategy()
         else:
             raise TypeError(f"Unsupported model type: {model_class}")
+
+    def add_hook(self, hook: Any) -> Self:
+        """Register a lifecycle hook. Returns self for chaining."""
+        self._hook_runner.add(hook)
+        return self
+
+    def remove_hook(self, hook: Any) -> None:
+        """Unregister a lifecycle hook."""
+        self._hook_runner.remove(hook)
 
     def _execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
         return self._executor.execute(query, tx_type)
@@ -271,6 +283,9 @@ class TypeDBManager[T: "TypeDBType"]:
         For relations, uses two roundtrips (insert, then fetch) because
         TypeDB 3.x relation inserts don't bind the variable.
         """
+        if self._hook_runner.has_hooks:
+            self._hook_runner.run_pre(CrudEvent.PRE_INSERT, self.model_class, instance)
+
         var = "$x"
 
         # Relations use include_variable=False in to_ast(), so $x isn't bound
@@ -283,6 +298,9 @@ class TypeDBManager[T: "TypeDBType"]:
             query_parts.append(self.compiler.compile(insert_clause))
             self._execute("\n".join(query_parts), TransactionType.WRITE)
             self._fetch_and_set_iid(instance, var)
+
+            if self._hook_runner.has_hooks:
+                self._hook_runner.run_post(CrudEvent.POST_INSERT, self.model_class, instance)
             return instance
 
         # Entities: Combined insert + fetch IID in single query
@@ -293,6 +311,9 @@ class TypeDBManager[T: "TypeDBType"]:
         else:
             # Fallback to separate fetch (for edge cases like types without keys)
             self._fetch_and_set_iid(instance, var)
+
+        if self._hook_runner.has_hooks:
+            self._hook_runner.run_post(CrudEvent.POST_INSERT, self.model_class, instance)
 
         return instance
 
@@ -768,6 +789,9 @@ class TypeDBManager[T: "TypeDBType"]:
         Returns:
             The updated instance
         """
+        if self._hook_runner.has_hooks:
+            self._hook_runner.run_pre(CrudEvent.PRE_UPDATE, self.model_class, instance)
+
         var = "$x"
         constraints = self.strategy.identify(instance)
         all_attrs = self.model_class.get_all_attributes()
@@ -876,10 +900,16 @@ class TypeDBManager[T: "TypeDBType"]:
         self._execute(full_query, TransactionType.WRITE)
         logger.info(f"Updated: {self.model_class.__name__}")
 
+        if self._hook_runner.has_hooks:
+            self._hook_runner.run_post(CrudEvent.POST_UPDATE, self.model_class, instance)
+
         return instance
 
     def delete(self, instance: T) -> T:
         """Delete an instance and return it."""
+        if self._hook_runner.has_hooks:
+            self._hook_runner.run_pre(CrudEvent.PRE_DELETE, self.model_class, instance)
+
         var = "$x"
 
         # Build AST-based match clause
@@ -900,6 +930,10 @@ class TypeDBManager[T: "TypeDBType"]:
         query = f"{match_str}\n{delete_str}"
 
         self._execute(query, TransactionType.WRITE)
+
+        if self._hook_runner.has_hooks:
+            self._hook_runner.run_post(CrudEvent.POST_DELETE, self.model_class, instance)
+
         return instance
 
     def all(self) -> list[T]:
@@ -918,9 +952,19 @@ class TypeDBManager[T: "TypeDBType"]:
         # Check if all instances are entities (can be batched)
         # Relations need individual handling due to role player match clauses
         if all(isinstance(inst, Entity) for inst in instances):
-            return self._batch_insert_entities(instances)
+            if self._hook_runner.has_hooks:
+                for instance in instances:
+                    self._hook_runner.run_pre(CrudEvent.PRE_INSERT, self.model_class, instance)
 
-        # Fallback for relations or mixed types
+            result = self._batch_insert_entities(instances)
+
+            if self._hook_runner.has_hooks:
+                for instance in result:
+                    self._hook_runner.run_post(CrudEvent.POST_INSERT, self.model_class, instance)
+
+            return result
+
+        # Fallback for relations or mixed types (hooks fire via self.insert)
         for instance in instances:
             self.insert(instance)
         return instances
@@ -993,6 +1037,9 @@ class TypeDBManager[T: "TypeDBType"]:
         Uses TypeQL's PUT clause for idempotent insertion.
         For entities, uses a single roundtrip. For relations, uses two.
         """
+        if self._hook_runner.has_hooks:
+            self._hook_runner.run_pre(CrudEvent.PRE_PUT, self.model_class, instance)
+
         var = "$x"
 
         # Relations use include_variable=False in to_ast(), so $x isn't bound.
@@ -1007,6 +1054,9 @@ class TypeDBManager[T: "TypeDBType"]:
             query_parts.append(put_query)
             self._execute("\n".join(query_parts), TransactionType.WRITE)
             self._fetch_and_set_iid(instance, var)
+
+            if self._hook_runner.has_hooks:
+                self._hook_runner.run_post(CrudEvent.POST_PUT, self.model_class, instance)
             return instance
 
         # Entities: Combined put + fetch IID in single query
@@ -1017,6 +1067,9 @@ class TypeDBManager[T: "TypeDBType"]:
         else:
             # Fallback to separate fetch (for edge cases like types without keys)
             self._fetch_and_set_iid(instance, var)
+
+        if self._hook_runner.has_hooks:
+            self._hook_runner.run_post(CrudEvent.POST_PUT, self.model_class, instance)
 
         return instance
 
@@ -1049,6 +1102,8 @@ class TypeDBManager[T: "TypeDBType"]:
             else:
                 without_iids.append(instance)
 
+        has_hooks = self._hook_runner.has_hooks
+
         # For strict mode, we need to check existence before deleting
         if strict:
             # Batch check existence for instances with IIDs
@@ -1066,10 +1121,16 @@ class TypeDBManager[T: "TypeDBType"]:
             # All exist - proceed with batch delete
             deleted: list[T] = []
             if with_iids:
+                if has_hooks:
+                    for inst in with_iids:
+                        self._hook_runner.run_pre(CrudEvent.PRE_DELETE, self.model_class, inst)
                 self._batch_delete_by_iid(with_iids)
+                if has_hooks:
+                    for inst in with_iids:
+                        self._hook_runner.run_post(CrudEvent.POST_DELETE, self.model_class, inst)
                 deleted.extend(with_iids)
             for inst in without_iids:
-                self.delete(inst)
+                self.delete(inst)  # hooks fire inside self.delete()
                 deleted.append(inst)
             return deleted
 
@@ -1082,10 +1143,16 @@ class TypeDBManager[T: "TypeDBType"]:
             existing_instances = [inst for inst in with_iids if inst._iid in existing_iids]
 
             if existing_instances:
+                if has_hooks:
+                    for inst in existing_instances:
+                        self._hook_runner.run_pre(CrudEvent.PRE_DELETE, self.model_class, inst)
                 self._batch_delete_by_iid(existing_instances)
+                if has_hooks:
+                    for inst in existing_instances:
+                        self._hook_runner.run_post(CrudEvent.POST_DELETE, self.model_class, inst)
                 deleted.extend(existing_instances)
 
-        # Handle instances without IIDs individually
+        # Handle instances without IIDs individually (hooks fire via self.delete)
         for inst in without_iids:
             if self._entity_exists(inst):
                 self.delete(inst)
@@ -1240,10 +1307,16 @@ class TypeDBManager[T: "TypeDBType"]:
         if not instances:
             return instances
 
+        has_hooks = self._hook_runner.has_hooks
+
         # Check if all instances are entities (can attempt batch)
         if all(isinstance(inst, Entity) for inst in instances):
+            if has_hooks:
+                for instance in instances:
+                    self._hook_runner.run_pre(CrudEvent.PRE_PUT, self.model_class, instance)
+
             try:
-                return self._batch_insert_entities(instances, use_put=True)
+                result = self._batch_insert_entities(instances, use_put=True)
             except Exception as e:
                 # Check if this is a key constraint violation
                 error_str = str(e)
@@ -1251,14 +1324,22 @@ class TypeDBManager[T: "TypeDBType"]:
                     logger.debug(
                         f"Batch put failed with constraint violation, falling back to individual: {e}"
                     )
-                    # Fall back to individual operations
+                    # Fall back to individual operations.
+                    # Note: pre-hooks may fire again via self.put() — acceptable
+                    # since the batch operation was rolled back.
                     for instance in instances:
                         self.put(instance)
                     return instances
                 # Re-raise other errors
                 raise
 
-        # Fallback for relations or mixed types
+            if has_hooks:
+                for instance in result:
+                    self._hook_runner.run_post(CrudEvent.POST_PUT, self.model_class, instance)
+
+            return result
+
+        # Fallback for relations or mixed types (hooks fire via self.put)
         for instance in instances:
             self.put(instance)
         return instances

@@ -60,6 +60,12 @@ pub struct MockExecutor {
     pub connected: Arc<Mutex<bool>>,
 }
 
+impl Default for MockExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockExecutor {
     pub fn new() -> Self {
         Self {
@@ -121,3 +127,4 @@ pub fn make_pipeline(executor: MockExecutor, with_schema: bool) -> QueryPipeline
 
     builder.build().expect("Failed to build test pipeline")
 }
+

@@ -58,6 +58,9 @@ alice = Person(name=Name("Alice"), age=Age(30))
 person_manager = Person.manager(db)
 person_manager.insert(alice)
 persons = person_manager.all()
+
+# 5. Add lifecycle hooks (optional)
+person_manager.add_hook(my_audit_hook)  # chainable
 ```
 
 ## Key Principles

@@ -135,7 +135,6 @@ mod tests {
 
         let interceptor = MinimalInterceptor;
 
-        // Exercise name() and on_request() to cover all methods
         assert_eq!(interceptor.name(), "minimal");
         let mut ctx = RequestContext {
             request_id: "req-1".into(),
@@ -168,7 +167,6 @@ mod tests {
         }
 
         let boxed: Box<dyn Interceptor> = Box::new(DummyInterceptor);
-        // Exercise methods through trait object
         assert_eq!(boxed.name(), "dummy");
         let mut ctx = RequestContext {
             request_id: "req-1".into(),
