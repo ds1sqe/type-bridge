@@ -309,7 +309,7 @@ async fn query_builder_with_sort_and_limit() {
     let results = manager
         .query()
         .filter(Expr::contains("name", "Sort"))
-        .sort("age", SortDirection::Asc)
+        .order_by("age", SortDir::Asc)
         .limit(2)
         .execute()
         .await
@@ -341,11 +341,13 @@ async fn transaction_context_batch_commit() {
     let iids = manager.insert_many(&mut people).await.expect("insert_many failed");
     assert_eq!(iids.len(), 2);
 
-    // Fetch all and verify
+    // Fetch all and verify using query builder with contains
     let results = manager
-        .get(&[Filter::contains("name", "TxBatch")])
+        .query()
+        .filter(Expr::contains("name", "TxBatch"))
+        .execute()
         .await
-        .expect("get after batch failed");
+        .expect("query after batch failed");
     assert_eq!(results.len(), 2);
 
     // Cleanup

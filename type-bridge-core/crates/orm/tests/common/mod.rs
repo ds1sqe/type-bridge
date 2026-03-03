@@ -331,6 +331,7 @@ pub struct RecordingHook {
 }
 
 impl RecordingHook {
+    #[allow(clippy::type_complexity)]
     pub fn new() -> (Self, Arc<Mutex<Vec<(String, CrudOperation)>>>) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         (
