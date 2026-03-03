@@ -37,18 +37,19 @@ A modern, Pythonic ORM for [TypeDB](https://github.com/typedb/typedb) with an At
 ## Installation
 
 ```bash
-# Clone the repository
+# Install from PyPI
+pip install type-bridge
+
+# Or with uv
+uv add type-bridge
+```
+
+**From source:**
+
+```bash
 git clone https://github.com/ds1sqe/type-bridge.git
 cd type_bridge
-
-# Install with uv
 uv sync
-
-# Or with pip
-pip install -e .
-
-# Or add to project with uv
-uv add type-bridge
 ```
 
 ## Quick Start
@@ -324,7 +325,7 @@ TypeBridge uses a two-tier testing approach with **100% test pass rate**:
 
 ```bash
 # Unit tests (fast, no external dependencies) - DEFAULT
-uv run pytest                              # Run unit tests (0.3s)
+uv run pytest                              # Run unit tests
 uv run pytest tests/unit/attributes/ -v   # Test all 9 attribute types
 uv run pytest tests/unit/core/ -v         # Test core functionality
 uv run pytest tests/unit/flags/ -v        # Test flag system
@@ -353,25 +354,27 @@ uv run pytest -m "" -v                    # Run all tests
 
 The project includes a Rust core (`type-bridge-core/`) that provides high-performance implementations of the query compiler, validation engine, and value coercer. When the native extension is installed, Python automatically delegates to Rust for:
 
-- **Validation** — ~8.6x faster schema-aware query validation
-- **Compilation** — ~1.3x faster AST-to-TypeQL compilation via serde bridge
+- **Validation** — up to 40x faster schema-aware query validation
+- **Compilation** — up to 2.5x faster AST-to-TypeQL compilation via serde bridge
 - **Value coercion** — Type-safe value coercion and TypeQL literal formatting
 
-The Rust core is a Cargo workspace with three crates:
+The Rust core is a Cargo workspace with five crates:
 
 | Crate | Description |
 |-------|-------------|
 | `type-bridge-core-lib` | Pure-Rust AST, schema parser, query compiler, and validation engine |
+| `type-bridge-orm` | Async ORM with entity/relation managers, chainable queries, and batch operations |
+| `type-bridge-orm-derive` | Derive macros for `TypeBridgeEntity`, `TypeBridgeRelation`, `TypeBridgeAttribute` |
 | `type-bridge-core` | PyO3 bindings exposing the Rust core to Python |
-| `type-bridge-server` | Transport-agnostic query pipeline with HTTP API |
+| `type-bridge-server` | Transport-agnostic query pipeline with interceptor chain and HTTP API |
 
 See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instructions and architecture details.
 
 ## Requirements
 
 - Python 3.13+
-- TypeDB 3.7.0-rc0 server (fully compatible)
-- typedb-driver>=3.7.0
+- TypeDB 3.x server
+- typedb-driver>=3.8.0
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
 - lark>=1.1.9 (for schema parsing)
