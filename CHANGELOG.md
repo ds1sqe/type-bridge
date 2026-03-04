@@ -4,6 +4,13 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-03-04
+
+##### Rust Server — `type-bridge-server`
+- **`CrudInfo`** on `RequestContext` — operation, type_name, type_kind, attribute_names, iid
+- **`CrudInterceptor` trait** with `on_crud_request` / `on_crud_response` and `should_intercept`
+- **`CrudInterceptorAdapter`** bridges `CrudInterceptor` into the existing `Interceptor` chain
+
 ## [1.4.1] - 2026-03-03
 
 ### New Features
@@ -25,11 +32,6 @@ Three-layer hook system for reacting to CRUD lifecycle events (audit logging, va
 - **`LifecycleHook` trait** with `HookContext`, `PreHookResult` (Continue/Reject), and `HookRunner`
 - Integrated into `EntityManager` and `RelationManager` via `add_hook()`
 - Same semantics as the Python layer (registration-order pre-hooks, reverse-order post-hooks)
-
-##### Rust Server — `type-bridge-server`
-- **`CrudInfo`** on `RequestContext` — operation, type_name, type_kind, attribute_names, iid
-- **`CrudInterceptor` trait** with `on_crud_request` / `on_crud_response` and `should_intercept`
-- **`CrudInterceptorAdapter`** bridges `CrudInterceptor` into the existing `Interceptor` chain
 
 #### Put (Upsert) Clause — `type-bridge-core-lib`
 - **Added `Clause::Put(Vec<Statement>)` variant** for idempotent insert (upsert) operations
