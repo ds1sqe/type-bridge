@@ -420,10 +420,7 @@ fn relation_derive_to_attribute_values_with_optionals() {
     // Only position, start_date is None
     assert_eq!(values.len(), 1);
     assert_eq!(values[0].0, "position");
-    assert_eq!(
-        values[0].1,
-        AttributeValue::String("Engineer".into())
-    );
+    assert_eq!(values[0].1, AttributeValue::String("Engineer".into()));
 }
 
 #[test]
@@ -685,10 +682,10 @@ fn relation_no_parent_default() {
 // Schema generation with abstract types and inheritance (uses mock backend)
 
 mod mock_backend {
+    use type_bridge_orm::OrmError;
     use type_bridge_orm::session::backend::{
         BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
     };
-    use type_bridge_orm::OrmError;
 
     struct NoopTx;
 
@@ -837,7 +834,10 @@ fn relation_fields_have_role_refs() {
         Expr::RolePlayer { role, inner } => {
             assert_eq!(role, "employee");
             match *inner {
-                Expr::Gte { ref attr, ref value } => {
+                Expr::Gte {
+                    ref attr,
+                    ref value,
+                } => {
                     assert_eq!(attr, "age");
                     assert_eq!(*value, AttributeValue::Long(30));
                 }
@@ -856,7 +856,10 @@ fn relation_fields_employer_role_ref() {
         Expr::RolePlayer { role, inner } => {
             assert_eq!(role, "employer");
             match *inner {
-                Expr::Contains { ref attr, ref substring } => {
+                Expr::Contains {
+                    ref attr,
+                    ref substring,
+                } => {
                     assert_eq!(attr, "name");
                     assert_eq!(substring, "Corp");
                 }

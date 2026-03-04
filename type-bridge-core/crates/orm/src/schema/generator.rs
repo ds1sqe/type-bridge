@@ -124,13 +124,7 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
             .parent_type
             .as_ref()
             .and_then(|p| info.relations.get(p))
-            .map(|parent| {
-                parent
-                    .roles
-                    .iter()
-                    .map(|r| r.role_name.as_str())
-                    .collect()
-            })
+            .map(|parent| parent.roles.iter().map(|r| r.role_name.as_str()).collect())
             .unwrap_or_default();
 
         let mut parts = Vec::new();

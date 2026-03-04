@@ -70,5 +70,9 @@ fn main() {
         eprintln!("  wrote {}", path.display());
     }
 
-    eprintln!("Done! Generated {} files in {}", files.len(), output_dir.display());
+    eprintln!(
+        "Done! Generated {} files in {}",
+        files.len(),
+        output_dir.display()
+    );
 }

@@ -232,16 +232,14 @@ fn parse_attribute_opt<'a>(input: &mut &'a str, attr: &mut AttributeType) -> PRe
             literal("@values").parse_next(i)?;
             ws_comments(i);
             let vals: Vec<String> =
-                delimited("(", separated(1.., padded(string_literal), ","), ")")
-                    .parse_next(i)?;
+                delimited("(", separated(1.., padded(string_literal), ","), ")").parse_next(i)?;
             attr.allowed_values = Some(vals);
             Ok(())
         },
         |i: &mut &'a str| {
             literal("@range").parse_next(i)?;
             ws_comments(i);
-            let content: &str =
-                delimited("(", take_until(0.., ")"), ")").parse_next(i)?;
+            let content: &str = delimited("(", take_until(0.., ")"), ")").parse_next(i)?;
             let content = content.trim();
             if let Some((min_s, max_s)) = content.split_once("..") {
                 let min_s = min_s.trim();
@@ -354,10 +352,7 @@ fn parse_relation_def(input: &mut &str) -> PResult<RelationType> {
     Ok(relation)
 }
 
-fn parse_relation_clause<'a>(
-    input: &mut &'a str,
-    relation: &mut RelationType,
-) -> PResult<()> {
+fn parse_relation_clause<'a>(input: &mut &'a str, relation: &mut RelationType) -> PResult<()> {
     alt((
         |i: &mut &'a str| {
             literal("sub").parse_next(i)?;
@@ -430,8 +425,7 @@ fn parse_owns_statement(input: &mut &str) -> PResult<OwnedAttribute> {
             |i: &mut &str| {
                 literal("@subkey").parse_next(i)?;
                 ws_comments(i);
-                let group: &str =
-                    delimited("(", padded(identifier), ")").parse_next(i)?;
+                let group: &str = delimited("(", padded(identifier), ")").parse_next(i)?;
                 owned.subkey_group = Some(group.to_string());
                 Ok(())
             },
@@ -584,9 +578,10 @@ fn skip_struct_def(input: &mut &str) -> PResult<()> {
 
 /// Parse an identifier: `[a-zA-Z_][a-zA-Z0-9_-]*`
 fn identifier<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    let ident: &str =
-        take_while(1.., |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            .parse_next(input)?;
+    let ident: &str = take_while(1.., |c: char| {
+        c.is_ascii_alphanumeric() || c == '_' || c == '-'
+    })
+    .parse_next(input)?;
 
     let first = ident.chars().next().unwrap();
     if !first.is_ascii_alphabetic() && first != '_' {
@@ -761,8 +756,18 @@ mod tests {
     #[test]
     fn test_value_type_name() {
         for vt in &[
-            "string", "integer", "double", "boolean", "date", "datetime",
-            "datetime-tz", "decimal", "duration", "long", "bool", "int",
+            "string",
+            "integer",
+            "double",
+            "boolean",
+            "date",
+            "datetime",
+            "datetime-tz",
+            "decimal",
+            "duration",
+            "long",
+            "bool",
+            "int",
         ] {
             let mut input = *vt;
             let result = value_type_name(&mut input).unwrap();
@@ -803,7 +808,13 @@ mod tests {
     fn test_card_annotation_bounded() {
         let mut input = "@card(1..3)";
         let card = parse_card_annotation(&mut input).unwrap();
-        assert_eq!(card, Cardinality { min: 1, max: Some(3) });
+        assert_eq!(
+            card,
+            Cardinality {
+                min: 1,
+                max: Some(3)
+            }
+        );
     }
 
     #[test]
@@ -817,14 +828,26 @@ mod tests {
     fn test_card_annotation_exact() {
         let mut input = "@card(5)";
         let card = parse_card_annotation(&mut input).unwrap();
-        assert_eq!(card, Cardinality { min: 5, max: Some(5) });
+        assert_eq!(
+            card,
+            Cardinality {
+                min: 5,
+                max: Some(5)
+            }
+        );
     }
 
     #[test]
     fn test_card_annotation_optional() {
         let mut input = "@card(0..1)";
         let card = parse_card_annotation(&mut input).unwrap();
-        assert_eq!(card, Cardinality { min: 0, max: Some(1) });
+        assert_eq!(
+            card,
+            Cardinality {
+                min: 0,
+                max: Some(1)
+            }
+        );
     }
 
     // --- Attribute definition tests ---
@@ -841,8 +864,7 @@ mod tests {
     #[test]
     fn test_parse_attribute_all_value_types() {
         for vt in &[
-            "string", "integer", "double", "boolean", "date", "datetime",
-            "decimal", "duration",
+            "string", "integer", "double", "boolean", "date", "datetime", "decimal", "duration",
         ] {
             let input = format!("define\nattribute test-attr, value {};", vt);
             let schema = parse_typeql(&input).unwrap();
@@ -942,7 +964,9 @@ mod tests {
     fn test_parse_entity_with_subkey() {
         let schema = parse_typeql("define\nentity person, owns name @subkey(name_group);").unwrap();
         assert_eq!(
-            schema.entities.get("person").unwrap().owns[0].subkey_group.as_deref(),
+            schema.entities.get("person").unwrap().owns[0]
+                .subkey_group
+                .as_deref(),
             Some("name_group")
         );
     }
@@ -952,7 +976,10 @@ mod tests {
         let schema = parse_typeql("define\nentity person, owns nickname @card(0..3);").unwrap();
         assert_eq!(
             schema.entities.get("person").unwrap().owns[0].cardinality,
-            Some(Cardinality { min: 0, max: Some(3) })
+            Some(Cardinality {
+                min: 0,
+                max: Some(3)
+            })
         );
     }
 
@@ -969,7 +996,10 @@ mod tests {
             parse_typeql("define\nentity person, plays friendship:friend @card(0..5);").unwrap();
         assert_eq!(
             schema.entities.get("person").unwrap().plays[0].cardinality,
-            Some(Cardinality { min: 0, max: Some(5) })
+            Some(Cardinality {
+                min: 0,
+                max: Some(5)
+            })
         );
     }
 
@@ -1029,7 +1059,10 @@ mod tests {
             parse_typeql("define\nrelation friendship, relates friend @card(2..2);").unwrap();
         assert_eq!(
             schema.relations.get("friendship").unwrap().roles[0].cardinality,
-            Some(Cardinality { min: 2, max: Some(2) })
+            Some(Cardinality {
+                min: 2,
+                max: Some(2)
+            })
         );
     }
 
@@ -1074,8 +1107,7 @@ mod tests {
 
     #[test]
     fn test_block_comments_ignored() {
-        let schema =
-            parse_typeql("define\n/* block */\nattribute name, value string;").unwrap();
+        let schema = parse_typeql("define\n/* block */\nattribute name, value string;").unwrap();
         assert_eq!(schema.attributes.len(), 1);
     }
 
@@ -1259,9 +1291,21 @@ entity person
         assert_eq!(person.owns.len(), 3);
         assert_eq!(person.plays.len(), 2);
         assert!(person.owns[0].is_key);
-        assert_eq!(person.owns[1].cardinality, Some(Cardinality { min: 0, max: Some(1) }));
+        assert_eq!(
+            person.owns[1].cardinality,
+            Some(Cardinality {
+                min: 0,
+                max: Some(1)
+            })
+        );
         assert!(person.owns[2].is_unique);
-        assert_eq!(person.plays[0].cardinality, Some(Cardinality { min: 0, max: Some(10) }));
+        assert_eq!(
+            person.plays[0].cardinality,
+            Some(Cardinality {
+                min: 0,
+                max: Some(10)
+            })
+        );
         assert!(person.plays[1].cardinality.is_none());
     }
 

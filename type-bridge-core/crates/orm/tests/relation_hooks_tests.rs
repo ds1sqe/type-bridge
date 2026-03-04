@@ -152,7 +152,7 @@ async fn post_hook_error_does_not_propagate() {
 #[tokio::test]
 async fn should_run_filters_by_operation() {
     let backend = MockBackend::new(vec![
-        QueryResult::Ok,          // for delete
+        QueryResult::Ok,           // for delete
         insert_response("0xrel1"), // for insert
     ]);
     let db = Database::with_backend(Box::new(backend), "testdb");
@@ -243,10 +243,7 @@ async fn rejection_short_circuits_subsequent_hooks() {
 
 #[tokio::test]
 async fn insert_many_fires_hooks_per_relation() {
-    let backend = MockBackend::new(vec![
-        insert_response("0xbr2"),
-        insert_response("0xbr1"),
-    ]);
+    let backend = MockBackend::new(vec![insert_response("0xbr2"), insert_response("0xbr1")]);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
     let (hook, calls) = RecordingHook::new();
@@ -286,10 +283,7 @@ async fn insert_many_fires_hooks_per_relation() {
 
 #[tokio::test]
 async fn insert_many_rejection_aborts_entire_batch() {
-    let backend = MockBackend::new(vec![
-        insert_response("0xbr2"),
-        insert_response("0xbr1"),
-    ]);
+    let backend = MockBackend::new(vec![insert_response("0xbr2"), insert_response("0xbr1")]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
@@ -384,10 +378,8 @@ async fn pre_hook_receives_correct_context() {
         fn after_operation<'a>(
             &'a self,
             _ctx: &'a HookContext,
-        ) -> type_bridge_orm::session::backend::BoxFuture<
-            'a,
-            std::result::Result<(), HookError>,
-        > {
+        ) -> type_bridge_orm::session::backend::BoxFuture<'a, std::result::Result<(), HookError>>
+        {
             Box::pin(async { Ok(()) })
         }
     }

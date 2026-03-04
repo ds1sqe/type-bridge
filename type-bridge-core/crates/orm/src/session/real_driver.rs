@@ -16,11 +16,7 @@ pub struct RealBackend {
 
 impl RealBackend {
     /// Connect to a TypeDB server.
-    pub async fn connect(
-        address: &str,
-        username: &str,
-        password: &str,
-    ) -> Result<Self, OrmError> {
+    pub async fn connect(address: &str, username: &str, password: &str) -> Result<Self, OrmError> {
         let driver = TypeDBDriver::new(
             address,
             Credentials::new(username, password),
@@ -114,8 +110,7 @@ impl TransactionOps for RealTransaction {
                     let json_docs = docs
                         .into_iter()
                         .map(|doc| {
-                            serde_json::to_value(doc.into_json())
-                                .unwrap_or(serde_json::Value::Null)
+                            serde_json::to_value(doc.into_json()).unwrap_or(serde_json::Value::Null)
                         })
                         .collect();
                     Ok(QueryResult::Documents(json_docs))
@@ -148,10 +143,7 @@ fn concept_to_json(concept: &typedb_driver::concept::Concept) -> serde_json::Val
         serde_json::Value::String(concept.get_label().into()),
     );
     if let Some(iid) = concept.try_get_iid() {
-        obj.insert(
-            "iid".into(),
-            serde_json::Value::String(iid.to_string()),
-        );
+        obj.insert("iid".into(), serde_json::Value::String(iid.to_string()));
     }
     if let Some(value) = concept.try_get_value() {
         obj.insert("value".into(), value_to_json(value));

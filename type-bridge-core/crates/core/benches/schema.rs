@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use type_bridge_core_lib::schema::TypeSchema;
 
 const SMALL_SCHEMA: &str = r#"
@@ -102,10 +102,7 @@ fn bench_resolve_inheritance(c: &mut Criterion) {
     tql.push_str("attribute name, value string;\n");
     tql.push_str("entity level-0 @abstract, owns name;\n");
     for i in 1..=10 {
-        tql.push_str(&format!(
-            "attribute attr-{}, value string;\n",
-            i
-        ));
+        tql.push_str(&format!("attribute attr-{}, value string;\n", i));
         tql.push_str(&format!(
             "entity level-{} sub level-{}, owns attr-{};\n",
             i,

@@ -27,8 +27,7 @@ enum AuditWriter {
 impl AuditWriter {
     #[cfg_attr(coverage_nightly, coverage(off))]
     fn write_entry(&mut self, entry: &AuditEntry) -> Result<(), std::io::Error> {
-        let json = serde_json::to_string(entry)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string(entry).map_err(std::io::Error::other)?;
         match self {
             AuditWriter::Stdout => {
                 println!("{}", json);
@@ -83,7 +82,9 @@ impl Interceptor for AuditLogInterceptor {
         &'a self,
         clauses: Vec<Clause>,
         ctx: &'a mut RequestContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             ctx.metadata.insert(
                 "audit_clause_count".to_string(),
@@ -97,7 +98,8 @@ impl Interceptor for AuditLogInterceptor {
         &'a self,
         _result: &'a serde_json::Value,
         ctx: &'a RequestContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let entry = AuditEntry {
                 timestamp: ctx.timestamp.to_rfc3339(),
@@ -119,9 +121,7 @@ impl Interceptor for AuditLogInterceptor {
             };
 
             let mut writer = self.writer.lock().await;
-            writer
-                .write_entry(&entry)
-                .map_err(io_to_intercept_error)
+            writer.write_entry(&entry).map_err(io_to_intercept_error)
         })
     }
 }
@@ -142,6 +142,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: None,
         }
     }
 
@@ -175,8 +176,13 @@ mod tests {
             output: "file".into(),
             file_path: String::new(),
         };
-        let err = AuditLogInterceptor::new(&config).err().expect("Expected error for empty file_path");
-        assert!(err.contains("file_path is required"), "Unexpected error: {err}");
+        let err = AuditLogInterceptor::new(&config)
+            .err()
+            .expect("Expected error for empty file_path");
+        assert!(
+            err.contains("file_path is required"),
+            "Unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -185,7 +191,9 @@ mod tests {
             output: "file".into(),
             file_path: "/nonexistent/directory/audit.log".into(),
         };
-        let err = AuditLogInterceptor::new(&config).err().expect("Expected error for invalid path");
+        let err = AuditLogInterceptor::new(&config)
+            .err()
+            .expect("Expected error for invalid path");
         assert!(err.contains("Failed to open"), "Unexpected error: {err}");
     }
 
@@ -195,8 +203,13 @@ mod tests {
             output: "kafka".into(),
             file_path: String::new(),
         };
-        let err = AuditLogInterceptor::new(&config).err().expect("Expected error for unknown output type");
-        assert!(err.contains("Unknown audit-log output type: kafka"), "Unexpected error: {err}");
+        let err = AuditLogInterceptor::new(&config)
+            .err()
+            .expect("Expected error for unknown output type");
+        assert!(
+            err.contains("Unknown audit-log output type: kafka"),
+            "Unexpected error: {err}"
+        );
     }
 
     // --- name() ---
@@ -222,10 +235,7 @@ mod tests {
         let interceptor = AuditLogInterceptor::new(&config).unwrap();
         let mut ctx = make_ctx();
 
-        let clauses = vec![
-            Clause::Match(vec![]),
-            Clause::Fetch(vec![]),
-        ];
+        let clauses = vec![Clause::Match(vec![]), Clause::Fetch(vec![])];
         interceptor.on_request(clauses, &mut ctx).await.unwrap();
 
         let count = ctx.metadata.get("audit_clause_count").unwrap();
@@ -273,8 +283,12 @@ mod tests {
         let interceptor = AuditLogInterceptor::new(&config).unwrap();
 
         let mut ctx = make_ctx();
-        ctx.metadata.insert("audit_clause_count".into(), serde_json::json!(3));
-        ctx.metadata.insert("compiled_typeql".into(), serde_json::json!("match $p isa person;"));
+        ctx.metadata
+            .insert("audit_clause_count".into(), serde_json::json!(3));
+        ctx.metadata.insert(
+            "compiled_typeql".into(),
+            serde_json::json!("match $p isa person;"),
+        );
 
         interceptor
             .on_response(&serde_json::json!({}), &ctx)
@@ -367,8 +381,12 @@ mod tests {
         let interceptor = AuditLogInterceptor::new(&config).unwrap();
 
         let mut ctx = make_ctx();
-        ctx.metadata.insert("audit_clause_count".into(), serde_json::json!(5));
-        ctx.metadata.insert("compiled_typeql".into(), serde_json::json!("match $x isa thing;"));
+        ctx.metadata
+            .insert("audit_clause_count".into(), serde_json::json!(5));
+        ctx.metadata.insert(
+            "compiled_typeql".into(),
+            serde_json::json!("match $x isa thing;"),
+        );
 
         interceptor
             .on_response(&serde_json::json!({"data": true}), &ctx)
@@ -392,8 +410,14 @@ mod tests {
         let interceptor = AuditLogInterceptor::new(&config).unwrap();
 
         let ctx = make_ctx();
-        interceptor.on_response(&serde_json::json!({}), &ctx).await.unwrap();
-        interceptor.on_response(&serde_json::json!({}), &ctx).await.unwrap();
+        interceptor
+            .on_response(&serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        interceptor
+            .on_response(&serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.trim().lines().collect();
@@ -409,8 +433,12 @@ mod tests {
         let interceptor = AuditLogInterceptor::new(&config).unwrap();
 
         let mut ctx = make_ctx();
-        ctx.metadata.insert("audit_clause_count".into(), serde_json::json!(1));
-        ctx.metadata.insert("compiled_typeql".into(), serde_json::json!("match $x isa thing;"));
+        ctx.metadata
+            .insert("audit_clause_count".into(), serde_json::json!(1));
+        ctx.metadata.insert(
+            "compiled_typeql".into(),
+            serde_json::json!("match $x isa thing;"),
+        );
 
         // Stdout writer should succeed without error
         let result = interceptor

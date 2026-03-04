@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use type_bridge_core_lib::ast::Clause;
 use type_bridge_server::config::AuditLogConfig;
@@ -391,10 +391,7 @@ async fn pipeline_with_multiple_interceptors_ordering() {
     assert_eq!(req2.load(Ordering::SeqCst), 1);
     assert_eq!(resp1.load(Ordering::SeqCst), 1);
     assert_eq!(resp2.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        output.interceptors_applied,
-        vec!["counter1", "counter2"]
-    );
+    assert_eq!(output.interceptors_applied, vec!["counter1", "counter2"]);
 }
 
 #[tokio::test]

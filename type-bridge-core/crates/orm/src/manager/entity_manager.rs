@@ -11,8 +11,8 @@ use crate::error::{OrmError, Result};
 use crate::filter::Filter;
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
 use crate::query::EntityQuery;
-use crate::session::backend::{QueryResult, TxType};
 use crate::session::Database;
+use crate::session::backend::{QueryResult, TxType};
 
 use super::hydration::{extract_count, hydrate_entity};
 use super::query_builder;

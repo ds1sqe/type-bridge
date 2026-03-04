@@ -3,8 +3,8 @@
 use crate::entity::TypeBridgeEntity;
 use crate::error::Result;
 use crate::relation::TypeBridgeRelation;
-use crate::session::backend::TxType;
 use crate::session::Database;
+use crate::session::backend::TxType;
 
 use super::error::SchemaError;
 use super::info::*;
@@ -44,12 +44,13 @@ impl<'db> SchemaManager<'db> {
             .iter()
             .map(|a| {
                 // Also register the attribute type
-                self.info.attributes.entry(a.attr_name.to_string()).or_insert(
-                    AttributeSchemaEntry {
+                self.info
+                    .attributes
+                    .entry(a.attr_name.to_string())
+                    .or_insert(AttributeSchemaEntry {
                         attr_name: a.attr_name.to_string(),
                         value_type: a.value_type,
-                    },
-                );
+                    });
                 OwnedAttributeEntry {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
@@ -76,12 +77,13 @@ impl<'db> SchemaManager<'db> {
         let owned_entries: Vec<OwnedAttributeEntry> = owned
             .iter()
             .map(|a| {
-                self.info.attributes.entry(a.attr_name.to_string()).or_insert(
-                    AttributeSchemaEntry {
+                self.info
+                    .attributes
+                    .entry(a.attr_name.to_string())
+                    .or_insert(AttributeSchemaEntry {
                         attr_name: a.attr_name.to_string(),
                         value_type: a.value_type,
-                    },
-                );
+                    });
                 OwnedAttributeEntry {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
@@ -166,8 +168,7 @@ impl<'db> SchemaManager<'db> {
         let mut info = SchemaInfo::default();
 
         // ── 1. Query all user-defined attribute types ──────────────
-        let attr_query =
-            r#"match $t sub! attribute; fetch { "name": label($t), "value_type": value_type($t) };"#;
+        let attr_query = r#"match $t sub! attribute; fetch { "name": label($t), "value_type": value_type($t) };"#;
         if let Ok(QueryResult::Documents(docs)) =
             self.db.execute_raw(attr_query, TxType::Read).await
         {
@@ -177,8 +178,7 @@ impl<'db> SchemaManager<'db> {
                         .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str())),
                     doc.get("value_type")
                         .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str())),
-                )
-                    && let Some(vt) = parse_value_type(vt_str)
+                ) && let Some(vt) = parse_value_type(vt_str)
                 {
                     info.attributes.insert(
                         name.to_string(),
@@ -201,8 +201,9 @@ impl<'db> SchemaManager<'db> {
                     .get("name")
                     .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
                 {
-                    let owned =
-                        self.introspect_owned_attributes(name, &info.attributes).await;
+                    let owned = self
+                        .introspect_owned_attributes(name, &info.attributes)
+                        .await;
                     info.entities.insert(
                         name.to_string(),
                         EntitySchemaEntry {
@@ -226,8 +227,9 @@ impl<'db> SchemaManager<'db> {
                     .get("name")
                     .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
                 {
-                    let owned =
-                        self.introspect_owned_attributes(name, &info.attributes).await;
+                    let owned = self
+                        .introspect_owned_attributes(name, &info.attributes)
+                        .await;
                     let roles = self.introspect_roles(name).await;
                     info.relations.insert(
                         name.to_string(),
@@ -254,13 +256,10 @@ impl<'db> SchemaManager<'db> {
     ) -> Vec<OwnedAttributeEntry> {
         use crate::session::backend::QueryResult;
 
-        let query = format!(
-            r#"match $t type {type_name}; $t owns $a; fetch {{ "attr": label($a) }};"#
-        );
+        let query =
+            format!(r#"match $t type {type_name}; $t owns $a; fetch {{ "attr": label($a) }};"#);
         let mut entries = Vec::new();
-        if let Ok(QueryResult::Documents(docs)) =
-            self.db.execute_raw(&query, TxType::Read).await
-        {
+        if let Ok(QueryResult::Documents(docs)) = self.db.execute_raw(&query, TxType::Read).await {
             for doc in &docs {
                 if let Some(attr_name) = doc
                     .get("attr")
@@ -289,9 +288,7 @@ impl<'db> SchemaManager<'db> {
             r#"match $t type {relation_name}; $t relates $r; fetch {{ "role": label($r) }};"#
         );
         let mut entries = Vec::new();
-        if let Ok(QueryResult::Documents(docs)) =
-            self.db.execute_raw(&query, TxType::Read).await
-        {
+        if let Ok(QueryResult::Documents(docs)) = self.db.execute_raw(&query, TxType::Read).await {
             for doc in &docs {
                 if let Some(role_name) = doc
                     .get("role")
@@ -335,7 +332,9 @@ impl<'db> SchemaManager<'db> {
             }
         }
 
-        let typeql = self.generate_schema().map_err(crate::error::OrmError::Schema)?;
+        let typeql = self
+            .generate_schema()
+            .map_err(crate::error::OrmError::Schema)?;
         tracing::debug!(typeql = %typeql, "Syncing schema to database");
         self.db.execute_raw(&typeql, TxType::Schema).await?;
         Ok(())

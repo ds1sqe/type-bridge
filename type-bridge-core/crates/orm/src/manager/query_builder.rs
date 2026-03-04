@@ -191,10 +191,7 @@ pub fn build_relation_fetch<R: TypeBridgeRelation>(
 }
 
 /// Build a match + delete query for a specific relation instance.
-pub fn build_relation_delete<R: TypeBridgeRelation>(
-    relation: &R,
-    var: &str,
-) -> Result<String> {
+pub fn build_relation_delete<R: TypeBridgeRelation>(relation: &R, var: &str) -> Result<String> {
     let match_patterns = relation.to_match_pattern(var);
     let clauses = vec![
         Clause::Match(match_patterns),
@@ -251,10 +248,7 @@ pub fn build_relation_count<R: TypeBridgeRelation>(
 /// Returns `(base_patterns, expr_patterns)` where `base_patterns`
 /// contains the `isa!` + `sub` patterns, and `expr_patterns` contains
 /// the filter expression patterns.
-fn build_entity_match_patterns<T: TypeBridgeEntity>(
-    var: &str,
-    filters: &[Expr],
-) -> Vec<Pattern> {
+fn build_entity_match_patterns<T: TypeBridgeEntity>(var: &str, filters: &[Expr]) -> Vec<Pattern> {
     let mut patterns = vec![
         Pattern::Entity {
             variable: var.to_string(),
@@ -319,10 +313,7 @@ pub fn build_expr_fetch<T: TypeBridgeEntity>(
         },
     ];
 
-    let mut clauses = vec![
-        Clause::Match(match_patterns),
-        Clause::Fetch(fetch_items),
-    ];
+    let mut clauses = vec![Clause::Match(match_patterns), Clause::Fetch(fetch_items)];
 
     if !sort_ast_fields.is_empty() {
         clauses.push(Clause::Sort(sort_ast_fields));
@@ -339,10 +330,7 @@ pub fn build_expr_fetch<T: TypeBridgeEntity>(
 }
 
 /// Build a count query with expression-based filters.
-pub fn build_expr_count<T: TypeBridgeEntity>(
-    filters: &[Expr],
-    var: &str,
-) -> Result<String> {
+pub fn build_expr_count<T: TypeBridgeEntity>(filters: &[Expr], var: &str) -> Result<String> {
     let match_patterns = build_entity_match_patterns::<T>(var, filters);
 
     let clauses = vec![
@@ -472,10 +460,7 @@ pub fn build_relation_expr_fetch<R: TypeBridgeRelation>(
         },
     ];
 
-    let mut clauses = vec![
-        Clause::Match(match_patterns),
-        Clause::Fetch(fetch_items),
-    ];
+    let mut clauses = vec![Clause::Match(match_patterns), Clause::Fetch(fetch_items)];
 
     if !sort_ast_fields.is_empty() {
         clauses.push(Clause::Sort(sort_ast_fields));
@@ -629,8 +614,8 @@ pub fn build_relation_group_by_aggregate<R: TypeBridgeRelation>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{Annotation, OwnedAttributeInfo};
     use crate::attribute::ValueType;
+    use crate::entity::{Annotation, OwnedAttributeInfo};
     use crate::value::AttributeValue;
 
     // Minimal test entity for query builder tests.
@@ -684,13 +669,12 @@ mod tests {
                     message: "missing name".into(),
                 })?
                 .to_string();
-            let age = doc
-                .get("age")
-                .and_then(|v| v.as_i64())
-                .ok_or_else(|| crate::error::OrmError::Hydration {
+            let age = doc.get("age").and_then(|v| v.as_i64()).ok_or_else(|| {
+                crate::error::OrmError::Hydration {
                     type_name: "person".into(),
                     message: "missing age".into(),
-                })?;
+                }
+            })?;
             Ok(Self {
                 iid: None,
                 name,
@@ -865,7 +849,10 @@ mod tests {
     #[test]
     fn expr_fetch_full_chain() {
         let filters = [Expr::gte("age", AttributeValue::Long(18))];
-        let sort = [("name".to_string(), SortDir::Asc), ("age".to_string(), SortDir::Desc)];
+        let sort = [
+            ("name".to_string(), SortDir::Asc),
+            ("age".to_string(), SortDir::Desc),
+        ];
         let q = build_expr_fetch::<TestPerson>(&filters, &sort, Some(10), Some(20), "$e").unwrap();
         assert!(q.contains("$e has age $_attr0"));
         assert!(q.contains("$_attr0 >= 18"));

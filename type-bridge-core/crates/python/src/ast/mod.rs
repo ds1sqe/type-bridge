@@ -46,7 +46,11 @@ pub struct ArithmeticValue {
 impl ArithmeticValue {
     #[new]
     fn new(left: PyObject, operator: String, right: PyObject) -> Self {
-        ArithmeticValue { left, operator, right }
+        ArithmeticValue {
+            left,
+            operator,
+            right,
+        }
     }
 }
 
@@ -120,7 +124,12 @@ pub struct EntityPattern {
 impl EntityPattern {
     #[new]
     #[pyo3(signature = (variable, type_name, constraints=Vec::new(), is_strict=false))]
-    fn new(variable: String, type_name: String, constraints: Vec<PyObject>, is_strict: bool) -> Self {
+    fn new(
+        variable: String,
+        type_name: String,
+        constraints: Vec<PyObject>,
+        is_strict: bool,
+    ) -> Self {
         EntityPattern {
             variable,
             type_name,
@@ -142,7 +151,12 @@ pub struct RelationPattern {
 impl RelationPattern {
     #[new]
     #[pyo3(signature = (variable, type_name, role_players=Vec::new(), constraints=Vec::new()))]
-    fn new(variable: String, type_name: String, role_players: Vec<PyObject>, constraints: Vec<PyObject>) -> Self {
+    fn new(
+        variable: String,
+        type_name: String,
+        role_players: Vec<PyObject>,
+        constraints: Vec<PyObject>,
+    ) -> Self {
         RelationPattern {
             variable,
             type_name,
@@ -162,7 +176,10 @@ pub struct SubTypePattern {
 impl SubTypePattern {
     #[new]
     fn new(variable: String, parent_type: String) -> Self {
-        SubTypePattern { variable, parent_type }
+        SubTypePattern {
+            variable,
+            parent_type,
+        }
     }
 }
 
@@ -178,7 +195,11 @@ impl AttributePattern {
     #[new]
     #[pyo3(signature = (variable, type_name, value=None))]
     fn new(variable: String, type_name: String, value: Option<PyObject>) -> Self {
-        AttributePattern { variable, type_name, value }
+        AttributePattern {
+            variable,
+            type_name,
+            value,
+        }
     }
 }
 
@@ -193,7 +214,11 @@ pub struct HasPattern {
 impl HasPattern {
     #[new]
     fn new(thing_var: String, attr_type: String, attr_var: String) -> Self {
-        HasPattern { thing_var, attr_type, attr_var }
+        HasPattern {
+            thing_var,
+            attr_type,
+            attr_var,
+        }
     }
 }
 
@@ -208,7 +233,11 @@ pub struct ValueComparisonPattern {
 impl ValueComparisonPattern {
     #[new]
     fn new(var: String, operator: String, value: PyObject) -> Self {
-        ValueComparisonPattern { var, operator, value }
+        ValueComparisonPattern {
+            var,
+            operator,
+            value,
+        }
     }
 }
 
@@ -277,7 +306,11 @@ pub struct HasStatement {
 impl HasStatement {
     #[new]
     fn new(subject_var: String, attr_name: String, value: PyObject) -> Self {
-        HasStatement { subject_var, attr_name, value }
+        HasStatement {
+            subject_var,
+            attr_name,
+            value,
+        }
     }
 }
 
@@ -291,7 +324,10 @@ pub struct IsaStatement {
 impl IsaStatement {
     #[new]
     fn new(variable: String, type_name: String) -> Self {
-        IsaStatement { variable, type_name }
+        IsaStatement {
+            variable,
+            type_name,
+        }
     }
 }
 
@@ -308,7 +344,13 @@ pub struct RelationStatement {
 impl RelationStatement {
     #[new]
     #[pyo3(signature = (variable, type_name, role_players=Vec::new(), include_variable=true, attributes=Vec::new()))]
-    fn new(variable: String, type_name: String, role_players: Vec<PyObject>, include_variable: bool, attributes: Vec<PyObject>) -> Self {
+    fn new(
+        variable: String,
+        type_name: String,
+        role_players: Vec<PyObject>,
+        include_variable: bool,
+        attributes: Vec<PyObject>,
+    ) -> Self {
         RelationStatement {
             variable,
             type_name,
@@ -384,7 +426,11 @@ impl LetAssignment {
     #[new]
     #[pyo3(signature = (variables, expression, is_stream=false))]
     fn new(variables: Vec<String>, expression: PyObject, is_stream: bool) -> Self {
-        LetAssignment { variables, expression, is_stream }
+        LetAssignment {
+            variables,
+            expression,
+            is_stream,
+        }
     }
 }
 
@@ -439,7 +485,11 @@ pub struct FetchAttribute {
 impl FetchAttribute {
     #[new]
     fn new(key: String, var: String, attr_name: String) -> Self {
-        FetchAttribute { key, var, attr_name }
+        FetchAttribute {
+            key,
+            var,
+            attr_name,
+        }
     }
 }
 
@@ -468,7 +518,11 @@ pub struct FetchAttributeList {
 impl FetchAttributeList {
     #[new]
     fn new(key: String, var: String, attr_name: String) -> Self {
-        FetchAttributeList { key, var, attr_name }
+        FetchAttributeList {
+            key,
+            var,
+            attr_name,
+        }
     }
 }
 
@@ -483,7 +537,11 @@ pub struct FetchFunction {
 impl FetchFunction {
     #[new]
     fn new(key: String, func_name: String, var: String) -> Self {
-        FetchFunction { key, func_name, var }
+        FetchFunction {
+            key,
+            func_name,
+            var,
+        }
     }
 }
 
@@ -541,7 +599,11 @@ impl AggregateExpr {
     #[new]
     #[pyo3(signature = (func_name, var, attr_name=None))]
     fn new(func_name: String, var: String, attr_name: Option<String>) -> Self {
-        AggregateExpr { func_name, var, attr_name }
+        AggregateExpr {
+            func_name,
+            var,
+            attr_name,
+        }
     }
 }
 
@@ -555,7 +617,10 @@ pub struct ReduceAssignment {
 impl ReduceAssignment {
     #[new]
     fn new(variable: String, expression: PyObject) -> Self {
-        ReduceAssignment { variable, expression }
+        ReduceAssignment {
+            variable,
+            expression,
+        }
     }
 }
 
@@ -570,7 +635,9 @@ impl ReduceClause {
     #[new]
     #[pyo3(signature = (assignments, group_by=None))]
     fn new(assignments: Vec<PyObject>, group_by: Option<String>) -> Self {
-        ReduceClause { assignments, group_by }
+        ReduceClause {
+            assignments,
+            group_by,
+        }
     }
 }
-

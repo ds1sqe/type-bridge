@@ -25,15 +25,10 @@ pub(crate) enum QueryResultKind {
 /// returns configurable results for testing.
 pub(crate) trait TransactionOps: Send {
     /// Execute a TypeQL query within this transaction.
-    fn query(
-        &mut self,
-        typeql: &str,
-    ) -> BoxFuture<'_, Result<QueryResultKind, PipelineError>>;
+    fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResultKind, PipelineError>>;
 
     /// Commit this transaction.
-    fn commit(
-        &mut self,
-    ) -> BoxFuture<'_, Result<(), PipelineError>>;
+    fn commit(&mut self) -> BoxFuture<'_, Result<(), PipelineError>>;
 }
 
 /// Abstraction over a TypeDB driver connection.

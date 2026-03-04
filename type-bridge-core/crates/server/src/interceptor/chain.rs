@@ -46,8 +46,8 @@ mod tests {
     use std::collections::HashMap;
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -59,6 +59,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: None,
         }
     }
 
@@ -80,13 +81,16 @@ mod tests {
     }
 
     impl Interceptor for CountingInterceptor {
-        fn name(&self) -> &str { &self.name }
+        fn name(&self) -> &str {
+            &self.name
+        }
 
         fn on_request<'a>(
             &'a self,
             clauses: Vec<Clause>,
             _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
             Box::pin(async move {
                 self.request_count.fetch_add(1, Ordering::SeqCst);
                 Ok(clauses)
@@ -111,14 +115,21 @@ mod tests {
     }
 
     impl Interceptor for RejectingInterceptor {
-        fn name(&self) -> &str { &self.name }
+        fn name(&self) -> &str {
+            &self.name
+        }
 
         fn on_request<'a>(
             &'a self,
             _clauses: Vec<Clause>,
             _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
-            Box::pin(async { Err(InterceptError::AccessDenied { reason: "rejected".into() }) })
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
+            Box::pin(async {
+                Err(InterceptError::AccessDenied {
+                    reason: "rejected".into(),
+                })
+            })
         }
 
         fn on_response<'a>(
@@ -134,15 +145,19 @@ mod tests {
     struct MetadataInterceptor;
 
     impl Interceptor for MetadataInterceptor {
-        fn name(&self) -> &str { "metadata" }
+        fn name(&self) -> &str {
+            "metadata"
+        }
 
         fn on_request<'a>(
             &'a self,
             clauses: Vec<Clause>,
             ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
             Box::pin(async move {
-                ctx.metadata.insert("marker".into(), serde_json::json!("set"));
+                ctx.metadata
+                    .insert("marker".into(), serde_json::json!("set"));
                 Ok(clauses)
             })
         }
@@ -155,15 +170,21 @@ mod tests {
     }
 
     impl Interceptor for OrderTrackingInterceptor {
-        fn name(&self) -> &str { &self.name }
+        fn name(&self) -> &str {
+            &self.name
+        }
 
         fn on_request<'a>(
             &'a self,
             clauses: Vec<Clause>,
             _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
             Box::pin(async move {
-                self.order.lock().unwrap().push(format!("req:{}", self.name));
+                self.order
+                    .lock()
+                    .unwrap()
+                    .push(format!("req:{}", self.name));
                 Ok(clauses)
             })
         }
@@ -174,7 +195,10 @@ mod tests {
             _ctx: &'a RequestContext,
         ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
             Box::pin(async move {
-                self.order.lock().unwrap().push(format!("resp:{}", self.name));
+                self.order
+                    .lock()
+                    .unwrap()
+                    .push(format!("resp:{}", self.name));
                 Ok(())
             })
         }
@@ -204,9 +228,9 @@ mod tests {
 
     #[tokio::test]
     async fn single_interceptor_request_rejects() {
-        let chain = InterceptorChain::new(vec![
-            Box::new(RejectingInterceptor { name: "rejector".into() }),
-        ]);
+        let chain = InterceptorChain::new(vec![Box::new(RejectingInterceptor {
+            name: "rejector".into(),
+        })]);
         assert_eq!(chain.interceptor_names(), vec!["rejector"]);
         let mut ctx = make_ctx();
         let result = chain.execute_request(vec![], &mut ctx).await;
@@ -217,9 +241,18 @@ mod tests {
     async fn multiple_interceptors_request_chain_order() {
         let order = Arc::new(std::sync::Mutex::new(Vec::new()));
         let chain = InterceptorChain::new(vec![
-            Box::new(OrderTrackingInterceptor { name: "first".into(), order: order.clone() }),
-            Box::new(OrderTrackingInterceptor { name: "second".into(), order: order.clone() }),
-            Box::new(OrderTrackingInterceptor { name: "third".into(), order: order.clone() }),
+            Box::new(OrderTrackingInterceptor {
+                name: "first".into(),
+                order: order.clone(),
+            }),
+            Box::new(OrderTrackingInterceptor {
+                name: "second".into(),
+                order: order.clone(),
+            }),
+            Box::new(OrderTrackingInterceptor {
+                name: "third".into(),
+                order: order.clone(),
+            }),
         ]);
         assert_eq!(chain.interceptor_names(), vec!["first", "second", "third"]);
         let mut ctx = make_ctx();
@@ -235,7 +268,9 @@ mod tests {
         let second_count = second.request_count.clone();
 
         let chain = InterceptorChain::new(vec![
-            Box::new(RejectingInterceptor { name: "rejector".into() }),
+            Box::new(RejectingInterceptor {
+                name: "rejector".into(),
+            }),
             Box::new(second),
         ]);
         let mut ctx = make_ctx();
@@ -251,7 +286,9 @@ mod tests {
 
         let chain = InterceptorChain::new(vec![
             Box::new(first),
-            Box::new(RejectingInterceptor { name: "rejector".into() }),
+            Box::new(RejectingInterceptor {
+                name: "rejector".into(),
+            }),
         ]);
         let mut ctx = make_ctx();
         let result = chain.execute_request(vec![], &mut ctx).await;
@@ -265,7 +302,10 @@ mod tests {
         assert_eq!(chain.interceptor_names(), vec!["metadata"]);
         let mut ctx = make_ctx();
         chain.execute_request(vec![], &mut ctx).await.unwrap();
-        assert_eq!(ctx.metadata.get("marker").unwrap(), &serde_json::json!("set"));
+        assert_eq!(
+            ctx.metadata.get("marker").unwrap(),
+            &serde_json::json!("set")
+        );
     }
 
     // --- execute_response tests ---
@@ -285,15 +325,18 @@ mod tests {
         let chain = InterceptorChain::new(vec![Box::new(interceptor)]);
 
         let ctx = make_ctx();
-        chain.execute_response(&serde_json::json!({}), &ctx).await.unwrap();
+        chain
+            .execute_response(&serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(resp_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
     async fn single_interceptor_response_failure() {
-        let chain = InterceptorChain::new(vec![
-            Box::new(RejectingInterceptor { name: "rejector".into() }),
-        ]);
+        let chain = InterceptorChain::new(vec![Box::new(RejectingInterceptor {
+            name: "rejector".into(),
+        })]);
         let ctx = make_ctx();
         let result = chain.execute_response(&serde_json::json!({}), &ctx).await;
         assert!(result.is_err());
@@ -303,12 +346,24 @@ mod tests {
     async fn multiple_interceptors_response_reverse_order() {
         let order = Arc::new(std::sync::Mutex::new(Vec::new()));
         let chain = InterceptorChain::new(vec![
-            Box::new(OrderTrackingInterceptor { name: "first".into(), order: order.clone() }),
-            Box::new(OrderTrackingInterceptor { name: "second".into(), order: order.clone() }),
-            Box::new(OrderTrackingInterceptor { name: "third".into(), order: order.clone() }),
+            Box::new(OrderTrackingInterceptor {
+                name: "first".into(),
+                order: order.clone(),
+            }),
+            Box::new(OrderTrackingInterceptor {
+                name: "second".into(),
+                order: order.clone(),
+            }),
+            Box::new(OrderTrackingInterceptor {
+                name: "third".into(),
+                order: order.clone(),
+            }),
         ]);
         let ctx = make_ctx();
-        chain.execute_response(&serde_json::json!({}), &ctx).await.unwrap();
+        chain
+            .execute_response(&serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
 
         let calls = order.lock().unwrap();
         assert_eq!(*calls, vec!["resp:third", "resp:second", "resp:first"]);
@@ -325,7 +380,9 @@ mod tests {
         let chain = InterceptorChain::new(vec![
             Box::new(first),
             Box::new(second),
-            Box::new(RejectingInterceptor { name: "third".into() }),
+            Box::new(RejectingInterceptor {
+                name: "third".into(),
+            }),
         ]);
         let ctx = make_ctx();
         let result = chain.execute_response(&serde_json::json!({}), &ctx).await;
@@ -345,9 +402,8 @@ mod tests {
 
     #[test]
     fn interceptor_names_single() {
-        let chain = InterceptorChain::new(vec![
-            Box::new(CountingInterceptor::new("my-interceptor")),
-        ]);
+        let chain =
+            InterceptorChain::new(vec![Box::new(CountingInterceptor::new("my-interceptor"))]);
         assert_eq!(chain.interceptor_names(), vec!["my-interceptor"]);
     }
 

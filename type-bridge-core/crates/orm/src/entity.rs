@@ -34,7 +34,9 @@ pub struct OwnedAttributeInfo {
 impl OwnedAttributeInfo {
     /// Whether this attribute has a `@key` annotation.
     pub fn is_key(&self) -> bool {
-        self.annotations.iter().any(|a| matches!(a, Annotation::Key))
+        self.annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::Key))
     }
 
     /// Whether this attribute has a `@unique` annotation.
@@ -183,11 +185,7 @@ pub trait TypeBridgeEntity: Sized + Send + Sync + 'static {
     /// match $var isa! $t, has name "Alice"; $t sub person;
     /// fetch { "_iid": iid($var), "_type": label($t), "attributes": { $var.* } };
     /// ```
-    fn build_polymorphic_fetch(
-        var: &str,
-        type_name: &str,
-        filters: &[Filter],
-    ) -> Vec<Clause> {
+    fn build_polymorphic_fetch(var: &str, type_name: &str, filters: &[Filter]) -> Vec<Clause> {
         let constraints: Vec<Constraint> = filters
             .iter()
             .map(|f| Constraint::Has {

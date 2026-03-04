@@ -1,5 +1,5 @@
-use typedb_driver::concept::Concept;
 use typedb_driver::TransactionType;
+use typedb_driver::concept::Concept;
 
 use super::backend::{DriverBackend, QueryResultKind};
 use super::real_driver::RealTypeDBBackend;
@@ -48,8 +48,10 @@ impl TypeDBClient {
 
         let answer = tx.query(typeql).await?;
 
-        let needs_commit =
-            matches!(transaction_type, TransactionType::Write | TransactionType::Schema);
+        let needs_commit = matches!(
+            transaction_type,
+            TransactionType::Write | TransactionType::Schema
+        );
 
         let results = match answer {
             QueryResultKind::Ok => {
@@ -88,11 +90,7 @@ impl QueryExecutor for TypeDBClient {
         typeql: &'a str,
         transaction_type: &'a str,
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<serde_json::Value, PipelineError>>
-                + Send
-                + 'a,
-        >,
+        Box<dyn std::future::Future<Output = Result<serde_json::Value, PipelineError>> + Send + 'a>,
     > {
         Box::pin(async move { self.execute(database, typeql, transaction_type).await })
     }
@@ -192,13 +190,15 @@ fn value_to_json_fallback(value: &typedb_driver::concept::Value) -> serde_json::
 mod tests {
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use typedb_driver::IID;
-    use typedb_driver::concept::{Attribute, AttributeType, Concept, Entity, EntityType, Value, ValueType};
-    use typedb_driver::concept::value::{Decimal, Duration, TimeZone};
     use typedb_driver::TransactionType;
+    use typedb_driver::concept::value::{Decimal, Duration, TimeZone};
+    use typedb_driver::concept::{
+        Attribute, AttributeType, Concept, Entity, EntityType, Value, ValueType,
+    };
 
     use super::*;
     use crate::error::PipelineError;
@@ -306,13 +306,8 @@ mod tests {
             &self,
             _database: &str,
             _tx_type: TransactionType,
-        ) -> Pin<
-            Box<
-                dyn Future<Output = Result<Box<dyn TransactionOps>, PipelineError>>
-                    + Send
-                    + '_,
-            >,
-        > {
+        ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransactionOps>, PipelineError>> + Send + '_>>
+        {
             self.open_called.fetch_add(1, Ordering::SeqCst);
             let tx = self.transaction.lock().unwrap().take();
             let error = self.open_error.clone();
@@ -320,8 +315,10 @@ mod tests {
                 if let Some(msg) = error {
                     return Err(PipelineError::QueryExecution(msg));
                 }
-                Ok(Box::new(tx.expect("MockBackend: no transaction configured"))
-                    as Box<dyn TransactionOps>)
+                Ok(
+                    Box::new(tx.expect("MockBackend: no transaction configured"))
+                        as Box<dyn TransactionOps>,
+                )
             })
         }
 
@@ -360,7 +357,9 @@ mod tests {
     fn parse_transaction_type_unknown() {
         let result = parse_transaction_type("unknown");
         let err = result.unwrap_err();
-        assert!(matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("Unknown transaction type: unknown")));
+        assert!(
+            matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("Unknown transaction type: unknown"))
+        );
     }
 
     #[test]
@@ -385,7 +384,10 @@ mod tests {
         let committed = tx.committed.clone();
         let client = make_client(MockBackend::new(tx));
 
-        let result = client.execute("db", "match $x isa thing;", "read").await.unwrap();
+        let result = client
+            .execute("db", "match $x isa thing;", "read")
+            .await
+            .unwrap();
         assert_eq!(result, serde_json::json!({"ok": true}));
         assert!(!committed.load(Ordering::SeqCst));
     }
@@ -396,7 +398,10 @@ mod tests {
         let committed = tx.committed.clone();
         let client = make_client(MockBackend::new(tx));
 
-        let result = client.execute("db", "insert $x isa thing;", "write").await.unwrap();
+        let result = client
+            .execute("db", "insert $x isa thing;", "write")
+            .await
+            .unwrap();
         assert_eq!(result, serde_json::json!({"ok": true}));
         assert!(committed.load(Ordering::SeqCst));
     }
@@ -407,19 +412,28 @@ mod tests {
         let committed = tx.committed.clone();
         let client = make_client(MockBackend::new(tx));
 
-        let result = client.execute("db", "define entity thing;", "schema").await.unwrap();
+        let result = client
+            .execute("db", "define entity thing;", "schema")
+            .await
+            .unwrap();
         assert_eq!(result, serde_json::json!({"ok": true}));
         assert!(committed.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
     async fn execute_rows_read_no_commit() {
-        let rows = vec![serde_json::json!({"name": "Alice"}), serde_json::json!({"name": "Bob"})];
+        let rows = vec![
+            serde_json::json!({"name": "Alice"}),
+            serde_json::json!({"name": "Bob"}),
+        ];
         let tx = MockTransaction::new(QueryResultKind::Rows(rows.clone()));
         let committed = tx.committed.clone();
         let client = make_client(MockBackend::new(tx));
 
-        let result = client.execute("db", "match $p isa person;", "read").await.unwrap();
+        let result = client
+            .execute("db", "match $p isa person;", "read")
+            .await
+            .unwrap();
         assert_eq!(result, serde_json::Value::Array(rows));
         assert!(!committed.load(Ordering::SeqCst));
     }
@@ -431,7 +445,10 @@ mod tests {
         let committed = tx.committed.clone();
         let client = make_client(MockBackend::new(tx));
 
-        let result = client.execute("db", "insert $x isa thing;", "write").await.unwrap();
+        let result = client
+            .execute("db", "insert $x isa thing;", "write")
+            .await
+            .unwrap();
         assert!(result.is_array());
         assert!(committed.load(Ordering::SeqCst));
     }
@@ -445,7 +462,10 @@ mod tests {
         let tx = MockTransaction::new(QueryResultKind::Rows(rows.clone()));
         let client = make_client(MockBackend::new(tx));
 
-        let result = client.execute("db", "match $p isa person;", "read").await.unwrap();
+        let result = client
+            .execute("db", "match $p isa person;", "read")
+            .await
+            .unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["name"], "Alice");
@@ -459,7 +479,10 @@ mod tests {
         let committed = tx.committed.clone();
         let client = make_client(MockBackend::new(tx));
 
-        let result = client.execute("db", "match $p isa person; fetch {};", "read").await.unwrap();
+        let result = client
+            .execute("db", "match $p isa person; fetch {};", "read")
+            .await
+            .unwrap();
         assert_eq!(result, serde_json::Value::Array(docs));
         assert!(!committed.load(Ordering::SeqCst));
     }
@@ -471,7 +494,10 @@ mod tests {
         let committed = tx.committed.clone();
         let client = make_client(MockBackend::new(tx));
 
-        let result = client.execute("db", "insert $x isa thing;", "write").await.unwrap();
+        let result = client
+            .execute("db", "insert $x isa thing;", "write")
+            .await
+            .unwrap();
         assert!(result.is_array());
         assert!(committed.load(Ordering::SeqCst));
     }
@@ -484,7 +510,10 @@ mod tests {
         let client = make_client(MockBackend::new(tx));
 
         // Documents + write: commit error is intentionally ignored (let _ = ...)
-        let result = client.execute("db", "insert $x isa thing;", "write").await.unwrap();
+        let result = client
+            .execute("db", "insert $x isa thing;", "write")
+            .await
+            .unwrap();
         assert_eq!(result, serde_json::Value::Array(docs));
     }
 
@@ -494,7 +523,9 @@ mod tests {
 
         let result = client.execute("db", "match $x isa thing;", "read").await;
         let err = result.unwrap_err();
-        assert!(matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("connection refused")));
+        assert!(
+            matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("connection refused"))
+        );
     }
 
     #[tokio::test]
@@ -509,26 +540,29 @@ mod tests {
 
     #[tokio::test]
     async fn execute_commit_failure_ok_propagated() {
-        let tx = MockTransaction::new(QueryResultKind::Ok)
-            .with_commit_error("commit failed");
+        let tx = MockTransaction::new(QueryResultKind::Ok).with_commit_error("commit failed");
         let client = make_client(MockBackend::new(tx));
 
         // Ok + write: commit error IS propagated
         let result = client.execute("db", "insert $x isa thing;", "write").await;
         let err = result.unwrap_err();
-        assert!(matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("commit failed")));
+        assert!(
+            matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("commit failed"))
+        );
     }
 
     #[tokio::test]
     async fn execute_commit_failure_rows_propagated() {
-        let tx = MockTransaction::new(QueryResultKind::Rows(vec![]))
-            .with_commit_error("commit failed");
+        let tx =
+            MockTransaction::new(QueryResultKind::Rows(vec![])).with_commit_error("commit failed");
         let client = make_client(MockBackend::new(tx));
 
         // Rows + write: commit error IS propagated
         let result = client.execute("db", "insert $x isa thing;", "write").await;
         let err = result.unwrap_err();
-        assert!(matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("commit failed")));
+        assert!(
+            matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("commit failed"))
+        );
     }
 
     #[tokio::test]
@@ -715,7 +749,9 @@ mod tests {
         let iid: IID = vec![0x01, 0x02, 0x03].into();
         let concept = Concept::Entity(Entity {
             iid,
-            type_: Some(EntityType { label: "person".to_string() }),
+            type_: Some(EntityType {
+                label: "person".to_string(),
+            }),
         });
         let json = concept_to_json(&concept);
         assert_eq!(json["category"], "Entity");
@@ -731,7 +767,10 @@ mod tests {
         let concept = Concept::Attribute(Attribute {
             iid,
             value: Value::String("hello".to_string()),
-            type_: Some(AttributeType { label: "name".to_string(), value_type: Some(ValueType::String) }),
+            type_: Some(AttributeType {
+                label: "name".to_string(),
+                value_type: Some(ValueType::String),
+            }),
         });
         let json = concept_to_json(&concept);
         assert_eq!(json["category"], "Attribute");
@@ -769,7 +808,10 @@ mod tests {
         let client = make_client(MockBackend::new(tx));
         let executor: Box<dyn QueryExecutor> = Box::new(client);
 
-        let result = executor.execute("db", "match $x isa thing;", "read").await.unwrap();
+        let result = executor
+            .execute("db", "match $x isa thing;", "read")
+            .await
+            .unwrap();
         assert!(result.is_array());
         assert_eq!(result.as_array().unwrap().len(), 1);
     }

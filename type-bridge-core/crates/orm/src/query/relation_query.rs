@@ -9,8 +9,8 @@ use crate::manager::hydration::{extract_count, hydrate_relation};
 use crate::manager::query_builder;
 use crate::query::group_by_query::GroupByRelationQuery;
 use crate::relation::TypeBridgeRelation;
-use crate::session::backend::{QueryResult, TxType};
 use crate::session::Database;
+use crate::session::backend::{QueryResult, TxType};
 
 /// A chainable query builder for relation types.
 ///
@@ -127,8 +127,7 @@ impl<'db, R: TypeBridgeRelation> RelationQuery<'db, R> {
     /// Run aggregation queries.
     #[tracing::instrument(skip(self, aggs), fields(relation_type = R::TYPE_NAME))]
     pub async fn aggregate(self, aggs: &[Agg]) -> Result<AggResult> {
-        let typeql =
-            query_builder::build_relation_expr_aggregate::<R>(&self.filters, aggs, "$r")?;
+        let typeql = query_builder::build_relation_expr_aggregate::<R>(&self.filters, aggs, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "EXPR AGGREGATE RELATION");
         let result = self.db.execute_raw(&typeql, TxType::Read).await?;
 

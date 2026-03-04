@@ -15,14 +15,14 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
                 return Err(syn::Error::new_spanned(
                     &input,
                     "TypeBridgeRelation requires a struct with named fields",
-                ))
+                ));
             }
         },
         _ => {
             return Err(syn::Error::new_spanned(
                 &input,
                 "TypeBridgeRelation can only be derived for structs",
-            ))
+            ));
         }
     };
 
@@ -228,10 +228,7 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     };
 
     // Generate XxxFields struct for type-safe field references (attribute + role fields)
-    let fields_struct_name = syn::Ident::new(
-        &format!("{}Fields", name),
-        name.span(),
-    );
+    let fields_struct_name = syn::Ident::new(&format!("{}Fields", name), name.span());
     let fields_struct_attr_fields = attr_fields.iter().map(|f| {
         let ident = &f.ident;
         let ty = &f.inner_ty;
@@ -429,9 +426,8 @@ fn parse_role_attrs(attrs: &[syn::Attribute]) -> syn::Result<Option<RoleAttrs>> 
             }
         })?;
 
-        let role_name = role_name.ok_or_else(|| {
-            syn::Error::new_spanned(attr, "Missing `name` in #[role(...)]")
-        })?;
+        let role_name = role_name
+            .ok_or_else(|| syn::Error::new_spanned(attr, "Missing `name` in #[role(...)]"))?;
         let player_type = player_type.ok_or_else(|| {
             syn::Error::new_spanned(attr, "Missing `player_type` in #[role(...)]")
         })?;

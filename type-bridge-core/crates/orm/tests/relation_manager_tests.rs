@@ -38,14 +38,7 @@ async fn insert_with_wrapped_iid_response() {
     })])]);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let mut employment = make_employment(
-        None,
-        Some("0xp1"),
-        None,
-        Some("0xc1"),
-        None,
-        None,
-    );
+    let mut employment = make_employment(None, Some("0xp1"), None, Some("0xc1"), None, None);
 
     let manager = RelationManager::<Employment>::new(&db);
     let iid = manager.insert(&mut employment).await.unwrap();

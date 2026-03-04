@@ -6,15 +6,15 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use type_bridge_core_lib::ast::{Clause, Constraint, LiteralValue, Pattern, Value};
 use type_bridge_server::error::PipelineError;
 use type_bridge_server::interceptor::{InterceptError, Interceptor, RequestContext};
 use type_bridge_server::pipeline::{PipelineBuilder, QueryInput, ValidateInput};
 use type_bridge_server::schema_source::InMemorySchemaSource;
-use type_bridge_server::test_helpers::{make_pipeline, make_simple_clauses, MockExecutor};
+use type_bridge_server::test_helpers::{MockExecutor, make_pipeline, make_simple_clauses};
 
 // ── Helper interceptors ──────────────────────────────────────────────
 
@@ -109,8 +109,10 @@ impl Interceptor for MetadataInterceptor {
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
         Box::pin(async move {
-            ctx.metadata
-                .insert("custom_marker".into(), serde_json::json!("set-by-interceptor"));
+            ctx.metadata.insert(
+                "custom_marker".into(),
+                serde_json::json!("set-by-interceptor"),
+            );
             Ok(clauses)
         })
     }
@@ -158,7 +160,10 @@ async fn execute_valid_query_returns_results() {
     let executor = MockExecutor::with_result(serde_json::json!({"data": [1, 2, 3]}));
     let pipeline = make_pipeline(executor, false);
 
-    let output = pipeline.execute_query(make_query_input(vec![])).await.unwrap();
+    let output = pipeline
+        .execute_query(make_query_input(vec![]))
+        .await
+        .unwrap();
     assert_eq!(output.results, serde_json::json!({"data": [1, 2, 3]}));
     assert!(!output.request_id.is_empty());
 }
@@ -257,7 +262,10 @@ async fn single_interceptor_modifies_context() {
         .build()
         .unwrap();
 
-    let output = pipeline.execute_query(make_query_input(vec![])).await.unwrap();
+    let output = pipeline
+        .execute_query(make_query_input(vec![]))
+        .await
+        .unwrap();
     assert_eq!(output.interceptors_applied, vec!["metadata"]);
 }
 
@@ -278,7 +286,10 @@ async fn multiple_interceptors_execute_in_order() {
         .build()
         .unwrap();
 
-    let output = pipeline.execute_query(make_query_input(vec![])).await.unwrap();
+    let output = pipeline
+        .execute_query(make_query_input(vec![]))
+        .await
+        .unwrap();
     assert_eq!(output.interceptors_applied, vec!["first", "second"]);
     assert_eq!(count1.load(Ordering::SeqCst), 1);
     assert_eq!(count2.load(Ordering::SeqCst), 1);
@@ -331,11 +342,11 @@ async fn interceptor_names_included_in_output() {
         .build()
         .unwrap();
 
-    let output = pipeline.execute_query(make_query_input(vec![])).await.unwrap();
-    assert_eq!(
-        output.interceptors_applied,
-        vec!["alpha", "beta", "gamma"]
-    );
+    let output = pipeline
+        .execute_query(make_query_input(vec![]))
+        .await
+        .unwrap();
+    assert_eq!(output.interceptors_applied, vec!["alpha", "beta", "gamma"]);
 }
 
 // ── Executor error tests ─────────────────────────────────────────────

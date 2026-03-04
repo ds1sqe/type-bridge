@@ -15,7 +15,7 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
             return Err(syn::Error::new_spanned(
                 &input,
                 "TypeBridgeAttribute can only be derived for structs",
-            ))
+            ));
         }
     };
 
@@ -25,7 +25,7 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
             return Err(syn::Error::new_spanned(
                 &input,
                 "TypeBridgeAttribute requires a newtype struct (e.g., `struct Name(pub String)`)",
-            ))
+            ));
         }
     };
 
@@ -139,7 +139,9 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
         other => {
             return Err(syn::Error::new_spanned(
                 &input,
-                format!("Unsupported value_type: \"{other}\". Expected one of: string, long, double, boolean, date, datetime, datetime-tz, decimal, duration"),
+                format!(
+                    "Unsupported value_type: \"{other}\". Expected one of: string, long, double, boolean, date, datetime, datetime-tz, decimal, duration"
+                ),
             ));
         }
     };

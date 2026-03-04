@@ -11,7 +11,11 @@ use type_bridge_server::transport;
 use type_bridge_server::typedb::TypeDBClient;
 
 #[derive(Parser)]
-#[command(name = "type-bridge-server", version, about = "TypeDB query proxy server")]
+#[command(
+    name = "type-bridge-server",
+    version,
+    about = "TypeDB query proxy server"
+)]
 struct Cli {
     /// Path to the server configuration file
     #[arg(short, long, default_value = "server.toml")]
@@ -24,8 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ServerConfig::from_file(&cli.config)?;
 
     // Initialize logging
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
 
     match config.logging.format.as_str() {
         "json" => {
@@ -35,9 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .init();
         }
         _ => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .init();
+            tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     }
 
@@ -49,13 +51,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Connect to TypeDB
-    let client = TypeDBClient::connect(&config.typedb).await
+    let client = TypeDBClient::connect(&config.typedb)
+        .await
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
     tracing::info!("TypeDB driver connected successfully");
 
     // Build pipeline
-    let mut builder = PipelineBuilder::new(client)
-        .with_default_database(&config.typedb.database);
+    let mut builder = PipelineBuilder::new(client).with_default_database(&config.typedb.database);
 
     if !config.schema.source_file.is_empty() {
         builder = builder.with_schema_source(FileSchemaSource::new(&config.schema.source_file));
@@ -65,10 +67,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for name in &config.interceptors.enabled {
         match name.as_str() {
             "audit-log" => {
-                let audit_config = config.interceptors.audit_log.clone().unwrap_or(AuditLogConfig {
-                    output: "stdout".to_string(),
-                    file_path: String::new(),
-                });
+                let audit_config =
+                    config
+                        .interceptors
+                        .audit_log
+                        .clone()
+                        .unwrap_or(AuditLogConfig {
+                            output: "stdout".to_string(),
+                            file_path: String::new(),
+                        });
                 let interceptor = AuditLogInterceptor::new(&audit_config)
                     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
                 builder = builder.with_interceptor(interceptor);
@@ -80,7 +87,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let pipeline = builder.build()
+    let pipeline = builder
+        .build()
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
     // Build router and serve

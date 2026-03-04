@@ -27,10 +27,7 @@ async fn insert_fires_pre_and_post_hooks() {
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0], ("pre:person".to_string(), CrudOperation::Insert));
-    assert_eq!(
-        calls[1],
-        ("post:person".to_string(), CrudOperation::Insert)
-    );
+    assert_eq!(calls[1], ("post:person".to_string(), CrudOperation::Insert));
 }
 
 #[tokio::test]
@@ -48,10 +45,7 @@ async fn delete_fires_pre_and_post_hooks() {
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0], ("pre:person".to_string(), CrudOperation::Delete));
-    assert_eq!(
-        calls[1],
-        ("post:person".to_string(), CrudOperation::Delete)
-    );
+    assert_eq!(calls[1], ("post:person".to_string(), CrudOperation::Delete));
 }
 
 #[tokio::test]
@@ -69,10 +63,7 @@ async fn update_fires_pre_and_post_hooks() {
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0], ("pre:person".to_string(), CrudOperation::Update));
-    assert_eq!(
-        calls[1],
-        ("post:person".to_string(), CrudOperation::Update)
-    );
+    assert_eq!(calls[1], ("post:person".to_string(), CrudOperation::Update));
 }
 
 #[tokio::test]
@@ -117,7 +108,10 @@ async fn pre_hook_rejection_prevents_insert() {
 
     // No query should have been executed
     let recorded = queries.lock().unwrap();
-    assert!(recorded.is_empty(), "Rejected insert should not execute query");
+    assert!(
+        recorded.is_empty(),
+        "Rejected insert should not execute query"
+    );
 }
 
 #[tokio::test]
@@ -192,7 +186,7 @@ async fn post_hook_error_does_not_propagate() {
 #[tokio::test]
 async fn should_run_filters_by_operation() {
     let backend = MockBackend::new(vec![
-        QueryResult::Ok, // for delete
+        QueryResult::Ok,        // for delete
         insert_response("0x1"), // for insert
     ]);
     let db = Database::with_backend(Box::new(backend), "testdb");
@@ -262,20 +256,14 @@ async fn rejection_short_circuits_subsequent_hooks() {
 
 #[tokio::test]
 async fn insert_many_fires_hooks_per_entity() {
-    let backend = MockBackend::new(vec![
-        insert_response("0xb2"),
-        insert_response("0xb1"),
-    ]);
+    let backend = MockBackend::new(vec![insert_response("0xb2"), insert_response("0xb1")]);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
     let (hook, calls) = RecordingHook::new();
     let mut manager = EntityManager::<Person>::new(&db);
     manager.add_hook(Arc::new(hook));
 
-    let mut entities = vec![
-        make_person("Alice", 30),
-        make_person("Bob", 25),
-    ];
+    let mut entities = vec![make_person("Alice", 30), make_person("Bob", 25)];
     manager.insert_many(&mut entities).await.unwrap();
 
     let calls = calls.lock().unwrap();
@@ -291,20 +279,14 @@ async fn insert_many_fires_hooks_per_entity() {
 
 #[tokio::test]
 async fn insert_many_rejection_aborts_entire_batch() {
-    let backend = MockBackend::new(vec![
-        insert_response("0xb2"),
-        insert_response("0xb1"),
-    ]);
+    let backend = MockBackend::new(vec![insert_response("0xb2"), insert_response("0xb1")]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
     let mut manager = EntityManager::<Person>::new(&db);
     manager.add_hook(Arc::new(RejectingHook::new("batch rejected")));
 
-    let mut entities = vec![
-        make_person("Alice", 30),
-        make_person("Bob", 25),
-    ];
+    let mut entities = vec![make_person("Alice", 30), make_person("Bob", 25)];
     let result = manager.insert_many(&mut entities).await;
 
     assert!(result.is_err());

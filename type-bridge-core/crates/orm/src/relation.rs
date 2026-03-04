@@ -1,8 +1,6 @@
 //! TypeDB relation trait with default AST generation methods.
 
-use type_bridge_core_lib::ast::{
-    Clause, Constraint, FetchItem, Pattern, RolePlayer, Statement,
-};
+use type_bridge_core_lib::ast::{Clause, Constraint, FetchItem, Pattern, RolePlayer, Statement};
 
 use serde::Serialize;
 
@@ -246,11 +244,7 @@ pub trait TypeBridgeRelation: Sized + Send + Sync + 'static {
     }
 
     /// Build a polymorphic fetch query for relations.
-    fn build_polymorphic_fetch(
-        var: &str,
-        type_name: &str,
-        filters: &[Filter],
-    ) -> Vec<Clause> {
+    fn build_polymorphic_fetch(var: &str, type_name: &str, filters: &[Filter]) -> Vec<Clause> {
         let constraints: Vec<Constraint> = filters
             .iter()
             .map(|f| Constraint::Has {

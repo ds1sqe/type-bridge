@@ -9,8 +9,8 @@ use crate::expr::{Agg, AggResult, Expr, SortDir};
 use crate::manager::hydration::{extract_count, hydrate_entity};
 use crate::manager::query_builder;
 use crate::query::group_by_query::GroupByEntityQuery;
-use crate::session::backend::{QueryResult, TxType};
 use crate::session::Database;
+use crate::session::backend::{QueryResult, TxType};
 
 /// A chainable query builder for entity types.
 ///

@@ -360,10 +360,7 @@ impl CrudQueryBuilder {
                 }],
                 is_strict: false,
             });
-            ast_role_players.push(RolePlayer {
-                role,
-                player_var,
-            });
+            ast_role_players.push(RolePlayer { role, player_var });
         }
 
         // Parse optional relation attributes
@@ -411,11 +408,7 @@ impl CrudQueryBuilder {
     ///
     /// Returns:
     ///     The compiled TypeQL INSERT string (caller handles put logic).
-    fn build_entity_put(
-        &self,
-        type_name: &str,
-        attributes: Bound<'_, PyList>,
-    ) -> PyResult<String> {
+    fn build_entity_put(&self, type_name: &str, attributes: Bound<'_, PyList>) -> PyResult<String> {
         // Put is semantically an insert — the caller manages existence check
         self.build_entity_insert(type_name, attributes)
     }
