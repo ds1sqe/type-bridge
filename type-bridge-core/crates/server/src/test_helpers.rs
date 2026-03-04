@@ -95,7 +95,9 @@ impl QueryExecutor for MockExecutor {
         database: &'a str,
         typeql: &'a str,
         transaction_type: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, PipelineError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<serde_json::Value, PipelineError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             self.calls.lock().unwrap().push((
                 database.to_string(),
@@ -118,8 +120,7 @@ impl QueryExecutor for MockExecutor {
 
 /// Build a pipeline with a mock executor and optional schema.
 pub fn make_pipeline(executor: MockExecutor, with_schema: bool) -> QueryPipeline {
-    let mut builder = PipelineBuilder::new(executor)
-        .with_default_database("test_db");
+    let mut builder = PipelineBuilder::new(executor).with_default_database("test_db");
 
     if with_schema {
         builder = builder.with_schema_source(InMemorySchemaSource::new(SIMPLE_SCHEMA));
@@ -127,4 +128,3 @@ pub fn make_pipeline(executor: MockExecutor, with_schema: bool) -> QueryPipeline
 
     builder.build().expect("Failed to build test pipeline")
 }
-

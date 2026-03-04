@@ -117,9 +117,7 @@ async fn handle_validate(
     }))
 }
 
-async fn handle_health(
-    State(pipeline): State<Arc<QueryPipeline>>,
-) -> Json<HealthResponse> {
+async fn handle_health(State(pipeline): State<Arc<QueryPipeline>>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -148,13 +146,12 @@ async fn handle_schema(
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn schema_to_json(schema: &type_bridge_core_lib::schema::TypeSchema) -> Result<Json<serde_json::Value>, PipelineError> {
-    let json = schema
-        .to_json()
-        .map_err(to_schema_error)?;
+fn schema_to_json(
+    schema: &type_bridge_core_lib::schema::TypeSchema,
+) -> Result<Json<serde_json::Value>, PipelineError> {
+    let json = schema.to_json().map_err(to_schema_error)?;
 
-    let value: serde_json::Value =
-        serde_json::from_str(&json).map_err(to_internal_error)?;
+    let value: serde_json::Value = serde_json::from_str(&json).map_err(to_internal_error)?;
 
     Ok(Json(value))
 }
@@ -170,7 +167,7 @@ mod tests {
     use type_bridge_core_lib::ast::{Clause, Constraint, LiteralValue, Pattern, Value};
 
     use super::*;
-    use crate::test_helpers::{make_pipeline, make_simple_clauses, MockExecutor};
+    use crate::test_helpers::{MockExecutor, make_pipeline, make_simple_clauses};
 
     /// Build an invalid clause (references nonexistent attr) as a serde_json::Value.
     fn invalid_clause_json() -> serde_json::Value {
@@ -266,7 +263,12 @@ mod tests {
         let json = body_json(resp).await;
         assert_eq!(json["status"], "error");
         assert_eq!(json["error"]["code"], "CONFIG_ERROR");
-        assert!(json["error"]["message"].as_str().unwrap().contains("bad config"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("bad config")
+        );
     }
 
     // =============================================
@@ -646,5 +648,4 @@ mod tests {
         let content_type = resp.headers().get(http::header::CONTENT_TYPE).unwrap();
         assert!(content_type.to_str().unwrap().contains("application/json"));
     }
-
 }

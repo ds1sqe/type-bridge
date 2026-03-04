@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use type_bridge_orm::attribute::ValueType;
 use type_bridge_orm::expr::{Agg, Expr, SortDir};
@@ -48,8 +48,7 @@ fn bench_attribute_value_roundtrip(c: &mut Criterion) {
         })
     });
 
-    let datetime_val =
-        AttributeValue::DateTime("2024-01-15T10:30:00".to_string());
+    let datetime_val = AttributeValue::DateTime("2024-01-15T10:30:00".to_string());
     group.bench_function("datetime_roundtrip", |b| {
         b.iter(|| {
             let json = serde_json::to_string(black_box(&datetime_val)).unwrap();
@@ -213,10 +212,7 @@ fn bench_expr_roundtrip(c: &mut Criterion) {
     // Build a nested Expr tree
     fn build_nested(depth: usize) -> Expr {
         if depth == 0 {
-            Expr::eq(
-                "name",
-                AttributeValue::String("test".to_string()),
-            )
+            Expr::eq("name", AttributeValue::String("test".to_string()))
         } else {
             Expr::And(vec![
                 build_nested(depth - 1),

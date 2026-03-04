@@ -351,9 +351,18 @@ mod tests {
 
     #[test]
     fn value_type_serde_names() {
-        assert_eq!(serde_json::to_string(&ValueType::String).unwrap(), "\"string\"");
+        assert_eq!(
+            serde_json::to_string(&ValueType::String).unwrap(),
+            "\"string\""
+        );
         assert_eq!(serde_json::to_string(&ValueType::Long).unwrap(), "\"long\"");
-        assert_eq!(serde_json::to_string(&ValueType::DateTime).unwrap(), "\"datetime\"");
-        assert_eq!(serde_json::to_string(&ValueType::DateTimeTz).unwrap(), "\"datetime-tz\"");
+        assert_eq!(
+            serde_json::to_string(&ValueType::DateTime).unwrap(),
+            "\"datetime\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ValueType::DateTimeTz).unwrap(),
+            "\"datetime-tz\""
+        );
     }
 }

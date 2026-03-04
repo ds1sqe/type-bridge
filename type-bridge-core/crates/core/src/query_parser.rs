@@ -149,9 +149,10 @@ fn ws_comments_required(input: &mut &str) -> PResult<()> {
 
 /// Parse an identifier: `[a-zA-Z_][a-zA-Z0-9_-]*`.
 fn identifier<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    let ident: &str =
-        take_while(1.., |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            .parse_next(input)?;
+    let ident: &str = take_while(1.., |c: char| {
+        c.is_ascii_alphanumeric() || c == '_' || c == '-'
+    })
+    .parse_next(input)?;
 
     let first = ident.chars().next().unwrap();
     if !first.is_ascii_alphabetic() && first != '_' {
@@ -211,8 +212,7 @@ fn quoted_string(input: &mut &str) -> PResult<String> {
 fn hex_id<'a>(input: &mut &'a str) -> PResult<&'a str> {
     let start = *input;
     literal("0x").parse_next(input)?;
-    let _digits: &str =
-        take_while(1.., |c: char| c.is_ascii_hexdigit()).parse_next(input)?;
+    let _digits: &str = take_while(1.., |c: char| c.is_ascii_hexdigit()).parse_next(input)?;
     let consumed = start.len() - input.len();
     Ok(&start[..consumed])
 }
@@ -279,12 +279,17 @@ fn parse_function_call_or_variable(input: &mut &str) -> PResult<Value> {
     let args = if input.starts_with(')') {
         vec![]
     } else {
-        let args: Vec<Value> = separated(1.., |i: &mut &str| {
-            ws_comments(i);
-            let v = parse_value(i)?;
-            ws_comments(i);
-            Ok(v)
-        }, ",").parse_next(input)?;
+        let args: Vec<Value> = separated(
+            1..,
+            |i: &mut &str| {
+                ws_comments(i);
+                let v = parse_value(i)?;
+                ws_comments(i);
+                Ok(v)
+            },
+            ",",
+        )
+        .parse_next(input)?;
         args
     };
 
@@ -343,8 +348,7 @@ fn parse_number_or_date_literal(input: &mut &str) -> PResult<Value> {
         .is_some();
 
     // Parse leading digits
-    let digits: &str =
-        take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+    let digits: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
 
     // Check if this looks like a date: YYYY-MM-DD (4 digits followed by -)
     if !negative && digits.len() == 4 && input.starts_with('-') {
@@ -358,16 +362,14 @@ fn parse_number_or_date_literal(input: &mut &str) -> PResult<Value> {
         if negative {
             literal::<_, _, ContextError>("-").parse_next(input).ok();
         }
-        let _: &str =
-            take_while::<_, _, ContextError>(1.., |c: char| c.is_ascii_digit())
-                .parse_next(input)?;
+        let _: &str = take_while::<_, _, ContextError>(1.., |c: char| c.is_ascii_digit())
+            .parse_next(input)?;
     }
 
     // Check for decimal point (double)
     if input.starts_with('.') {
         *input = &input[1..];
-        let frac: &str =
-            take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+        let frac: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
 
         // Check for 'dec' suffix (decimal type)
         if input.starts_with("dec") {
@@ -457,8 +459,7 @@ fn parse_date_or_datetime(input: &mut &str) -> PResult<Value> {
     // Optional fractional seconds
     if input.starts_with('.') {
         *input = &input[1..];
-        let _frac: &str =
-            take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+        let _frac: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
     }
 
     // Check for timezone
@@ -493,8 +494,7 @@ fn parse_duration_literal(input: &mut &str) -> PResult<Value> {
     // Consume duration components
     let mut has_component = false;
     loop {
-        let _digits: &str =
-            take_while(0.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+        let _digits: &str = take_while(0.., |c: char| c.is_ascii_digit()).parse_next(input)?;
         if _digits.is_empty() {
             // Check for 'T' time separator
             if input.starts_with('T') {
@@ -859,19 +859,23 @@ fn parse_comparison_op<'a>(input: &mut &'a str) -> PResult<&'a str> {
 fn parse_role_players(input: &mut &str) -> PResult<Vec<RolePlayer>> {
     literal("(").parse_next(input)?;
     ws_comments(input);
-    let players: Vec<RolePlayer> = separated(1.., |i: &mut &str| {
-        ws_comments(i);
-        let role = identifier(i)?;
-        ws_comments(i);
-        literal(":").parse_next(i)?;
-        ws_comments(i);
-        let player_var = variable(i)?;
-        ws_comments(i);
-        Ok(RolePlayer {
-            role: role.to_string(),
-            player_var,
-        })
-    }, ",")
+    let players: Vec<RolePlayer> = separated(
+        1..,
+        |i: &mut &str| {
+            ws_comments(i);
+            let role = identifier(i)?;
+            ws_comments(i);
+            literal(":").parse_next(i)?;
+            ws_comments(i);
+            let player_var = variable(i)?;
+            ws_comments(i);
+            Ok(RolePlayer {
+                role: role.to_string(),
+                player_var,
+            })
+        },
+        ",",
+    )
     .parse_next(input)?;
     ws_comments(input);
     literal(")").parse_next(input)?;
@@ -1050,10 +1054,14 @@ fn parse_fetch_items(input: &mut &str) -> PResult<Vec<FetchItem>> {
     literal("{").parse_next(input)?;
     ws_comments(input);
 
-    let items: Vec<FetchItem> = separated(1.., |i: &mut &str| {
-        ws_comments(i);
-        parse_fetch_item(i)
-    }, ",")
+    let items: Vec<FetchItem> = separated(
+        1..,
+        |i: &mut &str| {
+            ws_comments(i);
+            parse_fetch_item(i)
+        },
+        ",",
+    )
     .parse_next(input)?;
 
     ws_comments(input);
@@ -1151,21 +1159,26 @@ fn parse_let_assignment(input: &mut &str) -> PResult<LetAssignment> {
     literal("let").parse_next(input)?;
     ws_comments_required(input)?;
 
-    let vars: Vec<String> = separated(1.., |i: &mut &str| {
-        ws_comments(i);
-        variable(i)
-    }, ",")
+    let vars: Vec<String> = separated(
+        1..,
+        |i: &mut &str| {
+            ws_comments(i);
+            variable(i)
+        },
+        ",",
+    )
     .parse_next(input)?;
 
     ws_comments(input);
 
-    let is_stream = if input.starts_with("in") && input[2..].starts_with(|c: char| c.is_ascii_whitespace()) {
-        literal("in").parse_next(input)?;
-        true
-    } else {
-        literal("=").parse_next(input)?;
-        false
-    };
+    let is_stream =
+        if input.starts_with("in") && input[2..].starts_with(|c: char| c.is_ascii_whitespace()) {
+            literal("in").parse_next(input)?;
+            true
+        } else {
+            literal("=").parse_next(input)?;
+            false
+        };
 
     ws_comments(input);
     let expression = parse_value(input)?;
@@ -1301,19 +1314,23 @@ fn parse_reduce_clause(input: &mut &str) -> PResult<Clause> {
     literal("reduce").parse_next(input)?;
     ws_comments_required(input)?;
 
-    let assignments: Vec<ReduceAssignment> = separated(1.., |i: &mut &str| {
-        ws_comments(i);
-        let var = variable(i)?;
-        ws_comments(i);
-        literal("=").parse_next(i)?;
-        ws_comments(i);
-        let expr = parse_value(i)?;
-        ws_comments(i);
-        Ok(ReduceAssignment {
-            variable: var,
-            expression: expr,
-        })
-    }, ",")
+    let assignments: Vec<ReduceAssignment> = separated(
+        1..,
+        |i: &mut &str| {
+            ws_comments(i);
+            let var = variable(i)?;
+            ws_comments(i);
+            literal("=").parse_next(i)?;
+            ws_comments(i);
+            let expr = parse_value(i)?;
+            ws_comments(i);
+            Ok(ReduceAssignment {
+                variable: var,
+                expression: expr,
+            })
+        },
+        ",",
+    )
     .parse_next(input)?;
 
     ws_comments(input);
@@ -1341,17 +1358,21 @@ fn parse_sort_clause(input: &mut &str) -> PResult<Clause> {
     literal("sort").parse_next(input)?;
     ws_comments_required(input)?;
 
-    let fields: Vec<SortField> = separated(1.., |i: &mut &str| {
-        ws_comments(i);
-        let var = variable(i)?;
-        ws_comments_required(i)?;
-        let dir = alt((literal("asc"), literal("desc"))).parse_next(i)?;
-        ws_comments(i);
-        Ok(SortField {
-            variable: var,
-            ascending: dir == "asc",
-        })
-    }, ",")
+    let fields: Vec<SortField> = separated(
+        1..,
+        |i: &mut &str| {
+            ws_comments(i);
+            let var = variable(i)?;
+            ws_comments_required(i)?;
+            let dir = alt((literal("asc"), literal("desc"))).parse_next(i)?;
+            ws_comments(i);
+            Ok(SortField {
+                variable: var,
+                ascending: dir == "asc",
+            })
+        },
+        ",",
+    )
     .parse_next(input)?;
 
     ws_comments(input);
@@ -1364,8 +1385,7 @@ fn parse_sort_clause(input: &mut &str) -> PResult<Clause> {
 fn parse_limit_clause(input: &mut &str) -> PResult<Clause> {
     literal("limit").parse_next(input)?;
     ws_comments_required(input)?;
-    let digits: &str =
-        take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+    let digits: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
     let n: u64 = digits.parse().map_err(|_| ContextError::new())?;
     ws_comments(input);
     let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
@@ -1376,8 +1396,7 @@ fn parse_limit_clause(input: &mut &str) -> PResult<Clause> {
 fn parse_offset_clause(input: &mut &str) -> PResult<Clause> {
     literal("offset").parse_next(input)?;
     ws_comments_required(input)?;
-    let digits: &str =
-        take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+    let digits: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
     let n: u64 = digits.parse().map_err(|_| ContextError::new())?;
     ws_comments(input);
     let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
@@ -1769,7 +1788,8 @@ mod tests {
 
     #[test]
     fn test_parse_relation_with_constraints() {
-        let mut input = r#"$r isa employment (employee: $p, employer: $c), has start-date 2024-01-15"#;
+        let mut input =
+            r#"$r isa employment (employee: $p, employer: $c), has start-date 2024-01-15"#;
         let p = parse_pattern(&mut input).unwrap();
         match p {
             Pattern::Relation {
@@ -1841,7 +1861,14 @@ mod tests {
 
     #[test]
     fn test_parse_value_comparison_operators() {
-        for (op_str, expected) in &[(">=", ">="), ("<=", "<="), ("!=", "!="), ("==", "=="), (">", ">"), ("<", "<")] {
+        for (op_str, expected) in &[
+            (">=", ">="),
+            ("<=", "<="),
+            ("!=", "!="),
+            ("==", "=="),
+            (">", ">"),
+            ("<", "<"),
+        ] {
             let input_str = format!("$x {} 10", op_str);
             let mut input = input_str.as_str();
             let p = parse_pattern(&mut input).unwrap();
@@ -2063,7 +2090,11 @@ mod tests {
         let mut input = r#""names": [$p.name]"#;
         let item = parse_fetch_item(&mut input).unwrap();
         match item {
-            FetchItem::AttributeList { key, var, attr_name } => {
+            FetchItem::AttributeList {
+                key,
+                var,
+                attr_name,
+            } => {
                 assert_eq!(key, "names");
                 assert_eq!(var, "$p");
                 assert_eq!(attr_name, "name");
@@ -2077,7 +2108,11 @@ mod tests {
         let mut input = r#""id": iid($p)"#;
         let item = parse_fetch_item(&mut input).unwrap();
         match item {
-            FetchItem::Function { key, func_name, var } => {
+            FetchItem::Function {
+                key,
+                func_name,
+                var,
+            } => {
                 assert_eq!(key, "id");
                 assert_eq!(func_name, "iid");
                 assert_eq!(var, "$p");
@@ -2331,7 +2366,11 @@ mod tests {
         let compiler = QueryCompiler::new();
         let parsed = parse_typeql_query(typeql).unwrap();
         let recompiled = compiler.compile(&parsed);
-        assert_eq!(recompiled, typeql, "\n--- INPUT ---\n{}\n--- RECOMPILED ---\n{}", typeql, recompiled);
+        assert_eq!(
+            recompiled, typeql,
+            "\n--- INPUT ---\n{}\n--- RECOMPILED ---\n{}",
+            typeql, recompiled
+        );
     }
 
     #[test]
@@ -2396,7 +2435,9 @@ mod tests {
 
     #[test]
     fn test_roundtrip_relation_insert_with_var() {
-        assert_roundtrip("match\n$p isa person;\ninsert\n$r isa friendship, links (friend: $p, friend: $q);");
+        assert_roundtrip(
+            "match\n$p isa person;\ninsert\n$r isa friendship, links (friend: $p, friend: $q);",
+        );
     }
 
     #[test]
@@ -2406,7 +2447,9 @@ mod tests {
 
     #[test]
     fn test_roundtrip_relation_insert_with_attrs() {
-        assert_roundtrip("insert\n(employee: $p, employer: $c) isa employment, has start-date 2024-01-15;");
+        assert_roundtrip(
+            "insert\n(employee: $p, employer: $c) isa employment, has start-date 2024-01-15;",
+        );
     }
 
     #[test]
@@ -2426,7 +2469,9 @@ mod tests {
 
     #[test]
     fn test_roundtrip_fetch_all_types() {
-        assert_roundtrip("fetch {\n  \"a\": $p.name,\n  \"b\": $p,\n  \"c\": [$p.nick],\n  \"d\": iid($p),\n  \"e\": $p.*,\n  \"f\": { $p.* }\n};");
+        assert_roundtrip(
+            "fetch {\n  \"a\": $p.name,\n  \"b\": $p,\n  \"c\": [$p.nick],\n  \"d\": iid($p),\n  \"e\": $p.*,\n  \"f\": { $p.* }\n};",
+        );
     }
 
     #[test]
@@ -2461,7 +2506,9 @@ mod tests {
 
     #[test]
     fn test_roundtrip_complex_match() {
-        assert_roundtrip("match\n$p isa person, has name \"Alice\", has age 30;\n$r isa friendship (friend: $p, friend: $q);\n$q isa person;\nnot { $q isa! employee; };");
+        assert_roundtrip(
+            "match\n$p isa person, has name \"Alice\", has age 30;\n$r isa friendship (friend: $p, friend: $q);\n$q isa person;\nnot { $q isa! employee; };",
+        );
     }
 
     #[test]
@@ -2623,7 +2670,11 @@ mod tests {
         let mut input = "$name contains \"Ali\"";
         let p = parse_pattern(&mut input).unwrap();
         match p {
-            Pattern::ValueComparison { var, operator, value } => {
+            Pattern::ValueComparison {
+                var,
+                operator,
+                value,
+            } => {
                 assert_eq!(var, "$name");
                 assert_eq!(operator, "contains");
                 match value {

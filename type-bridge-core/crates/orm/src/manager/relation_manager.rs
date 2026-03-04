@@ -11,8 +11,8 @@ use crate::filter::Filter;
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
 use crate::query::RelationQuery;
 use crate::relation::TypeBridgeRelation;
-use crate::session::backend::{QueryResult, TxType};
 use crate::session::Database;
+use crate::session::backend::{QueryResult, TxType};
 
 use super::hydration::{extract_count, hydrate_relation};
 use super::query_builder;

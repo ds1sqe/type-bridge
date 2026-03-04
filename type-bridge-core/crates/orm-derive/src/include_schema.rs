@@ -10,24 +10,27 @@ use std::path::PathBuf;
 use proc_macro2::TokenStream;
 use syn::LitStr;
 
-use type_bridge_core_lib::schema::{Cardinality, EntityType, OwnedAttribute, RelationType, TypeSchema};
+use type_bridge_core_lib::schema::{
+    Cardinality, EntityType, OwnedAttribute, RelationType, TypeSchema,
+};
 
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let lit: LitStr = syn::parse2(input)?;
     let path = lit.value();
 
     // Resolve relative to CARGO_MANIFEST_DIR
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
-        syn::Error::new(lit.span(), "CARGO_MANIFEST_DIR not set")
-    })?;
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .map_err(|_| syn::Error::new(lit.span(), "CARGO_MANIFEST_DIR not set"))?;
     let full_path = PathBuf::from(&manifest_dir).join(&path);
     let content = std::fs::read_to_string(&full_path).map_err(|e| {
-        syn::Error::new(lit.span(), format!("cannot read {}: {}", full_path.display(), e))
+        syn::Error::new(
+            lit.span(),
+            format!("cannot read {}: {}", full_path.display(), e),
+        )
     })?;
 
-    let schema = TypeSchema::from_typeql(&content).map_err(|e| {
-        syn::Error::new(lit.span(), format!("schema parse error: {e}"))
-    })?;
+    let schema = TypeSchema::from_typeql(&content)
+        .map_err(|e| syn::Error::new(lit.span(), format!("schema parse error: {e}")))?;
 
     let code = generate_inline(&schema);
     let tokens: TokenStream = code.parse().map_err(|e: proc_macro2::LexError| {
@@ -92,7 +95,11 @@ fn generate_entity(out: &mut String, entity: &EntityType, _schema: &TypeSchema) 
     writeln!(out, "    pub iid: Option<String>,").unwrap();
 
     let attr_names = if entity.owns_order.is_empty() {
-        entity.owns.iter().map(|o| o.name.as_str()).collect::<Vec<_>>()
+        entity
+            .owns
+            .iter()
+            .map(|o| o.name.as_str())
+            .collect::<Vec<_>>()
     } else {
         entity.owns_order.iter().map(|s| s.as_str()).collect()
     };
@@ -161,11 +168,20 @@ fn generate_relation(out: &mut String, relation: &RelationType, schema: &TypeSch
             role.name, player_type
         )
         .unwrap();
-        writeln!(out, "    pub {}: type_bridge_orm::RolePlayerRef,", field_name).unwrap();
+        writeln!(
+            out,
+            "    pub {}: type_bridge_orm::RolePlayerRef,",
+            field_name
+        )
+        .unwrap();
     }
 
     let attr_names = if relation.owns_order.is_empty() {
-        relation.owns.iter().map(|o| o.name.as_str()).collect::<Vec<_>>()
+        relation
+            .owns
+            .iter()
+            .map(|o| o.name.as_str())
+            .collect::<Vec<_>>()
     } else {
         relation.owns_order.iter().map(|s| s.as_str()).collect()
     };
@@ -210,7 +226,10 @@ fn generate_relation(out: &mut String, relation: &RelationType, schema: &TypeSch
 
 fn determine_field_type(attr_type: &str, own: &OwnedAttribute) -> String {
     match &own.cardinality {
-        Some(Cardinality { min: 0, max: Some(1) }) => format!("Option<{}>", attr_type),
+        Some(Cardinality {
+            min: 0,
+            max: Some(1),
+        }) => format!("Option<{}>", attr_type),
         Some(Cardinality { max: None, .. }) => format!("Vec<{}>", attr_type),
         Some(Cardinality { max: Some(max), .. }) if *max > 1 => format!("Vec<{}>", attr_type),
         _ => attr_type.to_string(),

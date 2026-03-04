@@ -365,13 +365,13 @@ pub fn validate_duration(s: &str) -> Result<(), String> {
             'M' => has_component = true, // M is valid in both date and time
             'H' | 'S' if in_time => has_component = true,
             'Y' | 'D' if in_time => {
-                return Err(format!("'{}' not allowed in time part of duration", unit))
+                return Err(format!("'{}' not allowed in time part of duration", unit));
             }
             'H' | 'S' if !in_time => {
                 return Err(format!(
                     "'{}' only allowed in time part (after 'T') of duration",
                     unit
-                ))
+                ));
             }
             _ => return Err(format!("Unknown duration unit: '{}'", unit)),
         }
@@ -409,12 +409,7 @@ impl ValueCoercer {
     }
 
     /// Add a range constraint for an attribute type.
-    pub fn with_range(
-        mut self,
-        attr_type: &str,
-        min: Option<f64>,
-        max: Option<f64>,
-    ) -> Self {
+    pub fn with_range(mut self, attr_type: &str, min: Option<f64>, max: Option<f64>) -> Self {
         self.range_constraints
             .insert(attr_type.to_string(), (min, max));
         self
@@ -580,19 +575,19 @@ impl ValueCoercer {
                     });
                 }
             }
-            serde_json::Value::String(s) => s.parse::<i64>().map_err(|_| {
-                CoercionError::InvalidFormat {
+            serde_json::Value::String(s) => {
+                s.parse::<i64>().map_err(|_| CoercionError::InvalidFormat {
                     value: s.clone(),
                     expected_type: target_type.to_string(),
                     message: "Cannot parse as integer".to_string(),
-                }
-            })?,
+                })?
+            }
             _ => {
                 return Err(CoercionError::TypeMismatch {
                     value: value.to_string(),
                     expected: target_type.to_string(),
                     actual: json_type_name(value).to_string(),
-                })
+                });
             }
         };
         self.check_range(n as f64, target_type)?;
@@ -604,27 +599,26 @@ impl ValueCoercer {
 
     fn coerce_to_double(&self, value: &serde_json::Value) -> Result<CoercedValue, CoercionError> {
         let n = match value {
-            serde_json::Value::Number(n) => n.as_f64().ok_or_else(|| {
-                CoercionError::InvalidFormat {
+            serde_json::Value::Number(n) => {
+                n.as_f64().ok_or_else(|| CoercionError::InvalidFormat {
                     value: value.to_string(),
                     expected_type: "double".to_string(),
                     message: "Cannot convert to float".to_string(),
-                }
-            })?,
+                })?
+            }
             serde_json::Value::String(s) => {
-                s.parse::<f64>()
-                    .map_err(|_| CoercionError::InvalidFormat {
-                        value: s.clone(),
-                        expected_type: "double".to_string(),
-                        message: "Cannot parse as float".to_string(),
-                    })?
+                s.parse::<f64>().map_err(|_| CoercionError::InvalidFormat {
+                    value: s.clone(),
+                    expected_type: "double".to_string(),
+                    message: "Cannot parse as float".to_string(),
+                })?
             }
             _ => {
                 return Err(CoercionError::TypeMismatch {
                     value: value.to_string(),
                     expected: "double".to_string(),
                     actual: json_type_name(value).to_string(),
-                })
+                });
             }
         };
         self.check_range(n, "double")?;
@@ -645,7 +639,7 @@ impl ValueCoercer {
                         value: s.clone(),
                         expected_type: "boolean".to_string(),
                         message: "Expected 'true' or 'false'".to_string(),
-                    })
+                    });
                 }
             },
             _ => {
@@ -653,7 +647,7 @@ impl ValueCoercer {
                     value: value.to_string(),
                     expected: "boolean".to_string(),
                     actual: json_type_name(value).to_string(),
-                })
+                });
             }
         };
         Ok(CoercedValue {
@@ -682,9 +676,7 @@ impl ValueCoercer {
                     cleaned
                 };
                 if parse_part.is_empty()
-                    || !parse_part
-                        .chars()
-                        .all(|c| c.is_ascii_digit() || c == '.')
+                    || !parse_part.chars().all(|c| c.is_ascii_digit() || c == '.')
                 {
                     return Err(CoercionError::InvalidFormat {
                         value: s.clone(),
@@ -699,7 +691,7 @@ impl ValueCoercer {
                     value: value.to_string(),
                     expected: "decimal".to_string(),
                     actual: json_type_name(value).to_string(),
-                })
+                });
             }
         };
         Ok(CoercedValue {
@@ -716,7 +708,7 @@ impl ValueCoercer {
                     value: value.to_string(),
                     expected: "date".to_string(),
                     actual: json_type_name(value).to_string(),
-                })
+                });
             }
         };
         validate_date(&s).map_err(|msg| CoercionError::InvalidFormat {
@@ -730,10 +722,7 @@ impl ValueCoercer {
         })
     }
 
-    fn coerce_to_datetime(
-        &self,
-        value: &serde_json::Value,
-    ) -> Result<CoercedValue, CoercionError> {
+    fn coerce_to_datetime(&self, value: &serde_json::Value) -> Result<CoercedValue, CoercionError> {
         let s = match value {
             serde_json::Value::String(s) => s.clone(),
             _ => {
@@ -741,7 +730,7 @@ impl ValueCoercer {
                     value: value.to_string(),
                     expected: "datetime".to_string(),
                     actual: json_type_name(value).to_string(),
-                })
+                });
             }
         };
         validate_datetime(&s).map_err(|msg| CoercionError::InvalidFormat {
@@ -766,7 +755,7 @@ impl ValueCoercer {
                     value: value.to_string(),
                     expected: "datetime-tz".to_string(),
                     actual: json_type_name(value).to_string(),
-                })
+                });
             }
         };
         validate_datetime_tz(&s).map_err(|msg| CoercionError::InvalidFormat {
@@ -780,10 +769,7 @@ impl ValueCoercer {
         })
     }
 
-    fn coerce_to_duration(
-        &self,
-        value: &serde_json::Value,
-    ) -> Result<CoercedValue, CoercionError> {
+    fn coerce_to_duration(&self, value: &serde_json::Value) -> Result<CoercedValue, CoercionError> {
         let s = match value {
             serde_json::Value::String(s) => s.clone(),
             _ => {
@@ -791,7 +777,7 @@ impl ValueCoercer {
                     value: value.to_string(),
                     expected: "duration".to_string(),
                     actual: json_type_name(value).to_string(),
-                })
+                });
             }
         };
         validate_duration(&s).map_err(|msg| CoercionError::InvalidFormat {
@@ -852,26 +838,17 @@ mod tests {
 
     #[test]
     fn test_format_string_literal_newlines() {
-        assert_eq!(
-            format_string_literal("line1\nline2"),
-            "\"line1\\nline2\""
-        );
+        assert_eq!(format_string_literal("line1\nline2"), "\"line1\\nline2\"");
     }
 
     #[test]
     fn test_format_string_literal_tabs() {
-        assert_eq!(
-            format_string_literal("col1\tcol2"),
-            "\"col1\\tcol2\""
-        );
+        assert_eq!(format_string_literal("col1\tcol2"), "\"col1\\tcol2\"");
     }
 
     #[test]
     fn test_format_string_literal_carriage_return() {
-        assert_eq!(
-            format_string_literal("a\rb"),
-            "\"a\\rb\""
-        );
+        assert_eq!(format_string_literal("a\rb"), "\"a\\rb\"");
     }
 
     #[test]
@@ -881,10 +858,7 @@ mod tests {
 
     #[test]
     fn test_format_string_literal_unicode() {
-        assert_eq!(
-            format_string_literal("こんにちは"),
-            "\"こんにちは\""
-        );
+        assert_eq!(format_string_literal("こんにちは"), "\"こんにちは\"");
     }
 
     #[test]
@@ -1067,9 +1041,7 @@ mod tests {
     #[test]
     fn test_coerce_datetime() {
         let c = ValueCoercer::new();
-        let result = c
-            .coerce(&json!("2024-01-15T10:30:00"), "datetime")
-            .unwrap();
+        let result = c.coerce(&json!("2024-01-15T10:30:00"), "datetime").unwrap();
         assert_eq!(result.value, json!("2024-01-15T10:30:00"));
 
         // With fractional seconds
@@ -1079,9 +1051,10 @@ mod tests {
         assert_eq!(result.value, json!("2024-01-15T10:30:00.123456"));
 
         // Should reject timezone
-        assert!(c
-            .coerce(&json!("2024-01-15T10:30:00+00:00"), "datetime")
-            .is_err());
+        assert!(
+            c.coerce(&json!("2024-01-15T10:30:00+00:00"), "datetime")
+                .is_err()
+        );
     }
 
     #[test]
@@ -1093,9 +1066,10 @@ mod tests {
         assert_eq!(result.value, json!("2024-01-15T10:30:00+00:00"));
 
         // Should reject naive
-        assert!(c
-            .coerce(&json!("2024-01-15T10:30:00"), "datetime-tz")
-            .is_err());
+        assert!(
+            c.coerce(&json!("2024-01-15T10:30:00"), "datetime-tz")
+                .is_err()
+        );
     }
 
     #[test]

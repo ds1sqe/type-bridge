@@ -15,14 +15,14 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
                 return Err(syn::Error::new_spanned(
                     &input,
                     "TypeBridgeEntity requires a struct with named fields",
-                ))
+                ));
             }
         },
         _ => {
             return Err(syn::Error::new_spanned(
                 &input,
                 "TypeBridgeEntity can only be derived for structs",
-            ))
+            ));
         }
     };
 
@@ -174,10 +174,7 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     };
 
     // Generate XxxFields struct for type-safe field references
-    let fields_struct_name = syn::Ident::new(
-        &format!("{}Fields", name),
-        name.span(),
-    );
+    let fields_struct_name = syn::Ident::new(&format!("{}Fields", name), name.span());
     let fields_struct_fields = attr_fields.iter().map(|f| {
         let ident = &f.ident;
         let ty = &f.inner_ty;

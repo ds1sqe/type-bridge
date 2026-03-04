@@ -8,8 +8,8 @@ use crate::error::{OrmError, Result};
 use crate::expr::{Agg, AggResult, GroupByResult};
 use crate::manager::query_builder;
 use crate::relation::TypeBridgeRelation;
-use crate::session::backend::{QueryResult, TxType};
 use crate::session::Database;
+use crate::session::backend::{QueryResult, TxType};
 
 /// A group-by query builder for entity types.
 ///

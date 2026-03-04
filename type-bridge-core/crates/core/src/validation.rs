@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use crate::ast::{Clause, Constraint, FetchItem, Pattern, Statement, Value};
 use crate::reserved_words::is_reserved_word;
 use crate::schema::TypeSchema;
-use unicode_ident::{is_xid_start, is_xid_continue};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use unicode_ident::{is_xid_continue, is_xid_start};
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -77,7 +77,9 @@ fn warning(code: &str, message: String, path: &str) -> ValidationError {
 }
 
 fn make_result(errors: Vec<ValidationError>) -> ValidationResult {
-    let is_valid = !errors.iter().any(|e| e.severity == ValidationSeverity::Error);
+    let is_valid = !errors
+        .iter()
+        .any(|e| e.severity == ValidationSeverity::Error);
     ValidationResult { is_valid, errors }
 }
 
@@ -99,7 +101,8 @@ impl TypeEnvironment {
     }
 
     fn bind(&mut self, var: &str, type_name: &str) {
-        self.var_types.insert(var.to_string(), type_name.to_string());
+        self.var_types
+            .insert(var.to_string(), type_name.to_string());
     }
 
     fn get_type(&self, var: &str) -> Option<&str> {
@@ -125,7 +128,9 @@ fn value_types_compatible(literal_type: &str, schema_type: &str) -> bool {
         return true;
     }
     // integer is an alias for long in some contexts
-    if literal_type == "integer" && (schema_type == "long" || schema_type == "double" || schema_type == "decimal") {
+    if literal_type == "integer"
+        && (schema_type == "long" || schema_type == "double" || schema_type == "decimal")
+    {
         return true;
     }
     false
@@ -326,7 +331,9 @@ impl ValidationEngine {
     /// The output conforms to the [`ValidationRuleSet`] schema and can be
     /// re-loaded with [`load_rules`](Self::load_rules).
     pub fn export_rules(&self) -> Result<String, String> {
-        let ruleset = ValidationRuleSet { rules: self.rules.clone() };
+        let ruleset = ValidationRuleSet {
+            rules: self.rules.clone(),
+        };
         serde_json::to_string_pretty(&ruleset).map_err(|e| e.to_string())
     }
 
@@ -357,12 +364,25 @@ impl ValidationEngine {
     /// * `context` -- A human-readable context string for error messages
     ///   (e.g. `"Entity"`, `"Relation"`).
     /// * `path` -- The structural path for error reporting.
-    pub fn validate_variable_name(&self, name: &str, context: &str, path: &str) -> Vec<ValidationError> {
+    pub fn validate_variable_name(
+        &self,
+        name: &str,
+        context: &str,
+        path: &str,
+    ) -> Vec<ValidationError> {
         let mut errors = Vec::new();
         if !name.starts_with('$') {
-            errors.push(error("INVALID_VARIABLE", format!("Variable '{}' must start with '$' in {}", name, context), path));
+            errors.push(error(
+                "INVALID_VARIABLE",
+                format!("Variable '{}' must start with '$' in {}", name, context),
+                path,
+            ));
         } else if name.len() == 1 {
-            errors.push(error("EMPTY_VARIABLE", format!("Variable name cannot be just '$' in {}", context), path));
+            errors.push(error(
+                "EMPTY_VARIABLE",
+                format!("Variable name cannot be just '$' in {}", context),
+                path,
+            ));
         }
         errors
     }
@@ -383,24 +403,50 @@ impl ValidationEngine {
         let mut errors = Vec::new();
 
         if name.is_empty() {
-            errors.push(error("EMPTY_NAME", format!("Empty {} name is not allowed", context), ""));
+            errors.push(error(
+                "EMPTY_NAME",
+                format!("Empty {} name is not allowed", context),
+                "",
+            ));
             return make_result(errors);
         }
 
         if is_reserved_word(name) {
-            errors.push(error("RESERVED_WORD", format!("Cannot use '{}' as {} name: it's a TypeQL reserved word!", name, context), ""));
+            errors.push(error(
+                "RESERVED_WORD",
+                format!(
+                    "Cannot use '{}' as {} name: it's a TypeQL reserved word!",
+                    name, context
+                ),
+                "",
+            ));
         }
 
         let mut chars = name.chars();
         if let Some(first) = chars.next()
-            && !is_xid_start(first) && first != '_'
+            && !is_xid_start(first)
+            && first != '_'
         {
-            errors.push(error("INVALID_START", format!("{} name '{}' must start with a letter or underscore", context, name), ""));
+            errors.push(error(
+                "INVALID_START",
+                format!(
+                    "{} name '{}' must start with a letter or underscore",
+                    context, name
+                ),
+                "",
+            ));
         }
 
         for c in chars {
             if !is_xid_continue(c) && c != '-' {
-                errors.push(error("INVALID_CHAR", format!("{} name '{}' contains invalid character '{}'", context, name, c), ""));
+                errors.push(error(
+                    "INVALID_CHAR",
+                    format!(
+                        "{} name '{}' contains invalid character '{}'",
+                        context, name, c
+                    ),
+                    "",
+                ));
                 break;
             }
         }
@@ -410,7 +456,13 @@ impl ValidationEngine {
 
     fn check_type_name(&self, name: &str, context: &str, path: &str) -> Vec<ValidationError> {
         let res = self.validate_type_name(name, context);
-        res.errors.into_iter().map(|mut e| { e.path = path.to_string(); e }).collect()
+        res.errors
+            .into_iter()
+            .map(|mut e| {
+                e.path = path.to_string();
+                e
+            })
+            .collect()
     }
 
     /// Validate the syntactic structure of a single pattern.
@@ -425,16 +477,35 @@ impl ValidationEngine {
         make_result(errors)
     }
 
-    fn validate_pattern_recursive(&self, pattern: &Pattern, path: &str, errors: &mut Vec<ValidationError>) {
+    fn validate_pattern_recursive(
+        &self,
+        pattern: &Pattern,
+        path: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
         match pattern {
-            Pattern::Entity { variable, type_name, constraints, .. } => {
+            Pattern::Entity {
+                variable,
+                type_name,
+                constraints,
+                ..
+            } => {
                 errors.extend(self.validate_variable_name(variable, "Entity", path));
                 errors.extend(self.check_type_name(type_name, "Entity type", path));
                 for (i, c) in constraints.iter().enumerate() {
-                    self.validate_constraint_recursive(c, &format!("{}.constraints[{}]", path, i), errors);
+                    self.validate_constraint_recursive(
+                        c,
+                        &format!("{}.constraints[{}]", path, i),
+                        errors,
+                    );
                 }
             }
-            Pattern::Relation { variable, type_name, role_players, constraints } => {
+            Pattern::Relation {
+                variable,
+                type_name,
+                role_players,
+                constraints,
+            } => {
                 errors.extend(self.validate_variable_name(variable, "Relation", path));
                 errors.extend(self.check_type_name(type_name, "Relation type", path));
                 for (i, rp) in role_players.iter().enumerate() {
@@ -443,21 +514,36 @@ impl ValidationEngine {
                     errors.extend(self.validate_variable_name(&rp.player_var, "Player", &rp_path));
                 }
                 for (i, c) in constraints.iter().enumerate() {
-                    self.validate_constraint_recursive(c, &format!("{}.constraints[{}]", path, i), errors);
+                    self.validate_constraint_recursive(
+                        c,
+                        &format!("{}.constraints[{}]", path, i),
+                        errors,
+                    );
                 }
             }
-            Pattern::SubType { variable, parent_type } => {
+            Pattern::SubType {
+                variable,
+                parent_type,
+            } => {
                 errors.extend(self.validate_variable_name(variable, "SubType variable", path));
                 errors.extend(self.check_type_name(parent_type, "Parent type", path));
             }
-            Pattern::Attribute { variable, type_name, value } => {
+            Pattern::Attribute {
+                variable,
+                type_name,
+                value,
+            } => {
                 errors.extend(self.validate_variable_name(variable, "Attribute variable", path));
                 errors.extend(self.check_type_name(type_name, "Attribute type", path));
                 if let Some(v) = value {
                     self.validate_value_recursive(v, &format!("{}.value", path), errors);
                 }
             }
-            Pattern::Has { thing_var, attr_type, attr_var } => {
+            Pattern::Has {
+                thing_var,
+                attr_type,
+                attr_var,
+            } => {
                 errors.extend(self.validate_variable_name(thing_var, "Subject", path));
                 errors.extend(self.check_type_name(attr_type, "Attribute type", path));
                 errors.extend(self.validate_variable_name(attr_var, "Attribute variable", path));
@@ -474,7 +560,11 @@ impl ValidationEngine {
             Pattern::Or(alternatives) => {
                 for (i, alt) in alternatives.iter().enumerate() {
                     for (j, p) in alt.iter().enumerate() {
-                        self.validate_pattern_recursive(p, &format!("{}.or[{}][{}]", path, i, j), errors);
+                        self.validate_pattern_recursive(
+                            p,
+                            &format!("{}.or[{}][{}]", path, i, j),
+                            errors,
+                        );
                     }
                 }
             }
@@ -496,18 +586,36 @@ impl ValidationEngine {
         make_result(errors)
     }
 
-    fn validate_statement_recursive(&self, statement: &Statement, path: &str, errors: &mut Vec<ValidationError>) {
+    fn validate_statement_recursive(
+        &self,
+        statement: &Statement,
+        path: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
         match statement {
-            Statement::Has { subject_var, attr_name, value } => {
+            Statement::Has {
+                subject_var,
+                attr_name,
+                value,
+            } => {
                 errors.extend(self.validate_variable_name(subject_var, "Subject", path));
                 errors.extend(self.check_type_name(attr_name, "Attribute type", path));
                 self.validate_value_recursive(value, &format!("{}.value", path), errors);
             }
-            Statement::Isa { variable, type_name } => {
+            Statement::Isa {
+                variable,
+                type_name,
+            } => {
                 errors.extend(self.validate_variable_name(variable, "Variable", path));
                 errors.extend(self.check_type_name(type_name, "Type", path));
             }
-            Statement::Relation { variable, type_name, role_players, attributes, .. } => {
+            Statement::Relation {
+                variable,
+                type_name,
+                role_players,
+                attributes,
+                ..
+            } => {
                 errors.extend(self.validate_variable_name(variable, "Relation", path));
                 errors.extend(self.check_type_name(type_name, "Relation type", path));
                 for (i, rp) in role_players.iter().enumerate() {
@@ -516,7 +624,11 @@ impl ValidationEngine {
                     errors.extend(self.validate_variable_name(&rp.player_var, "Player", &rp_path));
                 }
                 for (i, attr) in attributes.iter().enumerate() {
-                    self.validate_statement_recursive(attr, &format!("{}.attributes[{}]", path, i), errors);
+                    self.validate_statement_recursive(
+                        attr,
+                        &format!("{}.attributes[{}]", path, i),
+                        errors,
+                    );
                 }
             }
             Statement::DeleteThing(variable) => {
@@ -526,7 +638,12 @@ impl ValidationEngine {
         }
     }
 
-    fn validate_constraint_recursive(&self, constraint: &Constraint, path: &str, errors: &mut Vec<ValidationError>) {
+    fn validate_constraint_recursive(
+        &self,
+        constraint: &Constraint,
+        path: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
         match constraint {
             Constraint::Iid(_) => {}
             Constraint::Has { attr_name, value } => {
@@ -539,7 +656,12 @@ impl ValidationEngine {
         }
     }
 
-    fn validate_value_recursive(&self, value: &Value, path: &str, errors: &mut Vec<ValidationError>) {
+    fn validate_value_recursive(
+        &self,
+        value: &Value,
+        path: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
         match value {
             Value::Literal(_) => {}
             Value::Variable(v) => {
@@ -597,28 +719,39 @@ impl ValidationEngine {
 
     // -- Phase 1: build type environment -----------------------------------
 
-    fn build_type_env(
-        &self,
-        patterns: &[Pattern],
-        schema: &TypeSchema,
-        env: &mut TypeEnvironment,
-    ) {
+    fn build_type_env(&self, patterns: &[Pattern], schema: &TypeSchema, env: &mut TypeEnvironment) {
         for pattern in patterns {
             match pattern {
-                Pattern::Entity { variable, type_name, .. } => {
+                Pattern::Entity {
+                    variable,
+                    type_name,
+                    ..
+                } => {
                     // The Entity pattern is used for any `$var isa type` match,
                     // so the type could be an entity, relation, or attribute.
                     if schema.type_exists(type_name) {
                         env.bind(variable, type_name);
                     }
                 }
-                Pattern::Relation { variable, type_name, .. } => {
+                Pattern::Relation {
+                    variable,
+                    type_name,
+                    ..
+                } => {
                     env.bind(variable, type_name);
                 }
-                Pattern::Attribute { variable, type_name, .. } => {
+                Pattern::Attribute {
+                    variable,
+                    type_name,
+                    ..
+                } => {
                     env.bind(variable, type_name);
                 }
-                Pattern::Has { attr_type, attr_var, .. } => {
+                Pattern::Has {
+                    attr_type,
+                    attr_var,
+                    ..
+                } => {
                     if schema.attributes.contains_key(attr_type) {
                         env.bind(attr_var, attr_type);
                     }
@@ -650,7 +783,11 @@ impl ValidationEngine {
             Clause::Match(patterns) => {
                 for (i, p) in patterns.iter().enumerate() {
                     self.validate_pattern_against_schema(
-                        p, schema, env, &format!("{}.patterns[{}]", path, i), errors,
+                        p,
+                        schema,
+                        env,
+                        &format!("{}.patterns[{}]", path, i),
+                        errors,
                     );
                 }
             }
@@ -660,7 +797,11 @@ impl ValidationEngine {
             Clause::Delete(stmts) | Clause::Update(stmts) => {
                 for (i, s) in stmts.iter().enumerate() {
                     self.validate_statement_against_schema(
-                        s, schema, env, &format!("{}.stmts[{}]", path, i), errors,
+                        s,
+                        schema,
+                        env,
+                        &format!("{}.stmts[{}]", path, i),
+                        errors,
                     );
                 }
             }
@@ -683,9 +824,18 @@ impl ValidationEngine {
         errors: &mut Vec<ValidationError>,
     ) {
         match pattern {
-            Pattern::Entity { type_name, constraints, is_strict, .. } => {
+            Pattern::Entity {
+                type_name,
+                constraints,
+                is_strict,
+                ..
+            } => {
                 if !schema.type_exists(type_name) {
-                    errors.push(error("UNKNOWN_TYPE", format!("Type '{}' not found in schema", type_name), path));
+                    errors.push(error(
+                        "UNKNOWN_TYPE",
+                        format!("Type '{}' not found in schema", type_name),
+                        path,
+                    ));
                     return;
                 }
 
@@ -693,8 +843,12 @@ impl ValidationEngine {
                 for (i, c) in constraints.iter().enumerate() {
                     if let Constraint::Has { attr_name, value } = c {
                         self.validate_has_against_schema(
-                            type_name, attr_name, value, schema,
-                            &format!("{}.constraints[{}]", path, i), errors,
+                            type_name,
+                            attr_name,
+                            value,
+                            schema,
+                            &format!("{}.constraints[{}]", path, i),
+                            errors,
                         );
                     }
                 }
@@ -705,12 +859,27 @@ impl ValidationEngine {
                 }
             }
 
-            Pattern::Relation { type_name, role_players, constraints, .. } => {
+            Pattern::Relation {
+                type_name,
+                role_players,
+                constraints,
+                ..
+            } => {
                 if !schema.relations.contains_key(type_name) {
-                    if schema.entities.contains_key(type_name) || schema.attributes.contains_key(type_name) {
-                        errors.push(error("UNKNOWN_TYPE", format!("'{}' is not a relation type", type_name), path));
+                    if schema.entities.contains_key(type_name)
+                        || schema.attributes.contains_key(type_name)
+                    {
+                        errors.push(error(
+                            "UNKNOWN_TYPE",
+                            format!("'{}' is not a relation type", type_name),
+                            path,
+                        ));
                     } else {
-                        errors.push(error("UNKNOWN_TYPE", format!("Relation type '{}' not found in schema", type_name), path));
+                        errors.push(error(
+                            "UNKNOWN_TYPE",
+                            format!("Relation type '{}' not found in schema", type_name),
+                            path,
+                        ));
                     }
                     return;
                 }
@@ -726,7 +895,10 @@ impl ValidationEngine {
                         let available: Vec<&str> = role_names.iter().copied().collect();
                         errors.push(error(
                             "UNKNOWN_ROLE",
-                            format!("Role '{}' not found in relation '{}'. Available roles: {:?}", rp.role, type_name, available),
+                            format!(
+                                "Role '{}' not found in relation '{}'. Available roles: {:?}",
+                                rp.role, type_name, available
+                            ),
                             &rp_path,
                         ));
                     }
@@ -734,7 +906,12 @@ impl ValidationEngine {
                     // Role player type check.
                     if let Some(player_type) = env.get_type(&rp.player_var) {
                         self.validate_role_player_type(
-                            player_type, type_name, &rp.role, schema, &rp_path, errors,
+                            player_type,
+                            type_name,
+                            &rp.role,
+                            schema,
+                            &rp_path,
+                            errors,
                         );
                     }
                 }
@@ -743,17 +920,29 @@ impl ValidationEngine {
                 for (i, c) in constraints.iter().enumerate() {
                     if let Constraint::Has { attr_name, value } = c {
                         self.validate_has_against_schema(
-                            type_name, attr_name, value, schema,
-                            &format!("{}.constraints[{}]", path, i), errors,
+                            type_name,
+                            attr_name,
+                            value,
+                            schema,
+                            &format!("{}.constraints[{}]", path, i),
+                            errors,
                         );
                     }
                 }
             }
 
-            Pattern::Has { thing_var, attr_type, .. } => {
+            Pattern::Has {
+                thing_var,
+                attr_type,
+                ..
+            } => {
                 // Validate attribute type exists.
                 if !schema.attributes.contains_key(attr_type) {
-                    errors.push(error("UNKNOWN_ATTRIBUTE_TYPE", format!("Attribute type '{}' not found in schema", attr_type), path));
+                    errors.push(error(
+                        "UNKNOWN_ATTRIBUTE_TYPE",
+                        format!("Attribute type '{}' not found in schema", attr_type),
+                        path,
+                    ));
                 }
 
                 // If we know the owner's type, check ownership.
@@ -765,7 +954,11 @@ impl ValidationEngine {
             Pattern::Not(inner) => {
                 for (i, p) in inner.iter().enumerate() {
                     self.validate_pattern_against_schema(
-                        p, schema, env, &format!("{}.not[{}]", path, i), errors,
+                        p,
+                        schema,
+                        env,
+                        &format!("{}.not[{}]", path, i),
+                        errors,
                     );
                 }
             }
@@ -774,7 +967,11 @@ impl ValidationEngine {
                 for (i, alt) in alternatives.iter().enumerate() {
                     for (j, p) in alt.iter().enumerate() {
                         self.validate_pattern_against_schema(
-                            p, schema, env, &format!("{}.or[{}][{}]", path, i, j), errors,
+                            p,
+                            schema,
+                            env,
+                            &format!("{}.or[{}][{}]", path, i, j),
+                            errors,
                         );
                     }
                 }
@@ -796,32 +993,53 @@ impl ValidationEngine {
         errors: &mut Vec<ValidationError>,
     ) {
         match stmt {
-            Statement::Has { subject_var, attr_name, value } => {
+            Statement::Has {
+                subject_var,
+                attr_name,
+                value,
+            } => {
                 if let Some(owner_type) = env.get_type(subject_var) {
                     self.validate_has_against_schema(
                         owner_type, attr_name, value, schema, path, errors,
                     );
                 } else if !schema.attributes.contains_key(attr_name) {
-                    errors.push(error("UNKNOWN_ATTRIBUTE_TYPE", format!("Attribute type '{}' not found in schema", attr_name), path));
+                    errors.push(error(
+                        "UNKNOWN_ATTRIBUTE_TYPE",
+                        format!("Attribute type '{}' not found in schema", attr_name),
+                        path,
+                    ));
                 }
             }
             Statement::Isa { type_name, .. } => {
                 if !schema.type_exists(type_name) {
-                    errors.push(error("UNKNOWN_TYPE", format!("Type '{}' not found in schema", type_name), path));
+                    errors.push(error(
+                        "UNKNOWN_TYPE",
+                        format!("Type '{}' not found in schema", type_name),
+                        path,
+                    ));
                 }
             }
-            Statement::Relation { type_name, role_players, attributes, .. } => {
+            Statement::Relation {
+                type_name,
+                role_players,
+                attributes,
+                ..
+            } => {
                 if let Some(_rel) = schema.relations.get(type_name) {
                     // Validate roles.
                     let all_roles = schema.get_all_relates(type_name);
-                    let role_names: HashSet<&str> = all_roles.iter().map(|r| r.name.as_str()).collect();
+                    let role_names: HashSet<&str> =
+                        all_roles.iter().map(|r| r.name.as_str()).collect();
 
                     for (j, rp) in role_players.iter().enumerate() {
                         if !role_names.contains(rp.role.as_str()) {
                             let available: Vec<&str> = role_names.iter().copied().collect();
                             errors.push(error(
                                 "UNKNOWN_ROLE",
-                                format!("Role '{}' not found in relation '{}'. Available roles: {:?}", rp.role, type_name, available),
+                                format!(
+                                    "Role '{}' not found in relation '{}'. Available roles: {:?}",
+                                    rp.role, type_name, available
+                                ),
                                 &format!("{}.role_players[{}]", path, j),
                             ));
                         }
@@ -830,11 +1048,19 @@ impl ValidationEngine {
                     // Validate inline attributes.
                     for (j, attr_stmt) in attributes.iter().enumerate() {
                         self.validate_statement_against_schema(
-                            attr_stmt, schema, env, &format!("{}.attrs[{}]", path, j), errors,
+                            attr_stmt,
+                            schema,
+                            env,
+                            &format!("{}.attrs[{}]", path, j),
+                            errors,
                         );
                     }
                 } else {
-                    errors.push(error("UNKNOWN_TYPE", format!("Relation type '{}' not found in schema", type_name), path));
+                    errors.push(error(
+                        "UNKNOWN_TYPE",
+                        format!("Relation type '{}' not found in schema", type_name),
+                        path,
+                    ));
                 }
             }
             Statement::DeleteThing(_) | Statement::Raw(_) => {}
@@ -855,12 +1081,19 @@ impl ValidationEngine {
         let mut env = match_env.clone();
         for stmt in stmts {
             match stmt {
-                Statement::Isa { variable, type_name } => {
+                Statement::Isa {
+                    variable,
+                    type_name,
+                } => {
                     if schema.type_exists(type_name) {
                         env.bind(variable, type_name);
                     }
                 }
-                Statement::Relation { variable, type_name, .. } => {
+                Statement::Relation {
+                    variable,
+                    type_name,
+                    ..
+                } => {
                     env.bind(variable, type_name);
                 }
                 _ => {}
@@ -875,12 +1108,24 @@ impl ValidationEngine {
             match stmt {
                 Statement::Isa { type_name, .. } => {
                     if !schema.type_exists(type_name) {
-                        errors.push(error("UNKNOWN_TYPE", format!("Type '{}' not found in schema", type_name), &stmt_path));
+                        errors.push(error(
+                            "UNKNOWN_TYPE",
+                            format!("Type '{}' not found in schema", type_name),
+                            &stmt_path,
+                        ));
                     } else if schema.is_abstract(type_name) {
-                        errors.push(error("ABSTRACT_TYPE_INSTANTIATION", format!("Cannot instantiate abstract type '{}'", type_name), &stmt_path));
+                        errors.push(error(
+                            "ABSTRACT_TYPE_INSTANTIATION",
+                            format!("Cannot instantiate abstract type '{}'", type_name),
+                            &stmt_path,
+                        ));
                     }
                 }
-                Statement::Has { subject_var, attr_name, value } => {
+                Statement::Has {
+                    subject_var,
+                    attr_name,
+                    value,
+                } => {
                     let key = (subject_var.clone(), attr_name.clone());
                     *attr_counts.entry(key).or_insert(0) += 1;
 
@@ -889,17 +1134,31 @@ impl ValidationEngine {
                             owner_type, attr_name, value, schema, &stmt_path, errors,
                         );
                     } else if !schema.attributes.contains_key(attr_name) {
-                        errors.push(error("UNKNOWN_ATTRIBUTE_TYPE", format!("Attribute type '{}' not found in schema", attr_name), &stmt_path));
+                        errors.push(error(
+                            "UNKNOWN_ATTRIBUTE_TYPE",
+                            format!("Attribute type '{}' not found in schema", attr_name),
+                            &stmt_path,
+                        ));
                     }
                 }
-                Statement::Relation { type_name, role_players, attributes, .. } => {
+                Statement::Relation {
+                    type_name,
+                    role_players,
+                    attributes,
+                    ..
+                } => {
                     if schema.relations.contains_key(type_name) {
                         if schema.is_abstract(type_name) {
-                            errors.push(error("ABSTRACT_TYPE_INSTANTIATION", format!("Cannot instantiate abstract relation '{}'", type_name), &stmt_path));
+                            errors.push(error(
+                                "ABSTRACT_TYPE_INSTANTIATION",
+                                format!("Cannot instantiate abstract relation '{}'", type_name),
+                                &stmt_path,
+                            ));
                         }
 
                         let all_roles = schema.get_all_relates(type_name);
-                        let role_names: HashSet<&str> = all_roles.iter().map(|r| r.name.as_str()).collect();
+                        let role_names: HashSet<&str> =
+                            all_roles.iter().map(|r| r.name.as_str()).collect();
 
                         for (j, rp) in role_players.iter().enumerate() {
                             if !role_names.contains(rp.role.as_str()) {
@@ -913,19 +1172,31 @@ impl ValidationEngine {
 
                             if let Some(player_type) = env.get_type(&rp.player_var) {
                                 self.validate_role_player_type(
-                                    player_type, type_name, &rp.role, schema,
-                                    &format!("{}.role_players[{}]", stmt_path, j), errors,
+                                    player_type,
+                                    type_name,
+                                    &rp.role,
+                                    schema,
+                                    &format!("{}.role_players[{}]", stmt_path, j),
+                                    errors,
                                 );
                             }
                         }
 
                         for (j, attr_stmt) in attributes.iter().enumerate() {
                             self.validate_statement_against_schema(
-                                attr_stmt, schema, &env, &format!("{}.attrs[{}]", stmt_path, j), errors,
+                                attr_stmt,
+                                schema,
+                                &env,
+                                &format!("{}.attrs[{}]", stmt_path, j),
+                                errors,
                             );
                         }
                     } else {
-                        errors.push(error("UNKNOWN_TYPE", format!("Relation type '{}' not found in schema", type_name), &stmt_path));
+                        errors.push(error(
+                            "UNKNOWN_TYPE",
+                            format!("Relation type '{}' not found in schema", type_name),
+                            &stmt_path,
+                        ));
                     }
                 }
                 Statement::DeleteThing(_) | Statement::Raw(_) => {}
@@ -935,7 +1206,10 @@ impl ValidationEngine {
         // Cardinality warnings.
         for ((var, attr_name), count) in &attr_counts {
             if let Some(owner_type) = env.get_type(var)
-                && let Some(attr) = schema.get_all_owned_attributes(owner_type).iter().find(|a| a.name == *attr_name)
+                && let Some(attr) = schema
+                    .get_all_owned_attributes(owner_type)
+                    .iter()
+                    .find(|a| a.name == *attr_name)
                 && let Some(ref card) = attr.cardinality
                 && let Some(max) = card.max
                 && *count as u32 > max
@@ -968,7 +1242,11 @@ impl ValidationEngine {
                 FetchItem::Attribute { var, attr_name, .. }
                 | FetchItem::AttributeList { var, attr_name, .. } => {
                     if !schema.attributes.contains_key(attr_name) {
-                        errors.push(error("UNKNOWN_ATTRIBUTE_TYPE", format!("Attribute type '{}' not found in schema", attr_name), &item_path));
+                        errors.push(error(
+                            "UNKNOWN_ATTRIBUTE_TYPE",
+                            format!("Attribute type '{}' not found in schema", attr_name),
+                            &item_path,
+                        ));
                     }
                     if let Some(owner_type) = env.get_type(var) {
                         self.validate_ownership(owner_type, attr_name, schema, &item_path, errors);
@@ -992,7 +1270,11 @@ impl ValidationEngine {
     ) {
         // Check attribute type exists at all.
         if !schema.attributes.contains_key(attr_name) {
-            errors.push(error("UNKNOWN_ATTRIBUTE_TYPE", format!("Attribute type '{}' not found in schema", attr_name), path));
+            errors.push(error(
+                "UNKNOWN_ATTRIBUTE_TYPE",
+                format!("Attribute type '{}' not found in schema", attr_name),
+                path,
+            ));
             return;
         }
 
@@ -1069,14 +1351,26 @@ impl ValidationEngine {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
-        let has_subtypes = schema.entities.values().any(|e| e.parent.as_deref() == Some(type_name))
-            || schema.relations.values().any(|r| r.parent.as_deref() == Some(type_name))
-            || schema.attributes.values().any(|a| a.parent.as_deref() == Some(type_name));
+        let has_subtypes = schema
+            .entities
+            .values()
+            .any(|e| e.parent.as_deref() == Some(type_name))
+            || schema
+                .relations
+                .values()
+                .any(|r| r.parent.as_deref() == Some(type_name))
+            || schema
+                .attributes
+                .values()
+                .any(|a| a.parent.as_deref() == Some(type_name));
 
         if !has_subtypes {
             errors.push(warning(
                 "STRICT_ISA_NO_SUBTYPES",
-                format!("'isa!' on type '{}' is redundant — it has no subtypes", type_name),
+                format!(
+                    "'isa!' on type '{}' is redundant — it has no subtypes",
+                    type_name
+                ),
                 path,
             ));
         }
@@ -1110,14 +1404,16 @@ impl ValidationEngine {
         let obj = match entity_data.as_object() {
             Some(o) => o,
             None => {
-                errors.push(error("INVALID_ENTITY_DATA", "Entity data must be a JSON object".into(), ""));
+                errors.push(error(
+                    "INVALID_ENTITY_DATA",
+                    "Entity data must be a JSON object".into(),
+                    "",
+                ));
                 return make_result(errors);
             }
         };
 
-        let entity_type = obj.get("__type__")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let entity_type = obj.get("__type__").and_then(|v| v.as_str()).unwrap_or("");
 
         for rule in &self.rules {
             errors.extend(self.apply_rule(rule, entity_type, obj, schema));
@@ -1157,11 +1453,21 @@ impl ValidationEngine {
 
         match &rule.rule_type {
             RuleType::Required => self.check_required(data, attr_name, &path, custom_msg),
-            RuleType::Regex { .. } => self.check_regex(data, attr_name, &rule.id, &path, custom_msg),
-            RuleType::Range { min, max } => self.check_range_rule(data, attr_name, *min, *max, &path, custom_msg),
-            RuleType::Values { allowed } => self.check_values(data, attr_name, allowed, &path, custom_msg),
-            RuleType::Cardinality { min, max } => self.check_cardinality_rule(data, attr_name, *min, *max, &path, custom_msg),
-            RuleType::Length { min, max } => self.check_length(data, attr_name, *min, *max, &path, custom_msg),
+            RuleType::Regex { .. } => {
+                self.check_regex(data, attr_name, &rule.id, &path, custom_msg)
+            }
+            RuleType::Range { min, max } => {
+                self.check_range_rule(data, attr_name, *min, *max, &path, custom_msg)
+            }
+            RuleType::Values { allowed } => {
+                self.check_values(data, attr_name, allowed, &path, custom_msg)
+            }
+            RuleType::Cardinality { min, max } => {
+                self.check_cardinality_rule(data, attr_name, *min, *max, &path, custom_msg)
+            }
+            RuleType::Length { min, max } => {
+                self.check_length(data, attr_name, *min, *max, &path, custom_msg)
+            }
         }
     }
 
@@ -1207,9 +1513,12 @@ impl ValidationEngine {
             if let Some(s) = val.as_str()
                 && !compiled.is_match(s)
             {
-                let msg = custom_msg
-                    .map(|m| m.to_string())
-                    .unwrap_or_else(|| format!("'{}' value '{}' does not match required pattern", attr_name, s));
+                let msg = custom_msg.map(|m| m.to_string()).unwrap_or_else(|| {
+                    format!(
+                        "'{}' value '{}' does not match required pattern",
+                        attr_name, s
+                    )
+                });
                 errors.push(error("RULE_REGEX_MISMATCH", msg, path));
             }
         }
@@ -1232,17 +1541,17 @@ impl ValidationEngine {
                 if let Some(lo) = min
                     && n < lo
                 {
-                    let msg = custom_msg
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| format!("'{}' value {} is below minimum {}", attr_name, n, lo));
+                    let msg = custom_msg.map(|m| m.to_string()).unwrap_or_else(|| {
+                        format!("'{}' value {} is below minimum {}", attr_name, n, lo)
+                    });
                     errors.push(error("RULE_RANGE_VIOLATION", msg, path));
                 }
                 if let Some(hi) = max
                     && n > hi
                 {
-                    let msg = custom_msg
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| format!("'{}' value {} is above maximum {}", attr_name, n, hi));
+                    let msg = custom_msg.map(|m| m.to_string()).unwrap_or_else(|| {
+                        format!("'{}' value {} is above maximum {}", attr_name, n, hi)
+                    });
                     errors.push(error("RULE_RANGE_VIOLATION", msg, path));
                 }
             }
@@ -1262,9 +1571,9 @@ impl ValidationEngine {
         let mut errors = Vec::new();
         for val in values {
             if !allowed.contains(val) {
-                let msg = custom_msg
-                    .map(|m| m.to_string())
-                    .unwrap_or_else(|| format!("'{}' value {} is not in allowed values", attr_name, val));
+                let msg = custom_msg.map(|m| m.to_string()).unwrap_or_else(|| {
+                    format!("'{}' value {} is not in allowed values", attr_name, val)
+                });
                 errors.push(error("RULE_VALUES_VIOLATION", msg, path));
             }
         }
@@ -1287,17 +1596,17 @@ impl ValidationEngine {
         };
         let mut errors = Vec::new();
         if count < min {
-            let msg = custom_msg
-                .map(|m| m.to_string())
-                .unwrap_or_else(|| format!("'{}' has {} values, minimum is {}", attr_name, count, min));
+            let msg = custom_msg.map(|m| m.to_string()).unwrap_or_else(|| {
+                format!("'{}' has {} values, minimum is {}", attr_name, count, min)
+            });
             errors.push(error("RULE_CARDINALITY_VIOLATION", msg, path));
         }
         if let Some(mx) = max
             && count > mx
         {
-            let msg = custom_msg
-                .map(|m| m.to_string())
-                .unwrap_or_else(|| format!("'{}' has {} values, maximum is {}", attr_name, count, mx));
+            let msg = custom_msg.map(|m| m.to_string()).unwrap_or_else(|| {
+                format!("'{}' has {} values, maximum is {}", attr_name, count, mx)
+            });
             errors.push(error("RULE_CARDINALITY_VIOLATION", msg, path));
         }
         errors
@@ -1320,17 +1629,23 @@ impl ValidationEngine {
                 if let Some(lo) = min
                     && len < lo
                 {
-                    let msg = custom_msg
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| format!("'{}' value has length {}, minimum is {}", attr_name, len, lo));
+                    let msg = custom_msg.map(|m| m.to_string()).unwrap_or_else(|| {
+                        format!(
+                            "'{}' value has length {}, minimum is {}",
+                            attr_name, len, lo
+                        )
+                    });
                     errors.push(error("RULE_LENGTH_VIOLATION", msg, path));
                 }
                 if let Some(hi) = max
                     && len > hi
                 {
-                    let msg = custom_msg
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| format!("'{}' value has length {}, maximum is {}", attr_name, len, hi));
+                    let msg = custom_msg.map(|m| m.to_string()).unwrap_or_else(|| {
+                        format!(
+                            "'{}' value has length {}, maximum is {}",
+                            attr_name, len, hi
+                        )
+                    });
                     errors.push(error("RULE_LENGTH_VIOLATION", msg, path));
                 }
             }
@@ -1354,7 +1669,11 @@ mod tests {
         let engine = ValidationEngine::new();
 
         assert!(engine.validate_type_name("person", "entity").is_valid);
-        assert!(engine.validate_type_name("first-name", "attribute").is_valid);
+        assert!(
+            engine
+                .validate_type_name("first-name", "attribute")
+                .is_valid
+        );
         assert!(engine.validate_type_name("_internal", "role").is_valid);
 
         assert!(!engine.validate_type_name("define", "entity").is_valid);
@@ -1431,107 +1750,282 @@ mod schema_validation_tests {
     fn build_test_schema() -> TypeSchema {
         let mut schema = TypeSchema::new();
 
-        schema.attributes.insert("name".into(), AttributeType {
-            name: "name".into(), value_type: "string".into(), parent: None,
-            is_abstract: false, is_independent: false, regex: None, allowed_values: None,
-            range_min: None, range_max: None,
-        });
-        schema.attributes.insert("age".into(), AttributeType {
-            name: "age".into(), value_type: "long".into(), parent: None,
-            is_abstract: false, is_independent: false, regex: None, allowed_values: None,
-            range_min: None, range_max: None,
-        });
-        schema.attributes.insert("email".into(), AttributeType {
-            name: "email".into(), value_type: "string".into(), parent: None,
-            is_abstract: false, is_independent: false, regex: None, allowed_values: None,
-            range_min: None, range_max: None,
-        });
-        schema.attributes.insert("salary".into(), AttributeType {
-            name: "salary".into(), value_type: "double".into(), parent: None,
-            is_abstract: false, is_independent: false, regex: None, allowed_values: None,
-            range_min: None, range_max: None,
-        });
-        schema.attributes.insert("score".into(), AttributeType {
-            name: "score".into(), value_type: "long".into(), parent: None,
-            is_abstract: false, is_independent: false, regex: None, allowed_values: None,
-            range_min: None, range_max: None,
-        });
+        schema.attributes.insert(
+            "name".into(),
+            AttributeType {
+                name: "name".into(),
+                value_type: "string".into(),
+                parent: None,
+                is_abstract: false,
+                is_independent: false,
+                regex: None,
+                allowed_values: None,
+                range_min: None,
+                range_max: None,
+            },
+        );
+        schema.attributes.insert(
+            "age".into(),
+            AttributeType {
+                name: "age".into(),
+                value_type: "long".into(),
+                parent: None,
+                is_abstract: false,
+                is_independent: false,
+                regex: None,
+                allowed_values: None,
+                range_min: None,
+                range_max: None,
+            },
+        );
+        schema.attributes.insert(
+            "email".into(),
+            AttributeType {
+                name: "email".into(),
+                value_type: "string".into(),
+                parent: None,
+                is_abstract: false,
+                is_independent: false,
+                regex: None,
+                allowed_values: None,
+                range_min: None,
+                range_max: None,
+            },
+        );
+        schema.attributes.insert(
+            "salary".into(),
+            AttributeType {
+                name: "salary".into(),
+                value_type: "double".into(),
+                parent: None,
+                is_abstract: false,
+                is_independent: false,
+                regex: None,
+                allowed_values: None,
+                range_min: None,
+                range_max: None,
+            },
+        );
+        schema.attributes.insert(
+            "score".into(),
+            AttributeType {
+                name: "score".into(),
+                value_type: "long".into(),
+                parent: None,
+                is_abstract: false,
+                is_independent: false,
+                regex: None,
+                allowed_values: None,
+                range_min: None,
+                range_max: None,
+            },
+        );
 
-        schema.entities.insert("person".into(), EntityType {
-            name: "person".into(), parent: None, is_abstract: false,
-            owns: vec![
-                OwnedAttribute { name: "name".into(), is_key: true, is_unique: false, is_cascade: false, subkey_group: None, cardinality: None },
-                OwnedAttribute { name: "age".into(), is_key: false, is_unique: false, is_cascade: false, subkey_group: None, cardinality: None },
-                OwnedAttribute { name: "email".into(), is_key: false, is_unique: false, is_cascade: false, subkey_group: None, cardinality: None },
-            ],
-            owns_order: vec!["name".into(), "age".into(), "email".into()],
-            plays: vec![PlayedRole { role_ref: "employment:employee".into(), cardinality: None }],
-        });
-        schema.entities.insert("employee".into(), EntityType {
-            name: "employee".into(), parent: Some("person".into()), is_abstract: false,
-            owns: vec![
-                // Inherited from person after resolution:
-                OwnedAttribute { name: "name".into(), is_key: true, is_unique: false, is_cascade: false, subkey_group: None, cardinality: None },
-                OwnedAttribute { name: "age".into(), is_key: false, is_unique: false, is_cascade: false, subkey_group: None, cardinality: None },
-                OwnedAttribute { name: "email".into(), is_key: false, is_unique: false, is_cascade: false, subkey_group: None, cardinality: None },
-                OwnedAttribute { name: "salary".into(), is_key: false, is_unique: false, is_cascade: false, subkey_group: None, cardinality: None },
-            ],
-            owns_order: vec!["name".into(), "age".into(), "email".into(), "salary".into()],
-            plays: vec![PlayedRole { role_ref: "employment:employee".into(), cardinality: None }],
-        });
-        schema.entities.insert("company".into(), EntityType {
-            name: "company".into(), parent: None, is_abstract: false,
-            owns: vec![
-                OwnedAttribute { name: "name".into(), is_key: true, is_unique: false, is_cascade: false, subkey_group: None, cardinality: None },
-            ],
-            owns_order: vec!["name".into()],
-            plays: vec![PlayedRole { role_ref: "employment:employer".into(), cardinality: None }],
-        });
-        schema.entities.insert("animal".into(), EntityType {
-            name: "animal".into(), parent: None, is_abstract: true,
-            owns: vec![
-                OwnedAttribute { name: "name".into(), is_key: false, is_unique: false, is_cascade: false, subkey_group: None, cardinality: None },
-            ],
-            owns_order: vec!["name".into()],
-            plays: vec![],
-        });
+        schema.entities.insert(
+            "person".into(),
+            EntityType {
+                name: "person".into(),
+                parent: None,
+                is_abstract: false,
+                owns: vec![
+                    OwnedAttribute {
+                        name: "name".into(),
+                        is_key: true,
+                        is_unique: false,
+                        is_cascade: false,
+                        subkey_group: None,
+                        cardinality: None,
+                    },
+                    OwnedAttribute {
+                        name: "age".into(),
+                        is_key: false,
+                        is_unique: false,
+                        is_cascade: false,
+                        subkey_group: None,
+                        cardinality: None,
+                    },
+                    OwnedAttribute {
+                        name: "email".into(),
+                        is_key: false,
+                        is_unique: false,
+                        is_cascade: false,
+                        subkey_group: None,
+                        cardinality: None,
+                    },
+                ],
+                owns_order: vec!["name".into(), "age".into(), "email".into()],
+                plays: vec![PlayedRole {
+                    role_ref: "employment:employee".into(),
+                    cardinality: None,
+                }],
+            },
+        );
+        schema.entities.insert(
+            "employee".into(),
+            EntityType {
+                name: "employee".into(),
+                parent: Some("person".into()),
+                is_abstract: false,
+                owns: vec![
+                    // Inherited from person after resolution:
+                    OwnedAttribute {
+                        name: "name".into(),
+                        is_key: true,
+                        is_unique: false,
+                        is_cascade: false,
+                        subkey_group: None,
+                        cardinality: None,
+                    },
+                    OwnedAttribute {
+                        name: "age".into(),
+                        is_key: false,
+                        is_unique: false,
+                        is_cascade: false,
+                        subkey_group: None,
+                        cardinality: None,
+                    },
+                    OwnedAttribute {
+                        name: "email".into(),
+                        is_key: false,
+                        is_unique: false,
+                        is_cascade: false,
+                        subkey_group: None,
+                        cardinality: None,
+                    },
+                    OwnedAttribute {
+                        name: "salary".into(),
+                        is_key: false,
+                        is_unique: false,
+                        is_cascade: false,
+                        subkey_group: None,
+                        cardinality: None,
+                    },
+                ],
+                owns_order: vec!["name".into(), "age".into(), "email".into(), "salary".into()],
+                plays: vec![PlayedRole {
+                    role_ref: "employment:employee".into(),
+                    cardinality: None,
+                }],
+            },
+        );
+        schema.entities.insert(
+            "company".into(),
+            EntityType {
+                name: "company".into(),
+                parent: None,
+                is_abstract: false,
+                owns: vec![OwnedAttribute {
+                    name: "name".into(),
+                    is_key: true,
+                    is_unique: false,
+                    is_cascade: false,
+                    subkey_group: None,
+                    cardinality: None,
+                }],
+                owns_order: vec!["name".into()],
+                plays: vec![PlayedRole {
+                    role_ref: "employment:employer".into(),
+                    cardinality: None,
+                }],
+            },
+        );
+        schema.entities.insert(
+            "animal".into(),
+            EntityType {
+                name: "animal".into(),
+                parent: None,
+                is_abstract: true,
+                owns: vec![OwnedAttribute {
+                    name: "name".into(),
+                    is_key: false,
+                    is_unique: false,
+                    is_cascade: false,
+                    subkey_group: None,
+                    cardinality: None,
+                }],
+                owns_order: vec!["name".into()],
+                plays: vec![],
+            },
+        );
 
-        schema.relations.insert("employment".into(), RelationType {
-            name: "employment".into(), parent: None, is_abstract: false,
-            roles: vec![
-                RoleSpec { name: "employee".into(), overrides: None, cardinality: None, distinct: false },
-                RoleSpec { name: "employer".into(), overrides: None, cardinality: None, distinct: false },
-            ],
-            owns: vec![],
-            owns_order: vec![],
-            plays: vec![],
-        });
-        schema.relations.insert("friendship".into(), RelationType {
-            name: "friendship".into(), parent: None, is_abstract: true,
-            roles: vec![
-                RoleSpec { name: "friend".into(), overrides: None, cardinality: None, distinct: false },
-            ],
-            owns: vec![],
-            owns_order: vec![],
-            plays: vec![],
-        });
+        schema.relations.insert(
+            "employment".into(),
+            RelationType {
+                name: "employment".into(),
+                parent: None,
+                is_abstract: false,
+                roles: vec![
+                    RoleSpec {
+                        name: "employee".into(),
+                        overrides: None,
+                        cardinality: None,
+                        distinct: false,
+                    },
+                    RoleSpec {
+                        name: "employer".into(),
+                        overrides: None,
+                        cardinality: None,
+                        distinct: false,
+                    },
+                ],
+                owns: vec![],
+                owns_order: vec![],
+                plays: vec![],
+            },
+        );
+        schema.relations.insert(
+            "friendship".into(),
+            RelationType {
+                name: "friendship".into(),
+                parent: None,
+                is_abstract: true,
+                roles: vec![RoleSpec {
+                    name: "friend".into(),
+                    overrides: None,
+                    cardinality: None,
+                    distinct: false,
+                }],
+                owns: vec![],
+                owns_order: vec![],
+                plays: vec![],
+            },
+        );
 
         // Entity with cardinality constraint for testing.
-        schema.entities.insert("student".into(), EntityType {
-            name: "student".into(), parent: None, is_abstract: false,
-            owns: vec![
-                OwnedAttribute {
-                    name: "name".into(), is_key: true, is_unique: false, is_cascade: false,
-                    subkey_group: None, cardinality: Some(Cardinality { min: 1, max: Some(1) }),
-                },
-                OwnedAttribute {
-                    name: "score".into(), is_key: false, is_unique: false, is_cascade: false,
-                    subkey_group: None, cardinality: Some(Cardinality { min: 0, max: Some(3) }),
-                },
-            ],
-            owns_order: vec!["name".into(), "score".into()],
-            plays: vec![],
-        });
+        schema.entities.insert(
+            "student".into(),
+            EntityType {
+                name: "student".into(),
+                parent: None,
+                is_abstract: false,
+                owns: vec![
+                    OwnedAttribute {
+                        name: "name".into(),
+                        is_key: true,
+                        is_unique: false,
+                        is_cascade: false,
+                        subkey_group: None,
+                        cardinality: Some(Cardinality {
+                            min: 1,
+                            max: Some(1),
+                        }),
+                    },
+                    OwnedAttribute {
+                        name: "score".into(),
+                        is_key: false,
+                        is_unique: false,
+                        is_cascade: false,
+                        subkey_group: None,
+                        cardinality: Some(Cardinality {
+                            min: 0,
+                            max: Some(3),
+                        }),
+                    },
+                ],
+                owns_order: vec!["name".into(), "score".into()],
+                plays: vec![],
+            },
+        );
 
         schema
     }
@@ -1542,12 +2036,12 @@ mod schema_validation_tests {
     fn test_unknown_entity_type() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$x".into(), type_name: "spaceship".into(),
-                constraints: vec![], is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$x".into(),
+            type_name: "spaceship".into(),
+            constraints: vec![],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_TYPE"));
@@ -1557,12 +2051,12 @@ mod schema_validation_tests {
     fn test_unknown_relation_type() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Relation {
-                variable: "$r".into(), type_name: "nonexistent".into(),
-                role_players: vec![], constraints: vec![],
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Relation {
+            variable: "$r".into(),
+            type_name: "nonexistent".into(),
+            role_players: vec![],
+            constraints: vec![],
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_TYPE"));
@@ -1572,15 +2066,20 @@ mod schema_validation_tests {
     fn test_entity_used_as_relation() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Relation {
-                variable: "$r".into(), type_name: "person".into(),
-                role_players: vec![], constraints: vec![],
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Relation {
+            variable: "$r".into(),
+            type_name: "person".into(),
+            role_players: vec![],
+            constraints: vec![],
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.message.contains("not a relation type")));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("not a relation type"))
+        );
     }
 
     // -- Ownership tests ---------------------------------------------------
@@ -1589,16 +2088,18 @@ mod schema_validation_tests {
     fn test_valid_has_constraint() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$p".into(), type_name: "person".into(),
-                constraints: vec![Constraint::Has {
-                    attr_name: "name".into(),
-                    value: Value::Literal(LiteralValue { value: json!("Alice"), value_type: "string".into() }),
-                }],
-                is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$p".into(),
+            type_name: "person".into(),
+            constraints: vec![Constraint::Has {
+                attr_name: "name".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!("Alice"),
+                    value_type: "string".into(),
+                }),
+            }],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
     }
@@ -1608,19 +2109,26 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         // person doesn't own salary (only employee does).
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$p".into(), type_name: "person".into(),
-                constraints: vec![Constraint::Has {
-                    attr_name: "salary".into(),
-                    value: Value::Literal(LiteralValue { value: json!(50000.0), value_type: "double".into() }),
-                }],
-                is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$p".into(),
+            type_name: "person".into(),
+            constraints: vec![Constraint::Has {
+                attr_name: "salary".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!(50000.0),
+                    value_type: "double".into(),
+                }),
+            }],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP")
+        );
     }
 
     #[test]
@@ -1628,16 +2136,18 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         // employee inherits name from person.
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$e".into(), type_name: "employee".into(),
-                constraints: vec![Constraint::Has {
-                    attr_name: "name".into(),
-                    value: Value::Literal(LiteralValue { value: json!("Bob"), value_type: "string".into() }),
-                }],
-                is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$e".into(),
+            type_name: "employee".into(),
+            constraints: vec![Constraint::Has {
+                attr_name: "name".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!("Bob"),
+                    value_type: "string".into(),
+                }),
+            }],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
     }
@@ -1646,19 +2156,26 @@ mod schema_validation_tests {
     fn test_unknown_attribute_type() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$p".into(), type_name: "person".into(),
-                constraints: vec![Constraint::Has {
-                    attr_name: "nonexistent".into(),
-                    value: Value::Literal(LiteralValue { value: json!("x"), value_type: "string".into() }),
-                }],
-                is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$p".into(),
+            type_name: "person".into(),
+            constraints: vec![Constraint::Has {
+                attr_name: "nonexistent".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!("x"),
+                    value_type: "string".into(),
+                }),
+            }],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ATTRIBUTE_TYPE"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "UNKNOWN_ATTRIBUTE_TYPE")
+        );
     }
 
     #[test]
@@ -1668,16 +2185,25 @@ mod schema_validation_tests {
         // $p isa person; $p has salary $s; -> person doesn't own salary
         let clauses = vec![Clause::Match(vec![
             Pattern::Entity {
-                variable: "$p".into(), type_name: "person".into(),
-                constraints: vec![], is_strict: false,
+                variable: "$p".into(),
+                type_name: "person".into(),
+                constraints: vec![],
+                is_strict: false,
             },
             Pattern::Has {
-                thing_var: "$p".into(), attr_type: "salary".into(), attr_var: "$s".into(),
+                thing_var: "$p".into(),
+                attr_type: "salary".into(),
+                attr_var: "$s".into(),
             },
         ])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP")
+        );
     }
 
     // -- Role validation tests ---------------------------------------------
@@ -1686,16 +2212,21 @@ mod schema_validation_tests {
     fn test_valid_role_names() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Relation {
-                variable: "$r".into(), type_name: "employment".into(),
-                role_players: vec![
-                    RolePlayer { role: "employee".into(), player_var: "$p".into() },
-                    RolePlayer { role: "employer".into(), player_var: "$c".into() },
-                ],
-                constraints: vec![],
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Relation {
+            variable: "$r".into(),
+            type_name: "employment".into(),
+            role_players: vec![
+                RolePlayer {
+                    role: "employee".into(),
+                    player_var: "$p".into(),
+                },
+                RolePlayer {
+                    role: "employer".into(),
+                    player_var: "$c".into(),
+                },
+            ],
+            constraints: vec![],
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
     }
@@ -1704,15 +2235,15 @@ mod schema_validation_tests {
     fn test_unknown_role_name() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Relation {
-                variable: "$r".into(), type_name: "employment".into(),
-                role_players: vec![
-                    RolePlayer { role: "manager".into(), player_var: "$p".into() },
-                ],
-                constraints: vec![],
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Relation {
+            variable: "$r".into(),
+            type_name: "employment".into(),
+            role_players: vec![RolePlayer {
+                role: "manager".into(),
+                player_var: "$p".into(),
+            }],
+            constraints: vec![],
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ROLE"));
@@ -1726,13 +2257,30 @@ mod schema_validation_tests {
         let schema = build_test_schema();
         // $p isa person; $c isa company; $r (employee: $p, employer: $c) isa employment;
         let clauses = vec![Clause::Match(vec![
-            Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false },
-            Pattern::Entity { variable: "$c".into(), type_name: "company".into(), constraints: vec![], is_strict: false },
+            Pattern::Entity {
+                variable: "$p".into(),
+                type_name: "person".into(),
+                constraints: vec![],
+                is_strict: false,
+            },
+            Pattern::Entity {
+                variable: "$c".into(),
+                type_name: "company".into(),
+                constraints: vec![],
+                is_strict: false,
+            },
             Pattern::Relation {
-                variable: "$r".into(), type_name: "employment".into(),
+                variable: "$r".into(),
+                type_name: "employment".into(),
                 role_players: vec![
-                    RolePlayer { role: "employee".into(), player_var: "$p".into() },
-                    RolePlayer { role: "employer".into(), player_var: "$c".into() },
+                    RolePlayer {
+                        role: "employee".into(),
+                        player_var: "$p".into(),
+                    },
+                    RolePlayer {
+                        role: "employer".into(),
+                        player_var: "$c".into(),
+                    },
                 ],
                 constraints: vec![],
             },
@@ -1747,18 +2295,30 @@ mod schema_validation_tests {
         let schema = build_test_schema();
         // company can't play employee role.
         let clauses = vec![Clause::Match(vec![
-            Pattern::Entity { variable: "$c".into(), type_name: "company".into(), constraints: vec![], is_strict: false },
+            Pattern::Entity {
+                variable: "$c".into(),
+                type_name: "company".into(),
+                constraints: vec![],
+                is_strict: false,
+            },
             Pattern::Relation {
-                variable: "$r".into(), type_name: "employment".into(),
-                role_players: vec![
-                    RolePlayer { role: "employee".into(), player_var: "$c".into() },
-                ],
+                variable: "$r".into(),
+                type_name: "employment".into(),
+                role_players: vec![RolePlayer {
+                    role: "employee".into(),
+                    player_var: "$c".into(),
+                }],
                 constraints: vec![],
             },
         ])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "ROLE_PLAYER_TYPE_MISMATCH"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "ROLE_PLAYER_TYPE_MISMATCH")
+        );
     }
 
     // -- Value type tests --------------------------------------------------
@@ -1767,16 +2327,18 @@ mod schema_validation_tests {
     fn test_valid_value_type() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$p".into(), type_name: "person".into(),
-                constraints: vec![Constraint::Has {
-                    attr_name: "age".into(),
-                    value: Value::Literal(LiteralValue { value: json!(30), value_type: "long".into() }),
-                }],
-                is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$p".into(),
+            type_name: "person".into(),
+            constraints: vec![Constraint::Has {
+                attr_name: "age".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!(30),
+                    value_type: "long".into(),
+                }),
+            }],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
     }
@@ -1786,19 +2348,26 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         // age is long, but we're passing a string.
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$p".into(), type_name: "person".into(),
-                constraints: vec![Constraint::Has {
-                    attr_name: "age".into(),
-                    value: Value::Literal(LiteralValue { value: json!("thirty"), value_type: "string".into() }),
-                }],
-                is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$p".into(),
+            type_name: "person".into(),
+            constraints: vec![Constraint::Has {
+                attr_name: "age".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!("thirty"),
+                    value_type: "string".into(),
+                }),
+            }],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "VALUE_TYPE_MISMATCH"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "VALUE_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -1806,16 +2375,18 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         // salary is double, using a long literal is OK.
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$e".into(), type_name: "employee".into(),
-                constraints: vec![Constraint::Has {
-                    attr_name: "salary".into(),
-                    value: Value::Literal(LiteralValue { value: json!(50000), value_type: "long".into() }),
-                }],
-                is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$e".into(),
+            type_name: "employee".into(),
+            constraints: vec![Constraint::Has {
+                attr_name: "salary".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!(50000),
+                    value_type: "long".into(),
+                }),
+            }],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
     }
@@ -1827,12 +2398,12 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         // Matching on abstract types is fine.
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$a".into(), type_name: "animal".into(),
-                constraints: vec![], is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$a".into(),
+            type_name: "animal".into(),
+            constraints: vec![],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
     }
@@ -1841,28 +2412,39 @@ mod schema_validation_tests {
     fn test_abstract_entity_in_insert() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Insert(vec![
-            Statement::Isa { variable: "$a".into(), type_name: "animal".into() },
-        ])];
+        let clauses = vec![Clause::Insert(vec![Statement::Isa {
+            variable: "$a".into(),
+            type_name: "animal".into(),
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "ABSTRACT_TYPE_INSTANTIATION"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "ABSTRACT_TYPE_INSTANTIATION")
+        );
     }
 
     #[test]
     fn test_abstract_relation_in_insert() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Insert(vec![
-            Statement::Relation {
-                variable: "$r".into(), type_name: "friendship".into(),
-                role_players: vec![],
-                include_variable: true, attributes: vec![],
-            },
-        ])];
+        let clauses = vec![Clause::Insert(vec![Statement::Relation {
+            variable: "$r".into(),
+            type_name: "friendship".into(),
+            role_players: vec![],
+            include_variable: true,
+            attributes: vec![],
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "ABSTRACT_TYPE_INSTANTIATION"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "ABSTRACT_TYPE_INSTANTIATION")
+        );
     }
 
     // -- Cardinality tests -------------------------------------------------
@@ -1873,14 +2455,37 @@ mod schema_validation_tests {
         let schema = build_test_schema();
         // student owns name @card(1..1), inserting 2 names.
         let clauses = vec![Clause::Insert(vec![
-            Statement::Isa { variable: "$s".into(), type_name: "student".into() },
-            Statement::Has { subject_var: "$s".into(), attr_name: "name".into(), value: Value::Literal(LiteralValue { value: json!("A"), value_type: "string".into() }) },
-            Statement::Has { subject_var: "$s".into(), attr_name: "name".into(), value: Value::Literal(LiteralValue { value: json!("B"), value_type: "string".into() }) },
+            Statement::Isa {
+                variable: "$s".into(),
+                type_name: "student".into(),
+            },
+            Statement::Has {
+                subject_var: "$s".into(),
+                attr_name: "name".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!("A"),
+                    value_type: "string".into(),
+                }),
+            },
+            Statement::Has {
+                subject_var: "$s".into(),
+                attr_name: "name".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!("B"),
+                    value_type: "string".into(),
+                }),
+            },
         ])];
         let result = engine.validate_query(&clauses, &schema);
         // Should be valid (warning only), but have a CARDINALITY_EXCEEDED warning.
         assert!(result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "CARDINALITY_EXCEEDED" && e.severity == ValidationSeverity::Warning));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "CARDINALITY_EXCEEDED"
+                    && e.severity == ValidationSeverity::Warning)
+        );
     }
 
     #[test]
@@ -1889,14 +2494,43 @@ mod schema_validation_tests {
         let schema = build_test_schema();
         // student owns score @card(0..3), inserting 2 scores is OK.
         let clauses = vec![Clause::Insert(vec![
-            Statement::Isa { variable: "$s".into(), type_name: "student".into() },
-            Statement::Has { subject_var: "$s".into(), attr_name: "name".into(), value: Value::Literal(LiteralValue { value: json!("A"), value_type: "string".into() }) },
-            Statement::Has { subject_var: "$s".into(), attr_name: "score".into(), value: Value::Literal(LiteralValue { value: json!(90), value_type: "long".into() }) },
-            Statement::Has { subject_var: "$s".into(), attr_name: "score".into(), value: Value::Literal(LiteralValue { value: json!(85), value_type: "long".into() }) },
+            Statement::Isa {
+                variable: "$s".into(),
+                type_name: "student".into(),
+            },
+            Statement::Has {
+                subject_var: "$s".into(),
+                attr_name: "name".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!("A"),
+                    value_type: "string".into(),
+                }),
+            },
+            Statement::Has {
+                subject_var: "$s".into(),
+                attr_name: "score".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!(90),
+                    value_type: "long".into(),
+                }),
+            },
+            Statement::Has {
+                subject_var: "$s".into(),
+                attr_name: "score".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!(85),
+                    value_type: "long".into(),
+                }),
+            },
         ])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
-        assert!(!result.errors.iter().any(|e| e.code == "CARDINALITY_EXCEEDED"));
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| e.code == "CARDINALITY_EXCEEDED")
+        );
     }
 
     // -- Strict isa tests --------------------------------------------------
@@ -1906,15 +2540,20 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         // person has subtype employee, so isa! is meaningful.
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$p".into(), type_name: "person".into(),
-                constraints: vec![], is_strict: true,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$p".into(),
+            type_name: "person".into(),
+            constraints: vec![],
+            is_strict: true,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
-        assert!(!result.errors.iter().any(|e| e.code == "STRICT_ISA_NO_SUBTYPES"));
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| e.code == "STRICT_ISA_NO_SUBTYPES")
+        );
     }
 
     #[test]
@@ -1922,15 +2561,17 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         // company has no subtypes.
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$c".into(), type_name: "company".into(),
-                constraints: vec![], is_strict: true,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$c".into(),
+            type_name: "company".into(),
+            constraints: vec![],
+            is_strict: true,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid); // Warnings don't invalidate.
-        assert!(result.errors.iter().any(|e| e.code == "STRICT_ISA_NO_SUBTYPES" && e.severity == ValidationSeverity::Warning));
+        assert!(result.errors.iter().any(
+            |e| e.code == "STRICT_ISA_NO_SUBTYPES" && e.severity == ValidationSeverity::Warning
+        ));
     }
 
     // -- Unknown variable type (graceful skip) -----------------------------
@@ -1940,9 +2581,11 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         // $p has no isa, so ownership can't be checked — should not error.
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Has { thing_var: "$p".into(), attr_type: "name".into(), attr_var: "$n".into() },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Has {
+            thing_var: "$p".into(),
+            attr_type: "name".into(),
+            attr_var: "$n".into(),
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
     }
@@ -1955,19 +2598,29 @@ mod schema_validation_tests {
         let schema = build_test_schema();
         // Match binds $p as person, then insert tries to add salary (person doesn't own salary).
         let clauses = vec![
-            Clause::Match(vec![
-                Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false },
-            ]),
-            Clause::Insert(vec![
-                Statement::Has {
-                    subject_var: "$p".into(), attr_name: "salary".into(),
-                    value: Value::Literal(LiteralValue { value: json!(50000.0), value_type: "double".into() }),
-                },
-            ]),
+            Clause::Match(vec![Pattern::Entity {
+                variable: "$p".into(),
+                type_name: "person".into(),
+                constraints: vec![],
+                is_strict: false,
+            }]),
+            Clause::Insert(vec![Statement::Has {
+                subject_var: "$p".into(),
+                attr_name: "salary".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!(50000.0),
+                    value_type: "double".into(),
+                }),
+            }]),
         ];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP")
+        );
     }
 
     // -- Edge cases --------------------------------------------------------
@@ -1989,26 +2642,50 @@ mod schema_validation_tests {
         let clauses = vec![
             Clause::Match(vec![
                 Pattern::Entity {
-                    variable: "$p".into(), type_name: "person".into(),
+                    variable: "$p".into(),
+                    type_name: "person".into(),
                     constraints: vec![Constraint::Has {
                         attr_name: "name".into(),
-                        value: Value::Literal(LiteralValue { value: json!("Alice"), value_type: "string".into() }),
+                        value: Value::Literal(LiteralValue {
+                            value: json!("Alice"),
+                            value_type: "string".into(),
+                        }),
                     }],
                     is_strict: false,
                 },
-                Pattern::Entity { variable: "$c".into(), type_name: "company".into(), constraints: vec![], is_strict: false },
+                Pattern::Entity {
+                    variable: "$c".into(),
+                    type_name: "company".into(),
+                    constraints: vec![],
+                    is_strict: false,
+                },
                 Pattern::Relation {
-                    variable: "$r".into(), type_name: "employment".into(),
+                    variable: "$r".into(),
+                    type_name: "employment".into(),
                     role_players: vec![
-                        RolePlayer { role: "employee".into(), player_var: "$p".into() },
-                        RolePlayer { role: "employer".into(), player_var: "$c".into() },
+                        RolePlayer {
+                            role: "employee".into(),
+                            player_var: "$p".into(),
+                        },
+                        RolePlayer {
+                            role: "employer".into(),
+                            player_var: "$c".into(),
+                        },
                     ],
                     constraints: vec![],
                 },
             ]),
             Clause::Fetch(vec![
-                FetchItem::Attribute { key: "name".into(), var: "$p".into(), attr_name: "name".into() },
-                FetchItem::Attribute { key: "company".into(), var: "$c".into(), attr_name: "name".into() },
+                FetchItem::Attribute {
+                    key: "name".into(),
+                    var: "$p".into(),
+                    attr_name: "name".into(),
+                },
+                FetchItem::Attribute {
+                    key: "company".into(),
+                    var: "$c".into(),
+                    attr_name: "name".into(),
+                },
             ]),
         ];
         let result = engine.validate_query(&clauses, &schema);
@@ -2020,16 +2697,26 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         let clauses = vec![
-            Clause::Match(vec![
-                Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false },
-            ]),
-            Clause::Fetch(vec![
-                FetchItem::Attribute { key: "x".into(), var: "$p".into(), attr_name: "nonexistent".into() },
-            ]),
+            Clause::Match(vec![Pattern::Entity {
+                variable: "$p".into(),
+                type_name: "person".into(),
+                constraints: vec![],
+                is_strict: false,
+            }]),
+            Clause::Fetch(vec![FetchItem::Attribute {
+                key: "x".into(),
+                var: "$p".into(),
+                attr_name: "nonexistent".into(),
+            }]),
         ];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ATTRIBUTE_TYPE"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "UNKNOWN_ATTRIBUTE_TYPE")
+        );
     }
 
     #[test]
@@ -2037,25 +2724,36 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         let clauses = vec![
-            Clause::Match(vec![
-                Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false },
-            ]),
-            Clause::Fetch(vec![
-                FetchItem::Attribute { key: "s".into(), var: "$p".into(), attr_name: "salary".into() },
-            ]),
+            Clause::Match(vec![Pattern::Entity {
+                variable: "$p".into(),
+                type_name: "person".into(),
+                constraints: vec![],
+                is_strict: false,
+            }]),
+            Clause::Fetch(vec![FetchItem::Attribute {
+                key: "s".into(),
+                var: "$p".into(),
+                attr_name: "salary".into(),
+            }]),
         ];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP")
+        );
     }
 
     #[test]
     fn test_insert_unknown_type() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Insert(vec![
-            Statement::Isa { variable: "$x".into(), type_name: "spaceship".into() },
-        ])];
+        let clauses = vec![Clause::Insert(vec![Statement::Isa {
+            variable: "$x".into(),
+            type_name: "spaceship".into(),
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_TYPE"));
@@ -2065,12 +2763,13 @@ mod schema_validation_tests {
     fn test_insert_unknown_relation() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Insert(vec![
-            Statement::Relation {
-                variable: "$r".into(), type_name: "nonexistent".into(),
-                role_players: vec![], include_variable: true, attributes: vec![],
-            },
-        ])];
+        let clauses = vec![Clause::Insert(vec![Statement::Relation {
+            variable: "$r".into(),
+            type_name: "nonexistent".into(),
+            role_players: vec![],
+            include_variable: true,
+            attributes: vec![],
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_TYPE"));
@@ -2082,18 +2781,29 @@ mod schema_validation_tests {
         let schema = build_test_schema();
         let clauses = vec![
             Clause::Match(vec![
-                Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false },
-                Pattern::Entity { variable: "$c".into(), type_name: "company".into(), constraints: vec![], is_strict: false },
-            ]),
-            Clause::Insert(vec![
-                Statement::Relation {
-                    variable: "$r".into(), type_name: "employment".into(),
-                    role_players: vec![
-                        RolePlayer { role: "boss".into(), player_var: "$p".into() },
-                    ],
-                    include_variable: true, attributes: vec![],
+                Pattern::Entity {
+                    variable: "$p".into(),
+                    type_name: "person".into(),
+                    constraints: vec![],
+                    is_strict: false,
+                },
+                Pattern::Entity {
+                    variable: "$c".into(),
+                    type_name: "company".into(),
+                    constraints: vec![],
+                    is_strict: false,
                 },
             ]),
+            Clause::Insert(vec![Statement::Relation {
+                variable: "$r".into(),
+                type_name: "employment".into(),
+                role_players: vec![RolePlayer {
+                    role: "boss".into(),
+                    player_var: "$p".into(),
+                }],
+                include_variable: true,
+                attributes: vec![],
+            }]),
         ];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
@@ -2105,16 +2815,15 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         // Using a variable as value shouldn't trigger VALUE_TYPE_MISMATCH.
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Entity {
-                variable: "$p".into(), type_name: "person".into(),
-                constraints: vec![Constraint::Has {
-                    attr_name: "name".into(),
-                    value: Value::Variable("$n".into()),
-                }],
-                is_strict: false,
-            },
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Entity {
+            variable: "$p".into(),
+            type_name: "person".into(),
+            constraints: vec![Constraint::Has {
+                attr_name: "name".into(),
+                value: Value::Variable("$n".into()),
+            }],
+            is_strict: false,
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
     }
@@ -2123,18 +2832,20 @@ mod schema_validation_tests {
     fn test_or_pattern_validation() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Match(vec![
-            Pattern::Or(vec![
-                vec![Pattern::Entity {
-                    variable: "$p".into(), type_name: "person".into(),
-                    constraints: vec![], is_strict: false,
-                }],
-                vec![Pattern::Entity {
-                    variable: "$p".into(), type_name: "nonexistent".into(),
-                    constraints: vec![], is_strict: false,
-                }],
-            ]),
-        ])];
+        let clauses = vec![Clause::Match(vec![Pattern::Or(vec![
+            vec![Pattern::Entity {
+                variable: "$p".into(),
+                type_name: "person".into(),
+                constraints: vec![],
+                is_strict: false,
+            }],
+            vec![Pattern::Entity {
+                variable: "$p".into(),
+                type_name: "nonexistent".into(),
+                constraints: vec![],
+                is_strict: false,
+            }],
+        ])])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_TYPE"));
@@ -2145,21 +2856,33 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         let clauses = vec![Clause::Match(vec![
-            Pattern::Entity { variable: "$p".into(), type_name: "person".into(), constraints: vec![], is_strict: false },
-            Pattern::Not(vec![
-                Pattern::Entity {
-                    variable: "$p".into(), type_name: "person".into(),
-                    constraints: vec![Constraint::Has {
-                        attr_name: "salary".into(), // person doesn't own salary
-                        value: Value::Literal(LiteralValue { value: json!(0.0), value_type: "double".into() }),
-                    }],
-                    is_strict: false,
-                },
-            ]),
+            Pattern::Entity {
+                variable: "$p".into(),
+                type_name: "person".into(),
+                constraints: vec![],
+                is_strict: false,
+            },
+            Pattern::Not(vec![Pattern::Entity {
+                variable: "$p".into(),
+                type_name: "person".into(),
+                constraints: vec![Constraint::Has {
+                    attr_name: "salary".into(), // person doesn't own salary
+                    value: Value::Literal(LiteralValue {
+                        value: json!(0.0),
+                        value_type: "double".into(),
+                    }),
+                }],
+                is_strict: false,
+            }]),
         ])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "UNKNOWN_ATTRIBUTE_OWNERSHIP")
+        );
     }
 
     // -- Put clause validation (same semantics as Insert) --------------------
@@ -2169,8 +2892,18 @@ mod schema_validation_tests {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
         let clauses = vec![Clause::Put(vec![
-            Statement::Isa { variable: "$p".into(), type_name: "person".into() },
-            Statement::Has { subject_var: "$p".into(), attr_name: "name".into(), value: Value::Literal(LiteralValue { value: json!("Alice"), value_type: "string".into() }) },
+            Statement::Isa {
+                variable: "$p".into(),
+                type_name: "person".into(),
+            },
+            Statement::Has {
+                subject_var: "$p".into(),
+                attr_name: "name".into(),
+                value: Value::Literal(LiteralValue {
+                    value: json!("Alice"),
+                    value_type: "string".into(),
+                }),
+            },
         ])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(result.is_valid);
@@ -2180,9 +2913,10 @@ mod schema_validation_tests {
     fn test_put_unknown_type() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Put(vec![
-            Statement::Isa { variable: "$x".into(), type_name: "spaceship".into() },
-        ])];
+        let clauses = vec![Clause::Put(vec![Statement::Isa {
+            variable: "$x".into(),
+            type_name: "spaceship".into(),
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.code == "UNKNOWN_TYPE"));
@@ -2192,12 +2926,18 @@ mod schema_validation_tests {
     fn test_put_abstract_type() {
         let engine = ValidationEngine::new();
         let schema = build_test_schema();
-        let clauses = vec![Clause::Put(vec![
-            Statement::Isa { variable: "$a".into(), type_name: "animal".into() },
-        ])];
+        let clauses = vec![Clause::Put(vec![Statement::Isa {
+            variable: "$a".into(),
+            type_name: "animal".into(),
+        }])];
         let result = engine.validate_query(&clauses, &schema);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "ABSTRACT_TYPE_INSTANTIATION"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "ABSTRACT_TYPE_INSTANTIATION")
+        );
     }
 }
 
@@ -2287,7 +3027,11 @@ mod rule_tests {
         engine.load_rules(&sample_rules_json()).unwrap();
         let data = json!({ "__type__": "person", "age": 30 });
         let result = engine.validate_entity(&data, None);
-        let req_error = result.errors.iter().find(|e| e.code == "RULE_REQUIRED").unwrap();
+        let req_error = result
+            .errors
+            .iter()
+            .find(|e| e.code == "RULE_REQUIRED")
+            .unwrap();
         assert_eq!(req_error.message, "Person must have a name");
     }
 
@@ -2307,7 +3051,12 @@ mod rule_tests {
         let data = json!({ "__type__": "person", "name": "Alice", "email": "not-an-email" });
         let result = engine.validate_entity(&data, None);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "RULE_REGEX_MISMATCH"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "RULE_REGEX_MISMATCH")
+        );
     }
 
     #[test]
@@ -2326,7 +3075,12 @@ mod rule_tests {
         let data = json!({ "__type__": "person", "name": "Alice", "age": -1 });
         let result = engine.validate_entity(&data, None);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "RULE_RANGE_VIOLATION"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "RULE_RANGE_VIOLATION")
+        );
     }
 
     #[test]
@@ -2336,7 +3090,12 @@ mod rule_tests {
         let data = json!({ "__type__": "person", "name": "Alice", "age": 200 });
         let result = engine.validate_entity(&data, None);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "RULE_RANGE_VIOLATION"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "RULE_RANGE_VIOLATION")
+        );
     }
 
     #[test]
@@ -2346,7 +3105,12 @@ mod rule_tests {
         let data = json!({ "__type__": "person", "name": "" });
         let result = engine.validate_entity(&data, None);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "RULE_LENGTH_VIOLATION"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "RULE_LENGTH_VIOLATION")
+        );
     }
 
     #[test]
@@ -2357,7 +3121,8 @@ mod rule_tests {
                 "target": { "type": "Attribute", "data": { "attribute": "status" } },
                 "rule_type": { "type": "Values", "data": { "allowed": ["active", "inactive"] } }
             }]
-        }).to_string();
+        })
+        .to_string();
         let mut engine = ValidationEngine::new();
         engine.load_rules(&rules).unwrap();
 
@@ -2367,7 +3132,12 @@ mod rule_tests {
         let invalid = json!({ "__type__": "person", "status": "deleted" });
         let result = engine.validate_entity(&invalid, None);
         assert!(!result.is_valid);
-        assert!(result.errors.iter().any(|e| e.code == "RULE_VALUES_VIOLATION"));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == "RULE_VALUES_VIOLATION")
+        );
     }
 
     #[test]
@@ -2422,7 +3192,8 @@ mod rule_tests {
                 "target": { "type": "Attribute", "data": { "attribute": "name" } },
                 "rule_type": { "type": "Regex", "data": { "pattern": "[invalid(" } }
             }]
-        }).to_string();
+        })
+        .to_string();
         let mut engine = ValidationEngine::new();
         let warnings = engine.load_rules(&rules).unwrap();
         assert_eq!(warnings.len(), 1);
@@ -2436,5 +3207,4 @@ mod rule_tests {
         assert!(engine.validate_type_name("person", "entity").is_valid);
         assert!(!engine.validate_type_name("define", "entity").is_valid);
     }
-
 }

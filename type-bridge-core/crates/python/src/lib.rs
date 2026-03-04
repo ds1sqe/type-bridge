@@ -40,7 +40,9 @@ impl ValidationEngine {
     fn validate_type_name(&self, name: String, context: String) -> PyResult<bool> {
         let result = self.inner.validate_type_name(&name, &context);
         if !result.is_valid {
-            return Err(pyo3::exceptions::PyValueError::new_err(result.errors[0].message.clone()));
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                result.errors[0].message.clone(),
+            ));
         }
         Ok(true)
     }
@@ -48,21 +50,28 @@ impl ValidationEngine {
     fn validate_variable_name(&self, name: String, context: String) -> PyResult<bool> {
         let errors = self.inner.validate_variable_name(&name, &context, "");
         if !errors.is_empty() {
-            return Err(pyo3::exceptions::PyValueError::new_err(errors[0].message.clone()));
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                errors[0].message.clone(),
+            ));
         }
         Ok(true)
     }
 
     fn validate_pattern(&self, pattern: Bound<'_, PyAny>) -> PyResult<bool> {
-        let core_pattern: core::ast::Pattern = depythonize(&pattern)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize pattern: {}", e)))?;
+        let core_pattern: core::ast::Pattern = depythonize(&pattern).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize pattern: {}", e))
+        })?;
         let result = self.inner.validate_pattern(&core_pattern);
         Ok(result.is_valid)
     }
 
     fn validate_statement(&self, statement: Bound<'_, PyAny>) -> PyResult<bool> {
-        let core_statement: core::ast::Statement = depythonize(&statement)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize statement: {}", e)))?;
+        let core_statement: core::ast::Statement = depythonize(&statement).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Failed to deserialize statement: {}",
+                e
+            ))
+        })?;
         let result = self.inner.validate_statement(&core_statement);
         Ok(result.is_valid)
     }
@@ -79,10 +88,12 @@ impl ValidationEngine {
     ) -> PyResult<PyObject> {
         let mut core_clauses = Vec::new();
         for clause in &clauses {
-            let c: core::ast::Clause = depythonize(clause)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(
-                    format!("Failed to deserialize clause: {}", e)
-                ))?;
+            let c: core::ast::Clause = depythonize(clause).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Failed to deserialize clause: {}",
+                    e
+                ))
+            })?;
             core_clauses.push(c);
         }
 
@@ -99,23 +110,25 @@ impl ValidationEngine {
 
     /// Add a single rule from a Python dict.
     fn add_rule(&mut self, rule_dict: Bound<'_, PyAny>) -> PyResult<()> {
-        let rule: core::validation::ValidationRule = depythonize(&rule_dict)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(
-                format!("Failed to deserialize rule: {}", e)
-            ))?;
-        self.inner.add_rule(rule)
+        let rule: core::validation::ValidationRule = depythonize(&rule_dict).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize rule: {}", e))
+        })?;
+        self.inner
+            .add_rule(rule)
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Load rules from a JSON string. Returns list of warning strings.
     fn load_rules(&mut self, json_str: &str) -> PyResult<Vec<String>> {
-        self.inner.load_rules(json_str)
+        self.inner
+            .load_rules(json_str)
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Export current rules as a JSON string.
     fn export_rules(&self) -> PyResult<String> {
-        self.inner.export_rules()
+        self.inner
+            .export_rules()
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
@@ -139,10 +152,12 @@ impl ValidationEngine {
         entity_data: Bound<'_, PyAny>,
         schema: Option<&TypeSchema>,
     ) -> PyResult<PyObject> {
-        let json_data: serde_json::Value = depythonize(&entity_data)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(
-                format!("Failed to deserialize entity data: {}", e)
-            ))?;
+        let json_data: serde_json::Value = depythonize(&entity_data).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Failed to deserialize entity data: {}",
+                e
+            ))
+        })?;
 
         let schema_ref = schema.map(|s| &s.inner);
         let result = self.inner.validate_entity(&json_data, schema_ref);
@@ -171,8 +186,12 @@ impl QueryCompiler {
     fn compile(&self, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
         let mut core_clauses = Vec::new();
         for clause in &clauses {
-            let c: core::ast::Clause = depythonize(clause)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize clause: {}", e)))?;
+            let c: core::ast::Clause = depythonize(clause).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Failed to deserialize clause: {}",
+                    e
+                ))
+            })?;
             core_clauses.push(c);
         }
         Ok(self.inner.compile(&core_clauses))
@@ -183,8 +202,12 @@ impl QueryCompiler {
     fn compile_dicts(&self, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
         let mut core_clauses = Vec::new();
         for clause in &clauses {
-            let c: core::ast::Clause = depythonize(clause)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize clause: {}", e)))?;
+            let c: core::ast::Clause = depythonize(clause).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Failed to deserialize clause: {}",
+                    e
+                ))
+            })?;
             core_clauses.push(c);
         }
         Ok(self.inner.compile(&core_clauses))
@@ -287,18 +310,16 @@ impl TypeSchema {
     /// Validate a query (as list of clause dicts) against this schema.
     ///
     /// Convenience method equivalent to `ValidationEngine().validate_query(clauses, schema)`.
-    fn validate_query(
-        &self,
-        py: Python<'_>,
-        clauses: Vec<Bound<'_, PyAny>>,
-    ) -> PyResult<PyObject> {
+    fn validate_query(&self, py: Python<'_>, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<PyObject> {
         let engine = core::validation::ValidationEngine::new();
         let mut core_clauses = Vec::new();
         for clause in &clauses {
-            let c: core::ast::Clause = depythonize(clause)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(
-                    format!("Failed to deserialize clause: {}", e)
-                ))?;
+            let c: core::ast::Clause = depythonize(clause).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Failed to deserialize clause: {}",
+                    e
+                ))
+            })?;
             core_clauses.push(c);
         }
 
@@ -326,9 +347,16 @@ impl ValueCoercer {
     }
 
     /// Coerce a value to a target TypeDB type. Returns dict with "value" and "value_type".
-    fn coerce(&self, py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> PyResult<PyObject> {
+    fn coerce(
+        &self,
+        py: Python<'_>,
+        value: Bound<'_, PyAny>,
+        target_type: &str,
+    ) -> PyResult<PyObject> {
         let json_val = py_to_json_value(&value)?;
-        let coerced = self.inner.coerce(&json_val, target_type)
+        let coerced = self
+            .inner
+            .coerce(&json_val, target_type)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         pythonize(py, &coerced)
             .map(|obj| obj.unbind())
@@ -336,7 +364,11 @@ impl ValueCoercer {
     }
 
     /// Batch coerce. Takes list of (value, type) tuples, returns list of dicts.
-    fn coerce_batch(&self, py: Python<'_>, pairs: Vec<(Bound<'_, PyAny>, String)>) -> PyResult<PyObject> {
+    fn coerce_batch(
+        &self,
+        py: Python<'_>,
+        pairs: Vec<(Bound<'_, PyAny>, String)>,
+    ) -> PyResult<PyObject> {
         let json_pairs: Vec<(serde_json::Value, String)> = pairs
             .iter()
             .map(|(v, t)| Ok((py_to_json_value(v)?, t.clone())))
@@ -351,7 +383,9 @@ impl ValueCoercer {
                 Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e.to_string())),
             })
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(pyo3::types::PyList::new(py, &py_results)?.into_any().unbind())
+        Ok(pyo3::types::PyList::new(py, &py_results)?
+            .into_any()
+            .unbind())
     }
 
     /// Format a value for TypeQL given its known type. Returns TypeQL literal string.

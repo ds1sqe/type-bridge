@@ -4,6 +4,8 @@ use std::pin::Pin;
 
 use type_bridge_core_lib::ast::Clause;
 
+use super::crud_info::CrudInfo;
+
 /// Metadata attached to each request flowing through the interceptor chain.
 #[derive(Debug, Clone)]
 pub struct RequestContext {
@@ -13,6 +15,7 @@ pub struct RequestContext {
     pub transaction_type: String,
     pub metadata: HashMap<String, serde_json::Value>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub crud_info: Option<CrudInfo>,
 }
 
 /// Errors that interceptors can produce.
@@ -66,19 +69,25 @@ mod tests {
 
     #[test]
     fn intercept_error_access_denied_display() {
-        let e = InterceptError::AccessDenied { reason: "no permission".into() };
+        let e = InterceptError::AccessDenied {
+            reason: "no permission".into(),
+        };
         assert_eq!(e.to_string(), "Access denied: no permission");
     }
 
     #[test]
     fn intercept_error_rate_limited_display() {
-        let e = InterceptError::RateLimited { reason: "too many requests".into() };
+        let e = InterceptError::RateLimited {
+            reason: "too many requests".into(),
+        };
         assert_eq!(e.to_string(), "Rate limited: too many requests");
     }
 
     #[test]
     fn intercept_error_validation_failed_display() {
-        let e = InterceptError::ValidationFailed { reason: "bad input".into() };
+        let e = InterceptError::ValidationFailed {
+            reason: "bad input".into(),
+        };
         assert_eq!(e.to_string(), "Validation failed: bad input");
     }
 
@@ -97,6 +106,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: None,
         };
         let cloned = ctx.clone();
         assert_eq!(cloned.request_id, "req-1");
@@ -112,6 +122,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: None,
         };
         let debug = format!("{:?}", ctx);
         assert!(debug.contains("req-1"));
@@ -122,12 +133,15 @@ mod tests {
         struct MinimalInterceptor;
 
         impl Interceptor for MinimalInterceptor {
-            fn name(&self) -> &str { "minimal" }
+            fn name(&self) -> &str {
+                "minimal"
+            }
             fn on_request<'a>(
                 &'a self,
                 clauses: Vec<Clause>,
                 _ctx: &'a mut RequestContext,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+            {
                 Box::pin(async move { Ok(clauses) })
             }
             // on_response uses default impl
@@ -143,6 +157,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: None,
         };
         let req_result = interceptor.on_request(vec![], &mut ctx).await;
         assert!(req_result.is_ok());
@@ -156,12 +171,15 @@ mod tests {
         struct DummyInterceptor;
 
         impl Interceptor for DummyInterceptor {
-            fn name(&self) -> &str { "dummy" }
+            fn name(&self) -> &str {
+                "dummy"
+            }
             fn on_request<'a>(
                 &'a self,
                 clauses: Vec<Clause>,
                 _ctx: &'a mut RequestContext,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+            {
                 Box::pin(async move { Ok(clauses) })
             }
         }
@@ -175,6 +193,7 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
+            crud_info: None,
         };
         let result = boxed.on_request(vec![], &mut ctx).await;
         assert!(result.unwrap().is_empty());

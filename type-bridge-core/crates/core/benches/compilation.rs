@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use serde_json::json;
 use type_bridge_core_lib::ast::{
     ArithmeticValue, Clause, Constraint, FetchItem, FunctionCallValue, LetAssignment, LiteralValue,
@@ -874,12 +874,36 @@ fn make_nested_arithmetic() -> Clause {
             constraints: vec![],
             is_strict: false,
         },
-        Pattern::Has { thing_var: "$x".to_string(), attr_type: "a".to_string(), attr_var: "$a".to_string() },
-        Pattern::Has { thing_var: "$x".to_string(), attr_type: "b".to_string(), attr_var: "$b".to_string() },
-        Pattern::Has { thing_var: "$x".to_string(), attr_type: "c".to_string(), attr_var: "$c".to_string() },
-        Pattern::Has { thing_var: "$x".to_string(), attr_type: "d".to_string(), attr_var: "$d".to_string() },
-        Pattern::Has { thing_var: "$x".to_string(), attr_type: "e".to_string(), attr_var: "$e".to_string() },
-        Pattern::Has { thing_var: "$x".to_string(), attr_type: "f".to_string(), attr_var: "$f".to_string() },
+        Pattern::Has {
+            thing_var: "$x".to_string(),
+            attr_type: "a".to_string(),
+            attr_var: "$a".to_string(),
+        },
+        Pattern::Has {
+            thing_var: "$x".to_string(),
+            attr_type: "b".to_string(),
+            attr_var: "$b".to_string(),
+        },
+        Pattern::Has {
+            thing_var: "$x".to_string(),
+            attr_type: "c".to_string(),
+            attr_var: "$c".to_string(),
+        },
+        Pattern::Has {
+            thing_var: "$x".to_string(),
+            attr_type: "d".to_string(),
+            attr_var: "$d".to_string(),
+        },
+        Pattern::Has {
+            thing_var: "$x".to_string(),
+            attr_type: "e".to_string(),
+            attr_var: "$e".to_string(),
+        },
+        Pattern::Has {
+            thing_var: "$x".to_string(),
+            attr_type: "f".to_string(),
+            attr_var: "$f".to_string(),
+        },
         Pattern::ValueComparison {
             var: "$result".to_string(),
             operator: ">=".to_string(),
@@ -975,10 +999,24 @@ fn bench_compile_match_let(c: &mut Criterion) {
 fn bench_compile_fetch_variable(c: &mut Criterion) {
     let compiler = QueryCompiler::new();
     let clause = Clause::Fetch(vec![
-        FetchItem::Variable { key: "person".to_string(), var: "$p".to_string() },
-        FetchItem::Variable { key: "company".to_string(), var: "$c".to_string() },
-        FetchItem::Attribute { key: "name".to_string(), var: "$p".to_string(), attr_name: "name".to_string() },
-        FetchItem::Function { key: "_iid".to_string(), func_name: "iid".to_string(), var: "$p".to_string() },
+        FetchItem::Variable {
+            key: "person".to_string(),
+            var: "$p".to_string(),
+        },
+        FetchItem::Variable {
+            key: "company".to_string(),
+            var: "$c".to_string(),
+        },
+        FetchItem::Attribute {
+            key: "name".to_string(),
+            var: "$p".to_string(),
+            attr_name: "name".to_string(),
+        },
+        FetchItem::Function {
+            key: "_iid".to_string(),
+            func_name: "iid".to_string(),
+            var: "$p".to_string(),
+        },
     ]);
     c.bench_function("compile/fetch_variable", |b| {
         b.iter(|| compiler.compile_clause(black_box(&clause)))
@@ -996,10 +1034,16 @@ fn bench_compile_isa_constraint(c: &mut Criterion) {
             variable: "$p".to_string(),
             type_name: "person".to_string(),
             constraints: vec![
-                Constraint::Isa { type_name: "employee".to_string(), strict: false },
+                Constraint::Isa {
+                    type_name: "employee".to_string(),
+                    strict: false,
+                },
                 Constraint::Has {
                     attr_name: "name".to_string(),
-                    value: Value::Literal(LiteralValue { value: json!("Alice"), value_type: "string".to_string() }),
+                    value: Value::Literal(LiteralValue {
+                        value: json!("Alice"),
+                        value_type: "string".to_string(),
+                    }),
                 },
             ],
             is_strict: false,
@@ -1007,19 +1051,26 @@ fn bench_compile_isa_constraint(c: &mut Criterion) {
         Pattern::Entity {
             variable: "$a".to_string(),
             type_name: "animal".to_string(),
-            constraints: vec![
-                Constraint::Isa { type_name: "mammal".to_string(), strict: true },
-            ],
+            constraints: vec![Constraint::Isa {
+                type_name: "mammal".to_string(),
+                strict: true,
+            }],
             is_strict: false,
         },
         Pattern::Entity {
             variable: "$v".to_string(),
             type_name: "vehicle".to_string(),
             constraints: vec![
-                Constraint::Isa { type_name: "electric-vehicle".to_string(), strict: false },
+                Constraint::Isa {
+                    type_name: "electric-vehicle".to_string(),
+                    strict: false,
+                },
                 Constraint::Has {
                     attr_name: "range".to_string(),
-                    value: Value::Literal(LiteralValue { value: json!(300), value_type: "long".to_string() }),
+                    value: Value::Literal(LiteralValue {
+                        value: json!(300),
+                        value_type: "long".to_string(),
+                    }),
                 },
             ],
             is_strict: false,
@@ -1039,18 +1090,33 @@ fn bench_compile_standalone_insert(c: &mut Criterion) {
     let mut statements = Vec::new();
     for i in 0..5 {
         let var = format!("$e{}", i);
-        statements.push(Statement::Isa { variable: var.clone(), type_name: format!("person-{}", i) });
-        statements.push(Statement::Has {
-            subject_var: var.clone(), attr_name: "name".to_string(),
-            value: Value::Literal(LiteralValue { value: json!(format!("Person {}", i)), value_type: "string".to_string() }),
+        statements.push(Statement::Isa {
+            variable: var.clone(),
+            type_name: format!("person-{}", i),
         });
         statements.push(Statement::Has {
-            subject_var: var.clone(), attr_name: "age".to_string(),
-            value: Value::Literal(LiteralValue { value: json!(20 + i), value_type: "long".to_string() }),
+            subject_var: var.clone(),
+            attr_name: "name".to_string(),
+            value: Value::Literal(LiteralValue {
+                value: json!(format!("Person {}", i)),
+                value_type: "string".to_string(),
+            }),
         });
         statements.push(Statement::Has {
-            subject_var: var, attr_name: "active".to_string(),
-            value: Value::Literal(LiteralValue { value: json!(true), value_type: "boolean".to_string() }),
+            subject_var: var.clone(),
+            attr_name: "age".to_string(),
+            value: Value::Literal(LiteralValue {
+                value: json!(20 + i),
+                value_type: "long".to_string(),
+            }),
+        });
+        statements.push(Statement::Has {
+            subject_var: var,
+            attr_name: "active".to_string(),
+            value: Value::Literal(LiteralValue {
+                value: json!(true),
+                value_type: "boolean".to_string(),
+            }),
         });
     }
     let clause = Clause::Insert(statements);
@@ -1075,14 +1141,22 @@ fn bench_compile_standalone_update(c: &mut Criterion) {
     let mut statements = Vec::new();
     for i in 0..10 {
         statements.push(Statement::Has {
-            subject_var: format!("$u{}", i), attr_name: "modified-at".to_string(),
-            value: Value::Literal(LiteralValue { value: json!("2025-12-31"), value_type: "date".to_string() }),
+            subject_var: format!("$u{}", i),
+            attr_name: "modified-at".to_string(),
+            value: Value::Literal(LiteralValue {
+                value: json!("2025-12-31"),
+                value_type: "date".to_string(),
+            }),
         });
     }
     for i in 0..10 {
         statements.push(Statement::Has {
-            subject_var: format!("$u{}", i), attr_name: "status".to_string(),
-            value: Value::Literal(LiteralValue { value: json!("updated"), value_type: "string".to_string() }),
+            subject_var: format!("$u{}", i),
+            attr_name: "status".to_string(),
+            value: Value::Literal(LiteralValue {
+                value: json!("updated"),
+                value_type: "string".to_string(),
+            }),
         });
     }
     let clause = Clause::Update(statements);

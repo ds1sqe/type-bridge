@@ -8,6 +8,7 @@ use type_bridge_core_lib::validation::ValidationEngine;
 
 use crate::error::PipelineError;
 use crate::executor::QueryExecutor;
+use crate::interceptor::crud_interceptor::{CrudInterceptor, CrudInterceptorAdapter};
 use crate::interceptor::{Interceptor, InterceptorChain, RequestContext};
 use crate::schema_source::SchemaSource;
 
@@ -96,13 +97,16 @@ impl QueryPipeline {
             transaction_type: input.transaction_type.clone(),
             metadata: input.metadata,
             timestamp: chrono::Utc::now(),
+            crud_info: None,
         };
 
         // Validate against schema
         if !self.skip_validation
             && let Some(schema) = &self.schema
         {
-            let result = self.validation_engine.validate_query(&input.clauses, schema);
+            let result = self
+                .validation_engine
+                .validate_query(&input.clauses, schema);
             if !result.is_valid {
                 return Err(PipelineError::Validation(format!(
                     "{} validation error(s)",
@@ -162,7 +166,9 @@ impl QueryPipeline {
             .as_ref()
             .ok_or_else(|| PipelineError::Schema("No schema loaded".to_string()))?;
 
-        let result = self.validation_engine.validate_query(&input.clauses, schema);
+        let result = self
+            .validation_engine
+            .validate_query(&input.clauses, schema);
 
         let errors = result
             .errors
@@ -247,6 +253,15 @@ impl PipelineBuilder {
         self
     }
 
+    /// Add a CRUD-aware interceptor to the pipeline chain.
+    ///
+    /// The interceptor is automatically wrapped in a [`CrudInterceptorAdapter`]
+    /// that extracts [`CrudInfo`](crate::interceptor::CrudInfo) and delegates
+    /// to the CRUD-specific hooks.
+    pub fn with_crud_interceptor(self, interceptor: impl CrudInterceptor + 'static) -> Self {
+        self.with_interceptor(CrudInterceptorAdapter::new(interceptor))
+    }
+
     /// Skip schema validation during query execution.
     ///
     /// The schema is still loaded (and accessible via [`QueryPipeline::schema`]),
@@ -279,14 +294,14 @@ impl PipelineBuilder {
 mod tests {
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use type_bridge_core_lib::ast::{Constraint, Pattern, Value};
 
     use super::*;
     use crate::interceptor::traits::InterceptError;
-    use crate::test_helpers::{make_pipeline, make_simple_clauses, MockExecutor};
+    use crate::test_helpers::{MockExecutor, make_pipeline, make_simple_clauses};
 
     fn init_tracing() -> tracing::subscriber::DefaultGuard {
         let subscriber = tracing_subscriber::fmt()
@@ -310,7 +325,8 @@ mod tests {
             &'a self,
             clauses: Vec<Clause>,
             _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
             Box::pin(async move { Ok(clauses) })
         }
     }
@@ -325,7 +341,8 @@ mod tests {
             &'a self,
             _clauses: Vec<Clause>,
             _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
             Box::pin(async {
                 Err(InterceptError::AccessDenied {
                     reason: "test rejection".into(),
@@ -344,7 +361,8 @@ mod tests {
             &'a self,
             clauses: Vec<Clause>,
             _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
             Box::pin(async move { Ok(clauses) })
         }
         fn on_response<'a>(
@@ -369,7 +387,8 @@ mod tests {
             &'a self,
             clauses: Vec<Clause>,
             _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
             Box::pin(async move {
                 self.count.fetch_add(1, Ordering::SeqCst);
                 Ok(clauses)
@@ -569,21 +588,24 @@ mod tests {
         let input = make_query_input(vec![]);
         let result = pipeline.execute_query(input).await;
         let err = result.unwrap_err();
-        assert!(matches!(&err, PipelineError::Interceptor(msg) if msg.contains("response rejected")));
+        assert!(
+            matches!(&err, PipelineError::Interceptor(msg) if msg.contains("response rejected"))
+        );
     }
 
     #[tokio::test]
     async fn execute_query_success_output_fields() {
         let _guard = init_tracing();
         let count = Arc::new(AtomicUsize::new(0));
-        let pipeline = PipelineBuilder::new(MockExecutor::with_result(serde_json::json!({"ok": true})))
-            .with_default_database("test_db")
-            .with_interceptor(CountingInterceptor {
-                name: "counter".into(),
-                count: count.clone(),
-            })
-            .build()
-            .unwrap();
+        let pipeline =
+            PipelineBuilder::new(MockExecutor::with_result(serde_json::json!({"ok": true})))
+                .with_default_database("test_db")
+                .with_interceptor(CountingInterceptor {
+                    name: "counter".into(),
+                    count: count.clone(),
+                })
+                .build()
+                .unwrap();
 
         let input = make_query_input(vec![]);
         let output = pipeline.execute_query(input).await.unwrap();

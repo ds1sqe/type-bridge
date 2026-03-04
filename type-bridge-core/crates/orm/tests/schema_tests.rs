@@ -45,15 +45,17 @@ impl TypeBridgeEntity for Person {
         self.iid = Some(iid);
     }
     fn to_attribute_values(&self) -> Vec<(&'static str, AttributeValue)> {
-        vec![
-            ("name", self.name.to_value()),
-            ("age", self.age.to_value()),
-        ]
+        vec![("name", self.name.to_value()), ("age", self.age.to_value())]
     }
     fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Result<Self> {
         Ok(Person {
             iid: None,
-            name: Name(doc.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string()),
+            name: Name(
+                doc.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
             age: Age(doc.get("age").and_then(|v| v.as_i64()).unwrap_or_default()),
         })
     }
@@ -88,7 +90,12 @@ impl TypeBridgeEntity for Company {
     fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Result<Self> {
         Ok(Company {
             iid: None,
-            name: Name(doc.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string()),
+            name: Name(
+                doc.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
         })
     }
 }
@@ -217,10 +224,7 @@ struct MockTransaction {
 }
 
 impl TransactionOps for MockTransaction {
-    fn query(
-        &mut self,
-        typeql: &str,
-    ) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
+    fn query(&mut self, typeql: &str) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
         self.queries
             .lock()
             .unwrap()
@@ -384,10 +388,7 @@ fn generate_schema_with_cardinality() {
 
 #[tokio::test]
 async fn sync_schema_sends_typeql_to_backend() {
-    let db = Database::with_backend(
-        Box::new(MockBackend::new(vec![QueryResult::Ok])),
-        "testdb",
-    );
+    let db = Database::with_backend(Box::new(MockBackend::new(vec![QueryResult::Ok])), "testdb");
     let mut schema = SchemaManager::new(&db);
     schema.register_entity::<Person>();
 
@@ -422,7 +423,11 @@ async fn sync_schema_force_skips_check() {
     schema.register_entity::<Person>();
 
     let result = schema.sync_schema(true, false).await;
-    assert!(result.is_ok(), "force sync should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "force sync should succeed: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
@@ -562,7 +567,10 @@ fn full_schema_roundtrip_registration_and_generation() {
     // Company before person (alphabetical)
     let company_pos = typeql.find("entity company").unwrap();
     let person_pos = typeql.find("entity person").unwrap();
-    assert!(company_pos < person_pos, "company should come before person");
+    assert!(
+        company_pos < person_pos,
+        "company should come before person"
+    );
 
     // Relation definition
     assert!(typeql.contains("relation employment,"));
@@ -668,12 +676,8 @@ async fn introspect_with_wrapped_values() {
     // TypeDB may return values wrapped in {"value": "..."}
     let backend = MockBackend::new(vec![
         QueryResult::Documents(vec![]), // relation types
-        QueryResult::Documents(vec![
-            serde_json::json!({"attr": {"value": "email"}}),
-        ]),
-        QueryResult::Documents(vec![
-            serde_json::json!({"name": {"value": "user"}}),
-        ]),
+        QueryResult::Documents(vec![serde_json::json!({"attr": {"value": "email"}})]),
+        QueryResult::Documents(vec![serde_json::json!({"name": {"value": "user"}})]),
         QueryResult::Documents(vec![
             serde_json::json!({"name": {"value": "email"}, "value_type": {"value": "string"}}),
         ]),

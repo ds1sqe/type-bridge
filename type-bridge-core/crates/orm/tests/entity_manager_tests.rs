@@ -312,9 +312,21 @@ async fn insert_many_sets_iids() {
     let db = Database::with_backend(Box::new(backend), "testdb");
 
     let mut entities = vec![
-        Person { iid: None, name: Name("Alice".into()), age: Age(30) },
-        Person { iid: None, name: Name("Bob".into()), age: Age(25) },
-        Person { iid: None, name: Name("Carol".into()), age: Age(35) },
+        Person {
+            iid: None,
+            name: Name("Alice".into()),
+            age: Age(30),
+        },
+        Person {
+            iid: None,
+            name: Name("Bob".into()),
+            age: Age(25),
+        },
+        Person {
+            iid: None,
+            name: Name("Carol".into()),
+            age: Age(35),
+        },
     ];
 
     let manager = EntityManager::<Person>::new(&db);
@@ -348,8 +360,16 @@ async fn delete_many_executes_all_queries() {
     let db = Database::with_backend(Box::new(backend), "testdb");
 
     let entities = vec![
-        Person { iid: Some("0x001".into()), name: Name("Alice".into()), age: Age(30) },
-        Person { iid: Some("0x002".into()), name: Name("Bob".into()), age: Age(25) },
+        Person {
+            iid: Some("0x001".into()),
+            name: Name("Alice".into()),
+            age: Age(30),
+        },
+        Person {
+            iid: Some("0x002".into()),
+            name: Name("Bob".into()),
+            age: Age(25),
+        },
     ];
 
     let manager = EntityManager::<Person>::new(&db);
@@ -368,8 +388,16 @@ async fn update_many_executes_all_queries() {
     let db = Database::with_backend(Box::new(backend), "testdb");
 
     let entities = vec![
-        Person { iid: Some("0x001".into()), name: Name("Alice".into()), age: Age(31) },
-        Person { iid: Some("0x002".into()), name: Name("Bob".into()), age: Age(26) },
+        Person {
+            iid: Some("0x001".into()),
+            name: Name("Alice".into()),
+            age: Age(31),
+        },
+        Person {
+            iid: Some("0x002".into()),
+            name: Name("Bob".into()),
+            age: Age(26),
+        },
     ];
 
     let manager = EntityManager::<Person>::new(&db);

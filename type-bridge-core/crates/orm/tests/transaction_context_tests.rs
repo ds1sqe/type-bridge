@@ -19,7 +19,10 @@ async fn query_executes_on_shared_transaction() {
     let db = Database::with_backend(Box::new(backend), "testdb");
 
     let tx = db.transaction_context(TxType::Write).await.unwrap();
-    let result = tx.query("match $p isa person; fetch $p: name, age;").await.unwrap();
+    let result = tx
+        .query("match $p isa person; fetch $p: name, age;")
+        .await
+        .unwrap();
 
     // Verify the query was recorded.
     let recorded = queries.lock().unwrap();

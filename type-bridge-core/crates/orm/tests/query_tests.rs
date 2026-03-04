@@ -44,10 +44,7 @@ impl TypeBridgeEntity for Person {
     }
 
     fn to_attribute_values(&self) -> Vec<(&'static str, AttributeValue)> {
-        vec![
-            ("name", self.name.to_value()),
-            ("age", self.age.to_value()),
-        ]
+        vec![("name", self.name.to_value()), ("age", self.age.to_value())]
     }
 
     fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Result<Self> {
@@ -124,13 +121,13 @@ impl TypeBridgeRelation for Friendship {
     }
 
     fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Result<Self> {
-        let since = doc
-            .get("since")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| OrmError::Hydration {
-                type_name: "friendship".into(),
-                message: "missing since".into(),
-            })?;
+        let since =
+            doc.get("since")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| OrmError::Hydration {
+                    type_name: "friendship".into(),
+                    message: "missing since".into(),
+                })?;
         Ok(Friendship {
             iid: None,
             since: Since(since.to_string()),
@@ -166,10 +163,7 @@ impl DriverBackend for MockBackend {
         let responses = Arc::clone(&self.responses);
         let queries = Arc::clone(&self.queries);
         Box::pin(async move {
-            Ok(Box::new(MockTransaction {
-                responses,
-                queries,
-            }) as Box<dyn TransactionOps>)
+            Ok(Box::new(MockTransaction { responses, queries }) as Box<dyn TransactionOps>)
         })
     }
 
@@ -184,10 +178,7 @@ struct MockTransaction {
 }
 
 impl TransactionOps for MockTransaction {
-    fn query(
-        &mut self,
-        typeql: &str,
-    ) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
+    fn query(&mut self, typeql: &str) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
         self.queries.lock().unwrap().push(typeql.to_string());
         let result = self
             .responses
@@ -366,13 +357,7 @@ async fn query_with_limit_offset() {
     let db = Database::with_backend(Box::new(backend), "testdb");
 
     let manager = EntityManager::<Person>::new(&db);
-    let _ = manager
-        .query()
-        .limit(10)
-        .offset(5)
-        .execute()
-        .await
-        .unwrap();
+    let _ = manager.query().limit(10).offset(5).execute().await.unwrap();
 
     let recorded = queries.lock().unwrap();
     let q = &recorded[0];
@@ -507,10 +492,7 @@ async fn query_chain_all_modifiers() {
     assert!(q.contains("<= 65"), "should contain '<= 65': {q}");
     assert!(q.contains("sort"), "should contain 'sort': {q}");
     assert!(q.contains("limit 10"), "should contain 'limit 10': {q}");
-    assert!(
-        q.contains("offset 20"),
-        "should contain 'offset 20': {q}"
-    );
+    assert!(q.contains("offset 20"), "should contain 'offset 20': {q}");
 }
 
 // ── RelationQuery tests ──────────────────────────────────────────────
@@ -797,10 +779,7 @@ async fn entity_group_by_with_filter() {
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result.get_by_str("Engineering").unwrap().count(),
-        Some(5)
-    );
+    assert_eq!(result.get_by_str("Engineering").unwrap().count(), Some(5));
 
     let recorded = queries.lock().unwrap();
     let q = &recorded[0];
@@ -883,7 +862,10 @@ async fn relation_query_with_multiple_role_player_filters() {
             "friend",
             Expr::gt("age", AttributeValue::Long(18)),
         ))
-        .filter(Expr::eq("since", AttributeValue::String("2024-01-01".into())))
+        .filter(Expr::eq(
+            "since",
+            AttributeValue::String("2024-01-01".into()),
+        ))
         .execute()
         .await
         .unwrap();

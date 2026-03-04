@@ -1,7 +1,7 @@
 //! TypeQL reserved words — keywords that cannot be used as type or variable names.
 
-use std::collections::HashSet;
 use once_cell::sync::Lazy;
+use std::collections::HashSet;
 
 /// The set of all TypeQL reserved words (keywords, value types, built-in functions, etc.).
 pub static TYPEQL_RESERVED_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {

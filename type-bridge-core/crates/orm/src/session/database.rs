@@ -38,10 +38,7 @@ pub struct Database {
 
 impl Database {
     /// Create a Database with a custom backend (for testing).
-    pub fn with_backend(
-        backend: Box<dyn DriverBackend>,
-        database_name: impl Into<String>,
-    ) -> Self {
+    pub fn with_backend(backend: Box<dyn DriverBackend>, database_name: impl Into<String>) -> Self {
         Self {
             backend,
             database_name: database_name.into(),

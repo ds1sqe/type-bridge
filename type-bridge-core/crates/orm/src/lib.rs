@@ -52,15 +52,17 @@ pub use attribute::{TypeBridgeAttribute, ValueType};
 pub use entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};
 pub use error::{OrmError, Result};
 pub use expr::{Agg, AggResult, Expr, GroupByResult, SortDir};
+pub use field_ref::{FieldRef, RolePlayerFieldRef, RoleRef};
 pub use filter::Filter;
+pub use hooks::{
+    CrudOperation, HookContext, HookError, HookRunner, LifecycleHook, PreHookResult, TypeKind,
+};
 pub use manager::{EntityManager, RelationManager};
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
-pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
+pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use value::AttributeValue;
-pub use field_ref::{FieldRef, RolePlayerFieldRef, RoleRef};
-pub use hooks::{CrudOperation, HookContext, HookError, HookRunner, LifecycleHook, PreHookResult, TypeKind};
 
 // Re-export derive macros when the `derive` feature is enabled.
 #[cfg(feature = "derive")]

@@ -47,14 +47,12 @@ impl DriverBackend for RealTypeDBBackend {
     {
         let db = database.to_string();
         Box::pin(async move {
-            let transaction = self
-                .driver
-                .transaction(&db, tx_type)
-                .await
-                .map_err(|e| {
-                    PipelineError::QueryExecution(format!("Failed to open transaction: {e}"))
-                })?;
-            Ok(Box::new(RealTransaction { transaction: Some(transaction) }) as Box<dyn TransactionOps>)
+            let transaction = self.driver.transaction(&db, tx_type).await.map_err(|e| {
+                PipelineError::QueryExecution(format!("Failed to open transaction: {e}"))
+            })?;
+            Ok(Box::new(RealTransaction {
+                transaction: Some(transaction),
+            }) as Box<dyn TransactionOps>)
         })
     }
 
@@ -128,9 +126,7 @@ impl TransactionOps for RealTransaction {
         })
     }
 
-    fn commit(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), PipelineError>> + Send + '_>> {
+    fn commit(&mut self) -> Pin<Box<dyn Future<Output = Result<(), PipelineError>> + Send + '_>> {
         let transaction = self.transaction.take();
         Box::pin(async move {
             let tx = transaction.ok_or_else(|| {

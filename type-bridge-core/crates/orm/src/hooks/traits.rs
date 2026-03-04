@@ -61,10 +61,7 @@ pub trait LifecycleHook: Send + Sync {
     ) -> BoxFuture<'a, Result<PreHookResult, HookError>>;
 
     /// Called after a successful CRUD operation.
-    fn after_operation<'a>(
-        &'a self,
-        ctx: &'a HookContext,
-    ) -> BoxFuture<'a, Result<(), HookError>>;
+    fn after_operation<'a>(&'a self, ctx: &'a HookContext) -> BoxFuture<'a, Result<(), HookError>>;
 
     /// Return `false` to skip this hook for the given context.
     ///

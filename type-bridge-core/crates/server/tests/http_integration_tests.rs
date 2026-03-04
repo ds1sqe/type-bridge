@@ -5,18 +5,18 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
-use axum::Router;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use type_bridge_core_lib::ast::{Clause, Constraint, LiteralValue, Pattern, Value};
 use type_bridge_server::interceptor::{InterceptError, Interceptor, RequestContext};
-use type_bridge_server::test_helpers::{make_pipeline, make_simple_clauses, MockExecutor};
+use type_bridge_server::test_helpers::{MockExecutor, make_pipeline, make_simple_clauses};
 use type_bridge_server::transport::http::create_router;
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -351,7 +351,10 @@ async fn query_with_counting_interceptor() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let json = body_json(resp).await;
-    assert_eq!(json["metadata"]["interceptors_applied"], serde_json::json!(["counter"]));
+    assert_eq!(
+        json["metadata"]["interceptors_applied"],
+        serde_json::json!(["counter"])
+    );
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
@@ -364,8 +367,8 @@ async fn query_with_audit_interceptor() {
         output: "file".into(),
         file_path: path.to_str().unwrap().to_string(),
     };
-    let audit = type_bridge_server::interceptor::audit_log::AuditLogInterceptor::new(&config)
-        .unwrap();
+    let audit =
+        type_bridge_server::interceptor::audit_log::AuditLogInterceptor::new(&config).unwrap();
 
     let pipeline = Arc::new(
         type_bridge_server::pipeline::PipelineBuilder::new(MockExecutor::new())

@@ -36,10 +36,7 @@ impl DriverBackend for MockBackend {
         let responses = Arc::clone(&self.responses);
         let queries = Arc::clone(&self.queries);
         Box::pin(async move {
-            Ok(Box::new(MockTransaction {
-                responses,
-                queries,
-            }) as Box<dyn TransactionOps>)
+            Ok(Box::new(MockTransaction { responses, queries }) as Box<dyn TransactionOps>)
         })
     }
 
@@ -54,10 +51,7 @@ pub struct MockTransaction {
 }
 
 impl TransactionOps for MockTransaction {
-    fn query(
-        &mut self,
-        typeql: &str,
-    ) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
+    fn query(&mut self, typeql: &str) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
         self.queries.lock().unwrap().push(typeql.to_string());
         let result = self
             .responses
@@ -96,9 +90,7 @@ impl DriverBackend for FailingMockBackend {
     ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
         let msg = self.error_message.clone();
         Box::pin(async move {
-            Ok(Box::new(FailingMockTransaction {
-                error_message: msg,
-            }) as Box<dyn TransactionOps>)
+            Ok(Box::new(FailingMockTransaction { error_message: msg }) as Box<dyn TransactionOps>)
         })
     }
 
@@ -117,9 +109,7 @@ impl TransactionOps for FailingMockTransaction {
         _typeql: &str,
     ) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
         let msg = self.error_message.clone();
-        Box::pin(async move {
-            Err(OrmError::Transaction(msg))
-        })
+        Box::pin(async move { Err(OrmError::Transaction(msg)) })
     }
 
     fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
@@ -175,10 +165,7 @@ impl TypeBridgeEntity for Person {
     }
 
     fn to_attribute_values(&self) -> Vec<(&'static str, AttributeValue)> {
-        vec![
-            ("name", self.name.to_value()),
-            ("age", self.age.to_value()),
-        ]
+        vec![("name", self.name.to_value()), ("age", self.age.to_value())]
     }
 
     fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Result<Self> {
@@ -277,7 +264,10 @@ impl TypeBridgeRelation for Employment {
     }
 
     fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Result<Self> {
-        let position = doc.get("position").and_then(|v| v.as_str()).map(String::from);
+        let position = doc
+            .get("position")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         Ok(Self {
             iid: None,
             employee: RolePlayerRef {

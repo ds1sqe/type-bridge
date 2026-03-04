@@ -61,11 +61,7 @@ impl fmt::Display for SchemaError {
                 write!(f, "Inheritance cycle detected involving '{}'", type_name)
             }
             SchemaError::UnknownParent { child, parent } => {
-                write!(
-                    f,
-                    "Type '{}' has unknown parent type '{}'",
-                    child, parent
-                )
+                write!(f, "Type '{}' has unknown parent type '{}'", child, parent)
             }
             SchemaError::DuplicateDefinition { name, kind } => {
                 write!(f, "Duplicate {} definition: '{}'", kind, name)
@@ -551,10 +547,7 @@ impl TypeSchema {
                         type_name: n.to_string(),
                     });
                 }
-                current = self
-                    .entities
-                    .get(n)
-                    .and_then(|e| e.parent.as_deref());
+                current = self.entities.get(n).and_then(|e| e.parent.as_deref());
             }
         }
         // Check relation parent chains
@@ -567,10 +560,7 @@ impl TypeSchema {
                         type_name: n.to_string(),
                     });
                 }
-                current = self
-                    .relations
-                    .get(n)
-                    .and_then(|r| r.parent.as_deref());
+                current = self.relations.get(n).and_then(|r| r.parent.as_deref());
             }
         }
         Ok(())
@@ -617,8 +607,7 @@ impl TypeSchema {
                 }
 
                 // Prepend parent owns_order
-                let child_order_set: HashSet<String> =
-                    entity.owns_order.iter().cloned().collect();
+                let child_order_set: HashSet<String> = entity.owns_order.iter().cloned().collect();
                 let parent_attrs: Vec<String> = parent
                     .owns_order
                     .iter()
@@ -744,10 +733,7 @@ mod tests {
 
     #[test]
     fn test_cardinality_unbounded() {
-        let card = Cardinality {
-            min: 0,
-            max: None,
-        };
+        let card = Cardinality { min: 0, max: None };
         let json = serde_json::to_string(&card).unwrap();
         assert!(json.contains("null"));
         let card2: Cardinality = serde_json::from_str(&json).unwrap();
@@ -1013,9 +999,7 @@ mod tests {
 
     #[test]
     fn test_validate_card_min_gt_max() {
-        let result = TypeSchema::from_typeql(
-            "define\nentity person, owns name @card(5..1);",
-        );
+        let result = TypeSchema::from_typeql("define\nentity person, owns name @card(5..1);");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("minimum (5)"), "expected min in msg: {}", msg);
@@ -1024,25 +1008,19 @@ mod tests {
 
     #[test]
     fn test_validate_card_valid_passes() {
-        let result = TypeSchema::from_typeql(
-            "define\nentity person, owns name @card(1..5);",
-        );
+        let result = TypeSchema::from_typeql("define\nentity person, owns name @card(1..5);");
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_card_exact_passes() {
-        let result = TypeSchema::from_typeql(
-            "define\nentity person, owns name @card(3);",
-        );
+        let result = TypeSchema::from_typeql("define\nentity person, owns name @card(3);");
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_card_unbounded_passes() {
-        let result = TypeSchema::from_typeql(
-            "define\nentity person, owns name @card(1..);",
-        );
+        let result = TypeSchema::from_typeql("define\nentity person, owns name @card(1..);");
         assert!(result.is_ok());
     }
 
@@ -1071,7 +1049,11 @@ mod tests {
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("duplicate"), "expected 'duplicate' in msg: {}", msg);
+        assert!(
+            msg.contains("duplicate"),
+            "expected 'duplicate' in msg: {}",
+            msg
+        );
     }
 
     #[test]
@@ -1106,7 +1088,11 @@ mod tests {
         let result = schema.validate();
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("start with a letter"), "expected start msg: {}", msg);
+        assert!(
+            msg.contains("start with a letter"),
+            "expected start msg: {}",
+            msg
+        );
     }
 
     #[test]
@@ -1133,7 +1119,11 @@ mod tests {
         let result = schema.validate();
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("invalid character"), "expected char msg: {}", msg);
+        assert!(
+            msg.contains("invalid character"),
+            "expected char msg: {}",
+            msg
+        );
     }
 
     #[test]

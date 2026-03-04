@@ -1,6 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use serde_json::json;
-use type_bridge_core_lib::ast::{Constraint, Pattern, Statement, Value, LiteralValue, RolePlayer};
+use type_bridge_core_lib::ast::{Constraint, LiteralValue, Pattern, RolePlayer, Statement, Value};
 use type_bridge_core_lib::validation::ValidationEngine;
 
 fn bench_validate_single_name(c: &mut Criterion) {
@@ -66,15 +66,13 @@ fn bench_validate_pattern_simple(c: &mut Criterion) {
     let pattern = Pattern::Entity {
         variable: "$p".to_string(),
         type_name: "person".to_string(),
-        constraints: vec![
-            Constraint::Has {
-                attr_name: "name".to_string(),
-                value: Value::Literal(LiteralValue {
-                    value: json!("Alice"),
-                    value_type: "string".to_string(),
-                }),
-            },
-        ],
+        constraints: vec![Constraint::Has {
+            attr_name: "name".to_string(),
+            value: Value::Literal(LiteralValue {
+                value: json!("Alice"),
+                value_type: "string".to_string(),
+            }),
+        }],
         is_strict: false,
     };
 
@@ -112,22 +110,24 @@ fn bench_validate_pattern_complex(c: &mut Criterion) {
                 variable: "$r".to_string(),
                 type_name: "employment".to_string(),
                 role_players: vec![
-                    RolePlayer { role: "employee".to_string(), player_var: "$p".to_string() },
-                    RolePlayer { role: "employer".to_string(), player_var: "$c".to_string() },
+                    RolePlayer {
+                        role: "employee".to_string(),
+                        player_var: "$p".to_string(),
+                    },
+                    RolePlayer {
+                        role: "employer".to_string(),
+                        player_var: "$c".to_string(),
+                    },
                 ],
                 constraints: vec![],
             },
         ],
-        vec![
-            Pattern::Not(vec![
-                Pattern::Entity {
-                    variable: "$p".to_string(),
-                    type_name: "retired-person".to_string(),
-                    constraints: vec![],
-                    is_strict: true,
-                },
-            ]),
-        ],
+        vec![Pattern::Not(vec![Pattern::Entity {
+            variable: "$p".to_string(),
+            type_name: "retired-person".to_string(),
+            constraints: vec![],
+            is_strict: true,
+        }])],
     ]);
 
     c.bench_function("validate_pattern/complex_nested", |b| {
@@ -142,14 +142,18 @@ fn bench_validate_pattern_complex(c: &mut Criterion) {
 fn bench_validate_variable_name_valid(c: &mut Criterion) {
     let engine = ValidationEngine::new();
     c.bench_function("validate_variable_name/valid", |b| {
-        b.iter(|| engine.validate_variable_name(black_box("$person"), black_box("entity"), black_box("")))
+        b.iter(|| {
+            engine.validate_variable_name(black_box("$person"), black_box("entity"), black_box(""))
+        })
     });
 }
 
 fn bench_validate_variable_name_invalid(c: &mut Criterion) {
     let engine = ValidationEngine::new();
     c.bench_function("validate_variable_name/invalid_no_dollar", |b| {
-        b.iter(|| engine.validate_variable_name(black_box("person"), black_box("entity"), black_box("")))
+        b.iter(|| {
+            engine.validate_variable_name(black_box("person"), black_box("entity"), black_box(""))
+        })
     });
 }
 
@@ -215,8 +219,14 @@ fn bench_validate_statement_relation(c: &mut Criterion) {
         variable: "$rel".to_string(),
         type_name: "employment".to_string(),
         role_players: vec![
-            RolePlayer { role: "employee".to_string(), player_var: "$p".to_string() },
-            RolePlayer { role: "employer".to_string(), player_var: "$c".to_string() },
+            RolePlayer {
+                role: "employee".to_string(),
+                player_var: "$p".to_string(),
+            },
+            RolePlayer {
+                role: "employer".to_string(),
+                player_var: "$c".to_string(),
+            },
         ],
         include_variable: true,
         attributes: vec![

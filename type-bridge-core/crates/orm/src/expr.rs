@@ -7,9 +7,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use type_bridge_core_lib::ast::{
-    FunctionCallValue, Pattern, ReduceAssignment, Value,
-};
+use type_bridge_core_lib::ast::{FunctionCallValue, Pattern, ReduceAssignment, Value};
 
 use crate::value::AttributeValue;
 
@@ -115,42 +113,66 @@ impl Expr {
 
     /// Create an equality filter.
     pub fn eq(attr: impl Into<String>, value: AttributeValue) -> Self {
-        Self::Eq { attr: attr.into(), value }
+        Self::Eq {
+            attr: attr.into(),
+            value,
+        }
     }
 
     /// Create a greater-than filter.
     pub fn gt(attr: impl Into<String>, value: AttributeValue) -> Self {
-        Self::Gt { attr: attr.into(), value }
+        Self::Gt {
+            attr: attr.into(),
+            value,
+        }
     }
 
     /// Create a less-than filter.
     pub fn lt(attr: impl Into<String>, value: AttributeValue) -> Self {
-        Self::Lt { attr: attr.into(), value }
+        Self::Lt {
+            attr: attr.into(),
+            value,
+        }
     }
 
     /// Create a greater-than-or-equal filter.
     pub fn gte(attr: impl Into<String>, value: AttributeValue) -> Self {
-        Self::Gte { attr: attr.into(), value }
+        Self::Gte {
+            attr: attr.into(),
+            value,
+        }
     }
 
     /// Create a less-than-or-equal filter.
     pub fn lte(attr: impl Into<String>, value: AttributeValue) -> Self {
-        Self::Lte { attr: attr.into(), value }
+        Self::Lte {
+            attr: attr.into(),
+            value,
+        }
     }
 
     /// Create a not-equal filter.
     pub fn neq(attr: impl Into<String>, value: AttributeValue) -> Self {
-        Self::Neq { attr: attr.into(), value }
+        Self::Neq {
+            attr: attr.into(),
+            value,
+        }
     }
 
     /// Create a string-contains filter.
     pub fn contains(attr: impl Into<String>, substring: impl Into<String>) -> Self {
-        Self::Contains { attr: attr.into(), substring: substring.into() }
+        Self::Contains {
+            attr: attr.into(),
+            substring: substring.into(),
+        }
     }
 
     /// Create a string-like (regex) filter.
     pub fn like(attr: impl Into<String>, pattern: impl Into<String>) -> Self {
-        Self::Like { attr: attr.into(), pattern: pattern.into() }
+        Self::Like {
+            attr: attr.into(),
+            pattern: pattern.into(),
+        }
     }
 
     /// AND multiple expressions together.
@@ -172,10 +194,7 @@ impl Expr {
     /// Range filter: `attr >= low AND attr <= high`.
     pub fn in_range(attr: impl Into<String>, low: AttributeValue, high: AttributeValue) -> Self {
         let a = attr.into();
-        Self::And(vec![
-            Self::gte(a.clone(), low),
-            Self::lte(a, high),
-        ])
+        Self::And(vec![Self::gte(a.clone(), low), Self::lte(a, high)])
     }
 
     /// String starts-with filter using regex: `attr like "^prefix.*"`.
@@ -299,7 +318,11 @@ impl Expr {
     }
 
     /// Collect unique role names from role player expressions.
-    pub fn collect_roles(&self, roles: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+    pub fn collect_roles(
+        &self,
+        roles: &mut Vec<String>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
         match self {
             Self::RolePlayer { role, .. } => {
                 if seen.insert(role.clone()) {
@@ -321,7 +344,10 @@ impl Expr {
 fn regex_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if matches!(c, '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | '^' | '$' | '|') {
+        if matches!(
+            c,
+            '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | '^' | '$' | '|'
+        ) {
             out.push('\\');
         }
         out.push(c);
@@ -515,7 +541,11 @@ mod tests {
         assert_eq!(patterns.len(), 2);
         assert_eq!(counter, 1);
         match &patterns[0] {
-            Pattern::Has { thing_var, attr_type, attr_var } => {
+            Pattern::Has {
+                thing_var,
+                attr_type,
+                attr_var,
+            } => {
                 assert_eq!(thing_var, "$e");
                 assert_eq!(attr_type, "age");
                 assert_eq!(attr_var, "$_attr0");
@@ -577,7 +607,9 @@ mod tests {
         let patterns = expr.to_patterns("$e", &mut counter);
         assert_eq!(patterns.len(), 2);
         match &patterns[1] {
-            Pattern::ValueComparison { operator, value, .. } => {
+            Pattern::ValueComparison {
+                operator, value, ..
+            } => {
                 assert_eq!(operator, "contains");
                 if let Value::Literal(lit) = value {
                     assert_eq!(lit.value, json!("Ali"));
@@ -635,7 +667,10 @@ mod tests {
 
     #[test]
     fn test_expr_not_generates_not_pattern() {
-        let expr = Expr::not(Expr::eq("status", AttributeValue::String("inactive".into())));
+        let expr = Expr::not(Expr::eq(
+            "status",
+            AttributeValue::String("inactive".into()),
+        ));
         let mut counter = 0;
         let patterns = expr.to_patterns("$e", &mut counter);
         assert_eq!(patterns.len(), 1);
@@ -670,7 +705,11 @@ mod tests {
         assert_eq!(assign.variable, "$_sum");
         assert!(pattern.is_some());
         match pattern.unwrap() {
-            Pattern::Has { attr_type, attr_var, .. } => {
+            Pattern::Has {
+                attr_type,
+                attr_var,
+                ..
+            } => {
                 assert_eq!(attr_type, "salary");
                 assert_eq!(attr_var, "$_agg0");
             }
@@ -766,7 +805,11 @@ mod tests {
         // Should generate patterns against $employee, not $r
         assert_eq!(patterns.len(), 2);
         match &patterns[0] {
-            Pattern::Has { thing_var, attr_type, .. } => {
+            Pattern::Has {
+                thing_var,
+                attr_type,
+                ..
+            } => {
                 assert_eq!(thing_var, "$employee");
                 assert_eq!(attr_type, "age");
             }
@@ -778,7 +821,10 @@ mod tests {
     fn test_collect_roles() {
         let expr = Expr::and(vec![
             Expr::role_player("employee", Expr::gt("age", AttributeValue::Long(30))),
-            Expr::role_player("employer", Expr::eq("name", AttributeValue::String("Corp".into()))),
+            Expr::role_player(
+                "employer",
+                Expr::eq("name", AttributeValue::String("Corp".into())),
+            ),
             Expr::role_player("employee", Expr::lt("age", AttributeValue::Long(65))),
         ]);
         let mut roles = Vec::new();
@@ -820,7 +866,10 @@ mod tests {
                 Expr::gt("age", AttributeValue::Long(18)),
                 Expr::lt("age", AttributeValue::Long(65)),
             ]),
-            Expr::not(Expr::eq("status", AttributeValue::String("inactive".into()))),
+            Expr::not(Expr::eq(
+                "status",
+                AttributeValue::String("inactive".into()),
+            )),
         ]);
         let json = serde_json::to_string(&expr).unwrap();
         let parsed: Expr = serde_json::from_str(&json).unwrap();

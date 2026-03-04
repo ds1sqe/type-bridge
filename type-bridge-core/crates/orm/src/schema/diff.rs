@@ -139,7 +139,9 @@ impl SchemaDiff {
             if let Some((old, new)) = &changes.parent_changed {
                 let old_str = old.as_deref().unwrap_or("none");
                 let new_str = new.as_deref().unwrap_or("none");
-                lines.push(format!("~ relation {name}: parent ({old_str} -> {new_str})"));
+                lines.push(format!(
+                    "~ relation {name}: parent ({old_str} -> {new_str})"
+                ));
             }
             for role in &changes.added_roles {
                 lines.push(format!("~ relation {name}: + relates {role}"));
@@ -186,20 +188,15 @@ impl SchemaDiff {
         }
         for (name, new_entry) in &new.entities {
             if let Some(old_entry) = old.entities.get(name) {
-                let mut changes = diff_owned_attributes(
-                    &old_entry.owned_attributes,
-                    &new_entry.owned_attributes,
-                );
+                let mut changes =
+                    diff_owned_attributes(&old_entry.owned_attributes, &new_entry.owned_attributes);
 
                 if old_entry.is_abstract != new_entry.is_abstract {
-                    changes.abstract_changed =
-                        Some((old_entry.is_abstract, new_entry.is_abstract));
+                    changes.abstract_changed = Some((old_entry.is_abstract, new_entry.is_abstract));
                 }
                 if old_entry.parent_type != new_entry.parent_type {
-                    changes.parent_changed = Some((
-                        old_entry.parent_type.clone(),
-                        new_entry.parent_type.clone(),
-                    ));
+                    changes.parent_changed =
+                        Some((old_entry.parent_type.clone(), new_entry.parent_type.clone()));
                 }
 
                 if !changes.added_attributes.is_empty()
@@ -226,10 +223,8 @@ impl SchemaDiff {
         }
         for (name, new_entry) in &new.relations {
             if let Some(old_entry) = old.relations.get(name) {
-                let attr_changes = diff_owned_attributes(
-                    &old_entry.owned_attributes,
-                    &new_entry.owned_attributes,
-                );
+                let attr_changes =
+                    diff_owned_attributes(&old_entry.owned_attributes, &new_entry.owned_attributes);
 
                 let old_roles: BTreeMap<&str, &str> = old_entry
                     .roles
@@ -256,17 +251,13 @@ impl SchemaDiff {
                     }
                 }
 
-                let abstract_changed =
-                    if old_entry.is_abstract != new_entry.is_abstract {
-                        Some((old_entry.is_abstract, new_entry.is_abstract))
-                    } else {
-                        None
-                    };
+                let abstract_changed = if old_entry.is_abstract != new_entry.is_abstract {
+                    Some((old_entry.is_abstract, new_entry.is_abstract))
+                } else {
+                    None
+                };
                 let parent_changed = if old_entry.parent_type != new_entry.parent_type {
-                    Some((
-                        old_entry.parent_type.clone(),
-                        new_entry.parent_type.clone(),
-                    ))
+                    Some((old_entry.parent_type.clone(), new_entry.parent_type.clone()))
                 } else {
                     None
                 };
@@ -316,10 +307,14 @@ fn diff_owned_attributes(
     old_attrs: &[OwnedAttributeEntry],
     new_attrs: &[OwnedAttributeEntry],
 ) -> EntityChanges {
-    let old_map: BTreeMap<&str, &OwnedAttributeEntry> =
-        old_attrs.iter().map(|a| (a.attr_name.as_str(), a)).collect();
-    let new_map: BTreeMap<&str, &OwnedAttributeEntry> =
-        new_attrs.iter().map(|a| (a.attr_name.as_str(), a)).collect();
+    let old_map: BTreeMap<&str, &OwnedAttributeEntry> = old_attrs
+        .iter()
+        .map(|a| (a.attr_name.as_str(), a))
+        .collect();
+    let new_map: BTreeMap<&str, &OwnedAttributeEntry> = new_attrs
+        .iter()
+        .map(|a| (a.attr_name.as_str(), a))
+        .collect();
 
     let mut changes = EntityChanges::default();
 
@@ -635,10 +630,7 @@ mod tests {
         assert!(diff.has_changes());
         assert!(diff.has_breaking_changes());
         let changes = diff.modified_entities.get("dog").unwrap();
-        assert_eq!(
-            changes.parent_changed,
-            Some((None, Some("animal".into())))
-        );
+        assert_eq!(changes.parent_changed, Some((None, Some("animal".into()))));
         assert!(diff.summary().contains("parent (none -> animal)"));
     }
 
@@ -677,10 +669,7 @@ mod tests {
         let mut new = SchemaInfo::default();
         new.entities.insert(
             "person".into(),
-            make_entity(
-                "person",
-                vec![make_attr("age", ValueType::Long, vec![])],
-            ),
+            make_entity("person", vec![make_attr("age", ValueType::Long, vec![])]),
         );
         new.entities
             .insert("company".into(), make_entity("company", vec![]));

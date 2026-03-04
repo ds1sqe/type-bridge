@@ -1,8 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use type_bridge_orm::schema::info::*;
 use type_bridge_orm::attribute::ValueType;
 use type_bridge_orm::codegen::generator::generate_from_typeql;
+use type_bridge_orm::schema::info::*;
 
 fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
     let mut info = SchemaInfo::default();
@@ -141,5 +141,9 @@ fn bench_codegen_from_typeql(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_schema_generate_define, bench_codegen_from_typeql);
+criterion_group!(
+    benches,
+    bench_schema_generate_define,
+    bench_codegen_from_typeql
+);
 criterion_main!(benches);

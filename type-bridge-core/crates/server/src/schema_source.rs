@@ -41,10 +41,10 @@ impl FileSchemaSource {
 
 impl SchemaSource for FileSchemaSource {
     fn load(&self) -> Result<TypeSchema, PipelineError> {
-        let content = std::fs::read_to_string(&self.path)
-            .map_err(|e| PipelineError::Schema(format!("Failed to read schema file '{}': {}", self.path, e)))?;
-        TypeSchema::from_typeql(&content)
-            .map_err(parse_schema_error)
+        let content = std::fs::read_to_string(&self.path).map_err(|e| {
+            PipelineError::Schema(format!("Failed to read schema file '{}': {}", self.path, e))
+        })?;
+        TypeSchema::from_typeql(&content).map_err(parse_schema_error)
     }
 }
 
@@ -62,14 +62,15 @@ pub struct InMemorySchemaSource {
 
 impl InMemorySchemaSource {
     pub fn new(typeql: impl Into<String>) -> Self {
-        Self { typeql: typeql.into() }
+        Self {
+            typeql: typeql.into(),
+        }
     }
 }
 
 impl SchemaSource for InMemorySchemaSource {
     fn load(&self) -> Result<TypeSchema, PipelineError> {
-        TypeSchema::from_typeql(&self.typeql)
-            .map_err(parse_schema_error)
+        TypeSchema::from_typeql(&self.typeql).map_err(parse_schema_error)
     }
 }
 
@@ -113,7 +114,9 @@ define
     fn file_schema_source_missing_file() {
         let source = FileSchemaSource::new("/nonexistent/schema.tql");
         let err = source.load().unwrap_err();
-        assert!(matches!(&err, PipelineError::Schema(msg) if msg.contains("Failed to read schema file")));
+        assert!(
+            matches!(&err, PipelineError::Schema(msg) if msg.contains("Failed to read schema file"))
+        );
     }
 
     #[test]
@@ -124,7 +127,9 @@ define
 
         let source = FileSchemaSource::new(path.to_str().unwrap());
         let err = source.load().unwrap_err();
-        assert!(matches!(&err, PipelineError::Schema(msg) if msg.contains("Failed to parse schema")));
+        assert!(
+            matches!(&err, PipelineError::Schema(msg) if msg.contains("Failed to parse schema"))
+        );
     }
 
     #[test]
@@ -146,7 +151,10 @@ define
         let source = FileSchemaSource::new("/some/specific/path.tql");
         let err = source.load().unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("/some/specific/path.tql"), "Error should contain the file path: {msg}");
+        assert!(
+            msg.contains("/some/specific/path.tql"),
+            "Error should contain the file path: {msg}"
+        );
     }
 
     // --- InMemorySchemaSource tests ---
@@ -162,7 +170,9 @@ define
     fn in_memory_schema_source_invalid() {
         let source = InMemorySchemaSource::new("not valid typeql at all");
         let err = source.load().unwrap_err();
-        assert!(matches!(&err, PipelineError::Schema(msg) if msg.contains("Failed to parse schema")));
+        assert!(
+            matches!(&err, PipelineError::Schema(msg) if msg.contains("Failed to parse schema"))
+        );
     }
 
     #[test]
