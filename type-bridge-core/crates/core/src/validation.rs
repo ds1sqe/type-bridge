@@ -726,12 +726,10 @@ impl ValidationEngine {
                     variable,
                     type_name,
                     ..
-                } => {
+                } if schema.type_exists(type_name) => {
                     // The Entity pattern is used for any `$var isa type` match,
                     // so the type could be an entity, relation, or attribute.
-                    if schema.type_exists(type_name) {
-                        env.bind(variable, type_name);
-                    }
+                    env.bind(variable, type_name);
                 }
                 Pattern::Relation {
                     variable,
@@ -751,11 +749,7 @@ impl ValidationEngine {
                     attr_type,
                     attr_var,
                     ..
-                } => {
-                    if schema.attributes.contains_key(attr_type) {
-                        env.bind(attr_var, attr_type);
-                    }
-                }
+                } if schema.attributes.contains_key(attr_type) => env.bind(attr_var, attr_type),
                 Pattern::Or(alternatives) => {
                     // Conservative: only bind from first alternative.
                     if let Some(first) = alternatives.first() {
@@ -1084,11 +1078,7 @@ impl ValidationEngine {
                 Statement::Isa {
                     variable,
                     type_name,
-                } => {
-                    if schema.type_exists(type_name) {
-                        env.bind(variable, type_name);
-                    }
-                }
+                } if schema.type_exists(type_name) => env.bind(variable, type_name),
                 Statement::Relation {
                     variable,
                     type_name,

@@ -4,6 +4,16 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-04-05
+
+### Bug Fixes
+
+##### Rust Server — `type-bridge-server`
+- **fix**: `extract_crud_info()` now reports the write-target type for Match + Insert/Put queries (#121)
+
+##### Rust Core — `type-bridge-core-lib`
+- **refactor**: use idiomatic match guards in validation.rs
+
 ## [1.4.2] - 2026-03-04
 
 ##### Rust Server — `type-bridge-server`

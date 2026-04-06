@@ -77,6 +77,8 @@ pub fn extract_crud_info(clauses: &[Clause]) -> CrudInfo {
     // Step 2: extract type info from the appropriate clauses
     let mut type_name: Option<String> = None;
     let mut type_kind: Option<TypeKind> = None;
+    let mut match_type_name: Option<String> = None;
+    let mut match_type_kind: Option<TypeKind> = None;
     let mut attribute_names: Vec<String> = Vec::new();
     let mut iid: Option<String> = None;
 
@@ -108,6 +110,17 @@ pub fn extract_crud_info(clauses: &[Clause]) -> CrudInfo {
                     &mut attribute_names,
                 );
             }
+            Clause::Match(patterns)
+                if matches!(operation, CrudOperation::Insert | CrudOperation::Put) =>
+            {
+                extract_from_patterns(
+                    patterns,
+                    &mut match_type_name,
+                    &mut match_type_kind,
+                    &mut attribute_names,
+                    &mut iid,
+                );
+            }
             Clause::Match(patterns) => {
                 extract_from_patterns(
                     patterns,
@@ -119,6 +132,11 @@ pub fn extract_crud_info(clauses: &[Clause]) -> CrudInfo {
             }
             _ => {}
         }
+    }
+
+    if type_name.is_none() {
+        type_name = match_type_name;
+        type_kind = match_type_kind;
     }
 
     // Step 3: deduplicate attribute names
@@ -251,6 +269,84 @@ mod tests {
             value: serde_json::json!(n),
             value_type: "long".to_string(),
         })
+    }
+
+    fn relation_match_patterns() -> Vec<Pattern> {
+        vec![
+            Pattern::Entity {
+                variable: "$issue".into(),
+                type_name: "JiraIssue".into(),
+                constraints: vec![Constraint::Has {
+                    attr_name: "key".into(),
+                    value: lit_str("DM-1"),
+                }],
+                is_strict: false,
+            },
+            Pattern::Entity {
+                variable: "$requirement".into(),
+                type_name: "Requirement".into(),
+                constraints: vec![Constraint::Has {
+                    attr_name: "req_id".into(),
+                    value: lit_str("REQ-DM-1"),
+                }],
+                is_strict: false,
+            },
+        ]
+    }
+
+    fn relation_write_statement() -> Statement {
+        Statement::Relation {
+            variable: "$rel".into(),
+            type_name: "JiraIssueIsRequirement".into(),
+            role_players: vec![
+                RolePlayer {
+                    role: "issue".into(),
+                    player_var: "$issue".into(),
+                },
+                RolePlayer {
+                    role: "requirement".into(),
+                    player_var: "$requirement".into(),
+                },
+            ],
+            include_variable: true,
+            attributes: vec![],
+        }
+    }
+
+    fn relation_only_put_query() -> Vec<Clause> {
+        vec![Clause::Put(vec![relation_write_statement()])]
+    }
+
+    fn relation_put_query() -> Vec<Clause> {
+        vec![
+            Clause::Match(relation_match_patterns()),
+            Clause::Put(vec![relation_write_statement()]),
+        ]
+    }
+
+    fn relation_insert_query() -> Vec<Clause> {
+        vec![
+            Clause::Match(relation_match_patterns()),
+            Clause::Insert(vec![relation_write_statement()]),
+        ]
+    }
+
+    fn match_insert_entity_query() -> Vec<Clause> {
+        vec![
+            Clause::Match(vec![Pattern::Entity {
+                variable: "$person".into(),
+                type_name: "person".into(),
+                constraints: vec![Constraint::Has {
+                    attr_name: "email".into(),
+                    value: lit_str("alice@example.com"),
+                }],
+                is_strict: false,
+            }]),
+            Clause::Insert(vec![Statement::Isa {
+                variable: "$company".into(),
+                type_name: "company".into(),
+            }]),
+        ]
     }
 
     // --- Operation detection ---
@@ -446,6 +542,44 @@ mod tests {
         assert_eq!(info.type_name.as_deref(), Some("employment"));
         assert_eq!(info.type_kind, Some(TypeKind::Relation));
         assert!(info.attribute_names.contains(&"start-date".to_string()));
+    }
+
+    #[test]
+    fn relation_only_put_reports_relation_type() {
+        let info = extract_crud_info(&relation_only_put_query());
+
+        assert_eq!(info.operation, CrudOperation::Put);
+        assert_eq!(info.type_name.as_deref(), Some("JiraIssueIsRequirement"));
+        assert_eq!(info.type_kind, Some(TypeKind::Relation));
+    }
+
+    #[test]
+    fn relation_put_should_report_relation_type_not_first_match_entity() {
+        let info = extract_crud_info(&relation_put_query());
+
+        assert_eq!(info.operation, CrudOperation::Put);
+        assert_eq!(info.type_name.as_deref(), Some("JiraIssueIsRequirement"));
+        assert_eq!(info.type_kind, Some(TypeKind::Relation));
+        assert!(info.attribute_names.contains(&"key".to_string()));
+    }
+
+    #[test]
+    fn relation_insert_should_report_relation_type_not_first_match_entity() {
+        let info = extract_crud_info(&relation_insert_query());
+
+        assert_eq!(info.operation, CrudOperation::Insert);
+        assert_eq!(info.type_name.as_deref(), Some("JiraIssueIsRequirement"));
+        assert_eq!(info.type_kind, Some(TypeKind::Relation));
+    }
+
+    #[test]
+    fn match_insert_entity_should_still_report_written_entity_type() {
+        let info = extract_crud_info(&match_insert_entity_query());
+
+        assert_eq!(info.operation, CrudOperation::Insert);
+        assert_eq!(info.type_name.as_deref(), Some("company"));
+        assert_eq!(info.type_kind, Some(TypeKind::Entity));
+        assert_eq!(info.attribute_names, vec!["email"]);
     }
 
     // --- Attribute extraction ---
