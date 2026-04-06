@@ -120,7 +120,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use type_bridge_core_lib::ast::Statement;
+    use type_bridge_core_lib::ast::{Constraint, LiteralValue, Pattern, RolePlayer, Statement, Value};
 
     use super::*;
     use crate::interceptor::crud_info::{CrudInfo, CrudOperation, TypeKind};
@@ -135,6 +135,54 @@ mod tests {
             timestamp: chrono::Utc::now(),
             crud_info: None,
         }
+    }
+
+    fn lit_str(s: &str) -> Value {
+        Value::Literal(LiteralValue {
+            value: serde_json::json!(s),
+            value_type: "string".to_string(),
+        })
+    }
+
+    fn relation_put_clauses() -> Vec<Clause> {
+        vec![
+            Clause::Match(vec![
+                Pattern::Entity {
+                    variable: "$issue".into(),
+                    type_name: "JiraIssue".into(),
+                    constraints: vec![Constraint::Has {
+                        attr_name: "key".into(),
+                        value: lit_str("DM-1"),
+                    }],
+                    is_strict: false,
+                },
+                Pattern::Entity {
+                    variable: "$requirement".into(),
+                    type_name: "Requirement".into(),
+                    constraints: vec![Constraint::Has {
+                        attr_name: "req_id".into(),
+                        value: lit_str("REQ-DM-1"),
+                    }],
+                    is_strict: false,
+                },
+            ]),
+            Clause::Put(vec![Statement::Relation {
+                variable: "$rel".into(),
+                type_name: "JiraIssueIsRequirement".into(),
+                role_players: vec![
+                    RolePlayer {
+                        role: "issue".into(),
+                        player_var: "$issue".into(),
+                    },
+                    RolePlayer {
+                        role: "requirement".into(),
+                        player_var: "$requirement".into(),
+                    },
+                ],
+                include_variable: true,
+                attributes: vec![],
+            }]),
+        ]
     }
 
     /// A CrudInterceptor that tracks calls.
@@ -252,6 +300,19 @@ mod tests {
         assert_eq!(info.operation, CrudOperation::Insert);
         assert_eq!(info.type_name.as_deref(), Some("person"));
         assert_eq!(info.type_kind, Some(TypeKind::Entity));
+    }
+
+    #[tokio::test]
+    async fn adapter_stores_relation_write_crud_info_on_context() {
+        let adapter = CrudInterceptorAdapter::new(MinimalCrudInterceptor);
+        let mut ctx = make_ctx();
+
+        adapter.on_request(relation_put_clauses(), &mut ctx).await.unwrap();
+
+        let info = ctx.crud_info.as_ref().unwrap();
+        assert_eq!(info.operation, CrudOperation::Put);
+        assert_eq!(info.type_name.as_deref(), Some("JiraIssueIsRequirement"));
+        assert_eq!(info.type_kind, Some(TypeKind::Relation));
     }
 
     #[tokio::test]
