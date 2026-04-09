@@ -87,6 +87,10 @@ class Entity(TypeDBType):
         scanner = SchemaScanner(cls)
         cls._owned_attrs = scanner.scan_attributes(is_relation=False)
 
+        from type_bridge.models.registry import ModelRegistry
+
+        ModelRegistry.register_attribute_owners(cls)
+
     @classmethod
     def _get_base_type_class(cls) -> type[Entity]:
         """Return Entity as the base type class for supertype resolution."""

@@ -11,6 +11,7 @@ from type_bridge.validation import validate_type_name as validate_reserved_word
 if TYPE_CHECKING:
     from type_bridge.attribute.flags import TypeNameCase
     from type_bridge.expressions import AggregateExpr, ComparisonExpr, Expression
+    from type_bridge.models.base import TypeDBType
 
 # TypeDB built-in type names that cannot be used for attributes
 TYPEDB_BUILTIN_TYPES = {"thing", "entity", "relation", "attribute"}
@@ -211,6 +212,18 @@ class Attribute(ABC):
     def is_independent(cls) -> bool:
         """Check if this attribute is independent (can exist without owners)."""
         return cls.independent
+
+    @classmethod
+    def get_owners(cls) -> "set[type[TypeDBType]]":
+        """Get all Entity/Relation classes that own this attribute.
+
+        Returns:
+            Set of model classes that define this attribute as a field.
+            Does not require a database connection (static discovery).
+        """
+        from type_bridge.models.registry import ModelRegistry
+
+        return ModelRegistry.get_attribute_owners(cls)
 
     @classmethod
     def get_supertype(cls) -> str | None:

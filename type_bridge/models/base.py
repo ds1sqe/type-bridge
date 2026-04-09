@@ -27,6 +27,7 @@ from type_bridge.models.utils import (
 )
 
 if TYPE_CHECKING:
+    from type_bridge.attribute.base import Attribute
     from type_bridge.crud.typedb_manager import TypeDBManager
     from type_bridge.session import Connection
 
@@ -101,6 +102,67 @@ class TypeDBType(BaseModel, ABC):
         """
         self.manager(connection).delete(self)
         return self
+
+    @classmethod
+    def has(
+        cls,
+        connection: Connection,
+        attr_class: type[Attribute],
+        value: Any | None = None,
+    ) -> list[TypeDBType]:
+        """Find all instances of this class (and its subtypes) that own *attr_class*.
+
+        Behaviour depends on the receiver:
+
+        * ``Entity.has(...)`` / ``Relation.has(...)``: cross-type lookup — returns
+          instances across **all** concrete types of that kind.
+        * ``<ConcreteType>.has(...)`` / ``<AbstractBase>.has(...)``: narrowed
+          lookup — restricted to that type and its TypeDB subtypes via ``isa``
+          polymorphism.
+
+        Returned relation instances always have their role players hydrated
+        (in addition to attributes). This is implemented by re-fetching each
+        relation through ``concrete_class.manager(connection).get(_iid=...)``
+        after the initial wildcard query, so the relation path is N+1 in the
+        number of returned relations. Entity lookups remain single-query.
+
+        Args:
+            connection: Database, Transaction, or TransactionContext.
+            attr_class: Attribute type to search for (e.g. ``Name``).
+            value: Optional filter — raw value, Attribute instance,
+                   or Expression (e.g. ``Name.gt(Name("B"))``).
+
+        Returns:
+            List of hydrated model instances (may contain mixed concrete types
+            when called on the base ``Entity`` / ``Relation`` class or an
+            abstract base subclass).
+
+        Raises:
+            TypeError: If called directly on :class:`TypeDBType` (use
+                :class:`Entity` or :class:`Relation` instead).
+        """
+        from type_bridge.crud.has_lookup import has_lookup
+        from type_bridge.models.entity import Entity
+        from type_bridge.models.relation import Relation
+
+        if cls is TypeDBType:
+            raise TypeError("has() must be called on Entity or Relation, not TypeDBType directly")
+
+        if issubclass(cls, Entity):
+            kind: Literal["entity", "relation"] = "entity"
+            base_cls: type[TypeDBType] = Entity
+        elif issubclass(cls, Relation):
+            kind = "relation"
+            base_cls = Relation
+        else:
+            raise TypeError(f"has() requires an Entity or Relation class, got {cls.__name__}")
+
+        # Narrow to the concrete (or abstract base) type when the caller is
+        # not the bare Entity / Relation class. TypeDB's `isa` is polymorphic,
+        # so subtypes of an abstract base are matched automatically.
+        narrow_type = None if cls is base_cls else cls.get_type_name()
+
+        return has_lookup(connection, attr_class, value, kind=kind, type_name=narrow_type)
 
     # Type context for name validation (entity, relation, etc.)
     _type_context: ClassVar[Literal["entity", "relation", "attribute", "role"]] = "entity"

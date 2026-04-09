@@ -13,11 +13,14 @@ from .exceptions import (
     NotUniqueError,
     RelationNotFoundError,
 )
+from .has_lookup import has_lookup
 from .hooks import CrudEvent, CrudHook, HookCancelled
 from .strategies import EntityStrategy, ModelStrategy, RelationStrategy
 from .typedb_manager import GroupByQuery, TypeDBManager, TypeDBQuery
 
 __all__ = [
+    # Cross-type lookup
+    "has_lookup",
     # Unified manager
     "TypeDBManager",
     "TypeDBQuery",
