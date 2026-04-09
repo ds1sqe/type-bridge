@@ -83,6 +83,10 @@ class Relation(TypeDBType):
         cls._roles = scanner.scan_roles()
         cls._owned_attrs = scanner.scan_attributes(is_relation=True)
 
+        from type_bridge.models.registry import ModelRegistry
+
+        ModelRegistry.register_attribute_owners(cls)
+
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         """Called by Pydantic after model class initialization.

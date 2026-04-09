@@ -4,6 +4,21 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-04-09
+
+### New Features
+
+#### Cross-type attribute lookup (PR #117)
+
+`Entity.has` / `Relation.has` / `<Concrete>.has` — find all instances that own a
+given attribute, optionally filtered by value or expression.
+
+##### Python ORM — `type_bridge.crud.has_lookup`
+- **Cross-type form** — `Entity.has(db, Name)` returns mixed concrete subtypes across all entities owning `Name`.
+- **Concrete-class narrowing** — `HLPerson.has(db, Name)` narrows to that type and its TypeDB subtypes via `isa` polymorphism. Abstract base subclasses get subtype matching for free.
+- **Role-player hydration** — relation results always include hydrated role players. Entity lookups remain single-query; relations are re-fetched per result through `concrete_class.manager(connection).get(_iid=iid)`.
+- **`Attribute.get_owners()`** — static discovery of attribute owners without a database connection, backed by a reverse `_attribute_owners` index in `ModelRegistry`.
+
 ## [1.4.3] - 2026-04-05
 
 ### Bug Fixes

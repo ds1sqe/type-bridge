@@ -23,6 +23,8 @@ class ModelRegistry:
     _registry: dict[str, type[TypeDBType]] = {}
     # Cache for resolved polymorphic classes (type_label -> class)
     _resolution_cache: dict[str, type[TypeDBType]] = {}
+    # Reverse index: attribute class → set of models that own it
+    _attribute_owners: dict[type, set[type[TypeDBType]]] = {}
 
     @classmethod
     def register(cls, model: type[TypeDBType]) -> None:
@@ -126,7 +128,32 @@ class ModelRegistry:
         return allowed_classes[0]
 
     @classmethod
+    def register_attribute_owners(cls, model: type[TypeDBType]) -> None:
+        """Populate the reverse index for a model's owned attributes.
+
+        Must be called **after** ``_owned_attrs`` has been populated
+        (i.e. after SchemaScanner runs in Entity/Relation ``__init_subclass__``).
+        """
+        if model.is_base():
+            return
+        for attr_info in model._owned_attrs.values():
+            cls._attribute_owners.setdefault(attr_info.typ, set()).add(model)
+
+    @classmethod
+    def get_attribute_owners(cls, attr_class: type) -> set[type[TypeDBType]]:
+        """Get all model classes that own the given attribute type.
+
+        Args:
+            attr_class: Attribute subclass to look up
+
+        Returns:
+            Set of Entity/Relation classes that own this attribute
+        """
+        return set(cls._attribute_owners.get(attr_class, set()))
+
+    @classmethod
     def clear(cls) -> None:
         """Clear the registry (for testing)."""
         cls._registry.clear()
         cls._resolution_cache.clear()
+        cls._attribute_owners.clear()
