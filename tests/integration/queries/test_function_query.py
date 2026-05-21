@@ -72,16 +72,14 @@ fun get-artifacts-with-score($min_score: integer) -> { artifact-id, artifact-sco
 @pytest.fixture
 def db(docker_typedb):
     """Provide database connection."""
-    from typedb.driver import DriverOptions
-
     from tests.integration.conftest import TEST_DB_ADDRESS
-    from type_bridge import Credentials, TypeDB
+    from type_bridge import Credentials, TypeDB, create_driver_options
 
     # Create database if needed
     driver = TypeDB.driver(
         address=TEST_DB_ADDRESS,
         credentials=Credentials(username="admin", password="password"),
-        driver_options=DriverOptions(is_tls_enabled=False),
+        driver_options=create_driver_options(is_tls_enabled=False),
     )
     db_name = "test_function_query"
     if driver.databases.contains(db_name):

@@ -122,6 +122,11 @@ class Role[T: "TypeDBType"]:
             return False  # Default is single player
         return self.cardinality.max is None or self.cardinality.max > 1
 
+    @property
+    def is_optional(self) -> bool:
+        """Check if this role allows zero players."""
+        return self.cardinality is not None and self.cardinality.min == 0
+
     def __set_name__(self, owner: type, name: str) -> None:
         """Called when role is assigned to a class."""
         self.attr_name = name
@@ -158,6 +163,13 @@ class Role[T: "TypeDBType"]:
         For roles with cardinality > 1, accepts a list of entities.
         For single-player roles, accepts a single entity.
         """
+        if value is None:
+            if not self.is_optional:
+                allowed = ", ".join(pt.__name__ for pt in self.player_entity_types)
+                raise TypeError(f"Role '{self.role_name}' expects types ({allowed}), got NoneType")
+            obj.__dict__[self.attr_name] = None
+            return
+
         if isinstance(value, list):
             # Multi-player role - validate each item in the list
             if not self.is_multi_player:
@@ -245,6 +257,9 @@ class Role[T: "TypeDBType"]:
             E.g., if Document is allowed and Report is a subclass of Document,
             Report instances are accepted.
             """
+            if value is None:
+                return None
+
             if not allowed_names:
                 # No type constraints - allow anything
                 return value

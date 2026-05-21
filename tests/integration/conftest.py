@@ -1,7 +1,6 @@
 """Pytest fixtures for integration tests."""
 
 import pytest
-from typedb.driver import DriverOptions
 
 from tests.utils.typedb_lifecycle import (
     TEST_DB_ADDRESS,
@@ -9,7 +8,7 @@ from tests.utils.typedb_lifecycle import (
     start_typedb_container,
     stop_typedb_container,
 )
-from type_bridge import Credentials, Database, TypeDB
+from type_bridge import Credentials, Database, TypeDB, create_driver_options
 
 
 @pytest.fixture(scope="session")
@@ -45,7 +44,7 @@ def typedb_driver(docker_typedb):
         driver = TypeDB.driver(
             address=TEST_DB_ADDRESS,
             credentials=Credentials(username="admin", password="password"),
-            driver_options=DriverOptions(is_tls_enabled=False),
+            driver_options=create_driver_options(is_tls_enabled=False),
         )
         yield driver
         driver.close()

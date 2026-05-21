@@ -2,6 +2,7 @@
 
 from type_bridge import (
     Boolean,
+    Card,
     Entity,
     Flag,
     Integer,
@@ -11,7 +12,8 @@ from type_bridge import (
     String,
     TypeFlags,
 )
-from type_bridge.query.ast import InsertClause, LiteralValue, RelationStatement
+from type_bridge.fields.role import RoleRef
+from type_bridge.query.ast import EntityPattern, InsertClause, LiteralValue, RelationStatement
 
 
 class Name(String):
@@ -42,6 +44,12 @@ class Employment(Relation):
     employer: Role[Company] = Role("employer", Company)
     salary: Salary | None = None
     full_time: FullTime | None = None
+
+
+class OptionalEmployment(Relation):
+    flags = TypeFlags(name="optional-employment")
+    employee: Role[Employee] = Role("employee", Employee)
+    employer: Role[Company] = Role("employer", Company, cardinality=Card(min=0, max=None))
 
 
 def test_relation_to_ast_basic():
@@ -113,3 +121,51 @@ def test_relation_to_ast_type_refinement():
     assert isinstance(ft_attr.value, LiteralValue)
     assert ft_attr.value.value_type == "boolean"
     assert ft_attr.value.value is False
+
+
+def test_optional_role_omitted_defaults_to_none_not_role_ref():
+    """Unset optional roles must not store the class-level RoleRef default."""
+    emp = Employee(name=Name("Alice"))
+
+    employment = OptionalEmployment(employee=emp)
+
+    assert employment.__dict__["employer"] is None
+    assert employment.employer is None
+    assert not isinstance(employment.__dict__["employer"], RoleRef)
+
+
+def test_optional_role_accepts_explicit_none():
+    """Users can explicitly pass None for an optional role."""
+    emp = Employee(name=Name("Alice"))
+
+    employment = OptionalEmployment(employee=emp, employer=None)  # pyright: ignore[reportArgumentType]
+
+    assert employment.__dict__["employer"] is None
+
+
+def test_optional_role_omitted_is_not_rendered_in_insert_ast():
+    """Missing optional roles are skipped when building insert role players."""
+    emp = Employee(name=Name("Alice"))
+    employment = OptionalEmployment(employee=emp)
+
+    result = employment.to_ast("$r")
+    rel_stmt = result.statements[0]
+    assert isinstance(rel_stmt, RelationStatement)
+
+    assert [player.role for player in rel_stmt.role_players] == ["employee"]
+
+
+def test_optional_role_omitted_is_skipped_by_relation_insert_strategy():
+    """The CRUD insert strategy should not identify missing optional roles."""
+    from type_bridge.crud.strategies import RelationStrategy
+
+    emp = Employee(name=Name("Alice"))
+    employment = OptionalEmployment(employee=emp)
+
+    match_clause, _ = RelationStrategy().build_insert(employment, "$r")
+
+    assert match_clause is not None
+    assert len(match_clause.patterns) == 1
+    pattern = match_clause.patterns[0]
+    assert isinstance(pattern, EntityPattern)
+    assert pattern.type_name == "employee"

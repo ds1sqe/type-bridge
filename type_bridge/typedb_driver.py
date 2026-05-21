@@ -11,10 +11,29 @@ Example:
     # from type_bridge import Database
 """
 
-from typedb.driver import Credentials, TransactionType, TypeDB
+from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
+
+
+def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
+    """Create TypeDB driver options across supported driver versions."""
+    try:
+        return DriverOptions(is_tls_enabled=is_tls_enabled)
+    except TypeError:
+        typedb_driver = __import__("typedb.driver", fromlist=["DriverTlsConfig"])
+        driver_tls_config = getattr(typedb_driver, "DriverTlsConfig")
+
+        tls_config = (
+            driver_tls_config.enabled_with_native_root_ca()
+            if is_tls_enabled
+            else driver_tls_config.disabled()
+        )
+        return DriverOptions(tls_config)
+
 
 __all__ = [
     "Credentials",
+    "DriverOptions",
     "TransactionType",
     "TypeDB",
+    "create_driver_options",
 ]
