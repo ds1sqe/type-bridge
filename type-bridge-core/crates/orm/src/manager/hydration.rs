@@ -4,10 +4,13 @@
 //! This module flattens those results and invokes
 //! [`TypeBridgeEntity::from_document`] to produce typed entities.
 
+use crate::descriptor::{EntityDescriptor, RelationDescriptor};
+use crate::dynamic::{DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer};
 use crate::entity::TypeBridgeEntity;
 use crate::error::{OrmError, Result};
 use crate::relation::TypeBridgeRelation;
 use crate::session::backend::QueryResult;
+use crate::value::AttributeValue;
 
 /// Hydrate a single entity from a TypeDB fetch document.
 ///
@@ -86,6 +89,51 @@ pub fn hydrate_relation<R: TypeBridgeRelation>(doc: &serde_json::Value) -> Resul
     Ok(relation)
 }
 
+/// Hydrate a dynamic entity row from a TypeDB fetch document.
+#[tracing::instrument(skip(doc, descriptor), fields(entity_type = %descriptor.type_name))]
+pub fn hydrate_dynamic_entity(
+    descriptor: &EntityDescriptor,
+    doc: &serde_json::Value,
+) -> Result<DynamicEntityRow> {
+    let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
+        type_name: descriptor.type_name.clone(),
+        message: "Expected JSON object".into(),
+    })?;
+
+    let flat = flatten_document_attributes(obj);
+    let attributes =
+        dynamic_attributes(&descriptor.type_name, &descriptor.owned_attributes, &flat)?;
+
+    Ok(DynamicEntityRow {
+        iid: extract_scalar_string(obj, "_iid"),
+        type_name: extract_scalar_string(obj, "_type"),
+        attributes,
+    })
+}
+
+/// Hydrate a dynamic relation row from a TypeDB fetch document.
+#[tracing::instrument(skip(doc, descriptor), fields(relation_type = %descriptor.type_name))]
+pub fn hydrate_dynamic_relation(
+    descriptor: &RelationDescriptor,
+    doc: &serde_json::Value,
+) -> Result<DynamicRelationRow> {
+    let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
+        type_name: descriptor.type_name.clone(),
+        message: "Expected JSON object".into(),
+    })?;
+
+    let flat = flatten_document_attributes(obj);
+    let attributes =
+        dynamic_attributes(&descriptor.type_name, &descriptor.owned_attributes, &flat)?;
+
+    Ok(DynamicRelationRow {
+        iid: extract_scalar_string(obj, "_iid"),
+        type_name: extract_scalar_string(obj, "_type"),
+        attributes,
+        role_players: hydrate_dynamic_role_players(obj),
+    })
+}
+
 /// Flatten TypeDB wildcard attribute results.
 ///
 /// Input: `{ "name": [{"value": "Alice", ...}], "age": [{"value": 30, ...}] }`
@@ -111,6 +159,76 @@ pub fn flatten_wildcard_attributes(
         }
     }
     flat
+}
+
+fn flatten_document_attributes(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    if let Some(attrs) = obj.get("attributes").and_then(|v| v.as_object()) {
+        flatten_wildcard_attributes(attrs)
+    } else {
+        let mut flat = serde_json::Map::new();
+        for (key, value) in obj {
+            if !key.starts_with('_') && key != "attributes" && key != "role_players" {
+                flat.insert(key.clone(), value.clone());
+            }
+        }
+        flat
+    }
+}
+
+fn dynamic_attributes(
+    type_name: &str,
+    descriptors: &[crate::descriptor::OwnedAttributeDescriptor],
+    flat: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<(String, AttributeValue)>> {
+    let mut attributes = Vec::new();
+    for descriptor in descriptors {
+        let Some(value) = flat.get(&descriptor.attr_name) else {
+            if descriptor.is_optional {
+                continue;
+            }
+            return Err(OrmError::Hydration {
+                type_name: type_name.to_string(),
+                message: format!("missing attribute '{}'", descriptor.attr_name),
+            });
+        };
+        let attribute = AttributeValue::from_json(value, descriptor.value_type.as_str())
+            .ok_or_else(|| OrmError::Hydration {
+                type_name: type_name.to_string(),
+                message: format!(
+                    "attribute '{}' is not a {} value",
+                    descriptor.attr_name, descriptor.value_type
+                ),
+            })?;
+        attributes.push((descriptor.attr_name.clone(), attribute));
+    }
+    Ok(attributes)
+}
+
+fn hydrate_dynamic_role_players(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<DynamicRolePlayer> {
+    obj.get("role_players")
+        .and_then(|value| value.as_array())
+        .map(|players| {
+            players
+                .iter()
+                .filter_map(|player| {
+                    let player = player.as_object()?;
+                    let role_name = extract_scalar_string(player, "role_name")
+                        .or_else(|| extract_scalar_string(player, "role"))?;
+                    Some(DynamicRolePlayer {
+                        role_name,
+                        player_iid: extract_scalar_string(player, "player_iid")
+                            .or_else(|| extract_scalar_string(player, "iid")),
+                        player_type_name: extract_scalar_string(player, "player_type_name")
+                            .or_else(|| extract_scalar_string(player, "type_name")),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Extract a count value from a reduce query result.
@@ -159,7 +277,7 @@ pub fn extract_count(result: &QueryResult) -> Result<u64> {
 ///
 /// Handles both scalar strings (`"0x123"`) and wrapped objects
 /// (`{"value": "0x123"}`).
-fn extract_scalar_string(
+pub(crate) fn extract_scalar_string(
     obj: &serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> Option<String> {

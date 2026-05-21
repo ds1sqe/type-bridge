@@ -2168,7 +2168,9 @@ dependencies = [
  "pythonize",
  "serde",
  "serde_json",
+ "tokio",
  "type-bridge-core-lib",
+ "type-bridge-orm",
 ]
 
 [[package]]

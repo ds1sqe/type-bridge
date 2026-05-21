@@ -34,6 +34,28 @@ pub enum OrmError {
     #[error("Invalid filter: {0}")]
     InvalidFilter(String),
 
+    /// Runtime descriptor validation failed.
+    #[error("Descriptor validation error for type '{type_name}': {message}")]
+    DescriptorValidation {
+        /// The descriptor type name, or `<registry>` for registry state errors.
+        type_name: String,
+        /// A description of what went wrong.
+        message: String,
+    },
+
+    /// Runtime descriptor conflicts with an existing registration or expected kind.
+    #[error("Descriptor conflict for type '{type_name}': {message}")]
+    DescriptorConflict {
+        /// The descriptor type name.
+        type_name: String,
+        /// A description of the conflict.
+        message: String,
+    },
+
+    /// Runtime descriptor was not registered.
+    #[error("Descriptor not found for type '{0}'")]
+    DescriptorNotFound(String),
+
     /// AST compilation failed.
     #[error("Compilation error: {0}")]
     Compilation(String),

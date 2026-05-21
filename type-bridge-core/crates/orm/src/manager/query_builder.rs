@@ -16,6 +16,10 @@ use crate::error::Result;
 use crate::expr::{Agg, Expr, SortDir};
 use crate::filter::Filter;
 use crate::relation::TypeBridgeRelation;
+use crate::{
+    descriptor::{EntityDescriptor, RelationDescriptor},
+    dynamic::{DynamicAttributeMap, DynamicRolePlayerInput},
+};
 
 /// Build an insert + fetch-IID query for the given entity.
 ///
@@ -96,6 +100,54 @@ pub fn build_count<T: TypeBridgeEntity>(filters: &[Filter], var: &str) -> Result
             group_by: None,
         },
     ];
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+// ------------------------------------------------------------------
+// Dynamic entity query builders
+// ------------------------------------------------------------------
+
+/// Build an insert + fetch-IID query for a runtime entity descriptor.
+pub fn build_dynamic_entity_insert_with_iid(
+    descriptor: &EntityDescriptor,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_insert_clauses(descriptor, attributes, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a polymorphic fetch query for a runtime entity descriptor.
+pub fn build_dynamic_entity_fetch(
+    descriptor: &EntityDescriptor,
+    filters: &[Filter],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_fetch_clauses(descriptor, filters, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a count query for a runtime entity descriptor.
+pub fn build_dynamic_entity_count(
+    descriptor: &EntityDescriptor,
+    filters: &[Filter],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_count_clauses(descriptor, filters, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an IID-based delete query for a runtime entity descriptor.
+pub fn build_dynamic_entity_delete_by_iid(
+    descriptor: &EntityDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_delete_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -235,6 +287,56 @@ pub fn build_relation_count<R: TypeBridgeRelation>(
             group_by: None,
         },
     ];
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+// ------------------------------------------------------------------
+// Dynamic relation query builders
+// ------------------------------------------------------------------
+
+/// Build an insert + fetch-IID query for a runtime relation descriptor.
+pub fn build_dynamic_relation_insert_with_iid(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    role_players: &[DynamicRolePlayerInput],
+    var: &str,
+) -> Result<String> {
+    let clauses =
+        crate::dynamic::relation_insert_clauses(descriptor, attributes, role_players, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a polymorphic fetch query for a runtime relation descriptor.
+pub fn build_dynamic_relation_fetch(
+    descriptor: &RelationDescriptor,
+    filters: &[Filter],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_fetch_clauses(descriptor, filters, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a count query for a runtime relation descriptor.
+pub fn build_dynamic_relation_count(
+    descriptor: &RelationDescriptor,
+    filters: &[Filter],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_count_clauses(descriptor, filters, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an IID-based delete query for a runtime relation descriptor.
+pub fn build_dynamic_relation_delete_by_iid(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_delete_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }

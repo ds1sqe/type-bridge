@@ -1,0 +1,209 @@
+//! Public API tests for runtime descriptors and registry behavior.
+
+use std::sync::Arc;
+
+use type_bridge_orm::*;
+
+fn attr(name: &str, value_type: ValueType) -> OwnedAttributeDescriptor {
+    OwnedAttributeDescriptor {
+        field_name: name.replace('-', "_"),
+        attr_name: name.to_string(),
+        value_type,
+        annotations: vec![],
+        is_optional: false,
+    }
+}
+
+fn person_descriptor() -> EntityDescriptor {
+    EntityDescriptor {
+        type_name: "person".into(),
+        is_abstract: false,
+        parent_type: None,
+        owned_attributes: vec![
+            OwnedAttributeDescriptor {
+                field_name: "name".into(),
+                attr_name: "name".into(),
+                value_type: ValueType::String,
+                annotations: vec![Annotation::Key],
+                is_optional: false,
+            },
+            OwnedAttributeDescriptor {
+                field_name: "email".into(),
+                attr_name: "email".into(),
+                value_type: ValueType::String,
+                annotations: vec![Annotation::Unique, Annotation::Card(0, Some(1))],
+                is_optional: true,
+            },
+        ],
+    }
+}
+
+fn employment_descriptor() -> RelationDescriptor {
+    RelationDescriptor {
+        type_name: "employment".into(),
+        is_abstract: false,
+        parent_type: None,
+        owned_attributes: vec![OwnedAttributeDescriptor {
+            field_name: "position".into(),
+            attr_name: "position".into(),
+            value_type: ValueType::String,
+            annotations: vec![],
+            is_optional: true,
+        }],
+        roles: vec![
+            RoleDescriptor {
+                role_name: "employee".into(),
+                player_type_names: vec!["person".into()],
+                cardinality: Some((1, Some(1))),
+            },
+            RoleDescriptor {
+                role_name: "employer".into(),
+                player_type_names: vec!["company".into()],
+                cardinality: Some((1, Some(1))),
+            },
+        ],
+    }
+}
+
+#[test]
+fn descriptor_serde_roundtrips_all_value_types() {
+    let descriptor = EntityDescriptor {
+        type_name: "all-values".into(),
+        is_abstract: false,
+        parent_type: Some("thing".into()),
+        owned_attributes: vec![
+            attr("string-value", ValueType::String),
+            attr("long-value", ValueType::Long),
+            attr("double-value", ValueType::Double),
+            attr("boolean-value", ValueType::Boolean),
+            attr("date-value", ValueType::Date),
+            attr("datetime-value", ValueType::DateTime),
+            attr("datetime-tz-value", ValueType::DateTimeTz),
+            attr("decimal-value", ValueType::Decimal),
+            attr("duration-value", ValueType::Duration),
+        ],
+    };
+
+    let json = serde_json::to_string(&descriptor).unwrap();
+    let parsed: EntityDescriptor = serde_json::from_str(&json).unwrap();
+    let normalized = serde_json::to_string(&parsed).unwrap();
+
+    assert_eq!(parsed, descriptor);
+    assert_eq!(normalized, json);
+}
+
+#[test]
+fn descriptor_helpers_find_keys_attributes_and_roles() {
+    let entity = person_descriptor();
+    assert_eq!(entity.key_attribute().unwrap().attr_name, "name");
+    assert!(entity.attribute("name").unwrap().is_key());
+    assert!(entity.attribute("email").unwrap().is_unique());
+    assert_eq!(
+        entity.attribute("email").unwrap().cardinality(),
+        Some((0, Some(1)))
+    );
+
+    let relation = employment_descriptor();
+    assert_eq!(
+        relation.role("employee").unwrap().player_type_names,
+        vec!["person"]
+    );
+    assert_eq!(
+        relation.role("employee").unwrap().cardinality,
+        Some((1, Some(1)))
+    );
+}
+
+#[test]
+fn registry_registration_is_standalone_and_idempotent() {
+    let registry = DescriptorRegistry::new();
+    let first = registry.register_entity(person_descriptor()).unwrap();
+    let second = registry.register_entity(person_descriptor()).unwrap();
+
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(registry.entity("person").unwrap().type_name, "person");
+    assert!(matches!(
+        registry.get("person"),
+        Some(TypeDescriptorRef::Entity(_))
+    ));
+    assert_eq!(registry.snapshot().len(), 1);
+}
+
+#[test]
+fn registry_rejects_kind_and_shape_conflicts() {
+    let registry = DescriptorRegistry::new();
+    registry.register_entity(person_descriptor()).unwrap();
+
+    let mut changed = person_descriptor();
+    changed.owned_attributes.push(attr("age", ValueType::Long));
+    assert!(matches!(
+        registry.register_entity(changed).unwrap_err(),
+        OrmError::DescriptorConflict { .. }
+    ));
+
+    let mut relation = employment_descriptor();
+    relation.type_name = "person".into();
+    assert!(matches!(
+        registry.register_relation(relation).unwrap_err(),
+        OrmError::DescriptorConflict { .. }
+    ));
+}
+
+#[test]
+fn registry_rejects_duplicate_attributes_and_roles() {
+    let registry = DescriptorRegistry::new();
+
+    let mut entity = person_descriptor();
+    entity.owned_attributes.push(OwnedAttributeDescriptor {
+        field_name: "display_name".into(),
+        attr_name: "name".into(),
+        value_type: ValueType::String,
+        annotations: vec![],
+        is_optional: false,
+    });
+    assert!(matches!(
+        registry.register_entity(entity).unwrap_err(),
+        OrmError::DescriptorValidation { .. }
+    ));
+
+    let mut relation = employment_descriptor();
+    relation.roles.push(RoleDescriptor {
+        role_name: "employee".into(),
+        player_type_names: vec!["person".into()],
+        cardinality: None,
+    });
+    assert!(matches!(
+        registry.register_relation(relation).unwrap_err(),
+        OrmError::DescriptorValidation { .. }
+    ));
+}
+
+#[test]
+fn concurrent_identical_registration_converges() {
+    let registry = Arc::new(DescriptorRegistry::new());
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let registry = Arc::clone(&registry);
+            std::thread::spawn(move || registry.register_entity(person_descriptor()).unwrap())
+        })
+        .collect();
+
+    let descriptors: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    let first = &descriptors[0];
+
+    assert!(
+        descriptors
+            .iter()
+            .all(|descriptor| Arc::ptr_eq(first, descriptor))
+    );
+    assert_eq!(registry.snapshot().len(), 1);
+}
+
+#[test]
+fn registry_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<DescriptorRegistry>();
+}

@@ -76,8 +76,17 @@ class TypeDBType(BaseModel, ABC):
         Returns:
             Manager instance for this type
         """
-        manager_class = cls._get_manager_class()
+        from type_bridge._backend import manager_class as selected_manager_class
+
+        manager_class = selected_manager_class(cls._get_manager_class())
         return cast("TypeDBManager[Self]", manager_class(connection, cls))
+
+    def _set_backend_iid(self, iid: str | None) -> None:
+        """Set the backend-assigned IID through Pydantic's private storage."""
+        private = self.__pydantic_private__
+        if private is None:
+            raise RuntimeError("Pydantic private storage is unavailable")
+        private["_iid"] = iid
 
     def insert(self, connection: Connection) -> Self:
         """Insert this instance into the database.
