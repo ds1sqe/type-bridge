@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-core-lib"
-version = "1.4.4"
+version = "1.4.5"
 edition = "2024"
 description = "TypeQL AST, schema parser, query compiler, and validation engine for type-bridge"
 license.workspace = true

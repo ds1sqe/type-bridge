@@ -323,7 +323,7 @@ The driver API for 3.x differs from earlier versions:
 Transactions are created directly on the driver:
 
 ```python
-# ✅ TypeDB 3.5.5
+# ✅ TypeDB 3.10.4
 driver.transaction(database_name, TransactionType.READ)
 
 # ❌ Old API (TypeDB 2.x)
@@ -494,7 +494,7 @@ If migrating from TypeDB 2.x:
 - Ensure correct clause ordering
 
 **Driver changes:**
-- Update to `typedb-driver==3.5.5`
+- Update to `typedb-driver==3.10.0`
 - Remove session management code
 - Add credentials for authentication
 - Use `transaction.query()` instead of separate query methods

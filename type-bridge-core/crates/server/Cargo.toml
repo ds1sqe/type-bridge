@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-server"
-version = "1.4.4"
+version = "1.4.5"
 edition = "2024"
 description = "Query-intercepting proxy server for TypeDB with validation and audit logging"
 license.workspace = true
@@ -23,7 +23,7 @@ axum-transport = ["dep:axum", "dep:tower-http"]
 test-helpers = []
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "1.4.4" }
+type-bridge-core-lib = { path = "../core", version = "1.4.5" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

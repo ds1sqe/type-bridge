@@ -4,6 +4,33 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.5] - 2026-05-21
+
+### Bug Fixes
+
+##### Python ORM
+- **Relation role-player hydration** — relation role players fetched as IID-only placeholders now hydrate correctly without requiring their own nested role players (#126).
+- **Optional relation roles** — `Relation.manager(...).all()` / fetch queries now include relations whose optional roles have no players (#127).
+- **Optional role validation** — omitted optional roles normalize to `None` instead of leaking class-level `RoleRef` defaults, while required roles are still rejected when missing.
+- **Role-player deduplication** — relation role players are deduplicated by IID when available, preserving distinct attribute-less relation players.
+- **TypeDB driver compatibility** — added `create_driver_options()` helper and exported it from `type_bridge` to support driver option construction across supported TypeDB driver APIs.
+
+##### Rust Core / Server
+- **Raw TypeQL endpoint** — restored `POST /query/raw` on the Rust server, parsing TypeQL text into clauses before running the existing query pipeline.
+- **Server configuration** — TypeDB connection settings can now be overridden with `TYPEDB_ADDRESS`, `TYPEDB_DATABASE`, `TYPEDB_USERNAME`, and `TYPEDB_PASSWORD`.
+- **Clippy cleanup** — updated ORM role collection code to satisfy current Rust lints.
+
+### Compatibility
+
+- **Pinned TypeDB runtime** — Python dependency now pins `typedb-driver==3.10.0`.
+- **Python version bounds** — package metadata now declares `>=3.13,<3.15`.
+- **Integration environment** — Docker Compose defaults now use TypeDB 3.10.4 and expose a configurable `TYPEDB_PORT`.
+
+### Testing & Tooling
+
+- **Pinned Docker-in-Docker integration runner** — added `Dockerfile.integration`, `docker-compose.dind.yml`, and `test-integration-dind.sh` for reproducible Python 3.13.5 + TypeDB 3.10.4 integration tests.
+- Added regression coverage for relation role-player hydration, optional relation fetches, raw proxy queries, and server environment overrides.
+
 ## [1.4.4] - 2026-04-09
 
 ### New Features

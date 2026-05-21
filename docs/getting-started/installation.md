@@ -3,7 +3,7 @@
 ## Requirements
 
 - Python 3.13+
-- TypeDB 3.7.0+ server (for database operations)
+- TypeDB 3.10.4 server (for database operations)
 
 ## Install from PyPI
 

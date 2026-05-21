@@ -178,7 +178,7 @@ tests/
 
 The project requires:
 
-- `typedb-driver>=3.7.0`: Official Python driver for TypeDB connectivity
+- `typedb-driver==3.10.0`: Official Python driver for TypeDB connectivity
 - `pydantic>=2.12.4`: For validation and type coercion
 - `isodate>=0.7.2`: ISO 8601 date/time parsing
 - `lark>=1.1.9`: Parser toolkit for TypeQL schema parsing

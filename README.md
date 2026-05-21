@@ -376,7 +376,7 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 ## Requirements
 
 - Python 3.13+
-- TypeDB 3.x server
+- TypeDB 3.10.4 server
 - typedb-driver==3.10.0
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
