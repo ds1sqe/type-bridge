@@ -15,6 +15,7 @@ from type_bridge import (
     String,
     TypeFlags,
 )
+from type_bridge.crud.strategies import RelationStrategy
 from type_bridge.crud.typedb_manager import TypeDBManager
 
 
@@ -33,6 +34,54 @@ class _RecordingTypeDBManager(TypeDBManager):
 # ============================================================================
 # Update tests
 # ============================================================================
+
+
+def test_relation_fetch_wraps_unconstrained_optional_roles_in_try():
+    """Unfiltered relation fetch should not require optional role players."""
+
+    class Doc(String):
+        pass
+
+    class User(Entity):
+        flags = TypeFlags(name="optional_user")
+        doc: Doc = Flag(Key)
+
+    class Link(Relation):
+        flags = TypeFlags(name="optional_link")
+        source: Role[User] = Role("source", User)
+        target: Role[User] = Role("target", User, cardinality=Card(0))
+
+    query = RelationStrategy().build_fetch_query(Link, "$rel", {}, [])
+
+    assert "$rel isa! $t (source: $source)" in query
+    assert "target: $target" not in query.split("try {", 1)[0]
+    assert "try {\n  $rel links (target: $target);\n  $target isa! $target_type;\n}" in query
+
+
+def test_relation_fetch_requires_filtered_optional_roles():
+    """Filtering by an optional role should bind it in the main match pattern."""
+
+    class Doc(String):
+        pass
+
+    class User(Entity):
+        flags = TypeFlags(name="filtered_optional_user")
+        doc: Doc = Flag(Key)
+
+    class Link(Relation):
+        flags = TypeFlags(name="filtered_optional_link")
+        source: Role[User] = Role("source", User)
+        target: Role[User] = Role("target", User, cardinality=Card(0))
+
+    query = RelationStrategy().build_fetch_query(
+        Link,
+        "$rel",
+        {"target": User(doc=Doc("b"))},
+        [],
+    )
+
+    assert "$rel isa! $t (source: $source, target: $target)" in query
+    assert "try {\n  $rel links (target: $target)" not in query
 
 
 def test_update_multi_value_uses_guards():
