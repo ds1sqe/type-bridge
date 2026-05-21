@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
+use type_bridge_core_lib::query_parser::parse_typeql_query;
 
 use crate::error::PipelineError;
 use crate::pipeline::{QueryInput, QueryPipeline, ValidateInput};
@@ -58,6 +59,7 @@ impl IntoResponse for PipelineError {
 pub fn create_router(pipeline: Arc<QueryPipeline>) -> Router {
     Router::new()
         .route("/query", post(handle_query))
+        .route("/query/raw", post(handle_raw_query))
         .route("/query/validate", post(handle_validate))
         .route("/health", get(handle_health))
         .route("/schema", get(handle_schema))
@@ -75,6 +77,32 @@ async fn handle_query(
             database: req.database,
             transaction_type: req.transaction_type,
             clauses: req.clauses,
+            metadata: req.metadata,
+        })
+        .await?;
+
+    Ok(Json(QueryResponse {
+        status: "ok".to_string(),
+        results: output.results,
+        metadata: ResponseMetadata {
+            request_id: output.request_id,
+            execution_time_ms: output.execution_time_ms,
+            interceptors_applied: output.interceptors_applied,
+        },
+    }))
+}
+
+async fn handle_raw_query(
+    State(pipeline): State<Arc<QueryPipeline>>,
+    Json(req): Json<RawQueryRequest>,
+) -> Result<Json<QueryResponse>, PipelineError> {
+    let clauses = parse_typeql_query(&req.query).map_err(|e| PipelineError::Parse(e.to_string()))?;
+
+    let output = pipeline
+        .execute_query(QueryInput {
+            database: req.database,
+            transaction_type: req.transaction_type,
+            clauses,
             metadata: req.metadata,
         })
         .await?;
@@ -375,6 +403,37 @@ mod tests {
         let json = body_json(resp).await;
         assert_eq!(json["status"], "ok");
         assert!(!json["metadata"]["request_id"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn raw_query_success() {
+        let router = app(MockExecutor::new(), false);
+        let body = serde_json::json!({
+            "transaction_type": "read",
+            "query": "match $p isa person; fetch { \"person\": { $p.* } };"
+        });
+        let req = json_request("POST", "/query/raw", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "ok");
+        assert!(!json["metadata"]["request_id"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn raw_query_parse_error() {
+        let router = app(MockExecutor::new(), false);
+        let body = serde_json::json!({
+            "transaction_type": "read",
+            "query": "this is not valid typeql!!!"
+        });
+        let req = json_request("POST", "/query/raw", body);
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["error"]["code"], "PARSE_ERROR");
     }
 
     #[tokio::test]

@@ -23,6 +23,6 @@ echo -e "${GREEN}Running proxy integration tests with ${CONTAINER_TOOL:-auto-det
 
 # Run pytest with proxy marker
 # Container management is handled by conftest.py
-uv run pytest -m proxy "$@"
+uv run --extra dev pytest -m proxy "$@"
 
 echo -e "${GREEN}Proxy integration tests completed!${NC}"

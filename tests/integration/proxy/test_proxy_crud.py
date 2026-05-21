@@ -12,24 +12,19 @@ from type_bridge.proxy import ProxyDatabase, ProxyError
 
 @pytest.mark.proxy
 def test_raw_query_passthrough(proxy_db: ProxyDatabase) -> None:
-    """Raw TypeQL query is parsed, compiled, and returned (stub mode)."""
+    """Raw TypeQL query is parsed, compiled, and executed."""
     results = proxy_db.execute_query(
-        "match $p isa person; fetch { };",
+        'match $p isa person; fetch { "person": { $p.* } };',
         transaction_type="read",
     )
     assert isinstance(results, list)
-    # In stub mode, the server returns the compiled TypeQL
-    if isinstance(results, list) and len(results) > 0:
-        result = results[0] if isinstance(results[0], dict) else results
-        # Stub response includes compiled_typeql
-        assert "compiled_typeql" in str(result) or "stub" in str(result)
 
 
 @pytest.mark.proxy
 def test_raw_query_with_write_transaction(proxy_db: ProxyDatabase) -> None:
     """Write queries flow through the proxy pipeline."""
     results = proxy_db.execute_query(
-        "insert $p isa person, has name 'Alice';",
+        'insert $p isa person; $p has name "Alice";',
         transaction_type="write",
     )
     assert isinstance(results, list)
@@ -39,7 +34,7 @@ def test_raw_query_with_write_transaction(proxy_db: ProxyDatabase) -> None:
 def test_transaction_context_execute(proxy_db: ProxyDatabase) -> None:
     """Queries work through transaction context."""
     with proxy_db.transaction("read") as tx:
-        results = tx.execute("match $p isa person; fetch { };")
+        results = tx.execute('match $p isa person; fetch { "person": { $p.* } };')
         assert isinstance(results, list)
 
 
@@ -47,7 +42,7 @@ def test_transaction_context_execute(proxy_db: ProxyDatabase) -> None:
 def test_transaction_context_write(proxy_db: ProxyDatabase) -> None:
     """Write transaction context auto-commits on exit."""
     with proxy_db.transaction("write") as tx:
-        results = tx.execute("insert $p isa person, has name 'Bob';")
+        results = tx.execute('insert $p isa person; $p has name "Bob";')
         assert isinstance(results, list)
     # Transaction should be closed after context exit
     assert tx.transaction.is_open is False
@@ -61,7 +56,7 @@ def test_query_response_metadata(proxy_db: ProxyDatabase) -> None:
         {
             "database": proxy_db.database_name,
             "transaction_type": "read",
-            "query": "match $p isa person; fetch { };",
+            "query": 'match $p isa person; fetch { "person": { $p.* } };',
             "metadata": {},
         },
     )

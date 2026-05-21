@@ -18,7 +18,7 @@ def test_audit_interceptor_applied(proxy_db: ProxyDatabase) -> None:
         {
             "database": proxy_db.database_name,
             "transaction_type": "read",
-            "query": "match $p isa person; fetch { };",
+            "query": 'match $p isa person; fetch { "person": { $p.* } };',
             "metadata": {},
         },
     )
@@ -35,7 +35,7 @@ def test_audit_interceptor_on_write(proxy_db: ProxyDatabase) -> None:
         {
             "database": proxy_db.database_name,
             "transaction_type": "write",
-            "query": "insert $p isa person, has name 'AuditTest';",
+            "query": 'insert $p isa person; $p has name "AuditTest";',
             "metadata": {},
         },
     )
@@ -53,7 +53,7 @@ def test_multiple_queries_all_audited(proxy_db: ProxyDatabase) -> None:
             {
                 "database": proxy_db.database_name,
                 "transaction_type": "read",
-                "query": f"match $p isa person, has name 'test_{i}'; fetch {{ }};",
+                "query": f'match $p isa person, has name "test_{i}"; fetch {{ "person": {{ $p.* }} }};',
                 "metadata": {"test_index": i},
             },
         )
