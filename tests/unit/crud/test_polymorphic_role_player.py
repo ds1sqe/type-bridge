@@ -9,6 +9,7 @@ the union.
 from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
 from type_bridge.crud.utils import (
     build_role_player_fetch_items,
+    extract_role_players_from_results,
     resolve_entity_class_from_label,
 )
 
@@ -227,3 +228,41 @@ class TestPolymorphicRolePlayerResolutionIntegration:
         resolved = resolve_entity_class_from_label("task", allowed)
         assert resolved is Task
         assert resolved is not Person
+
+    def test_relation_role_player_hydrates_from_iid_only_placeholder(self):
+        """Relation role players may be fetched by IID without their own roles."""
+        role_info = {"mentioned": ("$mentioned", (About,))}
+        result_group = [
+            {
+                "mentioned": {},
+                "mentioned_iid": "0xabc",
+                "mentioned_type": "about",
+            }
+        ]
+
+        role_players = extract_role_players_from_results(result_group, role_info, set())
+
+        mentioned = role_players["mentioned"]
+        assert isinstance(mentioned, About)
+        assert getattr(mentioned, "_iid") == "0xabc"
+
+    def test_relation_role_player_deduplicates_by_iid_not_empty_attributes(self):
+        """Multiple attribute-less relation players must not collapse together."""
+        role_info = {"mentioned": ("$mentioned", (About,))}
+        result_group = [
+            {
+                "mentioned": {},
+                "mentioned_iid": "0xabc",
+                "mentioned_type": "about",
+            },
+            {
+                "mentioned": {},
+                "mentioned_iid": "0xdef",
+                "mentioned_type": "about",
+            },
+        ]
+
+        role_players = extract_role_players_from_results(result_group, role_info, {"mentioned"})
+
+        mentioned = role_players["mentioned"]
+        assert [getattr(player, "_iid") for player in mentioned] == ["0xabc", "0xdef"]

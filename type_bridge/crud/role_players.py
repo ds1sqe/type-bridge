@@ -1,12 +1,13 @@
 """Role player utilities for relations."""
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from type_bridge.crud.formatting import format_value
 from type_bridge.crud.types import hydrate_attributes, wrap_attribute_value
 
 if TYPE_CHECKING:
-    from type_bridge.models import Entity, Relation
+    from type_bridge.models import Relation, TypeDBType
 
 
 def build_role_player_match(var_name: str, entity: Any, entity_type_name: str) -> str:
@@ -60,8 +61,8 @@ def build_role_player_match(var_name: str, entity: Any, entity_type_name: str) -
 
 def resolve_entity_class_from_label(
     type_label: str | None,
-    allowed_entity_classes: tuple[type["Entity"], ...],
-) -> type["Entity"]:
+    allowed_entity_classes: tuple[type["TypeDBType"], ...],
+) -> type["TypeDBType"]:
     """Resolve the correct Python entity class from a TypeDB type label.
 
     This is a thin wrapper around ModelRegistry.resolve() that provides
@@ -134,6 +135,24 @@ def group_results_by_iid(results: list[dict[str, Any]]) -> dict[str, list[dict[s
     return grouped
 
 
+def _set_iid(instance: Any, iid: str | None) -> None:
+    """Set the TypeDB IID on a hydrated instance."""
+    if not iid:
+        return
+
+    private = getattr(instance, "__pydantic_private__", None)
+    if private is not None:
+        private["_iid"] = iid
+    else:
+        object.__setattr__(instance, "_iid", iid)
+
+
+def _is_relation_class(model_class: type[Any]) -> bool:
+    from type_bridge.models import Relation
+
+    return issubclass(model_class, Relation)
+
+
 def extract_relation_attributes(
     model_class: type["Relation"],
     result: dict[str, Any],
@@ -175,7 +194,7 @@ def extract_relation_attributes(
 
 def extract_role_players_from_results(
     result_group: list[dict[str, Any]],
-    role_info: dict[str, tuple[str, tuple[type["Entity"], ...]]],
+    role_info: Mapping[str, tuple[str, tuple[type["TypeDBType"], ...]]],
     multi_player_roles: set[str],
 ) -> dict[str, Any]:
     """Extract and deduplicate role players from grouped query results.
@@ -214,15 +233,25 @@ def extract_role_players_from_results(
                     entity_class, player_data, wrap_values=True
                 )
 
-                # Create entity instance if we have any non-None attributes
-                # Note: Relations as role players may have no owned attributes
-                if player_attrs == {} or any(v is not None for v in player_attrs.values()):
-                    # Deduplicate players based on their attribute values
-                    if key_values not in seen_player_keys:
-                        seen_player_keys.add(key_values)
-                        player_entity = entity_class(**player_attrs)
-                        if player_iid:
-                            object.__setattr__(player_entity, "_iid", player_iid)
+                # Create a role-player instance if the row proves a player exists.
+                # Relations used as role players are fetched as nested placeholders:
+                # TypeDB returns their IID/type and owned attributes, but not their
+                # own role players. Construct them without validation so required
+                # roles are not demanded for a partial reference.
+                has_player_data = (
+                    player_iid is not None
+                    or player_attrs == {}
+                    or any(v is not None for v in player_attrs.values())
+                )
+                if has_player_data:
+                    player_key = ("iid", player_iid) if player_iid else ("keys", key_values)
+                    if player_key not in seen_player_keys:
+                        seen_player_keys.add(player_key)
+                        if _is_relation_class(entity_class):
+                            player_entity = entity_class.model_construct(**player_attrs)
+                        else:
+                            player_entity = entity_class(**player_attrs)
+                        _set_iid(player_entity, player_iid)
                         collected_players.append(player_entity)
 
         # Store collected players

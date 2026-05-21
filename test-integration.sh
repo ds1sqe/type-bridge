@@ -23,6 +23,6 @@ echo -e "${GREEN}Running integration tests with ${CONTAINER_TOOL:-auto-detect}..
 
 # Run pytest with integration marker
 # Container management is handled by conftest.py
-uv run pytest -m integration "$@"
+uv run --extra dev pytest -m integration "$@"
 
 echo -e "${GREEN}Integration tests completed!${NC}"

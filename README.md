@@ -335,7 +335,10 @@ uv run pytest tests/unit/expressions/ -v  # Test query expressions
 # Option 1: Use Docker (recommended)
 ./test-integration.sh                     # Starts Docker, runs tests, stops Docker
 
-# Option 2: Use existing TypeDB server
+# Option 2: Use a pinned Docker-in-Docker runner
+./test-integration-dind.sh                # Python 3.13.5 + TypeDB 3.10.4
+
+# Option 3: Use existing TypeDB server
 USE_DOCKER=false uv run pytest -m integration -v  # Run integration tests (~60s)
 
 # Run specific integration test categories
@@ -374,7 +377,7 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 
 - Python 3.13+
 - TypeDB 3.x server
-- typedb-driver>=3.8.0
+- typedb-driver==3.10.0
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
 - lark>=1.1.9 (for schema parsing)

@@ -21,7 +21,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.5"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -124,7 +124,7 @@ jobs:
         if: runner.os != 'Linux'
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.5"
 
       - name: Build wheel
         uses: PyO3/maturin-action@v1
@@ -154,7 +154,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.5"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -189,7 +189,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.5"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -214,7 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.13"]
+        python-version: ["3.13.5"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -265,7 +265,7 @@ jobs:
     # Start TypeDB as a service container (runs first, before steps)
     services:
       typedb:
-        image: typedb/typedb:3.8.0-rc0
+        image: typedb/typedb:3.10.4
         ports:
           - 1729:1729
 
@@ -276,7 +276,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.5"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

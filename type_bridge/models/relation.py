@@ -7,11 +7,13 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
+    Self,
     TypeVar,
+    cast,
     dataclass_transform,
 )
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, model_validator
 
 from type_bridge.attribute import AttributeFlags, TypeFlags
 from type_bridge.crud.utils import extract_entity_key, unwrap_attribute
@@ -124,6 +126,36 @@ class Relation(TypeDBType):
             Dictionary mapping role names to Role instances
         """
         return cls._roles
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_unset_roles(cls, values: Any) -> Any:
+        """Prevent class-level RoleRef defaults from leaking into instances."""
+        if not isinstance(values, dict):
+            return values
+
+        from type_bridge.fields.role import RoleRef
+
+        data = dict(values)
+        for role_name in cls._roles:
+            value = data.get(role_name)
+            if role_name not in data or isinstance(value, RoleRef):
+                data[role_name] = None
+        return data
+
+    @model_validator(mode="after")
+    def _validate_required_roles(self) -> Self:
+        """Reject missing role players for roles with required cardinality."""
+        from type_bridge.fields.role import RoleRef
+
+        for role_name, role in self.__class__._roles.items():
+            value = self.__dict__.get(role_name)
+            if isinstance(value, RoleRef):
+                value = None
+                cast("dict[str, Any]", self.__dict__)[role_name] = None
+            if value is None and not role.is_optional:
+                raise ValueError(f"Role player '{role_name}' is required")
+        return self
 
     def to_ast(self, var: str = "$r") -> InsertClause:
         """Generate AST InsertClause for this relation instance.

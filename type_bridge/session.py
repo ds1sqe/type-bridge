@@ -6,7 +6,6 @@ from typing import Any, overload
 from typedb.driver import (
     Credentials,
     Driver,
-    DriverOptions,
     TransactionType,
     TypeDB,
 )
@@ -15,6 +14,7 @@ from typedb.driver import (
 )
 
 from type_bridge.proxy import ProxyDatabase, ProxyTransaction, ProxyTransactionContext
+from type_bridge.typedb_driver import create_driver_options
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +195,7 @@ class Database:
             # Create driver options
             # Disable TLS for local connections (non-HTTPS addresses)
             is_tls_enabled = self.address.startswith("https://")
-            driver_options = DriverOptions(is_tls_enabled=is_tls_enabled)
+            driver_options = create_driver_options(is_tls_enabled=is_tls_enabled)
             logger.debug(f"TLS enabled: {is_tls_enabled}")
 
             # Connect to TypeDB

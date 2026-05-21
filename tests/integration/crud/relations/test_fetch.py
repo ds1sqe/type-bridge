@@ -2,7 +2,7 @@
 
 import pytest
 
-from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
+from type_bridge import Card, Entity, Flag, Key, Relation, Role, SchemaManager, String, TypeFlags
 
 
 @pytest.mark.integration
@@ -95,3 +95,56 @@ def test_fetch_relation_by_attribute(db_with_schema):
     results_by_pos = employment_manager.get(position="CTO")
     assert len(results_by_pos) == 1
     assert results_by_pos[0].position.value == "CTO"
+
+
+@pytest.mark.integration
+def test_fetch_all_includes_relations_with_empty_optional_roles(clean_db):
+    """Regression for #127: optional role players must not filter out relations."""
+
+    class Name(String):
+        pass
+
+    class Person(Entity):
+        flags = TypeFlags(name="person")
+        name: Name = Flag(Key)
+
+    class Club(Entity):
+        flags = TypeFlags(name="club")
+        name: Name = Flag(Key)
+
+    class Sponsor(Entity):
+        flags = TypeFlags(name="sponsor")
+        name: Name = Flag(Key)
+
+    class Membership(Relation):
+        flags = TypeFlags(name="membership")
+        person: Role[Person] = Role("person", Person)
+        club: Role[Club] = Role("club", Club)
+        sponsor: Role[Sponsor] = Role("sponsor", Sponsor, cardinality=Card(0))
+
+    schema = SchemaManager(clean_db)
+    schema.register(Person, Club, Sponsor, Membership)
+    schema.sync_schema(force=True)
+
+    person_manager = Person.manager(clean_db)
+    club_manager = Club.manager(clean_db)
+    sponsor_manager = Sponsor.manager(clean_db)
+    membership_manager = Membership.manager(clean_db)
+
+    alice = person_manager.insert(Person(name=Name("Alice")))
+    bob = person_manager.insert(Person(name=Name("Bob")))
+    chess = club_manager.insert(Club(name=Name("Chess")))
+    hiking = club_manager.insert(Club(name=Name("Hiking")))
+    acme = sponsor_manager.insert(Sponsor(name=Name("Acme")))
+
+    membership_manager.insert(Membership(person=alice, club=chess, sponsor=[acme]))
+    membership_manager.insert(Membership(person=bob, club=hiking, sponsor=[]))
+
+    memberships = membership_manager.all()
+
+    assert len(memberships) == 2
+    assert {membership.person.name.value for membership in memberships} == {"Alice", "Bob"}
+
+    sponsored = membership_manager.get(sponsor=acme)
+    assert len(sponsored) == 1
+    assert sponsored[0].person.name.value == "Alice"

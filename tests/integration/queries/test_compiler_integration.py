@@ -115,15 +115,13 @@ fun list-test-person-names() -> { person-name }:
 @pytest.fixture
 def db(docker_typedb):
     """Provide database connection."""
-    from typedb.driver import DriverOptions
-
     from tests.integration.conftest import TEST_DB_ADDRESS
-    from type_bridge import Credentials, TypeDB
+    from type_bridge import Credentials, TypeDB, create_driver_options
 
     driver = TypeDB.driver(
         address=TEST_DB_ADDRESS,
         credentials=Credentials(username="admin", password="password"),
-        driver_options=DriverOptions(is_tls_enabled=False),
+        driver_options=create_driver_options(is_tls_enabled=False),
     )
     db_name = "test_compiler_integration"
     if driver.databases.contains(db_name):

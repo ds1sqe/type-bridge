@@ -5,29 +5,10 @@ WORKDIR /app
 # Install build dependencies
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace manifests first for layer caching
-COPY Cargo.toml ./
-COPY crates/core/Cargo.toml crates/core/Cargo.toml
-COPY crates/server/Cargo.toml crates/server/Cargo.toml
-
-# Create dummy python crate manifest (not built in server image)
-RUN mkdir -p crates/python/src && echo '' > crates/python/src/lib.rs
-COPY crates/python/Cargo.toml crates/python/Cargo.toml
-
-# Create dummy source files to cache dependency builds
-RUN mkdir -p crates/core/src && echo 'pub mod ast; pub mod compiler; pub mod parser; pub mod query_parser; pub mod reserved_words; pub mod schema; pub mod validation; pub mod value_coercion;' > crates/core/src/lib.rs
-RUN for f in ast compiler parser query_parser reserved_words schema validation value_coercion; do echo '' > crates/core/src/$f.rs; done
-RUN mkdir -p crates/server/src && echo 'fn main() {}' > crates/server/src/main.rs
-
-# Build dependencies only (cached layer)
-RUN cargo build --release -p type-bridge-server 2>/dev/null || true
-
-# Copy actual source code
-COPY crates/core/src crates/core/src
-COPY crates/server/src crates/server/src
-
-# Touch source files to invalidate previous build artifacts
-RUN touch crates/core/src/lib.rs crates/server/src/main.rs
+# Copy the full workspace. The server crate does not depend on every member,
+# but Cargo still needs all workspace manifests to resolve the package graph.
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
 
 # Build the server
 RUN cargo build --release -p type-bridge-server

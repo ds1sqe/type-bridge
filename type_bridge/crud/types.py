@@ -8,7 +8,7 @@ from type_bridge.attribute import AttributeFlags
 from type_bridge.crud.formatting import unwrap_attribute
 
 if TYPE_CHECKING:
-    from type_bridge.models import Entity
+    from type_bridge.models import TypeDBType
     from type_bridge.models.utils import ModelAttrInfo
 
 
@@ -141,7 +141,7 @@ def build_metadata_fetch(var: str) -> str:
 
 
 def hydrate_attributes(
-    entity_class: type[Entity],
+    entity_class: type[TypeDBType],
     raw_data: dict[str, Any],
     wrap_values: bool = False,
 ) -> tuple[dict[str, Any], tuple[tuple[str, Any], ...]]:

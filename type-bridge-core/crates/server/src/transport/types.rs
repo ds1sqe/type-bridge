@@ -12,6 +12,16 @@ pub struct QueryRequest {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
+/// Request body for POST /query/raw.
+#[derive(Debug, Deserialize)]
+pub struct RawQueryRequest {
+    pub database: Option<String>,
+    pub transaction_type: String,
+    pub query: String,
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
 /// Request body for POST /query/validate.
 #[derive(Debug, Deserialize)]
 pub struct ValidateRequest {

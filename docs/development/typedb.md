@@ -7,11 +7,11 @@ This guide covers TypeDB-specific concepts, driver API, TypeQL syntax, and integ
 - [Key TypeDB Concepts](#key-typedb-concepts)
 - [TypeDB ORM Design Considerations](#typedb-orm-design-considerations)
 - [TypeQL Syntax Requirements](#typeql-syntax-requirements)
-**Verified with TypeDB 3.7.0-rc0 and typedb-driver>=3.7.0rc3.**
+**Verified with TypeDB 3.10.4 and typedb-driver==3.10.0.**
 
-## TypeDB Driver 3.7.x API
+## TypeDB Driver 3.x API
 
-- [TypeDB Driver 3.7.x API](#typedb-driver-37x-api)
+- [TypeDB Driver 3.x API](#typedb-driver-3x-api)
 - [TypeDB 3.x Syntax and Behavior Changes](#typedb-3x-syntax-and-behavior-changes)
 
 ## Key TypeDB Concepts
@@ -314,9 +314,9 @@ entity person,
     owns email @key @card(1..1);  # Don't specify both
 ```
 
-## TypeDB Driver 3.7.x API
+## TypeDB Driver 3.x API
 
-The driver API for 3.7.x differs from earlier versions:
+The driver API for 3.x differs from earlier versions:
 
 ### 1. No Separate Sessions
 

@@ -1,0 +1,41 @@
+services:
+  docker:
+    image: docker:28.1.1-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    command:
+      - --host=tcp://0.0.0.0:2375
+      - --host=unix:///var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    volumes:
+      - dind-storage:/var/lib/docker
+
+  integration:
+    build:
+      context: .
+      dockerfile: Dockerfile.integration
+    depends_on:
+      docker:
+        condition: service_healthy
+    working_dir: /workspace
+    environment:
+      CONTAINER_TOOL: docker
+      DOCKER_HOST: tcp://docker:2375
+      DOCKER_TLS_CERTDIR: ""
+      TYPEDB_ADDRESS: docker:1730
+      TYPEDB_IMAGE: typedb/typedb:3.10.4
+      TYPEDB_PORT: 1730
+      UV_CACHE_DIR: /tmp/uv-cache
+    volumes:
+      - .:/workspace
+      - uv-cache:/tmp/uv-cache
+
+volumes:
+  dind-storage:
+  uv-cache:

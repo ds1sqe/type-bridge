@@ -155,19 +155,66 @@ class RelationStrategy(ModelStrategy["Relation"]):
             role_vars[role_name] = role_var
             role_info[role_name] = (role_var, role.player_entity_types)
 
+        constrained_roles = set()
+        for field_name in filters:
+            if field_name in roles:
+                constrained_roles.add(field_name)
+        for field_name, _ in order_by or []:
+            role_name = field_name.split("__", 1)[0]
+            if role_name in roles:
+                constrained_roles.add(role_name)
+
+        if expressions:
+            from type_bridge.expressions.role_player import RolePlayerExpr
+
+            constrained_roles.update(
+                expr.role_name for expr in expressions if isinstance(expr, RolePlayerExpr)
+            )
+
         # Build match clause using isa! pattern for type variable binding
         # This enables label($t) to fetch the actual type name
-        role_player_parts = [f"{roles[rn].role_name}: {rv}" for rn, rv in role_vars.items()]
+        required_role_names = [
+            role_name
+            for role_name, role in roles.items()
+            if not role.is_optional or role_name in constrained_roles
+        ]
+        optional_role_names = [
+            role_name
+            for role_name, role in roles.items()
+            if role.is_optional and role_name not in constrained_roles
+        ]
+
+        role_player_parts = [
+            f"{roles[role_name].role_name}: {role_vars[role_name]}"
+            for role_name in required_role_names
+        ]
         roles_str = ", ".join(role_player_parts)
 
         # Use isa! to bind exact type to $t for label() function
-        match_clauses = [f"{var} isa! $t ({roles_str})", f"$t sub {base_type}"]
+        relation_pattern = f"{var} isa! $t"
+        if roles_str:
+            relation_pattern += f" ({roles_str})"
+        match_clauses = [relation_pattern, f"$t sub {base_type}"]
 
-        # Add type variable bindings for each role player to enable label() fetch
-        for role_name in roles:
-            role_var = f"${role_name}"
+        # Add type variable bindings for required role players to enable label() fetch
+        for role_name in required_role_names:
+            role_var = role_vars[role_name]
             type_var = f"{role_var}_type"
             match_clauses.append(f"{role_var} isa! {type_var}")
+
+        # Optional roles must not participate in the primary relation pattern.
+        # Matching them inside try blocks lets relation instances with no player
+        # for that role remain visible while still fetching players when present.
+        for role_name in optional_role_names:
+            role = roles[role_name]
+            role_var = role_vars[role_name]
+            type_var = f"{role_var}_type"
+            match_clauses.append(
+                "try {\n"
+                f"  {var} links ({role.role_name}: {role_var});\n"
+                f"  {role_var} isa! {type_var};\n"
+                "}"
+            )
 
         # Add attribute filter clauses to relation match
         for field_name, value in filters.items():

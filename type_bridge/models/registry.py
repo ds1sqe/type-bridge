@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 if TYPE_CHECKING:
     from type_bridge.models.base import TypeDBType
-    from type_bridge.models.entity import Entity
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +62,8 @@ class ModelRegistry:
     def resolve(
         cls,
         type_label: str | None,
-        allowed_classes: tuple[type[Entity], ...],
-    ) -> type[Entity]:
+        allowed_classes: tuple[type[T], ...],
+    ) -> type[T]:
         """Resolve a TypeDB type label to a Python model class.
 
         This is the unified method for polymorphic class resolution. It:
@@ -88,7 +87,7 @@ class ModelRegistry:
             # Verify the cached class is compatible with allowed_classes
             for allowed in allowed_classes:
                 if issubclass(cached, allowed):
-                    return cached  # type: ignore[return-value]
+                    return cast("type[T]", cached)
 
         # Try central registry
         registered = cls._registry.get(type_label)
@@ -97,7 +96,7 @@ class ModelRegistry:
             for allowed in allowed_classes:
                 if issubclass(registered, allowed):
                     cls._resolution_cache[type_label] = registered
-                    return registered  # type: ignore[return-value]
+                    return cast("type[T]", registered)
 
         # Quick check: direct match against allowed classes
         for allowed_cls in allowed_classes:
@@ -106,12 +105,12 @@ class ModelRegistry:
                 return allowed_cls
 
         # Fallback: search through subclasses
-        def find_in_subclasses(search_cls: type[Entity]) -> type[Entity] | None:
+        def find_in_subclasses(search_cls: type[T]) -> type[T] | None:
             """Recursively search subclasses for matching type name."""
             for subclass in search_cls.__subclasses__():
                 if subclass.get_type_name() == type_label:
-                    return subclass
-                found = find_in_subclasses(subclass)
+                    return cast("type[T]", subclass)
+                found = find_in_subclasses(cast("type[T]", subclass))
                 if found:
                     return found
             return None

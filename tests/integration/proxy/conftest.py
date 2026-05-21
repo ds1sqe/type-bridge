@@ -1,5 +1,6 @@
 """Pytest fixtures for proxy integration tests."""
 
+import os
 from collections.abc import Generator
 
 import pytest
@@ -11,6 +12,41 @@ from tests.utils.proxy_lifecycle import (
     stop_proxy_containers,
 )
 from type_bridge.proxy import ProxyDatabase
+
+
+def _prepare_proxy_database() -> None:
+    """Create the proxy test database and a minimal schema for raw query tests."""
+    from type_bridge import (
+        AttributeFlags,
+        Database,
+        Entity,
+        Flag,
+        Key,
+        SchemaManager,
+        String,
+        TypeFlags,
+    )
+
+    typedb_address = os.getenv("PROXY_TYPEDB_ADDRESS", "localhost:1731")
+
+    class Name(String):
+        flags = AttributeFlags(name="name")
+
+    class Person(Entity):
+        flags = TypeFlags(name="person")
+        name: Name = Flag(Key)
+
+    database = Database(address=typedb_address, database=PROXY_DB_NAME)
+    database.connect()
+    try:
+        database.delete_database()
+        database.create_database()
+
+        schema_manager = SchemaManager(database)
+        schema_manager.register(Person)
+        schema_manager.sync_schema(force=True)
+    finally:
+        database.close()
 
 
 @pytest.fixture(scope="session")
@@ -33,6 +69,7 @@ def proxy_db(docker_proxy: None) -> Generator[ProxyDatabase]:
         Connected ProxyDatabase instance
     """
     try:
+        _prepare_proxy_database()
         proxy = ProxyDatabase(proxy_url=PROXY_ADDRESS, database=PROXY_DB_NAME)
         proxy.connect()
         yield proxy

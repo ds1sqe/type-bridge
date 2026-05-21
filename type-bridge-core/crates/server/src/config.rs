@@ -100,8 +100,31 @@ fn default_audit_output() -> String {
 impl ServerConfig {
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
-        let config: ServerConfig = toml::from_str(&content)?;
+        let mut config: ServerConfig = toml::from_str(&content)?;
+        config.apply_env_overrides();
         Ok(config)
+    }
+
+    fn apply_env_overrides(&mut self) {
+        self.apply_env_overrides_from(|name| std::env::var(name).ok());
+    }
+
+    fn apply_env_overrides_from<F>(&mut self, mut get_env: F)
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        if let Some(address) = get_env("TYPEDB_ADDRESS") {
+            self.typedb.address = address;
+        }
+        if let Some(database) = get_env("TYPEDB_DATABASE") {
+            self.typedb.database = database;
+        }
+        if let Some(username) = get_env("TYPEDB_USERNAME") {
+            self.typedb.username = username;
+        }
+        if let Some(password) = get_env("TYPEDB_PASSWORD") {
+            self.typedb.password = password;
+        }
     }
 }
 
@@ -166,6 +189,23 @@ database = "mydb"
         assert_eq!(audit.file_path, "/tmp/audit.log");
         assert_eq!(config.logging.level, "debug");
         assert_eq!(config.logging.format, "text");
+    }
+
+    #[test]
+    fn env_overrides_typedb_section() {
+        let mut config: ServerConfig = toml::from_str(FULL_CONFIG).unwrap();
+        config.apply_env_overrides_from(|name| match name {
+            "TYPEDB_ADDRESS" => Some("typedb:1729".to_string()),
+            "TYPEDB_DATABASE" => Some("docker_db".to_string()),
+            "TYPEDB_USERNAME" => Some("docker_user".to_string()),
+            "TYPEDB_PASSWORD" => Some("docker_pass".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(config.typedb.address, "typedb:1729");
+        assert_eq!(config.typedb.database, "docker_db");
+        assert_eq!(config.typedb.username, "docker_user");
+        assert_eq!(config.typedb.password, "docker_pass");
     }
 
     #[test]
