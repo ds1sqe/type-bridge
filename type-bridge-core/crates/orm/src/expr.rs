@@ -324,10 +324,8 @@ impl Expr {
         seen: &mut std::collections::HashSet<String>,
     ) {
         match self {
-            Self::RolePlayer { role, .. } => {
-                if seen.insert(role.clone()) {
-                    roles.push(role.clone());
-                }
+            Self::RolePlayer { role, .. } if seen.insert(role.clone()) => {
+                roles.push(role.clone());
             }
             Self::And(children) | Self::Or(children) => {
                 for child in children {
