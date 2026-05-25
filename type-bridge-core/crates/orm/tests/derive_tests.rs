@@ -696,6 +696,12 @@ mod mock_backend {
         fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
             Box::pin(async { Ok(()) })
         }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 
     pub struct NoopBackend;

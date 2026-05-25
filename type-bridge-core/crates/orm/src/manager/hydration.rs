@@ -130,7 +130,7 @@ pub fn hydrate_dynamic_relation(
         iid: extract_scalar_string(obj, "_iid"),
         type_name: extract_scalar_string(obj, "_type"),
         attributes,
-        role_players: hydrate_dynamic_role_players(obj),
+        role_players: hydrate_dynamic_role_players(descriptor, obj),
     })
 }
 
@@ -139,7 +139,8 @@ pub fn hydrate_dynamic_relation(
 /// Input: `{ "name": [{"value": "Alice", ...}], "age": [{"value": 30, ...}] }`
 /// Output: `{ "name": "Alice", "age": 30 }`
 ///
-/// For each attribute, takes the first array element's `"value"` field.
+/// For each attribute, unwraps document scalar wrappers. Single values are
+/// returned as scalars and repeated values are returned as arrays.
 /// If the value is already flat (not an array), passes it through unchanged.
 pub fn flatten_wildcard_attributes(
     attrs: &serde_json::Map<String, serde_json::Value>,
@@ -147,18 +148,47 @@ pub fn flatten_wildcard_attributes(
     let mut flat = serde_json::Map::new();
     for (key, value) in attrs {
         if let Some(arr) = value.as_array() {
-            if let Some(first) = arr.first()
-                && let Some(val) = first.get("value")
-            {
-                flat.insert(key.clone(), val.clone());
+            let values: Vec<_> = arr.iter().map(unwrap_document_value).collect();
+            match values.as_slice() {
+                [] => {}
+                [single] => {
+                    flat.insert(key.clone(), single.clone());
+                }
+                _ => {
+                    flat.insert(key.clone(), serde_json::Value::Array(values));
+                }
             }
-            // Empty array → attribute not present, skip
         } else {
-            // Already flat value
-            flat.insert(key.clone(), value.clone());
+            flat.insert(key.clone(), unwrap_document_value(value));
         }
     }
     flat
+}
+
+fn unwrap_document_value(value: &serde_json::Value) -> serde_json::Value {
+    let Some(obj) = value.as_object() else {
+        return value.clone();
+    };
+    if let Some(inner) = obj.get("value") {
+        return unwrap_document_value(inner);
+    }
+    for key in [
+        "string",
+        "long",
+        "integer",
+        "double",
+        "boolean",
+        "date",
+        "datetime",
+        "datetime-tz",
+        "decimal",
+        "duration",
+    ] {
+        if let Some(inner) = obj.get(key) {
+            return unwrap_document_value(inner);
+        }
+    }
+    value.clone()
 }
 
 fn flatten_document_attributes(
@@ -193,23 +223,31 @@ fn dynamic_attributes(
                 message: format!("missing attribute '{}'", descriptor.attr_name),
             });
         };
-        let attribute = AttributeValue::from_json(value, descriptor.value_type.as_str())
-            .ok_or_else(|| OrmError::Hydration {
-                type_name: type_name.to_string(),
-                message: format!(
-                    "attribute '{}' is not a {} value",
-                    descriptor.attr_name, descriptor.value_type
-                ),
-            })?;
-        attributes.push((descriptor.attr_name.clone(), attribute));
+        let values = value
+            .as_array()
+            .map(|items| items.iter().collect::<Vec<_>>())
+            .unwrap_or_else(|| vec![value]);
+        for value in values {
+            let attribute = AttributeValue::from_json(value, descriptor.value_type.as_str())
+                .ok_or_else(|| OrmError::Hydration {
+                    type_name: type_name.to_string(),
+                    message: format!(
+                        "attribute '{}' is not a {} value: {}",
+                        descriptor.attr_name, descriptor.value_type, value
+                    ),
+                })?;
+            attributes.push((descriptor.attr_name.clone(), attribute));
+        }
     }
     Ok(attributes)
 }
 
 fn hydrate_dynamic_role_players(
+    descriptor: &RelationDescriptor,
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<DynamicRolePlayer> {
-    obj.get("role_players")
+    let mut role_players: Vec<DynamicRolePlayer> = obj
+        .get("role_players")
         .and_then(|value| value.as_array())
         .map(|players| {
             players
@@ -224,11 +262,45 @@ fn hydrate_dynamic_role_players(
                             .or_else(|| extract_scalar_string(player, "iid")),
                         player_type_name: extract_scalar_string(player, "player_type_name")
                             .or_else(|| extract_scalar_string(player, "type_name")),
+                        attributes: player
+                            .get("attributes")
+                            .and_then(|value| value.as_object())
+                            .map(raw_attribute_entries)
+                            .unwrap_or_default(),
                     })
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    for (index, role) in descriptor.roles.iter().enumerate() {
+        let Some(player_iid) = extract_scalar_string(obj, &format!("_role_{index}_iid")) else {
+            continue;
+        };
+        let attributes = obj
+            .get(&format!("_role_{index}_attributes"))
+            .and_then(|value| value.as_object())
+            .map(flatten_wildcard_attributes)
+            .map(|attributes| attributes.into_iter().collect())
+            .unwrap_or_default();
+        role_players.push(DynamicRolePlayer {
+            role_name: role.role_name.clone(),
+            player_iid: Some(player_iid),
+            player_type_name: extract_scalar_string(obj, &format!("_role_{index}_type")),
+            attributes,
+        });
+    }
+
+    role_players
+}
+
+fn raw_attribute_entries(
+    attrs: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<(String, serde_json::Value)> {
+    attrs
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 /// Extract a count value from a reduce query result.
@@ -294,6 +366,7 @@ pub(crate) fn extract_scalar_string(
 }
 
 fn parse_count_value(v: &serde_json::Value) -> Result<u64> {
+    let v = unwrap_document_value(v);
     if let Some(n) = v.as_u64() {
         return Ok(n);
     }
@@ -322,6 +395,27 @@ mod tests {
         let flat = flatten_wildcard_attributes(input.as_object().unwrap());
         assert_eq!(flat.get("name").unwrap(), &serde_json::json!("Alice"));
         assert_eq!(flat.get("age").unwrap(), &serde_json::json!(30));
+    }
+
+    #[test]
+    fn flatten_nested_wrapped_scalar_attributes() {
+        let input: serde_json::Value = serde_json::json!({
+            "age": [{"value": {"integer": 30}, "type": {"label": "age", "value_type": "long"}}]
+        });
+        let flat = flatten_wildcard_attributes(input.as_object().unwrap());
+        assert_eq!(flat.get("age").unwrap(), &serde_json::json!(30));
+    }
+
+    #[test]
+    fn flatten_repeated_attributes() {
+        let input: serde_json::Value = serde_json::json!({
+            "tag": [{"value": "alpha"}, {"value": "shared"}]
+        });
+        let flat = flatten_wildcard_attributes(input.as_object().unwrap());
+        assert_eq!(
+            flat.get("tag").unwrap(),
+            &serde_json::json!(["alpha", "shared"])
+        );
     }
 
     #[test]
@@ -356,6 +450,19 @@ mod tests {
     fn extract_count_fallback_key() {
         let result = QueryResult::Rows(vec![serde_json::json!({"total": 7})]);
         assert_eq!(extract_count(&result).unwrap(), 7);
+    }
+
+    #[test]
+    fn extract_count_from_wrapped_value() {
+        let result = QueryResult::Rows(vec![serde_json::json!({
+            "$count": {
+                "category": "Value",
+                "label": "integer",
+                "value": 2,
+                "value_type": "integer"
+            }
+        })]);
+        assert_eq!(extract_count(&result).unwrap(), 2);
     }
 
     #[test]

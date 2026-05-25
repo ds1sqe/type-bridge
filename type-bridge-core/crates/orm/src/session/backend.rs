@@ -46,6 +46,12 @@ pub trait TransactionOps: Send {
 
     /// Commit this transaction. Only meaningful for write/schema transactions.
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
+
+    /// Roll back this transaction.
+    fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
+
+    /// Close this transaction without committing.
+    fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
 }
 
 /// Abstraction over a TypeDB driver connection.

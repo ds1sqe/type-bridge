@@ -129,6 +129,29 @@ impl TransactionOps for RealTransaction {
                 .map_err(|e| OrmError::Transaction(format!("Commit failed: {e}")))
         })
     }
+
+    fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        let tx = self.transaction.take();
+        Box::pin(async move {
+            let t =
+                tx.ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+            t.rollback()
+                .await
+                .map_err(|e| OrmError::Transaction(format!("Rollback failed: {e}")))
+        })
+    }
+
+    fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        let tx = self.transaction.take();
+        Box::pin(async move {
+            let Some(t) = tx else {
+                return Ok(());
+            };
+            t.close()
+                .await
+                .map_err(|e| OrmError::Transaction(format!("Close failed: {e}")))
+        })
+    }
 }
 
 /// Convert a TypeDB concept to a JSON value.

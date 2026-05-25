@@ -87,7 +87,7 @@ pub use descriptor::{
     TypeDescriptorRef,
 };
 pub use dynamic::{
-    DynamicAttributeMap, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
+    DynamicAggregate, DynamicAttributeMap, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
     DynamicRolePlayerInput,
 };
 pub use entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};

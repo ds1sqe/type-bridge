@@ -1791,6 +1791,10 @@ class TypeDBQuery[T: "TypeDBType"]:
 
     def first(self) -> T | None:
         """Get the first matching instance."""
+        if isinstance(self._manager.strategy, RelationStrategy):
+            results = self.execute()
+            return results[0] if results else None
+
         # Optimize by limiting to 1
         original_limit = self._limit_val
         self._limit_val = 1

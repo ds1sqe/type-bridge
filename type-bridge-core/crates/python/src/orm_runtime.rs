@@ -11,10 +11,12 @@ use pyo3::types::{PyDict, PyList};
 use pythonize::{depythonize, pythonize};
 use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
+use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
-    AttributeValue, DescriptorRegistry, DynamicAttributeMap, DynamicEntityManager,
-    DynamicEntityRow, DynamicRelationManager, DynamicRelationRow, DynamicRolePlayerInput,
-    EntityDescriptor, Filter, OrmError, RelationDescriptor, ValueType,
+    AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap,
+    DynamicEntityManager, DynamicEntityRow, DynamicRelationManager, DynamicRelationRow,
+    DynamicRolePlayerInput, EntityDescriptor, Filter, OrmError, RelationDescriptor,
+    TransactionContext, TxType, ValueType,
 };
 
 /// Python-facing descriptor registry wrapper.
@@ -126,12 +128,72 @@ impl PyRustDatabase {
     fn is_connected(&self) -> bool {
         self.db.is_connected()
     }
+
+    /// Open a Rust-owned transaction context.
+    #[pyo3(signature = (transaction_type="read"))]
+    fn transaction(&self, transaction_type: &str) -> PyResult<PyRustTransactionContext> {
+        let tx_type = parse_tx_type(transaction_type)?;
+        let context = self
+            .runtime
+            .block_on(self.db.transaction_context(tx_type))
+            .map_err(py_orm_error)?;
+        Ok(PyRustTransactionContext {
+            context,
+            runtime: Arc::clone(&self.runtime),
+        })
+    }
+}
+
+/// Python-facing Rust transaction context.
+#[pyclass]
+pub struct PyRustTransactionContext {
+    context: TransactionContext,
+    runtime: Arc<Runtime>,
+}
+
+#[pymethods]
+impl PyRustTransactionContext {
+    /// Execute a raw TypeQL query in this Rust transaction.
+    fn execute(&self, py: Python<'_>, query: &str) -> PyResult<PyObject> {
+        let result = self
+            .runtime
+            .block_on(self.context.query(query))
+            .map_err(py_orm_error)?;
+        query_result_to_py(py, result)
+    }
+
+    /// Commit this Rust transaction.
+    fn commit(&self) -> PyResult<()> {
+        self.runtime
+            .block_on(self.context.commit())
+            .map_err(py_orm_error)
+    }
+
+    /// Roll back this Rust transaction.
+    fn rollback(&self) -> PyResult<()> {
+        self.runtime
+            .block_on(self.context.rollback())
+            .map_err(py_orm_error)
+    }
+
+    /// Close this Rust transaction without committing.
+    fn close(&self) -> PyResult<()> {
+        self.runtime
+            .block_on(self.context.close())
+            .map_err(py_orm_error)
+    }
+
+    /// Return this transaction's type name.
+    fn transaction_type(&self) -> &'static str {
+        tx_type_name(self.context.tx_type())
+    }
 }
 
 /// Python-facing dynamic entity manager.
 #[pyclass]
 pub struct PyDynamicEntityManager {
-    db: Arc<type_bridge_orm::Database>,
+    db: Option<Arc<type_bridge_orm::Database>>,
+    tx: Option<TransactionContext>,
     runtime: Arc<Runtime>,
     descriptor: Arc<EntityDescriptor>,
 }
@@ -144,8 +206,25 @@ impl PyDynamicEntityManager {
         let descriptor: EntityDescriptor = depythonize(&descriptor)
             .map_err(|error| py_value_error(format!("Invalid entity descriptor: {error}")))?;
         Ok(Self {
-            db: Arc::clone(&database.db),
+            db: Some(Arc::clone(&database.db)),
+            tx: None,
             runtime: Arc::clone(&database.runtime),
+            descriptor: Arc::new(descriptor),
+        })
+    }
+
+    /// Construct a dynamic entity manager bound to an existing Rust transaction.
+    #[staticmethod]
+    fn for_transaction(
+        transaction: &PyRustTransactionContext,
+        descriptor: Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let descriptor: EntityDescriptor = depythonize(&descriptor)
+            .map_err(|error| py_value_error(format!("Invalid entity descriptor: {error}")))?;
+        Ok(Self {
+            db: None,
+            tx: Some(transaction.context.clone()),
+            runtime: Arc::clone(&transaction.runtime),
             descriptor: Arc::new(descriptor),
         })
     }
@@ -153,9 +232,46 @@ impl PyDynamicEntityManager {
     /// Insert one entity and return its IID.
     fn insert(&self, attributes: Bound<'_, PyAny>) -> PyResult<String> {
         let attributes = entity_attributes_from_py(&self.descriptor, attributes)?;
-        let manager = DynamicEntityManager::new(&self.db, Arc::clone(&self.descriptor));
+        let manager = self.manager()?;
         self.runtime
             .block_on(manager.insert(&attributes))
+            .map_err(py_orm_error)
+    }
+
+    /// Insert multiple entities in one Rust transaction and return their IIDs.
+    fn insert_many(&self, attributes: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+        let attributes = entity_attribute_list_from_py(&self.descriptor, attributes)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.insert_many(&attributes))
+            .map_err(py_orm_error)
+    }
+
+    /// Put one entity and return its IID.
+    fn put(&self, attributes: Bound<'_, PyAny>) -> PyResult<String> {
+        let attributes = entity_attributes_from_py(&self.descriptor, attributes)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.put(&attributes))
+            .map_err(py_orm_error)
+    }
+
+    /// Put multiple entities in one Rust transaction and return their IIDs.
+    fn put_many(&self, attributes: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+        let attributes = entity_attribute_list_from_py(&self.descriptor, attributes)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.put_many(&attributes))
+            .map_err(py_orm_error)
+    }
+
+    /// Update one entity's non-key attributes.
+    #[pyo3(signature = (attributes, iid=None))]
+    fn update(&self, attributes: Bound<'_, PyAny>, iid: Option<&str>) -> PyResult<()> {
+        let attributes = entity_attributes_from_py(&self.descriptor, attributes)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.update(iid, &attributes))
             .map_err(py_orm_error)
     }
 
@@ -163,12 +279,22 @@ impl PyDynamicEntityManager {
     #[pyo3(signature = (filters=None))]
     fn get(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<PyObject> {
         let filters = entity_filters_from_py(&self.descriptor, filters)?;
-        let manager = DynamicEntityManager::new(&self.db, Arc::clone(&self.descriptor));
+        let manager = self.manager()?;
         let rows = self
             .runtime
             .block_on(manager.get(&filters))
             .map_err(py_orm_error)?;
         entity_rows_to_py(py, &rows)
+    }
+
+    /// Fetch one entity by TypeDB IID.
+    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
+        let manager = self.manager()?;
+        let row = self
+            .runtime
+            .block_on(manager.get_by_iid(iid))
+            .map_err(py_orm_error)?;
+        optional_entity_row_to_py(py, row.as_ref())
     }
 
     /// Fetch all entities for this descriptor.
@@ -180,25 +306,84 @@ impl PyDynamicEntityManager {
     #[pyo3(signature = (filters=None))]
     fn count(&self, filters: Option<Bound<'_, PyAny>>) -> PyResult<u64> {
         let filters = entity_filters_from_py(&self.descriptor, filters)?;
-        let manager = DynamicEntityManager::new(&self.db, Arc::clone(&self.descriptor));
+        let manager = self.manager()?;
         self.runtime
             .block_on(manager.count_with_filters(&filters))
             .map_err(py_orm_error)
     }
 
+    /// Run aggregate reductions over entities matching equality filters.
+    #[pyo3(signature = (aggregates, filters=None))]
+    fn aggregate(
+        &self,
+        py: Python<'_>,
+        aggregates: Bound<'_, PyAny>,
+        filters: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        let filters = entity_filters_from_py(&self.descriptor, filters)?;
+        let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.aggregate(&filters, &aggregates))
+            .map_err(py_orm_error)?;
+        pythonize(py, &rows)
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
+    /// Run grouped aggregate reductions over entities matching equality filters.
+    #[pyo3(signature = (group_fields, aggregates, filters=None))]
+    fn group_by_aggregate(
+        &self,
+        py: Python<'_>,
+        group_fields: Bound<'_, PyAny>,
+        aggregates: Bound<'_, PyAny>,
+        filters: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        let filters = entity_filters_from_py(&self.descriptor, filters)?;
+        let group_fields = group_fields_from_py(&self.descriptor.owned_attributes, group_fields)?;
+        let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.group_by_aggregate(&filters, &group_fields, &aggregates))
+            .map_err(py_orm_error)?;
+        pythonize(py, &rows)
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
     /// Delete one entity by IID.
     fn delete_by_iid(&self, iid: &str) -> PyResult<()> {
-        let manager = DynamicEntityManager::new(&self.db, Arc::clone(&self.descriptor));
+        let manager = self.manager()?;
         self.runtime
             .block_on(manager.delete_by_iid(iid))
             .map_err(py_orm_error)
     }
 }
 
+impl PyDynamicEntityManager {
+    fn manager(&self) -> PyResult<DynamicEntityManager<'_>> {
+        if let Some(tx) = &self.tx {
+            return Ok(DynamicEntityManager::with_transaction(
+                tx.clone(),
+                Arc::clone(&self.descriptor),
+            ));
+        }
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| py_runtime_error("Rust entity manager has no execution target"))?;
+        Ok(DynamicEntityManager::new(db, Arc::clone(&self.descriptor)))
+    }
+}
+
 /// Python-facing dynamic relation manager.
 #[pyclass]
 pub struct PyDynamicRelationManager {
-    db: Arc<type_bridge_orm::Database>,
+    db: Option<Arc<type_bridge_orm::Database>>,
+    tx: Option<TransactionContext>,
     runtime: Arc<Runtime>,
     descriptor: Arc<RelationDescriptor>,
 }
@@ -211,8 +396,25 @@ impl PyDynamicRelationManager {
         let descriptor: RelationDescriptor = depythonize(&descriptor)
             .map_err(|error| py_value_error(format!("Invalid relation descriptor: {error}")))?;
         Ok(Self {
-            db: Arc::clone(&database.db),
+            db: Some(Arc::clone(&database.db)),
+            tx: None,
             runtime: Arc::clone(&database.runtime),
+            descriptor: Arc::new(descriptor),
+        })
+    }
+
+    /// Construct a dynamic relation manager bound to an existing Rust transaction.
+    #[staticmethod]
+    fn for_transaction(
+        transaction: &PyRustTransactionContext,
+        descriptor: Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let descriptor: RelationDescriptor = depythonize(&descriptor)
+            .map_err(|error| py_value_error(format!("Invalid relation descriptor: {error}")))?;
+        Ok(Self {
+            db: None,
+            tx: Some(transaction.context.clone()),
+            runtime: Arc::clone(&transaction.runtime),
             descriptor: Arc::new(descriptor),
         })
     }
@@ -225,9 +427,57 @@ impl PyDynamicRelationManager {
     ) -> PyResult<String> {
         let attributes = relation_attributes_from_py(&self.descriptor, attributes)?;
         let role_players = role_players_from_py(&self.descriptor, role_players)?;
-        let manager = DynamicRelationManager::new(&self.db, Arc::clone(&self.descriptor));
+        let manager = self.manager()?;
         self.runtime
             .block_on(manager.insert(&attributes, &role_players))
+            .map_err(py_orm_error)
+    }
+
+    /// Insert multiple relations in one Rust transaction and return their IIDs.
+    fn insert_many(&self, items: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+        let items = relation_write_batch_from_py(&self.descriptor, items)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.insert_many(&items))
+            .map_err(py_orm_error)
+    }
+
+    /// Put one relation and return its IID.
+    fn put(
+        &self,
+        attributes: Bound<'_, PyAny>,
+        role_players: Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        let attributes = relation_attributes_from_py(&self.descriptor, attributes)?;
+        let role_players = role_players_from_py(&self.descriptor, role_players)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.put(&attributes, &role_players))
+            .map_err(py_orm_error)
+    }
+
+    /// Put multiple relations in one Rust transaction and return their IIDs.
+    fn put_many(&self, items: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+        let items = relation_write_batch_from_py(&self.descriptor, items)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.put_many(&items))
+            .map_err(py_orm_error)
+    }
+
+    /// Update one relation's scalar non-key attributes.
+    #[pyo3(signature = (attributes, role_players, iid=None))]
+    fn update(
+        &self,
+        attributes: Bound<'_, PyAny>,
+        role_players: Bound<'_, PyAny>,
+        iid: Option<&str>,
+    ) -> PyResult<()> {
+        let attributes = relation_attributes_from_py(&self.descriptor, attributes)?;
+        let role_players = role_players_from_py(&self.descriptor, role_players)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.update(iid, &attributes, &role_players))
             .map_err(py_orm_error)
     }
 
@@ -235,10 +485,43 @@ impl PyDynamicRelationManager {
     #[pyo3(signature = (filters=None))]
     fn get(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<PyObject> {
         let filters = relation_filters_from_py(&self.descriptor, filters)?;
-        let manager = DynamicRelationManager::new(&self.db, Arc::clone(&self.descriptor));
+        let manager = self.manager()?;
         let rows = self
             .runtime
             .block_on(manager.get(&filters))
+            .map_err(py_orm_error)?;
+        relation_rows_to_py(py, &rows)
+    }
+
+    /// Fetch relations matching attribute filters and role-player filters.
+    #[pyo3(signature = (filters=None, role_players=None))]
+    fn get_with_role_players(
+        &self,
+        py: Python<'_>,
+        filters: Option<Bound<'_, PyAny>>,
+        role_players: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        let filters = relation_filters_from_py(&self.descriptor, filters)?;
+        let role_players = match role_players {
+            Some(role_players) if !role_players.is_none() => {
+                role_players_from_py(&self.descriptor, role_players)?
+            }
+            _ => vec![],
+        };
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.get_with_role_filters(&filters, &role_players))
+            .map_err(py_orm_error)?;
+        relation_rows_to_py(py, &rows)
+    }
+
+    /// Fetch one relation by TypeDB IID.
+    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.get_by_iid(iid))
             .map_err(py_orm_error)?;
         relation_rows_to_py(py, &rows)
     }
@@ -252,18 +535,79 @@ impl PyDynamicRelationManager {
     #[pyo3(signature = (filters=None))]
     fn count(&self, filters: Option<Bound<'_, PyAny>>) -> PyResult<u64> {
         let filters = relation_filters_from_py(&self.descriptor, filters)?;
-        let manager = DynamicRelationManager::new(&self.db, Arc::clone(&self.descriptor));
+        let manager = self.manager()?;
         self.runtime
             .block_on(manager.count_with_filters(&filters))
             .map_err(py_orm_error)
     }
 
+    /// Run aggregate reductions over relations matching equality filters.
+    #[pyo3(signature = (aggregates, filters=None))]
+    fn aggregate(
+        &self,
+        py: Python<'_>,
+        aggregates: Bound<'_, PyAny>,
+        filters: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        let filters = relation_filters_from_py(&self.descriptor, filters)?;
+        let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.aggregate(&filters, &aggregates))
+            .map_err(py_orm_error)?;
+        pythonize(py, &rows)
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
+    /// Run grouped aggregate reductions over relations matching equality filters.
+    #[pyo3(signature = (group_fields, aggregates, filters=None))]
+    fn group_by_aggregate(
+        &self,
+        py: Python<'_>,
+        group_fields: Bound<'_, PyAny>,
+        aggregates: Bound<'_, PyAny>,
+        filters: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        let filters = relation_filters_from_py(&self.descriptor, filters)?;
+        let group_fields = group_fields_from_py(&self.descriptor.owned_attributes, group_fields)?;
+        let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.group_by_aggregate(&filters, &group_fields, &aggregates))
+            .map_err(py_orm_error)?;
+        pythonize(py, &rows)
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
     /// Delete one relation by IID.
     fn delete_by_iid(&self, iid: &str) -> PyResult<()> {
-        let manager = DynamicRelationManager::new(&self.db, Arc::clone(&self.descriptor));
+        let manager = self.manager()?;
         self.runtime
             .block_on(manager.delete_by_iid(iid))
             .map_err(py_orm_error)
+    }
+}
+
+impl PyDynamicRelationManager {
+    fn manager(&self) -> PyResult<DynamicRelationManager<'_>> {
+        if let Some(tx) = &self.tx {
+            return Ok(DynamicRelationManager::with_transaction(
+                tx.clone(),
+                Arc::clone(&self.descriptor),
+            ));
+        }
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| py_runtime_error("Rust relation manager has no execution target"))?;
+        Ok(DynamicRelationManager::new(
+            db,
+            Arc::clone(&self.descriptor),
+        ))
     }
 }
 
@@ -289,6 +633,34 @@ fn attributes_from_py(
         return Ok(vec![]);
     }
     let value = py_to_json(value)?;
+    attributes_from_json(descriptors, &value)
+}
+
+fn entity_attribute_list_from_py(
+    descriptor: &EntityDescriptor,
+    value: Bound<'_, PyAny>,
+) -> PyResult<Vec<DynamicAttributeMap>> {
+    attribute_list_from_py(&descriptor.owned_attributes, value)
+}
+
+fn attribute_list_from_py(
+    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    value: Bound<'_, PyAny>,
+) -> PyResult<Vec<DynamicAttributeMap>> {
+    let value = py_to_json(value)?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| py_type_error("Batch attributes must be a list of dicts"))?;
+    items
+        .iter()
+        .map(|item| attributes_from_json(descriptors, item))
+        .collect()
+}
+
+fn attributes_from_json(
+    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    value: &Value,
+) -> PyResult<DynamicAttributeMap> {
     let obj = value
         .as_object()
         .ok_or_else(|| py_type_error("Attributes must be a dict"))?;
@@ -338,6 +710,32 @@ fn filters_from_py(
         return Ok(vec![]);
     }
     let value = py_to_json(filters)?;
+    if let Some(items) = value.as_array() {
+        let mut rust_filters = Vec::with_capacity(items.len());
+        for item in items {
+            let obj = item
+                .as_object()
+                .ok_or_else(|| py_type_error("Each filter spec must be a dict"))?;
+            let attr_name = required_string(obj, "attr_name")?;
+            let operator = required_string(obj, "operator")?;
+            let value = obj
+                .get("value")
+                .ok_or_else(|| py_type_error("Filter spec missing value"))?;
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| {
+                    descriptor.field_name == attr_name || descriptor.attr_name == attr_name
+                })
+                .ok_or_else(|| py_value_error(format!("Unknown filter attribute '{attr_name}'")))?;
+            let attr_value = attribute_value_from_json(value, descriptor.value_type)?;
+            rust_filters.push(Filter::compare(
+                descriptor.attr_name.clone(),
+                operator,
+                attr_value,
+            ));
+        }
+        return Ok(rust_filters);
+    }
     let obj = value
         .as_object()
         .ok_or_else(|| py_type_error("Filters must be a dict"))?;
@@ -359,6 +757,69 @@ fn filters_from_py(
         rust_filters.push(Filter::eq(descriptor.attr_name.clone(), attr_value));
     }
     Ok(rust_filters)
+}
+
+fn aggregates_from_py(
+    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    aggregates: Bound<'_, PyAny>,
+) -> PyResult<Vec<DynamicAggregate>> {
+    let value = py_to_json(aggregates)?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| py_type_error("Aggregates must be a list of dicts"))?;
+    let mut rust_aggregates = Vec::with_capacity(items.len());
+    for item in items {
+        let obj = item
+            .as_object()
+            .ok_or_else(|| py_type_error("Each aggregate must be a dict"))?;
+        let result_key = required_string(obj, "result_key")?;
+        let function = required_string(obj, "function")?;
+        let attr_name = match obj.get("attr_name") {
+            Some(Value::Null) | None => None,
+            Some(value) => {
+                let attr_name = value
+                    .as_str()
+                    .ok_or_else(|| py_type_error("Aggregate attr_name must be a string"))?;
+                let descriptor = descriptors
+                    .iter()
+                    .find(|descriptor| {
+                        descriptor.field_name == attr_name || descriptor.attr_name == attr_name
+                    })
+                    .ok_or_else(|| {
+                        py_value_error(format!("Unknown aggregate attribute '{attr_name}'"))
+                    })?;
+                Some(descriptor.attr_name.clone())
+            }
+        };
+        rust_aggregates.push(DynamicAggregate {
+            result_key,
+            function,
+            attr_name,
+        });
+    }
+    Ok(rust_aggregates)
+}
+
+fn group_fields_from_py(
+    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    fields: Bound<'_, PyAny>,
+) -> PyResult<Vec<String>> {
+    let value = py_to_json(fields)?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| py_type_error("Group fields must be a list of strings"))?;
+    let mut group_fields = Vec::with_capacity(items.len());
+    for item in items {
+        let field = item
+            .as_str()
+            .ok_or_else(|| py_type_error("Group field must be a string"))?;
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.field_name == field || descriptor.attr_name == field)
+            .ok_or_else(|| py_value_error(format!("Unknown group field '{field}'")))?;
+        group_fields.push(descriptor.attr_name.clone());
+    }
+    Ok(group_fields)
 }
 
 fn push_attribute_values(
@@ -397,6 +858,13 @@ fn role_players_from_py(
     value: Bound<'_, PyAny>,
 ) -> PyResult<Vec<DynamicRolePlayerInput>> {
     let value = py_to_json(value)?;
+    role_players_from_json(descriptor, &value)
+}
+
+fn role_players_from_json(
+    descriptor: &RelationDescriptor,
+    value: &Value,
+) -> PyResult<Vec<DynamicRolePlayerInput>> {
     let players = value
         .as_array()
         .ok_or_else(|| py_type_error("Role players must be a list of dicts"))?;
@@ -462,6 +930,33 @@ fn role_players_from_py(
     Ok(inputs)
 }
 
+fn relation_write_batch_from_py(
+    descriptor: &RelationDescriptor,
+    value: Bound<'_, PyAny>,
+) -> PyResult<Vec<(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)>> {
+    let value = py_to_json(value)?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| py_type_error("Relation batch must be a list of dicts"))?;
+    let mut batch = Vec::with_capacity(items.len());
+    for item in items {
+        let obj = item
+            .as_object()
+            .ok_or_else(|| py_type_error("Each relation batch item must be a dict"))?;
+        let attributes = obj
+            .get("attributes")
+            .ok_or_else(|| py_value_error("Relation batch item missing attributes"))?;
+        let role_players = obj
+            .get("role_players")
+            .ok_or_else(|| py_value_error("Relation batch item missing role_players"))?;
+        batch.push((
+            attributes_from_json(&descriptor.owned_attributes, attributes)?,
+            role_players_from_json(descriptor, role_players)?,
+        ));
+    }
+    Ok(batch)
+}
+
 fn entity_rows_to_py(py: Python<'_>, rows: &[DynamicEntityRow]) -> PyResult<PyObject> {
     let values: Vec<_> = rows.iter().map(entity_row_to_json).collect();
     pythonize(py, &values)
@@ -476,10 +971,19 @@ fn relation_rows_to_py(py: Python<'_>, rows: &[DynamicRelationRow]) -> PyResult<
         .map_err(|error| py_value_error(error.to_string()))
 }
 
+fn optional_entity_row_to_py(py: Python<'_>, row: Option<&DynamicEntityRow>) -> PyResult<PyObject> {
+    match row {
+        Some(row) => pythonize(py, &entity_row_to_json(row))
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string())),
+        None => Ok(py.None()),
+    }
+}
+
 fn entity_row_to_json(row: &DynamicEntityRow) -> Value {
     let mut obj = Map::new();
     for (name, value) in &row.attributes {
-        obj.insert(name.clone(), attribute_value_to_json(value));
+        insert_repeated_attribute(&mut obj, name, attribute_value_to_json(value));
     }
     if let Some(iid) = &row.iid {
         obj.insert("_iid".into(), Value::String(iid.clone()));
@@ -511,11 +1015,29 @@ fn relation_row_to_json(row: &DynamicRelationRow) -> Value {
             if let Some(type_name) = &player.player_type_name {
                 obj.insert("player_type_name".into(), Value::String(type_name.clone()));
             }
+            let mut attributes = Map::new();
+            for (name, value) in &player.attributes {
+                insert_repeated_attribute(&mut attributes, name, value.clone());
+            }
+            obj.insert("attributes".into(), Value::Object(attributes));
             Value::Object(obj)
         })
         .collect();
     obj.insert("role_players".into(), Value::Array(role_players));
     Value::Object(obj)
+}
+
+fn insert_repeated_attribute(obj: &mut Map<String, Value>, name: &str, value: Value) {
+    match obj.get_mut(name) {
+        Some(Value::Array(values)) => values.push(value),
+        Some(existing) => {
+            let first = std::mem::replace(existing, Value::Null);
+            *existing = Value::Array(vec![first, value]);
+        }
+        None => {
+            obj.insert(name.to_string(), value);
+        }
+    }
 }
 
 fn attribute_value_to_json(value: &AttributeValue) -> Value {
@@ -532,9 +1054,38 @@ fn attribute_value_to_json(value: &AttributeValue) -> Value {
     }
 }
 
+fn query_result_to_py(py: Python<'_>, result: QueryResult) -> PyResult<PyObject> {
+    let values = match result {
+        QueryResult::Ok => Vec::new(),
+        QueryResult::Documents(values) | QueryResult::Rows(values) => values,
+    };
+    pythonize(py, &values)
+        .map(|obj| obj.unbind())
+        .map_err(|error| py_value_error(error.to_string()))
+}
+
 fn py_to_json(value: Bound<'_, PyAny>) -> PyResult<Value> {
     depythonize(&value)
         .map_err(|error| py_value_error(format!("Expected JSON-compatible value: {error}")))
+}
+
+fn parse_tx_type(value: &str) -> PyResult<TxType> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "read" => Ok(TxType::Read),
+        "write" => Ok(TxType::Write),
+        "schema" => Ok(TxType::Schema),
+        other => Err(py_value_error(format!(
+            "transaction_type must be 'read', 'write', or 'schema', got {other:?}"
+        ))),
+    }
+}
+
+fn tx_type_name(tx_type: TxType) -> &'static str {
+    match tx_type {
+        TxType::Read => "read",
+        TxType::Write => "write",
+        TxType::Schema => "schema",
+    }
 }
 
 fn required_string(obj: &Map<String, Value>, key: &str) -> PyResult<String> {
@@ -575,6 +1126,7 @@ fn py_runtime_error(message: impl Into<String>) -> PyErr {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDescriptorRegistry>()?;
     m.add_class::<PyRustDatabase>()?;
+    m.add_class::<PyRustTransactionContext>()?;
     m.add_class::<PyDynamicEntityManager>()?;
     m.add_class::<PyDynamicRelationManager>()?;
     // Keep these imported so PyO3 validates the signatures at compile time.

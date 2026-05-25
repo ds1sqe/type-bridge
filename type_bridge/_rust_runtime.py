@@ -68,8 +68,39 @@ def register_model_descriptor(model_cls: type[TypeDBType]) -> dict[str, Any]:
     registry = descriptor_registry()
     descriptor = descriptor_for_model(model_cls)
     if issubclass(model_cls, Relation):
-        return registry.register_relation(descriptor)
-    return registry.register_entity(descriptor)
+        return _register_or_project_descriptor(
+            descriptor,
+            register=registry.register_relation,
+            lookup=registry.relation,
+        )
+    return _register_or_project_descriptor(
+        descriptor,
+        register=registry.register_entity,
+        lookup=registry.entity,
+    )
+
+
+def _register_or_project_descriptor(
+    descriptor: dict[str, Any],
+    *,
+    register: Any,
+    lookup: Any,
+) -> dict[str, Any]:
+    """Register a descriptor, or use a same-kind local projection on shape conflict.
+
+    Integration tests and user code can define narrower local Python classes for
+    the same TypeDB label. The shared Rust registry stays strict, while dynamic
+    managers can still use the local descriptor directly because they receive an
+    owned descriptor from PyO3 rather than a registry key.
+    """
+    try:
+        return register(descriptor)
+    except ValueError as exc:
+        message = str(exc)
+        if "descriptor shape differs from registered descriptor" not in message:
+            raise
+        lookup(descriptor["type_name"])
+        return descriptor
 
 
 def entity_descriptor(model_cls: type[TypeDBType]) -> dict[str, Any]:
@@ -196,12 +227,14 @@ def normalize_attributes(model_cls: type[TypeDBType], data: dict[str, Any]) -> d
 
 def rust_database_for(connection: Any) -> Any:
     """Return or create a Rust database handle for a Python Database object."""
-    from type_bridge.session import Database
+    from type_bridge.session import Database, TransactionContext
 
+    if isinstance(connection, TransactionContext):
+        return rust_database_for(connection.database)
     if not isinstance(connection, Database):
         raise NotImplementedError(
-            "TYPE_BRIDGE_BACKEND=rust currently supports Database connections only; "
-            "Transaction and TransactionContext parity is Phase 3 scope"
+            "TYPE_BRIDGE_BACKEND=rust supports Database and TransactionContext connections; "
+            "raw Python Transaction handles cannot be shared with the Rust backend"
         )
 
     cached = getattr(connection, "_rust_backend_database", None)
@@ -218,13 +251,32 @@ def rust_database_for(connection: Any) -> Any:
     return rust_db
 
 
+def rust_transaction_for(connection: Any) -> Any | None:
+    """Return the Rust transaction adapter for a Python TransactionContext."""
+    from type_bridge.session import TransactionContext
+
+    if not isinstance(connection, TransactionContext):
+        return None
+
+    rust_tx = getattr(connection, "_rust_tx", None)
+    if rust_tx is None:
+        raise RuntimeError("Rust transaction context is not active")
+    return rust_tx
+
+
 def rust_manager_for_entity(connection: Any, descriptor: dict[str, Any]) -> Any:
     """Create a PyO3 dynamic entity manager."""
+    rust_tx = rust_transaction_for(connection)
+    if rust_tx is not None:
+        return rust_core().PyDynamicEntityManager.for_transaction(rust_tx, descriptor)
     return rust_core().PyDynamicEntityManager(rust_database_for(connection), descriptor)
 
 
 def rust_manager_for_relation(connection: Any, descriptor: dict[str, Any]) -> Any:
     """Create a PyO3 dynamic relation manager."""
+    rust_tx = rust_transaction_for(connection)
+    if rust_tx is not None:
+        return rust_core().PyDynamicRelationManager.for_transaction(rust_tx, descriptor)
     return rust_core().PyDynamicRelationManager(rust_database_for(connection), descriptor)
 
 
@@ -285,6 +337,11 @@ def _relation_role_fields(model_cls: type[Any]) -> list[tuple[str, _RoleMetadata
             )
         )
     return fields
+
+
+def relation_role_fields(model_cls: type[Any]) -> list[tuple[str, _RoleMetadata]]:
+    """Return Python relation field names with Rust backend role metadata."""
+    return _relation_role_fields(model_cls)
 
 
 def key_filter_for_entity(instance: Any) -> dict[str, Any] | None:

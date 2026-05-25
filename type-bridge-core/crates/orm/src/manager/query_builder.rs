@@ -18,7 +18,7 @@ use crate::filter::Filter;
 use crate::relation::TypeBridgeRelation;
 use crate::{
     descriptor::{EntityDescriptor, RelationDescriptor},
-    dynamic::{DynamicAttributeMap, DynamicRolePlayerInput},
+    dynamic::{DynamicAggregate, DynamicAttributeMap, DynamicRolePlayerInput},
 };
 
 /// Build an insert + fetch-IID query for the given entity.
@@ -119,6 +119,29 @@ pub fn build_dynamic_entity_insert_with_iid(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build a put + fetch-IID query for a runtime entity descriptor.
+pub fn build_dynamic_entity_put(
+    descriptor: &EntityDescriptor,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_put_clauses(descriptor, attributes, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a match + update query for a runtime entity descriptor.
+pub fn build_dynamic_entity_update(
+    descriptor: &EntityDescriptor,
+    iid: Option<&str>,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_update_clauses(descriptor, iid, attributes, var)?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
 /// Build a polymorphic fetch query for a runtime entity descriptor.
 pub fn build_dynamic_entity_fetch(
     descriptor: &EntityDescriptor,
@@ -130,6 +153,17 @@ pub fn build_dynamic_entity_fetch(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build a polymorphic IID fetch query for a runtime entity descriptor.
+pub fn build_dynamic_entity_fetch_by_iid(
+    descriptor: &EntityDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_fetch_by_iid_clauses(descriptor, iid, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
 /// Build a count query for a runtime entity descriptor.
 pub fn build_dynamic_entity_count(
     descriptor: &EntityDescriptor,
@@ -137,6 +171,37 @@ pub fn build_dynamic_entity_count(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::dynamic::entity_count_clauses(descriptor, filters, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an aggregate query for a runtime entity descriptor.
+pub fn build_dynamic_entity_aggregate(
+    descriptor: &EntityDescriptor,
+    filters: &[Filter],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_aggregate_clauses(descriptor, filters, aggregates, var)?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a group-by aggregate query for a runtime entity descriptor.
+pub fn build_dynamic_entity_group_by_aggregate(
+    descriptor: &EntityDescriptor,
+    filters: &[Filter],
+    group_fields: &[String],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_group_by_aggregate_clauses(
+        descriptor,
+        filters,
+        group_fields,
+        aggregates,
+        var,
+    )?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -308,6 +373,32 @@ pub fn build_dynamic_relation_insert_with_iid(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build a put + fetch-IID query for a runtime relation descriptor.
+pub fn build_dynamic_relation_put(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    role_players: &[DynamicRolePlayerInput],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_put_clauses(descriptor, attributes, role_players, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a match + update query for a runtime relation descriptor.
+pub fn build_dynamic_relation_update(
+    descriptor: &RelationDescriptor,
+    iid: Option<&str>,
+    attributes: &DynamicAttributeMap,
+    role_players: &[DynamicRolePlayerInput],
+    var: &str,
+) -> Result<String> {
+    let clauses =
+        crate::dynamic::relation_update_clauses(descriptor, iid, attributes, role_players, var)?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
 /// Build a polymorphic fetch query for a runtime relation descriptor.
 pub fn build_dynamic_relation_fetch(
     descriptor: &RelationDescriptor,
@@ -319,6 +410,34 @@ pub fn build_dynamic_relation_fetch(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build a polymorphic fetch query for a runtime relation descriptor with role-player filters.
+pub fn build_dynamic_relation_fetch_with_role_filters(
+    descriptor: &RelationDescriptor,
+    filters: &[Filter],
+    role_filters: &[DynamicRolePlayerInput],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_fetch_with_role_filters_clauses(
+        descriptor,
+        filters,
+        role_filters,
+        var,
+    );
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a polymorphic IID fetch query for a runtime relation descriptor.
+pub fn build_dynamic_relation_fetch_by_iid(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_fetch_by_iid_clauses(descriptor, iid, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
 /// Build a count query for a runtime relation descriptor.
 pub fn build_dynamic_relation_count(
     descriptor: &RelationDescriptor,
@@ -326,6 +445,37 @@ pub fn build_dynamic_relation_count(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::dynamic::relation_count_clauses(descriptor, filters, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an aggregate query for a runtime relation descriptor.
+pub fn build_dynamic_relation_aggregate(
+    descriptor: &RelationDescriptor,
+    filters: &[Filter],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_aggregate_clauses(descriptor, filters, aggregates, var)?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build a group-by aggregate query for a runtime relation descriptor.
+pub fn build_dynamic_relation_group_by_aggregate(
+    descriptor: &RelationDescriptor,
+    filters: &[Filter],
+    group_fields: &[String],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_group_by_aggregate_clauses(
+        descriptor,
+        filters,
+        group_fields,
+        aggregates,
+        var,
+    )?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }

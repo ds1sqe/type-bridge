@@ -12,6 +12,9 @@ use crate::value::AttributeValue;
 pub struct Filter {
     /// The TypeDB attribute type name to filter on.
     pub attr_name: String,
+    /// The comparison operator. Equality is represented as `"=="`.
+    #[serde(default = "default_operator")]
+    pub operator: String,
     /// The value to match.
     pub value: AttributeValue,
 }
@@ -21,6 +24,20 @@ impl Filter {
     pub fn eq(attr_name: impl Into<String>, value: AttributeValue) -> Self {
         Self {
             attr_name: attr_name.into(),
+            operator: "==".into(),
+            value,
+        }
+    }
+
+    /// Create a comparison filter with an [`AttributeValue`].
+    pub fn compare(
+        attr_name: impl Into<String>,
+        operator: impl Into<String>,
+        value: AttributeValue,
+    ) -> Self {
+        Self {
+            attr_name: attr_name.into(),
+            operator: operator.into(),
             value,
         }
     }
@@ -44,4 +61,8 @@ impl Filter {
     pub fn double_eq(attr_name: impl Into<String>, value: f64) -> Self {
         Self::eq(attr_name, AttributeValue::Double(value))
     }
+}
+
+fn default_operator() -> String {
+    "==".into()
 }

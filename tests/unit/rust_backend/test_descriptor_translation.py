@@ -82,6 +82,12 @@ class RustPerson(Entity):
     spans: list[RustSpan] = Flag(Card(min=0))
 
 
+class RustPersonProjection(Entity):
+    flags = TypeFlags(name="rust-person")
+
+    name: RustName = Flag(Key)
+
+
 class RustCompany(Entity):
     flags = TypeFlags(name="rust-company")
 
@@ -166,3 +172,13 @@ def test_pyo3_registry_roundtrip_when_available() -> None:
 
     assert registered["type_name"] == "rust-person"
     assert registered["owned_attributes"][0]["field_name"] == "name"
+
+
+def test_register_model_descriptor_allows_same_label_projection() -> None:
+    pytest.importorskip("type_bridge_core")
+
+    register_model_descriptor(RustPerson)
+    projected = register_model_descriptor(RustPersonProjection)
+
+    assert projected["type_name"] == "rust-person"
+    assert [attr["field_name"] for attr in projected["owned_attributes"]] == ["name"]

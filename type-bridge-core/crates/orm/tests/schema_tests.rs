@@ -241,6 +241,14 @@ impl TransactionOps for MockTransaction {
     fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
         Box::pin(async { Ok(()) })
     }
+
+    fn rollback(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn close(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 // ── SchemaManager registration tests ────────────────────────────────

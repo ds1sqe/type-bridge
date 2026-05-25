@@ -4,26 +4,38 @@ use std::sync::Arc;
 
 use crate::descriptor::{EntityDescriptor, RelationDescriptor};
 use crate::dynamic::{
-    DynamicAttributeMap, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayerInput,
+    DynamicAggregate, DynamicAttributeMap, DynamicEntityRow, DynamicRelationRow,
+    DynamicRolePlayerInput,
 };
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
-use crate::session::Database;
 use crate::session::backend::{QueryResult, TxType};
+use crate::session::{Database, TransactionContext};
 
 use super::hydration::{extract_count, hydrate_dynamic_entity, hydrate_dynamic_relation};
 use super::query_builder;
 
 /// CRUD manager for an entity described at runtime.
 pub struct DynamicEntityManager<'db> {
-    db: &'db Database,
+    target: DynamicExecutionTarget<'db>,
     descriptor: Arc<EntityDescriptor>,
 }
 
 impl<'db> DynamicEntityManager<'db> {
     /// Create a dynamic entity manager from a registered descriptor.
     pub fn new(db: &'db Database, descriptor: Arc<EntityDescriptor>) -> Self {
-        Self { db, descriptor }
+        Self {
+            target: DynamicExecutionTarget::Database(db),
+            descriptor,
+        }
+    }
+
+    /// Create a dynamic entity manager bound to an existing transaction context.
+    pub fn with_transaction(tx: TransactionContext, descriptor: Arc<EntityDescriptor>) -> Self {
+        Self {
+            target: DynamicExecutionTarget::Transaction(tx),
+            descriptor,
+        }
     }
 
     /// Return the descriptor used by this manager.
@@ -39,15 +51,42 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC INSERT");
-        let result = self.db.execute_raw(&typeql, TxType::Write).await?;
+        let result = self.target.execute(&typeql, TxType::Write).await?;
         extract_insert_iid(&self.descriptor.type_name, result)
+    }
+
+    /// Insert multiple dynamic entities in one Rust transaction.
+    pub async fn insert_many(&self, items: &[DynamicAttributeMap]) -> Result<Vec<String>> {
+        self.write_many(items, DynamicWriteOperation::Insert).await
+    }
+
+    /// Put one dynamic entity and return its IID.
+    pub async fn put(&self, attributes: &DynamicAttributeMap) -> Result<String> {
+        let typeql = query_builder::build_dynamic_entity_put(&self.descriptor, attributes, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC PUT");
+        let result = self.target.execute(&typeql, TxType::Write).await?;
+        extract_insert_iid(&self.descriptor.type_name, result)
+    }
+
+    /// Put multiple dynamic entities in one Rust transaction.
+    pub async fn put_many(&self, items: &[DynamicAttributeMap]) -> Result<Vec<String>> {
+        self.write_many(items, DynamicWriteOperation::Put).await
+    }
+
+    /// Update one dynamic entity's non-key attributes.
+    pub async fn update(&self, iid: Option<&str>, attributes: &DynamicAttributeMap) -> Result<()> {
+        let typeql =
+            query_builder::build_dynamic_entity_update(&self.descriptor, iid, attributes, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC UPDATE");
+        self.target.execute(&typeql, TxType::Write).await?;
+        Ok(())
     }
 
     /// Fetch entities matching equality filters.
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<DynamicEntityRow>> {
         let typeql = query_builder::build_dynamic_entity_fetch(&self.descriptor, filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC FETCH");
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
+        let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
             QueryResult::Documents(docs) => docs
                 .iter()
@@ -77,6 +116,28 @@ impl<'db> DynamicEntityManager<'db> {
         }
     }
 
+    /// Fetch one entity by its TypeDB IID.
+    pub async fn get_by_iid(&self, iid: &str) -> Result<Option<DynamicEntityRow>> {
+        let typeql = query_builder::build_dynamic_entity_fetch_by_iid(&self.descriptor, iid, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC FETCH BY IID");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        match result {
+            QueryResult::Documents(docs) => match docs.len() {
+                0 => Ok(None),
+                1 => hydrate_dynamic_entity(&self.descriptor, &docs[0]).map(Some),
+                n => Err(OrmError::Hydration {
+                    type_name: self.descriptor.type_name.clone(),
+                    message: format!("Expected 0 or 1 result for IID lookup, got {n}"),
+                }),
+            },
+            QueryResult::Ok => Ok(None),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from fetch query, got Rows".into(),
+            }),
+        }
+    }
+
     /// Fetch all entities for this descriptor.
     pub async fn all(&self) -> Result<Vec<DynamicEntityRow>> {
         self.get(&[]).await
@@ -91,8 +152,44 @@ impl<'db> DynamicEntityManager<'db> {
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
         let typeql = query_builder::build_dynamic_entity_count(&self.descriptor, filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC COUNT");
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
+        let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
+    }
+
+    /// Run aggregate reductions over entities matching equality filters.
+    pub async fn aggregate(
+        &self,
+        filters: &[Filter],
+        aggregates: &[DynamicAggregate],
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        let typeql = query_builder::build_dynamic_entity_aggregate(
+            &self.descriptor,
+            filters,
+            aggregates,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC AGGREGATE");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_rows(&self.descriptor.type_name, result)
+    }
+
+    /// Run grouped aggregate reductions over entities matching equality filters.
+    pub async fn group_by_aggregate(
+        &self,
+        filters: &[Filter],
+        group_fields: &[String],
+        aggregates: &[DynamicAggregate],
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        let typeql = query_builder::build_dynamic_entity_group_by_aggregate(
+            &self.descriptor,
+            filters,
+            group_fields,
+            aggregates,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC GROUP BY AGGREGATE");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_rows(&self.descriptor.type_name, result)
     }
 
     /// Delete one entity by IID.
@@ -100,21 +197,83 @@ impl<'db> DynamicEntityManager<'db> {
         let typeql =
             query_builder::build_dynamic_entity_delete_by_iid(&self.descriptor, iid, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC DELETE");
-        self.db.execute_raw(&typeql, TxType::Write).await?;
+        self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
+    }
+
+    async fn write_many(
+        &self,
+        items: &[DynamicAttributeMap],
+        operation: DynamicWriteOperation,
+    ) -> Result<Vec<String>> {
+        if items.is_empty() {
+            return Ok(vec![]);
+        }
+
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicEntityManager::with_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                let mut iids = Vec::with_capacity(items.len());
+                for item in items {
+                    match manager.write_one(item, operation).await {
+                        Ok(iid) => iids.push(iid),
+                        Err(error) => {
+                            let _ = tx.rollback().await;
+                            return Err(error);
+                        }
+                    }
+                }
+                tx.commit().await?;
+                Ok(iids)
+            }
+            DynamicExecutionTarget::Transaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                let mut iids = Vec::with_capacity(items.len());
+                for item in items {
+                    iids.push(self.write_one(item, operation).await?);
+                }
+                Ok(iids)
+            }
+        }
+    }
+
+    async fn write_one(
+        &self,
+        item: &DynamicAttributeMap,
+        operation: DynamicWriteOperation,
+    ) -> Result<String> {
+        match operation {
+            DynamicWriteOperation::Insert => self.insert(item).await,
+            DynamicWriteOperation::Put => self.put(item).await,
+        }
     }
 }
 
 /// CRUD manager for a relation described at runtime.
 pub struct DynamicRelationManager<'db> {
-    db: &'db Database,
+    target: DynamicExecutionTarget<'db>,
     descriptor: Arc<RelationDescriptor>,
 }
 
 impl<'db> DynamicRelationManager<'db> {
     /// Create a dynamic relation manager from a registered descriptor.
     pub fn new(db: &'db Database, descriptor: Arc<RelationDescriptor>) -> Self {
-        Self { db, descriptor }
+        Self {
+            target: DynamicExecutionTarget::Database(db),
+            descriptor,
+        }
+    }
+
+    /// Create a dynamic relation manager bound to an existing transaction context.
+    pub fn with_transaction(tx: TransactionContext, descriptor: Arc<RelationDescriptor>) -> Self {
+        Self {
+            target: DynamicExecutionTarget::Transaction(tx),
+            descriptor,
+        }
     }
 
     /// Return the descriptor used by this manager.
@@ -135,15 +294,94 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION INSERT");
-        let result = self.db.execute_raw(&typeql, TxType::Write).await?;
+        let result = self.target.execute(&typeql, TxType::Write).await?;
         extract_insert_iid(&self.descriptor.type_name, result)
+    }
+
+    /// Insert multiple dynamic relations in one Rust transaction.
+    pub async fn insert_many(
+        &self,
+        items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
+    ) -> Result<Vec<String>> {
+        self.write_many(items, DynamicWriteOperation::Insert).await
+    }
+
+    /// Put one dynamic relation and return its IID.
+    pub async fn put(
+        &self,
+        attributes: &DynamicAttributeMap,
+        role_players: &[DynamicRolePlayerInput],
+    ) -> Result<String> {
+        let typeql = query_builder::build_dynamic_relation_put(
+            &self.descriptor,
+            attributes,
+            role_players,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION PUT");
+        let result = self.target.execute(&typeql, TxType::Write).await?;
+        extract_insert_iid(&self.descriptor.type_name, result)
+    }
+
+    /// Put multiple dynamic relations in one Rust transaction.
+    pub async fn put_many(
+        &self,
+        items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
+    ) -> Result<Vec<String>> {
+        self.write_many(items, DynamicWriteOperation::Put).await
+    }
+
+    /// Update one dynamic relation's scalar non-key attributes.
+    pub async fn update(
+        &self,
+        iid: Option<&str>,
+        attributes: &DynamicAttributeMap,
+        role_players: &[DynamicRolePlayerInput],
+    ) -> Result<()> {
+        let typeql = query_builder::build_dynamic_relation_update(
+            &self.descriptor,
+            iid,
+            attributes,
+            role_players,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION UPDATE");
+        self.target.execute(&typeql, TxType::Write).await?;
+        Ok(())
     }
 
     /// Fetch relations matching equality filters.
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<DynamicRelationRow>> {
         let typeql = query_builder::build_dynamic_relation_fetch(&self.descriptor, filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION FETCH");
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        match result {
+            QueryResult::Documents(docs) => docs
+                .iter()
+                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
+                .collect(),
+            QueryResult::Ok => Ok(vec![]),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from fetch query, got Rows".into(),
+            }),
+        }
+    }
+
+    /// Fetch relations matching attribute and role-player filters.
+    pub async fn get_with_role_filters(
+        &self,
+        filters: &[Filter],
+        role_filters: &[DynamicRolePlayerInput],
+    ) -> Result<Vec<DynamicRelationRow>> {
+        let typeql = query_builder::build_dynamic_relation_fetch_with_role_filters(
+            &self.descriptor,
+            filters,
+            role_filters,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION FETCH WITH ROLE FILTERS");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
             QueryResult::Documents(docs) => docs
                 .iter()
@@ -173,6 +411,25 @@ impl<'db> DynamicRelationManager<'db> {
         }
     }
 
+    /// Fetch relation rows by TypeDB IID.
+    pub async fn get_by_iid(&self, iid: &str) -> Result<Vec<DynamicRelationRow>> {
+        let typeql =
+            query_builder::build_dynamic_relation_fetch_by_iid(&self.descriptor, iid, "$r")?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION FETCH BY IID");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        match result {
+            QueryResult::Documents(docs) => docs
+                .iter()
+                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
+                .collect(),
+            QueryResult::Ok => Ok(vec![]),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from fetch query, got Rows".into(),
+            }),
+        }
+    }
+
     /// Fetch all relations for this descriptor.
     pub async fn all(&self) -> Result<Vec<DynamicRelationRow>> {
         self.get(&[]).await
@@ -187,8 +444,44 @@ impl<'db> DynamicRelationManager<'db> {
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
         let typeql = query_builder::build_dynamic_relation_count(&self.descriptor, filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION COUNT");
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
+        let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
+    }
+
+    /// Run aggregate reductions over relations matching equality filters.
+    pub async fn aggregate(
+        &self,
+        filters: &[Filter],
+        aggregates: &[DynamicAggregate],
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        let typeql = query_builder::build_dynamic_relation_aggregate(
+            &self.descriptor,
+            filters,
+            aggregates,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION AGGREGATE");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_rows(&self.descriptor.type_name, result)
+    }
+
+    /// Run grouped aggregate reductions over relations matching equality filters.
+    pub async fn group_by_aggregate(
+        &self,
+        filters: &[Filter],
+        group_fields: &[String],
+        aggregates: &[DynamicAggregate],
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        let typeql = query_builder::build_dynamic_relation_group_by_aggregate(
+            &self.descriptor,
+            filters,
+            group_fields,
+            aggregates,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION GROUP BY AGGREGATE");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_rows(&self.descriptor.type_name, result)
     }
 
     /// Delete one relation by IID.
@@ -196,8 +489,98 @@ impl<'db> DynamicRelationManager<'db> {
         let typeql =
             query_builder::build_dynamic_relation_delete_by_iid(&self.descriptor, iid, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION DELETE");
-        self.db.execute_raw(&typeql, TxType::Write).await?;
+        self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
+    }
+
+    async fn write_many(
+        &self,
+        items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
+        operation: DynamicWriteOperation,
+    ) -> Result<Vec<String>> {
+        if items.is_empty() {
+            return Ok(vec![]);
+        }
+
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicRelationManager::with_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                let mut iids = Vec::with_capacity(items.len());
+                for (attributes, role_players) in items {
+                    match manager.write_one(attributes, role_players, operation).await {
+                        Ok(iid) => iids.push(iid),
+                        Err(error) => {
+                            let _ = tx.rollback().await;
+                            return Err(error);
+                        }
+                    }
+                }
+                tx.commit().await?;
+                Ok(iids)
+            }
+            DynamicExecutionTarget::Transaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                let mut iids = Vec::with_capacity(items.len());
+                for (attributes, role_players) in items {
+                    iids.push(self.write_one(attributes, role_players, operation).await?);
+                }
+                Ok(iids)
+            }
+        }
+    }
+
+    async fn write_one(
+        &self,
+        attributes: &DynamicAttributeMap,
+        role_players: &[DynamicRolePlayerInput],
+        operation: DynamicWriteOperation,
+    ) -> Result<String> {
+        match operation {
+            DynamicWriteOperation::Insert => self.insert(attributes, role_players).await,
+            DynamicWriteOperation::Put => self.put(attributes, role_players).await,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DynamicWriteOperation {
+    Insert,
+    Put,
+}
+
+enum DynamicExecutionTarget<'db> {
+    Database(&'db Database),
+    Transaction(TransactionContext),
+}
+
+impl DynamicExecutionTarget<'_> {
+    async fn execute(&self, typeql: &str, required_tx_type: TxType) -> Result<QueryResult> {
+        match self {
+            Self::Database(db) => db.execute_raw(typeql, required_tx_type).await,
+            Self::Transaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), required_tx_type)?;
+                tx.query(typeql).await
+            }
+        }
+    }
+}
+
+fn ensure_transaction_can_execute(active: TxType, required: TxType) -> Result<()> {
+    let allowed = match required {
+        TxType::Read => matches!(active, TxType::Read | TxType::Write),
+        TxType::Write => active == TxType::Write,
+        TxType::Schema => active == TxType::Schema,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(OrmError::Transaction(format!(
+            "Cannot execute {required:?} operation in {active:?} transaction"
+        )))
     }
 }
 
@@ -224,6 +607,28 @@ fn extract_insert_iid(type_name: &str, result: QueryResult) -> Result<String> {
         QueryResult::Rows(_) => Err(OrmError::Hydration {
             type_name: type_name.to_string(),
             message: "Expected Documents from insert+fetch, got Rows".into(),
+        }),
+    }
+}
+
+fn extract_rows(
+    type_name: &str,
+    result: QueryResult,
+) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+    match result {
+        QueryResult::Rows(rows) => rows
+            .into_iter()
+            .map(|row| {
+                row.as_object().cloned().ok_or_else(|| OrmError::Hydration {
+                    type_name: type_name.to_string(),
+                    message: "Expected row object from reduce query".into(),
+                })
+            })
+            .collect(),
+        QueryResult::Ok => Ok(vec![]),
+        QueryResult::Documents(_) => Err(OrmError::Hydration {
+            type_name: type_name.to_string(),
+            message: "Expected Rows from reduce query, got Documents".into(),
         }),
     }
 }
