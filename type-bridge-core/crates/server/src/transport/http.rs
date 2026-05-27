@@ -96,7 +96,8 @@ async fn handle_raw_query(
     State(pipeline): State<Arc<QueryPipeline>>,
     Json(req): Json<RawQueryRequest>,
 ) -> Result<Json<QueryResponse>, PipelineError> {
-    let clauses = parse_typeql_query(&req.query).map_err(|e| PipelineError::Parse(e.to_string()))?;
+    let clauses =
+        parse_typeql_query(&req.query).map_err(|e| PipelineError::Parse(e.to_string()))?;
 
     let output = pipeline
         .execute_query(QueryInput {

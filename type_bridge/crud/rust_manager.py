@@ -45,7 +45,9 @@ class RustTypeDBManager[T: "TypeDBType"]:
             if self._kind == "entity":
                 self._manager_instance = rust_manager_for_entity(self._connection, self._descriptor)
             else:
-                self._manager_instance = rust_manager_for_relation(self._connection, self._descriptor)
+                self._manager_instance = rust_manager_for_relation(
+                    self._connection, self._descriptor
+                )
         return self._manager_instance
 
     def add_hook(self, hook: Any) -> Self:
