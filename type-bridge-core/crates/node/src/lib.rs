@@ -623,6 +623,33 @@ impl NodeDynamicRelationManager {
     }
 }
 
+/// Ensure a TypeDB database exists, creating it if absent.
+///
+/// Fails hard when TypeDB is unreachable — the caller decides whether to
+/// propagate or surface the error; tests should propagate it so that a
+/// missing server is a clear failure rather than a silent skip.
+#[napi(js_name = "ensureRustDatabase")]
+pub fn ensure_rust_database(
+    address: String,
+    database: String,
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<()> {
+    let runtime = Runtime::new().map(Arc::new).map_err(|error| {
+        Error::new(
+            Status::GenericFailure,
+            format!("Failed to create Tokio runtime: {error}"),
+        )
+    })?;
+    let username = username.unwrap_or_else(|| "admin".to_string());
+    let password = password.unwrap_or_else(|| "password".to_string());
+    runtime
+        .block_on(type_bridge_orm::ensure_database_exists(
+            &address, &database, &username, &password,
+        ))
+        .map_err(napi_orm_error)
+}
+
 /// Connect to TypeDB using the shared Rust ORM session layer.
 #[napi(js_name = "connectRustDatabase")]
 pub fn connect_rust_database(
@@ -889,19 +916,15 @@ fn role_players_from_json(
             .as_object()
             .ok_or_else(|| Error::from_reason("Each role player must be an object"))?;
         let role_name = required_string(obj, "role_name")?;
-        let role = descriptor
-            .role(&role_name)
-            .ok_or_else(|| Error::from_reason(format!("Unknown role '{role_name}'")))?;
-        let player_type_name = required_string(obj, "player_type_name")?;
-        if !role
-            .player_type_names
-            .iter()
-            .any(|type_name| type_name == &player_type_name)
-        {
-            return Err(Error::from_reason(format!(
-                "Role '{role_name}' cannot be played by '{player_type_name}'"
-            )));
+        // Validate that the role exists, but not the player's concrete type.
+        // A role's declared player_type_names are the (possibly abstract)
+        // declared targets; any concrete subtype is a legal player. Subtype
+        // compatibility is enforced by TypeDB at insert time — mirroring the
+        // orm backend, which performs no player-type membership check here.
+        if descriptor.role(&role_name).is_none() {
+            return Err(Error::from_reason(format!("Unknown role '{role_name}'")));
         }
+        let player_type_name = required_string(obj, "player_type_name")?;
 
         let iid = obj
             .get("iid")
@@ -1328,16 +1351,6 @@ fn napi_orm_error(error: OrmError) -> napi::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    mod attribute_crud_integration;
-    mod chainable_semantics_integration;
-    mod entity_crud_integration;
-    mod filter_lookup_integration;
-    mod integration_support;
-    mod multivalue_crud_integration;
-    mod relation_crud_integration;
-    mod relation_roles_integration;
-    mod transaction_integration;
 
     fn person_descriptor_json() -> String {
         r#"{

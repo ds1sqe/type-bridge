@@ -31,6 +31,43 @@ impl RealBackend {
     }
 }
 
+/// Ensure a TypeDB database exists, creating it if absent.
+///
+/// Connects with a standalone driver, checks whether the named database exists,
+/// and creates it only when it does not.  Returns `Err` on any TypeDB failure
+/// (including unreachable server) so callers can treat the error as a hard
+/// failure rather than silently skipping.
+pub async fn ensure_database_exists(
+    address: &str,
+    database: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), OrmError> {
+    let driver = TypeDBDriver::new(
+        address,
+        Credentials::new(username, password),
+        DriverOptions::new(false, None)
+            .map_err(|e| OrmError::Connection(format!("Driver options error: {e}")))?,
+    )
+    .await
+    .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))?;
+
+    let databases = driver.databases();
+    let exists = databases
+        .contains(database)
+        .await
+        .map_err(|e| OrmError::Connection(format!("Database lookup failed: {e}")))?;
+
+    if !exists {
+        databases
+            .create(database)
+            .await
+            .map_err(|e| OrmError::Connection(format!("Database create failed: {e}")))?;
+    }
+
+    Ok(())
+}
+
 impl DriverBackend for RealBackend {
     fn open_transaction(
         &self,

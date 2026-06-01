@@ -417,6 +417,15 @@ function optionalJson(value) {
   return value == null ? null : JSON.stringify(value);
 }
 
+function ensureDatabase(address, database, options) {
+  loadNative().ensureRustDatabase(
+    address,
+    database,
+    options?.username ?? null,
+    options?.password ?? null,
+  );
+}
+
 module.exports = {
   DescriptorRegistry,
   Marshalling,
@@ -431,6 +440,7 @@ module.exports = {
   decimal,
   double,
   duration,
+  ensureDatabase,
   loadNative,
   long,
   longFromNumberUnsafe,

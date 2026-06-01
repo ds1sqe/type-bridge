@@ -73,6 +73,13 @@ export interface AggregateInput {
 
 export interface RolePlayerInput {
   role_name: string;
+  /**
+   * The concrete type of the player. The binding validates only that the role
+   * exists; whether this type may actually play the role (including via
+   * subtyping of an abstract declared player type) is enforced by TypeDB at
+   * insert time, so an incompatible type surfaces as a TypeDB error, not a
+   * binding error.
+   */
   player_type_name: string;
   iid?: string | null;
   key_attr?: string | null;
@@ -227,6 +234,12 @@ export interface NativeDynamicRelationManager {
 }
 
 export interface NativeRuntime {
+  ensureRustDatabase(
+    address: string,
+    database: string,
+    username?: string | null,
+    password?: string | null,
+  ): void;
   connectRustDatabase(
     address: string,
     database: string,
@@ -242,6 +255,31 @@ export interface NativeModule extends NativeRuntime, NativeMarshalling {
 export interface RustDatabaseConnectOptions {
   username?: string | null;
   password?: string | null;
+}
+
+export interface EnsureDatabaseOptions {
+  username?: string | null;
+  password?: string | null;
+}
+
+/**
+ * Ensure the named TypeDB database exists, creating it if absent.
+ *
+ * Fails hard when TypeDB is unreachable — callers should let the error
+ * propagate so that a missing server shows up as a clear failure, not a
+ * silent skip.
+ */
+export function ensureDatabase(
+  address: string,
+  database: string,
+  options?: EnsureDatabaseOptions,
+): void {
+  loadNative().ensureRustDatabase(
+    address,
+    database,
+    options?.username ?? null,
+    options?.password ?? null,
+  );
 }
 
 declare const nativeModule: NativeModule;

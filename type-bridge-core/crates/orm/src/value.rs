@@ -87,7 +87,7 @@ impl AttributeValue {
     }
 }
 
-fn unwrap_value<'a>(value: &'a serde_json::Value) -> &'a serde_json::Value {
+fn unwrap_value(value: &serde_json::Value) -> &serde_json::Value {
     let Some(obj) = value.as_object() else {
         return value;
     };

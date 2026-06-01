@@ -103,6 +103,8 @@ pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQ
 pub use registry::DescriptorRegistry;
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
+#[cfg(feature = "typedb")]
+pub use session::ensure_database_exists;
 pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use value::AttributeValue;
 

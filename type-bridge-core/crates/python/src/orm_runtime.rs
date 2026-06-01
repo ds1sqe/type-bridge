@@ -875,19 +875,15 @@ fn role_players_from_json(
             .as_object()
             .ok_or_else(|| py_type_error("Each role player must be a dict"))?;
         let role_name = required_string(obj, "role_name")?;
-        let role = descriptor
-            .role(&role_name)
-            .ok_or_else(|| py_value_error(format!("Unknown role '{role_name}'")))?;
-        let player_type_name = required_string(obj, "player_type_name")?;
-        if !role
-            .player_type_names
-            .iter()
-            .any(|type_name| type_name == &player_type_name)
-        {
-            return Err(py_value_error(format!(
-                "Role '{role_name}' cannot be played by '{player_type_name}'"
-            )));
+        // Validate that the role exists, but not the player's concrete type.
+        // A role's declared player_type_names are the (possibly abstract)
+        // declared targets; any concrete subtype is a legal player. Subtype
+        // compatibility is enforced by TypeDB at insert time — mirroring the
+        // orm backend, which performs no player-type membership check here.
+        if descriptor.role(&role_name).is_none() {
+            return Err(py_value_error(format!("Unknown role '{role_name}'")));
         }
+        let player_type_name = required_string(obj, "player_type_name")?;
 
         let iid = obj
             .get("iid")

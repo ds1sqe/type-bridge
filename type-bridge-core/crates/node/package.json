@@ -20,11 +20,13 @@
   ],
   "scripts": {
     "build": "npm run build:native && npm run build:types",
-    "build:native": "napi build --platform --release",
+    "build:native": "node scripts/build-native.js",
     "build:types": "tsc -p tsconfig.json",
     "scope:probe": "node tests/scope-probe.cjs",
     "smoke:package": "node tests/package-smoke.cjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:integration": "tsc -p tsconfig.integration.json",
+    "test:integration": "node scripts/run-integration.js"
   },
   "engines": {
     "node": ">=18"
@@ -37,6 +39,7 @@
   },
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4",
+    "@types/node": "^25.9.1",
     "typescript": "^5.5.0"
   }
 }
