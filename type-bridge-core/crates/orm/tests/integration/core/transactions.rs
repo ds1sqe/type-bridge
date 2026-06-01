@@ -1,19 +1,13 @@
 //! Dynamic transaction-bound manager integration tests against TypeDB.
 //!
-//! Run with:
-//! `cargo test -p type-bridge-orm --test dynamic_transaction_integration -- --ignored`
 
-mod dynamic_crud_support;
-
-use dynamic_crud_support::*;
+use crate::common::dynamic_crud::*;
 use type_bridge_orm::*;
 
 #[tokio::test]
-#[ignore = "requires a running TypeDB database; uses TYPEDB_ADDRESS and TYPE_BRIDGE_RUST_INTG_DATABASE"]
 async fn dynamic_entity_transaction_commit_and_rollback_against_typedb() {
-    let Some((db, schema)) = setup_dynamic_database("tx").await else {
-        return;
-    };
+    let _guard = crate::common::integration_test_guard().await;
+    let (db, schema) = setup_dynamic_database("tx").await;
     let descriptor = schema.person_descriptor();
     let db_manager = DynamicEntityManager::new(&db, descriptor.clone());
 

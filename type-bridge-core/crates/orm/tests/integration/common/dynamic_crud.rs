@@ -5,7 +5,10 @@ use std::process;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use type_bridge_orm::*;
+
+use super::typedb::ensure_database_exists;
 
 static NEXT_SCHEMA_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -53,7 +56,7 @@ impl DynamicCrudSchema {
             r#"define
 attribute {name_attr}, value string;
 attribute {company_name_attr}, value string;
-attribute {age_attr}, value long;
+attribute {age_attr}, value integer;
 attribute {score_attr}, value double;
 attribute {active_attr}, value boolean;
 attribute {birthday_attr}, value date;
@@ -148,48 +151,51 @@ pub fn unique_schema_suffix(prefix: &str, scope: &str) -> String {
     format!("{prefix}-{scope}-{}-{id}", process::id())
 }
 
-pub async fn setup_dynamic_database(scope: &str) -> Option<(Database, DynamicCrudSchema)> {
+pub async fn setup_dynamic_database(scope: &str) -> (Database, DynamicCrudSchema) {
     let schema = DynamicCrudSchema::new(scope);
-    let db = connect_dynamic_database().await?;
+    let db = connect_dynamic_database().await;
 
-    if let Err(error) = db
-        .execute_raw(&schema.define_typeql(), TxType::Schema)
+    db.execute_raw(&schema.define_typeql(), TxType::Schema)
         .await
-    {
-        eprintln!("Skipping Rust dynamic integration test: schema define failed ({error})");
-        return None;
-    }
+        .unwrap_or_else(|error| panic!("Rust dynamic integration schema define failed: {error}"));
 
-    Some((db, schema))
+    (db, schema)
 }
 
-pub async fn setup_dynamic_typeql(typeql: &str) -> Option<Database> {
-    let db = connect_dynamic_database().await?;
+pub async fn setup_dynamic_typeql(typeql: &str) -> Database {
+    let db = connect_dynamic_database().await;
 
-    if let Err(error) = db.execute_raw(typeql, TxType::Schema).await {
-        eprintln!("Skipping Rust dynamic integration test: schema define failed ({error})");
-        return None;
-    }
+    db.execute_raw(typeql, TxType::Schema)
+        .await
+        .unwrap_or_else(|error| panic!("Rust dynamic integration schema define failed: {error}"));
 
-    Some(db)
+    db
 }
 
-async fn connect_dynamic_database() -> Option<Database> {
+async fn connect_dynamic_database() -> Database {
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_string());
     let database =
         env::var("TYPE_BRIDGE_RUST_INTG_DATABASE").unwrap_or_else(|_| "type_bridge_test".into());
     let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_string());
     let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_string());
 
-    let db = match Database::connect(&address, &database, &username, &password).await {
-        Ok(db) => db,
-        Err(error) => {
-            eprintln!("Skipping Rust dynamic integration test: TypeDB unavailable ({error})");
-            return None;
-        }
-    };
+    ensure_database_exists(
+        &address,
+        &database,
+        &username,
+        &password,
+        "Rust dynamic integration",
+    )
+    .await;
 
-    Some(db)
+    Database::connect(&address, &database, &username, &password)
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "Rust dynamic integration requires TypeDB at {address} \
+                 database {database}: {error}"
+            )
+        })
 }
 
 pub fn person_attrs(name: &str, age: i64) -> DynamicAttributeMap {
@@ -284,6 +290,29 @@ pub fn count_aggregate() -> DynamicAggregate {
     }
 }
 
+pub fn aggregate_i64(row: &JsonMap<String, JsonValue>, result_key: &str) -> Option<i64> {
+    let prefixed = format!("${result_key}");
+    for key in [prefixed.as_str(), result_key] {
+        let Some(value) = row.get(key) else {
+            continue;
+        };
+        if let Some(number) = value.as_i64() {
+            return Some(number);
+        }
+        if let Some(number) = value.get("value").and_then(JsonValue::as_i64) {
+            return Some(number);
+        }
+        if let Some(number) = value
+            .get("value")
+            .and_then(JsonValue::as_str)
+            .and_then(|value| value.parse().ok())
+        {
+            return Some(number);
+        }
+    }
+    None
+}
+
 pub fn mean_age_aggregate() -> DynamicAggregate {
     DynamicAggregate {
         result_key: "avg_age".into(),
@@ -292,7 +321,7 @@ pub fn mean_age_aggregate() -> DynamicAggregate {
     }
 }
 
-fn attr(
+pub fn attr(
     field_name: &str,
     attr_name: &str,
     value_type: ValueType,

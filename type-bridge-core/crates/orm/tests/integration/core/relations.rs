@@ -1,19 +1,13 @@
 //! Dynamic relation CRUD integration tests against a real TypeDB instance.
 //!
-//! Run with:
-//! `cargo test -p type-bridge-orm --test dynamic_relation_crud_integration -- --ignored`
 
-mod dynamic_crud_support;
-
-use dynamic_crud_support::*;
+use crate::common::dynamic_crud::*;
 use type_bridge_orm::*;
 
 #[tokio::test]
-#[ignore = "requires a running TypeDB database; uses TYPEDB_ADDRESS and TYPE_BRIDGE_RUST_INTG_DATABASE"]
 async fn dynamic_relation_crud_against_typedb() {
-    let Some((db, schema)) = setup_dynamic_database("relation").await else {
-        return;
-    };
+    let _guard = crate::common::integration_test_guard().await;
+    let (db, schema) = setup_dynamic_database("relation").await;
     let person_manager = DynamicEntityManager::new(&db, schema.person_descriptor());
     let company_manager = DynamicEntityManager::new(&db, schema.company_descriptor());
     let relation_manager = DynamicRelationManager::new(&db, schema.employment_descriptor());
@@ -93,20 +87,20 @@ async fn dynamic_relation_crud_against_typedb() {
             .count()
             .await
             .expect("relation count should work"),
-        2
+        3
     );
 
     let aggregate_rows = relation_manager
         .aggregate(&[], &[count_aggregate()])
         .await
         .expect("relation aggregate should work");
-    assert_eq!(aggregate_rows[0]["$count"]["value"], 2);
+    assert_eq!(aggregate_i64(&aggregate_rows[0], "count"), Some(3));
 
     let grouped_rows = relation_manager
         .group_by_aggregate(&[], &[String::from("since")], &[count_aggregate()])
         .await
         .expect("relation group_by_aggregate should work");
-    assert_eq!(grouped_rows.len(), 2);
+    assert_eq!(grouped_rows.len(), 3);
 
     relation_manager
         .delete_by_iid(&relation_iid)

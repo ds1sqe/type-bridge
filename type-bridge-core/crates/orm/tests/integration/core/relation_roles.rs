@@ -1,13 +1,8 @@
 //! Dynamic relation role-shape integration tests against TypeDB.
-//!
-//! Run with:
-//! `cargo test -p type-bridge-orm --test dynamic_relation_roles_integration -- --ignored`
-
-mod dynamic_crud_support;
 
 use std::sync::Arc;
 
-use dynamic_crud_support::*;
+use crate::common::dynamic_crud::*;
 use type_bridge_orm::*;
 
 struct MultiRoleSchema {
@@ -40,7 +35,7 @@ attribute {subject_attr}, value string;
 attribute {label_attr}, value string;
 entity {document_type}, owns {document_id_attr} @key, plays {trace_type}:origin;
 entity {email_type}, owns {subject_attr} @key, plays {trace_type}:origin;
-relation {trace_type}, relates origin, owns {label_attr};
+relation {trace_type}, relates origin @card(0..2), owns {label_attr};
 "#,
             document_id_attr = self.document_id_attr,
             subject_attr = self.subject_attr,
@@ -83,7 +78,7 @@ relation {trace_type}, relates origin, owns {label_attr};
             roles: vec![RoleDescriptor {
                 role_name: "origin".into(),
                 player_type_names: vec![self.document_type.clone(), self.email_type.clone()],
-                cardinality: Some((1, Some(1))),
+                cardinality: Some((1, Some(2))),
             }],
         })
     }
@@ -120,7 +115,7 @@ impl AbstractRoleSchema {
             r#"define
 attribute {token_text_attr}, value string;
 attribute {issue_key_attr}, value string;
-attribute {confidence_attr}, value long;
+attribute {confidence_attr}, value integer;
 entity {token_type} @abstract, owns {token_text_attr} @key, plays {origin_type}:token;
 entity {symptom_type} sub {token_type};
 entity {problem_type} sub {token_type};
@@ -201,12 +196,10 @@ relation {origin_type}, relates token, relates issue, owns {confidence_attr} @ca
 }
 
 #[tokio::test]
-#[ignore = "requires a running TypeDB database; uses TYPEDB_ADDRESS and TYPE_BRIDGE_RUST_INTG_DATABASE"]
 async fn dynamic_relation_single_role_accepts_multiple_player_types_against_typedb() {
+    let _guard = crate::common::integration_test_guard().await;
     let schema = MultiRoleSchema::new();
-    let Some(db) = setup_dynamic_typeql(&schema.define_typeql()).await else {
-        return;
-    };
+    let db = setup_dynamic_typeql(&schema.define_typeql()).await;
     let document_manager = DynamicEntityManager::new(&db, schema.document_descriptor());
     let email_manager = DynamicEntityManager::new(&db, schema.email_descriptor());
     let trace_manager = DynamicRelationManager::new(&db, schema.trace_descriptor());
@@ -290,12 +283,68 @@ async fn dynamic_relation_single_role_accepts_multiple_player_types_against_type
 }
 
 #[tokio::test]
-#[ignore = "requires a running TypeDB database; uses TYPEDB_ADDRESS and TYPE_BRIDGE_RUST_INTG_DATABASE"]
+async fn dynamic_relation_single_role_hydrates_multiple_players_against_typedb() {
+    let _guard = crate::common::integration_test_guard().await;
+    let schema = MultiRoleSchema::new();
+    let db = setup_dynamic_typeql(&schema.define_typeql()).await;
+    let document_manager = DynamicEntityManager::new(&db, schema.document_descriptor());
+    let email_manager = DynamicEntityManager::new(&db, schema.email_descriptor());
+    let trace_manager = DynamicRelationManager::new(&db, schema.trace_descriptor());
+
+    let doc_iid = document_manager
+        .insert(&vec![(
+            "document_id".into(),
+            AttributeValue::String("doc-multi".into()),
+        )])
+        .await
+        .expect("document insert should return IID");
+    let email_iid = email_manager
+        .insert(&vec![(
+            "subject".into(),
+            AttributeValue::String("Multi origin".into()),
+        )])
+        .await
+        .expect("email insert should return IID");
+
+    let roles = vec![
+        role_player("origin", &schema.document_type, &doc_iid),
+        role_player("origin", &schema.email_type, &email_iid),
+    ];
+    trace_manager
+        .insert(
+            &vec![("label".into(), AttributeValue::String("multi".into()))],
+            &roles,
+        )
+        .await
+        .expect("same-role multi-player trace insert should work");
+
+    let rows = trace_manager
+        .get(&[Filter::string_eq("label", "multi")])
+        .await
+        .expect("same-role multi-player trace should fetch");
+    assert!(
+        rows.iter().all(|row| row.iid == rows[0].iid),
+        "same relation may be returned once per role-player binding"
+    );
+
+    let mut origin_types: Vec<_> = rows
+        .iter()
+        .flat_map(|row| row.role_players.iter())
+        .filter(|player| player.role_name == "origin")
+        .filter_map(|player| player.player_type_name.as_deref())
+        .collect();
+    origin_types.sort_unstable();
+    origin_types.dedup();
+    assert_eq!(origin_types.len(), 2);
+    assert!(origin_types.contains(&schema.document_type.as_str()));
+    assert!(origin_types.contains(&schema.email_type.as_str()));
+}
+
+#[tokio::test]
 async fn dynamic_relation_abstract_role_resolves_concrete_players_against_typedb() {
+    let _guard = crate::common::integration_test_guard().await;
     let schema = AbstractRoleSchema::new();
-    let Some(db) = setup_dynamic_typeql(&schema.define_typeql()).await else {
-        return;
-    };
+    let db = setup_dynamic_typeql(&schema.define_typeql()).await;
     let token_manager = DynamicEntityManager::new(&db, schema.token_descriptor());
     let symptom_manager = DynamicEntityManager::new(&db, schema.symptom_descriptor());
     let problem_manager = DynamicEntityManager::new(&db, schema.problem_descriptor());
@@ -388,24 +437,5 @@ fn role_player(role_name: &str, player_type_name: &str, iid: &str) -> DynamicRol
         player_type_name: player_type_name.into(),
         iid: Some(iid.into()),
         key: None,
-    }
-}
-
-fn attr(
-    field_name: &str,
-    attr_name: &str,
-    value_type: ValueType,
-    is_key: bool,
-) -> OwnedAttributeDescriptor {
-    OwnedAttributeDescriptor {
-        field_name: field_name.into(),
-        attr_name: attr_name.into(),
-        value_type,
-        annotations: if is_key {
-            vec![Annotation::Key]
-        } else {
-            vec![]
-        },
-        is_optional: !is_key,
     }
 }

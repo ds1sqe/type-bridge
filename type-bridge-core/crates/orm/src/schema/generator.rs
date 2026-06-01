@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use crate::attribute::ValueType;
+
 use super::info::{EntitySchemaEntry, RelationSchemaEntry, SchemaInfo};
 
 /// Generate a TypeQL `define` block from the given schema info.
@@ -11,7 +13,7 @@ use super::info::{EntitySchemaEntry, RelationSchemaEntry, SchemaInfo};
 /// define
 ///
 /// attribute name, value string;
-/// attribute age, value long;
+/// attribute age, value integer;
 ///
 /// entity person,
 ///     owns name @key,
@@ -36,7 +38,8 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
         let attr = &info.attributes[*attr_name];
         lines.push(format!(
             "attribute {}, value {};",
-            attr.attr_name, attr.value_type
+            attr.attr_name,
+            typedb_value_type(&attr.value_type)
         ));
     }
     if !attr_names.is_empty() {
@@ -192,6 +195,20 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
     lines.join("\n")
 }
 
+fn typedb_value_type(value_type: &ValueType) -> &'static str {
+    match value_type {
+        ValueType::String => "string",
+        ValueType::Long => "integer",
+        ValueType::Double => "double",
+        ValueType::Boolean => "boolean",
+        ValueType::Date => "date",
+        ValueType::DateTime => "datetime",
+        ValueType::DateTimeTz => "datetime-tz",
+        ValueType::Decimal => "decimal",
+        ValueType::Duration => "duration",
+    }
+}
+
 /// Build the entity header line: `entity <name> [sub <parent>] [@abstract]`.
 fn build_entity_header(entity: &EntitySchemaEntry) -> String {
     let mut header = format!("entity {}", entity.type_name);
@@ -285,7 +302,7 @@ mod tests {
         );
 
         let result = generate_define_block(&info);
-        assert!(result.contains("attribute age, value long;"));
+        assert!(result.contains("attribute age, value integer;"));
         assert!(result.contains("attribute name, value string;"));
         // age before name (alphabetical)
         let age_pos = result.find("attribute age").unwrap();

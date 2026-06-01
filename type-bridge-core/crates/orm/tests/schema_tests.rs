@@ -320,7 +320,7 @@ fn generate_schema_produces_valid_typeql() {
     let typeql = schema.generate_schema().unwrap();
     assert!(typeql.starts_with("define"));
     assert!(typeql.contains("attribute name, value string;"));
-    assert!(typeql.contains("attribute age, value long;"));
+    assert!(typeql.contains("attribute age, value integer;"));
     assert!(typeql.contains("attribute position, value string;"));
     assert!(typeql.contains("entity person,"));
     assert!(typeql.contains("entity company,"));

@@ -52,15 +52,12 @@ pub fn build_fetch<T: TypeBridgeEntity>(filters: &[Filter], var: &str) -> Result
 /// Uses IID or @key attributes for identification. Produces:
 /// ```text
 /// match $e isa person, has name "Alice";
-/// delete $e isa person;
+/// delete $e;
 /// ```
 pub fn build_delete<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String> {
     let clauses = vec![
         Clause::Match(vec![entity.to_match_pattern(var)]),
-        Clause::Delete(vec![Statement::Isa {
-            variable: var.to_string(),
-            type_name: T::TYPE_NAME.to_string(),
-        }]),
+        Clause::Delete(vec![Statement::DeleteThing(var.to_string())]),
     ];
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
@@ -125,7 +122,7 @@ pub fn build_dynamic_entity_put(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_put_clauses(descriptor, attributes, var);
+    let clauses = crate::dynamic::entity_put_clauses(descriptor, attributes, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -267,13 +264,49 @@ pub fn build_update<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String
 /// TypeDB will insert if no matching entity exists, or update if one does.
 ///
 /// ```text
-/// put $e isa person, has name "Alice", has age 30;
+/// put $e isa person, has name "Alice";
+/// update $e has age 30;
 /// fetch { "iid": iid($e) };
 /// ```
 pub fn build_put<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String> {
-    let typeql = build_insert_with_iid::<T>(entity, var)?;
-    // Replace the first occurrence of "insert" with "put"
-    Ok(typeql.replacen("insert", "put", 1))
+    let key_attrs: HashSet<&'static str> = T::owned_attributes()
+        .iter()
+        .filter(|a| a.is_key())
+        .map(|a| a.attr_name)
+        .collect();
+    let attr_values = entity.to_attribute_values();
+
+    let mut put_statements = vec![Statement::Isa {
+        variable: var.to_string(),
+        type_name: T::TYPE_NAME.to_string(),
+    }];
+    let mut update_statements = Vec::new();
+
+    for (attr_name, value) in attr_values {
+        let statement = Statement::Has {
+            subject_var: var.to_string(),
+            attr_name: attr_name.to_string(),
+            value: value.to_ast_value(),
+        };
+        if key_attrs.is_empty() || key_attrs.contains(attr_name) {
+            put_statements.push(statement);
+        } else {
+            update_statements.push(statement);
+        }
+    }
+
+    let mut clauses = vec![Clause::Put(put_statements)];
+    if !update_statements.is_empty() {
+        clauses.push(Clause::Update(update_statements));
+    }
+    clauses.push(Clause::Fetch(vec![FetchItem::Function {
+        key: "iid".to_string(),
+        func_name: "iid".to_string(),
+        var: var.to_string(),
+    }]));
+
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
 }
 
 // ------------------------------------------------------------------
@@ -312,10 +345,7 @@ pub fn build_relation_delete<R: TypeBridgeRelation>(relation: &R, var: &str) -> 
     let match_patterns = relation.to_match_pattern(var);
     let clauses = vec![
         Clause::Match(match_patterns),
-        Clause::Delete(vec![Statement::Isa {
-            variable: var.to_string(),
-            type_name: R::TYPE_NAME.to_string(),
-        }]),
+        Clause::Delete(vec![Statement::DeleteThing(var.to_string())]),
     ];
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
@@ -536,7 +566,7 @@ pub fn build_expr_fetch<T: TypeBridgeEntity>(
     // Add Has bindings for sort attributes
     let mut sort_ast_fields = Vec::new();
     for (i, (attr, dir)) in sort_fields.iter().enumerate() {
-        let sort_var = format!("$_sort{}", i);
+        let sort_var = format!("$sort{}", i);
         match_patterns.push(Pattern::Has {
             thing_var: var.to_string(),
             attr_type: attr.clone(),
@@ -565,7 +595,7 @@ pub fn build_expr_fetch<T: TypeBridgeEntity>(
         },
     ];
 
-    let mut clauses = vec![Clause::Match(match_patterns), Clause::Fetch(fetch_items)];
+    let mut clauses = vec![Clause::Match(match_patterns)];
 
     if !sort_ast_fields.is_empty() {
         clauses.push(Clause::Sort(sort_ast_fields));
@@ -576,6 +606,7 @@ pub fn build_expr_fetch<T: TypeBridgeEntity>(
     if let Some(n) = offset {
         clauses.push(Clause::Offset(n));
     }
+    clauses.push(Clause::Fetch(fetch_items));
 
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
@@ -589,7 +620,7 @@ pub fn build_expr_count<T: TypeBridgeEntity>(filters: &[Expr], var: &str) -> Res
         Clause::Match(match_patterns),
         Clause::Reduce {
             assignments: vec![ReduceAssignment {
-                variable: "$_count".to_string(),
+                variable: "$count".to_string(),
                 expression: Value::FunctionCall(FunctionCallValue {
                     function: "count".into(),
                     args: vec![Value::Variable(var.to_string())],
@@ -688,7 +719,7 @@ pub fn build_relation_expr_fetch<R: TypeBridgeRelation>(
 
     let mut sort_ast_fields = Vec::new();
     for (i, (attr, dir)) in sort_fields.iter().enumerate() {
-        let sort_var = format!("$_sort{}", i);
+        let sort_var = format!("$sort{}", i);
         match_patterns.push(Pattern::Has {
             thing_var: var.to_string(),
             attr_type: attr.clone(),
@@ -712,7 +743,7 @@ pub fn build_relation_expr_fetch<R: TypeBridgeRelation>(
         },
     ];
 
-    let mut clauses = vec![Clause::Match(match_patterns), Clause::Fetch(fetch_items)];
+    let mut clauses = vec![Clause::Match(match_patterns)];
 
     if !sort_ast_fields.is_empty() {
         clauses.push(Clause::Sort(sort_ast_fields));
@@ -723,6 +754,7 @@ pub fn build_relation_expr_fetch<R: TypeBridgeRelation>(
     if let Some(n) = offset {
         clauses.push(Clause::Offset(n));
     }
+    clauses.push(Clause::Fetch(fetch_items));
 
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
@@ -739,7 +771,7 @@ pub fn build_relation_expr_count<R: TypeBridgeRelation>(
         Clause::Match(match_patterns),
         Clause::Reduce {
             assignments: vec![ReduceAssignment {
-                variable: "$_count".to_string(),
+                variable: "$count".to_string(),
                 expression: Value::FunctionCall(FunctionCallValue {
                     function: "count".into(),
                     args: vec![Value::Variable(var.to_string())],
@@ -796,7 +828,7 @@ pub fn build_expr_group_by_aggregate<T: TypeBridgeEntity>(
 ) -> Result<String> {
     let mut match_patterns = build_entity_match_patterns::<T>(var, filters);
 
-    let group_var = "$_group0".to_string();
+    let group_var = "$group0".to_string();
     match_patterns.push(Pattern::Has {
         thing_var: var.to_string(),
         attr_type: group_field.to_string(),
@@ -834,7 +866,7 @@ pub fn build_relation_group_by_aggregate<R: TypeBridgeRelation>(
 ) -> Result<String> {
     let mut match_patterns = build_relation_match_patterns::<R>(var, filters);
 
-    let group_var = "$_group0".to_string();
+    let group_var = "$group0".to_string();
     match_patterns.push(Pattern::Has {
         thing_var: var.to_string(),
         attr_type: group_field.to_string(),
@@ -1077,8 +1109,8 @@ mod tests {
     fn expr_fetch_with_gt_filter() {
         let filters = [Expr::gt("age", AttributeValue::Long(30))];
         let q = build_expr_fetch::<TestPerson>(&filters, &[], None, None, "$e").unwrap();
-        assert!(q.contains("$e has age $_attr0"));
-        assert!(q.contains("$_attr0 > 30"));
+        assert!(q.contains("$e has age $attr0"));
+        assert!(q.contains("$attr0 > 30"));
         assert!(q.contains("sub person"));
         assert!(q.contains("fetch"));
     }
@@ -1087,8 +1119,8 @@ mod tests {
     fn expr_fetch_with_sort() {
         let sort = [("age".to_string(), SortDir::Asc)];
         let q = build_expr_fetch::<TestPerson>(&[], &sort, None, None, "$e").unwrap();
-        assert!(q.contains("$e has age $_sort0"));
-        assert!(q.contains("sort $_sort0 asc;"));
+        assert!(q.contains("$e has age $sort0"));
+        assert!(q.contains("sort $sort0 asc;"));
     }
 
     #[test]
@@ -1106,11 +1138,11 @@ mod tests {
             ("age".to_string(), SortDir::Desc),
         ];
         let q = build_expr_fetch::<TestPerson>(&filters, &sort, Some(10), Some(20), "$e").unwrap();
-        assert!(q.contains("$e has age $_attr0"));
-        assert!(q.contains("$_attr0 >= 18"));
-        assert!(q.contains("$e has name $_sort0"));
-        assert!(q.contains("$e has age $_sort1"));
-        assert!(q.contains("sort $_sort0 asc, $_sort1 desc;"));
+        assert!(q.contains("$e has age $attr0"));
+        assert!(q.contains("$attr0 >= 18"));
+        assert!(q.contains("$e has name $sort0"));
+        assert!(q.contains("$e has age $sort1"));
+        assert!(q.contains("sort $sort0 asc, $sort1 desc;"));
         assert!(q.contains("limit 10;"));
         assert!(q.contains("offset 20;"));
     }
@@ -1119,8 +1151,8 @@ mod tests {
     fn expr_count_with_filter() {
         let filters = [Expr::eq("name", AttributeValue::String("Alice".into()))];
         let q = build_expr_count::<TestPerson>(&filters, "$e").unwrap();
-        assert!(q.contains("$e has name $_attr0"));
-        assert!(q.contains("$_attr0 == \"Alice\""));
+        assert!(q.contains("$e has name $attr0"));
+        assert!(q.contains("$attr0 == \"Alice\""));
         assert!(q.contains("reduce"));
         assert!(q.contains("count"));
     }
@@ -1129,8 +1161,8 @@ mod tests {
     fn expr_aggregate_sum() {
         let aggs = [Agg::Sum("age".into())];
         let q = build_expr_aggregate::<TestPerson>(&[], &aggs, "$e").unwrap();
-        assert!(q.contains("$e has age $_agg100"));
-        assert!(q.contains("$_sum = sum($_agg100)"));
+        assert!(q.contains("$e has age $agg100"));
+        assert!(q.contains("$sum = sum($agg100)"));
         assert!(q.contains("reduce"));
     }
 
@@ -1138,7 +1170,7 @@ mod tests {
     fn expr_aggregate_count_and_sum() {
         let aggs = [Agg::Count, Agg::Sum("age".into())];
         let q = build_expr_aggregate::<TestPerson>(&[], &aggs, "$e").unwrap();
-        assert!(q.contains("$_count = count($e)"));
-        assert!(q.contains("$_sum = sum($_agg100)"));
+        assert!(q.contains("$count = count($e)"));
+        assert!(q.contains("$sum = sum($agg100)"));
     }
 }

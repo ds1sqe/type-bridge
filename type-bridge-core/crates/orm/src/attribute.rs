@@ -177,6 +177,12 @@ macro_rules! define_attribute {
             }
         }
     };
+    ($name:ident, $attr_name:expr, "integer") => {
+        $crate::define_attribute!($name, $attr_name, "long");
+    };
+    ($name:ident, $attr_name:expr, "int") => {
+        $crate::define_attribute!($name, $attr_name, "long");
+    };
     ($name:ident, $attr_name:expr, "double") => {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub f64);
@@ -218,6 +224,9 @@ macro_rules! define_attribute {
                 }
             }
         }
+    };
+    ($name:ident, $attr_name:expr, "bool") => {
+        $crate::define_attribute!($name, $attr_name, "boolean");
     };
     ($name:ident, $attr_name:expr, "date") => {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

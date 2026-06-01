@@ -90,8 +90,85 @@ pub(crate) fn entity_put_clauses(
     descriptor: &EntityDescriptor,
     attributes: &DynamicAttributeMap,
     var: &str,
-) -> Vec<Clause> {
-    entity_write_with_iid_clauses(ClauseKind::Put, descriptor, attributes, var)
+) -> Result<Vec<Clause>> {
+    let key_attrs: Vec<_> = descriptor
+        .owned_attributes
+        .iter()
+        .filter(|attr| attr.is_key())
+        .collect();
+    if key_attrs.is_empty()
+        || !key_attrs
+            .iter()
+            .any(|key_attr| find_attribute_value(attributes, key_attr).is_some())
+    {
+        return Ok(entity_write_with_iid_clauses(
+            ClauseKind::Put,
+            descriptor,
+            attributes,
+            var,
+        ));
+    }
+
+    let mut put_statements = vec![Statement::Isa {
+        variable: var.to_string(),
+        type_name: descriptor.type_name.clone(),
+    }];
+    let mut has_non_key_attributes = false;
+
+    for (attr_name, value) in attributes {
+        let attr = descriptor
+            .owned_attributes
+            .iter()
+            .find(|attr| attr_name == &attr.field_name || attr_name == &attr.attr_name)
+            .ok_or_else(|| {
+                OrmError::QueryExecution(format!(
+                    "Dynamic put for {} references unknown attribute {attr_name}",
+                    descriptor.type_name
+                ))
+            })?;
+
+        if attr.is_key() {
+            put_statements.push(Statement::Has {
+                subject_var: var.to_string(),
+                attr_name: attr.attr_name.clone(),
+                value: value.to_ast_value(),
+            });
+        } else {
+            has_non_key_attributes = true;
+        }
+    }
+
+    let mut clauses = vec![Clause::Put(put_statements)];
+    if has_non_key_attributes {
+        let constraints = entity_identification_constraints(descriptor, None, attributes)?;
+        let mut match_patterns = vec![Pattern::Entity {
+            variable: var.to_string(),
+            type_name: descriptor.type_name.clone(),
+            constraints,
+            is_strict: false,
+        }];
+        let mutation = update_mutation_clauses(
+            &descriptor.type_name,
+            descriptor
+                .owned_attributes
+                .iter()
+                .map(|attr| (attr, attr.is_key())),
+            attributes,
+            var,
+        )?;
+        match_patterns.extend(mutation.match_patterns);
+        clauses.push(Clause::Match(match_patterns));
+        if !mutation.delete_statements.is_empty() {
+            clauses.push(Clause::Delete(mutation.delete_statements));
+        }
+        clauses.push(Clause::Insert(mutation.insert_statements));
+    }
+    clauses.push(Clause::Fetch(vec![FetchItem::Function {
+        key: "iid".to_string(),
+        func_name: "iid".to_string(),
+        var: var.to_string(),
+    }]));
+    Ok(clauses)
 }
 
 pub(crate) fn entity_update_clauses(
@@ -136,7 +213,11 @@ fn entity_write_with_iid_clauses(
         variable: var.to_string(),
         type_name: descriptor.type_name.clone(),
     }];
-    statements.extend(attribute_statements(var, attributes));
+    statements.extend(attribute_statements(
+        var,
+        &descriptor.owned_attributes,
+        attributes,
+    ));
     let write_clause = match kind {
         ClauseKind::Insert => Clause::Insert(statements),
         ClauseKind::Put => Clause::Put(statements),
@@ -365,7 +446,7 @@ fn relation_write_with_iid_clauses(
         type_name: descriptor.type_name.clone(),
         role_players: role_player_bindings(role_players),
         include_variable: true,
-        attributes: attribute_statements(var, attributes),
+        attributes: attribute_statements(var, &descriptor.owned_attributes, attributes),
     };
     clauses.push(match kind {
         ClauseKind::Insert => Clause::Insert(vec![relation_statement]),
@@ -598,15 +679,30 @@ pub(crate) fn relation_delete_by_iid_clauses(
     ]
 }
 
-fn attribute_statements(var: &str, attributes: &DynamicAttributeMap) -> Vec<Statement> {
+fn attribute_statements(
+    var: &str,
+    descriptors: &[OwnedAttributeDescriptor],
+    attributes: &DynamicAttributeMap,
+) -> Vec<Statement> {
     attributes
         .iter()
         .map(|(attr_name, value)| Statement::Has {
             subject_var: var.to_string(),
-            attr_name: attr_name.clone(),
+            attr_name: resolve_input_attribute_name(descriptors, attr_name),
             value: value.to_ast_value(),
         })
         .collect()
+}
+
+fn resolve_input_attribute_name(
+    descriptors: &[OwnedAttributeDescriptor],
+    input_name: &str,
+) -> String {
+    descriptors
+        .iter()
+        .find(|attr| input_name == attr.field_name || input_name == attr.attr_name)
+        .map(|attr| attr.attr_name.clone())
+        .unwrap_or_else(|| input_name.to_string())
 }
 
 fn entity_identification_constraints(

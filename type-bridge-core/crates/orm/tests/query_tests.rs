@@ -454,7 +454,7 @@ async fn query_count_returns_value() {
 #[tokio::test]
 async fn query_aggregate_sum() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$_agg100": 1500}),
+        serde_json::json!({"$sum": 1500}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
@@ -466,7 +466,7 @@ async fn query_aggregate_sum() {
         .await
         .unwrap();
 
-    assert_eq!(result.get_i64("$_agg100"), Some(1500));
+    assert_eq!(result.get_i64("$sum"), Some(1500));
 
     let recorded = queries.lock().unwrap();
     let q = &recorded[0];
@@ -596,7 +596,7 @@ async fn relation_query_first() {
 #[tokio::test]
 async fn relation_query_aggregate() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$_count": 10}),
+        serde_json::json!({"$count": 10}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
@@ -734,8 +734,8 @@ async fn query_with_endswith() {
 #[tokio::test]
 async fn entity_group_by_aggregate() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$_group0": "Engineering", "$_mean": 35.5}),
-        serde_json::json!({"$_group0": "Sales", "$_mean": 28.3}),
+        serde_json::json!({"$group0": "Engineering", "$mean": 35.5}),
+        serde_json::json!({"$group0": "Sales", "$mean": 28.3}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
@@ -750,18 +750,18 @@ async fn entity_group_by_aggregate() {
 
     assert_eq!(result.len(), 2);
     assert_eq!(
-        result.get_by_str("Engineering").unwrap().get_f64("$_mean"),
+        result.get_by_str("Engineering").unwrap().get_f64("$mean"),
         Some(35.5)
     );
     assert_eq!(
-        result.get_by_str("Sales").unwrap().get_f64("$_mean"),
+        result.get_by_str("Sales").unwrap().get_f64("$mean"),
         Some(28.3)
     );
 
     let recorded = queries.lock().unwrap();
     let q = &recorded[0];
     assert!(q.contains("groupby"), "should contain 'groupby': {q}");
-    assert!(q.contains("$_group0"), "should contain '$_group0': {q}");
+    assert!(q.contains("$group0"), "should contain '$group0': {q}");
     assert!(
         q.contains("has department"),
         "should contain 'has department': {q}"
@@ -772,7 +772,7 @@ async fn entity_group_by_aggregate() {
 #[tokio::test]
 async fn entity_group_by_with_filter() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$_group0": "Engineering", "$_count": 5}),
+        serde_json::json!({"$group0": "Engineering", "$count": 5}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
@@ -798,7 +798,7 @@ async fn entity_group_by_with_filter() {
 #[tokio::test]
 async fn relation_group_by_aggregate() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$_group0": "2024", "$_count": 3}),
+        serde_json::json!({"$group0": "2024", "$count": 3}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");

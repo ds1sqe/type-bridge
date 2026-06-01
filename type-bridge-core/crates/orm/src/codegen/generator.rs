@@ -52,9 +52,9 @@ pub fn generate_rust_models(schema: &TypeSchema) -> GeneratedModels {
 fn value_type_to_rust(vt: &str) -> &str {
     match vt {
         "string" => "string",
-        "long" => "long",
+        "long" | "integer" | "int" => "long",
         "double" => "double",
-        "boolean" => "boolean",
+        "boolean" | "bool" => "boolean",
         "date" => "date",
         "datetime" => "datetime",
         "datetime-tz" => "datetime-tz",

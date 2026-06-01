@@ -1,19 +1,13 @@
 //! Dynamic multi-value attribute CRUD integration tests against TypeDB.
 //!
-//! Run with:
-//! `cargo test -p type-bridge-orm --test dynamic_multivalue_crud_integration -- --ignored`
 
-mod dynamic_crud_support;
-
-use dynamic_crud_support::*;
+use crate::common::dynamic_crud::*;
 use type_bridge_orm::*;
 
 #[tokio::test]
-#[ignore = "requires a running TypeDB database; uses TYPEDB_ADDRESS and TYPE_BRIDGE_RUST_INTG_DATABASE"]
 async fn dynamic_entity_multi_value_attributes_against_typedb() {
-    let Some((db, schema)) = setup_dynamic_database("multi").await else {
-        return;
-    };
+    let _guard = crate::common::integration_test_guard().await;
+    let (db, schema) = setup_dynamic_database("multi").await;
     let manager = DynamicEntityManager::new(&db, schema.person_descriptor());
 
     let iid = manager

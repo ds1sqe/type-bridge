@@ -1,19 +1,13 @@
 //! Dynamic filter and lookup integration tests against TypeDB.
 //!
-//! Run with:
-//! `cargo test -p type-bridge-orm --test dynamic_filter_lookup_integration -- --ignored`
 
-mod dynamic_crud_support;
-
-use dynamic_crud_support::*;
+use crate::common::dynamic_crud::*;
 use type_bridge_orm::*;
 
 #[tokio::test]
-#[ignore = "requires a running TypeDB database; uses TYPEDB_ADDRESS and TYPE_BRIDGE_RUST_INTG_DATABASE"]
 async fn dynamic_entity_filters_and_lookup_against_typedb() {
-    let Some((db, schema)) = setup_dynamic_database("filters").await else {
-        return;
-    };
+    let _guard = crate::common::integration_test_guard().await;
+    let (db, schema) = setup_dynamic_database("filters").await;
     let manager = DynamicEntityManager::new(&db, schema.person_descriptor());
 
     manager
@@ -55,11 +49,9 @@ async fn dynamic_entity_filters_and_lookup_against_typedb() {
 }
 
 #[tokio::test]
-#[ignore = "requires a running TypeDB database; uses TYPEDB_ADDRESS and TYPE_BRIDGE_RUST_INTG_DATABASE"]
 async fn dynamic_relation_filters_and_role_lookup_against_typedb() {
-    let Some((db, schema)) = setup_dynamic_database("rel-filters").await else {
-        return;
-    };
+    let _guard = crate::common::integration_test_guard().await;
+    let (db, schema) = setup_dynamic_database("rel-filters").await;
     let person_manager = DynamicEntityManager::new(&db, schema.person_descriptor());
     let company_manager = DynamicEntityManager::new(&db, schema.company_descriptor());
     let relation_manager = DynamicRelationManager::new(&db, schema.employment_descriptor());

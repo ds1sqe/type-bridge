@@ -50,10 +50,11 @@ fn generate_inline(schema: &TypeSchema) -> String {
             continue;
         }
         let struct_name = to_pascal_case(&attr.name);
+        let value_type = value_type_to_rust(&attr.value_type);
         writeln!(
             out,
             "type_bridge_orm::define_attribute!({}, \"{}\", \"{}\");",
-            struct_name, attr.name, attr.value_type
+            struct_name, attr.name, value_type
         )
         .unwrap();
     }
@@ -76,6 +77,14 @@ fn generate_inline(schema: &TypeSchema) -> String {
     }
 
     out
+}
+
+fn value_type_to_rust(value_type: &str) -> &str {
+    match value_type {
+        "integer" | "int" => "long",
+        "bool" => "boolean",
+        other => other,
+    }
 }
 
 fn generate_entity(out: &mut String, entity: &EntityType, _schema: &TypeSchema) {
