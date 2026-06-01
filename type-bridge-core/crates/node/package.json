@@ -5,13 +5,35 @@
   "license": "MIT",
   "main": "index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./index.js",
+      "default": "./index.js"
+    }
+  },
   "files": [
+    "index.js",
     "dist",
-    "*.node"
+    "*.node",
+    "README.md"
   ],
   "scripts": {
+    "build": "npm run build:native && npm run build:types",
     "build:native": "napi build --platform --release",
+    "build:types": "tsc -p tsconfig.json",
+    "scope:probe": "node tests/scope-probe.cjs",
+    "smoke:package": "node tests/package-smoke.cjs",
     "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "napi": {
+    "name": "type_bridge_node",
+    "triples": {
+      "defaults": true
+    }
   },
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4",

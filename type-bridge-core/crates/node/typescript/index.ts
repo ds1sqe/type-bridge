@@ -235,11 +235,26 @@ export interface NativeRuntime {
   ): NativeRustDatabase;
 }
 
+export interface NativeModule extends NativeRuntime, NativeMarshalling {
+  NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
+}
+
+export interface RustDatabaseConnectOptions {
+  username?: string | null;
+  password?: string | null;
+}
+
+declare const nativeModule: NativeModule;
+
+export function loadNative(): NativeModule {
+  return nativeModule;
+}
+
 export class DescriptorRegistry {
   readonly #native: NativeDescriptorRegistry;
 
-  constructor(native: NativeDescriptorRegistry) {
-    this.#native = native;
+  constructor(nativeRegistry?: NativeDescriptorRegistry | null) {
+    this.#native = nativeRegistry ?? new (loadNative().NodeDescriptorRegistry)();
   }
 
   registerEntity(descriptor: EntityDescriptor): EntityDescriptor {
@@ -266,8 +281,8 @@ export class DescriptorRegistry {
 export class Marshalling {
   readonly #native: NativeMarshalling;
 
-  constructor(native: NativeMarshalling) {
-    this.#native = native;
+  constructor(nativeMarshalling?: NativeMarshalling | null) {
+    this.#native = nativeMarshalling ?? loadNative();
   }
 
   attributeValue(value: AttributeValue): unknown {
@@ -319,14 +334,27 @@ export class RustDatabase {
     this.#native = native;
   }
 
+  static connect(address: string, database: string, options?: RustDatabaseConnectOptions): RustDatabase;
   static connect(
     native: NativeRuntime,
     address: string,
     database: string,
-    options: { username?: string | null; password?: string | null } = {},
+    options?: RustDatabaseConnectOptions,
+  ): RustDatabase;
+  static connect(
+    nativeOrAddress: NativeRuntime | string,
+    addressOrDatabase: string,
+    databaseOrOptions: string | RustDatabaseConnectOptions = {},
+    maybeOptions: RustDatabaseConnectOptions = {},
   ): RustDatabase {
+    const parsed = parseConnectArguments(nativeOrAddress, addressOrDatabase, databaseOrOptions, maybeOptions);
     return new RustDatabase(
-      native.connectRustDatabase(address, database, options.username ?? null, options.password ?? null),
+      parsed.native.connectRustDatabase(
+        parsed.address,
+        parsed.database,
+        parsed.options.username ?? null,
+        parsed.options.password ?? null,
+      ),
     );
   }
 
@@ -524,4 +552,36 @@ function parseJson<T>(value: string): T {
 
 function optionalJson(value: unknown | null | undefined): string | null {
   return value == null ? null : JSON.stringify(value);
+}
+
+function parseConnectArguments(
+  nativeOrAddress: NativeRuntime | string,
+  addressOrDatabase: string,
+  databaseOrOptions: string | RustDatabaseConnectOptions,
+  maybeOptions: RustDatabaseConnectOptions,
+): {
+  native: NativeRuntime;
+  address: string;
+  database: string;
+  options: RustDatabaseConnectOptions;
+} {
+  if (typeof nativeOrAddress === "string") {
+    return {
+      native: loadNative(),
+      address: nativeOrAddress,
+      database: addressOrDatabase,
+      options: (databaseOrOptions as RustDatabaseConnectOptions) ?? {},
+    };
+  }
+
+  if (typeof databaseOrOptions !== "string") {
+    throw new TypeError("RustDatabase.connect(native, address, database, options?) requires a database string");
+  }
+
+  return {
+    native: nativeOrAddress,
+    address: addressOrDatabase,
+    database: databaseOrOptions,
+    options: maybeOptions ?? {},
+  };
 }

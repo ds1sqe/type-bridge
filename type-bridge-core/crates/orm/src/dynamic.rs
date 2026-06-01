@@ -161,7 +161,8 @@ pub(crate) fn entity_fetch_clauses(
     filters: &[Filter],
     var: &str,
 ) -> Vec<Clause> {
-    let (constraints, extra_patterns) = filter_match_parts(filters, var);
+    let filters = normalize_filters(&descriptor.owned_attributes, filters);
+    let (constraints, extra_patterns) = filter_match_parts(&filters, var);
     entity_fetch_with_filter_patterns(descriptor, constraints, extra_patterns, var)
 }
 
@@ -207,7 +208,8 @@ pub(crate) fn entity_count_clauses(
     filters: &[Filter],
     var: &str,
 ) -> Vec<Clause> {
-    let (constraints, extra_patterns) = filter_match_parts(filters, var);
+    let filters = normalize_filters(&descriptor.owned_attributes, filters);
+    let (constraints, extra_patterns) = filter_match_parts(&filters, var);
     let mut match_patterns = vec![Pattern::Entity {
         variable: var.to_string(),
         type_name: descriptor.type_name.clone(),
@@ -225,7 +227,8 @@ pub(crate) fn entity_aggregate_clauses(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<Vec<Clause>> {
-    let (constraints, extra_patterns) = filter_match_parts(filters, var);
+    let filters = normalize_filters(&descriptor.owned_attributes, filters);
+    let (constraints, extra_patterns) = filter_match_parts(&filters, var);
     let mut match_patterns = vec![Pattern::Entity {
         variable: var.to_string(),
         type_name: descriptor.type_name.clone(),
@@ -256,10 +259,11 @@ pub(crate) fn entity_group_by_aggregate_clauses(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<Vec<Clause>> {
+    let filters = normalize_filters(&descriptor.owned_attributes, filters);
     group_by_aggregate_clauses(
         &descriptor.type_name,
         &descriptor.owned_attributes,
-        filters,
+        &filters,
         group_fields,
         aggregates,
         var,
@@ -380,7 +384,8 @@ pub(crate) fn relation_fetch_clauses(
     filters: &[Filter],
     var: &str,
 ) -> Vec<Clause> {
-    let (constraints, extra_patterns) = filter_match_parts(filters, var);
+    let filters = normalize_filters(&descriptor.owned_attributes, filters);
+    let (constraints, extra_patterns) = filter_match_parts(&filters, var);
     relation_fetch_with_role_filters(descriptor, constraints, extra_patterns, &[], var)
 }
 
@@ -390,7 +395,8 @@ pub(crate) fn relation_fetch_with_role_filters_clauses(
     role_filters: &[DynamicRolePlayerInput],
     var: &str,
 ) -> Vec<Clause> {
-    let (constraints, extra_patterns) = filter_match_parts(filters, var);
+    let filters = normalize_filters(&descriptor.owned_attributes, filters);
+    let (constraints, extra_patterns) = filter_match_parts(&filters, var);
     relation_fetch_with_role_filters(descriptor, constraints, extra_patterns, role_filters, var)
 }
 
@@ -496,7 +502,8 @@ pub(crate) fn relation_count_clauses(
     filters: &[Filter],
     var: &str,
 ) -> Vec<Clause> {
-    let (constraints, extra_patterns) = filter_match_parts(filters, var);
+    let filters = normalize_filters(&descriptor.owned_attributes, filters);
+    let (constraints, extra_patterns) = filter_match_parts(&filters, var);
     let mut match_patterns = vec![Pattern::Relation {
         variable: var.to_string(),
         type_name: descriptor.type_name.clone(),
@@ -514,7 +521,8 @@ pub(crate) fn relation_aggregate_clauses(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<Vec<Clause>> {
-    let (constraints, extra_patterns) = filter_match_parts(filters, var);
+    let filters = normalize_filters(&descriptor.owned_attributes, filters);
+    let (constraints, extra_patterns) = filter_match_parts(&filters, var);
     let mut match_patterns = vec![Pattern::Relation {
         variable: var.to_string(),
         type_name: descriptor.type_name.clone(),
@@ -545,10 +553,11 @@ pub(crate) fn relation_group_by_aggregate_clauses(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<Vec<Clause>> {
+    let filters = normalize_filters(&descriptor.owned_attributes, filters);
     group_by_aggregate_clauses(
         &descriptor.type_name,
         &descriptor.owned_attributes,
-        filters,
+        &filters,
         group_fields,
         aggregates,
         var,
@@ -881,6 +890,22 @@ fn filter_match_parts(filters: &[Filter], var: &str) -> (Vec<Constraint>, Vec<Pa
         });
     }
     (constraints, patterns)
+}
+
+fn normalize_filters(descriptors: &[OwnedAttributeDescriptor], filters: &[Filter]) -> Vec<Filter> {
+    filters
+        .iter()
+        .map(|filter| {
+            let Some(attr) = descriptors.iter().find(|attr| {
+                filter.attr_name == attr.field_name || filter.attr_name == attr.attr_name
+            }) else {
+                return filter.clone();
+            };
+            let mut normalized = filter.clone();
+            normalized.attr_name = attr.attr_name.clone();
+            normalized
+        })
+        .collect()
 }
 
 fn polymorphic_fetch_items(var: &str) -> Clause {

@@ -1329,6 +1329,16 @@ fn napi_orm_error(error: OrmError) -> napi::Error {
 mod tests {
     use super::*;
 
+    mod attribute_crud_integration;
+    mod chainable_semantics_integration;
+    mod entity_crud_integration;
+    mod filter_lookup_integration;
+    mod integration_support;
+    mod multivalue_crud_integration;
+    mod relation_crud_integration;
+    mod relation_roles_integration;
+    mod transaction_integration;
+
     fn person_descriptor_json() -> String {
         r#"{
             "type_name": "person",

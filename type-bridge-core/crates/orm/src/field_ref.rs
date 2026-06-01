@@ -5,7 +5,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```text
 //! // Instead of stringly-typed:
 //! Expr::gte("age", AttributeValue::Long(18))
 //!
