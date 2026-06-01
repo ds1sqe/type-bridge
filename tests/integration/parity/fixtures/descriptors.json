@@ -1,0 +1,229 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "type_name": "parity-party",
+      "is_abstract": true,
+      "parent_type": null,
+      "owned_attributes": [
+        {
+          "field_name": "id",
+          "attr_name": "parity-id",
+          "value_type": "string",
+          "annotations": ["Key"],
+          "is_optional": false
+        },
+        {
+          "field_name": "name",
+          "attr_name": "parity-name",
+          "value_type": "string",
+          "annotations": [],
+          "is_optional": true
+        }
+      ]
+    },
+    {
+      "type_name": "parity-person",
+      "is_abstract": false,
+      "parent_type": "parity-party",
+      "owned_attributes": [
+        {
+          "field_name": "id",
+          "attr_name": "parity-id",
+          "value_type": "string",
+          "annotations": ["Key"],
+          "is_optional": false
+        },
+        {
+          "field_name": "name",
+          "attr_name": "parity-name",
+          "value_type": "string",
+          "annotations": [],
+          "is_optional": true
+        },
+        {
+          "field_name": "email",
+          "attr_name": "parity-email",
+          "value_type": "string",
+          "annotations": ["Unique"],
+          "is_optional": false
+        },
+        {
+          "field_name": "age",
+          "attr_name": "parity-age",
+          "value_type": "long",
+          "annotations": [],
+          "is_optional": true
+        },
+        {
+          "field_name": "score",
+          "attr_name": "parity-score",
+          "value_type": "double",
+          "annotations": [],
+          "is_optional": true
+        },
+        {
+          "field_name": "active",
+          "attr_name": "parity-active",
+          "value_type": "boolean",
+          "annotations": [],
+          "is_optional": true
+        },
+        {
+          "field_name": "birth_date",
+          "attr_name": "parity-birth-date",
+          "value_type": "date",
+          "annotations": [],
+          "is_optional": true
+        },
+        {
+          "field_name": "login_at",
+          "attr_name": "parity-login-at",
+          "value_type": "datetime",
+          "annotations": [],
+          "is_optional": true
+        },
+        {
+          "field_name": "seen_at",
+          "attr_name": "parity-seen-at",
+          "value_type": "datetime-tz",
+          "annotations": [],
+          "is_optional": true
+        },
+        {
+          "field_name": "balance",
+          "attr_name": "parity-balance",
+          "value_type": "decimal",
+          "annotations": [],
+          "is_optional": true
+        },
+        {
+          "field_name": "session_length",
+          "attr_name": "parity-session-length",
+          "value_type": "duration",
+          "annotations": [],
+          "is_optional": true
+        },
+        {
+          "field_name": "tags",
+          "attr_name": "parity-tag",
+          "value_type": "string",
+          "annotations": [
+            {
+              "Card": [0, 5]
+            }
+          ],
+          "is_optional": true
+        }
+      ]
+    },
+    {
+      "type_name": "parity-company",
+      "is_abstract": false,
+      "parent_type": null,
+      "owned_attributes": [
+        {
+          "field_name": "id",
+          "attr_name": "parity-id",
+          "value_type": "string",
+          "annotations": ["Key"],
+          "is_optional": false
+        },
+        {
+          "field_name": "name",
+          "attr_name": "parity-name",
+          "value_type": "string",
+          "annotations": [],
+          "is_optional": false
+        }
+      ]
+    },
+    {
+      "type_name": "parity-email-message",
+      "is_abstract": false,
+      "parent_type": null,
+      "owned_attributes": [
+        {
+          "field_name": "id",
+          "attr_name": "parity-id",
+          "value_type": "string",
+          "annotations": ["Key"],
+          "is_optional": false
+        },
+        {
+          "field_name": "note",
+          "attr_name": "parity-note",
+          "value_type": "string",
+          "annotations": [],
+          "is_optional": false
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "type_name": "parity-membership",
+      "is_abstract": false,
+      "parent_type": null,
+      "owned_attributes": [
+        {
+          "field_name": "since",
+          "attr_name": "parity-since",
+          "value_type": "date",
+          "annotations": [],
+          "is_optional": false
+        },
+        {
+          "field_name": "confidence",
+          "attr_name": "parity-confidence",
+          "value_type": "long",
+          "annotations": [],
+          "is_optional": true
+        }
+      ],
+      "roles": [
+        {
+          "role_name": "member",
+          "player_type_names": ["parity-person"],
+          "cardinality": [1, 1]
+        },
+        {
+          "role_name": "organization",
+          "player_type_names": ["parity-company"],
+          "cardinality": [1, 1]
+        },
+        {
+          "role_name": "evidence",
+          "player_type_names": ["parity-person", "parity-email-message"],
+          "cardinality": [0, 5]
+        }
+      ]
+    },
+    {
+      "type_name": "parity-token-origin",
+      "is_abstract": false,
+      "parent_type": null,
+      "owned_attributes": [
+        {
+          "field_name": "kind",
+          "attr_name": "parity-kind",
+          "value_type": "string",
+          "annotations": [],
+          "is_optional": false
+        }
+      ],
+      "roles": [
+        {
+          "role_name": "token",
+          "player_type_names": ["parity-party", "parity-person"],
+          "cardinality": [1, 1]
+        },
+        {
+          "role_name": "issue",
+          "player_type_names": ["parity-company"],
+          "cardinality": [1, 1]
+        }
+      ]
+    }
+  ]
+}

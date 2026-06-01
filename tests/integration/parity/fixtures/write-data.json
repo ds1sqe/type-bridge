@@ -1,0 +1,82 @@
+{
+  "fixture_id": "phase5-mvp",
+  "version": 1,
+  "entities": [
+    {
+      "stable_id": "person:alice",
+      "type": "parity-person",
+      "attributes": {
+        "id": {"type": "string", "value": "person:alice"},
+        "name": {"type": "string", "value": "Alice"},
+        "email": {"type": "string", "value": "alice@example.test"},
+        "age": {"type": "long", "value": "37"},
+        "score": {"type": "double", "value": 98.25},
+        "active": {"type": "boolean", "value": true},
+        "birth_date": {"type": "date", "value": "1989-01-02"},
+        "login_at": {"type": "datetime", "value": "2026-06-01T10:30:00"},
+        "seen_at": {"type": "datetime-tz", "value": "2026-06-01T10:30:00+00:00"},
+        "balance": {"type": "decimal", "value": "1234.56"},
+        "session_length": {"type": "duration", "value": "PT2H30M"},
+        "tags": [
+          {"type": "string", "value": "admin"},
+          {"type": "string", "value": "writer"}
+        ]
+      }
+    },
+    {
+      "stable_id": "person:bob",
+      "type": "parity-person",
+      "attributes": {
+        "id": {"type": "string", "value": "person:bob"},
+        "email": {"type": "string", "value": "bob@example.test"},
+        "age": {"type": "long", "value": "41"},
+        "active": {"type": "boolean", "value": false}
+      }
+    },
+    {
+      "stable_id": "company:acme",
+      "type": "parity-company",
+      "attributes": {
+        "id": {"type": "string", "value": "company:acme"},
+        "name": {"type": "string", "value": "Acme Research"}
+      }
+    },
+    {
+      "stable_id": "email:evidence-1",
+      "type": "parity-email-message",
+      "attributes": {
+        "id": {"type": "string", "value": "email:evidence-1"},
+        "note": {"type": "string", "value": "welcome thread"}
+      }
+    }
+  ],
+  "relations": [
+    {
+      "stable_id": "membership:alice-acme",
+      "type": "parity-membership",
+      "attributes": {
+        "since": {"type": "date", "value": "2024-05-01"},
+        "confidence": {"type": "long", "value": "9"}
+      },
+      "roles": {
+        "member": [{"stable_id": "person:alice", "type": "parity-person"}],
+        "organization": [{"stable_id": "company:acme", "type": "parity-company"}],
+        "evidence": [
+          {"stable_id": "person:bob", "type": "parity-person"},
+          {"stable_id": "email:evidence-1", "type": "parity-email-message"}
+        ]
+      }
+    },
+    {
+      "stable_id": "origin:alice-acme",
+      "type": "parity-token-origin",
+      "attributes": {
+        "kind": {"type": "string", "value": "abstract-token"}
+      },
+      "roles": {
+        "token": [{"stable_id": "person:alice", "type": "parity-person"}],
+        "issue": [{"stable_id": "company:acme", "type": "parity-company"}]
+      }
+    }
+  ]
+}

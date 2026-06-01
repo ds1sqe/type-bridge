@@ -432,14 +432,18 @@ fn relation_fetch_with_role_filters(
     role_filters: &[DynamicRolePlayerInput],
     var: &str,
 ) -> Vec<Clause> {
+    let mut included_role_indices: Vec<usize> = Vec::new();
     let role_players: Vec<_> = descriptor
         .roles
         .iter()
         .enumerate()
         .filter(|(_, role)| !is_optional_role(role.cardinality))
-        .map(|(index, role)| RolePlayer {
-            role: role.role_name.clone(),
-            player_var: role_player_var(index),
+        .map(|(index, role)| {
+            included_role_indices.push(index);
+            RolePlayer {
+                role: role.role_name.clone(),
+                player_var: role_player_var(index),
+            }
         })
         .collect();
 
@@ -449,10 +453,18 @@ fn relation_fetch_with_role_filters(
         let filter_var = descriptor
             .roles
             .iter()
-            .position(|role| {
-                role.role_name == role_filter.role_name && !is_optional_role(role.cardinality)
+            .enumerate()
+            .find(|(_, role)| role.role_name == role_filter.role_name)
+            .map(|(index, role)| {
+                if !included_role_indices.contains(&index) {
+                    included_role_indices.push(index);
+                    role_players.push(RolePlayer {
+                        role: role.role_name.clone(),
+                        player_var: role_player_var(index),
+                    });
+                }
+                role_player_var(index)
             })
-            .map(role_player_var)
             .unwrap_or_else(|| {
                 let var = format!("$rpf{filter_index}");
                 role_players.push(RolePlayer {
@@ -479,8 +491,8 @@ fn relation_fetch_with_role_filters(
     match_patterns.extend(extra_patterns);
     match_patterns.extend(role_filter_patterns);
 
-    for (index, role) in descriptor.roles.iter().enumerate() {
-        if is_optional_role(role.cardinality) {
+    for (index, _role) in descriptor.roles.iter().enumerate() {
+        if !included_role_indices.contains(&index) {
             continue;
         }
         match_patterns.push(Pattern::Entity {
@@ -493,7 +505,7 @@ fn relation_fetch_with_role_filters(
 
     vec![
         Clause::Match(match_patterns),
-        relation_fetch_items(descriptor, var),
+        relation_fetch_items(descriptor, var, &included_role_indices),
     ]
 }
 
@@ -927,14 +939,18 @@ fn polymorphic_fetch_items(var: &str) -> Clause {
     ])
 }
 
-fn relation_fetch_items(descriptor: &RelationDescriptor, var: &str) -> Clause {
+fn relation_fetch_items(
+    descriptor: &RelationDescriptor,
+    var: &str,
+    included_role_indices: &[usize],
+) -> Clause {
     let mut items = match polymorphic_fetch_items(var) {
         Clause::Fetch(items) => items,
         _ => unreachable!("polymorphic_fetch_items always returns a fetch clause"),
     };
 
-    for (index, role) in descriptor.roles.iter().enumerate() {
-        if is_optional_role(role.cardinality) {
+    for (index, _role) in descriptor.roles.iter().enumerate() {
+        if !included_role_indices.contains(&index) {
             continue;
         }
         let var = role_player_var(index);
