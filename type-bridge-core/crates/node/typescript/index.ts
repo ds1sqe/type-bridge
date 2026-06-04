@@ -102,6 +102,40 @@ export type RuntimeAttributeValue =
   | { Decimal: string }
   | { Duration: string };
 
+export { Attribute, attr, type AttributeBase } from "./attribute.js";
+export {
+  AttributeFlags,
+  Card,
+  Flag,
+  Key,
+  TypeFlags,
+  TypeNameCase,
+  Unique,
+  formatTypeName,
+  resolveFlags,
+  type AttributeFlagsOptions,
+  type CardSpec,
+  type FlagInput,
+  type FlagSpec,
+  type ResolvedAttributeFlags,
+  type ResolvedTypeFlags,
+  type TypeFlagsOptions,
+} from "./flags.js";
+export {
+  Entity,
+  FieldSpec,
+  Relation,
+  RoleSpec,
+  field,
+  role,
+  type EntitySchema,
+  type FieldValue,
+  type InstanceFields,
+  type ModelClass,
+  type RelationSchema,
+  type SchemaSpec,
+} from "./model.js";
+
 export interface DynamicEntityRow {
   iid: string | null;
   type_name: string | null;

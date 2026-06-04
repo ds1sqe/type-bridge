@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "../../../tmp/node-typed-integration",
+    "rootDir": ".",
+    "strict": true,
+    "target": "ES2022"
+  },
+  "include": [
+    "typescript/**/*.ts",
+    "tests/typed-integration/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "dist-integration",
+    "../../../tmp/node-typed-integration"
+  ]
+}

@@ -22,10 +22,13 @@
     "build": "npm run build:native && npm run build:types",
     "build:native": "node scripts/build-native.js",
     "build:types": "tsc -p tsconfig.json",
+    "build:typed-integration": "tsc -p tsconfig.typed-integration.json",
     "scope:probe": "node tests/scope-probe.cjs",
     "smoke:package": "node tests/package-smoke.cjs",
+    "test:unit": "tsc -p tsconfig.unit.json && node --test ../../../tmp/node-unit/tests/unit/*.test.js",
     "typecheck": "tsc --noEmit",
     "typecheck:integration": "tsc -p tsconfig.integration.json",
+    "test:typed-integration": "npm run build:typed-integration && node --test ../../../tmp/node-typed-integration/tests/typed-integration/*.test.js",
     "test:integration": "node scripts/run-integration.js"
   },
   "engines": {

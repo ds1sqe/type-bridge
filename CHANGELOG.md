@@ -4,6 +4,23 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### New Features
+
+#### Node.js typed model layer (#124)
+
+- **Branded attributes** — `class Name extends attr.String("name") {}` defines a
+  hard-typed attribute whose class is nominally distinct from other attributes
+  (`Name` is not interchangeable with `Email` or raw `string`). One factory per
+  TypeDB value type; the mandatory name is both the schema attribute name and the
+  compile-time brand.
+- **Typed `Entity` / `Relation` classes** — `class Person extends Entity("person",
+  { name: field(Name, Key), age: field(Age).optional() }) {}` yields typed
+  construction and field reads, mirroring the Python class surface. Relations
+  support multi-player `role(...)` declarations.
+- **Descriptor emission** — typed models emit registration descriptors
+  byte-identical to the Python facade (verified against the shared parity
+  fixture), so the same model definition drives the existing dynamic managers.
+
 ## [1.4.5] - 2026-05-21
 
 ### Bug Fixes

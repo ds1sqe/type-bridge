@@ -93,4 +93,22 @@ const result = spawnSync(
   },
 );
 
-process.exit(result.status ?? 1);
+if ((result.status ?? 1) !== 0) {
+  process.exit(result.status ?? 1);
+}
+
+const typedResult = spawnSync("npm", ["run", "test:typed-integration"], {
+  cwd: ROOT,
+  stdio: "inherit",
+  shell: true,
+  env: {
+    ...process.env,
+    TYPEDB_ADDRESS: process.env.TYPEDB_ADDRESS ?? "localhost:1730",
+    TYPE_BRIDGE_NODE_INTG_DATABASE:
+      process.env.TYPE_BRIDGE_NODE_INTG_DATABASE ?? "type_bridge_test",
+    TYPEDB_USERNAME: process.env.TYPEDB_USERNAME ?? "admin",
+    TYPEDB_PASSWORD: process.env.TYPEDB_PASSWORD ?? "password",
+  },
+});
+
+process.exit(typedResult.status ?? 1);
