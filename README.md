@@ -377,12 +377,15 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 
 - Python 3.13+
 - TypeDB 3.10.4 server
-- typedb-driver==3.10.0
+- type-bridge-core>=1.4.5
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
 - lark>=1.1.9 (for schema parsing)
 - jinja2>=3.1.0 (for code generation)
 - typer>=0.15.0 (for CLI)
+
+`typedb-driver==3.10.0` is required only for the Phase 3 Python backend
+fallback, direct Python driver APIs, and development/integration tests.
 
 ## Release Notes
 

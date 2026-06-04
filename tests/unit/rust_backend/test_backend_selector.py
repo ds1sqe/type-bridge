@@ -7,8 +7,17 @@ from type_bridge._backend import BACKEND_ENV_VAR, manager_class, selected_backen
 from type_bridge.crud import TypeDBManager
 
 
-def test_backend_defaults_to_python(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_backend_defaults_to_rust(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(BACKEND_ENV_VAR, raising=False)
+
+    from type_bridge.crud.rust_manager import RustTypeDBManager
+
+    assert selected_backend() == "rust"
+    assert manager_class(TypeDBManager) is RustTypeDBManager
+
+
+def test_backend_selects_python_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(BACKEND_ENV_VAR, "python")
 
     assert selected_backend() == "python"
     assert manager_class(TypeDBManager) is TypeDBManager

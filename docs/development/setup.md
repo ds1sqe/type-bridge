@@ -25,12 +25,16 @@ uv pip install -e ".[dev]"
 ### Project Dependencies
 
 The project requires:
-- `typedb-driver==3.10.0`: Official Python driver for TypeDB connectivity
+- `type-bridge-core>=1.4.5`: Rust runtime for ORM connectivity and query execution
 - `pydantic>=2.12.4`: For validation and type coercion
 - `isodate==0.7.2`: For Duration type support (ISO 8601)
 - `lark>=1.1.9`: Parser toolkit for TypeQL schema parsing
 - `jinja2>=3.1.0`: Template engine for code generation
 - `typer>=0.15.0`: CLI framework for generator and migration tools
+
+`typedb-driver==3.10.0` is no longer a default runtime dependency. It remains
+available through the `dev` and `python-backend` extras for integration tests,
+direct driver calls, and the Phase 3 Python backend fallback.
 
 Development dependencies include:
 - `pytest`: Testing framework

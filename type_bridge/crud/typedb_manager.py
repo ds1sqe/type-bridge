@@ -10,8 +10,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Self, cast
 
-from typedb.driver import TransactionType
-
 from type_bridge.crud.formatting import format_value
 from type_bridge.crud.hooks import CrudEvent, HookRunner
 from type_bridge.crud.strategies import EntityStrategy, ModelStrategy, RelationStrategy
@@ -34,6 +32,7 @@ from type_bridge.query.ast import (
 )
 from type_bridge.query.compiler import QueryCompiler
 from type_bridge.session import Connection, ConnectionExecutor
+from type_bridge.typedb_driver import TransactionType
 
 if TYPE_CHECKING:
     from type_bridge.models.base import TypeDBType

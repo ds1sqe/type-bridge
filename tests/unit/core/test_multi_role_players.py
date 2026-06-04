@@ -77,7 +77,11 @@ def test_role_multi_requires_two_player_types():
         Role.multi("origin", Document)
 
 
-def test_delete_filters_use_actual_role_player_type_for_multi_roles():
+def test_delete_filters_use_actual_role_player_type_for_multi_roles(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TYPE_BRIDGE_BACKEND", "python")
+
     class PersonId(String):
         pass
 

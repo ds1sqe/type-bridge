@@ -4,9 +4,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from typedb.driver import TransactionType
-
 from type_bridge.session import Connection, ConnectionExecutor
+from type_bridge.typedb_driver import TransactionType
 
 if TYPE_CHECKING:
     from type_bridge.models.base import TypeDBType

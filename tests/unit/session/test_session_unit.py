@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-from typedb.driver import TransactionType
 
 from type_bridge.session import (
     Connection,
@@ -12,6 +11,7 @@ from type_bridge.session import (
     Transaction,
     TransactionContext,
 )
+from type_bridge.typedb_driver import TransactionType
 
 
 class TestDatabaseConfiguration:

@@ -173,7 +173,7 @@ def has_lookup(
     query = _build_has_query(attr_class, value, kind=kind, type_name=type_name)
 
     # Execute
-    from typedb.driver import TransactionType
+    from type_bridge.typedb_driver import TransactionType
 
     executor = ConnectionExecutor(connection)
     results = executor.execute(query, TransactionType.READ)

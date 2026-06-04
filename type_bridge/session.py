@@ -1,20 +1,22 @@
 """Session and transaction management for TypeDB."""
 
-import logging
-from typing import Any, overload
+from __future__ import annotations
 
-from typedb.driver import (
-    Credentials,
-    Driver,
-    TransactionType,
-    TypeDB,
-)
-from typedb.driver import (
-    Transaction as TypeDBTransaction,
-)
+import logging
+import warnings
+from typing import TYPE_CHECKING, Any, overload
 
 from type_bridge.proxy import ProxyDatabase, ProxyTransaction, ProxyTransactionContext
-from type_bridge.typedb_driver import create_driver_options
+from type_bridge.typedb_driver import (
+    Credentials,
+    TransactionType,
+    TypeDB,
+    create_driver_options,
+)
+
+if TYPE_CHECKING:
+    from typedb.driver import Driver
+    from typedb.driver import Transaction as TypeDBTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +243,7 @@ class Database:
                 logger.debug("Clearing driver reference (external driver, not closing)")
             self._driver = None
 
-    def __enter__(self) -> "Database":
+    def __enter__(self) -> Database:
         """Context manager entry."""
         self.connect()
         return self
@@ -253,8 +255,6 @@ class Database:
 
     def __del__(self) -> None:
         """Destructor that warns if driver was not properly closed."""
-        import warnings
-
         if self._driver is not None and self._owns_driver:
             warnings.warn(
                 f"Database connection to {self.address} was not closed. "
@@ -301,12 +301,12 @@ class Database:
         return exists
 
     @overload
-    def transaction(self, transaction_type: TransactionType) -> "TransactionContext": ...
+    def transaction(self, transaction_type: TransactionType) -> TransactionContext: ...
 
     @overload
-    def transaction(self, transaction_type: str = "read") -> "TransactionContext": ...
+    def transaction(self, transaction_type: str = "read") -> TransactionContext: ...
 
-    def transaction(self, transaction_type: TransactionType | str = "read") -> "TransactionContext":
+    def transaction(self, transaction_type: TransactionType | str = "read") -> TransactionContext:
         """Create a transaction context.
 
         Args:
@@ -442,7 +442,7 @@ class Transaction:
 class _RustTransactionView:
     """Small compatibility view for Rust transaction state."""
 
-    def __init__(self, context: "TransactionContext"):
+    def __init__(self, context: TransactionContext):
         self._context = context
 
     @property
@@ -450,7 +450,7 @@ class _RustTransactionView:
         return self._context._rust_tx is not None and not self._context._rust_finalized
 
     @property
-    def _tx(self) -> "_RustRawTransactionAdapter":
+    def _tx(self) -> _RustRawTransactionAdapter:
         return _RustRawTransactionAdapter(self._context)
 
     def execute(self, query: str) -> list[dict[str, Any]]:
@@ -464,11 +464,11 @@ class _RustTransactionView:
 
 
 class _RustRawQueryPromise:
-    def __init__(self, context: "TransactionContext", query: str):
+    def __init__(self, context: TransactionContext, query: str):
         self._context = context
         self._query = query
 
-    def resolve(self) -> "_RustRawQueryResult":
+    def resolve(self) -> _RustRawQueryResult:
         return _RustRawQueryResult(self._context.execute(self._query))
 
 
@@ -490,7 +490,7 @@ class _RustRawQueryResult:
 
 
 class _RustRawTransactionAdapter:
-    def __init__(self, context: "TransactionContext"):
+    def __init__(self, context: TransactionContext):
         self._context = context
 
     def query(self, query: str) -> _RustRawQueryPromise:
@@ -516,7 +516,7 @@ class TransactionContext:
         self._rust_tx: Any | None = None
         self._rust_finalized = False
 
-    def __enter__(self) -> "TransactionContext":
+    def __enter__(self) -> TransactionContext:
         logger.debug(
             f"Opening {_tx_type_name(self.tx_type)} transaction context for database: {self.db.database_name}"
         )

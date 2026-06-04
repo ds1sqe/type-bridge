@@ -23,7 +23,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "typedb-driver==3.10.0",
     "pydantic>=2.12.4",
     "isodate==0.7.2",
     "lark>=1.1.9",
@@ -43,6 +42,7 @@ type-bridge = "type_bridge.migration.__main__:main"
 
 [project.optional-dependencies]
 dev = [
+    "typedb-driver==3.10.0",
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
     "pytest-order>=1.2.0",
@@ -58,6 +58,9 @@ docs = [
     "mkdocs-gen-files>=0.5",
     "mkdocs-literate-nav>=0.6",
     "mkdocs-section-index>=0.3",
+]
+python-backend = [
+    "typedb-driver==3.10.0",
 ]
 
 [tool.ty.environment]

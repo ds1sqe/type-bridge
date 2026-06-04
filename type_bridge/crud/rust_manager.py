@@ -1,4 +1,4 @@
-"""Experimental Rust-backed manager facade."""
+"""Rust-backed manager facade."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 class RustTypeDBManager[T: "TypeDBType"]:
-    """Experimental manager that delegates supported operations to Rust."""
+    """Manager that delegates CRUD and query execution to Rust."""
 
     def __init__(self, connection: Connection, model_class: type[T]):
         self._connection = connection
@@ -143,7 +143,9 @@ class RustTypeDBManager[T: "TypeDBType"]:
             if _has_non_key_update_attributes(self.model_class, attributes):
                 _rust_call(
                     self._manager.update,
-                    attributes, role_player_inputs(instance), getattr(instance, "_iid", None)
+                    attributes,
+                    role_player_inputs(instance),
+                    getattr(instance, "_iid", None),
                 )
             if clear_attrs:
                 self._clear_attributes(instance, clear_attrs, "$r")
@@ -422,7 +424,9 @@ class RustTypeDBManager[T: "TypeDBType"]:
         delete_parts = []
         for index, attr_name in enumerate(attr_names):
             old_var = f"$old_attr_{index}"
-            match_parts.append(f"try {{ {var} has {attr_name} {old_var}; {old_var} isa {attr_name}; }};")
+            match_parts.append(
+                f"try {{ {var} has {attr_name} {old_var}; {old_var} isa {attr_name}; }};"
+            )
             delete_parts.append(f"try {{ {old_var} of {var}; }};")
         query = "\n".join(match_parts) + "\ndelete\n" + "\n".join(delete_parts)
         _execute_write_query(self._connection, query)
@@ -766,8 +770,7 @@ def _validate_filter_expression(
                 continue
             player_names = ", ".join(player.__name__ for player in role_player_types)
             raise ValueError(
-                f"Role player types {player_names} do not own attribute type "
-                f"{attr_type.__name__}"
+                f"Role player types {player_names} do not own attribute type {attr_type.__name__}"
             )
 
         owned_attr_types = {
@@ -828,7 +831,10 @@ def _rust_call(func: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 def _raise_typedb_driver_exception(exc: RuntimeError) -> Never:
-    import typedb.driver
+    try:
+        import typedb.driver
+    except ModuleNotFoundError:
+        raise exc
 
     exception_class = getattr(typedb.driver, "TypeDBDriverException")
     raise exception_class(str(exc)) from exc
@@ -876,9 +882,7 @@ def _entity_filter_expressions(
 
         field_name, lookup = raw_key.split("__", 1)
         if field_name not in owned_attrs:
-            raise ValueError(
-                f"Unknown filter field '{field_name}' for {model_class.__name__}"
-            )
+            raise ValueError(f"Unknown filter field '{field_name}' for {model_class.__name__}")
 
         attr_type = owned_attrs[field_name].typ
         if lookup in ("exact", "eq"):
@@ -1062,8 +1066,7 @@ def _lower_expression(
         return core.DynamicExpr.role_player(role.role_name, inner)
 
     raise NotImplementedError(
-        "TYPE_BRIDGE_BACKEND=rust cannot lower expression "
-        f"{type(expression).__name__}"
+        f"TYPE_BRIDGE_BACKEND=rust cannot lower expression {type(expression).__name__}"
     )
 
 
@@ -1075,11 +1078,7 @@ def _query_sorts(
     core = rust_core()
     sorts: list[Any] = []
     for field_name, descending in order_fields:
-        direction = (
-            core.DynamicSortDir.desc()
-            if descending
-            else core.DynamicSortDir.asc()
-        )
+        direction = core.DynamicSortDir.desc() if descending else core.DynamicSortDir.asc()
         if kind == "relation" and "__" in field_name:
             role_name, player_field = field_name.split("__", 1)
             role = _relation_role(model_class, role_name)
@@ -1176,16 +1175,13 @@ def _attr_info_for_expression(
                     return attr_info
         player_names = ", ".join(player.__name__ for player in role_player_types)
         raise ValueError(
-            f"Role player types {player_names} do not own attribute type "
-            f"{attr_type.__name__}"
+            f"Role player types {player_names} do not own attribute type {attr_type.__name__}"
         )
 
     for attr_info in model_class.get_all_attributes().values():
         if attr_info.typ is attr_type:
             return attr_info
-    raise ValueError(
-        f"{model_class.__name__} does not own attribute type {attr_type.__name__}"
-    )
+    raise ValueError(f"{model_class.__name__} does not own attribute type {attr_type.__name__}")
 
 
 def _relation_role(model_class: type[Any], field_or_role_name: str) -> Any:
@@ -1215,8 +1211,7 @@ def _role_player_attr_info(
         }
     )
     raise ValueError(
-        f"Role players do not have attribute '{field_name}'. "
-        f"Available attributes: {available}"
+        f"Role players do not have attribute '{field_name}'. Available attributes: {available}"
     )
 
 
@@ -1229,9 +1224,7 @@ def _role_player_instance_expression(role_name: str, player: Any) -> Any:
 
     key = key_filter_for_entity(player)
     if key is None:
-        raise ValueError(
-            f"Role player for role '{role_name}' needs _iid or a key attribute"
-        )
+        raise ValueError(f"Role player for role '{role_name}' needs _iid or a key attribute")
     value = _dynamic_value_from_rust_type(
         key["key_value"],
         key["key_value_type"],

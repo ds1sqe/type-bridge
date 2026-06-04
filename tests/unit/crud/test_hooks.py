@@ -6,12 +6,12 @@ import logging
 from typing import Any, cast
 
 import pytest
-from typedb.driver import TransactionType
 
 from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
 from type_bridge.crud.hooks import CrudEvent, HookCancelled, HookRunner
 from type_bridge.crud.typedb_manager import TypeDBManager
 from type_bridge.session import Database
+from type_bridge.typedb_driver import TransactionType
 
 # ---------------------------------------------------------------------------
 # Test helpers

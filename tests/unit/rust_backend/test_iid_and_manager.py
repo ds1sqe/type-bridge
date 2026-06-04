@@ -664,4 +664,3 @@ def test_rust_manager_marshals_relation_group_by_aggregates(
         [{"result_key": "count", "function": "count", "attr_name": None}],
         {},
     )
-

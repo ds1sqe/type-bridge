@@ -12,9 +12,9 @@ RUST_BACKEND = "rust"
 
 def selected_backend() -> str:
     """Return the configured manager backend."""
-    value = os.environ.get(BACKEND_ENV_VAR, PYTHON_BACKEND).strip().lower()
+    value = os.environ.get(BACKEND_ENV_VAR, RUST_BACKEND).strip().lower()
     if value == "":
-        return PYTHON_BACKEND
+        return RUST_BACKEND
     if value not in {PYTHON_BACKEND, RUST_BACKEND}:
         raise ValueError(
             f"{BACKEND_ENV_VAR} must be '{PYTHON_BACKEND}' or '{RUST_BACKEND}', got {value!r}"
