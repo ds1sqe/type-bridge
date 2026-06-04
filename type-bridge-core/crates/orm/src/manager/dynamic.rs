@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use crate::descriptor::{EntityDescriptor, RelationDescriptor};
 use crate::dynamic::{
-    DynamicAggregate, DynamicAttributeMap, DynamicEntityRow, DynamicRelationRow,
-    DynamicRolePlayerInput,
+    DynamicAggregate, DynamicAttributeMap, DynamicEntityRow, DynamicExpr, DynamicRelationRow,
+    DynamicRolePlayerInput, DynamicSort,
 };
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
@@ -87,17 +87,28 @@ impl<'db> DynamicEntityManager<'db> {
         let typeql = query_builder::build_dynamic_entity_fetch(&self.descriptor, filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC FETCH");
         let result = self.target.execute(&typeql, TxType::Read).await?;
-        match result {
-            QueryResult::Documents(docs) => docs
-                .iter()
-                .map(|doc| hydrate_dynamic_entity(&self.descriptor, doc))
-                .collect(),
-            QueryResult::Ok => Ok(vec![]),
-            QueryResult::Rows(_) => Err(OrmError::Hydration {
-                type_name: self.descriptor.type_name.clone(),
-                message: "Expected Documents from fetch query, got Rows".into(),
-            }),
-        }
+        self.hydrate_documents(result)
+    }
+
+    /// Fetch entities matching dynamic expressions, sorting, and pagination.
+    pub async fn get_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+        sorts: &[DynamicSort],
+        limit: Option<u64>,
+        offset: Option<u64>,
+    ) -> Result<Vec<DynamicEntityRow>> {
+        let typeql = query_builder::build_dynamic_entity_expr_fetch(
+            &self.descriptor,
+            expressions,
+            sorts,
+            limit,
+            offset,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXPR FETCH");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        self.hydrate_documents(result)
     }
 
     /// Fetch exactly one entity matching equality filters.
@@ -152,6 +163,15 @@ impl<'db> DynamicEntityManager<'db> {
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
         let typeql = query_builder::build_dynamic_entity_count(&self.descriptor, filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC COUNT");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_count(&result)
+    }
+
+    /// Count entities matching dynamic expressions.
+    pub async fn count_with_query(&self, expressions: &[DynamicExpr]) -> Result<u64> {
+        let typeql =
+            query_builder::build_dynamic_entity_expr_count(&self.descriptor, expressions, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXPR COUNT");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
@@ -249,6 +269,20 @@ impl<'db> DynamicEntityManager<'db> {
         match operation {
             DynamicWriteOperation::Insert => self.insert(item).await,
             DynamicWriteOperation::Put => self.put(item).await,
+        }
+    }
+
+    fn hydrate_documents(&self, result: QueryResult) -> Result<Vec<DynamicEntityRow>> {
+        match result {
+            QueryResult::Documents(docs) => docs
+                .iter()
+                .map(|doc| hydrate_dynamic_entity(&self.descriptor, doc))
+                .collect(),
+            QueryResult::Ok => Ok(vec![]),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from fetch query, got Rows".into(),
+            }),
         }
     }
 }
@@ -355,17 +389,28 @@ impl<'db> DynamicRelationManager<'db> {
         let typeql = query_builder::build_dynamic_relation_fetch(&self.descriptor, filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION FETCH");
         let result = self.target.execute(&typeql, TxType::Read).await?;
-        match result {
-            QueryResult::Documents(docs) => docs
-                .iter()
-                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
-                .collect(),
-            QueryResult::Ok => Ok(vec![]),
-            QueryResult::Rows(_) => Err(OrmError::Hydration {
-                type_name: self.descriptor.type_name.clone(),
-                message: "Expected Documents from fetch query, got Rows".into(),
-            }),
-        }
+        self.hydrate_documents(result)
+    }
+
+    /// Fetch relations matching dynamic expressions, sorting, and pagination.
+    pub async fn get_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+        sorts: &[DynamicSort],
+        limit: Option<u64>,
+        offset: Option<u64>,
+    ) -> Result<Vec<DynamicRelationRow>> {
+        let typeql = query_builder::build_dynamic_relation_expr_fetch(
+            &self.descriptor,
+            expressions,
+            sorts,
+            limit,
+            offset,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR FETCH");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        self.hydrate_documents(result)
     }
 
     /// Fetch relations matching attribute and role-player filters.
@@ -382,17 +427,7 @@ impl<'db> DynamicRelationManager<'db> {
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION FETCH WITH ROLE FILTERS");
         let result = self.target.execute(&typeql, TxType::Read).await?;
-        match result {
-            QueryResult::Documents(docs) => docs
-                .iter()
-                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
-                .collect(),
-            QueryResult::Ok => Ok(vec![]),
-            QueryResult::Rows(_) => Err(OrmError::Hydration {
-                type_name: self.descriptor.type_name.clone(),
-                message: "Expected Documents from fetch query, got Rows".into(),
-            }),
-        }
+        self.hydrate_documents(result)
     }
 
     /// Fetch exactly one relation matching equality filters.
@@ -444,6 +479,15 @@ impl<'db> DynamicRelationManager<'db> {
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
         let typeql = query_builder::build_dynamic_relation_count(&self.descriptor, filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION COUNT");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_count(&result)
+    }
+
+    /// Count relations matching dynamic expressions.
+    pub async fn count_with_query(&self, expressions: &[DynamicExpr]) -> Result<u64> {
+        let typeql =
+            query_builder::build_dynamic_relation_expr_count(&self.descriptor, expressions, "$r")?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR COUNT");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
@@ -542,6 +586,20 @@ impl<'db> DynamicRelationManager<'db> {
         match operation {
             DynamicWriteOperation::Insert => self.insert(attributes, role_players).await,
             DynamicWriteOperation::Put => self.put(attributes, role_players).await,
+        }
+    }
+
+    fn hydrate_documents(&self, result: QueryResult) -> Result<Vec<DynamicRelationRow>> {
+        match result {
+            QueryResult::Documents(docs) => docs
+                .iter()
+                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
+                .collect(),
+            QueryResult::Ok => Ok(vec![]),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from fetch query, got Rows".into(),
+            }),
         }
     }
 }

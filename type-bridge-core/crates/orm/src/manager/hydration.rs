@@ -100,9 +100,8 @@ pub fn hydrate_dynamic_entity(
         message: "Expected JSON object".into(),
     })?;
 
-    let flat = flatten_document_attributes(obj);
     let attributes =
-        dynamic_attributes(&descriptor.type_name, &descriptor.owned_attributes, &flat)?;
+        dynamic_attributes_from_document(&descriptor.type_name, &descriptor.owned_attributes, obj)?;
 
     Ok(DynamicEntityRow {
         iid: extract_scalar_string(obj, "_iid"),
@@ -122,9 +121,8 @@ pub fn hydrate_dynamic_relation(
         message: "Expected JSON object".into(),
     })?;
 
-    let flat = flatten_document_attributes(obj);
     let attributes =
-        dynamic_attributes(&descriptor.type_name, &descriptor.owned_attributes, &flat)?;
+        dynamic_attributes_from_document(&descriptor.type_name, &descriptor.owned_attributes, obj)?;
 
     Ok(DynamicRelationRow {
         iid: extract_scalar_string(obj, "_iid"),
@@ -240,6 +238,125 @@ fn dynamic_attributes(
         }
     }
     Ok(attributes)
+}
+
+fn dynamic_attributes_from_document(
+    type_name: &str,
+    descriptors: &[crate::descriptor::OwnedAttributeDescriptor],
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<(String, AttributeValue)>> {
+    let Some(attrs) = obj.get("attributes").and_then(|value| value.as_object()) else {
+        let flat = flatten_document_attributes(obj);
+        return dynamic_attributes(type_name, descriptors, &flat);
+    };
+
+    let known_value_types: std::collections::HashMap<&str, &str> = descriptors
+        .iter()
+        .map(|descriptor| {
+            (
+                descriptor.attr_name.as_str(),
+                descriptor.value_type.as_str(),
+            )
+        })
+        .collect();
+
+    let mut attributes = Vec::new();
+    for descriptor in descriptors {
+        let Some(value) = attrs.get(&descriptor.attr_name) else {
+            if descriptor.is_optional {
+                continue;
+            }
+            return Err(OrmError::Hydration {
+                type_name: type_name.to_string(),
+                message: format!("missing attribute '{}'", descriptor.attr_name),
+            });
+        };
+        if dynamic_attribute_values(
+            type_name,
+            &descriptor.attr_name,
+            value,
+            Some(descriptor.value_type.as_str()),
+            &mut attributes,
+        )? == 0
+            && !descriptor.is_optional
+        {
+            return Err(OrmError::Hydration {
+                type_name: type_name.to_string(),
+                message: format!("missing attribute '{}'", descriptor.attr_name),
+            });
+        }
+    }
+
+    for (attr_name, value) in attrs {
+        if known_value_types.contains_key(attr_name.as_str()) {
+            continue;
+        }
+        dynamic_attribute_values(type_name, attr_name, value, None, &mut attributes)?;
+    }
+
+    Ok(attributes)
+}
+
+fn dynamic_attribute_values(
+    type_name: &str,
+    attr_name: &str,
+    value: &serde_json::Value,
+    known_value_type: Option<&str>,
+    attributes: &mut Vec<(String, AttributeValue)>,
+) -> Result<usize> {
+    let values = value
+        .as_array()
+        .map(|items| items.iter().collect::<Vec<_>>())
+        .unwrap_or_else(|| vec![value]);
+    let mut parsed = 0;
+    for value in values {
+        let Some(value_type) = known_value_type
+            .or_else(|| extract_attribute_value_type(value))
+            .or_else(|| infer_attribute_value_type(value))
+        else {
+            return Err(OrmError::Hydration {
+                type_name: type_name.to_string(),
+                message: format!("attribute '{attr_name}' is missing value type metadata"),
+            });
+        };
+        let attribute =
+            AttributeValue::from_json(value, value_type).ok_or_else(|| OrmError::Hydration {
+                type_name: type_name.to_string(),
+                message: format!("attribute '{attr_name}' is not a {value_type} value: {value}"),
+            })?;
+        attributes.push((attr_name.to_string(), attribute));
+        parsed += 1;
+    }
+    Ok(parsed)
+}
+
+fn extract_attribute_value_type(value: &serde_json::Value) -> Option<&str> {
+    let obj = value.as_object()?;
+    obj.get("value_type")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            obj.get("type")
+                .and_then(|value| value.as_object())
+                .and_then(|value| value.get("value_type"))
+                .and_then(|value| value.as_str())
+        })
+}
+
+fn infer_attribute_value_type(value: &serde_json::Value) -> Option<&'static str> {
+    let value = unwrap_document_value(value);
+    if value.as_bool().is_some() {
+        return Some("boolean");
+    }
+    if value.as_i64().is_some() {
+        return Some("long");
+    }
+    if value.as_f64().is_some() {
+        return Some("double");
+    }
+    if value.as_str().is_some() {
+        return Some("string");
+    }
+    None
 }
 
 fn hydrate_dynamic_role_players(
@@ -385,6 +502,8 @@ fn parse_count_value(v: &serde_json::Value) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attribute::ValueType;
+    use crate::descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
 
     #[test]
     fn flatten_nested_attributes() {
@@ -438,6 +557,43 @@ mod tests {
         let flat = flatten_wildcard_attributes(input.as_object().unwrap());
         assert_eq!(flat.len(), 1);
         assert!(flat.get("optional").is_none());
+    }
+
+    #[test]
+    fn dynamic_entity_hydration_keeps_wildcard_subtype_attributes() {
+        let descriptor = EntityDescriptor {
+            type_name: "artifact".into(),
+            is_abstract: true,
+            parent_type: None,
+            owned_attributes: vec![OwnedAttributeDescriptor {
+                field_name: "name".into(),
+                attr_name: "ArtifactName".into(),
+                value_type: ValueType::String,
+                annotations: vec![],
+                is_optional: false,
+            }],
+        };
+        let doc = serde_json::json!({
+            "_iid": "0x123",
+            "_type": "user_story",
+            "attributes": {
+                "ArtifactName": [{"value": "Login Feature", "value_type": "string"}],
+                "Priority": [{"value": 1, "value_type": "long"}]
+            }
+        });
+
+        let row = hydrate_dynamic_entity(&descriptor, &doc).unwrap();
+
+        assert_eq!(row.type_name.as_deref(), Some("user_story"));
+        assert_eq!(row.attributes.len(), 2);
+        assert!(row.attributes.contains(&(
+            "ArtifactName".into(),
+            AttributeValue::String("Login Feature".into())
+        )));
+        assert!(
+            row.attributes
+                .contains(&("Priority".into(), AttributeValue::Long(1)))
+        );
     }
 
     #[test]

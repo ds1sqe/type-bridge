@@ -1,16 +1,17 @@
 //! Dynamic rows and inputs used by runtime descriptor managers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use type_bridge_core_lib::ast::{
     Clause, Constraint, FetchItem, FunctionCallValue, Pattern, ReduceAssignment, RolePlayer,
-    Statement, Value,
+    SortField, Statement, Value,
 };
 
 use crate::descriptor::{EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor};
 use crate::error::{OrmError, Result};
+use crate::expr::SortDir;
 use crate::filter::Filter;
 use crate::value::AttributeValue;
 
@@ -76,6 +77,208 @@ pub struct DynamicAggregate {
     pub function: String,
     /// Attribute type name or field name for attribute-backed aggregates.
     pub attr_name: Option<String>,
+}
+
+/// Runtime comparison operator requested by a language binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicComparisonOp {
+    /// Equality.
+    Eq,
+    /// Not equal.
+    Neq,
+    /// Greater than.
+    Gt,
+    /// Greater than or equal.
+    Gte,
+    /// Less than.
+    Lt,
+    /// Less than or equal.
+    Lte,
+    /// String contains.
+    Contains,
+    /// String regex match.
+    Like,
+}
+
+impl DynamicComparisonOp {
+    fn typeql_operator(self) -> &'static str {
+        match self {
+            Self::Eq => "==",
+            Self::Neq => "!=",
+            Self::Gt => ">",
+            Self::Gte => ">=",
+            Self::Lt => "<",
+            Self::Lte => "<=",
+            Self::Contains => "contains",
+            Self::Like => "like",
+        }
+    }
+}
+
+/// Runtime expression tree requested by a language binding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DynamicExpr {
+    /// Attribute comparison or string operator.
+    Compare {
+        /// Attribute type name.
+        attr_name: String,
+        /// Typed comparison operator.
+        operator: DynamicComparisonOp,
+        /// Typed value to compare against.
+        value: AttributeValue,
+    },
+    /// IID lookup for the current thing variable.
+    Iid {
+        /// TypeDB internal identifier.
+        iid: String,
+    },
+    /// Presence/absence lookup for an owned attribute.
+    IsNull {
+        /// Attribute type name.
+        attr_name: String,
+        /// `true` means the owner must not have this attribute.
+        is_null: bool,
+    },
+    /// All child expressions must match.
+    And {
+        /// Child expressions.
+        exprs: Vec<DynamicExpr>,
+    },
+    /// At least one child expression must match.
+    Or {
+        /// Child expressions.
+        exprs: Vec<DynamicExpr>,
+    },
+    /// The child expression must not match.
+    Not {
+        /// Child expression.
+        expr: Box<DynamicExpr>,
+    },
+    /// Apply an expression to a relation role-player variable.
+    RolePlayer {
+        /// Relation role name.
+        role_name: String,
+        /// Expression applied to that role player.
+        expr: Box<DynamicExpr>,
+    },
+}
+
+/// Runtime sort requested by a language binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DynamicSort {
+    /// Sort by an attribute owned by the queried thing.
+    Attribute {
+        /// Attribute type name.
+        attr_name: String,
+        /// Sort direction.
+        direction: SortDir,
+    },
+    /// Sort a relation query by one role player's attribute.
+    RolePlayerAttribute {
+        /// Relation role name.
+        role_name: String,
+        /// Player attribute type name.
+        attr_name: String,
+        /// Sort direction.
+        direction: SortDir,
+    },
+}
+
+impl DynamicExpr {
+    pub(crate) fn to_patterns(&self, thing_var: &str, counter: &mut usize) -> Result<Vec<Pattern>> {
+        match self {
+            Self::Compare {
+                attr_name,
+                operator,
+                value,
+            } => {
+                let attr_var = next_dynamic_var("$dyn_attr", counter);
+                Ok(vec![
+                    Pattern::Has {
+                        thing_var: thing_var.to_string(),
+                        attr_type: attr_name.clone(),
+                        attr_var: attr_var.clone(),
+                    },
+                    Pattern::ValueComparison {
+                        var: attr_var,
+                        operator: operator.typeql_operator().to_string(),
+                        value: value.to_ast_value(),
+                    },
+                ])
+            }
+            Self::Iid { iid } => Ok(vec![Pattern::Iid {
+                variable: thing_var.to_string(),
+                iid: iid.clone(),
+            }]),
+            Self::IsNull { attr_name, is_null } => {
+                let attr_var = next_dynamic_var("$dyn_attr", counter);
+                let pattern = Pattern::Has {
+                    thing_var: thing_var.to_string(),
+                    attr_type: attr_name.clone(),
+                    attr_var,
+                };
+                if *is_null {
+                    Ok(vec![Pattern::Not(vec![pattern])])
+                } else {
+                    Ok(vec![pattern])
+                }
+            }
+            Self::And { exprs } => {
+                let mut patterns = Vec::new();
+                for expr in exprs {
+                    patterns.extend(expr.to_patterns(thing_var, counter)?);
+                }
+                Ok(patterns)
+            }
+            Self::Or { exprs } => {
+                let mut branches = Vec::with_capacity(exprs.len());
+                for expr in exprs {
+                    branches.push(expr.to_patterns(thing_var, counter)?);
+                }
+                Ok(vec![Pattern::Or(branches)])
+            }
+            Self::Not { expr } => Ok(vec![Pattern::Not(expr.to_patterns(thing_var, counter)?)]),
+            Self::RolePlayer { role_name, expr } => {
+                expr.to_patterns(&role_player_expr_var(role_name), counter)
+            }
+        }
+    }
+
+    pub(crate) fn collect_roles(&self, roles: &mut HashSet<String>) {
+        match self {
+            Self::RolePlayer { role_name, expr } => {
+                roles.insert(role_name.clone());
+                expr.collect_roles(roles);
+            }
+            Self::And { exprs } | Self::Or { exprs } => {
+                for expr in exprs {
+                    expr.collect_roles(roles);
+                }
+            }
+            Self::Not { expr } => expr.collect_roles(roles),
+            _ => {}
+        }
+    }
+}
+
+impl DynamicSort {
+    pub(crate) fn role_name(&self) -> Option<&str> {
+        match self {
+            Self::RolePlayerAttribute { role_name, .. } => Some(role_name),
+            Self::Attribute { .. } => None,
+        }
+    }
+
+    fn direction(&self) -> SortDir {
+        match self {
+            Self::Attribute { direction, .. } | Self::RolePlayerAttribute { direction, .. } => {
+                *direction
+            }
+        }
+    }
 }
 
 pub(crate) fn entity_insert_clauses(
@@ -247,6 +450,41 @@ pub(crate) fn entity_fetch_clauses(
     entity_fetch_with_filter_patterns(descriptor, constraints, extra_patterns, var)
 }
 
+pub(crate) fn entity_expr_fetch_clauses(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    sorts: &[DynamicSort],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    let mut counter = 0;
+    let mut match_patterns = vec![Pattern::Entity {
+        variable: var.to_string(),
+        type_name: "$t".to_string(),
+        constraints: vec![],
+        is_strict: true,
+    }];
+    for expression in expressions {
+        match_patterns.extend(expression.to_patterns(var, &mut counter)?);
+    }
+    match_patterns.push(Pattern::SubType {
+        variable: "$t".to_string(),
+        parent_type: descriptor.type_name.clone(),
+    });
+
+    let sort_fields = dynamic_sort_patterns(var, sorts, &mut match_patterns)?;
+    let mut clauses = vec![Clause::Match(match_patterns)];
+    append_sort_limit_offset_fetch(
+        &mut clauses,
+        sort_fields,
+        limit,
+        offset,
+        polymorphic_fetch_items(var),
+    );
+    Ok(clauses)
+}
+
 pub(crate) fn entity_fetch_by_iid_clauses(
     descriptor: &EntityDescriptor,
     iid: &str,
@@ -300,6 +538,24 @@ pub(crate) fn entity_count_clauses(
     match_patterns.extend(extra_patterns);
 
     vec![Clause::Match(match_patterns), count_clause(var)]
+}
+
+pub(crate) fn entity_expr_count_clauses(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    let mut counter = 0;
+    let mut match_patterns = vec![Pattern::Entity {
+        variable: var.to_string(),
+        type_name: descriptor.type_name.clone(),
+        constraints: vec![],
+        is_strict: false,
+    }];
+    for expression in expressions {
+        match_patterns.extend(expression.to_patterns(var, &mut counter)?);
+    }
+    Ok(vec![Clause::Match(match_patterns), count_clause(var)])
 }
 
 pub(crate) fn entity_aggregate_clauses(
@@ -481,6 +737,71 @@ pub(crate) fn relation_fetch_with_role_filters_clauses(
     relation_fetch_with_role_filters(descriptor, constraints, extra_patterns, role_filters, var)
 }
 
+pub(crate) fn relation_expr_fetch_clauses(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    sorts: &[DynamicSort],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    let mut role_names = HashSet::new();
+    for expression in expressions {
+        expression.collect_roles(&mut role_names);
+    }
+    for sort in sorts {
+        if let Some(role_name) = sort.role_name() {
+            role_names.insert(role_name.to_string());
+        }
+    }
+
+    let mut included_roles = dynamic_relation_role_bindings(descriptor, &role_names);
+    let role_players = included_roles
+        .iter()
+        .map(|binding| RolePlayer {
+            role: binding.role_name.clone(),
+            player_var: binding.var_name.clone(),
+        })
+        .collect();
+
+    let mut counter = 0;
+    let mut match_patterns = vec![
+        Pattern::Relation {
+            variable: var.to_string(),
+            type_name: "$t".to_string(),
+            role_players,
+            constraints: vec![],
+        },
+        Pattern::SubType {
+            variable: "$t".to_string(),
+            parent_type: descriptor.type_name.clone(),
+        },
+    ];
+    for expression in expressions {
+        match_patterns.extend(expression.to_patterns(var, &mut counter)?);
+    }
+    for binding in &included_roles {
+        match_patterns.push(Pattern::Entity {
+            variable: binding.var_name.clone(),
+            type_name: format!("{}_type", binding.var_name),
+            constraints: vec![],
+            is_strict: true,
+        });
+    }
+    let sort_fields = dynamic_sort_patterns(var, sorts, &mut match_patterns)?;
+    included_roles.sort_by_key(|binding| binding.index);
+
+    let mut clauses = vec![Clause::Match(match_patterns)];
+    append_sort_limit_offset_fetch(
+        &mut clauses,
+        sort_fields,
+        limit,
+        offset,
+        relation_fetch_items_for_bindings(var, &included_roles),
+    );
+    Ok(clauses)
+}
+
 pub(crate) fn relation_fetch_by_iid_clauses(
     descriptor: &RelationDescriptor,
     iid: &str,
@@ -606,6 +927,43 @@ pub(crate) fn relation_count_clauses(
     match_patterns.extend(extra_patterns);
 
     vec![Clause::Match(match_patterns), count_clause(var)]
+}
+
+pub(crate) fn relation_expr_count_clauses(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    let mut role_names = HashSet::new();
+    for expression in expressions {
+        expression.collect_roles(&mut role_names);
+    }
+    let role_players = dynamic_relation_role_bindings(descriptor, &role_names)
+        .into_iter()
+        .map(|binding| RolePlayer {
+            role: binding.role_name,
+            player_var: binding.var_name,
+        })
+        .collect();
+
+    let mut counter = 0;
+    let mut match_patterns = vec![
+        Pattern::Relation {
+            variable: var.to_string(),
+            type_name: "$t".to_string(),
+            role_players,
+            constraints: vec![],
+        },
+        Pattern::SubType {
+            variable: "$t".to_string(),
+            parent_type: descriptor.type_name.clone(),
+        },
+    ];
+    for expression in expressions {
+        match_patterns.extend(expression.to_patterns(var, &mut counter)?);
+    }
+
+    Ok(vec![Clause::Match(match_patterns), count_clause(var)])
 }
 
 pub(crate) fn relation_aggregate_clauses(
@@ -1069,12 +1427,129 @@ fn relation_fetch_items(
     Clause::Fetch(items)
 }
 
+#[derive(Debug, Clone)]
+struct DynamicRoleBinding {
+    index: usize,
+    role_name: String,
+    var_name: String,
+}
+
+fn dynamic_relation_role_bindings(
+    descriptor: &RelationDescriptor,
+    role_names: &HashSet<String>,
+) -> Vec<DynamicRoleBinding> {
+    let mut bindings = Vec::new();
+    for (index, role) in descriptor.roles.iter().enumerate() {
+        if !is_optional_role(role.cardinality) || role_names.contains(&role.role_name) {
+            bindings.push(DynamicRoleBinding {
+                index,
+                role_name: role.role_name.clone(),
+                var_name: if role_names.contains(&role.role_name) {
+                    role_player_expr_var(&role.role_name)
+                } else {
+                    role_player_var(index)
+                },
+            });
+        }
+    }
+    bindings
+}
+
+fn relation_fetch_items_for_bindings(var: &str, bindings: &[DynamicRoleBinding]) -> Clause {
+    let mut items = match polymorphic_fetch_items(var) {
+        Clause::Fetch(items) => items,
+        _ => unreachable!("polymorphic_fetch_items always returns a fetch clause"),
+    };
+
+    for binding in bindings {
+        items.push(FetchItem::Function {
+            key: format!("_role_{}_iid", binding.index),
+            func_name: "iid".to_string(),
+            var: binding.var_name.clone(),
+        });
+        items.push(FetchItem::Function {
+            key: format!("_role_{}_type", binding.index),
+            func_name: "label".to_string(),
+            var: format!("{}_type", binding.var_name),
+        });
+        items.push(FetchItem::NestedWildcard {
+            key: format!("_role_{}_attributes", binding.index),
+            var: binding.var_name.clone(),
+        });
+    }
+
+    Clause::Fetch(items)
+}
+
+fn dynamic_sort_patterns(
+    thing_var: &str,
+    sorts: &[DynamicSort],
+    match_patterns: &mut Vec<Pattern>,
+) -> Result<Vec<SortField>> {
+    let mut sort_fields = Vec::with_capacity(sorts.len());
+    for (index, sort) in sorts.iter().enumerate() {
+        let (owner_var, attr_name) = match sort {
+            DynamicSort::Attribute { attr_name, .. } => (thing_var.to_string(), attr_name),
+            DynamicSort::RolePlayerAttribute {
+                role_name,
+                attr_name,
+                ..
+            } => (role_player_expr_var(role_name), attr_name),
+        };
+        if attr_name.is_empty() {
+            return Err(OrmError::QueryExecution(
+                "Dynamic sort attribute name cannot be empty".into(),
+            ));
+        }
+        let sort_var = format!("$dyn_sort{index}");
+        match_patterns.push(Pattern::Has {
+            thing_var: owner_var,
+            attr_type: attr_name.clone(),
+            attr_var: sort_var.clone(),
+        });
+        sort_fields.push(SortField {
+            variable: sort_var,
+            ascending: sort.direction() == SortDir::Asc,
+        });
+    }
+    Ok(sort_fields)
+}
+
+fn append_sort_limit_offset_fetch(
+    clauses: &mut Vec<Clause>,
+    sort_fields: Vec<SortField>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+    fetch: Clause,
+) {
+    if !sort_fields.is_empty() {
+        clauses.push(Clause::Sort(sort_fields));
+    }
+    if let Some(offset) = offset {
+        clauses.push(Clause::Offset(offset));
+    }
+    if let Some(limit) = limit {
+        clauses.push(Clause::Limit(limit));
+    }
+    clauses.push(fetch);
+}
+
 fn role_player_var(index: usize) -> String {
     format!("$rp{index}")
 }
 
+fn role_player_expr_var(role_name: &str) -> String {
+    format!("${role_name}")
+}
+
 fn role_player_type_var(index: usize) -> String {
     format!("$rp{index}_type")
+}
+
+fn next_dynamic_var(prefix: &str, counter: &mut usize) -> String {
+    let var = format!("{prefix}{counter}");
+    *counter += 1;
+    var
 }
 
 fn is_optional_role(cardinality: Option<(u32, Option<u32>)>) -> bool {

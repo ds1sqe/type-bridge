@@ -18,7 +18,6 @@ from type_bridge import (
     String,
     TypeFlags,
 )
-from type_bridge.crud import TypeDBManager
 
 # ============================================================================
 # Fixtures
@@ -87,7 +86,7 @@ def test_typedb_manager_entity_insert(db_with_extended_schema):
         name: Name = Flag(Key)
         age: Age | None = None
 
-    manager = TypeDBManager(db_with_extended_schema, Person)
+    manager = Person.manager(db_with_extended_schema)
 
     # Insert entity
     alice = Person(name=Name("Alice"), age=Age(30))
@@ -112,7 +111,7 @@ def test_typedb_manager_entity_get(db_with_extended_schema):
         name: Name = Flag(Key)
         age: Age | None = None
 
-    manager = TypeDBManager(db_with_extended_schema, Person)
+    manager = Person.manager(db_with_extended_schema)
 
     # Insert some entities
     manager.insert(Person(name=Name("Bob"), age=Age(25)))
@@ -140,7 +139,7 @@ def test_typedb_manager_entity_update(db_with_extended_schema):
         name: Name = Flag(Key)
         age: Age | None = None
 
-    manager = TypeDBManager(db_with_extended_schema, Person)
+    manager = Person.manager(db_with_extended_schema)
 
     # Insert entity
     diana = Person(name=Name("Diana"), age=Age(28))
@@ -174,7 +173,7 @@ def test_typedb_manager_entity_delete(db_with_extended_schema):
         flags = TypeFlags(name="person")
         name: Name = Flag(Key)
 
-    manager = TypeDBManager(db_with_extended_schema, Person)
+    manager = Person.manager(db_with_extended_schema)
 
     # Insert entity
     eve = Person(name=Name("Eve"))
@@ -214,7 +213,7 @@ def test_typedb_manager_multi_value_update(db_with_extended_schema):
         name: Name = Flag(Key)
         tags: list[Tag] = Flag(Card(min=0))
 
-    manager = TypeDBManager(db_with_extended_schema, Person)
+    manager = Person.manager(db_with_extended_schema)
 
     # Insert entity with tags
     frank = Person(name=Name("Frank"), tags=[Tag("developer"), Tag("python")])
@@ -265,7 +264,7 @@ def test_typedb_manager_relation_insert(db_with_extended_schema):
         since: Since | None = None
 
     # Insert persons first
-    person_mgr = TypeDBManager(db_with_extended_schema, Person)
+    person_mgr = Person.manager(db_with_extended_schema)
     greg = Person(name=Name("Greg"))
     helen = Person(name=Name("Helen"))
     person_mgr.insert(greg)
@@ -276,7 +275,7 @@ def test_typedb_manager_relation_insert(db_with_extended_schema):
     helen_fetched = person_mgr.get(name="Helen")[0]
 
     # Insert relation
-    relation_mgr = TypeDBManager(db_with_extended_schema, Friendship)
+    relation_mgr = Friendship.manager(db_with_extended_schema)
     friendship = Friendship(
         friend1=greg_fetched,
         friend2=helen_fetched,
@@ -305,7 +304,7 @@ def test_typedb_manager_relation_delete_with_iid(db_with_extended_schema):
         friend2: Role[Person] = Role("friend2", Person)
 
     # Insert persons
-    person_mgr = TypeDBManager(db_with_extended_schema, Person)
+    person_mgr = Person.manager(db_with_extended_schema)
     ivan = Person(name=Name("Ivan"))
     julia = Person(name=Name("Julia"))
     person_mgr.insert(ivan)
@@ -316,7 +315,7 @@ def test_typedb_manager_relation_delete_with_iid(db_with_extended_schema):
     julia_fetched = person_mgr.get(name="Julia")[0]
 
     # Insert relation
-    relation_mgr = TypeDBManager(db_with_extended_schema, Friendship)
+    relation_mgr = Friendship.manager(db_with_extended_schema)
     friendship = Friendship(friend1=ivan_fetched, friend2=julia_fetched)
     relation_mgr.insert(friendship)
 

@@ -13,10 +13,10 @@ use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
-    AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap,
-    DynamicEntityManager, DynamicEntityRow, DynamicRelationManager, DynamicRelationRow,
-    DynamicRolePlayerInput, EntityDescriptor, Filter, OrmError, RelationDescriptor,
-    TransactionContext, TxType, ValueType,
+    AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
+    DynamicEntityManager, DynamicEntityRow, DynamicExpr, DynamicRelationManager,
+    DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, EntityDescriptor, Filter, OrmError,
+    RelationDescriptor, SortDir, TransactionContext, TxType, ValueType,
 };
 
 /// Python-facing descriptor registry wrapper.
@@ -86,6 +86,308 @@ impl PyDescriptorRegistry {
         pythonize(py, &self.inner.snapshot())
             .map(|obj| obj.unbind())
             .map_err(|error| py_value_error(error.to_string()))
+    }
+}
+
+/// Python-facing typed dynamic attribute value.
+#[pyclass(name = "DynamicValue")]
+#[derive(Clone)]
+pub struct PyDynamicValue {
+    value: AttributeValue,
+}
+
+#[pymethods]
+impl PyDynamicValue {
+    /// Create a string value.
+    #[staticmethod]
+    fn string(value: &str) -> Self {
+        Self {
+            value: AttributeValue::String(value.to_string()),
+        }
+    }
+
+    /// Create a long value.
+    #[staticmethod]
+    fn long(value: i64) -> Self {
+        Self {
+            value: AttributeValue::Long(value),
+        }
+    }
+
+    /// Create a double value.
+    #[staticmethod]
+    fn double(value: f64) -> Self {
+        Self {
+            value: AttributeValue::Double(value),
+        }
+    }
+
+    /// Create a boolean value.
+    #[staticmethod]
+    fn boolean(value: bool) -> Self {
+        Self {
+            value: AttributeValue::Boolean(value),
+        }
+    }
+
+    /// Create a date value from an ISO-8601 date string.
+    #[staticmethod]
+    fn date(value: &str) -> Self {
+        Self {
+            value: AttributeValue::Date(value.to_string()),
+        }
+    }
+
+    /// Create a datetime value from an ISO-8601 datetime string.
+    #[staticmethod]
+    fn datetime(value: &str) -> Self {
+        Self {
+            value: AttributeValue::DateTime(value.to_string()),
+        }
+    }
+
+    /// Create a datetime-tz value from an ISO-8601 datetime string.
+    #[staticmethod]
+    fn datetime_tz(value: &str) -> Self {
+        Self {
+            value: AttributeValue::DateTimeTZ(value.to_string()),
+        }
+    }
+
+    /// Create a decimal value from its canonical string representation.
+    #[staticmethod]
+    fn decimal(value: &str) -> Self {
+        Self {
+            value: AttributeValue::Decimal(value.to_string()),
+        }
+    }
+
+    /// Create a duration value from an ISO-8601 duration string.
+    #[staticmethod]
+    fn duration(value: &str) -> Self {
+        Self {
+            value: AttributeValue::Duration(value.to_string()),
+        }
+    }
+}
+
+/// Python-facing typed dynamic sort direction.
+#[pyclass(name = "DynamicSortDir")]
+#[derive(Clone, Copy)]
+pub struct PyDynamicSortDir {
+    direction: SortDir,
+}
+
+#[pymethods]
+impl PyDynamicSortDir {
+    /// Ascending order.
+    #[staticmethod]
+    fn asc() -> Self {
+        Self {
+            direction: SortDir::Asc,
+        }
+    }
+
+    /// Descending order.
+    #[staticmethod]
+    fn desc() -> Self {
+        Self {
+            direction: SortDir::Desc,
+        }
+    }
+}
+
+/// Python-facing typed dynamic expression.
+#[pyclass(name = "DynamicExpr")]
+#[derive(Clone)]
+pub struct PyDynamicExpr {
+    expr: DynamicExpr,
+}
+
+#[pymethods]
+impl PyDynamicExpr {
+    /// Attribute equality.
+    #[staticmethod]
+    fn eq(attr_name: &str, value: PyRef<'_, PyDynamicValue>) -> Self {
+        compare_expr(attr_name, DynamicComparisonOp::Eq, &value)
+    }
+
+    /// Attribute inequality.
+    #[staticmethod]
+    fn neq(attr_name: &str, value: PyRef<'_, PyDynamicValue>) -> Self {
+        compare_expr(attr_name, DynamicComparisonOp::Neq, &value)
+    }
+
+    /// Attribute greater-than.
+    #[staticmethod]
+    fn gt(attr_name: &str, value: PyRef<'_, PyDynamicValue>) -> Self {
+        compare_expr(attr_name, DynamicComparisonOp::Gt, &value)
+    }
+
+    /// Attribute greater-than-or-equal.
+    #[staticmethod]
+    fn gte(attr_name: &str, value: PyRef<'_, PyDynamicValue>) -> Self {
+        compare_expr(attr_name, DynamicComparisonOp::Gte, &value)
+    }
+
+    /// Attribute less-than.
+    #[staticmethod]
+    fn lt(attr_name: &str, value: PyRef<'_, PyDynamicValue>) -> Self {
+        compare_expr(attr_name, DynamicComparisonOp::Lt, &value)
+    }
+
+    /// Attribute less-than-or-equal.
+    #[staticmethod]
+    fn lte(attr_name: &str, value: PyRef<'_, PyDynamicValue>) -> Self {
+        compare_expr(attr_name, DynamicComparisonOp::Lte, &value)
+    }
+
+    /// String contains.
+    #[staticmethod]
+    fn contains(attr_name: &str, substring: &str) -> Self {
+        Self {
+            expr: DynamicExpr::Compare {
+                attr_name: attr_name.to_string(),
+                operator: DynamicComparisonOp::Contains,
+                value: AttributeValue::String(substring.to_string()),
+            },
+        }
+    }
+
+    /// String regex match.
+    #[staticmethod]
+    fn like(attr_name: &str, pattern: &str) -> Self {
+        Self {
+            expr: DynamicExpr::Compare {
+                attr_name: attr_name.to_string(),
+                operator: DynamicComparisonOp::Like,
+                value: AttributeValue::String(pattern.to_string()),
+            },
+        }
+    }
+
+    /// IID lookup.
+    #[staticmethod]
+    fn iid(iid: &str) -> Self {
+        Self {
+            expr: DynamicExpr::Iid {
+                iid: iid.to_string(),
+            },
+        }
+    }
+
+    /// Attribute absence.
+    #[staticmethod]
+    fn is_null(attr_name: &str) -> Self {
+        Self {
+            expr: DynamicExpr::IsNull {
+                attr_name: attr_name.to_string(),
+                is_null: true,
+            },
+        }
+    }
+
+    /// Attribute presence.
+    #[staticmethod]
+    fn is_not_null(attr_name: &str) -> Self {
+        Self {
+            expr: DynamicExpr::IsNull {
+                attr_name: attr_name.to_string(),
+                is_null: false,
+            },
+        }
+    }
+
+    /// Logical AND.
+    #[staticmethod]
+    fn and_(expressions: Bound<'_, PyList>) -> PyResult<Self> {
+        Ok(Self {
+            expr: DynamicExpr::And {
+                exprs: dynamic_exprs_from_list(&expressions)?,
+            },
+        })
+    }
+
+    /// Logical OR.
+    #[staticmethod]
+    fn or_(expressions: Bound<'_, PyList>) -> PyResult<Self> {
+        Ok(Self {
+            expr: DynamicExpr::Or {
+                exprs: dynamic_exprs_from_list(&expressions)?,
+            },
+        })
+    }
+
+    /// Logical NOT.
+    #[staticmethod]
+    fn not_(expression: PyRef<'_, PyDynamicExpr>) -> Self {
+        Self {
+            expr: DynamicExpr::Not {
+                expr: Box::new(expression.expr.clone()),
+            },
+        }
+    }
+
+    /// Apply an expression to a relation role player.
+    #[staticmethod]
+    fn role_player(role_name: &str, expression: PyRef<'_, PyDynamicExpr>) -> Self {
+        Self {
+            expr: DynamicExpr::RolePlayer {
+                role_name: role_name.to_string(),
+                expr: Box::new(expression.expr.clone()),
+            },
+        }
+    }
+}
+
+/// Python-facing typed dynamic sort.
+#[pyclass(name = "DynamicSort")]
+#[derive(Clone)]
+pub struct PyDynamicSort {
+    sort: DynamicSort,
+}
+
+#[pymethods]
+impl PyDynamicSort {
+    /// Sort by an attribute owned by the queried thing.
+    #[staticmethod]
+    fn attribute(attr_name: &str, direction: PyRef<'_, PyDynamicSortDir>) -> Self {
+        Self {
+            sort: DynamicSort::Attribute {
+                attr_name: attr_name.to_string(),
+                direction: direction.direction,
+            },
+        }
+    }
+
+    /// Sort a relation query by a role player's attribute.
+    #[staticmethod]
+    fn role_player_attribute(
+        role_name: &str,
+        attr_name: &str,
+        direction: PyRef<'_, PyDynamicSortDir>,
+    ) -> Self {
+        Self {
+            sort: DynamicSort::RolePlayerAttribute {
+                role_name: role_name.to_string(),
+                attr_name: attr_name.to_string(),
+                direction: direction.direction,
+            },
+        }
+    }
+}
+
+fn compare_expr(
+    attr_name: &str,
+    operator: DynamicComparisonOp,
+    value: &PyDynamicValue,
+) -> PyDynamicExpr {
+    PyDynamicExpr {
+        expr: DynamicExpr::Compare {
+            attr_name: attr_name.to_string(),
+            operator,
+            value: value.value.clone(),
+        },
     }
 }
 
@@ -287,6 +589,26 @@ impl PyDynamicEntityManager {
         entity_rows_to_py(py, &rows)
     }
 
+    /// Fetch entities matching dynamic expression and sort specs.
+    #[pyo3(signature = (expressions=None, sorts=None, limit=None, offset=None))]
+    fn get_with_query(
+        &self,
+        py: Python<'_>,
+        expressions: Option<Bound<'_, PyList>>,
+        sorts: Option<Bound<'_, PyList>>,
+        limit: Option<u64>,
+        offset: Option<u64>,
+    ) -> PyResult<PyObject> {
+        let expressions = dynamic_exprs_from_py_list(expressions)?;
+        let sorts = dynamic_sorts_from_py_list(sorts)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.get_with_query(&expressions, &sorts, limit, offset))
+            .map_err(py_orm_error)?;
+        entity_rows_to_py(py, &rows)
+    }
+
     /// Fetch one entity by TypeDB IID.
     fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
         let manager = self.manager()?;
@@ -309,6 +631,16 @@ impl PyDynamicEntityManager {
         let manager = self.manager()?;
         self.runtime
             .block_on(manager.count_with_filters(&filters))
+            .map_err(py_orm_error)
+    }
+
+    /// Count entities matching dynamic expression specs.
+    #[pyo3(signature = (expressions=None))]
+    fn count_with_query(&self, expressions: Option<Bound<'_, PyList>>) -> PyResult<u64> {
+        let expressions = dynamic_exprs_from_py_list(expressions)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.count_with_query(&expressions))
             .map_err(py_orm_error)
     }
 
@@ -493,6 +825,26 @@ impl PyDynamicRelationManager {
         relation_rows_to_py(py, &rows)
     }
 
+    /// Fetch relations matching dynamic expression and sort specs.
+    #[pyo3(signature = (expressions=None, sorts=None, limit=None, offset=None))]
+    fn get_with_query(
+        &self,
+        py: Python<'_>,
+        expressions: Option<Bound<'_, PyList>>,
+        sorts: Option<Bound<'_, PyList>>,
+        limit: Option<u64>,
+        offset: Option<u64>,
+    ) -> PyResult<PyObject> {
+        let expressions = dynamic_exprs_from_py_list(expressions)?;
+        let sorts = dynamic_sorts_from_py_list(sorts)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.get_with_query(&expressions, &sorts, limit, offset))
+            .map_err(py_orm_error)?;
+        relation_rows_to_py(py, &rows)
+    }
+
     /// Fetch relations matching attribute filters and role-player filters.
     #[pyo3(signature = (filters=None, role_players=None))]
     fn get_with_role_players(
@@ -538,6 +890,16 @@ impl PyDynamicRelationManager {
         let manager = self.manager()?;
         self.runtime
             .block_on(manager.count_with_filters(&filters))
+            .map_err(py_orm_error)
+    }
+
+    /// Count relations matching dynamic expression specs.
+    #[pyo3(signature = (expressions=None))]
+    fn count_with_query(&self, expressions: Option<Bound<'_, PyList>>) -> PyResult<u64> {
+        let expressions = dynamic_exprs_from_py_list(expressions)?;
+        let manager = self.manager()?;
+        self.runtime
+            .block_on(manager.count_with_query(&expressions))
             .map_err(py_orm_error)
     }
 
@@ -757,6 +1119,38 @@ fn filters_from_py(
         rust_filters.push(Filter::eq(descriptor.attr_name.clone(), attr_value));
     }
     Ok(rust_filters)
+}
+
+fn dynamic_exprs_from_py_list(
+    expressions: Option<Bound<'_, PyList>>,
+) -> PyResult<Vec<DynamicExpr>> {
+    let Some(expressions) = expressions else {
+        return Ok(vec![]);
+    };
+    dynamic_exprs_from_list(&expressions)
+}
+
+fn dynamic_exprs_from_list(expressions: &Bound<'_, PyList>) -> PyResult<Vec<DynamicExpr>> {
+    expressions
+        .iter()
+        .map(|item| {
+            let expression = item.extract::<PyRef<'_, PyDynamicExpr>>()?;
+            Ok(expression.expr.clone())
+        })
+        .collect()
+}
+
+fn dynamic_sorts_from_py_list(sorts: Option<Bound<'_, PyList>>) -> PyResult<Vec<DynamicSort>> {
+    let Some(sorts) = sorts else {
+        return Ok(vec![]);
+    };
+    sorts
+        .iter()
+        .map(|item| {
+            let sort = item.extract::<PyRef<'_, PyDynamicSort>>()?;
+            Ok(sort.sort.clone())
+        })
+        .collect()
 }
 
 fn aggregates_from_py(
@@ -1123,6 +1517,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDescriptorRegistry>()?;
     m.add_class::<PyRustDatabase>()?;
     m.add_class::<PyRustTransactionContext>()?;
+    m.add_class::<PyDynamicValue>()?;
+    m.add_class::<PyDynamicSortDir>()?;
+    m.add_class::<PyDynamicExpr>()?;
+    m.add_class::<PyDynamicSort>()?;
     m.add_class::<PyDynamicEntityManager>()?;
     m.add_class::<PyDynamicRelationManager>()?;
     // Keep these imported so PyO3 validates the signatures at compile time.

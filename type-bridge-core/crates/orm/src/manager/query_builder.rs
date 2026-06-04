@@ -18,7 +18,9 @@ use crate::filter::Filter;
 use crate::relation::TypeBridgeRelation;
 use crate::{
     descriptor::{EntityDescriptor, RelationDescriptor},
-    dynamic::{DynamicAggregate, DynamicAttributeMap, DynamicRolePlayerInput},
+    dynamic::{
+        DynamicAggregate, DynamicAttributeMap, DynamicExpr, DynamicRolePlayerInput, DynamicSort,
+    },
 };
 
 /// Build an insert + fetch-IID query for the given entity.
@@ -150,6 +152,27 @@ pub fn build_dynamic_entity_fetch(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build an expression-aware fetch query for a runtime entity descriptor.
+pub fn build_dynamic_entity_expr_fetch(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    sorts: &[DynamicSort],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_expr_fetch_clauses(
+        descriptor,
+        expressions,
+        sorts,
+        limit,
+        offset,
+        var,
+    )?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
 /// Build a polymorphic IID fetch query for a runtime entity descriptor.
 pub fn build_dynamic_entity_fetch_by_iid(
     descriptor: &EntityDescriptor,
@@ -168,6 +191,17 @@ pub fn build_dynamic_entity_count(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::dynamic::entity_count_clauses(descriptor, filters, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an expression-aware count query for a runtime entity descriptor.
+pub fn build_dynamic_entity_expr_count(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_expr_count_clauses(descriptor, expressions, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -457,6 +491,27 @@ pub fn build_dynamic_relation_fetch_with_role_filters(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build an expression-aware fetch query for a runtime relation descriptor.
+pub fn build_dynamic_relation_expr_fetch(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    sorts: &[DynamicSort],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_expr_fetch_clauses(
+        descriptor,
+        expressions,
+        sorts,
+        limit,
+        offset,
+        var,
+    )?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
 /// Build a polymorphic IID fetch query for a runtime relation descriptor.
 pub fn build_dynamic_relation_fetch_by_iid(
     descriptor: &RelationDescriptor,
@@ -475,6 +530,17 @@ pub fn build_dynamic_relation_count(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::dynamic::relation_count_clauses(descriptor, filters, var);
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an expression-aware count query for a runtime relation descriptor.
+pub fn build_dynamic_relation_expr_count(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_expr_count_clauses(descriptor, expressions, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }

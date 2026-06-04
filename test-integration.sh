@@ -20,9 +20,12 @@ if [ -z "$CONTAINER_TOOL" ]; then
 fi
 
 echo -e "${GREEN}Running integration tests with ${CONTAINER_TOOL:-auto-detect}...${NC}"
+echo -e "${YELLOW}Using TYPE_BRIDGE_BACKEND=${TYPE_BRIDGE_BACKEND:-rust}${NC}"
+
+export TYPE_BRIDGE_BACKEND="${TYPE_BRIDGE_BACKEND:-rust}"
 
 # Run pytest with integration marker
 # Container management is handled by conftest.py
-uv run --extra dev pytest -m integration "$@"
+uv run --no-sync pytest -m integration "$@"
 
 echo -e "${GREEN}Integration tests completed!${NC}"

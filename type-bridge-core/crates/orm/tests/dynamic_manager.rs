@@ -276,6 +276,44 @@ fn dynamic_entity_fetch_query_binds_comparison_filter() {
 }
 
 #[test]
+fn dynamic_entity_expr_fetch_supports_boolean_sort_and_limit() {
+    let dynamic = query_builder::build_dynamic_entity_expr_fetch(
+        &person_descriptor(),
+        &[DynamicExpr::Or {
+            exprs: vec![
+                DynamicExpr::Compare {
+                    attr_name: "name".into(),
+                    operator: DynamicComparisonOp::Contains,
+                    value: AttributeValue::String("Al".into()),
+                },
+                DynamicExpr::Compare {
+                    attr_name: "age".into(),
+                    operator: DynamicComparisonOp::Gt,
+                    value: AttributeValue::Long(40),
+                },
+            ],
+        }],
+        &[DynamicSort::Attribute {
+            attr_name: "age".into(),
+            direction: SortDir::Desc,
+        }],
+        Some(10),
+        Some(5),
+        "$e",
+    )
+    .unwrap();
+
+    assert!(dynamic.contains("$e isa! $t"));
+    assert!(dynamic.contains("$dyn_attr0 contains \"Al\""));
+    assert!(dynamic.contains("$dyn_attr1 > 40"));
+    assert!(dynamic.contains(" or "));
+    assert!(dynamic.contains("$e has age $dyn_sort0"));
+    assert!(dynamic.contains("sort $dyn_sort0 desc"));
+    assert!(dynamic.contains("limit 10"));
+    assert!(dynamic.contains("offset 5"));
+}
+
+#[test]
 fn dynamic_relation_group_by_aggregate_query_groups_relation_attribute() {
     let dynamic = query_builder::build_dynamic_relation_group_by_aggregate(
         &employment_descriptor(),
@@ -310,6 +348,40 @@ fn dynamic_relation_fetch_query_binds_role_player_filter() {
     assert!(dynamic.contains("$r isa $t"));
     assert!(dynamic.contains("employee: $rp0"));
     assert!(dynamic.contains("$rp0 isa person, iid 0xperson"));
+}
+
+#[test]
+fn dynamic_relation_expr_fetch_binds_role_player_expr_and_sort() {
+    let dynamic = query_builder::build_dynamic_relation_expr_fetch(
+        &employment_descriptor(),
+        &[DynamicExpr::RolePlayer {
+            role_name: "employee".into(),
+            expr: Box::new(DynamicExpr::Compare {
+                attr_name: "age".into(),
+                operator: DynamicComparisonOp::Gte,
+                value: AttributeValue::Long(30),
+            }),
+        }],
+        &[DynamicSort::RolePlayerAttribute {
+            role_name: "employee".into(),
+            attr_name: "name".into(),
+            direction: SortDir::Asc,
+        }],
+        Some(3),
+        None,
+        "$r",
+    )
+    .unwrap();
+
+    assert!(dynamic.contains("$r isa $t"));
+    assert!(dynamic.contains("$t sub employment"));
+    assert!(dynamic.contains("employee: $employee"));
+    assert!(dynamic.contains("$employee has age $dyn_attr0"));
+    assert!(dynamic.contains("$dyn_attr0 >= 30"));
+    assert!(dynamic.contains("$employee has name $dyn_sort0"));
+    assert!(dynamic.contains("sort $dyn_sort0 asc"));
+    assert!(dynamic.contains("limit 3"));
+    assert!(dynamic.contains("\"_role_0_iid\": iid($employee)"));
 }
 
 #[test]

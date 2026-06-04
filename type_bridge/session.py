@@ -439,6 +439,73 @@ class Transaction:
             self._tx.close()
 
 
+class _RustTransactionView:
+    """Small compatibility view for Rust transaction state."""
+
+    def __init__(self, context: "TransactionContext"):
+        self._context = context
+
+    @property
+    def is_open(self) -> bool:
+        return self._context._rust_tx is not None and not self._context._rust_finalized
+
+    @property
+    def _tx(self) -> "_RustRawTransactionAdapter":
+        return _RustRawTransactionAdapter(self._context)
+
+    def execute(self, query: str) -> list[dict[str, Any]]:
+        return self._context.execute(query)
+
+    def commit(self) -> None:
+        self._context.commit()
+
+    def rollback(self) -> None:
+        self._context.rollback()
+
+
+class _RustRawQueryPromise:
+    def __init__(self, context: "TransactionContext", query: str):
+        self._context = context
+        self._query = query
+
+    def resolve(self) -> "_RustRawQueryResult":
+        return _RustRawQueryResult(self._context.execute(self._query))
+
+
+class _RustRawQueryResult:
+    def __init__(self, rows: list[dict[str, Any]]):
+        self._rows = rows
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def as_concept_rows(self) -> list[dict[str, Any]]:
+        return self._rows
+
+    def as_concept_documents(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+class _RustRawTransactionAdapter:
+    def __init__(self, context: "TransactionContext"):
+        self._context = context
+
+    def query(self, query: str) -> _RustRawQueryPromise:
+        return _RustRawQueryPromise(self._context, query)
+
+    def commit(self) -> None:
+        self._context.commit()
+
+    def rollback(self) -> None:
+        self._context.rollback()
+
+    def is_open(self) -> bool:
+        return self._context._rust_tx is not None and not self._context._rust_finalized
+
+
 class TransactionContext:
     """Context manager for sharing a TypeDB transaction across operations."""
 
@@ -511,12 +578,10 @@ class TransactionContext:
         logger.debug("Transaction context closed")
 
     @property
-    def transaction(self) -> Transaction:
+    def transaction(self) -> Transaction | _RustTransactionView:
         """Underlying transaction wrapper."""
         if self._rust_tx is not None:
-            raise RuntimeError(
-                "Rust TransactionContext does not expose a Python driver transaction"
-            )
+            return _RustTransactionView(self)
         if self._tx is None:
             raise RuntimeError("TransactionContext not entered")
         return self._tx
@@ -585,7 +650,9 @@ class ConnectionExecutor:
         """
         if isinstance(connection, (TransactionContext, ProxyTransactionContext)):
             logger.debug("ConnectionExecutor initialized with TransactionContext")
-            self._transaction: Transaction | ProxyTransaction | None = connection.transaction
+            self._transaction: Transaction | ProxyTransaction | _RustTransactionView | None = (
+                connection.transaction
+            )
             self._database: Database | ProxyDatabase | None = None
         elif isinstance(connection, (Transaction, ProxyTransaction)):
             logger.debug("ConnectionExecutor initialized with Transaction")
@@ -625,6 +692,6 @@ class ConnectionExecutor:
         return self._database
 
     @property
-    def transaction(self) -> Transaction | ProxyTransaction | None:
+    def transaction(self) -> Transaction | ProxyTransaction | _RustTransactionView | None:
         """Get transaction if available."""
         return self._transaction
