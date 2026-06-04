@@ -61,7 +61,7 @@ function* walkTs(dir) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       yield* walkTs(full);
-    } else if (entry.name.endsWith(".test.ts")) {
+    } else if (entry.name.endsWith(".test.ts") && !full.includes(`${path.sep}integration${path.sep}typed${path.sep}`)) {
       yield full;
     }
   }

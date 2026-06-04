@@ -10,7 +10,8 @@
   },
   "include": [
     "typescript/**/*.ts",
-    "tests/typed-integration/**/*.ts"
+    "tests/typed-integration/**/*.ts",
+    "tests/integration/typed/**/*.ts"
   ],
   "exclude": [
     "dist",

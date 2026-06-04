@@ -28,7 +28,7 @@
     "test:unit": "tsc -p tsconfig.unit.json && node --test ../../../tmp/node-unit/tests/unit/*.test.js",
     "typecheck": "tsc --noEmit",
     "typecheck:integration": "tsc -p tsconfig.integration.json",
-    "test:typed-integration": "npm run build:typed-integration && node --test ../../../tmp/node-typed-integration/tests/typed-integration/*.test.js",
+    "test:typed-integration": "npm run build:typed-integration && node --test ../../../tmp/node-typed-integration/tests/typed-integration/*.test.js ../../../tmp/node-typed-integration/tests/integration/typed/*.test.js",
     "test:integration": "node scripts/run-integration.js"
   },
   "engines": {

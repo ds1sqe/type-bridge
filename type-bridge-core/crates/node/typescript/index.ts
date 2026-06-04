@@ -128,13 +128,34 @@ export {
   RoleSpec,
   field,
   role,
+  type AttributeClass,
   type EntitySchema,
   type FieldValue,
+  type IidBearing,
   type InstanceFields,
   type ModelClass,
   type RelationSchema,
   type SchemaSpec,
 } from "./model.js";
+export {
+  TypedCodecError,
+  hydrateAttributeEntries,
+  hydrateAttributes,
+  keyAttributeDescriptor,
+  lowerAttributes,
+  lowerAttributeValue,
+  lowerFilters,
+  runtimeAttributeValueFromUnknown,
+} from "./codec.js";
+export {
+  TypedEntityManager,
+  TypedRelationManager,
+  buildRolePlayers,
+  entityManagerFor,
+  relationManagerFor,
+  type ExactFilters,
+  type ManagerConnection,
+} from "./manager.js";
 
 export interface DynamicEntityRow {
   iid: string | null;

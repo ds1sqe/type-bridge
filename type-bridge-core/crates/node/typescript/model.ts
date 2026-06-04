@@ -15,8 +15,16 @@ import {
   type FlagInput,
   type ResolvedTypeFlags,
 } from "./flags.js";
+import { defineIidSlot, type IidBearing } from "./iid.js";
+import {
+  entityManagerFor,
+  relationManagerFor,
+  type ManagerConnection,
+  type TypedEntityManager,
+  type TypedRelationManager,
+} from "./manager.js";
 
-type AnyAttributeClass = (new (value: never) => Attribute<unknown, string>) & {
+export type AttributeClass = (new (value: never) => Attribute<unknown, string>) & {
   readonly attrName: string;
   readonly valueType: ValueType;
 };
@@ -30,7 +38,7 @@ type ModelToken = string | ModelClassLike;
  * whether it is optional. Produced by `field()`; consumed by the model factory to
  * type construction and to emit `owned_attributes`.
  */
-export class FieldSpec<Attr extends AnyAttributeClass, Optional extends boolean = false> {
+export class FieldSpec<Attr extends AttributeClass, Optional extends boolean = false> {
   readonly kind = "field";
   readonly flags;
 
@@ -61,8 +69,8 @@ export class RoleSpec<Players extends readonly ModelToken[]> {
   }
 }
 
-export type SchemaSpec = FieldSpec<AnyAttributeClass, boolean> | RoleSpec<readonly ModelToken[]>;
-export type EntitySchema = Record<string, FieldSpec<AnyAttributeClass, boolean>>;
+export type SchemaSpec = FieldSpec<AttributeClass, boolean> | RoleSpec<readonly ModelToken[]>;
+export type EntitySchema = Record<string, FieldSpec<AttributeClass, boolean>>;
 export type RelationSchema = Record<string, SchemaSpec>;
 
 export type FieldValue<Spec> = Spec extends FieldSpec<infer Attr, boolean>
@@ -72,7 +80,7 @@ export type FieldValue<Spec> = Spec extends FieldSpec<infer Attr, boolean>
     : never;
 
 export type InstanceFields<Schema extends Record<string, SchemaSpec>> = {
-  readonly [Key in keyof Schema]: Schema[Key] extends FieldSpec<AnyAttributeClass, true>
+  readonly [Key in keyof Schema]: Schema[Key] extends FieldSpec<AttributeClass, true>
     ? FieldValue<Schema[Key]> | undefined
     : FieldValue<Schema[Key]>;
 };
@@ -84,7 +92,7 @@ type ConstructorInput<Schema extends Record<string, SchemaSpec>> = {
 };
 
 type OptionalKeys<Schema extends Record<string, SchemaSpec>> = {
-  [Key in keyof Schema]: Schema[Key] extends FieldSpec<AnyAttributeClass, true> ? Key : never;
+  [Key in keyof Schema]: Schema[Key] extends FieldSpec<AttributeClass, true> ? Key : never;
 }[keyof Schema];
 
 type RequiredKeys<Schema extends Record<string, SchemaSpec>> = Exclude<
@@ -105,15 +113,20 @@ type ModelInstance<Token> = Token extends string
 export type ModelClass<
   Schema extends Record<string, SchemaSpec>,
   Descriptor extends EntityDescriptor | RelationDescriptor,
-> = (new (values: ConstructorInput<Schema>) => InstanceFields<Schema>) & {
+> = (new (values: ConstructorInput<Schema>) => InstanceFields<Schema> & IidBearing) & {
   readonly typeName: string;
   readonly schema: Schema;
   readonly flags: ResolvedTypeFlags;
   descriptor(): Descriptor;
+  manager(
+    db: ManagerConnection,
+  ): Descriptor extends EntityDescriptor
+    ? TypedEntityManager<InstanceFields<Schema> & IidBearing>
+    : TypedRelationManager<InstanceFields<Schema> & IidBearing>;
 };
 
 /** Declare an owned-attribute field on a model schema, with optional flags. */
-export function field<Attr extends AnyAttributeClass>(
+export function field<Attr extends AttributeClass>(
   attrType: Attr,
   ...flags: FlagInput[]
 ): FieldSpec<Attr, false> {
@@ -182,6 +195,7 @@ function createModelClass(
     }
 
     constructor(values: Record<string, unknown>) {
+      defineIidSlot(this);
       for (const key of Object.keys(schema)) {
         const spec = schema[key];
         const present = key in values;
@@ -217,6 +231,13 @@ function createModelClass(
         ...descriptor,
         roles: roleDescriptors(schema),
       };
+    }
+
+    static manager(db: ManagerConnection) {
+      if (kind === "entity") {
+        return entityManagerFor(this as never, db);
+      }
+      return relationManagerFor(this as never, db);
     }
   }
 
@@ -301,3 +322,4 @@ function isRoleOptions(value: unknown): value is RoleOptions {
     !(value instanceof RoleSpec)
   );
 }
+export type { IidBearing };
