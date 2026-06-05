@@ -1,6 +1,7 @@
 """Migration manager for TypeDB schema migrations."""
 
 import logging
+import warnings
 
 from type_bridge.session import Database
 
@@ -8,14 +9,32 @@ logger = logging.getLogger(__name__)
 
 
 class MigrationManager:
-    """Manager for schema migrations."""
+    """Manager for schema migrations.
+
+    .. deprecated::
+        ``MigrationManager`` (exported as ``SimpleMigrationManager``) is
+        superseded by :class:`~type_bridge.migration.executor.MigrationExecutor`
+        (for applying migrations) and
+        :class:`~type_bridge.migration.generator.MigrationGenerator` (for
+        generating migrations).  It will be removed in a future release.
+    """
 
     def __init__(self, db: Database):
         """Initialize migration manager.
 
+        .. deprecated::
+            Use :class:`~type_bridge.migration.executor.MigrationExecutor` and
+            :class:`~type_bridge.migration.generator.MigrationGenerator` instead.
+
         Args:
             db: Database connection
         """
+        warnings.warn(
+            "MigrationManager (SimpleMigrationManager) is deprecated and will be removed "
+            "in a future release.  Use MigrationExecutor and MigrationGenerator instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.db = db
         self.migrations: list[tuple[str, str]] = []
 

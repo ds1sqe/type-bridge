@@ -157,6 +157,22 @@ pub enum OperationSpec {
         /// TypeDB value type.
         value_type: String,
     },
+    /// Copy an attribute from source to dest on every instance of the owner type.
+    ///
+    /// This is a DML (write-typed) backfill operation — it inserts attribute values, not
+    /// schema.  The forward TypeQL is an insert-if-absent backfill; the reverse deletes the
+    /// destination attribute.
+    CopyAttribute {
+        /// Forward backfill TypeQL, carried verbatim from the frozen
+        /// `CopyAttribute.to_typeql()`. The executor runs this string and derives
+        /// counts from its match clause; it is never re-synthesized in Rust
+        /// (invariant 2: a single TypeQL source).
+        forward: String,
+        /// Reverse (rollback) TypeQL from `to_rollback_typeql()`, or `None` when
+        /// the migration is irreversible.
+        #[serde(default)]
+        reverse: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -230,6 +246,41 @@ mod tests {
 
         let json = serde_json::to_value(&operation).unwrap();
         assert_eq!(json["kind"], "run_typeql");
+
+        let parsed: OperationSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, operation);
+    }
+
+    #[test]
+    fn copy_attribute_operation_round_trips_json() {
+        let operation = OperationSpec::CopyAttribute {
+            forward: "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;".to_string(),
+            reverse: Some("match $x isa person, has new-name $v;\ndelete $v of $x;".to_string()),
+        };
+
+        let json = serde_json::to_value(&operation).unwrap();
+        assert_eq!(json["kind"], "copy_attribute");
+        assert!(
+            json["forward"]
+                .as_str()
+                .unwrap()
+                .contains("has new-name == $v")
+        );
+
+        let parsed: OperationSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, operation);
+    }
+
+    #[test]
+    fn copy_attribute_without_reverse_round_trips_json() {
+        let operation = OperationSpec::CopyAttribute {
+            forward: "match\n  $x isa company, has legacy-id $v;\n  not { $x has new-id $d; };\ninsert\n  $x has new-id == $v;".to_string(),
+            reverse: None,
+        };
+
+        let json = serde_json::to_value(&operation).unwrap();
+        assert_eq!(json["kind"], "copy_attribute");
+        // reverse is None → omitted (serde default).
 
         let parsed: OperationSpec = serde_json::from_value(json).unwrap();
         assert_eq!(parsed, operation);

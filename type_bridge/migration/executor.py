@@ -50,12 +50,15 @@ class MigrationResult:
         action: "applied" or "rolled_back"
         success: Whether the operation succeeded
         error: Error message if failed
+        backfill: Per-step backfill counts when the migration contained a
+            CopyAttribute op; ``None`` for pure-schema migrations (no bloat).
     """
 
     name: str
     action: str
     success: bool
     error: str | None = None
+    backfill: list[dict[str, object]] | None = None
 
 
 class MigrationExecutor:
@@ -192,7 +195,12 @@ class MigrationExecutor:
                 lambda: self.state_manager.record_unapplied(app_label, name),
             )
 
-        return MigrationResult(name=name, action=action, success=True)
+        return MigrationResult(
+            name=name,
+            action=action,
+            success=True,
+            backfill=rust_result.get("backfill"),
+        )
 
     def _record_state(self, name: str, action: str, record: Callable[[], None]) -> None:
         """Run a state-recording call, surfacing failures as a MigrationError.

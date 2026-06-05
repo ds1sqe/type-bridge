@@ -21,14 +21,6 @@ pub enum MigrationError {
         /// Human-readable error message.
         message: String,
     },
-    /// The requested CLI behavior is reserved for a later sub-plan.
-    #[error("{feature} is not implemented until sub-plan {sub_plan}")]
-    Unsupported {
-        /// Feature or command name.
-        feature: &'static str,
-        /// Sub-plan number that owns the behavior.
-        sub_plan: u8,
-    },
     /// Graph validation failed; one or more structural errors were found.
     #[error("migration graph validation failed with {} error(s)", errors.len())]
     Planning {
@@ -75,6 +67,15 @@ pub enum MigrationError {
     #[error("migration loader error: {message}")]
     Loader {
         /// Human-readable error message describing the loader failure.
+        message: String,
+    },
+    /// A backfill count query or write failed.
+    ///
+    /// Raised by [`backfill::execute_backfill`](crate::backfill::execute_backfill)
+    /// when a count query, the backfill insert, or a transaction open fails.
+    #[error("backfill execution error: {message}")]
+    BackfillQuery {
+        /// Human-readable error message describing the failure.
         message: String,
     },
 }

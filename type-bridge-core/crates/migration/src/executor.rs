@@ -17,7 +17,8 @@
 use serde::{Deserialize, Serialize};
 use type_bridge_orm::Database;
 
-use crate::plan::{ExecutionPlan, MigrationAction, MigrationExecution};
+use crate::backfill::{BackfillResult, execute_backfill};
+use crate::plan::{ExecutionPlan, MigrationAction, MigrationExecution, StepKind};
 
 /// Result of executing a single migration (one entry per attempted migration).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,6 +33,11 @@ pub struct MigrationResult {
     pub success: bool,
     /// Human-readable failure reason, present only when `success` is `false`.
     pub error: Option<String>,
+    /// Per-step backfill counts, present only when the migration contained at
+    /// least one [`StepKind::Backfill`] step.  `None` for pure-schema migrations
+    /// so the field does not appear in JSON output (no bloat — D2a).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backfill: Option<Vec<BackfillResult>>,
 }
 
 /// Execute a [`ExecutionPlan`] against `db`.
@@ -81,11 +87,36 @@ async fn execute_migration(
             action: migration.action,
             success: false,
             error: Some(format!("{} is not reversible", migration.name)),
+            backfill: None,
         });
         return true; // halt
     }
 
-    for step in &migration.steps {
+    let mut backfill_results: Vec<BackfillResult> = Vec::new();
+
+    for (step_index, step) in migration.steps.iter().enumerate() {
+        // Backfill steps are routed through the count-deriving path.
+        if step.kind == StepKind::Backfill && migration.action == MigrationAction::Apply {
+            match execute_backfill(db, step, step_index).await {
+                Ok(bf_result) => {
+                    backfill_results.push(bf_result);
+                    // Backfill execution committed internally; continue.
+                    continue;
+                }
+                Err(e) => {
+                    results.push(MigrationResult {
+                        app_label: migration.app_label.clone(),
+                        name: migration.name.clone(),
+                        action: migration.action,
+                        success: false,
+                        error: Some(format!("backfill step {step_index} failed: {e}")),
+                        backfill: None,
+                    });
+                    return true; // halt
+                }
+            }
+        }
+
         // Choose forward or reverse TypeQL based on the action.
         let typeql: &str = match migration.action {
             MigrationAction::Apply => &step.forward,
@@ -107,6 +138,7 @@ async fn execute_migration(
                     action: migration.action,
                     success: false,
                     error: Some(format!("failed to open transaction: {e}")),
+                    backfill: None,
                 });
                 return true; // halt
             }
@@ -122,6 +154,7 @@ async fn execute_migration(
                 action: migration.action,
                 success: false,
                 error: Some(format!("query failed: {e}")),
+                backfill: None,
             });
             return true; // halt
         }
@@ -134,18 +167,25 @@ async fn execute_migration(
                 action: migration.action,
                 success: false,
                 error: Some(format!("commit failed: {e}")),
+                backfill: None,
             });
             return true; // halt
         }
     }
 
     // All steps succeeded.
+    let backfill = if backfill_results.is_empty() {
+        None
+    } else {
+        Some(backfill_results)
+    };
     results.push(MigrationResult {
         app_label: migration.app_label.clone(),
         name: migration.name.clone(),
         action: migration.action,
         success: true,
         error: None,
+        backfill,
     });
     false // continue
 }
@@ -162,6 +202,7 @@ mod tests {
     fn schema_step(forward: &str, reverse: Option<&str>) -> ExecutionStep {
         ExecutionStep {
             tx_type: TxType::Schema,
+            kind: crate::plan::StepKind::Schema,
             forward: forward.to_string(),
             reverse: reverse.map(str::to_string),
         }

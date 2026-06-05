@@ -13,6 +13,23 @@ use crate::error::MigrationError;
 use crate::graph::{AppliedMigrationRecord, validate_graph};
 use crate::spec::{MigrationGraph, OperationSpec};
 
+/// The kind of execution step, controlling how the executor dispatches it.
+///
+/// `Schema` and `Write` run the carried TypeQL directly.  `Backfill` is a
+/// write-typed step that additionally derives matched/inserted/skipped counts
+/// via bracketing `reduce $c = count;` read queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StepKind {
+    /// Schema DDL step — opened under a schema transaction.
+    #[default]
+    Schema,
+    /// Data-write step — opened under a write transaction.
+    Write,
+    /// Backfill step — write transaction + bracketing count derivation.
+    Backfill,
+}
+
 /// One executable step within a migration.
 ///
 /// Carries the transaction type and the forward (and optional reverse) TypeQL.
@@ -21,6 +38,12 @@ use crate::spec::{MigrationGraph, OperationSpec};
 pub struct ExecutionStep {
     /// Transaction type to open for this step.
     pub tx_type: TxType,
+    /// Discriminant controlling executor dispatch.
+    ///
+    /// Defaults to [`StepKind::Schema`] for backwards-compatible deserialization
+    /// of steps persisted before this field was introduced.
+    #[serde(default)]
+    pub kind: StepKind,
     /// Forward (apply) TypeQL text.
     pub forward: String,
     /// Reverse (rollback) TypeQL text, or `None` when the step is
@@ -170,14 +193,15 @@ pub fn plan(
 
 /// Lower a slice of [`OperationSpec`] into [`ExecutionStep`]s.
 ///
-/// Only `RunTypeql` and `DefineSchema` are accepted; any other variant
-/// returns [`MigrationError::UnloweredOperation`].
+/// `RunTypeql`, `DefineSchema`, and `CopyAttribute` are handled; any other
+/// variant returns [`MigrationError::UnloweredOperation`].
 fn assemble_steps(operations: &[OperationSpec]) -> crate::Result<Vec<ExecutionStep>> {
     let mut steps = Vec::with_capacity(operations.len());
     for op in operations {
         let step = match op {
             OperationSpec::RunTypeql { forward, reverse } => ExecutionStep {
                 tx_type: TxType::Schema,
+                kind: StepKind::Schema,
                 forward: forward.clone(),
                 reverse: reverse.clone(),
             },
@@ -193,9 +217,22 @@ fn assemble_steps(operations: &[OperationSpec]) -> crate::Result<Vec<ExecutionSt
                     })?;
                 ExecutionStep {
                     tx_type: TxType::Schema,
+                    kind: StepKind::Schema,
                     forward,
                     // Model-initial migrations are non-reversible.
                     reverse: None,
+                }
+            }
+            OperationSpec::CopyAttribute { forward, reverse } => {
+                // The backfill TypeQL is carried verbatim from the frozen
+                // `CopyAttribute.to_typeql()` (invariant 2: no re-synthesis here).
+                // `backfill.rs` composes its count queries from this `forward`
+                // text's match clause.
+                ExecutionStep {
+                    tx_type: TxType::Write,
+                    kind: StepKind::Backfill,
+                    forward: forward.clone(),
+                    reverse: reverse.clone(),
                 }
             }
             other => {
@@ -230,6 +267,7 @@ fn op_kind_name(op: &OperationSpec) -> &'static str {
         OperationSpec::AddRolePlayer { .. } => "AddRolePlayer",
         OperationSpec::RemoveRolePlayer { .. } => "RemoveRolePlayer",
         OperationSpec::RenameAttribute { .. } => "RenameAttribute",
+        OperationSpec::CopyAttribute { .. } => "CopyAttribute",
     }
 }
 
@@ -654,6 +692,64 @@ mod tests {
         assert!(
             matches!(err, MigrationError::TargetNotFound { .. }),
             "expected TargetNotFound, got {err:?}"
+        );
+    }
+
+    // ── test: CopyAttribute lowers to Write-typed Backfill step ───────────────
+
+    #[test]
+    fn copy_attribute_lowers_to_write_typed_backfill_step() {
+        // The carried forward/reverse mirror `CopyAttribute.to_typeql()` /
+        // `to_rollback_typeql()`; assemble_steps must pass them through verbatim
+        // under a Write/Backfill step (no re-synthesis — invariant 2).
+        let forward = "match\n  $x isa person, has old-name $v;\n  \
+            not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;";
+        let reverse = "match $x isa person, has new-name $v;\ndelete $v of $x;";
+        let g = graph(vec![migration(
+            "0002_backfill",
+            vec![OperationSpec::CopyAttribute {
+                forward: forward.to_string(),
+                reverse: Some(reverse.to_string()),
+            }],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+
+        let exec = &result.to_apply[0];
+        assert_eq!(exec.steps.len(), 1);
+        let step = &exec.steps[0];
+
+        assert_eq!(
+            step.tx_type,
+            TxType::Write,
+            "CopyAttribute step must use Write tx"
+        );
+        assert_eq!(
+            step.kind,
+            StepKind::Backfill,
+            "CopyAttribute step kind must be Backfill"
+        );
+        // The carried strings are passed through unchanged.
+        assert_eq!(step.forward, forward, "forward must be carried verbatim");
+        assert_eq!(
+            step.reverse.as_deref(),
+            Some(reverse),
+            "reverse must be carried verbatim"
+        );
+    }
+
+    #[test]
+    fn step_kind_default_is_schema_for_serde_backcompat() {
+        // Simulate a legacy JSON step without the `kind` field.
+        let json =
+            r#"{"tx_type":"Schema","forward":"define attribute a, value string;","reverse":null}"#;
+        let step: ExecutionStep =
+            serde_json::from_str(json).expect("should deserialize legacy step");
+        assert_eq!(
+            step.kind,
+            StepKind::Schema,
+            "missing `kind` field must default to Schema for backward compat"
         );
     }
 }

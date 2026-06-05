@@ -104,6 +104,7 @@ from type_bridge.migration.loader import (
     MigrationLoader,
     MigrationLoadError,
 )
+from type_bridge.migration.operations import CopyAttribute
 from type_bridge.migration.registry import ModelRegistry
 from type_bridge.migration.schema_manager import SchemaManager
 from type_bridge.migration.simple_migration import (
@@ -168,4 +169,6 @@ __all__ = [
     "type_exists",
     # Operations module
     "operations",
+    # Ops shorthand
+    "CopyAttribute",
 ]

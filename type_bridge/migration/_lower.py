@@ -73,11 +73,18 @@ def lower_execution_migration(loaded: LoadedMigration) -> dict[str, Any]:
     """Lower one loaded migration into an execution-ready Rust spec dict.
 
     Unlike :func:`lower_migration`, every operation here carries the TypeQL the
-    Rust executor runs. Each frozen ``ops.*`` op becomes a ``run_typeql`` op
-    holding its ``to_typeql()`` (forward) and ``to_rollback_typeql()`` (reverse,
-    or ``None``); a model-initial migration emits a single non-reversible
-    ``define_schema`` op carrying its ``SchemaInfo``. This mirrors the TypeQL the
-    Python executor previously assembled, so execution semantics are preserved.
+    Rust executor runs. Each frozen ``ops.*`` op becomes one of:
+
+    - ``run_typeql`` — for schema/DDL ops and ``ops.RunTypeQL``, holding
+      ``to_typeql()`` forward and ``to_rollback_typeql()`` reverse (or ``None``).
+    - ``copy_attribute`` — for ``ops.CopyAttribute`` (DML backfill), preserving
+      the op fields so the Rust planner can assign ``StepKind::Backfill`` and
+      ``TxType::Write`` and the backfill executor can derive counts via bracketing
+      read queries (invariant 2 — no semantic re-derivation here).
+    - ``define_schema`` — for model-initial migrations (non-reversible).
+
+    This mirrors the TypeQL the Python executor previously assembled, so execution
+    semantics are preserved.
 
     When the ``LoadedMigration`` carries a pre-lowered ``execution_spec`` (from the
     JSON sidecar written at generation time), that spec is returned directly after
@@ -110,6 +117,21 @@ def lower_execution_migration(loaded: LoadedMigration) -> dict[str, Any]:
     migration_reversible = migration.reversible and not migration.models
 
     for operation in migration.operations:
+        if isinstance(operation, ops.CopyAttribute):
+            # CopyAttribute is a write-typed backfill step.  The forward/reverse
+            # TypeQL is carried from the frozen to_typeql()/to_rollback_typeql()
+            # so the Rust planner assigns StepKind::Backfill + TxType::Write and
+            # the executor runs the carried strings (invariant 2: one TypeQL
+            # source; the backfill path derives counts from the carried match).
+            operations.append(
+                {
+                    "kind": "copy_attribute",
+                    "forward": operation.to_typeql(),
+                    "reverse": operation.to_rollback_typeql() if migration_reversible else None,
+                }
+            )
+            continue
+
         forward = operation.to_typeql()
         if not forward:
             # Mirror the prior apply path, which skipped empty forward TypeQL.
@@ -257,6 +279,15 @@ def _operation_spec(operation: ops.Operation) -> dict[str, Any]:
             "old_name": operation.old_name,
             "new_name": operation.new_name,
             "value_type": operation.value_type,
+        }
+    if isinstance(operation, ops.CopyAttribute):
+        # The sidecar IR carries the backfill TypeQL (not the structured fields)
+        # so the Rust executor runs the carried strings — a single TypeQL source
+        # shared with the .py authoring form (invariant 2).
+        return {
+            "kind": "copy_attribute",
+            "forward": operation.to_typeql(),
+            "reverse": operation.to_rollback_typeql(),
         }
     raise TypeError(f"Unsupported migration operation type: {type(operation).__name__}")
 

@@ -5,6 +5,15 @@
 //! the executor issued.  A failure-injection knob lets tests verify
 //! rollback-on-error and run-halt behavior without a live TypeDB connection.
 //!
+//! Two construction modes are available:
+//!
+//! - [`MockMigrationBackend::new`] — every query returns `QueryResult::Ok`
+//!   except an optional injected failure at a given 0-indexed query position.
+//!   Used by the existing executor tests.
+//! - [`MockMigrationBackend::with_responses`] — each query returns the next
+//!   `QueryResult` from a scripted list.  Used by the backfill count tests to
+//!   supply scripted row counts without a live TypeDB connection.
+//!
 //! # Usage
 //!
 //! ```ignore
@@ -13,6 +22,17 @@
 //!
 //! // Fail the second query (0-indexed: index 1).
 //! let (backend, log) = MockMigrationBackend::new(Some(1));
+//! let db = Database::with_backend(Box::new(backend), "test");
+//!
+//! // Script specific QueryResult values per query call.
+//! use type_bridge_orm::session::backend::QueryResult;
+//! use serde_json::json;
+//! let scripted = vec![
+//!     QueryResult::Rows(vec![json!({"c": 7})]),
+//!     QueryResult::Rows(vec![json!({"c": 10})]),
+//!     QueryResult::Ok,
+//! ];
+//! let (backend, log) = MockMigrationBackend::with_responses(scripted);
 //! let db = Database::with_backend(Box::new(backend), "test");
 //! ```
 
@@ -46,28 +66,47 @@ pub type EventLog = Arc<Mutex<Vec<MockEvent>>>;
 
 /// In-memory `DriverBackend` that records the executor's interaction sequence.
 ///
-/// `fail_on_query_index` is the 0-indexed position across ALL query calls
-/// (across all transactions in a single `execute_plan` run) that should return
-/// an error.  `None` means all queries succeed.
+/// See the module-level documentation for the two construction modes.
 pub struct MockMigrationBackend {
     log: EventLog,
     /// Global query counter shared across all spawned transactions.
     query_count: Arc<Mutex<usize>>,
-    /// If `Some(n)`, the n-th query call returns an error.
+    /// If `Some(n)`, the n-th query call returns an error (used by `new`).
     fail_on_query_index: Option<usize>,
+    /// Scripted per-query responses consumed in order (used by `with_responses`).
+    /// When present, `fail_on_query_index` is ignored.
+    scripted_responses: Option<Arc<Mutex<Vec<QueryResult>>>>,
 }
 
 impl MockMigrationBackend {
     /// Create a new mock backend and return it together with the shared event log.
     ///
     /// Pass `fail_on_query_index = Some(n)` to make the n-th `query` call
-    /// (0-indexed across the whole run) return an error.
+    /// (0-indexed across the whole run) return an error.  All other queries
+    /// return `QueryResult::Ok`.
     pub fn new(fail_on_query_index: Option<usize>) -> (Self, EventLog) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let backend = Self {
             log: Arc::clone(&log),
             query_count: Arc::new(Mutex::new(0)),
             fail_on_query_index,
+            scripted_responses: None,
+        };
+        (backend, log)
+    }
+
+    /// Create a mock backend with scripted per-query responses.
+    ///
+    /// Each `query` call consumes the next element from `responses` in order.
+    /// If the list is exhausted, subsequent queries return `QueryResult::Ok`.
+    /// Useful for backfill count tests that need to return `Rows([{"c": N}])`.
+    pub fn with_responses(responses: Vec<QueryResult>) -> (Self, EventLog) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let backend = Self {
+            log: Arc::clone(&log),
+            query_count: Arc::new(Mutex::new(0)),
+            fail_on_query_index: None,
+            scripted_responses: Some(Arc::new(Mutex::new(responses))),
         };
         (backend, log)
     }
@@ -83,12 +122,14 @@ impl DriverBackend for MockMigrationBackend {
         let log = Arc::clone(&self.log);
         let query_count = Arc::clone(&self.query_count);
         let fail_on = self.fail_on_query_index;
+        let scripted = self.scripted_responses.as_ref().map(Arc::clone);
         Box::pin(async move {
             let tx: Box<dyn TransactionOps> = Box::new(MockMigrationTransaction {
                 tx_type,
                 log,
                 query_count,
                 fail_on,
+                scripted_responses: scripted,
             });
             Ok(tx)
         })
@@ -106,6 +147,8 @@ struct MockMigrationTransaction {
     log: EventLog,
     query_count: Arc<Mutex<usize>>,
     fail_on: Option<usize>,
+    /// When present, each query consumes the next scripted response.
+    scripted_responses: Option<Arc<Mutex<Vec<QueryResult>>>>,
 }
 
 impl TransactionOps for MockMigrationTransaction {
@@ -118,7 +161,6 @@ impl TransactionOps for MockMigrationTransaction {
             current
         };
 
-        let should_fail = self.fail_on == Some(idx);
         let typeql_owned = typeql.to_string();
         let tx_type = self.tx_type;
 
@@ -129,15 +171,29 @@ impl TransactionOps for MockMigrationTransaction {
             .unwrap()
             .push(MockEvent::Query(tx_type, typeql_owned));
 
-        Box::pin(async move {
-            if should_fail {
-                Err(OrmError::Transaction(
-                    "injected query failure for testing".to_string(),
-                ))
+        // Determine what to return.
+        let response: Result<QueryResult, OrmError> =
+            if let Some(scripted) = &self.scripted_responses {
+                // Scripted mode: consume next response.
+                let mut responses = scripted.lock().unwrap();
+                if responses.is_empty() {
+                    Ok(QueryResult::Ok)
+                } else {
+                    Ok(responses.remove(0))
+                }
             } else {
-                Ok(QueryResult::Ok)
-            }
-        })
+                // Failure-injection mode.
+                let should_fail = self.fail_on == Some(idx);
+                if should_fail {
+                    Err(OrmError::Transaction(
+                        "injected query failure for testing".to_string(),
+                    ))
+                } else {
+                    Ok(QueryResult::Ok)
+                }
+            };
+
+        Box::pin(async move { response })
     }
 
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {

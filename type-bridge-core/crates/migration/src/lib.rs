@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+pub mod backfill;
 pub mod checksum;
 pub mod error;
 pub mod executor;
@@ -18,13 +19,14 @@ pub mod state;
 #[cfg(test)]
 pub(crate) mod testing;
 
+pub use backfill::{BackfillResult, execute_backfill};
 pub use checksum::{
     ChecksumDrift, check_checksum_drift, checksum_drift_errors, migration_file_checksum,
 };
 pub use error::{MigrationError, Result};
 pub use executor::{MigrationResult, execute_plan};
 pub use graph::{AppliedMigrationRecord, MigrationValidationError, ValidationCode, validate_graph};
-pub use loader::{load_dir, load_sidecar};
-pub use plan::{ExecutionPlan, ExecutionStep, MigrationAction, MigrationExecution, plan};
+pub use loader::{load_dir, load_dir_checked, load_sidecar};
+pub use plan::{ExecutionPlan, ExecutionStep, MigrationAction, MigrationExecution, StepKind, plan};
 pub use spec::{MigrationDependencySpec, MigrationGraph, MigrationSpec, OperationSpec};
 pub use state::{InMemoryStateStore, MigrationStateStore, TypeDbStateStore};
