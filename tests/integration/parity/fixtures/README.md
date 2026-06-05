@@ -2,8 +2,8 @@
 
 This fixture is the contract for Python/Node parity in #124. It is not a
 Python-backend-vs-Rust-backend duplicate test corpus. Python user-space parity
-continues to live in the existing integration suite under
-`TYPE_BRIDGE_BACKEND=python|rust`.
+continues to live in the existing integration suite through the Rust manager
+runtime.
 
 The files here define one shared schema, write data, descriptor snapshots, and
 expected canonical JSON for cross-language tests:

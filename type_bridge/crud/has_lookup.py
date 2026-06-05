@@ -1,39 +1,7 @@
 """Cross-type and narrowed attribute lookup.
 
-Provides :func:`has_lookup` which builds and executes a TypeQL query that
-finds all entity **or** relation instances owning a given attribute,
-optionally filtered by value or expression and optionally narrowed to a
-concrete (or abstract base) type.
-
-Two query shapes are emitted depending on whether ``type_name`` is set:
-
-Cross-type form (``type_name=None``)::
-
-    # All entities with Name = "Alice"
-    match entity $e; $x isa $e, has Name "Alice";
-    fetch { "_iid": iid($x), "_type": label($e), "attributes": { $x.* } };
-
-    # All relations with Name attribute (any value)
-    match relation $r; $x isa $r, has Name $n;
-    fetch { "_iid": iid($x), "_type": label($r), "attributes": { $x.* } };
-
-Narrowed form (``type_name="some_type"``)::
-
-    # All instances of some_type (and its subtypes) with Name = "Alice".
-    # Uses isa! + sub so that label($t) recovers the concrete subtype.
-    # `label($x)` is illegal because $x is an Object variable.
-    match $t sub some_type; $x isa! $t, has Name "Alice";
-    fetch { "_iid": iid($x), "_type": label($t), "attributes": { $x.* } };
-
-Hydration:
-
-* Entity results are hydrated from the wildcard ``$x.*`` payload directly
-  (single query, no follow-up).
-* Relation results are re-fetched via
-  ``concrete_class.manager(connection).get(_iid=iid)`` so that role players
-  are populated. The relation hydration path is therefore N+1 in the number
-  of returned relations; this is accepted because relation result sets from
-  attribute lookups are typically small.
+Python owns public-call lowering and result hydration. Rust owns TypeQL
+construction and execution.
 """
 
 from __future__ import annotations
@@ -41,9 +9,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
-from type_bridge.crud.formatting import format_value
 from type_bridge.expressions.base import Expression
-from type_bridge.query.compiler import QueryCompiler
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
@@ -60,87 +26,15 @@ def _build_has_query(
     kind: Literal["entity", "relation"],
     type_name: str | None = None,
 ) -> str:
-    """Build the TypeQL query string for a cross-type or narrowed attribute lookup.
-
-    This is the single source of truth for query construction. Tests should
-    call this directly rather than mirroring the logic.
-
-    Args:
-        attr_class: The attribute type to search for.
-        value: Optional filter — see :func:`has_lookup` for accepted shapes.
-        kind: ``"entity"`` or ``"relation"`` — selects the TypeDB kind keyword.
-            Only consulted on the cross-type path; the narrowed path is
-            kind-agnostic because ``$t sub <type_name>`` already constrains the
-            match to the right kind via the type name.
-        type_name: Optional TypeDB type name to narrow the match to.
-            When ``None``, the query matches across all types of *kind* and
-            uses ``label($e)`` / ``label($r)`` to recover each result's
-            concrete type. When set, the query emits
-            ``$t sub <type_name>; $x isa! $t`` and uses ``label($t)`` to
-            recover the most-specific concrete subtype. ``isa!`` is required
-            so ``$t`` binds to the exact type of ``$x`` (not a supertype),
-            and ``$t sub <type_name>`` is reflexive on the parent in TypeDB,
-            so it includes ``<type_name>`` itself plus any of its subtypes.
-            ``label($x)`` is illegal in TypeDB 3 because ``$x`` is an Object
-            variable, not a Type variable — hence the type-variable dance.
-
-    Returns:
-        A complete TypeQL query string (match clause + fetch clause).
-    """
-    attr_name = attr_class.get_attribute_name()
-
-    match_parts: list[str] = []
-
-    if type_name is None:
-        # Cross-type: bind a kind variable so label() returns the concrete subtype.
-        # Form:  match {kind} $kv; $x isa $kv, ...
-        kind_var = "$e" if kind == "entity" else "$r"
-        match_parts.append(f"{kind} {kind_var}")
-        isa_anchor = kind_var
-        label_var = kind_var
-    else:
-        # Narrowed: bind a type variable to the most-specific subtype of
-        # ``type_name`` so ``label($t)`` returns the concrete subtype label.
-        # Form:  match $t sub {type_name}; $x isa! $t, ...
-        # ``isa!`` ensures $t is bound to the *exact* type of $x (not a
-        # supertype), and ``$t sub {type_name}`` constrains $t to {type_name}
-        # or any of its subtypes (TypeDB ``sub`` is reflexive on the parent).
-        # We need this dance because ``label($x)`` is illegal — $x is an
-        # Object variable, not a Type variable.
-        #
-        # NOTE: ``kind`` is intentionally unused here. ``$t sub <type_name>``
-        # is kind-agnostic — the type name itself already constrains the
-        # match to the right kind. Callers passing a mismatched kind +
-        # type_name (e.g. ``kind="entity"`` with a relation type name) will
-        # get an empty result set, not an error. The only public caller is
-        # ``TypeDBType.has``, which always derives both from the same ``cls``.
-        match_parts.append(f"$t sub {type_name}")
-        isa_anchor = "$t"
-        label_var = "$t"
-
-    isa_op = "isa!" if type_name is not None else "isa"
-
-    if value is None:
-        # All instances with this attribute (any value)
-        match_parts.append(f"$x {isa_op} {isa_anchor}, has {attr_name} $n")
-    elif isinstance(value, Expression):
-        # Let the expression generate its own HasPattern + comparison.
-        # We only emit `$x isa <anchor>` here — no manual `has` clause,
-        # so we avoid a duplicate binding with the expression's variable.
-        match_parts.append(f"$x {isa_op} {isa_anchor}")
-        compiler = QueryCompiler()
-        for pattern in value.to_ast("$x"):
-            match_parts.append(compiler.compile(pattern))
-    else:
-        # Exact match (raw value or Attribute instance)
-        formatted = format_value(value)
-        match_parts.append(f"$x {isa_op} {isa_anchor}, has {attr_name} {formatted}")
-
-    match_clause = "match " + ";\n".join(match_parts) + ";"
-    fetch_clause = (
-        'fetch { "_iid": iid($x), "_type": label(' + label_var + '), "attributes": { $x.* } };'
+    """Build has-lookup TypeQL through the Rust ORM query builder."""
+    core = _rust_core()
+    expression = _has_lookup_expression(attr_class, value)
+    return core.build_has_lookup_query(
+        kind,
+        attr_class.get_attribute_name(),
+        expression,
+        type_name,
     )
-    return match_clause + "\n" + fetch_clause
 
 
 def has_lookup(
@@ -180,6 +74,100 @@ def has_lookup(
 
     # Hydrate (relations route through manager.get to recover role players)
     return _hydrate_results(results, ModelRegistry, connection=connection)
+
+
+def _rust_core() -> Any:
+    from type_bridge._rust_runtime import rust_core
+
+    return rust_core()
+
+
+def _has_lookup_expression(attr_class: type[Attribute], value: Any | None) -> Any | None:
+    if value is None:
+        return None
+    if isinstance(value, Expression):
+        return _lower_has_expression(attr_class, value)
+
+    wrapped = value if isinstance(value, attr_class) else attr_class(value)
+    return _lower_has_expression(attr_class, attr_class.eq(wrapped))
+
+
+def _lower_has_expression(attr_class: type[Attribute], expression: Expression) -> Any:
+    from type_bridge.crud.rust_manager import _dynamic_value, _raw_attr_value
+    from type_bridge.expressions import (
+        AttributeExistsExpr,
+        BooleanExpr,
+        ComparisonExpr,
+        IidExpr,
+        StringExpr,
+    )
+
+    core = _rust_core()
+
+    if isinstance(expression, core.DynamicExpr):
+        return expression
+
+    if isinstance(expression, ComparisonExpr):
+        _validate_has_expression_attr(attr_class, expression.attr_type)
+        value = _dynamic_value(_raw_attr_value(expression.value), expression.attr_type)
+        attr_name = expression.attr_type.get_attribute_name()
+        match expression.operator:
+            case "==":
+                return core.DynamicExpr.eq(attr_name, value)
+            case "!=":
+                return core.DynamicExpr.neq(attr_name, value)
+            case ">":
+                return core.DynamicExpr.gt(attr_name, value)
+            case ">=":
+                return core.DynamicExpr.gte(attr_name, value)
+            case "<":
+                return core.DynamicExpr.lt(attr_name, value)
+            case "<=":
+                return core.DynamicExpr.lte(attr_name, value)
+        raise ValueError(f"Unsupported comparison operator {expression.operator!r}")
+
+    if isinstance(expression, StringExpr):
+        _validate_has_expression_attr(attr_class, expression.attr_type)
+        attr_name = expression.attr_type.get_attribute_name()
+        pattern = str(_raw_attr_value(expression.pattern))
+        if expression.operation == "contains":
+            return core.DynamicExpr.contains(attr_name, pattern)
+        if expression.operation in {"like", "regex"}:
+            return core.DynamicExpr.like(attr_name, pattern)
+        raise ValueError(f"Unsupported string operation {expression.operation!r}")
+
+    if isinstance(expression, AttributeExistsExpr):
+        _validate_has_expression_attr(attr_class, expression.attr_type)
+        attr_name = expression.attr_type.get_attribute_name()
+        if expression.present:
+            return core.DynamicExpr.is_not_null(attr_name)
+        return core.DynamicExpr.is_null(attr_name)
+
+    if isinstance(expression, IidExpr):
+        return core.DynamicExpr.iid(expression.iid)
+
+    if isinstance(expression, BooleanExpr):
+        expressions = [_lower_has_expression(attr_class, item) for item in expression.operands]
+        if expression.operation == "and":
+            return core.DynamicExpr.and_(expressions)
+        if expression.operation == "or":
+            return core.DynamicExpr.or_(expressions)
+        if expression.operation == "not":
+            return core.DynamicExpr.not_(expressions[0])
+        raise ValueError(f"Unsupported boolean operation {expression.operation!r}")
+
+    raise TypeError(f"Unsupported has lookup expression {type(expression).__name__}")
+
+
+def _validate_has_expression_attr(
+    attr_class: type[Attribute],
+    expression_attr_class: type[Attribute],
+) -> None:
+    if expression_attr_class.get_attribute_name() != attr_class.get_attribute_name():
+        raise ValueError(
+            "has lookup expression attribute must match the searched attribute "
+            f"{attr_class.get_attribute_name()!r}"
+        )
 
 
 def _hydrate_entity(concrete_class: type, attrs: dict[str, Any]) -> Any:

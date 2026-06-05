@@ -4,11 +4,8 @@ The Rust backend is the default ORM execution path. Python Pydantic models
 register runtime descriptors with the shared Rust ORM and route manager CRUD,
 query, hydration, and transaction operations through PyO3.
 
-The transition fallback remains explicitly selectable for Phase 3 only:
-
-```bash
-TYPE_BRIDGE_BACKEND=python
-```
+The Python ORM backend fallback was removed in #125 Phase 4. If
+`TYPE_BRIDGE_BACKEND` is set, only `rust` is accepted.
 
 Current Rust backend scope:
 
@@ -28,14 +25,13 @@ Current Rust backend scope:
   `update_many`, `put`, `put_many`, and delete operations;
 - descriptor registration without an active manager or database.
 
-Phase 3 hardening status as of 2026-06-04:
+Phase 4 status as of 2026-06-04:
 
 - full Rust backend integration wrapper passes:
   `TYPE_BRIDGE_BACKEND=rust UV_CACHE_DIR=/tmp/uv-cache ./test-integration.sh`;
 - unit suite passes with the Rust backend as the selector default;
 - `typedb-driver` is no longer a default dependency. It remains in the
-  `dev` and `python-backend` extras because tests and the Phase 3 fallback
-  still use direct Python driver APIs.
+  `dev` and `typedb-driver` extras for tests and direct Python driver APIs.
 
 Relation `get`, `get_by_iid`, and `all` hydrate role players from Rust dynamic
 relation rows, including repeated players for a role when TypeDB returns
@@ -46,12 +42,6 @@ defaults to Rust:
 
 ```bash
 ./test-integration.sh
-```
-
-For transition comparison only, the Python fallback can still be selected:
-
-```bash
-TYPE_BRIDGE_BACKEND=python uv run --no-sync pytest tests/integration/ -m integration
 ```
 
 Python `TransactionContext` instances select a Rust-owned transaction adapter

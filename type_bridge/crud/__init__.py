@@ -1,9 +1,4 @@
-"""CRUD operations for TypeDB entities and relations.
-
-This module provides the unified TypeDBManager for performing
-CRUD (Create, Read, Update, Delete) operations on TypeDB entities
-and relations with type safety.
-"""
+"""CRUD operations for TypeDB entities and relations."""
 
 from .exceptions import (
     EntityNotFoundError,
@@ -15,8 +10,15 @@ from .exceptions import (
 )
 from .has_lookup import has_lookup
 from .hooks import CrudEvent, CrudHook, HookCancelled
-from .strategies import EntityStrategy, ModelStrategy, RelationStrategy
-from .typedb_manager import GroupByQuery, TypeDBManager, TypeDBQuery
+from .rust_manager import (
+    RustTypeDBGroupByQuery as GroupByQuery,
+)
+from .rust_manager import (
+    RustTypeDBManager as TypeDBManager,
+)
+from .rust_manager import (
+    RustTypeDBQuery as TypeDBQuery,
+)
 
 __all__ = [
     # Cross-type lookup
@@ -25,10 +27,6 @@ __all__ = [
     "TypeDBManager",
     "TypeDBQuery",
     "GroupByQuery",
-    # Strategies
-    "ModelStrategy",
-    "EntityStrategy",
-    "RelationStrategy",
     # Hooks
     "CrudEvent",
     "CrudHook",

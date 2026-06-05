@@ -217,6 +217,6 @@ Remaining parity gaps:
 - Prefer package-level Node integration over Rust-side NAPI JSON integration.
 - Keep Rust-side NAPI DB tests only where they prove native-boundary behavior
   that a TypeScript package test cannot cover.
-- Do not duplicate the existing Python backend-selector integration corpus.
+- Do not duplicate the existing Python manager integration corpus.
 - Label smoke, fake-manager, descriptor-only, and package-load tests as
   non-substitutes for real DB integration.

@@ -520,21 +520,15 @@ class TransactionContext:
         logger.debug(
             f"Opening {_tx_type_name(self.tx_type)} transaction context for database: {self.db.database_name}"
         )
-        from type_bridge._backend import RUST_BACKEND, selected_backend
+        from type_bridge._backend import selected_backend
 
-        if selected_backend() == RUST_BACKEND:
-            from type_bridge._rust_runtime import rust_database_for
+        selected_backend()
+        from type_bridge._rust_runtime import rust_database_for
 
-            rust_db = rust_database_for(self.db)
-            self._rust_tx = rust_db.transaction(_tx_type_wire_name(self.tx_type))
-            self._rust_finalized = False
-            logger.debug(f"Rust transaction context opened: {_tx_type_name(self.tx_type)}")
-            return self
-
-        self.db.connect()
-        raw_tx = self.db.driver.transaction(self.db.database_name, self.tx_type)
-        self._tx = Transaction(raw_tx)
-        logger.debug(f"Transaction context opened: {_tx_type_name(self.tx_type)}")
+        rust_db = rust_database_for(self.db)
+        self._rust_tx = rust_db.transaction(_tx_type_wire_name(self.tx_type))
+        self._rust_finalized = False
+        logger.debug(f"Rust transaction context opened: {_tx_type_name(self.tx_type)}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

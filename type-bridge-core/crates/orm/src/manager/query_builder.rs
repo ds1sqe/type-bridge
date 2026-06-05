@@ -173,6 +173,83 @@ pub fn build_dynamic_entity_expr_fetch(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build a cross-type or narrowed attribute-owner lookup query.
+///
+/// This backs the Python `TypeDBType.has(...)` surface without requiring
+/// Python-side TypeQL construction. `kind` is used only for cross-type
+/// lookups, where TypeDB needs an `entity $e` or `relation $r` type binding.
+pub fn build_dynamic_has_lookup_query(
+    kind: &str,
+    attr_name: &str,
+    expression: Option<&DynamicExpr>,
+    type_name: Option<&str>,
+) -> Result<String> {
+    let (mut match_patterns, label_var) = if let Some(type_name) = type_name {
+        (
+            vec![Pattern::SubType {
+                variable: "$t".to_string(),
+                parent_type: type_name.to_string(),
+            }],
+            "$t".to_string(),
+        )
+    } else {
+        let kind_var = match kind {
+            "entity" => "$e",
+            "relation" => "$r",
+            other => {
+                return Err(crate::error::OrmError::QueryExecution(format!(
+                    "has lookup kind must be 'entity' or 'relation', got {other:?}"
+                )));
+            }
+        };
+        (
+            vec![Pattern::Raw(format!("{kind} {kind_var}"))],
+            kind_var.to_string(),
+        )
+    };
+
+    let isa_op = if type_name.is_some() { "isa!" } else { "isa" };
+    let isa_anchor = if type_name.is_some() {
+        "$t"
+    } else if kind == "entity" {
+        "$e"
+    } else {
+        "$r"
+    };
+
+    if let Some(expression) = expression {
+        match_patterns.push(Pattern::Raw(format!("$x {isa_op} {isa_anchor}")));
+        let mut counter = 0;
+        match_patterns.extend(expression.to_patterns("$x", &mut counter)?);
+    } else {
+        match_patterns.push(Pattern::Raw(format!(
+            "$x {isa_op} {isa_anchor}, has {attr_name} $n"
+        )));
+    }
+
+    let clauses = vec![
+        Clause::Match(match_patterns),
+        Clause::Fetch(vec![
+            FetchItem::Function {
+                key: "_iid".to_string(),
+                func_name: "iid".to_string(),
+                var: "$x".to_string(),
+            },
+            FetchItem::Function {
+                key: "_type".to_string(),
+                func_name: "label".to_string(),
+                var: label_var,
+            },
+            FetchItem::NestedWildcard {
+                key: "attributes".to_string(),
+                var: "$x".to_string(),
+            },
+        ]),
+    ];
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
 /// Build a polymorphic IID fetch query for a runtime entity descriptor.
 pub fn build_dynamic_entity_fetch_by_iid(
     descriptor: &EntityDescriptor,

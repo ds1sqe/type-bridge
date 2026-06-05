@@ -33,8 +33,8 @@ The project requires:
 - `typer>=0.15.0`: CLI framework for generator and migration tools
 
 `typedb-driver==3.10.0` is no longer a default runtime dependency. It remains
-available through the `dev` and `python-backend` extras for integration tests,
-direct driver calls, and the Phase 3 Python backend fallback.
+available through the `dev` and `typedb-driver` extras for integration tests
+and direct driver calls.
 
 Development dependencies include:
 - `pytest`: Testing framework

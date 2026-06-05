@@ -377,6 +377,25 @@ impl PyDynamicSort {
     }
 }
 
+/// Build the TypeQL for a cross-type or narrowed attribute-owner lookup.
+#[pyfunction]
+#[pyo3(signature = (kind, attr_name, expression=None, type_name=None))]
+fn build_has_lookup_query(
+    kind: &str,
+    attr_name: &str,
+    expression: Option<PyRef<'_, PyDynamicExpr>>,
+    type_name: Option<&str>,
+) -> PyResult<String> {
+    let expression = expression.as_ref().map(|expr| expr.expr.clone());
+    type_bridge_orm::manager::query_builder::build_dynamic_has_lookup_query(
+        kind,
+        attr_name,
+        expression.as_ref(),
+        type_name,
+    )
+    .map_err(py_orm_error)
+}
+
 fn compare_expr(
     attr_name: &str,
     operator: DynamicComparisonOp,
@@ -1521,6 +1540,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDynamicSortDir>()?;
     m.add_class::<PyDynamicExpr>()?;
     m.add_class::<PyDynamicSort>()?;
+    m.add_function(wrap_pyfunction!(build_has_lookup_query, m)?)?;
     m.add_class::<PyDynamicEntityManager>()?;
     m.add_class::<PyDynamicRelationManager>()?;
     // Keep these imported so PyO3 validates the signatures at compile time.

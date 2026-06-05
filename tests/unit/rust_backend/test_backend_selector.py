@@ -16,11 +16,14 @@ def test_backend_defaults_to_rust(monkeypatch: pytest.MonkeyPatch) -> None:
     assert manager_class(TypeDBManager) is RustTypeDBManager
 
 
-def test_backend_selects_python_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_backend_rejects_python_manager(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(BACKEND_ENV_VAR, "python")
 
-    assert selected_backend() == "python"
-    assert manager_class(TypeDBManager) is TypeDBManager
+    with pytest.raises(ValueError, match="no longer supported"):
+        selected_backend()
+
+    with pytest.raises(ValueError, match="no longer supported"):
+        manager_class(TypeDBManager)
 
 
 def test_backend_selects_rust_manager(monkeypatch: pytest.MonkeyPatch) -> None:

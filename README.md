@@ -384,8 +384,8 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 - jinja2>=3.1.0 (for code generation)
 - typer>=0.15.0 (for CLI)
 
-`typedb-driver==3.10.0` is required only for the Phase 3 Python backend
-fallback, direct Python driver APIs, and development/integration tests.
+`typedb-driver==3.10.0` is required only for direct Python driver APIs and
+development/integration tests.
 
 ## Release Notes
 

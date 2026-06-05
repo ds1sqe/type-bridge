@@ -123,13 +123,15 @@ class TestQueryGeneration:
         from type_bridge.crud.has_lookup import _build_has_query
 
         q = _build_has_query(SharedName, "Alice", kind="entity")
-        assert 'has SharedName "Alice"' in q
+        assert "has SharedName $dyn_attr0" in q
+        assert '$dyn_attr0 == "Alice"' in q
 
     def test_entity_with_attribute_instance(self):
         from type_bridge.crud.has_lookup import _build_has_query
 
         q = _build_has_query(SharedName, SharedName("Alice"), kind="entity")
-        assert 'has SharedName "Alice"' in q
+        assert "has SharedName $dyn_attr0" in q
+        assert '$dyn_attr0 == "Alice"' in q
 
     def test_relation_kind(self):
         from type_bridge.crud.has_lookup import _build_has_query
@@ -155,7 +157,8 @@ class TestQueryGeneration:
         from type_bridge.crud.has_lookup import _build_has_query
 
         q = _build_has_query(Salary, 120000, kind="relation")
-        assert "has Salary 120000" in q
+        assert "has Salary $dyn_attr0" in q
+        assert "$dyn_attr0 == 120000" in q
 
     # ── Concrete-class narrowing ────────────────────────────────────
 
@@ -177,7 +180,8 @@ class TestQueryGeneration:
         # Narrowed match: $t sub lookup_person; $x isa! $t
         assert "$t sub lookup_person" in q
         assert "$x isa! $t" in q
-        assert 'has SharedName "Alice"' in q
+        assert "has SharedName $dyn_attr0" in q
+        assert '$dyn_attr0 == "Alice"' in q
         # Must NOT bind a kind variable
         assert "entity $e" not in q
         # Label must come from the type variable $t, not from $x or a kind var

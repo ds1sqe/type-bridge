@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, Any
 
 _MISSING_DRIVER_MESSAGE = (
     "The Python TypeDB driver is required for this operation. Install "
-    "type-bridge with the 'python-backend' extra to use the transition "
-    "Python backend or direct typedb.driver APIs."
+    "type-bridge with the 'typedb-driver' extra to use direct typedb.driver "
+    "APIs."
 )
 
 if TYPE_CHECKING:
@@ -56,7 +56,7 @@ else:
 
 
 def raise_missing_typedb_driver() -> None:
-    """Raise the transition-extra error for direct Python driver use."""
+    """Raise the optional-driver error for direct Python driver use."""
     raise ImportError(_MISSING_DRIVER_MESSAGE)
 
 

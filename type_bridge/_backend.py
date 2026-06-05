@@ -1,4 +1,4 @@
-"""Backend selection for TypeBridge managers."""
+"""Runtime selection for TypeBridge managers."""
 
 from __future__ import annotations
 
@@ -11,20 +11,26 @@ RUST_BACKEND = "rust"
 
 
 def selected_backend() -> str:
-    """Return the configured manager backend."""
+    """Return the configured manager backend.
+
+    The Python ORM backend was retired in #125 Phase 4. The environment
+    variable is retained only to reject stale transition settings clearly.
+    """
     value = os.environ.get(BACKEND_ENV_VAR, RUST_BACKEND).strip().lower()
-    if value == "":
+    if value in {"", RUST_BACKEND}:
         return RUST_BACKEND
-    if value not in {PYTHON_BACKEND, RUST_BACKEND}:
+    if value == PYTHON_BACKEND:
         raise ValueError(
-            f"{BACKEND_ENV_VAR} must be '{PYTHON_BACKEND}' or '{RUST_BACKEND}', got {value!r}"
+            f"{BACKEND_ENV_VAR}=python is no longer supported; TypeBridge managers "
+            "run through the Rust runtime"
         )
-    return value
+    raise ValueError(f"{BACKEND_ENV_VAR} must be '{RUST_BACKEND}' or unset, got {value!r}")
 
 
 def manager_class(default_manager: type[Any]) -> type[Any]:
-    """Return the manager class for the configured backend."""
-    if selected_backend() == PYTHON_BACKEND:
+    """Return the canonical manager class after validating stale env settings."""
+    selected_backend()
+    if default_manager.__name__ == "RustTypeDBManager":
         return default_manager
 
     from type_bridge.crud.rust_manager import RustTypeDBManager
