@@ -102,7 +102,26 @@ export type RuntimeAttributeValue =
   | { Decimal: string }
   | { Duration: string };
 
-export { Attribute, attr, type AttributeBase } from "./attribute.js";
+export {
+  Attribute,
+  attr,
+  type AttributeBase,
+  type ComparableAttributeBase,
+  type NumericAttributeBase,
+  type StringAttributeBase,
+} from "./attribute.js";
+export {
+  AggregateSpec,
+  BooleanExpr,
+  ComparisonExpr,
+  NotExpr,
+  QueryExpr,
+  SortExpr,
+  TypedGroupByQuery,
+  TypedQuery,
+  TypedQueryError,
+  agg,
+} from "./query.js";
 export {
   AttributeFlags,
   Card,
@@ -172,6 +191,58 @@ export interface DynamicRolePlayer {
 
 export interface DynamicRelationRow extends DynamicEntityRow {
   role_players: DynamicRolePlayer[];
+}
+
+/**
+ * Wire shape of the Rust `DynamicComparisonOp`. `starts_with`/`ends_with` carry
+ * the raw literal only — Rust owns regex anchoring and escaping (Plan 09 Gap B).
+ */
+export type DynamicComparisonOp =
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "contains"
+  | "like"
+  | "starts_with"
+  | "ends_with";
+
+/**
+ * Wire shape of the Rust `DynamicExpr` expression tree. Comparison values use the
+ * same precision-safe {@link AttributeValue} `{ value_type, value }` encoding as
+ * CRUD filters (`long` carried as a string) — the Node binding decodes them
+ * through its shared value convention, so `long` keeps full i64 precision rather
+ * than being capped at the JS safe-integer range.
+ */
+export type DynamicExpr =
+  | { kind: "compare"; attr_name: string; operator: DynamicComparisonOp; value: AttributeValue }
+  | { kind: "iid"; iid: string }
+  | { kind: "is_null"; attr_name: string; is_null: boolean }
+  | { kind: "and"; exprs: DynamicExpr[] }
+  | { kind: "or"; exprs: DynamicExpr[] }
+  | { kind: "not"; expr: DynamicExpr }
+  | { kind: "role_player"; role_name: string; expr: DynamicExpr };
+
+/** Wire shape of the Rust `SortDir` (bare PascalCase variant names). */
+export type DynamicSortDir = "Asc" | "Desc";
+
+/** Wire shape of the Rust `DynamicSort`. */
+export type DynamicSort =
+  | { kind: "attribute"; attr_name: string; direction: DynamicSortDir }
+  | { kind: "role_player_attribute"; role_name: string; attr_name: string; direction: DynamicSortDir };
+
+/**
+ * Wire shape of the Rust `DynamicQuerySpecJson`. All fields are optional; an empty
+ * `expr` matches every row. `limit`/`offset` apply only to `query`, not to
+ * `queryCount`/`queryAggregate`/`queryGroupByAggregate`.
+ */
+export interface DynamicQuerySpec {
+  expr?: DynamicExpr[];
+  sort?: DynamicSort[];
+  limit?: number | null;
+  offset?: number | null;
 }
 
 export function string(value: string): AttributeValue {
@@ -270,6 +341,10 @@ export interface NativeDynamicEntityManager {
   aggregateJson(aggregatesJson: string, filtersJson?: string | null): string;
   groupByAggregateJson(groupFieldsJson: string, aggregatesJson: string, filtersJson?: string | null): string;
   deleteByIid(iid: string): void;
+  queryJson(specJson: string): string;
+  queryCountJson(specJson: string): string;
+  queryAggregateJson(specJson: string, aggregatesJson: string): string;
+  queryGroupByAggregateJson(specJson: string, groupFieldsJson: string, aggregatesJson: string): string;
 }
 
 export interface NativeDynamicRelationManager {
@@ -286,6 +361,10 @@ export interface NativeDynamicRelationManager {
   aggregateJson(aggregatesJson: string, filtersJson?: string | null): string;
   groupByAggregateJson(groupFieldsJson: string, aggregatesJson: string, filtersJson?: string | null): string;
   deleteByIid(iid: string): void;
+  queryJson(specJson: string): string;
+  queryCountJson(specJson: string): string;
+  queryAggregateJson(specJson: string, aggregatesJson: string): string;
+  queryGroupByAggregateJson(specJson: string, groupFieldsJson: string, aggregatesJson: string): string;
 }
 
 export interface NativeRuntime {
@@ -565,6 +644,32 @@ export class RustDynamicEntityManager {
     );
   }
 
+  query(spec: DynamicQuerySpec): DynamicEntityRow[] {
+    return parseJson(this.#native.queryJson(JSON.stringify(spec)));
+  }
+
+  queryCount(spec: DynamicQuerySpec): bigint {
+    return BigInt(this.#native.queryCountJson(JSON.stringify(spec)));
+  }
+
+  queryAggregate(spec: DynamicQuerySpec, aggregates: AggregateInput[]): unknown[] {
+    return parseJson(this.#native.queryAggregateJson(JSON.stringify(spec), JSON.stringify(aggregates)));
+  }
+
+  queryGroupByAggregate(
+    spec: DynamicQuerySpec,
+    groupFields: string[],
+    aggregates: AggregateInput[],
+  ): unknown[] {
+    return parseJson(
+      this.#native.queryGroupByAggregateJson(
+        JSON.stringify(spec),
+        JSON.stringify(groupFields),
+        JSON.stringify(aggregates),
+      ),
+    );
+  }
+
   deleteByIid(iid: string): void {
     this.#native.deleteByIid(iid);
   }
@@ -631,6 +736,32 @@ export class RustDynamicRelationManager {
   ): unknown[] {
     return parseJson(
       this.#native.groupByAggregateJson(JSON.stringify(groupFields), JSON.stringify(aggregates), optionalJson(filters)),
+    );
+  }
+
+  query(spec: DynamicQuerySpec): DynamicRelationRow[] {
+    return parseJson(this.#native.queryJson(JSON.stringify(spec)));
+  }
+
+  queryCount(spec: DynamicQuerySpec): bigint {
+    return BigInt(this.#native.queryCountJson(JSON.stringify(spec)));
+  }
+
+  queryAggregate(spec: DynamicQuerySpec, aggregates: AggregateInput[]): unknown[] {
+    return parseJson(this.#native.queryAggregateJson(JSON.stringify(spec), JSON.stringify(aggregates)));
+  }
+
+  queryGroupByAggregate(
+    spec: DynamicQuerySpec,
+    groupFields: string[],
+    aggregates: AggregateInput[],
+  ): unknown[] {
+    return parseJson(
+      this.#native.queryGroupByAggregateJson(
+        JSON.stringify(spec),
+        JSON.stringify(groupFields),
+        JSON.stringify(aggregates),
+      ),
     );
   }
 

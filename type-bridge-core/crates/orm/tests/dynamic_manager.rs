@@ -939,3 +939,496 @@ async fn dynamic_entity_manager_rejects_write_in_read_transaction_context() {
         Err(OrmError::Transaction(message)) if message.contains("Write operation")
     ));
 }
+
+// ── Phase 1 Gap A: expression-tree-filtered aggregate and group-by ────────────
+
+#[test]
+fn entity_expr_aggregate_query_uses_or_filter() {
+    let dynamic = query_builder::build_dynamic_entity_expr_aggregate(
+        &person_descriptor(),
+        &[DynamicExpr::Or {
+            exprs: vec![
+                DynamicExpr::Compare {
+                    attr_name: "name".into(),
+                    operator: DynamicComparisonOp::Eq,
+                    value: AttributeValue::String("Alice".into()),
+                },
+                DynamicExpr::Compare {
+                    attr_name: "name".into(),
+                    operator: DynamicComparisonOp::Eq,
+                    value: AttributeValue::String("Bob".into()),
+                },
+            ],
+        }],
+        &[count_aggregate(), mean_age_aggregate()],
+        "$e",
+    )
+    .unwrap();
+
+    assert!(dynamic.contains("$e isa person"));
+    // OR branch is emitted
+    assert!(dynamic.contains(" or "));
+    assert!(dynamic.contains("$count = count($e)"));
+    assert!(dynamic.contains("$avg_age = mean($agg"));
+    assert!(dynamic.contains("reduce"));
+}
+
+#[test]
+fn entity_expr_aggregate_query_uses_not_filter() {
+    let dynamic = query_builder::build_dynamic_entity_expr_aggregate(
+        &person_descriptor(),
+        &[DynamicExpr::Not {
+            expr: Box::new(DynamicExpr::Compare {
+                attr_name: "name".into(),
+                operator: DynamicComparisonOp::Eq,
+                value: AttributeValue::String("Carol".into()),
+            }),
+        }],
+        &[count_aggregate()],
+        "$e",
+    )
+    .unwrap();
+
+    assert!(dynamic.contains("$e isa person"));
+    assert!(dynamic.contains("not {"));
+    assert!(dynamic.contains("$count = count($e)"));
+    assert!(dynamic.contains("reduce"));
+}
+
+#[test]
+fn entity_expr_group_by_aggregate_query_uses_or_filter() {
+    let dynamic = query_builder::build_dynamic_entity_expr_group_by_aggregate(
+        &person_descriptor(),
+        &[DynamicExpr::Or {
+            exprs: vec![
+                DynamicExpr::Compare {
+                    attr_name: "age".into(),
+                    operator: DynamicComparisonOp::Lt,
+                    value: AttributeValue::Long(30),
+                },
+                DynamicExpr::Compare {
+                    attr_name: "age".into(),
+                    operator: DynamicComparisonOp::Gt,
+                    value: AttributeValue::Long(50),
+                },
+            ],
+        }],
+        &["name".into()],
+        &[count_aggregate()],
+        "$e",
+    )
+    .unwrap();
+
+    assert!(dynamic.contains("$e isa person"));
+    assert!(dynamic.contains(" or "));
+    assert!(dynamic.contains("$e has name $group0"));
+    assert!(dynamic.contains("$count = count($e)"));
+    assert!(dynamic.contains("groupby $group0"));
+}
+
+#[test]
+fn entity_expr_group_by_aggregate_query_uses_not_filter() {
+    let dynamic = query_builder::build_dynamic_entity_expr_group_by_aggregate(
+        &person_descriptor(),
+        &[DynamicExpr::Not {
+            expr: Box::new(DynamicExpr::Compare {
+                attr_name: "age".into(),
+                operator: DynamicComparisonOp::Lt,
+                value: AttributeValue::Long(18),
+            }),
+        }],
+        &["name".into()],
+        &[count_aggregate()],
+        "$e",
+    )
+    .unwrap();
+
+    assert!(dynamic.contains("$e isa person"));
+    assert!(dynamic.contains("not {"));
+    assert!(dynamic.contains("$e has name $group0"));
+    assert!(dynamic.contains("groupby $group0"));
+}
+
+#[tokio::test]
+async fn dynamic_entity_manager_aggregate_with_query_executes_reduce_query() {
+    let descriptor = Arc::new(person_descriptor());
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![serde_json::json!({
+        "$count": {"value": 2},
+        "$avg_age": {"value": 28.0},
+    })])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicEntityManager::new(&db, descriptor);
+
+    let rows = manager
+        .aggregate_with_query(
+            &[DynamicExpr::Or {
+                exprs: vec![
+                    DynamicExpr::Compare {
+                        attr_name: "name".into(),
+                        operator: DynamicComparisonOp::Eq,
+                        value: AttributeValue::String("Alice".into()),
+                    },
+                    DynamicExpr::Compare {
+                        attr_name: "name".into(),
+                        operator: DynamicComparisonOp::Eq,
+                        value: AttributeValue::String("Bob".into()),
+                    },
+                ],
+            }],
+            &[count_aggregate(), mean_age_aggregate()],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("$count").unwrap(),
+        &serde_json::json!({"value": 2})
+    );
+    assert_eq!(
+        rows[0].get("$avg_age").unwrap(),
+        &serde_json::json!({"value": 28.0})
+    );
+
+    let recorded = queries.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].contains(" or "));
+    assert!(recorded[0].contains("reduce"));
+    assert!(recorded[0].contains("$avg_age = mean($agg"));
+}
+
+#[tokio::test]
+async fn dynamic_entity_manager_group_by_aggregate_with_query_executes_reduce_query() {
+    let descriptor = Arc::new(person_descriptor());
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![
+        serde_json::json!({
+            "$group0": {"value": "Alice"},
+            "$count": {"value": 1},
+        }),
+        serde_json::json!({
+            "$group0": {"value": "Bob"},
+            "$count": {"value": 3},
+        }),
+    ])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicEntityManager::new(&db, descriptor);
+
+    let rows = manager
+        .group_by_aggregate_with_query(
+            &[DynamicExpr::Not {
+                expr: Box::new(DynamicExpr::Compare {
+                    attr_name: "age".into(),
+                    operator: DynamicComparisonOp::Lt,
+                    value: AttributeValue::Long(18),
+                }),
+            }],
+            &["name".into()],
+            &[count_aggregate()],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 2);
+    let recorded = queries.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].contains("not {"));
+    assert!(recorded[0].contains("$e has name $group0"));
+    assert!(recorded[0].contains("groupby $group0"));
+}
+
+// ── Phase 1 Gap A: relation aggregate_with_query / group_by_aggregate_with_query ──
+
+#[test]
+fn relation_expr_aggregate_query_uses_or_filter() {
+    let dynamic = query_builder::build_dynamic_relation_expr_aggregate(
+        &employment_descriptor(),
+        &[DynamicExpr::Or {
+            exprs: vec![
+                DynamicExpr::Compare {
+                    attr_name: "position".into(),
+                    operator: DynamicComparisonOp::Eq,
+                    value: AttributeValue::String("Engineer".into()),
+                },
+                DynamicExpr::Compare {
+                    attr_name: "position".into(),
+                    operator: DynamicComparisonOp::Eq,
+                    value: AttributeValue::String("Manager".into()),
+                },
+            ],
+        }],
+        &[count_aggregate()],
+        "$r",
+    )
+    .unwrap();
+
+    assert!(dynamic.contains("$r isa employment"));
+    assert!(dynamic.contains(" or "));
+    assert!(dynamic.contains("$count = count($r)"));
+    assert!(dynamic.contains("reduce"));
+}
+
+#[test]
+fn relation_expr_group_by_aggregate_query_uses_not_filter() {
+    let dynamic = query_builder::build_dynamic_relation_expr_group_by_aggregate(
+        &employment_descriptor(),
+        &[DynamicExpr::Not {
+            expr: Box::new(DynamicExpr::Compare {
+                attr_name: "position".into(),
+                operator: DynamicComparisonOp::Eq,
+                value: AttributeValue::String("Intern".into()),
+            }),
+        }],
+        &["position".into()],
+        &[count_aggregate()],
+        "$r",
+    )
+    .unwrap();
+
+    assert!(dynamic.contains("$r isa employment"));
+    assert!(dynamic.contains("not {"));
+    assert!(dynamic.contains("$r has position $group0"));
+    assert!(dynamic.contains("$count = count($r)"));
+    assert!(dynamic.contains("groupby $group0"));
+}
+
+#[tokio::test]
+async fn dynamic_relation_manager_aggregate_with_query_executes_reduce_query() {
+    let descriptor = Arc::new(employment_descriptor());
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![serde_json::json!({
+        "$count": {"value": 5},
+    })])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicRelationManager::new(&db, descriptor);
+
+    let rows = manager
+        .aggregate_with_query(
+            &[DynamicExpr::Or {
+                exprs: vec![
+                    DynamicExpr::Compare {
+                        attr_name: "position".into(),
+                        operator: DynamicComparisonOp::Eq,
+                        value: AttributeValue::String("Engineer".into()),
+                    },
+                    DynamicExpr::Compare {
+                        attr_name: "position".into(),
+                        operator: DynamicComparisonOp::Eq,
+                        value: AttributeValue::String("Manager".into()),
+                    },
+                ],
+            }],
+            &[count_aggregate()],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("$count").unwrap(),
+        &serde_json::json!({"value": 5})
+    );
+
+    let recorded = queries.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].contains(" or "));
+    assert!(recorded[0].contains("$count = count($r)"));
+}
+
+#[tokio::test]
+async fn dynamic_relation_manager_group_by_aggregate_with_query_executes_reduce_query() {
+    let descriptor = Arc::new(employment_descriptor());
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![
+        serde_json::json!({
+            "$group0": {"value": "Engineer"},
+            "$count": {"value": 3},
+        }),
+    ])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicRelationManager::new(&db, descriptor);
+
+    let rows = manager
+        .group_by_aggregate_with_query(
+            &[DynamicExpr::Not {
+                expr: Box::new(DynamicExpr::Compare {
+                    attr_name: "position".into(),
+                    operator: DynamicComparisonOp::Eq,
+                    value: AttributeValue::String("Intern".into()),
+                }),
+            }],
+            &["position".into()],
+            &[count_aggregate()],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    let recorded = queries.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].contains("not {"));
+    assert!(recorded[0].contains("$r has position $group0"));
+    assert!(recorded[0].contains("groupby $group0"));
+}
+
+// ── Phase 1 Gap B: StartsWith / EndsWith ─────────────────────────────────────
+
+#[test]
+fn starts_with_emits_anchored_prefix_like_regex() {
+    let dynamic = query_builder::build_dynamic_entity_expr_fetch(
+        &person_descriptor(),
+        &[DynamicExpr::Compare {
+            attr_name: "name".into(),
+            operator: DynamicComparisonOp::StartsWith,
+            value: AttributeValue::String("Al".into()),
+        }],
+        &[],
+        None,
+        None,
+        "$e",
+    )
+    .unwrap();
+
+    // TypeQL like with anchored prefix pattern
+    assert!(dynamic.contains("like"));
+    assert!(dynamic.contains("^Al.*"));
+}
+
+#[test]
+fn ends_with_emits_anchored_suffix_like_regex() {
+    let dynamic = query_builder::build_dynamic_entity_expr_fetch(
+        &person_descriptor(),
+        &[DynamicExpr::Compare {
+            attr_name: "name".into(),
+            operator: DynamicComparisonOp::EndsWith,
+            value: AttributeValue::String("ice".into()),
+        }],
+        &[],
+        None,
+        None,
+        "$e",
+    )
+    .unwrap();
+
+    assert!(dynamic.contains("like"));
+    assert!(dynamic.contains(".*ice$"));
+}
+
+#[test]
+fn starts_with_escapes_regex_metacharacters_in_literal() {
+    let dynamic = query_builder::build_dynamic_entity_expr_fetch(
+        &person_descriptor(),
+        &[DynamicExpr::Compare {
+            attr_name: "name".into(),
+            operator: DynamicComparisonOp::StartsWith,
+            value: AttributeValue::String("foo.bar".into()),
+        }],
+        &[],
+        None,
+        None,
+        "$e",
+    )
+    .unwrap();
+
+    // Two escaping layers stack: regex-escape (`.` -> `\.`) then TypeQL
+    // string-literal escape (`\` -> `\\`), so the rendered query text carries
+    // a doubled backslash. TypeDB parses it back to the regex `^foo\.bar.*`.
+    assert!(dynamic.contains("^foo\\\\.bar.*"));
+}
+
+#[test]
+fn ends_with_escapes_regex_metacharacters_in_literal() {
+    let dynamic = query_builder::build_dynamic_entity_expr_fetch(
+        &person_descriptor(),
+        &[DynamicExpr::Compare {
+            attr_name: "name".into(),
+            operator: DynamicComparisonOp::EndsWith,
+            value: AttributeValue::String("foo+bar".into()),
+        }],
+        &[],
+        None,
+        None,
+        "$e",
+    )
+    .unwrap();
+
+    // Same doubled-backslash rendering as the StartsWith case (`+` -> `\+` -> `\\+`).
+    assert!(dynamic.contains(".*foo\\\\+bar$"));
+}
+
+#[tokio::test]
+async fn dynamic_entity_manager_starts_with_get_with_query_executes() {
+    let descriptor = Arc::new(person_descriptor());
+    let fetch_doc = serde_json::json!({
+        "_iid": "0xaaa",
+        "_type": "person",
+        "attributes": {
+            "name": [{"value": "Alice"}],
+            "age": [{"value": 30}]
+        }
+    });
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![fetch_doc])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicEntityManager::new(&db, descriptor);
+
+    let rows = manager
+        .get_with_query(
+            &[DynamicExpr::Compare {
+                attr_name: "name".into(),
+                operator: DynamicComparisonOp::StartsWith,
+                value: AttributeValue::String("Al".into()),
+            }],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].iid.as_deref(), Some("0xaaa"));
+
+    let recorded = queries.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].contains("like"));
+    assert!(recorded[0].contains("^Al.*"));
+}
+
+#[tokio::test]
+async fn dynamic_entity_manager_ends_with_get_with_query_executes() {
+    let descriptor = Arc::new(person_descriptor());
+    let fetch_doc = serde_json::json!({
+        "_iid": "0xbbb",
+        "_type": "person",
+        "attributes": {
+            "name": [{"value": "Alice"}],
+            "age": [{"value": 30}]
+        }
+    });
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![fetch_doc])]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicEntityManager::new(&db, descriptor);
+
+    let rows = manager
+        .get_with_query(
+            &[DynamicExpr::Compare {
+                attr_name: "name".into(),
+                operator: DynamicComparisonOp::EndsWith,
+                value: AttributeValue::String("ice".into()),
+            }],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    let recorded = queries.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].contains("like"));
+    assert!(recorded[0].contains(".*ice$"));
+}

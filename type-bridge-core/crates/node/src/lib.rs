@@ -11,15 +11,116 @@ use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap,
-    DynamicEntityManager, DynamicEntityRow, DynamicRelationManager, DynamicRelationRow,
-    DynamicRolePlayerInput, EntityDescriptor, Filter, OrmError, OwnedAttributeDescriptor,
-    RelationDescriptor, TransactionContext, TxType, TypeDescriptor, ValueType,
+    DynamicComparisonOp, DynamicEntityManager, DynamicEntityRow, DynamicExpr,
+    DynamicRelationManager, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort,
+    EntityDescriptor, Filter, OrmError, OwnedAttributeDescriptor, RelationDescriptor,
+    TransactionContext, TxType, TypeDescriptor, ValueType,
 };
+
+/// JSON-deserialized spec for expression-tree queries.
+///
+/// Carries the `{ expr, sort, limit, offset }` object a language binding passes
+/// to `queryJson`. `queryCountJson`, `queryAggregateJson`, and
+/// `queryGroupByAggregateJson` use only the `expr` field; `sort`/`limit`/`offset`
+/// are ignored there.
+#[derive(Deserialize)]
+struct DynamicQuerySpecJson {
+    #[serde(default)]
+    expr: Vec<DynamicExprJson>,
+    #[serde(default)]
+    sort: Vec<DynamicSort>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+}
+
+/// JS-shaped expression tree mirroring [`DynamicExpr`], but with comparison
+/// values left as raw JSON so they decode through the binding's
+/// `{ value_type, value }` convention (`attribute_value_from_js`) — preserving
+/// full `long`/`decimal` precision — instead of serde's native externally-tagged
+/// `AttributeValue` shape, which would cap `long` at the JS safe-integer range.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum DynamicExprJson {
+    Compare {
+        attr_name: String,
+        operator: DynamicComparisonOp,
+        value: Value,
+    },
+    Iid {
+        iid: String,
+    },
+    IsNull {
+        attr_name: String,
+        is_null: bool,
+    },
+    And {
+        exprs: Vec<DynamicExprJson>,
+    },
+    Or {
+        exprs: Vec<DynamicExprJson>,
+    },
+    Not {
+        expr: Box<DynamicExprJson>,
+    },
+    RolePlayer {
+        role_name: String,
+        expr: Box<DynamicExprJson>,
+    },
+}
+
+impl DynamicExprJson {
+    /// Lower the JS-shaped tree into the shared `DynamicExpr`, decoding each
+    /// comparison value through the binding value convention. Values are decoded
+    /// without an expected type (role-player branches reference a different
+    /// type's attributes whose descriptor is not in scope here); the embedded
+    /// `value_type` plus TypeDB execution provide validation.
+    fn into_expr(self) -> Result<DynamicExpr> {
+        match self {
+            Self::Compare {
+                attr_name,
+                operator,
+                value,
+            } => Ok(DynamicExpr::Compare {
+                attr_name,
+                operator,
+                value: attribute_value_from_js(&value, None)?,
+            }),
+            Self::Iid { iid } => Ok(DynamicExpr::Iid { iid }),
+            Self::IsNull { attr_name, is_null } => Ok(DynamicExpr::IsNull { attr_name, is_null }),
+            Self::And { exprs } => Ok(DynamicExpr::And {
+                exprs: exprs_into_exprs(exprs)?,
+            }),
+            Self::Or { exprs } => Ok(DynamicExpr::Or {
+                exprs: exprs_into_exprs(exprs)?,
+            }),
+            Self::Not { expr } => Ok(DynamicExpr::Not {
+                expr: Box::new(expr.into_expr()?),
+            }),
+            Self::RolePlayer { role_name, expr } => Ok(DynamicExpr::RolePlayer {
+                role_name,
+                expr: Box::new(expr.into_expr()?),
+            }),
+        }
+    }
+}
+
+fn exprs_into_exprs(exprs: Vec<DynamicExprJson>) -> Result<Vec<DynamicExpr>> {
+    exprs.into_iter().map(DynamicExprJson::into_expr).collect()
+}
+
+impl DynamicQuerySpecJson {
+    /// Decode the spec's expression list into shared `DynamicExpr` values.
+    fn exprs(self) -> Result<(Vec<DynamicExpr>, Vec<DynamicSort>, Option<u64>, Option<u64>)> {
+        let exprs = exprs_into_exprs(self.expr)?;
+        Ok((exprs, self.sort, self.limit, self.offset))
+    }
+}
 
 /// JavaScript-facing descriptor registry backed by `type_bridge_orm`.
 #[allow(missing_docs)]
@@ -397,6 +498,80 @@ impl NodeDynamicEntityManager {
             .block_on(manager.delete_by_iid(&iid))
             .map_err(napi_orm_error)
     }
+
+    /// Fetch entities matching an expression-tree query spec.
+    ///
+    /// `spec_json`: `{ "expr": DynamicExpr[], "sort": DynamicSort[],
+    /// "limit": number|null, "offset": number|null }`.
+    #[napi(js_name = "queryJson")]
+    pub fn query_json(&self, spec_json: String) -> Result<String> {
+        let spec: DynamicQuerySpecJson =
+            serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
+        let (exprs, sort, limit, offset) = spec.exprs()?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.get_with_query(&exprs, &sort, limit, offset))
+            .map_err(napi_orm_error)?;
+        entity_rows_to_json(&rows)
+    }
+
+    /// Count entities matching an expression-tree query spec. Only `expr` is
+    /// used; `sort`/`limit`/`offset` are ignored.
+    #[napi(js_name = "queryCountJson")]
+    pub fn query_count_json(&self, spec_json: String) -> Result<String> {
+        let spec: DynamicQuerySpecJson =
+            serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
+        let (exprs, ..) = spec.exprs()?;
+        let manager = self.manager()?;
+        let count = self
+            .runtime
+            .block_on(manager.count_with_query(&exprs))
+            .map_err(napi_orm_error)?;
+        Ok(count.to_string())
+    }
+
+    /// Run aggregate reductions over entities matching an expression-tree query
+    /// spec. `aggregates_json`: `DynamicAggregate[]`.
+    #[napi(js_name = "queryAggregateJson")]
+    pub fn query_aggregate_json(&self, spec_json: String, aggregates_json: String) -> Result<String> {
+        let spec: DynamicQuerySpecJson =
+            serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
+        let (exprs, ..) = spec.exprs()?;
+        let aggregates =
+            aggregates_from_json_string(&self.descriptor.owned_attributes, &aggregates_json)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.aggregate_with_query(&exprs, &aggregates))
+            .map_err(napi_orm_error)?;
+        serde_json::to_string(&rows).map_err(json_serialize_error)
+    }
+
+    /// Run grouped aggregate reductions over entities matching an expression-tree
+    /// query spec. `group_fields_json`: `string[]`; `aggregates_json`:
+    /// `DynamicAggregate[]`.
+    #[napi(js_name = "queryGroupByAggregateJson")]
+    pub fn query_group_by_aggregate_json(
+        &self,
+        spec_json: String,
+        group_fields_json: String,
+        aggregates_json: String,
+    ) -> Result<String> {
+        let spec: DynamicQuerySpecJson =
+            serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
+        let (exprs, ..) = spec.exprs()?;
+        let group_fields =
+            group_fields_from_json_string(&self.descriptor.owned_attributes, &group_fields_json)?;
+        let aggregates =
+            aggregates_from_json_string(&self.descriptor.owned_attributes, &aggregates_json)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.group_by_aggregate_with_query(&exprs, &group_fields, &aggregates))
+            .map_err(napi_orm_error)?;
+        serde_json::to_string(&rows).map_err(json_serialize_error)
+    }
 }
 
 impl NodeDynamicEntityManager {
@@ -601,6 +776,80 @@ impl NodeDynamicRelationManager {
         self.runtime
             .block_on(manager.delete_by_iid(&iid))
             .map_err(napi_orm_error)
+    }
+
+    /// Fetch relations matching an expression-tree query spec.
+    ///
+    /// `spec_json`: `{ "expr": DynamicExpr[], "sort": DynamicSort[],
+    /// "limit": number|null, "offset": number|null }`.
+    #[napi(js_name = "queryJson")]
+    pub fn query_json(&self, spec_json: String) -> Result<String> {
+        let spec: DynamicQuerySpecJson =
+            serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
+        let (exprs, sort, limit, offset) = spec.exprs()?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.get_with_query(&exprs, &sort, limit, offset))
+            .map_err(napi_orm_error)?;
+        relation_rows_to_json(&rows)
+    }
+
+    /// Count relations matching an expression-tree query spec. Only `expr` is
+    /// used; `sort`/`limit`/`offset` are ignored.
+    #[napi(js_name = "queryCountJson")]
+    pub fn query_count_json(&self, spec_json: String) -> Result<String> {
+        let spec: DynamicQuerySpecJson =
+            serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
+        let (exprs, ..) = spec.exprs()?;
+        let manager = self.manager()?;
+        let count = self
+            .runtime
+            .block_on(manager.count_with_query(&exprs))
+            .map_err(napi_orm_error)?;
+        Ok(count.to_string())
+    }
+
+    /// Run aggregate reductions over relations matching an expression-tree query
+    /// spec. `aggregates_json`: `DynamicAggregate[]`.
+    #[napi(js_name = "queryAggregateJson")]
+    pub fn query_aggregate_json(&self, spec_json: String, aggregates_json: String) -> Result<String> {
+        let spec: DynamicQuerySpecJson =
+            serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
+        let (exprs, ..) = spec.exprs()?;
+        let aggregates =
+            aggregates_from_json_string(&self.descriptor.owned_attributes, &aggregates_json)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.aggregate_with_query(&exprs, &aggregates))
+            .map_err(napi_orm_error)?;
+        serde_json::to_string(&rows).map_err(json_serialize_error)
+    }
+
+    /// Run grouped aggregate reductions over relations matching an
+    /// expression-tree query spec. `group_fields_json`: `string[]`;
+    /// `aggregates_json`: `DynamicAggregate[]`.
+    #[napi(js_name = "queryGroupByAggregateJson")]
+    pub fn query_group_by_aggregate_json(
+        &self,
+        spec_json: String,
+        group_fields_json: String,
+        aggregates_json: String,
+    ) -> Result<String> {
+        let spec: DynamicQuerySpecJson =
+            serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
+        let (exprs, ..) = spec.exprs()?;
+        let group_fields =
+            group_fields_from_json_string(&self.descriptor.owned_attributes, &group_fields_json)?;
+        let aggregates =
+            aggregates_from_json_string(&self.descriptor.owned_attributes, &aggregates_json)?;
+        let manager = self.manager()?;
+        let rows = self
+            .runtime
+            .block_on(manager.group_by_aggregate_with_query(&exprs, &group_fields, &aggregates))
+            .map_err(napi_orm_error)?;
+        serde_json::to_string(&rows).map_err(json_serialize_error)
     }
 }
 

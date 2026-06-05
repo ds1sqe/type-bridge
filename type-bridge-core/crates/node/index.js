@@ -320,6 +320,24 @@ class RustDynamicEntityManager {
     );
   }
 
+  query(spec) {
+    return parseJson(this.#native.queryJson(JSON.stringify(spec)));
+  }
+
+  queryCount(spec) {
+    return BigInt(this.#native.queryCountJson(JSON.stringify(spec)));
+  }
+
+  queryAggregate(spec, aggregates) {
+    return parseJson(this.#native.queryAggregateJson(JSON.stringify(spec), JSON.stringify(aggregates)));
+  }
+
+  queryGroupByAggregate(spec, groupFields, aggregates) {
+    return parseJson(
+      this.#native.queryGroupByAggregateJson(JSON.stringify(spec), JSON.stringify(groupFields), JSON.stringify(aggregates)),
+    );
+  }
+
   deleteByIid(iid) {
     this.#native.deleteByIid(iid);
   }
@@ -379,6 +397,24 @@ class RustDynamicRelationManager {
   groupByAggregate(groupFields, aggregates, filters = null) {
     return parseJson(
       this.#native.groupByAggregateJson(JSON.stringify(groupFields), JSON.stringify(aggregates), optionalJson(filters)),
+    );
+  }
+
+  query(spec) {
+    return parseJson(this.#native.queryJson(JSON.stringify(spec)));
+  }
+
+  queryCount(spec) {
+    return BigInt(this.#native.queryCountJson(JSON.stringify(spec)));
+  }
+
+  queryAggregate(spec, aggregates) {
+    return parseJson(this.#native.queryAggregateJson(JSON.stringify(spec), JSON.stringify(aggregates)));
+  }
+
+  queryGroupByAggregate(spec, groupFields, aggregates) {
+    return parseJson(
+      this.#native.queryGroupByAggregateJson(JSON.stringify(spec), JSON.stringify(groupFields), JSON.stringify(aggregates)),
     );
   }
 

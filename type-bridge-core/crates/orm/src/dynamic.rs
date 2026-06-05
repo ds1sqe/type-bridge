@@ -99,6 +99,12 @@ pub enum DynamicComparisonOp {
     Contains,
     /// String regex match.
     Like,
+    /// Anchored prefix match: the caller passes the raw literal; Rust adds
+    /// the `^` anchor, escapes regex metacharacters, and emits a `like` query.
+    StartsWith,
+    /// Anchored suffix match: the caller passes the raw literal; Rust adds
+    /// the `$` anchor, escapes regex metacharacters, and emits a `like` query.
+    EndsWith,
 }
 
 impl DynamicComparisonOp {
@@ -112,6 +118,8 @@ impl DynamicComparisonOp {
             Self::Lte => "<=",
             Self::Contains => "contains",
             Self::Like => "like",
+            Self::StartsWith => "like",
+            Self::EndsWith => "like",
         }
     }
 }
@@ -187,6 +195,20 @@ pub enum DynamicSort {
     },
 }
 
+/// Escape regex metacharacters in a raw literal for use in a TypeDB `like` pattern.
+///
+/// Escapes the characters: `\ ^ $ . * + ? ( ) [ ] { } |`
+fn escape_regex_literal(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() * 2);
+    for ch in raw.chars() {
+        if r"\.^$*+?()[]{}|".contains(ch) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 impl DynamicExpr {
     pub(crate) fn to_patterns(&self, thing_var: &str, counter: &mut usize) -> Result<Vec<Pattern>> {
         match self {
@@ -196,6 +218,34 @@ impl DynamicExpr {
                 value,
             } => {
                 let attr_var = next_dynamic_var("$dyn_attr", counter);
+                // For StartsWith/EndsWith, transform the raw literal into an anchored
+                // like-regex pattern. Rust owns all anchoring and escaping; the caller
+                // provides only the raw literal.
+                let effective_value = match operator {
+                    DynamicComparisonOp::StartsWith => {
+                        let raw = match value {
+                            AttributeValue::String(s) => s.as_str(),
+                            _ => {
+                                return Err(OrmError::QueryExecution(
+                                    "DynamicComparisonOp::StartsWith requires a String value".into(),
+                                ));
+                            }
+                        };
+                        AttributeValue::String(format!("^{}.*", escape_regex_literal(raw)))
+                    }
+                    DynamicComparisonOp::EndsWith => {
+                        let raw = match value {
+                            AttributeValue::String(s) => s.as_str(),
+                            _ => {
+                                return Err(OrmError::QueryExecution(
+                                    "DynamicComparisonOp::EndsWith requires a String value".into(),
+                                ));
+                            }
+                        };
+                        AttributeValue::String(format!(".*{}$", escape_regex_literal(raw)))
+                    }
+                    _ => value.clone(),
+                };
                 Ok(vec![
                     Pattern::Has {
                         thing_var: thing_var.to_string(),
@@ -205,7 +255,7 @@ impl DynamicExpr {
                     Pattern::ValueComparison {
                         var: attr_var,
                         operator: operator.typeql_operator().to_string(),
-                        value: value.to_ast_value(),
+                        value: effective_value.to_ast_value(),
                     },
                 ])
             }
@@ -556,6 +606,91 @@ pub(crate) fn entity_expr_count_clauses(
         match_patterns.extend(expression.to_patterns(var, &mut counter)?);
     }
     Ok(vec![Clause::Match(match_patterns), count_clause(var)])
+}
+
+pub(crate) fn entity_expr_aggregate_clauses(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    let mut counter = 0;
+    let mut match_patterns = vec![Pattern::Entity {
+        variable: var.to_string(),
+        type_name: descriptor.type_name.clone(),
+        constraints: vec![],
+        is_strict: false,
+    }];
+    for expression in expressions {
+        match_patterns.extend(expression.to_patterns(var, &mut counter)?);
+    }
+    let assignments = aggregate_assignments(
+        &descriptor.type_name,
+        &descriptor.owned_attributes,
+        aggregates,
+        var,
+        &mut match_patterns,
+    )?;
+    Ok(vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments,
+            group_by: None,
+        },
+    ])
+}
+
+pub(crate) fn entity_expr_group_by_aggregate_clauses(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    group_fields: &[String],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    if group_fields.is_empty() {
+        return Err(OrmError::QueryExecution(format!(
+            "Dynamic group-by aggregate for {} requires at least one group field",
+            descriptor.type_name
+        )));
+    }
+
+    let mut counter = 0;
+    let mut match_patterns = vec![Pattern::Entity {
+        variable: var.to_string(),
+        type_name: descriptor.type_name.clone(),
+        constraints: vec![],
+        is_strict: false,
+    }];
+    for expression in expressions {
+        match_patterns.extend(expression.to_patterns(var, &mut counter)?);
+    }
+
+    let mut group_vars = Vec::with_capacity(group_fields.len());
+    for (index, field) in group_fields.iter().enumerate() {
+        let attr = resolve_attribute_descriptor(&descriptor.type_name, &descriptor.owned_attributes, field)?;
+        let group_var = format!("$group{index}");
+        match_patterns.push(Pattern::Has {
+            thing_var: var.to_string(),
+            attr_type: attr.attr_name.clone(),
+            attr_var: group_var.clone(),
+        });
+        group_vars.push(group_var);
+    }
+
+    let assignments = aggregate_assignments(
+        &descriptor.type_name,
+        &descriptor.owned_attributes,
+        aggregates,
+        var,
+        &mut match_patterns,
+    )?;
+    Ok(vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments,
+            group_by: Some(group_vars.join(", ")),
+        },
+    ])
 }
 
 pub(crate) fn entity_aggregate_clauses(
@@ -964,6 +1099,122 @@ pub(crate) fn relation_expr_count_clauses(
     }
 
     Ok(vec![Clause::Match(match_patterns), count_clause(var)])
+}
+
+pub(crate) fn relation_expr_aggregate_clauses(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    // Collect role names referenced in expression tree so we can bind role
+    // player variables if needed (mirrors relation_expr_count_clauses).
+    let mut role_names = HashSet::new();
+    for expression in expressions {
+        expression.collect_roles(&mut role_names);
+    }
+    let role_players = dynamic_relation_role_bindings(descriptor, &role_names)
+        .into_iter()
+        .map(|binding| RolePlayer {
+            role: binding.role_name,
+            player_var: binding.var_name,
+        })
+        .collect();
+
+    let mut counter = 0;
+    let mut match_patterns = vec![
+        Pattern::Relation {
+            variable: var.to_string(),
+            type_name: descriptor.type_name.clone(),
+            role_players,
+            constraints: vec![],
+        },
+    ];
+    for expression in expressions {
+        match_patterns.extend(expression.to_patterns(var, &mut counter)?);
+    }
+    let assignments = aggregate_assignments(
+        &descriptor.type_name,
+        &descriptor.owned_attributes,
+        aggregates,
+        var,
+        &mut match_patterns,
+    )?;
+    Ok(vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments,
+            group_by: None,
+        },
+    ])
+}
+
+pub(crate) fn relation_expr_group_by_aggregate_clauses(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    group_fields: &[String],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    if group_fields.is_empty() {
+        return Err(OrmError::QueryExecution(format!(
+            "Dynamic group-by aggregate for {} requires at least one group field",
+            descriptor.type_name
+        )));
+    }
+
+    // Collect role names referenced in expression tree.
+    let mut role_names = HashSet::new();
+    for expression in expressions {
+        expression.collect_roles(&mut role_names);
+    }
+    let role_players = dynamic_relation_role_bindings(descriptor, &role_names)
+        .into_iter()
+        .map(|binding| RolePlayer {
+            role: binding.role_name,
+            player_var: binding.var_name,
+        })
+        .collect();
+
+    let mut counter = 0;
+    let mut match_patterns = vec![
+        Pattern::Relation {
+            variable: var.to_string(),
+            type_name: descriptor.type_name.clone(),
+            role_players,
+            constraints: vec![],
+        },
+    ];
+    for expression in expressions {
+        match_patterns.extend(expression.to_patterns(var, &mut counter)?);
+    }
+
+    let mut group_vars = Vec::with_capacity(group_fields.len());
+    for (index, field) in group_fields.iter().enumerate() {
+        let attr = resolve_attribute_descriptor(&descriptor.type_name, &descriptor.owned_attributes, field)?;
+        let group_var = format!("$group{index}");
+        match_patterns.push(Pattern::Has {
+            thing_var: var.to_string(),
+            attr_type: attr.attr_name.clone(),
+            attr_var: group_var.clone(),
+        });
+        group_vars.push(group_var);
+    }
+
+    let assignments = aggregate_assignments(
+        &descriptor.type_name,
+        &descriptor.owned_attributes,
+        aggregates,
+        var,
+        &mut match_patterns,
+    )?;
+    Ok(vec![
+        Clause::Match(match_patterns),
+        Clause::Reduce {
+            assignments,
+            group_by: Some(group_vars.join(", ")),
+        },
+    ])
 }
 
 pub(crate) fn relation_aggregate_clauses(
