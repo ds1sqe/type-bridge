@@ -402,6 +402,9 @@ abstract = true
     #[test]
     fn test_emit_attribute_sub() {
         let toml_text = r#"
+[attributes.isbn]
+value = "string"
+
 [attributes.isbn-13]
 sub = "isbn"
 "#;
@@ -411,7 +414,7 @@ sub = "isbn"
             "expected `attribute isbn-13 sub isbn;`; got:\n{result}"
         );
         assert!(
-            !result.contains("value"),
+            !result.contains("isbn-13 sub isbn,"),
             "sub attribute must NOT emit a `value` clause; got:\n{result}"
         );
     }
@@ -576,12 +579,12 @@ fields = [
 [structs.name]
 fields = [
     { name = "first", type = "string" },
-    { name = "m", type = "t", optional = true },
+    { name = "m", type = "long", optional = true },
 ]
 "#;
         let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
         assert!(
-            result.contains("value m t?"),
+            result.contains("value m long?"),
             "optional field must emit `<type>?` suffix; got:\n{result}"
         );
         assert!(
