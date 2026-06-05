@@ -338,6 +338,16 @@ def rust_database_for(connection: Any) -> Any:
     return rust_db
 
 
+def migration_runner_for(connection: Any) -> Any:
+    """Return a PyMigrationRunner bound to the Rust database for a connection.
+
+    The runner shares the connection's `Arc<Database>` and `Arc<Runtime>`, so
+    migration execution runs on the same Rust connection as the rest of the ORM
+    path — no second runtime is created.
+    """
+    return rust_core().PyMigrationRunner(rust_database_for(connection))
+
+
 def rust_transaction_for(connection: Any) -> Any | None:
     """Return the Rust transaction adapter for a Python TransactionContext."""
     from type_bridge.session import TransactionContext

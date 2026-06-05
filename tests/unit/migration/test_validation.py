@@ -169,12 +169,14 @@ def test_executor_preflight_fails_before_apply_on_drift(monkeypatch: pytest.Monk
 
     called = False
 
-    def fail_if_called(_loaded: LoadedMigration) -> object:
+    def fail_if_called(_db: object) -> object:
         nonlocal called
         called = True
-        pytest.fail("apply should not run after checksum drift")
+        pytest.fail("execution must not start after checksum drift")
 
-    monkeypatch.setattr(executor, "_apply_one", fail_if_called)
+    # Execution flows through the Rust runner, not a Python apply method; the
+    # preflight drift gate must raise before the runner is ever constructed.
+    monkeypatch.setattr(_rust_runtime, "migration_runner_for", fail_if_called)
 
     with pytest.raises(MigrationError, match="checksum drift"):
         executor.migrate()

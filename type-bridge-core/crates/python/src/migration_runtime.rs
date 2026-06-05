@@ -5,12 +5,17 @@
 //! checks over it. They open no transactions and execute no TypeQL — migration
 //! execution is owned by a later sub-plan.
 
+use std::sync::Arc;
+
 use pyo3::prelude::*;
 use pythonize::{depythonize, pythonize};
+use tokio::runtime::Runtime;
 use type_bridge_migration::{
-    AppliedMigrationRecord, MigrationGraph, MigrationSpec, check_checksum_drift,
-    migration_file_checksum, validate_graph,
+    AppliedMigrationRecord, MigrationGraph, MigrationSpec, check_checksum_drift, execute_plan,
+    migration_file_checksum, plan, validate_graph,
 };
+
+use crate::orm_runtime::PyRustDatabase;
 
 /// Normalize a serialized `MigrationSpec` dict through Rust serde.
 #[pyfunction]
@@ -105,12 +110,74 @@ fn check_migration_drift(
         .map_err(|error| py_value_error(error.to_string()))
 }
 
+/// Rust-owned migration executor bound to a live `PyRustDatabase`.
+///
+/// Plans a validated migration graph into an ordered execution plan and runs
+/// every schema transaction in Rust, on the SAME `Arc<Database>` and
+/// `Arc<Runtime>` the rest of the Rust ORM path uses. No raw Python
+/// transaction crosses this boundary — `apply` takes serde dicts only.
+#[pyclass]
+pub struct PyMigrationRunner {
+    db: Arc<type_bridge_orm::Database>,
+    runtime: Arc<Runtime>,
+}
+
+#[pymethods]
+impl PyMigrationRunner {
+    /// Build a runner from a `PyRustDatabase`, sharing its database and runtime.
+    #[new]
+    fn new(db: &PyRustDatabase) -> Self {
+        let (db, runtime) = db.handles();
+        Self { db, runtime }
+    }
+
+    /// Plan and execute migrations, returning one result dict per migration.
+    ///
+    /// `graph` is a serialized `MigrationGraph`; `applied_records` a list of
+    /// serialized `AppliedMigrationRecord`s (or `None`); `target` an optional
+    /// migration name to migrate to. Planning or drift errors raise
+    /// `ValueError` (surfaced as `MigrationError` in Python).
+    #[pyo3(signature = (graph, applied_records = None, target = None))]
+    fn apply(
+        &self,
+        py: Python<'_>,
+        graph: Bound<'_, PyAny>,
+        applied_records: Option<Bound<'_, PyAny>>,
+        target: Option<&str>,
+    ) -> PyResult<PyObject> {
+        let graph: MigrationGraph = depythonize(&graph)
+            .map_err(|error| py_value_error(format!("Invalid MigrationGraph: {error}")))?;
+        let applied = depythonize_applied_records(applied_records)?;
+
+        let execution_plan =
+            plan(&graph, &applied, target).map_err(|error| py_value_error(error.to_string()))?;
+
+        let results = self
+            .runtime
+            .block_on(execute_plan(&self.db, execution_plan));
+
+        pythonize(py, &results)
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+}
+
+/// Construct a `PyMigrationRunner` bound to a `PyRustDatabase`.
+#[pyfunction]
+fn migration_runner(db: &PyRustDatabase) -> PyMigrationRunner {
+    PyMigrationRunner::new(db)
+}
+
 fn depythonize_applied_records(
     applied_records: Option<Bound<'_, PyAny>>,
 ) -> PyResult<Vec<AppliedMigrationRecord>> {
     let Some(applied_records) = applied_records else {
         return Ok(Vec::new());
     };
+    // The argument was supplied but may itself be Python `None` (an explicit
+    // `apply(graph, None, ...)`), which is distinct from the parameter being
+    // absent above; treat it as "no applied records" rather than letting
+    // depythonize fail on a None payload.
     if applied_records.is_none() {
         return Ok(Vec::new());
     }
@@ -133,5 +200,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(calculate_migration_file_checksum, m)?)?;
     m.add_function(wrap_pyfunction!(validate_migration_graph, m)?)?;
     m.add_function(wrap_pyfunction!(check_migration_drift, m)?)?;
+    m.add_function(wrap_pyfunction!(migration_runner, m)?)?;
+    m.add_class::<PyMigrationRunner>()?;
     Ok(())
 }

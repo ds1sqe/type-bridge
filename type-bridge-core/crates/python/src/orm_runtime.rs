@@ -425,6 +425,18 @@ pub struct PyRustDatabase {
     runtime: Arc<Runtime>,
 }
 
+impl PyRustDatabase {
+    /// Return shared `Arc` clones of the database and runtime handles.
+    ///
+    /// Exposes the capability to drive work on this database's connection and
+    /// runtime without widening the struct fields to `pub`. Callers (e.g. the
+    /// migration runner) must `block_on` the returned runtime so every Rust
+    /// path shares one connection and one runtime.
+    pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<Runtime>) {
+        (Arc::clone(&self.db), Arc::clone(&self.runtime))
+    }
+}
+
 #[pymethods]
 impl PyRustDatabase {
     /// Connect to TypeDB using the shared Rust ORM session layer.

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from type_bridge import _rust_runtime
-from type_bridge.migration.base import Migration
 from type_bridge.migration.loader import LoadedMigration, MigrationLoader
-from type_bridge.migration.schema_manager import SchemaManager
 from type_bridge.migration.state import MigrationRecord, MigrationState, MigrationStateManager
 
 if TYPE_CHECKING:
@@ -120,6 +119,8 @@ class MigrationExecutor:
         Raises:
             MigrationError: If migration fails
         """
+        from type_bridge.migration._lower import lower_execution_graph
+
         state = self.state_manager.load_state()
         all_migrations = self.loader.discover()
         self._preflight_migrations(all_migrations, state)
@@ -129,22 +130,110 @@ class MigrationExecutor:
             logger.info("No migrations to apply")
             return []
 
+        if self.dry_run:
+            return self._dry_run(plan)
+
+        graph = lower_execution_graph(all_migrations)
+        applied_records = [_applied_record_dict(record) for record in state.applied]
+
+        runner = _rust_runtime.migration_runner_for(self.db)
+        rust_results = runner.apply(graph, applied_records, target)
+
+        checksums = {
+            (loaded.migration.app_label, loaded.migration.name): loaded.checksum
+            for loaded in all_migrations
+        }
+
         results: list[MigrationResult] = []
-
-        # Rollback if needed (migrating backwards)
-        for loaded in plan.to_rollback:
-            result = self._rollback_one(loaded)
+        for rust_result in rust_results:
+            result = self._record_result(rust_result, checksums)
             results.append(result)
             if not result.success:
-                raise MigrationError(f"Rollback failed: {result.error}")
-
-        # Apply forward migrations
-        for loaded in plan.to_apply:
-            result = self._apply_one(loaded)
-            results.append(result)
-            if not result.success:
+                if result.action == "rolled_back":
+                    raise MigrationError(f"Rollback failed: {result.error}")
                 raise MigrationError(f"Migration failed: {result.error}")
 
+        return results
+
+    def _record_result(
+        self,
+        rust_result: dict,
+        checksums: dict[tuple[str, str], str],
+    ) -> MigrationResult:
+        """Record state for one Rust execution result and map it to a dataclass.
+
+        On a successful Rust apply/rollback the matching state record is written
+        via the unchanged `MigrationStateManager`. The schema change is already
+        durable in TypeDB at this point; a failure to record state is surfaced as
+        a `MigrationError` naming the migration rather than swallowed (full
+        desync-window closure is sub-plan 06).
+        """
+        app_label = rust_result["app_label"]
+        name = rust_result["name"]
+        is_apply = rust_result["action"] == "apply"
+        action = "applied" if is_apply else "rolled_back"
+        success = bool(rust_result["success"])
+        error = rust_result.get("error")
+
+        if not success:
+            return MigrationResult(name=name, action=action, success=False, error=error)
+
+        if is_apply:
+            checksum = checksums.get((app_label, name), "")
+            self._record_state(
+                name,
+                action,
+                lambda: self.state_manager.record_applied(app_label, name, checksum),
+            )
+        else:
+            self._record_state(
+                name,
+                action,
+                lambda: self.state_manager.record_unapplied(app_label, name),
+            )
+
+        return MigrationResult(name=name, action=action, success=True)
+
+    def _record_state(self, name: str, action: str, record: Callable[[], None]) -> None:
+        """Run a state-recording call, surfacing failures as a MigrationError.
+
+        The schema change already landed in Rust; a state-record failure leaves
+        applied history out of sync with the database, so it must not be
+        silently swallowed.
+        """
+        try:
+            record()
+        except Exception as exc:  # noqa: BLE001 - re-raised as MigrationError below
+            verb = "apply" if action == "applied" else "rollback"
+            raise MigrationError(
+                f"Migration {name} {verb} succeeded but recording its state failed: {exc}"
+            ) from exc
+
+    def _dry_run(self, plan: MigrationPlan) -> list[MigrationResult]:
+        """Log the TypeQL each migration would run without touching the database."""
+        results: list[MigrationResult] = []
+        for loaded in plan.to_rollback:
+            typeql = self._preview_typeql(loaded, reverse=True)
+            if typeql is None:
+                results.append(
+                    MigrationResult(
+                        name=loaded.migration.name,
+                        action="rolled_back",
+                        success=False,
+                        error=f"Migration {loaded.migration.name} is not reversible",
+                    )
+                )
+                continue
+            logger.info(f"[DRY RUN] Would roll back {loaded.migration.name}:\n{typeql}")
+            results.append(
+                MigrationResult(name=loaded.migration.name, action="rolled_back", success=True)
+            )
+        for loaded in plan.to_apply:
+            typeql = self._preview_typeql(loaded, reverse=False)
+            logger.info(f"[DRY RUN] Would apply {loaded.migration.name}:\n{typeql}")
+            results.append(
+                MigrationResult(name=loaded.migration.name, action="applied", success=True)
+            )
         return results
 
     def showmigrations(self) -> list[tuple[str, bool]]:
@@ -180,13 +269,35 @@ class MigrationExecutor:
         if loaded is None:
             raise MigrationError(f"Migration not found: {migration_name}")
 
-        if reverse:
-            typeql = self._generate_rollback_typeql(loaded.migration)
-            if typeql is None:
-                raise MigrationError(f"Migration {migration_name} is not reversible")
-            return typeql
-        else:
-            return self._generate_apply_typeql(loaded.migration)
+        typeql = self._preview_typeql(loaded, reverse=reverse)
+        if reverse and typeql is None:
+            raise MigrationError(f"Migration {migration_name} is not reversible")
+        return typeql or ""
+
+    def _preview_typeql(self, loaded: LoadedMigration, *, reverse: bool) -> str | None:
+        """Render a migration's lowered execution TypeQL for preview/dry-run.
+
+        Routes through the same execution-step lowering the Rust executor runs,
+        so preview and execution share one TypeQL source. Returns the forward
+        TypeQL (joined per step) when ``reverse`` is ``False``; the reverse
+        TypeQL in reverse step order when ``reverse`` is ``True``, or ``None``
+        when any step is non-reversible.
+        """
+        from type_bridge.migration._lower import lower_execution_migration
+
+        spec = lower_execution_migration(loaded)
+        steps = spec["operations"]
+
+        if not reverse:
+            return "\n\n".join(_step_forward(step) for step in steps)
+
+        reverses: list[str] = []
+        for step in reversed(steps):
+            rollback = _step_reverse(step)
+            if rollback is None:
+                return None
+            reverses.append(rollback)
+        return "\n\n".join(reverses)
 
     def plan(self, target: str | None = None) -> MigrationPlan:
         """Get the migration plan without executing.
@@ -269,207 +380,24 @@ class MigrationExecutor:
         except ValueError as exc:
             raise MigrationError(f"Migration checksum drift detected: {exc}") from exc
 
-    def _apply_one(self, loaded: LoadedMigration) -> MigrationResult:
-        """Apply a single migration.
 
-        Args:
-            loaded: Migration to apply
+def _step_forward(step: dict) -> str:
+    """Return the forward TypeQL a lowered execution step would run.
 
-        Returns:
-            MigrationResult
-        """
-        migration = loaded.migration
-        logger.info(f"Applying migration: {migration.name}")
+    A ``define_schema`` step carries a ``SchemaInfo`` rather than a TypeQL
+    string; its forward TypeQL is produced by the canonical Rust generator (the
+    same engine the planner uses), keeping one TypeQL source.
+    """
+    if step["kind"] == "define_schema":
+        return _rust_runtime.generate_define_block(step["schema"])
+    return step["forward"]
 
-        try:
-            typeql_statements = self._generate_apply_typeql_statements(migration)
 
-            if self.dry_run:
-                for typeql in typeql_statements:
-                    logger.info(f"[DRY RUN] Would execute:\n{typeql}")
-            else:
-                # Execute each operation separately in schema transaction
-                # (TypeDB doesn't allow multiple define blocks in one query)
-                for typeql in typeql_statements:
-                    with self.db.transaction("schema") as tx:
-                        tx.execute(typeql)
-                        tx.commit()
-
-                # Record as applied
-                self.state_manager.record_applied(
-                    migration.app_label,
-                    migration.name,
-                    loaded.checksum,
-                )
-
-            logger.info(f"Applied: {migration.name}")
-            return MigrationResult(
-                name=migration.name,
-                action="applied",
-                success=True,
-            )
-
-        except Exception as e:
-            error_msg = self._extract_error_message(e)
-            logger.error(f"Failed to apply {migration.name}: {error_msg}")
-            return MigrationResult(
-                name=migration.name,
-                action="applied",
-                success=False,
-                error=error_msg,
-            )
-
-    def _rollback_one(self, loaded: LoadedMigration) -> MigrationResult:
-        """Rollback a single migration.
-
-        Args:
-            loaded: Migration to rollback
-
-        Returns:
-            MigrationResult
-        """
-        migration = loaded.migration
-        logger.info(f"Rolling back migration: {migration.name}")
-
-        try:
-            typeql_statements = self._generate_rollback_typeql_statements(migration)
-            if typeql_statements is None:
-                return MigrationResult(
-                    name=migration.name,
-                    action="rolled_back",
-                    success=False,
-                    error=f"Migration {migration.name} is not reversible",
-                )
-
-            if self.dry_run:
-                for typeql in typeql_statements:
-                    logger.info(f"[DRY RUN] Would execute:\n{typeql}")
-            else:
-                # Execute each operation separately in schema transaction
-                for typeql in typeql_statements:
-                    with self.db.transaction("schema") as tx:
-                        tx.execute(typeql)
-                        tx.commit()
-
-                # Remove from applied
-                self.state_manager.record_unapplied(
-                    migration.app_label,
-                    migration.name,
-                )
-
-            logger.info(f"Rolled back: {migration.name}")
-            return MigrationResult(
-                name=migration.name,
-                action="rolled_back",
-                success=True,
-            )
-
-        except Exception as e:
-            error_msg = self._extract_error_message(e)
-            logger.error(f"Failed to rollback {migration.name}: {error_msg}")
-            return MigrationResult(
-                name=migration.name,
-                action="rolled_back",
-                success=False,
-                error=error_msg,
-            )
-
-    def _extract_error_message(self, e: Exception) -> str:
-        """Extract error message from exception.
-
-        TypeDB exceptions may have blank str() output, so we try
-        multiple approaches to get the actual error message.
-        """
-        error_msg = str(e)
-        if not error_msg:
-            error_msg = getattr(e, "message", "")
-        if not error_msg:
-            error_msg = repr(e)
-        return error_msg
-
-    def _generate_apply_typeql_statements(self, migration: Migration) -> list[str]:
-        """Generate forward TypeQL statements for a migration.
-
-        Returns a list of individual TypeQL statements to execute separately.
-
-        Args:
-            migration: Migration instance
-
-        Returns:
-            List of TypeQL strings
-        """
-        statements: list[str] = []
-
-        # Initial migration with models
-        if migration.models:
-            schema_mgr = SchemaManager(self.db)
-            schema_mgr.register(*migration.models)
-            schema_info = schema_mgr.collect_schema_info()
-            statements.append(schema_info.to_typeql())
-
-        # Operations-based migration
-        for op in migration.operations:
-            typeql = op.to_typeql()
-            if typeql:
-                statements.append(typeql)
-
-        return statements
-
-    def _generate_apply_typeql(self, migration: Migration) -> str:
-        """Generate forward TypeQL for a migration (for preview).
-
-        Args:
-            migration: Migration instance
-
-        Returns:
-            TypeQL string (all statements joined)
-        """
-        return "\n\n".join(self._generate_apply_typeql_statements(migration))
-
-    def _generate_rollback_typeql_statements(self, migration: Migration) -> list[str] | None:
-        """Generate rollback TypeQL statements for a migration.
-
-        Returns a list of individual TypeQL statements to execute separately.
-
-        Args:
-            migration: Migration instance
-
-        Returns:
-            List of TypeQL strings or None if not reversible
-        """
-        # Initial migrations with models are not reversible
-        if migration.models:
-            return None
-
-        if not migration.reversible:
-            return None
-
-        statements: list[str] = []
-
-        # Reverse operations in reverse order
-        for op in reversed(migration.operations):
-            rollback = op.to_rollback_typeql()
-            if rollback is None:
-                # One non-reversible op makes whole migration non-reversible
-                return None
-            statements.append(rollback)
-
-        return statements
-
-    def _generate_rollback_typeql(self, migration: Migration) -> str | None:
-        """Generate rollback TypeQL for a migration (for preview).
-
-        Args:
-            migration: Migration instance
-
-        Returns:
-            TypeQL string or None if not reversible
-        """
-        statements = self._generate_rollback_typeql_statements(migration)
-        if statements is None:
-            return None
-
-        return "\n\n".join(statements)
+def _step_reverse(step: dict) -> str | None:
+    """Return the reverse TypeQL of a lowered step, or ``None`` if irreversible."""
+    if step["kind"] == "define_schema":
+        return None
+    return step.get("reverse")
 
 
 def _applied_record_dict(record: MigrationRecord) -> dict[str, str]:

@@ -1,6 +1,7 @@
 //! Error types for migration IR and validation boundaries.
 
 use crate::checksum::ChecksumDrift;
+use crate::graph::MigrationValidationError;
 use thiserror::Error;
 
 /// Crate-local result alias.
@@ -27,5 +28,36 @@ pub enum MigrationError {
         feature: &'static str,
         /// Sub-plan number that owns the behavior.
         sub_plan: u8,
+    },
+    /// Graph validation failed; one or more structural errors were found.
+    #[error("migration graph validation failed with {} error(s)", errors.len())]
+    Planning {
+        /// All validation errors discovered.
+        errors: Vec<MigrationValidationError>,
+    },
+    /// An `OperationSpec` variant that has not been lowered to `RunTypeql` or
+    /// `DefineSchema` was encountered by the planner.
+    ///
+    /// Granular typed ops (e.g. `AddAttribute`, `AddOwnership`) must be
+    /// converted to `RunTypeql` by the Python executor's lowering pass (Phase 3)
+    /// before they reach the Rust planner.
+    #[error(
+        "operation {kind} is not lowered for execution; lower granular ops to RunTypeql before planning"
+    )]
+    UnloweredOperation {
+        /// Variant name of the unlowered operation.
+        kind: String,
+    },
+    /// The requested target migration was not found in the graph.
+    #[error("target migration not found: {target}")]
+    TargetNotFound {
+        /// The target name that could not be resolved.
+        target: String,
+    },
+    /// The schema generator failed to produce TypeQL from a `DefineSchema` op.
+    #[error("schema generation failed: {message}")]
+    SchemaGeneration {
+        /// Human-readable error message.
+        message: String,
     },
 }
