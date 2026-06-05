@@ -139,7 +139,7 @@ def test_relation_descriptor_translates_roles() -> None:
         {
             "role_name": "employer",
             "player_type_names": ["rust-company"],
-            "cardinality": None,
+            "cardinality": [1, 1],
         },
     ]
 

@@ -458,6 +458,25 @@ impl PyRustDatabase {
         self.db.is_connected()
     }
 
+    /// Export the live TypeDB schema as TypeQL text.
+    fn schema_text(&self) -> PyResult<String> {
+        self.runtime
+            .block_on(self.db.schema_text())
+            .map_err(py_orm_error)
+    }
+
+    /// Introspect the live TypeDB schema through the Rust schema manager.
+    fn introspect_schema(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let manager = type_bridge_orm::SchemaManager::new(self.db.as_ref());
+        let info = self
+            .runtime
+            .block_on(manager.introspect())
+            .map_err(py_orm_error)?;
+        pythonize(py, &info)
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
     /// Open a Rust-owned transaction context.
     #[pyo3(signature = (transaction_type="read"))]
     fn transaction(&self, transaction_type: &str) -> PyResult<PyRustTransactionContext> {

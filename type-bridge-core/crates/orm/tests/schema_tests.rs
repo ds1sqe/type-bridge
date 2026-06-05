@@ -293,9 +293,9 @@ fn register_relation_populates_roles() {
     assert_eq!(relation.type_name, "employment");
     assert_eq!(relation.roles.len(), 2);
     assert_eq!(relation.roles[0].role_name, "employee");
-    assert_eq!(relation.roles[0].player_type_name, "person");
+    assert_eq!(relation.roles[0].player_type_names, vec!["person"]);
     assert_eq!(relation.roles[1].role_name, "employer");
-    assert_eq!(relation.roles[1].player_type_name, "company");
+    assert_eq!(relation.roles[1].player_type_names, vec!["company"]);
 
     // Owned attributes
     assert_eq!(relation.owned_attributes.len(), 1);
@@ -660,6 +660,46 @@ async fn introspect_builds_schema_info() {
     assert_eq!(employment.roles.len(), 2);
     assert_eq!(employment.roles[0].role_name, "employee");
     assert_eq!(employment.roles[1].role_name, "employer");
+}
+
+#[test]
+fn schema_info_from_typeql_export_preserves_annotations_roles_and_players() {
+    let typeql = r#"define
+
+attribute name,
+ value string;
+attribute age,
+ value integer;
+entity person,
+  owns age @card(0..1),
+  owns name @key,
+  plays employment:employee;
+relation employment,
+  relates employee @card(1..1);
+"#;
+
+    let info = SchemaInfo::from_typeql(typeql).unwrap();
+
+    assert_eq!(info.attributes["age"].value_type, ValueType::Long);
+    let person = &info.entities["person"];
+    let name = person
+        .owned_attributes
+        .iter()
+        .find(|attr| attr.attr_name == "name")
+        .unwrap();
+    assert_eq!(name.annotations, vec![Annotation::Key]);
+    let age = person
+        .owned_attributes
+        .iter()
+        .find(|attr| attr.attr_name == "age")
+        .unwrap();
+    assert_eq!(age.annotations, vec![Annotation::Card(0, Some(1))]);
+
+    let employment = &info.relations["employment"];
+    assert_eq!(employment.roles.len(), 1);
+    assert_eq!(employment.roles[0].role_name, "employee");
+    assert_eq!(employment.roles[0].player_type_names, vec!["person"]);
+    assert_eq!(employment.roles[0].cardinality, Some((1, Some(1))));
 }
 
 #[tokio::test]

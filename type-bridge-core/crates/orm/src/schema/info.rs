@@ -4,9 +4,10 @@
 //! `TypeBridgeRelation` trait impls at registration time, enabling
 //! runtime schema operations without generic type parameters.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use type_bridge_core_lib::schema as core_schema;
 
 use crate::attribute::ValueType;
 use crate::descriptor::{OwnedAttributeDescriptor, TypeDescriptor};
@@ -55,8 +56,10 @@ impl OwnedAttributeEntry {
 pub struct RoleEntry {
     /// Role name (e.g. `"employee"`).
     pub role_name: String,
-    /// Entity type that plays this role.
-    pub player_type_name: String,
+    /// Entity types that can play this role.
+    pub player_type_names: Vec<String>,
+    /// Optional role cardinality, where `None` max means unbounded.
+    pub cardinality: Option<(u32, Option<u32>)>,
 }
 
 /// Schema entry for an entity type.
@@ -108,13 +111,97 @@ pub struct SchemaInfo {
 }
 
 impl SchemaInfo {
+    /// Parse an exported TypeDB `define` schema into migration-facing schema IR.
+    ///
+    /// This is used for live introspection because TypeDB's schema export
+    /// preserves annotations that are not currently queryable through schema
+    /// match clauses.
+    pub fn from_typeql(input: &str) -> Result<Self, SchemaError> {
+        if input.trim() == "define" {
+            return Ok(Self::default());
+        }
+
+        let schema = core_schema::TypeSchema::from_typeql(input).map_err(|error| {
+            SchemaError::Validation {
+                message: error.to_string(),
+            }
+        })?;
+        Ok(Self::from_type_schema(&schema))
+    }
+
+    /// Bridge the parser-facing TypeQL schema into the migration-facing schema IR.
+    pub fn from_type_schema(schema: &core_schema::TypeSchema) -> Self {
+        let mut info = Self::default();
+
+        for (attr_name, attr) in &schema.attributes {
+            info.attributes.insert(
+                attr_name.clone(),
+                AttributeSchemaEntry {
+                    attr_name: attr_name.clone(),
+                    value_type: value_type_from_typeql(&attr.value_type),
+                },
+            );
+        }
+
+        let role_players = role_players_from_schema(schema);
+
+        for (entity_name, entity) in &schema.entities {
+            info.entities.insert(
+                entity_name.clone(),
+                EntitySchemaEntry {
+                    type_name: entity_name.clone(),
+                    is_abstract: entity.is_abstract,
+                    parent_type: entity.parent.clone(),
+                    owned_attributes: owned_attribute_entries_from_typeql(
+                        &entity.owns,
+                        &info.attributes,
+                    ),
+                },
+            );
+        }
+
+        for (relation_name, relation) in &schema.relations {
+            let roles = relation
+                .roles
+                .iter()
+                .map(|role| {
+                    let player_type_names = role_players
+                        .get(&(relation_name.clone(), role.name.clone()))
+                        .map(|players| players.iter().cloned().collect())
+                        .unwrap_or_default();
+                    RoleEntry {
+                        role_name: role.name.clone(),
+                        player_type_names,
+                        cardinality: role.cardinality.as_ref().map(cardinality_tuple),
+                    }
+                })
+                .collect();
+
+            info.relations.insert(
+                relation_name.clone(),
+                RelationSchemaEntry {
+                    type_name: relation_name.clone(),
+                    is_abstract: relation.is_abstract,
+                    parent_type: relation.parent.clone(),
+                    owned_attributes: owned_attribute_entries_from_typeql(
+                        &relation.owns,
+                        &info.attributes,
+                    ),
+                    roles,
+                },
+            );
+        }
+
+        info
+    }
+
     /// Bridge the CRUD-facing descriptor IR into the migration-facing schema IR.
     ///
     /// Descriptors are what Python models register for CRUD; the diff and
     /// breaking-change engine reads `SchemaInfo`. This constructor is the only
-    /// crossing between the two — there is no second schema engine. A relation
-    /// role carrying several player types is expanded to one `RoleEntry` per
-    /// player, mirroring how `register_relation` records roles.
+    /// crossing between the two — there is no second schema engine. Relation
+    /// roles keep their player set grouped because cardinality belongs to the
+    /// role, not to each individual player type.
     pub fn from_descriptors(descriptors: &[TypeDescriptor]) -> Self {
         let mut info = Self::default();
 
@@ -137,13 +224,10 @@ impl SchemaInfo {
                     let roles = relation
                         .roles
                         .iter()
-                        .flat_map(|role| {
-                            role.player_type_names
-                                .iter()
-                                .map(|player_type_name| RoleEntry {
-                                    role_name: role.role_name.clone(),
-                                    player_type_name: player_type_name.clone(),
-                                })
+                        .map(|role| RoleEntry {
+                            role_name: role.role_name.clone(),
+                            player_type_names: role.player_type_names.clone(),
+                            cardinality: role.cardinality,
                         })
                         .collect();
 
@@ -206,6 +290,86 @@ impl SchemaInfo {
     /// Compare this schema to another and return the diff.
     pub fn compare(&self, other: &SchemaInfo) -> SchemaDiff {
         SchemaDiff::compute(self, other)
+    }
+}
+
+fn owned_attribute_entries_from_typeql(
+    attrs: &[core_schema::OwnedAttribute],
+    known_attrs: &BTreeMap<String, AttributeSchemaEntry>,
+) -> Vec<OwnedAttributeEntry> {
+    attrs
+        .iter()
+        .map(|attr| OwnedAttributeEntry {
+            attr_name: attr.name.clone(),
+            value_type: known_attrs
+                .get(&attr.name)
+                .map(|entry| entry.value_type)
+                .unwrap_or(ValueType::String),
+            annotations: annotations_from_typeql(attr),
+        })
+        .collect()
+}
+
+fn annotations_from_typeql(attr: &core_schema::OwnedAttribute) -> Vec<Annotation> {
+    let mut annotations = Vec::new();
+    if attr.is_key {
+        annotations.push(Annotation::Key);
+    }
+    if attr.is_unique {
+        annotations.push(Annotation::Unique);
+    }
+    if let Some(cardinality) = &attr.cardinality {
+        annotations.push(Annotation::Card(cardinality.min, cardinality.max));
+    }
+    annotations
+}
+
+fn role_players_from_schema(
+    schema: &core_schema::TypeSchema,
+) -> BTreeMap<(String, String), BTreeSet<String>> {
+    let mut players: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+
+    for (entity_name, entity) in &schema.entities {
+        add_played_roles(&mut players, entity_name, &entity.plays);
+    }
+    for (relation_name, relation) in &schema.relations {
+        add_played_roles(&mut players, relation_name, &relation.plays);
+    }
+
+    players
+}
+
+fn add_played_roles(
+    players: &mut BTreeMap<(String, String), BTreeSet<String>>,
+    player_type_name: &str,
+    played_roles: &[core_schema::PlayedRole],
+) {
+    for played in played_roles {
+        if let Some((relation_name, role_name)) = split_role_ref(&played.role_ref) {
+            players
+                .entry((relation_name.to_string(), role_name.to_string()))
+                .or_default()
+                .insert(player_type_name.to_string());
+        }
+    }
+}
+
+fn split_role_ref(role_ref: &str) -> Option<(&str, &str)> {
+    let (relation_name, role_name) = role_ref.split_once(':')?;
+    if relation_name.is_empty() || role_name.is_empty() {
+        return None;
+    }
+    Some((relation_name, role_name))
+}
+
+fn cardinality_tuple(cardinality: &core_schema::Cardinality) -> (u32, Option<u32>) {
+    (cardinality.min, cardinality.max)
+}
+
+fn value_type_from_typeql(value_type: &str) -> ValueType {
+    match value_type {
+        "integer" => ValueType::Long,
+        other => ValueType::parse(other).unwrap_or(ValueType::String),
     }
 }
 
@@ -367,7 +531,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![RoleEntry {
                     role_name: "employee".into(),
-                    player_type_name: "person".into(),
+                    player_type_names: vec!["person".into()],
+                    cardinality: None,
                 }],
             },
         );
@@ -450,16 +615,11 @@ mod tests {
                     value_type: ValueType::Date,
                     annotations: vec![],
                 }],
-                roles: vec![
-                    RoleEntry {
-                        role_name: "participant".into(),
-                        player_type_name: "person".into(),
-                    },
-                    RoleEntry {
-                        role_name: "participant".into(),
-                        player_type_name: "company".into(),
-                    },
-                ],
+                roles: vec![RoleEntry {
+                    role_name: "participant".into(),
+                    player_type_names: vec!["person".into(), "company".into()],
+                    cardinality: Some((1, Some(2))),
+                },],
             })
         );
         assert_eq!(

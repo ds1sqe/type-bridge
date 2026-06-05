@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from type_bridge.attribute.base import Attribute
 from type_bridge.migration import operations as ops
-from type_bridge.migration.diff import SchemaDiff
 from type_bridge.migration.info import SchemaInfo
 from type_bridge.migration.introspection import IntrospectedSchema, SchemaIntrospector
 from type_bridge.migration.loader import MigrationLoader
@@ -19,6 +19,38 @@ if TYPE_CHECKING:
     from type_bridge.session import Database
 
 logger = logging.getLogger(__name__)
+
+
+def _add_ownership_operation(
+    owner: type[Entity | Relation],
+    attr_name: str,
+    attributes: dict[str, type[Attribute]],
+) -> ops.AddOwnership | None:
+    attr = attributes.get(attr_name)
+    if attr is None:
+        return None
+
+    attr_info = owner.get_owned_attributes().get(attr_name)
+    if attr_info is None:
+        return ops.AddOwnership(owner, attr)
+
+    flags = attr_info.flags
+    return ops.AddOwnership(
+        owner,
+        attr,
+        optional=flags.card_min == 0,
+        key=flags.is_key,
+        unique=flags.is_unique,
+        card_min=flags.card_min,
+        card_max=flags.card_max,
+    )
+
+
+def _role_player_type_names(role: object) -> list[str]:
+    return [
+        player.get_type_name() if hasattr(player, "get_type_name") else str(player)
+        for player in getattr(role, "player_types", [])
+    ]
 
 
 class MigrationGenerator:
@@ -173,208 +205,77 @@ class MigrationGenerator:
         Returns:
             List of operations to apply
         """
+        from type_bridge._rust_runtime import compute_schema_diff
+
         operations: list[ops.Operation] = []
 
-        # Get type names from both sources
-        db_entities = db_schema.get_entity_names()
-        db_relations = db_schema.get_relation_names()
-        db_attributes = db_schema.get_attribute_names()
+        current_schema = db_schema.to_rust_schema_info()
+        target_schema = model_info.to_rust_schema_info()
+        rust_diff = compute_schema_diff(current_schema, target_schema)
 
-        model_entities = {e.get_type_name() for e in model_info.entities}
-        model_relations = {r.get_type_name() for r in model_info.relations}
-        model_attributes = {a.get_attribute_name() for a in model_info.attribute_classes}
+        entities = {entity.get_type_name(): entity for entity in model_info.entities}
+        relations = {relation.get_type_name(): relation for relation in model_info.relations}
+        attributes = {
+            attribute.get_attribute_name(): attribute for attribute in model_info.attribute_classes
+        }
 
-        # Find new attributes (must be added first)
-        new_attrs = model_attributes - db_attributes
-        for attr in model_info.attribute_classes:
-            if attr.get_attribute_name() in new_attrs:
+        for attr_name in rust_diff.get("added_attributes", []):
+            if attr := attributes.get(attr_name):
                 operations.append(ops.AddAttribute(attr))
-                logger.debug(f"Will add attribute: {attr.get_attribute_name()}")
+                logger.debug(f"Will add attribute: {attr_name}")
 
-        # Find new entities
-        new_entities = model_entities - db_entities
-        for entity in model_info.entities:
-            if entity.get_type_name() in new_entities:
+        for entity_name in rust_diff.get("added_entities", []):
+            if entity := entities.get(entity_name):
                 operations.append(ops.AddEntity(entity))
-                logger.debug(f"Will add entity: {entity.get_type_name()}")
+                logger.debug(f"Will add entity: {entity_name}")
 
-        # Find new relations
-        new_relations = model_relations - db_relations
-        for relation in model_info.relations:
-            if relation.get_type_name() in new_relations:
+        for relation_name in rust_diff.get("added_relations", []):
+            if relation := relations.get(relation_name):
                 operations.append(ops.AddRelation(relation))
-                logger.debug(f"Will add relation: {relation.get_type_name()}")
+                logger.debug(f"Will add relation: {relation_name}")
 
-        # Check for new ownerships on existing entities
-        for entity in model_info.entities:
-            entity_name = entity.get_type_name()
-            if entity_name in db_entities:
-                # Entity exists, check for new attributes
-                db_ownerships = {
-                    o.attribute_name for o in db_schema.get_ownerships_for(entity_name)
-                }
-                model_ownerships = entity.get_owned_attributes()
+        for entity_name, changes in rust_diff.get("modified_entities", {}).items():
+            entity = entities.get(entity_name)
+            if entity is None:
+                continue
+            for attr_name in changes.get("added_attributes", []):
+                if operation := _add_ownership_operation(entity, attr_name, attributes):
+                    operations.append(operation)
+                    logger.debug(f"Will add ownership: {entity_name} owns {attr_name}")
+            for attr_name in changes.get("removed_attributes", []):
+                if attr := attributes.get(attr_name):
+                    operations.append(ops.RemoveOwnership(entity, attr))
+            for attr_name, old_flags, new_flags in changes.get("modified_attributes", []):
+                if attr := attributes.get(attr_name):
+                    operations.append(ops.ModifyOwnership(entity, attr, old_flags, new_flags))
 
-                for attr_name, attr_info in model_ownerships.items():
-                    attr_type_name = attr_info.typ.get_attribute_name()
-                    if attr_type_name not in db_ownerships:
-                        # Need to add this attribute first if it doesn't exist
-                        if attr_type_name not in db_attributes and attr_type_name not in new_attrs:
-                            operations.append(ops.AddAttribute(attr_info.typ))
-                            new_attrs.add(attr_type_name)
-
-                        operations.append(
-                            ops.AddOwnership(
-                                entity,
-                                attr_info.typ,
-                                optional=attr_info.flags.card_min == 0,
-                                key=attr_info.flags.is_key,
-                                unique=attr_info.flags.is_unique,
-                            )
-                        )
-                        logger.debug(f"Will add ownership: {entity_name} owns {attr_type_name}")
-
-        # Check for new roles/role players on existing relations
-        for relation in model_info.relations:
-            rel_name = relation.get_type_name()
-            if rel_name in db_relations:
-                db_rel = db_schema.relations.get(rel_name)
-                if db_rel:
-                    db_role_names = set(db_rel.roles.keys())
-                    model_roles = relation._roles
-
-                    # New roles
-                    for role_name, role in model_roles.items():
-                        if role_name not in db_role_names:
-                            operations.append(
-                                ops.AddRole(
-                                    relation,
-                                    role_name,
-                                    list(role.player_types),
-                                )
-                            )
-                            logger.debug(f"Will add role: {rel_name}:{role_name}")
-                        else:
-                            # Role exists, check for new player types
-                            db_role = db_rel.roles.get(role_name)
-                            if db_role:
-                                db_players = set(db_role.player_types)
-                                model_players = set(role.player_types)
-                                new_players = model_players - db_players
-
-                                for player in new_players:
-                                    operations.append(
-                                        ops.AddRolePlayer(relation, role_name, player)
-                                    )
-                                    logger.debug(
-                                        f"Will add role player: {player} plays {rel_name}:{role_name}"
-                                    )
-
-        # Log warnings for removed types (breaking changes)
-        removed_entities = db_entities - model_entities
-        if removed_entities:
-            logger.warning(
-                f"Detected entities in DB but not in models: {removed_entities}. "
-                "Manual migration may be required for data cleanup."
-            )
-
-        removed_relations = db_relations - model_relations
-        if removed_relations:
-            logger.warning(
-                f"Detected relations in DB but not in models: {removed_relations}. "
-                "Manual migration may be required for data cleanup."
-            )
-
-        removed_attrs = db_attributes - model_attributes
-        if removed_attrs:
-            logger.warning(
-                f"Detected attributes in DB but not in models: {removed_attrs}. "
-                "Manual migration may be required for data cleanup."
-            )
-
-        return operations
-
-    def _diff_to_operations(self, diff: SchemaDiff, new_info: SchemaInfo) -> list[ops.Operation]:
-        """Convert SchemaDiff to operations.
-
-        Args:
-            diff: Schema diff
-            new_info: New schema info (for looking up types)
-
-        Returns:
-            List of operations
-        """
-        operations: list[ops.Operation] = []
-
-        # Add new attributes first (they may be needed by entities/relations)
-        for attr in diff.added_attributes:
-            operations.append(ops.AddAttribute(attr))
-
-        # Add new entities
-        for entity in diff.added_entities:
-            operations.append(ops.AddEntity(entity))
-
-        # Add new relations
-        for relation in diff.added_relations:
-            operations.append(ops.AddRelation(relation))
-
-        # Handle modified entities
-        for entity, changes in diff.modified_entities.items():
-            # Add ownership for new attributes
-            owned_attrs = entity.get_owned_attributes()
-            for attr_name in changes.added_attributes:
-                if attr_name in owned_attrs:
-                    attr_info = owned_attrs[attr_name]
-                    operations.append(
-                        ops.AddOwnership(
-                            entity,
-                            attr_info.typ,
-                            optional=attr_info.flags.card_min == 0,
-                            key=attr_info.flags.is_key,
-                            unique=attr_info.flags.is_unique,
-                        )
-                    )
-
-            # Note: Removed attributes would need RemoveOwnership
-            # but that's a breaking change requiring careful handling
-
-        # Handle modified relations
-        for relation, changes in diff.modified_relations.items():
-            # Add new roles
-            for role_name in changes.added_roles:
-                if role_name in relation._roles:
-                    role = relation._roles[role_name]
-                    operations.append(
-                        ops.AddRole(
-                            relation,
-                            role_name,
-                            list(role.player_types),
-                        )
-                    )
-
-            # Handle role player changes
-            for rpc in changes.modified_role_players:
-                for player_type in rpc.added_player_types:
-                    operations.append(ops.AddRolePlayer(relation, rpc.role_name, player_type))
-
-        # Removed types are breaking changes - generate warnings but don't auto-remove
-        if diff.removed_entities:
-            logger.warning(
-                f"Detected removed entities: {[e.__name__ for e in diff.removed_entities]}. "
-                "Manual migration required for data cleanup."
-            )
-
-        if diff.removed_relations:
-            logger.warning(
-                f"Detected removed relations: {[r.__name__ for r in diff.removed_relations]}. "
-                "Manual migration required for data cleanup."
-            )
-
-        if diff.removed_attributes:
-            logger.warning(
-                f"Detected removed attributes: {[a.get_attribute_name() for a in diff.removed_attributes]}. "
-                "Manual migration required for data cleanup."
-            )
+        for relation_name, changes in rust_diff.get("modified_relations", {}).items():
+            relation = relations.get(relation_name)
+            if relation is None:
+                continue
+            for attr_name in changes.get("added_attributes", []):
+                if operation := _add_ownership_operation(relation, attr_name, attributes):
+                    operations.append(operation)
+                    logger.debug(f"Will add ownership: {relation_name} owns {attr_name}")
+            for attr_name in changes.get("removed_attributes", []):
+                if attr := attributes.get(attr_name):
+                    operations.append(ops.RemoveOwnership(relation, attr))
+            for attr_name, old_flags, new_flags in changes.get("modified_attributes", []):
+                if attr := attributes.get(attr_name):
+                    operations.append(ops.ModifyOwnership(relation, attr, old_flags, new_flags))
+            for role_name in changes.get("added_roles", []):
+                role = relation._roles.get(role_name)
+                player_types = _role_player_type_names(role) if role is not None else []
+                operations.append(ops.AddRole(relation, role_name, player_types))
+                logger.debug(f"Will add role: {relation_name}:{role_name}")
+            for role_name in changes.get("removed_roles", []):
+                operations.append(ops.RemoveRole(relation, role_name))
+            for player_change in changes.get("modified_role_players", []):
+                role_name = player_change["role_name"]
+                for player_type in player_change.get("added_player_types", []):
+                    operations.append(ops.AddRolePlayer(relation, role_name, player_type))
+                for player_type in player_change.get("removed_player_types", []):
+                    operations.append(ops.RemoveRolePlayer(relation, role_name, player_type))
 
         return operations
 
@@ -409,60 +310,6 @@ class MigrationGenerator:
         lines.append("    ]")
         return "\n".join(lines)
 
-    def _render_models(self, models: list[type[Entity | Relation]]) -> str:
-        """Render models list as Python code.
-
-        Args:
-            models: List of model classes
-
-        Returns:
-            Python code string
-        """
-        if not models:
-            return ""
-
-        model_names = [m.__name__ for m in models]
-        return f"    models: ClassVar[list[type[Entity | Relation]]] = [{', '.join(model_names)}]"
-
-    def _op_to_code(self, op: ops.Operation) -> str:
-        """Convert operation to Python code string.
-
-        Args:
-            op: Operation instance
-
-        Returns:
-            Python code
-        """
-        if isinstance(op, ops.AddAttribute):
-            return f"ops.AddAttribute({op.attribute.__name__})"
-        elif isinstance(op, ops.RemoveAttribute):
-            return f"ops.RemoveAttribute({op.attribute.__name__})"
-        elif isinstance(op, ops.AddEntity):
-            return f"ops.AddEntity({op.entity.__name__})"
-        elif isinstance(op, ops.RemoveEntity):
-            return f"ops.RemoveEntity({op.entity.__name__})"
-        elif isinstance(op, ops.AddRelation):
-            return f"ops.AddRelation({op.relation.__name__})"
-        elif isinstance(op, ops.AddOwnership):
-            parts = [f"{op.owner.__name__}", f"{op.attribute.__name__}"]
-            if op.optional:
-                parts.append("optional=True")
-            if op.key:
-                parts.append("key=True")
-            if op.unique:
-                parts.append("unique=True")
-            return f"ops.AddOwnership({', '.join(parts)})"
-        elif isinstance(op, ops.AddRole):
-            return f"ops.AddRole({op.relation.__name__}, {op.role_name!r}, {op.player_types!r})"
-        elif isinstance(op, ops.AddRolePlayer):
-            return (
-                f"ops.AddRolePlayer({op.relation.__name__}, {op.role_name!r}, {op.player_type!r})"
-            )
-        elif isinstance(op, ops.RunTypeQL):
-            return f"ops.RunTypeQL(forward={op.forward!r}, reverse={op.reverse!r})"
-        else:
-            return repr(op)
-
     def _describe_operations(self, operations: list[ops.Operation]) -> str:
         """Generate description of operations.
 
@@ -490,20 +337,6 @@ class MigrationGenerator:
 
         return ", ".join(parts) or "schema changes"
 
-    def _describe_models(self, models: list[type[Entity | Relation]]) -> str:
-        """Generate description of models.
-
-        Args:
-            models: List of model classes
-
-        Returns:
-            Description string
-        """
-        model_names = [m.__name__ for m in models[:3]]
-        if len(models) > 3:
-            model_names.append(f"and {len(models) - 3} more")
-        return f"initial migration with {', '.join(model_names)}"
-
     def _to_class_name(self, name: str) -> str:
         """Convert migration name to class name.
 
@@ -522,23 +355,6 @@ class MigrationGenerator:
 from type_bridge.migration import Migration
 from type_bridge.migration.operations import Operation
 from type_bridge.migration import operations as ops"""
-
-    def _generate_model_imports(self, models: list[type[Entity | Relation]]) -> str:
-        """Generate imports for model-based migration."""
-        lines = [
-            "from typing import ClassVar",
-            "",
-            "from type_bridge.migration import Migration",
-            "from type_bridge.models import Entity, Relation",
-        ]
-
-        # Add model imports (user needs to adjust these)
-        lines.append("")
-        lines.append("# TODO: Update these imports to match your model locations")
-        for model in models:
-            lines.append(f"# from your_app.models import {model.__name__}")
-
-        return "\n".join(lines)
 
     def _generate_operations_imports(self, operations: list[ops.Operation]) -> str:
         """Generate imports for operations-based migration."""

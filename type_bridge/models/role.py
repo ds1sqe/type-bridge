@@ -154,6 +154,7 @@ class Role[T: "TypeDBType"]:
             return RoleRef(
                 role_name=self.role_name,
                 player_types=self.player_entity_types,
+                cardinality=self.cardinality,
             )
         return obj.__dict__.get(self.attr_name)
 

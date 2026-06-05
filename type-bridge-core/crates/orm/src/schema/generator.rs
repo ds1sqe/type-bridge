@@ -137,19 +137,31 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
         for role in &relation.roles {
             if parent_role_names.contains(role.role_name.as_str()) {
                 // Still collect plays clause for inherited roles
-                plays_clauses.push((
-                    role.player_type_name.clone(),
-                    format!("{}:{}", relation.type_name, role.role_name),
-                ));
+                for player_type_name in &role.player_type_names {
+                    plays_clauses.push((
+                        player_type_name.clone(),
+                        format!("{}:{}", relation.type_name, role.role_name),
+                    ));
+                }
                 continue;
             }
             if seen_roles.insert(&role.role_name) {
-                parts.push(format!("    relates {}", role.role_name));
+                if let Some((min, max)) = role.cardinality {
+                    parts.push(format!(
+                        "    relates {} {}",
+                        role.role_name,
+                        card_annotation(min, max)
+                    ));
+                } else {
+                    parts.push(format!("    relates {}", role.role_name));
+                }
             }
-            plays_clauses.push((
-                role.player_type_name.clone(),
-                format!("{}:{}", relation.type_name, role.role_name),
-            ));
+            for player_type_name in &role.player_type_names {
+                plays_clauses.push((
+                    player_type_name.clone(),
+                    format!("{}:{}", relation.type_name, role.role_name),
+                ));
+            }
         }
 
         for attr in &relation.owned_attributes {
@@ -207,6 +219,13 @@ fn typedb_value_type(value_type: &ValueType) -> &'static str {
         ValueType::Decimal => "decimal",
         ValueType::Duration => "duration",
     }
+}
+
+fn card_annotation(min: u32, max: Option<u32>) -> String {
+    let max_str = max
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "*".to_string());
+    format!("@card({min}..{max_str})")
 }
 
 /// Build the entity header line: `entity <name> [sub <parent>] [@abstract]`.
@@ -385,11 +404,13 @@ mod tests {
                 roles: vec![
                     RoleEntry {
                         role_name: "employee".into(),
-                        player_type_name: "person".into(),
+                        player_type_names: vec!["person".into()],
+                        cardinality: None,
                     },
                     RoleEntry {
                         role_name: "employer".into(),
-                        player_type_name: "company".into(),
+                        player_type_names: vec!["company".into()],
+                        cardinality: None,
                     },
                 ],
             },
@@ -615,7 +636,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![RoleEntry {
                     role_name: "source".into(),
-                    player_type_name: "node".into(),
+                    player_type_names: vec!["node".into()],
+                    cardinality: None,
                 }],
             },
         );
@@ -649,7 +671,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![RoleEntry {
                     role_name: "employee".into(),
-                    player_type_name: "person".into(),
+                    player_type_names: vec!["person".into()],
+                    cardinality: None,
                 }],
             },
         );
@@ -674,11 +697,13 @@ mod tests {
                 roles: vec![
                     RoleEntry {
                         role_name: "friend".into(),
-                        player_type_name: "person".into(),
+                        player_type_names: vec!["person".into()],
+                        cardinality: None,
                     },
                     RoleEntry {
                         role_name: "friend".into(),
-                        player_type_name: "person".into(),
+                        player_type_names: vec!["person".into()],
+                        cardinality: None,
                     },
                 ],
             },

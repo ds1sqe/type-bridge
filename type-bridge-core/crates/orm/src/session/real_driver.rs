@@ -95,6 +95,21 @@ impl DriverBackend for RealBackend {
     fn is_open(&self) -> bool {
         self.driver.is_open()
     }
+
+    fn schema_text(&self, database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            let db = self
+                .driver
+                .databases()
+                .get(&database)
+                .await
+                .map_err(|e| OrmError::Connection(format!("Database lookup failed: {e}")))?;
+            db.schema()
+                .await
+                .map_err(|e| OrmError::Connection(format!("Schema export failed: {e}")))
+        })
+    }
 }
 
 struct RealTransaction {

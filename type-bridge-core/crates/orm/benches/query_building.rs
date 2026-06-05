@@ -53,15 +53,17 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
                 roles: vec![
                     RoleEntry {
                         role_name: "player-a".to_string(),
-                        player_type_name: "entity-0".to_string(),
+                        player_type_names: vec!["entity-0".to_string()],
+                        cardinality: None,
                     },
                     RoleEntry {
                         role_name: "player-b".to_string(),
-                        player_type_name: if entity_count > 1 {
+                        player_type_names: vec![if entity_count > 1 {
                             "entity-1".to_string()
                         } else {
                             "entity-0".to_string()
-                        },
+                        }],
+                        cardinality: None,
                     },
                 ],
             },

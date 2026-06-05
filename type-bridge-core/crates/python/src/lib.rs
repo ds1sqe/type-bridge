@@ -16,6 +16,7 @@
 pub mod ast;
 pub mod orm;
 pub mod orm_runtime;
+pub mod schema;
 
 use type_bridge_core_lib as core;
 
@@ -632,6 +633,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // ORM CRUD query builder
     m.add_class::<orm::CrudQueryBuilder>()?;
     orm_runtime::register(m)?;
+    schema::register(m)?;
 
     Ok(())
 }

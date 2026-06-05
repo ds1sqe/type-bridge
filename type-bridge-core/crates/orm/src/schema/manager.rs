@@ -96,7 +96,8 @@ impl<'db> SchemaManager<'db> {
             .iter()
             .map(|r| RoleEntry {
                 role_name: r.role_name.to_string(),
-                player_type_name: r.player_type_name.to_string(),
+                player_type_names: vec![r.player_type_name.to_string()],
+                cardinality: None,
             })
             .collect();
 
@@ -164,6 +165,10 @@ impl<'db> SchemaManager<'db> {
     #[tracing::instrument(skip(self))]
     pub async fn introspect(&self) -> Result<SchemaInfo> {
         use crate::session::backend::QueryResult;
+
+        if let Ok(typeql) = self.db.schema_text().await {
+            return Ok(SchemaInfo::from_typeql(&typeql)?);
+        }
 
         let mut info = SchemaInfo::default();
 
@@ -296,7 +301,8 @@ impl<'db> SchemaManager<'db> {
                 {
                     entries.push(RoleEntry {
                         role_name: role_name.to_string(),
-                        player_type_name: String::new(),
+                        player_type_names: Vec::new(),
+                        cardinality: None,
                     });
                 }
             }

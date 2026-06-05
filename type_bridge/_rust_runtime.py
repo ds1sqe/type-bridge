@@ -85,6 +85,36 @@ def model_schema_info() -> dict[str, Any]:
     return descriptor_registry().schema_info()
 
 
+def compute_schema_diff(current: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+    """Compute schema diff through the Rust schema engine."""
+    return rust_core().compute_schema_diff(current, target)
+
+
+def classify_schema_diff(diff: dict[str, Any]) -> list[dict[str, Any]]:
+    """Classify schema diff changes through the Rust schema engine."""
+    return rust_core().classify_schema_diff(diff)
+
+
+def schema_diff_is_breaking(diff: dict[str, Any]) -> bool:
+    """Return whether the Rust schema diff contains breaking changes."""
+    return bool(rust_core().schema_diff_is_breaking(diff))
+
+
+def generate_define_block(info: dict[str, Any]) -> str:
+    """Generate TypeQL through the Rust schema generator."""
+    return rust_core().generate_define_block(info)
+
+
+def introspect_schema(connection: Any) -> dict[str, Any]:
+    """Introspect the live TypeDB schema through the Rust schema manager."""
+    return rust_database_for(connection).introspect_schema()
+
+
+def schema_text(connection: Any) -> str:
+    """Export the live TypeDB schema as TypeQL text through the Rust driver."""
+    return rust_database_for(connection).schema_text()
+
+
 def _register_or_project_descriptor(
     descriptor: dict[str, Any],
     *,
@@ -152,10 +182,11 @@ def _relation_roles(model_cls: type[TypeDBType]) -> list[Any]:
         default = getattr(field, "default", None)
         role_name = getattr(default, "role_name", None)
         player_types = getattr(default, "player_types", None)
+        cardinality = getattr(default, "cardinality", None)
         if role_name is None or player_types is None:
             continue
         fallback_roles.append(
-            _RoleMetadata(role_name=role_name, player_types=player_types, cardinality=None)
+            _RoleMetadata(role_name=role_name, player_types=player_types, cardinality=cardinality)
         )
     return fallback_roles
 
@@ -333,12 +364,15 @@ def _relation_role_fields(model_cls: type[Any]) -> list[tuple[str, _RoleMetadata
         default = getattr(field, "default", None)
         role_name = getattr(default, "role_name", None)
         player_types = getattr(default, "player_types", None)
+        cardinality = getattr(default, "cardinality", None)
         if role_name is None or player_types is None:
             continue
         fields.append(
             (
                 field_name,
-                _RoleMetadata(role_name=role_name, player_types=player_types, cardinality=None),
+                _RoleMetadata(
+                    role_name=role_name, player_types=player_types, cardinality=cardinality
+                ),
             )
         )
     return fields
