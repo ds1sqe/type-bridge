@@ -1,0 +1,8 @@
+[attributes.name]
+value = "string"
+
+[attributes.age]
+value = "long"
+
+[entities.person]
+owns = ["name", "age"]

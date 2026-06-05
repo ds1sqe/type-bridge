@@ -8,6 +8,7 @@ members = [
     "crates/orm",
     "crates/orm-derive",
     "crates/node",
+    "crates/toml-transpiler",
 ]
 
 [workspace.package]

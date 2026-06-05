@@ -2335,6 +2335,7 @@ dependencies = [
  "type-bridge-core-lib",
  "type-bridge-migration",
  "type-bridge-orm",
+ "type-bridge-toml-transpiler",
 ]
 
 [[package]]
@@ -2429,6 +2430,16 @@ dependencies = [
  "type-bridge-server",
  "typedb-driver",
  "uuid",
+]
+
+[[package]]
+name = "type-bridge-toml-transpiler"
+version = "1.4.5"
+dependencies = [
+ "indexmap 2.13.1",
+ "serde",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

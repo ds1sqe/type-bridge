@@ -18,6 +18,7 @@ pub mod migration_runtime;
 pub mod orm;
 pub mod orm_runtime;
 pub mod schema;
+pub mod transpiler;
 
 use type_bridge_core_lib as core;
 
@@ -578,6 +579,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_typeql_query, m)?)?;
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
+    m.add_function(wrap_pyfunction!(transpiler::toml_to_typeql, m)?)?;
 
     // Values
     m.add_class::<ast::LiteralValue>()?;

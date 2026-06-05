@@ -1,0 +1,4 @@
+define
+attribute name, value string;
+attribute age, value long;
+entity person, owns name, owns age;
