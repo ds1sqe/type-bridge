@@ -41,6 +41,65 @@ export class TypedCodecError extends Error {
   }
 }
 
+/**
+ * Unwrap a branded `Attribute` instance to its plain primitive value. For a
+ * list field, unwrap each element of the array element-wise. Mirrors Python
+ * `Entity._unwrap_value` (`type_bridge/models/entity.py:329-335`).
+ *
+ * This is the serialization-only path (no query language, no DB crossing). The
+ * canonical plain-dict value encodings are:
+ * - `long` / i64  → `bigint`
+ * - `string`, `double`, `boolean` → JS native equivalents
+ * - `decimal`, `date`, `datetime`, `datetime-tz`, `duration` → string (as
+ *   stored in the attribute's `.value` field, matching `expected-canonical.json`)
+ */
+export function attributeToPlain(
+  value: Attribute<unknown, string>,
+): unknown;
+export function attributeToPlain(
+  value: Attribute<unknown, string>[],
+): unknown[];
+export function attributeToPlain(
+  value: Attribute<unknown, string> | Attribute<unknown, string>[],
+): unknown | unknown[] {
+  if (Array.isArray(value)) {
+    return value.map((element) => element.value);
+  }
+  return value.value;
+}
+
+/**
+ * Wrap a plain primitive (or array of plain primitives) into a branded
+ * `Attribute` (or `Attribute[]`) using the given attribute class constructor.
+ * Mirrors the `new attrType(value)` brand-construction pattern in
+ * `hydrateAttributeValue` (`codec.ts:192-224`).
+ *
+ * Used by `fromDict` to re-brand plain dict values back into typed instances.
+ */
+export function plainToAttribute(
+  attrType: AttributeClass,
+  value: unknown,
+  fieldName: string,
+  isList: boolean,
+): Attribute<unknown, string> | Attribute<unknown, string>[] {
+  if (isList) {
+    if (!Array.isArray(value)) {
+      throw new TypedCodecError(
+        `List field "${fieldName}" must be an array in fromDict input`,
+      );
+    }
+    return (value as unknown[]).map((element) => {
+      if (element === null || element === undefined) {
+        throw new TypedCodecError(
+          `List field "${fieldName}" contains null/undefined element`,
+        );
+      }
+      return new attrType(element as never);
+    });
+  }
+  return new attrType(value as never);
+}
+
 export function lowerAttributes(
   instance: object,
   schema: EntitySchema | RelationSchema,

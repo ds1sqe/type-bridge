@@ -152,22 +152,27 @@ export {
   type EntitySchema,
   type FieldValue,
   type IidBearing,
+  type InstanceDict,
   type InstanceFields,
   type MergedSchema,
   type ModelClass,
+  type ModelInstance,
   type ParentModelClass,
   type ParentOption,
+  type PlainFieldValue,
   type RelationSchema,
   type SchemaSpec,
 } from "./model.js";
 export {
   TypedCodecError,
+  attributeToPlain,
   hydrateAttributeEntries,
   hydrateAttributes,
   keyAttributeDescriptor,
   lowerAttributes,
   lowerAttributeValue,
   lowerFilters,
+  plainToAttribute,
   runtimeAttributeValueFromUnknown,
 } from "./codec.js";
 export {

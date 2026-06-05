@@ -41,6 +41,13 @@ from tests.integration.parity.models import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_NODE_NATIVE = REPO_ROOT / "tmp" / "type_bridge_node.node"
 NODE_READER = Path(__file__).with_name("node_reader.cjs")
+NODE_PACKAGE_DIR = REPO_ROOT / "type-bridge-core" / "crates" / "node"
+WRITE_DATA = Path(__file__).with_name("fixtures") / "write-data.json"
+# The typed reader is compiled by `npm run build:parity-reader` (tsconfig.parity.json)
+# into tmp/node-parity. It is a sibling to NODE_READER that reads the typed
+# Entity()/Relation() surface and serializes through toDict(). See
+# canonicalize_typed_reader_output for the descriptor-gate vs value-gate split.
+TYPED_NODE_READER = REPO_ROOT / "tmp" / "node-parity" / "tests" / "parity" / "typed-reader.js"
 
 ENTITY_CLASSES = {
     "parity-person": ParityPerson,
@@ -166,6 +173,170 @@ def canonicalize_node_reader_output(
         "entities": sorted(entities, key=lambda row: row["stable_id"]),
         "relations": sorted(relations, key=lambda row: row["stable_id"]),
     }
+
+
+def read_with_typed_node(
+    address: str | None = None,
+    database: str | None = None,
+    *,
+    offline: bool = False,
+) -> dict[str, Any]:
+    """Read fixture rows through the typed Node surface and toDict().
+
+    Sibling to :func:`read_with_node`. The typed reader is compiled by
+    ``npm run build:parity-reader``; this skips cleanly if it is not built or
+    if node is unavailable. In ``offline`` mode the reader builds instances from
+    ``write-data.json`` with no database; otherwise it reads live via the typed
+    manager ``.all()``.
+    """
+    if shutil.which("node") is None:
+        pytest.skip("node executable is not installed")
+    if not TYPED_NODE_READER.exists():
+        pytest.skip(
+            f"typed parity reader not built ({TYPED_NODE_READER}); "
+            "run `npm run build:parity-reader` in type-bridge-core/crates/node"
+        )
+
+    env = dict(os.environ)
+    env["TYPE_BRIDGE_NODE_PACKAGE_DIR"] = str(NODE_PACKAGE_DIR)
+    env["TYPE_BRIDGE_PARITY_WRITE_DATA"] = str(WRITE_DATA)
+    if address is not None:
+        env["TYPEDB_ADDRESS"] = address
+    if database is not None:
+        env["TYPE_BRIDGE_PARITY_DATABASE"] = database
+    if "TYPE_BRIDGE_NODE_NATIVE_PATH" not in env and DEFAULT_NODE_NATIVE.exists():
+        env["TYPE_BRIDGE_NODE_NATIVE_PATH"] = str(DEFAULT_NODE_NATIVE)
+
+    cmd = ["node", str(TYPED_NODE_READER)]
+    if offline:
+        cmd.append("--offline")
+    completed = subprocess.run(
+        cmd,
+        check=False,
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(
+            f"Typed parity reader failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
+    return json.loads(completed.stdout)
+
+
+def assert_typed_node_output_matches_expected(raw_output: dict[str, Any]) -> None:
+    """Assert the typed reader's entity toDict() output matches the value oracle.
+
+    The typed reader feeds the SAME ``expected-canonical.json`` oracle the
+    dynamic ``node_reader.cjs`` satisfies, reusing the single canonicalizer
+    (:func:`_canonical_value` and friends). This is the VALUE-parity gate; the
+    descriptor SHAPE-parity gate is Plan 10's byte-identity check. The two are
+    complementary, not duplicative.
+    """
+    contract = load_fixture_contract()
+    actual = canonicalize_typed_reader_output(raw_output, contract)
+    expected = {
+        "fixture_id": contract["expected"]["fixture_id"],
+        "version": contract["expected"]["version"],
+        "entities": contract["expected"]["entities"],
+        # The typed reader covers entity value parity; relations (with role
+        # players) stay the dynamic reader's job — typed relation toDict()
+        # excludes roles by contract.
+        "relations": [],
+    }
+    actual_json = canonical_json(actual)
+    expected_json = canonical_json(expected)
+    if actual_json != expected_json:
+        diff = "\n".join(
+            difflib.unified_diff(
+                expected_json.splitlines(),
+                actual_json.splitlines(),
+                fromfile="expected-canonical.json",
+                tofile="typed-node-reader",
+                lineterm="",
+            )
+        )
+        raise AssertionError(f"Typed reader canonical entity output drifted:\n{diff}")
+
+
+def assert_typed_relation_attributes_match_expected(raw_output: dict[str, Any]) -> None:
+    """Assert each relation's toDict() attribute shape matches the value oracle.
+
+    Typed relation ``toDict()`` emits attribute fields only (role players are
+    excluded by contract), so this checks the relation ``attributes`` sub-shape
+    against ``expected-canonical.json`` — not the full role-bearing relation
+    oracle, which the dynamic reader covers.
+    """
+    contract = load_fixture_contract()
+    descriptors = _descriptor_maps(contract["descriptors"])
+    expected_by_type = {rel["type"]: rel for rel in contract["expected"]["relations"]}
+    for section in raw_output.get("relations", []):
+        type_name = section["type_name"]
+        descriptor = descriptors[type_name]
+        expected_attributes = expected_by_type[type_name]["attributes"]
+        for row in section["rows"]:
+            actual_attributes = _canonical_typed_attributes(row, descriptor)
+            if canonical_json(actual_attributes) != canonical_json(expected_attributes):
+                raise AssertionError(
+                    f"Typed relation '{type_name}' attribute toDict drifted:\n"
+                    f"expected={canonical_json(expected_attributes)}\n"
+                    f"actual={canonical_json(actual_attributes)}"
+                )
+
+
+def canonicalize_typed_reader_output(
+    raw_output: dict[str, Any],
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    """Canonicalize typed reader entity output, reusing the single canonicalizer."""
+    descriptors = _descriptor_maps(contract["descriptors"])
+    entities = [
+        _canonical_typed_entity(row, descriptors[section["type_name"]], section["type_name"])
+        for section in raw_output["entities"]
+        for row in section["rows"]
+    ]
+    return {
+        "fixture_id": contract["expected"]["fixture_id"],
+        "version": contract["expected"]["version"],
+        "entities": sorted(entities, key=lambda row: row["stable_id"]),
+        "relations": [],
+    }
+
+
+def _canonical_typed_entity(
+    row: dict[str, Any],
+    descriptor: dict[str, Any],
+    type_name: str,
+) -> dict[str, Any]:
+    return {
+        "stable_id": row["id"],
+        "type": type_name,
+        "attributes": _canonical_typed_attributes(row, descriptor),
+    }
+
+
+def _canonical_typed_attributes(
+    row: dict[str, Any],
+    descriptor: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize a toDict() plain dict to the canonical attribute shape.
+
+    The toDict() value is already a plain primitive keyed by field name, so this
+    reuses :func:`_canonical_value` (the single value normalizer — long → decimal
+    string, decimal strip, datetime trimming) without a second canonicalizer.
+    """
+    attrs_by_field = {attr["field_name"]: attr for attr in descriptor["owned_attributes"]}
+    attributes: dict[str, Any] = {}
+    for field_name, value in row.items():
+        attr = attrs_by_field[field_name]
+        if _is_multi_value_attribute(attr):
+            canonical_values = [_canonical_value(item, attr["value_type"]) for item in value]
+            canonical_values.sort(key=canonical_json)
+            attributes[field_name] = canonical_values
+        else:
+            attributes[field_name] = _canonical_value(value, attr["value_type"])
+    return dict(sorted(attributes.items()))
 
 
 def _build_entity(row: dict[str, Any]) -> Any:

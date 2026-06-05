@@ -23,6 +23,11 @@ import {
   type TypedEntityManager,
   type TypedRelationManager,
 } from "./manager.js";
+import {
+  TypedCodecError,
+  attributeToPlain,
+  plainToAttribute,
+} from "./codec.js";
 
 export type AttributeClass = (new (value: never) => Attribute<unknown, string>) & {
   readonly attrName: string;
@@ -162,6 +167,57 @@ export type InstanceFields<Schema extends Record<string, SchemaSpec>> = {
     : FieldValue<Schema[Key]>;
 };
 
+/**
+ * The plain primitive value corresponding to a schema field spec, used as the
+ * value type in the `toDict()` / `fromDict()` canonical dict shape.
+ *
+ * - `FieldSpec<Attr, false>` → the raw `.value` type of the attribute instance
+ * - `FieldSpec<Attr, true>` → raw `.value` type or `undefined` (optional field)
+ * - `ListFieldSpec<Attr, *>` → array of raw `.value` type (optional list is
+ *   included only when the list is non-empty; absent optional list is omitted)
+ *
+ * `RoleSpec` fields are deliberately excluded — `toDict`/`fromDict` are for
+ * attribute serialization only.
+ */
+export type PlainFieldValue<Spec> = Spec extends ListFieldSpec<infer Attr, boolean>
+  ? InstanceType<Attr>["value"][]
+  : Spec extends FieldSpec<infer Attr, boolean>
+    ? InstanceType<Attr>["value"]
+    : never;
+
+/**
+ * The schema-derived canonical plain dict type produced by `toDict()` and
+ * consumed by `fromDict()`. Each field key maps to its plain primitive (or
+ * plain-primitive array for list fields). Optional fields are marked `?` and
+ * are omitted from `toDict()` output when absent (mirroring Python's
+ * `model_dump(exclude_unset=...)` behaviour).
+ *
+ * This type is intentionally NOT `Record<string, unknown>` — it is fully
+ * derived from the schema so that indexing an unknown key is a type error.
+ *
+ * Required non-role attribute fields → required key with plain primitive type.
+ * Optional attribute fields → optional key (`?`) with plain primitive type.
+ * Role fields → excluded entirely (key maps to `never` via the `as` clause).
+ */
+export type InstanceDict<Schema extends Record<string, SchemaSpec>> =
+  // Required attribute field entries (non-optional, non-role):
+  {
+    readonly [Key in keyof Schema as Schema[Key] extends
+      | RoleSpec<readonly ModelToken[]>
+      | FieldSpec<AttributeClass, true>
+      | ListFieldSpec<AttributeClass, true>
+      ? never
+      : Key]: PlainFieldValue<Schema[Key]>;
+  } &
+  // Optional attribute field entries (optional flag):
+  {
+    readonly [Key in keyof Schema as Schema[Key] extends
+      | FieldSpec<AttributeClass, true>
+      | ListFieldSpec<AttributeClass, true>
+      ? Key
+      : never]?: PlainFieldValue<Schema[Key]>;
+  };
+
 type ConstructorInput<Schema extends Record<string, SchemaSpec>> = {
   readonly [Key in RequiredKeys<Schema>]: FieldValue<Schema[Key]>;
 } & {
@@ -182,28 +238,70 @@ type RequiredKeys<Schema extends Record<string, SchemaSpec>> = Exclude<
 >;
 
 type RoleValue<Players extends readonly ModelToken[]> =
-  | ModelInstance<Players[number]>
-  | readonly ModelInstance<Players[number]>[];
+  | RolePlayerInstance<Players[number]>
+  | readonly RolePlayerInstance<Players[number]>[];
 
-type ModelInstance<Token> = Token extends string
+type RolePlayerInstance<Token> = Token extends string
   ? never
   : Token extends new (values: never) => infer Instance
     ? Instance
     : never;
 
+/**
+ * The canonical hydrated-instance type for a model schema. This is the single
+ * source of truth for what `class X extends Entity(...) {}` produces AND what a
+ * manager's `get`/`all`/`first`/`insert`/hydrate paths return. Both surfaces
+ * reference this type so a manager-fetched instance is assignable to the user's
+ * model class — manager-hydrated instances are real `new modelClass(...)`
+ * instances, so they genuinely carry `toDict` at runtime.
+ *
+ * Shape: schema-derived fields, the `_iid` slot (`IidBearing`), and the
+ * precise `toDict(): InstanceDict<Schema>` serializer.
+ */
+export type ModelInstance<Schema extends Record<string, SchemaSpec>> =
+  InstanceFields<Schema> &
+    IidBearing & {
+      /**
+       * Serialize this typed instance to a canonical plain dict, byte-shape
+       * identical to Python `to_dict()` (`type_bridge/models/entity.py:291-335`).
+       *
+       * Each branded `Attribute` field is unwrapped to its plain primitive; list
+       * fields serialize to a plain array of primitives. Absent optional fields
+       * are omitted from the result (not included as `undefined`) — this mirrors
+       * Python `model_dump(exclude_unset=...)` + `_unwrap_value`.
+       *
+       * Return type: `InstanceDict<Schema>` — a schema-derived mapped type keyed
+       * by field name with plain primitive values. Indexing a non-schema key is a
+       * compile-time type error; the return is never `Record<string, any>`.
+       */
+      toDict(): InstanceDict<Schema>;
+    };
+
 export type ModelClass<
   Schema extends Record<string, SchemaSpec>,
   Descriptor extends EntityDescriptor | RelationDescriptor,
-> = (new (values: ConstructorInput<Schema>) => InstanceFields<Schema> & IidBearing) & {
+> = (new (values: ConstructorInput<Schema>) => ModelInstance<Schema>) & {
   readonly typeName: string;
   readonly schema: Schema;
   readonly flags: ResolvedTypeFlags;
   descriptor(): Descriptor;
+  /**
+   * Construct a typed instance from a canonical plain dict, mirroring Python
+   * `from_dict()` (`type_bridge/models/entity.py:337-378`).
+   *
+   * Each plain primitive (or array) is re-branded into a `Attribute` /
+   * `Attribute[]` using the field's attribute class constructor (`new
+   * attrType(value)`). The resulting values are passed to the model
+   * constructor. Runtime guards:
+   * - Unknown keys: throws `TypedCodecError` (strict mode).
+   * - Missing required fields: the constructor throws `TypeError`.
+   */
+  fromDict(data: InstanceDict<Schema>): ModelInstance<Schema>;
   manager(
     db: ManagerConnection,
   ): Descriptor extends EntityDescriptor
-    ? TypedEntityManager<InstanceFields<Schema> & IidBearing>
-    : TypedRelationManager<InstanceFields<Schema> & IidBearing>;
+    ? TypedEntityManager<ModelInstance<Schema>>
+    : TypedRelationManager<ModelInstance<Schema>>;
 };
 
 /** Declare an owned-attribute field on a model schema, with optional flags. */
@@ -334,12 +432,18 @@ function createModelClass(
         const spec = mergedSchema[key];
         const present = key in values;
         const optional =
+          spec instanceof RoleSpec ||
           (spec instanceof FieldSpec && spec.isOptional) ||
           (spec instanceof ListFieldSpec && spec.isOptional);
         // The constructor type already forbids omitting a required field, but
         // guard at runtime too: callers crossing an `any`/JS boundary bypass the
         // compile-time check, and a silent `undefined` would corrupt the
         // descriptor round-trip rather than fail loudly.
+        //
+        // RoleSpec fields are always treated as optional here: role players are
+        // a relation-level concern that fromDict() and attribute-only hydration
+        // paths legitimately leave unset. The manager's hydrateRelationGroup
+        // always populates them via hydrateRoleFields().
         if (!present && !optional) {
           throw new TypeError(`${flags.name ?? this.constructor.name}: missing required field "${key}"`);
         }
@@ -349,6 +453,70 @@ function createModelClass(
           writable: false,
         });
       }
+    }
+
+    /**
+     * Serialize this typed instance to the canonical plain dict.
+     * See `ModelClass.toDict()` for the full contract.
+     *
+     * The concrete body returns the structural `Record<string, unknown>` because
+     * the runtime walks `mergedSchema` dynamically; the precise
+     * `InstanceDict<Schema>` is recovered at the public boundary by
+     * `ModelInstance<Schema>` / `ModelClass`, which every caller sees. The
+     * widening is contained to this base class — callers never observe it.
+     */
+    toDict(): Record<string, unknown> {
+      const result: Record<string, unknown> = {};
+      const self = this as Record<string, unknown>;
+      for (const [key, spec] of Object.entries(mergedSchema)) {
+        if (spec instanceof RoleSpec) {
+          // Role fields are not serialized in the attribute dict.
+          continue;
+        }
+        const value = self[key];
+        if (value === undefined) {
+          // Absent optional field: omit entirely (mirrors Python exclude_unset).
+          continue;
+        }
+        if (spec instanceof ListFieldSpec) {
+          if (!Array.isArray(value)) {
+            throw new TypedCodecError(`List field "${key}" is not an array`);
+          }
+          result[key] = attributeToPlain(value as Attribute<unknown, string>[]);
+        } else {
+          result[key] = attributeToPlain(value as Attribute<unknown, string>);
+        }
+      }
+      return result;
+    }
+
+    static fromDict(data: Record<string, unknown>): TypedModel {
+      // Check for unknown keys (strict mode, mirrors Python from_dict strict=True).
+      for (const key of Object.keys(data)) {
+        if (!(key in mergedSchema) || mergedSchema[key] instanceof RoleSpec) {
+          throw new TypedCodecError(
+            `fromDict: unknown field "${key}" for ${this.typeName}`,
+          );
+        }
+      }
+
+      // Re-brand each plain value into a typed Attribute / Attribute[].
+      const values: Record<string, unknown> = {};
+      for (const [key, spec] of Object.entries(mergedSchema)) {
+        if (spec instanceof RoleSpec) {
+          continue;
+        }
+        const rawValue = (data as Record<string, unknown>)[key];
+        if (rawValue === undefined || rawValue === null) {
+          // Let the constructor handle missing required field detection.
+          continue;
+        }
+        const isList = spec instanceof ListFieldSpec;
+        values[key] = plainToAttribute(spec.attrType, rawValue, key, isList);
+      }
+
+      // Constructor throws TypeError on missing required fields (existing guard).
+      return new (this as unknown as new (values: Record<string, unknown>) => TypedModel)(values);
     }
 
     static descriptor(): EntityDescriptor | RelationDescriptor {
