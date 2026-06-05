@@ -80,6 +80,11 @@ def register_model_descriptor(model_cls: type[TypeDBType]) -> dict[str, Any]:
     )
 
 
+def model_schema_info() -> dict[str, Any]:
+    """Schema-IR view of the registered models for the migration diff/introspection path."""
+    return descriptor_registry().schema_info()
+
+
 def _register_or_project_descriptor(
     descriptor: dict[str, Any],
     *,

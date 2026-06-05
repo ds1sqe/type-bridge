@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::attribute::ValueType;
+use crate::descriptor::{OwnedAttributeDescriptor, TypeDescriptor};
 use crate::entity::Annotation;
 
 use super::diff::SchemaDiff;
@@ -107,6 +108,62 @@ pub struct SchemaInfo {
 }
 
 impl SchemaInfo {
+    /// Bridge the CRUD-facing descriptor IR into the migration-facing schema IR.
+    ///
+    /// Descriptors are what Python models register for CRUD; the diff and
+    /// breaking-change engine reads `SchemaInfo`. This constructor is the only
+    /// crossing between the two — there is no second schema engine. A relation
+    /// role carrying several player types is expanded to one `RoleEntry` per
+    /// player, mirroring how `register_relation` records roles.
+    pub fn from_descriptors(descriptors: &[TypeDescriptor]) -> Self {
+        let mut info = Self::default();
+
+        for descriptor in descriptors {
+            match descriptor {
+                TypeDescriptor::Entity(entity) => {
+                    register_attribute_types(&mut info, &entity.owned_attributes);
+                    info.entities.insert(
+                        entity.type_name.clone(),
+                        EntitySchemaEntry {
+                            type_name: entity.type_name.clone(),
+                            is_abstract: entity.is_abstract,
+                            parent_type: entity.parent_type.clone(),
+                            owned_attributes: owned_attribute_entries(&entity.owned_attributes),
+                        },
+                    );
+                }
+                TypeDescriptor::Relation(relation) => {
+                    register_attribute_types(&mut info, &relation.owned_attributes);
+                    let roles = relation
+                        .roles
+                        .iter()
+                        .flat_map(|role| {
+                            role.player_type_names
+                                .iter()
+                                .map(|player_type_name| RoleEntry {
+                                    role_name: role.role_name.clone(),
+                                    player_type_name: player_type_name.clone(),
+                                })
+                        })
+                        .collect();
+
+                    info.relations.insert(
+                        relation.type_name.clone(),
+                        RelationSchemaEntry {
+                            type_name: relation.type_name.clone(),
+                            is_abstract: relation.is_abstract,
+                            parent_type: relation.parent_type.clone(),
+                            owned_attributes: owned_attribute_entries(&relation.owned_attributes),
+                            roles,
+                        },
+                    );
+                }
+            }
+        }
+
+        info
+    }
+
     /// Look up an entity by name.
     pub fn get_entity_by_name(&self, name: &str) -> Option<&EntitySchemaEntry> {
         self.entities.get(name)
@@ -152,9 +209,38 @@ impl SchemaInfo {
     }
 }
 
+fn owned_attribute_entries(attributes: &[OwnedAttributeDescriptor]) -> Vec<OwnedAttributeEntry> {
+    attributes
+        .iter()
+        .map(|attr| {
+            // Python descriptors emit scalar optionality as `Annotation::Card(0, Some(1))`.
+            // `is_optional` remains descriptor-only dynamic-manager metadata.
+            OwnedAttributeEntry {
+                attr_name: attr.attr_name.clone(),
+                value_type: attr.value_type,
+                annotations: attr.annotations.clone(),
+            }
+        })
+        .collect()
+}
+
+fn register_attribute_types(info: &mut SchemaInfo, attributes: &[OwnedAttributeDescriptor]) {
+    for attr in attributes {
+        info.attributes
+            .entry(attr.attr_name.clone())
+            .or_insert(AttributeSchemaEntry {
+                attr_name: attr.attr_name.clone(),
+                value_type: attr.value_type,
+            });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::descriptor::{
+        EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
+    };
 
     #[test]
     fn schema_info_empty() {
@@ -302,5 +388,124 @@ mod tests {
             info.entities.get("person").unwrap().owned_attributes,
             parsed.entities.get("person").unwrap().owned_attributes,
         );
+    }
+
+    #[test]
+    fn from_descriptors_lowers_entities_relations_roles_and_attribute_side_map() {
+        let descriptors = vec![
+            TypeDescriptor::Entity(EntityDescriptor {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: Some("thing".into()),
+                owned_attributes: vec![OwnedAttributeDescriptor {
+                    field_name: "name".into(),
+                    attr_name: "name".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Key],
+                    is_optional: false,
+                }],
+            }),
+            TypeDescriptor::Relation(RelationDescriptor {
+                type_name: "employment".into(),
+                is_abstract: true,
+                parent_type: Some("contract".into()),
+                owned_attributes: vec![OwnedAttributeDescriptor {
+                    field_name: "since".into(),
+                    attr_name: "since".into(),
+                    value_type: ValueType::Date,
+                    annotations: vec![],
+                    is_optional: false,
+                }],
+                roles: vec![RoleDescriptor {
+                    role_name: "participant".into(),
+                    player_type_names: vec!["person".into(), "company".into()],
+                    cardinality: Some((1, Some(2))),
+                }],
+            }),
+        ];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        assert_eq!(
+            info.entities.get("person"),
+            Some(&EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: Some("thing".into()),
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "name".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Key],
+                }],
+            })
+        );
+        assert_eq!(
+            info.relations.get("employment"),
+            Some(&RelationSchemaEntry {
+                type_name: "employment".into(),
+                is_abstract: true,
+                parent_type: Some("contract".into()),
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "since".into(),
+                    value_type: ValueType::Date,
+                    annotations: vec![],
+                }],
+                roles: vec![
+                    RoleEntry {
+                        role_name: "participant".into(),
+                        player_type_name: "person".into(),
+                    },
+                    RoleEntry {
+                        role_name: "participant".into(),
+                        player_type_name: "company".into(),
+                    },
+                ],
+            })
+        );
+        assert_eq!(
+            info.attributes.get("name"),
+            Some(&AttributeSchemaEntry {
+                attr_name: "name".into(),
+                value_type: ValueType::String,
+            })
+        );
+        assert_eq!(
+            info.attributes.get("since"),
+            Some(&AttributeSchemaEntry {
+                attr_name: "since".into(),
+                value_type: ValueType::Date,
+            })
+        );
+    }
+
+    #[test]
+    fn from_descriptors_preserves_cardinality_annotation_for_optional_attributes() {
+        let descriptors = vec![TypeDescriptor::Entity(EntityDescriptor {
+            type_name: "person".into(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![OwnedAttributeDescriptor {
+                field_name: "age".into(),
+                attr_name: "age".into(),
+                value_type: ValueType::Long,
+                annotations: vec![Annotation::Card(0, Some(1))],
+                is_optional: true,
+            }],
+        })];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+        let attr = &info.entities["person"].owned_attributes[0];
+
+        assert_eq!(attr.annotations, vec![Annotation::Card(0, Some(1))]);
+        assert_eq!(attr.flags_string(), "@card(0..1)");
+    }
+
+    #[test]
+    fn from_descriptors_empty_yields_empty_schema() {
+        let info = SchemaInfo::from_descriptors(&[]);
+
+        assert!(info.entities.is_empty());
+        assert!(info.relations.is_empty());
+        assert!(info.attributes.is_empty());
     }
 }

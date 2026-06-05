@@ -16,7 +16,7 @@ use type_bridge_orm::{
     AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
     DynamicEntityManager, DynamicEntityRow, DynamicExpr, DynamicRelationManager,
     DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, EntityDescriptor, Filter, OrmError,
-    RelationDescriptor, SortDir, TransactionContext, TxType, ValueType,
+    RelationDescriptor, SchemaInfo, SortDir, TransactionContext, TxType, ValueType,
 };
 
 /// Python-facing descriptor registry wrapper.
@@ -84,6 +84,14 @@ impl PyDescriptorRegistry {
     /// Return a sorted snapshot of all registered descriptors.
     fn snapshot(&self, py: Python<'_>) -> PyResult<PyObject> {
         pythonize(py, &self.inner.snapshot())
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
+    /// Expose the registered models as migration-facing `SchemaInfo` for the
+    /// Python diff / breaking-change path, mirroring `snapshot`'s descriptor view.
+    fn schema_info(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pythonize(py, &SchemaInfo::from_descriptors(&self.inner.snapshot()))
             .map(|obj| obj.unbind())
             .map_err(|error| py_value_error(error.to_string()))
     }
