@@ -348,6 +348,17 @@ def migration_runner_for(connection: Any) -> Any:
     return rust_core().PyMigrationRunner(rust_database_for(connection))
 
 
+def state_manager_for(connection: Any) -> Any:
+    """Return a PyMigrationStateManager bound to the Rust database.
+
+    Resolves the unconfigured default migration-state backend to the
+    TypeDB-backed manager built from the live `PyRustDatabase`, sharing the
+    connection's `Arc<Database>` and `Arc<Runtime>` — the same default path as
+    `migration_runner_for`.
+    """
+    return rust_core().PyMigrationStateManager(rust_database_for(connection))
+
+
 def rust_transaction_for(connection: Any) -> Any | None:
     """Return the Rust transaction adapter for a Python TransactionContext."""
     from type_bridge.session import TransactionContext

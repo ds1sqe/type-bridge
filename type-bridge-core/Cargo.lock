@@ -2332,6 +2332,7 @@ dependencies = [
 name = "type-bridge-migration"
 version = "1.4.5"
 dependencies = [
+ "chrono",
  "clap",
  "serde",
  "serde_json",

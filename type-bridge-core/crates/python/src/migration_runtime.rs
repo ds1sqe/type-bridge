@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 use pythonize::{depythonize, pythonize};
 use tokio::runtime::Runtime;
 use type_bridge_migration::{
-    AppliedMigrationRecord, MigrationGraph, MigrationSpec, check_checksum_drift, execute_plan,
-    migration_file_checksum, plan, validate_graph,
+    AppliedMigrationRecord, MigrationGraph, MigrationSpec, MigrationStateStore, TypeDbStateStore,
+    check_checksum_drift, execute_plan, migration_file_checksum, plan, validate_graph,
 };
 
 use crate::orm_runtime::PyRustDatabase;
@@ -168,6 +168,79 @@ fn migration_runner(db: &PyRustDatabase) -> PyMigrationRunner {
     PyMigrationRunner::new(db)
 }
 
+/// Rust-owned migration applied-state manager bound to a live `PyRustDatabase`.
+///
+/// Wraps a [`TypeDbStateStore`] over the SAME `Arc<Database>` and `Arc<Runtime>`
+/// the rest of the Rust ORM path uses (mirroring [`PyMigrationRunner`]). Every
+/// method `block_on`s the shared runtime; no raw Python transaction crosses this
+/// boundary (invariant 4) — only serde dicts and scalar strings do.
+#[pyclass]
+pub struct PyMigrationStateManager {
+    store: Arc<TypeDbStateStore>,
+    runtime: Arc<Runtime>,
+}
+
+#[pymethods]
+impl PyMigrationStateManager {
+    /// Build a state manager from a `PyRustDatabase`, sharing its handles.
+    #[new]
+    fn new(db: &PyRustDatabase) -> Self {
+        let (db, runtime) = db.handles();
+        Self {
+            store: Arc::new(TypeDbStateStore::new(db)),
+            runtime,
+        }
+    }
+
+    /// Ensure the `type_bridge_migration` schema exists (idempotent).
+    fn ensure_schema(&self) -> PyResult<()> {
+        self.runtime
+            .block_on(self.store.ensure_schema())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
+    /// Load all applied migration records as a list of dicts.
+    ///
+    /// Each dict carries `app_label`, `name`, `checksum`, and `applied_at`
+    /// (the last possibly `None`) — the serde shape of `AppliedMigrationRecord`.
+    fn load_applied(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let records = self
+            .runtime
+            .block_on(self.store.load_applied())
+            .map_err(|error| py_value_error(error.to_string()))?;
+        pythonize(py, &records)
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
+    /// Record a migration as applied.
+    ///
+    /// Accepts a serialized `AppliedMigrationRecord` dict. When `applied_at` is
+    /// absent or `None`, Rust stamps the current UTC time in the
+    /// Python-compatible `%Y-%m-%dT%H:%M:%S.%f` format.
+    fn record_applied(&self, record: Bound<'_, PyAny>) -> PyResult<()> {
+        let record: AppliedMigrationRecord = depythonize(&record).map_err(|error| {
+            py_value_error(format!("Invalid applied migration record: {error}"))
+        })?;
+        self.runtime
+            .block_on(self.store.record_applied(record))
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
+    /// Remove the applied record identified by `(app_label, name)`.
+    fn record_unapplied(&self, app_label: &str, name: &str) -> PyResult<()> {
+        self.runtime
+            .block_on(self.store.record_unapplied(app_label, name))
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+}
+
+/// Construct a `PyMigrationStateManager` bound to a `PyRustDatabase`.
+#[pyfunction]
+fn migration_state_manager(db: &PyRustDatabase) -> PyMigrationStateManager {
+    PyMigrationStateManager::new(db)
+}
+
 fn depythonize_applied_records(
     applied_records: Option<Bound<'_, PyAny>>,
 ) -> PyResult<Vec<AppliedMigrationRecord>> {
@@ -201,6 +274,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate_migration_graph, m)?)?;
     m.add_function(wrap_pyfunction!(check_migration_drift, m)?)?;
     m.add_function(wrap_pyfunction!(migration_runner, m)?)?;
+    m.add_function(wrap_pyfunction!(migration_state_manager, m)?)?;
     m.add_class::<PyMigrationRunner>()?;
+    m.add_class::<PyMigrationStateManager>()?;
     Ok(())
 }

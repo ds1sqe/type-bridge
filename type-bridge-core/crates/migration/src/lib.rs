@@ -12,6 +12,7 @@ pub mod executor;
 pub mod graph;
 pub mod plan;
 pub mod spec;
+pub mod state;
 
 #[cfg(test)]
 pub(crate) mod testing;
@@ -24,3 +25,4 @@ pub use executor::{MigrationResult, execute_plan};
 pub use graph::{AppliedMigrationRecord, MigrationValidationError, ValidationCode, validate_graph};
 pub use plan::{ExecutionPlan, ExecutionStep, MigrationAction, MigrationExecution, plan};
 pub use spec::{MigrationDependencySpec, MigrationGraph, MigrationSpec, OperationSpec};
+pub use state::{InMemoryStateStore, MigrationStateStore, TypeDbStateStore};

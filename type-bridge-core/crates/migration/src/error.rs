@@ -60,4 +60,15 @@ pub enum MigrationError {
         /// Human-readable error message.
         message: String,
     },
+    /// An applied-state storage operation failed at the ORM seam.
+    ///
+    /// Carries the ORM-layer failure (connection, transaction, or query
+    /// execution) reworded for the migration error hierarchy. Raised by the
+    /// TypeDB-backed [`MigrationStateStore`](crate::state::MigrationStateStore)
+    /// when a state read or write cannot complete.
+    #[error("migration state storage error: {message}")]
+    State {
+        /// Human-readable error message describing the storage failure.
+        message: String,
+    },
 }

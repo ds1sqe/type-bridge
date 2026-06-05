@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from type_bridge.session import Database
@@ -97,7 +97,12 @@ class MigrationState:
 class MigrationStateManager:
     """Manages migration state in TypeDB.
 
-    State is stored in TypeDB as type_bridge_migration entities.
+    State is stored in TypeDB as type_bridge_migration entities. The storage
+    mechanism — schema bootstrap, the applied-state read, and the
+    record/unrecord writes — lives in Rust behind the ``MigrationStateStore``
+    seam; this class is a thin facade that delegates to a Rust-owned
+    ``PyMigrationStateManager`` and assembles the ``MigrationState`` /
+    ``MigrationRecord`` dataclasses Python callers consume.
 
     Example:
         manager = MigrationStateManager(db)
@@ -118,55 +123,28 @@ class MigrationStateManager:
         """
         self.db = db
         self._state: MigrationState | None = None
-        self._schema_ensured = False
+        self._rust_manager: Any = None
+
+    @property
+    def _manager(self) -> Any:
+        """Return the Rust state manager, building it on first use.
+
+        Built lazily so subclasses that bypass ``__init__`` (e.g. test doubles
+        overriding ``load_state``) never trigger a Rust connection.
+        """
+        if self._rust_manager is None:
+            from type_bridge._rust_runtime import state_manager_for
+
+            self._rust_manager = state_manager_for(self.db)
+        return self._rust_manager
 
     def ensure_schema(self) -> None:
-        """Ensure migration tracking schema exists in TypeDB.
+        """Ensure the migration tracking schema exists in TypeDB.
 
-        Creates the type_bridge_migration entity type if it doesn't exist.
+        Idempotent: the Rust state store no-ops when the schema is already
+        ensured, so no second Python-side latch is kept here.
         """
-        if self._schema_ensured:
-            return
-
-        # Check if entity type exists
-        check_query = f"""
-            match $t type {self.ENTITY_NAME};
-            fetch {{ "exists": true }};
-        """
-
-        try:
-            with self.db.transaction("read") as tx:
-                results = list(tx.execute(check_query))
-                if results:
-                    self._schema_ensured = True
-                    return
-        except Exception:
-            # Type doesn't exist, will create it
-            pass
-
-        # Create migration tracking schema
-        # Use composite key (app_label:name) since TypeDB 3.x @key requires unique ownership
-        schema = f"""define
-attribute migration_id, value string;
-attribute migration_app_label, value string;
-attribute migration_name, value string;
-attribute migration_applied_at, value datetime;
-attribute migration_checksum, value string;
-
-entity {self.ENTITY_NAME},
-    owns migration_id @key,
-    owns migration_app_label,
-    owns migration_name,
-    owns migration_applied_at,
-    owns migration_checksum;
-"""
-
-        logger.info("Creating migration tracking schema")
-        with self.db.transaction("schema") as tx:
-            tx.execute(schema)
-            tx.commit()
-
-        self._schema_ensured = True
+        self._manager.ensure_schema()
 
     def load_state(self) -> MigrationState:
         """Load migration state from TypeDB.
@@ -176,65 +154,23 @@ entity {self.ENTITY_NAME},
         """
         self.ensure_schema()
 
-        query = f"""
-match
-$m isa {self.ENTITY_NAME},
-    has migration_app_label $app,
-    has migration_name $name,
-    has migration_applied_at $applied,
-    has migration_checksum $checksum;
-fetch {{
-    "app": $app,
-    "name": $name,
-    "applied": $applied,
-    "checksum": $checksum
-}};
-"""
-
         state = MigrationState()
-
-        try:
-            with self.db.transaction("read") as tx:
-                results = tx.execute(query)
-                for result in results:
-                    # Handle TypeDB result format
-                    app = self._extract_value(result, "app")
-                    name = self._extract_value(result, "name")
-                    applied = self._extract_value(result, "applied")
-                    checksum = self._extract_value(result, "checksum")
-
-                    if all([app, name, applied, checksum]):
-                        state.add(
-                            MigrationRecord(
-                                app_label=str(app),
-                                name=str(name),
-                                applied_at=str(applied),
-                                checksum=str(checksum),
-                            )
-                        )
-        except Exception as e:
-            logger.warning(f"Failed to load migration state from TypeDB: {e}")
+        # Let a real backend error surface; ensure_schema() above guarantees the
+        # store exists, so load_applied returns [] (not an error) on first run.
+        # Swallowing here would silently mask a Rust-side failure as empty state.
+        for row in self._manager.load_applied():
+            applied = row.get("applied_at")
+            state.add(
+                MigrationRecord(
+                    app_label=str(row["app_label"]),
+                    name=str(row["name"]),
+                    applied_at="" if applied is None else str(applied),
+                    checksum=str(row["checksum"]),
+                )
+            )
 
         self._state = state
         return state
-
-    def _extract_value(self, result: dict, key: str) -> str | None:
-        """Extract value from TypeDB fetch result.
-
-        Args:
-            result: Fetch result dictionary
-            key: Key to extract
-
-        Returns:
-            Extracted value or None
-        """
-        value = result.get(key)
-        if value is None:
-            return None
-        # Handle different result formats
-        if isinstance(value, dict):
-            return value.get("value")
-        return str(value)
 
     def record_applied(self, app_label: str, name: str, checksum: str) -> None:
         """Record that a migration was applied.
@@ -249,19 +185,14 @@ fetch {{
         applied_at = datetime.now(UTC)
         applied_at_str = applied_at.strftime("%Y-%m-%dT%H:%M:%S.%f")
 
-        migration_id = f"{app_label}:{name}"
-        query = f"""
-insert $m isa {self.ENTITY_NAME},
-    has migration_id "{migration_id}",
-    has migration_app_label "{app_label}",
-    has migration_name "{name}",
-    has migration_applied_at {applied_at_str},
-    has migration_checksum "{checksum}";
-"""
-
-        with self.db.transaction("write") as tx:
-            tx.execute(query)
-            tx.commit()
+        self._manager.record_applied(
+            {
+                "app_label": app_label,
+                "name": name,
+                "checksum": checksum,
+                "applied_at": applied_at_str,
+            }
+        )
 
         logger.info(f"Recorded migration: {app_label}.{name}")
 
@@ -285,17 +216,7 @@ insert $m isa {self.ENTITY_NAME},
         """
         self.ensure_schema()
 
-        query = f"""
-match
-$m isa {self.ENTITY_NAME},
-    has migration_app_label "{app_label}",
-    has migration_name "{name}";
-delete $m isa {self.ENTITY_NAME};
-"""
-
-        with self.db.transaction("write") as tx:
-            tx.execute(query)
-            tx.commit()
+        self._manager.record_unapplied(app_label, name)
 
         logger.info(f"Removed migration record: {app_label}.{name}")
 
