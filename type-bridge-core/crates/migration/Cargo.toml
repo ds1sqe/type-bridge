@@ -1,0 +1,27 @@
+[package]
+name = "type-bridge-migration"
+version = "1.4.5"
+edition = "2024"
+description = "Migration IR and planning substrate for type-bridge"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "type_bridge_migration"
+path = "src/lib.rs"
+
+[[bin]]
+name = "type-bridge-migration"
+path = "src/bin/type_bridge_migration.rs"
+
+[dependencies]
+type-bridge-orm = { path = "../orm", version = "1.4.5", default-features = false }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2"
+
+[lints]
+workspace = true

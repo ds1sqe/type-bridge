@@ -6,13 +6,13 @@ Migration files must follow the naming convention: NNNN_name.py (e.g., 0001_init
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import logging
 import types
 from dataclasses import dataclass
 from pathlib import Path
 
+from type_bridge import _rust_runtime
 from type_bridge.migration.base import Migration
 
 logger = logging.getLogger(__name__)
@@ -131,9 +131,8 @@ class MigrationLoader:
         """
         logger.debug(f"Loading migration: {path}")
 
-        # Calculate checksum
         content = path.read_text()
-        checksum = hashlib.sha256(content.encode()).hexdigest()[:16]
+        checksum = _rust_runtime.migration_file_checksum(content)
 
         # Load module dynamically
         module_name = f"migration_{path.stem}"
@@ -215,18 +214,8 @@ class MigrationLoader:
         Returns:
             List of error messages (empty if valid)
         """
-        migrations = self.discover()
-        errors: list[str] = []
+        from type_bridge.migration._lower import lower_migration_graph
 
-        # Build set of available migrations
-        available = {(m.migration.app_label, m.migration.name) for m in migrations}
-
-        for loaded in migrations:
-            for dep_app, dep_name in loaded.migration.dependencies:
-                if (dep_app, dep_name) not in available:
-                    errors.append(
-                        f"Migration {loaded.migration.name} depends on "
-                        f"{dep_app}.{dep_name} which does not exist"
-                    )
-
-        return errors
+        graph = lower_migration_graph(self.discover())
+        errors = _rust_runtime.validate_migration_graph(graph)
+        return [str(error["message"]) for error in errors]

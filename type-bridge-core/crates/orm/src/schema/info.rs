@@ -100,7 +100,7 @@ pub struct AttributeSchemaEntry {
 }
 
 /// Complete schema information extracted from registered models.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaInfo {
     /// Registered entity types, keyed by type name.
     pub entities: BTreeMap<String, EntitySchemaEntry>,

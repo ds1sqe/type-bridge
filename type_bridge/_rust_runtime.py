@@ -105,6 +105,57 @@ def generate_define_block(info: dict[str, Any]) -> str:
     return rust_core().generate_define_block(info)
 
 
+def normalize_migration_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a migration spec dict through Rust serde."""
+    return rust_core().normalize_migration_spec(spec)
+
+
+def normalize_migration_graph(graph: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a migration graph dict through Rust serde."""
+    return rust_core().normalize_migration_graph(graph)
+
+
+def migration_spec_to_json(spec: dict[str, Any]) -> str:
+    """Serialize a migration spec dict through Rust serde."""
+    return rust_core().migration_spec_to_json(spec)
+
+
+def migration_spec_from_json(json: str) -> dict[str, Any]:
+    """Deserialize a migration spec JSON string through Rust serde."""
+    return rust_core().migration_spec_from_json(json)
+
+
+def migration_graph_to_json(graph: dict[str, Any]) -> str:
+    """Serialize a migration graph dict through Rust serde."""
+    return rust_core().migration_graph_to_json(graph)
+
+
+def migration_graph_from_json(json: str) -> dict[str, Any]:
+    """Deserialize a migration graph JSON string through Rust serde."""
+    return rust_core().migration_graph_from_json(json)
+
+
+def migration_file_checksum(content: str) -> str:
+    """Calculate the migration-file checksum through Rust."""
+    return rust_core().calculate_migration_file_checksum(content)
+
+
+def validate_migration_graph(
+    graph: dict[str, Any],
+    applied_records: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Validate a migration graph through Rust."""
+    return rust_core().validate_migration_graph(graph, applied_records)
+
+
+def check_migration_drift(
+    graph: dict[str, Any],
+    applied_records: list[dict[str, Any]],
+) -> None:
+    """Fail if applied migration checksums drifted from the loaded graph."""
+    rust_core().check_migration_drift(graph, applied_records)
+
+
 def introspect_schema(connection: Any) -> dict[str, Any]:
     """Introspect the live TypeDB schema through the Rust schema manager."""
     return rust_database_for(connection).introspect_schema()

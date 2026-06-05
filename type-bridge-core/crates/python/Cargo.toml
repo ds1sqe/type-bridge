@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "1.4.5" }
+type-bridge-migration = { path = "../migration", version = "1.4.5" }
 type-bridge-orm = { path = "../orm", version = "1.4.5" }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 pythonize = "0.23"

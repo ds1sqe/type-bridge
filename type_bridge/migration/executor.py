@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from type_bridge import _rust_runtime
 from type_bridge.migration.base import Migration
 from type_bridge.migration.loader import LoadedMigration, MigrationLoader
 from type_bridge.migration.schema_manager import SchemaManager
-from type_bridge.migration.state import MigrationState, MigrationStateManager
+from type_bridge.migration.state import MigrationRecord, MigrationState, MigrationStateManager
 
 if TYPE_CHECKING:
     from type_bridge.session import Database
@@ -121,6 +122,7 @@ class MigrationExecutor:
         """
         state = self.state_manager.load_state()
         all_migrations = self.loader.discover()
+        self._preflight_migrations(all_migrations, state)
         plan = self._create_plan(state, all_migrations, target)
 
         if plan.is_empty():
@@ -247,6 +249,25 @@ class MigrationExecutor:
             to_rollback.reverse()
 
         return MigrationPlan(to_apply=to_apply, to_rollback=to_rollback)
+
+    def _preflight_migrations(
+        self,
+        all_migrations: list[LoadedMigration],
+        state: MigrationState,
+    ) -> None:
+        """Validate graph and checksum drift before any migration step runs."""
+        from type_bridge.migration._lower import lower_migration_graph
+
+        graph = lower_migration_graph(all_migrations)
+        applied_records = [_applied_record_dict(record) for record in state.applied]
+        errors = _rust_runtime.validate_migration_graph(graph, applied_records)
+        if errors:
+            messages = [str(error["message"]) for error in errors]
+            raise MigrationError("Migration graph validation failed: " + "; ".join(messages))
+        try:
+            _rust_runtime.check_migration_drift(graph, applied_records)
+        except ValueError as exc:
+            raise MigrationError(f"Migration checksum drift detected: {exc}") from exc
 
     def _apply_one(self, loaded: LoadedMigration) -> MigrationResult:
         """Apply a single migration.
@@ -449,3 +470,12 @@ class MigrationExecutor:
             return None
 
         return "\n\n".join(statements)
+
+
+def _applied_record_dict(record: MigrationRecord) -> dict[str, str]:
+    return {
+        "app_label": record.app_label,
+        "name": record.name,
+        "checksum": record.checksum,
+        "applied_at": record.applied_at,
+    }
