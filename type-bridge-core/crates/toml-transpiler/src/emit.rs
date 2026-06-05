@@ -28,11 +28,16 @@ fn owns_parts(entry: &TomlOwns) -> (&str, bool, bool, Option<&str>) {
 /// ...
 /// relation <name>[@abstract | sub <parent>][, relates <r>[@ card(m..n)], owns <a>[@key|...]];
 /// ...
+/// <signature>:
+/// <body>
+/// ...
+/// struct <name>, value <f> <t>[?], ...;
+/// ...
 /// ```
 ///
 /// Declaration order within each section matches TOML document order (preserved
 /// by [`indexmap::IndexMap`]).  Sections appear in the fixed order: attributes,
-/// entities, relations.
+/// entities, relations, functions, structs.
 pub fn emit(schema: &TomlSchema) -> String {
     let mut out = String::from("define\n");
 
@@ -163,6 +168,43 @@ pub fn emit(schema: &TomlSchema) -> String {
             out.push_str(&format!("{};\n", head));
         } else {
             out.push_str(&format!("{}, {};\n", head, clauses.join(", ")));
+        }
+    }
+
+    // --- functions ---
+    //
+    // Each function emits as `<signature>:\n<body>\n`.
+    // The emitter owns the `:` separator — `signature` carries NO trailing colon.
+    // The body string is written verbatim (no parsing by the transpiler).
+    for (_name, func) in &schema.functions {
+        out.push_str(&func.signature);
+        out.push_str(":\n");
+        out.push_str(&func.body);
+        out.push('\n');
+    }
+
+    // --- structs ---
+    //
+    // Each struct emits as `struct <name>, value <f> <t>[?], ...;`.
+    // A `?` suffix is appended to the type name when the field is optional.
+    // A struct with zero fields emits `struct <name>;` best-effort; downstream
+    // parsing will surface the error (the parser requires at least one field).
+    for (name, s) in &schema.structs {
+        if s.fields.is_empty() {
+            out.push_str(&format!("struct {};\n", name));
+        } else {
+            let field_clauses: Vec<String> = s
+                .fields
+                .iter()
+                .map(|f| {
+                    if f.optional {
+                        format!("value {} {}?", f.name, f.value_type)
+                    } else {
+                        format!("value {} {}", f.name, f.value_type)
+                    }
+                })
+                .collect();
+            out.push_str(&format!("struct {}, {};\n", name, field_clauses.join(", ")));
         }
     }
 
@@ -460,6 +502,172 @@ roles = [{ name = "author", as = "contributor" }]
         assert!(
             result.contains("relates author as contributor"),
             "expected `relates author as contributor`; got:\n{result}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Function and struct emission
+    // -------------------------------------------------------------------------
+
+    /// A stream-return function emits `<signature>:\n<body>` — the emitter
+    /// appends `:` and the body is written verbatim.
+    #[test]
+    fn test_emit_function_passthrough() {
+        let toml_text = r#"
+[functions.f]
+signature = "fun f($x: user) -> { book }"
+body = "  match $x isa user;\n  return { $b };"
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        // The emitter must append `:` immediately after the signature.
+        assert!(
+            result.contains("fun f($x: user) -> { book }:"),
+            "output must contain the signature with emitter-appended colon; got:\n{result}"
+        );
+        // The verbatim body must be present.
+        assert!(
+            result.contains("return"),
+            "output must contain the verbatim body with `return`; got:\n{result}"
+        );
+        assert!(
+            result.contains(';'),
+            "output must contain the trailing `;` from the body; got:\n{result}"
+        );
+    }
+
+    /// A scalar-return function (`-> double`, no braces) emits with the
+    /// emitter-appended `:` as well.
+    #[test]
+    fn test_emit_function_scalar_return() {
+        let toml_text = r#"
+[functions.best-price]
+signature = "fun best-price($line: order-line) -> double"
+body = "  match $line has price $p;\n  return max($p);"
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("fun best-price($line: order-line) -> double:"),
+            "scalar-return signature must have the emitter-appended colon; got:\n{result}"
+        );
+    }
+
+    /// Two non-optional struct fields emit as
+    /// `struct person-name, value first-name string, value last-name string;`.
+    #[test]
+    fn test_emit_struct_basic() {
+        let toml_text = r#"
+[structs.person-name]
+fields = [
+    { name = "first-name", type = "string" },
+    { name = "last-name", type = "string" },
+]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("struct person-name, value first-name string, value last-name string;"),
+            "expected two-field struct declaration; got:\n{result}"
+        );
+    }
+
+    /// An optional struct field emits a `?` suffix on the type name.
+    #[test]
+    fn test_emit_struct_optional_field() {
+        let toml_text = r#"
+[structs.name]
+fields = [
+    { name = "first", type = "string" },
+    { name = "m", type = "t", optional = true },
+]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("value m t?"),
+            "optional field must emit `<type>?` suffix; got:\n{result}"
+        );
+        assert!(
+            !result.contains("value first string?"),
+            "non-optional field must not emit `?`; got:\n{result}"
+        );
+    }
+
+    /// A TOML without `[functions]` or `[structs]` sections deserializes and
+    /// emits without any function or struct lines — back-compat with 01/02/03 fixtures.
+    #[test]
+    fn test_functions_structs_default_absent() {
+        let toml_text = r#"
+[attributes.name]
+value = "string"
+
+[entities.person]
+owns = ["name"]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            !result.contains("fun "),
+            "output must contain no function declarations; got:\n{result}"
+        );
+        assert!(
+            !result.contains("struct "),
+            "output must contain no struct declarations; got:\n{result}"
+        );
+        // The existing attribute and entity declarations must still be present.
+        assert!(
+            result.contains("attribute name, value string;"),
+            "attribute declaration must still emit; got:\n{result}"
+        );
+        assert!(
+            result.contains("entity person, owns name;"),
+            "entity declaration must still emit; got:\n{result}"
+        );
+    }
+
+    /// Integration smoke: a TOML with one function and one struct feeds through
+    /// `toml_to_typeql` end-to-end — the output contains the function head with
+    /// the emitter-appended `:`, the verbatim body, and the struct line.
+    #[test]
+    fn test_emit_p0_functions_structs_smoke() {
+        let toml_text = r#"
+[attributes.name]
+value = "string"
+
+[entities.user]
+owns = ["name"]
+
+[functions.count-users]
+signature = "fun count-users($u: user) -> { integer }"
+body = "  match $u isa user;\n  return { 1 };"
+
+[structs.person-name]
+fields = [
+    { name = "first-name", type = "string" },
+    { name = "middle-name", type = "string", optional = true },
+    { name = "last-name", type = "string" },
+]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+
+        // Function: signature + emitter-appended colon
+        assert!(
+            result.contains("fun count-users($u: user) -> { integer }:"),
+            "function head must carry the emitter-appended colon; got:\n{result}"
+        );
+        // Function: verbatim body contains `return`
+        assert!(
+            result.contains("return"),
+            "verbatim body must contain `return`; got:\n{result}"
+        );
+        // Struct: standard two-field form + optional field with `?`
+        assert!(
+            result.contains("struct person-name,"),
+            "struct declaration must be present; got:\n{result}"
+        );
+        assert!(
+            result.contains("value middle-name string?"),
+            "optional struct field must emit `<type>?`; got:\n{result}"
+        );
+        assert!(
+            result.contains("value first-name string"),
+            "non-optional struct field must emit without `?`; got:\n{result}"
         );
     }
 

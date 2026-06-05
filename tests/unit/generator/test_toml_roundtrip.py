@@ -559,3 +559,150 @@ class TestAnnotationInheritanceRoundtrip:
                 f"--- TOML output ({filename}) ---\n{toml_content}\n"
                 f"--- TQL output ({filename}) ---\n{tql_content}\n"
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: functions + structs round-trip equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestFunctionsStructsRoundtrip:
+    """Round-trip equivalence for the functions and structs fixture.
+
+    Reuses ``assert_roundtrip_equivalent`` (unchanged from 01) to assert that
+    ``functions_structs.toml`` and its hand-written TQL mirror parse to
+    structurally-equivalent IR.  Adds focused assertions on function parameters,
+    return type (stream vs scalar), struct fields, and the optional field.
+
+    Also verifies the body-discard invariant: ``FunctionSpec`` carries no body
+    field regardless of which source (TOML or TQL) is used.
+    """
+
+    def test_functions_structs_roundtrip_equivalent(self) -> None:
+        """functions_structs.toml and functions_structs.tql must parse to equivalent IR."""
+        assert_roundtrip_equivalent(
+            FIXTURES_DIR / "functions_structs.toml",
+            FIXTURES_DIR / "functions_structs.tql",
+        )
+
+    def test_stream_return_function_parsed(self) -> None:
+        """top-scorer must parse as a stream-return function with the correct parameter."""
+        toml_text = (FIXTURES_DIR / "functions_structs.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "top-scorer" in schema.functions, (
+            f"expected 'top-scorer' in functions; got keys: {list(schema.functions.keys())}"
+        )
+        f = schema.functions["top-scorer"]
+        assert f.name == "top-scorer", f"expected name='top-scorer', got {f.name!r}"
+        assert len(f.parameters) == 1, f"expected 1 parameter, got {len(f.parameters)}"
+        assert f.parameters[0].name == "g", (
+            f"expected parameter name 'g', got {f.parameters[0].name!r}"
+        )
+        assert f.parameters[0].type == "game", (
+            f"expected parameter type 'game', got {f.parameters[0].type!r}"
+        )
+        assert f.return_type.is_stream is True, (
+            f"expected is_stream=True for top-scorer, got {f.return_type.is_stream!r}"
+        )
+        assert len(f.return_type.types) == 1, (
+            f"expected 1 return type item, got {len(f.return_type.types)}"
+        )
+        assert f.return_type.types[0].name == "player", (
+            f"expected return type 'player', got {f.return_type.types[0].name!r}"
+        )
+
+    def test_scalar_return_function_parsed(self) -> None:
+        """max-score must parse as a scalar-return function."""
+        toml_text = (FIXTURES_DIR / "functions_structs.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "max-score" in schema.functions, (
+            f"expected 'max-score' in functions; got keys: {list(schema.functions.keys())}"
+        )
+        f = schema.functions["max-score"]
+        assert f.return_type.is_stream is False, (
+            f"expected is_stream=False for max-score, got {f.return_type.is_stream!r}"
+        )
+        assert len(f.return_type.types) == 1, (
+            f"expected 1 return type item, got {len(f.return_type.types)}"
+        )
+        assert f.return_type.types[0].name == "double", (
+            f"expected return type 'double', got {f.return_type.types[0].name!r}"
+        )
+
+    def test_function_body_discarded_by_parser(self) -> None:
+        """FunctionSpec must carry no body field — the parser discards it from
+        both the TOML-transpiled and hand-written TQL sources."""
+        toml_text = (FIXTURES_DIR / "functions_structs.toml").read_text(encoding="utf-8")
+        schema_from_toml = parse_tql_schema(toml_to_typeql(toml_text))
+        tql_text = (FIXTURES_DIR / "functions_structs.tql").read_text(encoding="utf-8")
+        schema_from_tql = parse_tql_schema(tql_text)
+
+        for func_name in ("top-scorer", "max-score"):
+            for schema, source in ((schema_from_toml, "TOML"), (schema_from_tql, "TQL")):
+                f = schema.functions[func_name]
+                assert not hasattr(f, "body"), (
+                    f"[{source}] FunctionSpec for {func_name!r} must not have a 'body' attribute"
+                )
+
+    def test_struct_fields_with_optional(self) -> None:
+        """player-stats struct must have three fields; nickname must be optional."""
+        toml_text = (FIXTURES_DIR / "functions_structs.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "player-stats" in schema.structs, (
+            f"expected 'player-stats' in structs; got keys: {list(schema.structs.keys())}"
+        )
+        s = schema.structs["player-stats"]
+        assert len(s.fields) == 3, f"expected 3 fields, got {len(s.fields)}"
+
+        field_map = {f.name: f for f in s.fields}
+        assert "wins" in field_map, "expected 'wins' field"
+        assert field_map["wins"].value_type == "integer", (
+            f"expected wins.value_type='integer', got {field_map['wins'].value_type!r}"
+        )
+        assert field_map["wins"].optional is False, "wins must be non-optional"
+
+        assert "nickname" in field_map, "expected 'nickname' field"
+        assert field_map["nickname"].value_type == "string", (
+            f"expected nickname.value_type='string', got {field_map['nickname'].value_type!r}"
+        )
+        assert field_map["nickname"].optional is True, "nickname must be optional"
+
+    def test_generate_models_functions_structs_byte_identical(self, tmp_path: Path) -> None:
+        """generate_models on functions_structs.toml vs .tql produces byte-for-byte
+        identical model files — strong Inv-2 proof through the real renderer for the
+        functions and structs codegen paths."""
+        toml_path = FIXTURES_DIR / "functions_structs.toml"
+        tql_path = FIXTURES_DIR / "functions_structs.tql"
+
+        out_toml = tmp_path / "out_toml"
+        out_tql = tmp_path / "out_tql"
+
+        generate_models(toml_path, out_toml)
+        generate_models(tql_path, out_tql)
+
+        # functions.py and structs.py are conditionally generated (present when the
+        # schema has functions/structs respectively); both fixture files have both.
+        model_files = [
+            "attributes.py",
+            "entities.py",
+            "relations.py",
+            "functions.py",
+            "structs.py",
+            "__init__.py",
+            "registry.py",
+        ]
+        for filename in model_files:
+            toml_file = out_toml / filename
+            tql_file = out_tql / filename
+            assert toml_file.exists(), f"TOML output missing: {filename}"
+            assert tql_file.exists(), f"TQL output missing: {filename}"
+            toml_content = toml_file.read_text(encoding="utf-8")
+            tql_content = tql_file.read_text(encoding="utf-8")
+            assert toml_content == tql_content, (
+                f"{filename} differs between TOML and TQL generate_models outputs.\n"
+                f"--- TOML output ({filename}) ---\n{toml_content}\n"
+                f"--- TQL output ({filename}) ---\n{tql_content}\n"
+            )

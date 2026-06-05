@@ -1,18 +1,17 @@
 //! Typed serde intermediate model for the TOML schema DSL.
 //!
-//! Attribute, entity-owns, relation/role, entity-plays, sub/abstract, and
-//! annotation fields are present. Function and struct fields are deliberately
-//! omitted until a concrete emitter needs them — the model grows with the
-//! feature surface, not ahead of it.
+//! Attribute, entity-owns, relation/role, entity-plays, sub/abstract,
+//! annotation, function, and struct fields are all present.
 
 use indexmap::IndexMap;
 use serde::Deserialize;
 
 /// Top-level TOML schema document.
 ///
-/// Document order is preserved via [`IndexMap`] for `attributes`, `entities`,
-/// and `relations`, so the emitted TypeQL declaration order matches the TOML
-/// source order byte-for-byte.
+/// Document order is preserved via [`IndexMap`] for all sections, so the
+/// emitted TypeQL declaration order matches the TOML source order byte-for-byte.
+/// Sections emit in fixed order: attributes, entities, relations, functions,
+/// structs.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlSchema {
@@ -25,6 +24,15 @@ pub struct TomlSchema {
     /// Relation type declarations, keyed by relation name.
     #[serde(default)]
     pub relations: IndexMap<String, TomlRelation>,
+    /// Function declarations, keyed by function name.
+    ///
+    /// Each entry carries a `signature` (without trailing `:`) and a `body`
+    /// string emitted verbatim.  The emitter appends the `:` between them.
+    #[serde(default)]
+    pub functions: IndexMap<String, TomlFunction>,
+    /// Struct type declarations, keyed by struct name.
+    #[serde(default)]
+    pub structs: IndexMap<String, TomlStruct>,
 }
 
 /// A single attribute type declaration.
@@ -170,6 +178,52 @@ pub struct TomlOwnsAnnotated {
     pub card: Option<String>,
 }
 
+/// A single function declaration.
+///
+/// `signature` is the function head WITHOUT the trailing `:`, e.g.
+/// `fun f($x: user) -> { book }`.  The emitter appends `:\n` before
+/// the body so that the TOML author never needs to supply the colon.
+///
+/// `body` is the `match …; return …;` block, emitted verbatim (no parsing
+/// by the transpiler — the downstream `parse_tql_schema` validates it).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TomlFunction {
+    /// Function head without trailing colon, e.g. `fun f($x: t) -> { r }`.
+    pub signature: String,
+    /// Raw function body including `match … ; return … ;`, emitted verbatim.
+    pub body: String,
+}
+
+/// A single struct type declaration.
+///
+/// Fields are emitted in declaration order as
+/// `struct <name>, value <f> <t>[?], ...;`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TomlStruct {
+    /// Ordered list of struct fields.
+    pub fields: Vec<TomlStructField>,
+}
+
+/// A single field inside a [`TomlStruct`].
+///
+/// The TOML key for the value type is `type` (a Rust keyword), so the field
+/// is renamed via `#[serde(rename = "type")]`.  `optional` defaults to
+/// `false`; when `true` the emitter appends `?` to the type name.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TomlStructField {
+    /// Field name, e.g. `first-name`.
+    pub name: String,
+    /// Value type name, e.g. `string`.  TOML key is `type`.
+    #[serde(rename = "type")]
+    pub value_type: String,
+    /// Whether the field is optional; emitted as `<type>?` when `true`.
+    #[serde(default)]
+    pub optional: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +359,136 @@ sub = "isbn"
         let attr = &schema.attributes["isbn-13"];
         assert_eq!(attr.sub, Some("isbn".to_string()));
         assert!(attr.value.is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // Function and struct model deserialization
+    // -------------------------------------------------------------------------
+
+    /// A well-formed function declaration deserializes correctly.
+    #[test]
+    fn test_function_parses() {
+        let toml_text = r#"
+[functions.book-count]
+signature = "fun book-count($u: user) -> { integer }"
+body = "  match\n    $u isa user;\n  return { 1 };"
+"#;
+        let result: Result<TomlSchema, _> = toml::from_str(toml_text);
+        assert!(
+            result.is_ok(),
+            "expected Ok for function; got Err: {:?}",
+            result
+        );
+        let schema = result.unwrap();
+        assert!(schema.functions.contains_key("book-count"));
+        let f = &schema.functions["book-count"];
+        assert!(f.signature.starts_with("fun book-count"));
+        assert!(
+            !f.signature.ends_with(':'),
+            "signature must not carry a trailing colon"
+        );
+    }
+
+    /// An unknown key in a `[functions.NAME]` table must produce a deserialization
+    /// error — `TomlFunction` carries `#[serde(deny_unknown_fields)]`.
+    #[test]
+    fn test_malformed_function_unknown_key() {
+        let toml_text = r#"
+[functions.f]
+sig = "fun f($x: t) -> { r }"
+body = "  match $x isa t;\n  return { $x };"
+"#;
+        let result: Result<TomlSchema, _> = toml::from_str(toml_text);
+        assert!(
+            result.is_err(),
+            "expected Err for unknown function key `sig`, got Ok"
+        );
+    }
+
+    /// An unknown key inside a struct field inline table must produce a
+    /// deserialization error — `TomlStructField` carries `#[serde(deny_unknown_fields)]`.
+    #[test]
+    fn test_malformed_struct_field_unknown_key() {
+        let toml_text = r#"
+[structs.person-name]
+fields = [{ nam = "first", type = "string" }]
+"#;
+        let result: Result<TomlSchema, _> = toml::from_str(toml_text);
+        assert!(
+            result.is_err(),
+            "expected Err for unknown struct field key `nam`, got Ok"
+        );
+    }
+
+    /// A struct with no `optional` keys deserializes with all fields non-optional.
+    #[test]
+    fn test_struct_non_optional_fields_parse() {
+        let toml_text = r#"
+[structs.person-name]
+fields = [
+    { name = "first-name", type = "string" },
+    { name = "last-name", type = "string" },
+]
+"#;
+        let result: Result<TomlSchema, _> = toml::from_str(toml_text);
+        assert!(result.is_ok(), "expected Ok; got Err: {:?}", result);
+        let schema = result.unwrap();
+        let s = &schema.structs["person-name"];
+        assert_eq!(s.fields.len(), 2);
+        assert!(
+            !s.fields[0].optional,
+            "first-name must default to non-optional"
+        );
+        assert!(
+            !s.fields[1].optional,
+            "last-name must default to non-optional"
+        );
+    }
+
+    /// A struct with `optional = true` on one field deserializes correctly.
+    #[test]
+    fn test_struct_optional_field_parses() {
+        let toml_text = r#"
+[structs.person-name]
+fields = [
+    { name = "first-name", type = "string" },
+    { name = "middle-name", type = "string", optional = true },
+]
+"#;
+        let result: Result<TomlSchema, _> = toml::from_str(toml_text);
+        assert!(result.is_ok(), "expected Ok; got Err: {:?}", result);
+        let schema = result.unwrap();
+        let s = &schema.structs["person-name"];
+        assert!(!s.fields[0].optional, "first-name must be non-optional");
+        assert!(s.fields[1].optional, "middle-name must be optional");
+    }
+
+    /// A TOML document with no `[functions]` or `[structs]` sections (the 01/02/03
+    /// fixture shape) must deserialize without error — back-compat via
+    /// `#[serde(default)]` on both new fields.
+    #[test]
+    fn test_functions_structs_absent_back_compat() {
+        let toml_text = r#"
+[attributes.name]
+value = "string"
+
+[entities.person]
+owns = ["name"]
+"#;
+        let result: Result<TomlSchema, _> = toml::from_str(toml_text);
+        assert!(
+            result.is_ok(),
+            "expected Ok for schema without functions/structs; got Err: {:?}",
+            result
+        );
+        let schema = result.unwrap();
+        assert!(
+            schema.functions.is_empty(),
+            "functions must default to empty map"
+        );
+        assert!(
+            schema.structs.is_empty(),
+            "structs must default to empty map"
+        );
     }
 }
