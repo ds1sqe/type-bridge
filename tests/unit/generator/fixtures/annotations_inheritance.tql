@@ -1,0 +1,11 @@
+define
+attribute isbn @abstract, value string;
+attribute isbn-13 sub isbn;
+attribute isbn-10 sub isbn;
+attribute title, value string;
+attribute stock, value integer;
+attribute status, value string @regex("^(paid|dispatched|delivered|returned|canceled)$");
+attribute reaction, value string @values("like", "love", "funny");
+attribute age, value integer @range(0..150);
+entity book @abstract, owns isbn-13 @key, owns isbn-10 @unique, owns isbn @card(0..2), owns title;
+entity hardback sub book, owns stock;

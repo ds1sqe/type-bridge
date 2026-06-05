@@ -3,19 +3,30 @@
 //! [`emit`] is a total function over the typed model — it never inspects raw
 //! `toml::Value` tables and never calls `.unwrap()` on optional fields.
 
-use crate::model::TomlSchema;
+use crate::model::{TomlOwns, TomlSchema};
+
+/// Normalise a `TomlOwns` entry into `(name, key, unique, card)`.
+fn owns_parts(entry: &TomlOwns) -> (&str, bool, bool, Option<&str>) {
+    match entry {
+        TomlOwns::Name(n) => (n.as_str(), false, false, None),
+        TomlOwns::Annotated(a) => (a.attribute.as_str(), a.key, a.unique, a.card.as_deref()),
+    }
+}
 
 /// Emit a canonical TypeQL `define` block from a typed schema model.
 ///
 /// Output format:
 /// ```text
 /// define
-/// attribute <name>, value <type>;
+/// attribute <name>[sub <parent>], value <type>[@ regex(...)];
+///   -- OR --
+/// attribute <name> @abstract, value <type>;
+///   -- OR --
+/// attribute <name> sub <parent>;            (no value clause)
 /// ...
-/// entity <name>, owns <a>, owns <b>, plays <r>:<role>;   -- or --
-/// entity <name>;                                          -- when owns+plays empty
+/// entity <name>[@abstract | sub <parent>][, owns <a>[@key|@unique|@card(m..n)], plays <r>:<role>];
 /// ...
-/// relation <name>, relates <r> @card(<m..n>), relates <s> as <t>, owns <a>;
+/// relation <name>[@abstract | sub <parent>][, relates <r>[@ card(m..n)], owns <a>[@key|...]];
 /// ...
 /// ```
 ///
@@ -27,24 +38,101 @@ pub fn emit(schema: &TomlSchema) -> String {
 
     // --- attributes ---
     for (name, attr) in &schema.attributes {
-        out.push_str(&format!("attribute {}, value {};\n", name, attr.value));
+        // Build clause list (comma-separated items after the type+sub+abstract head).
+        // The head itself is: `attribute <name>[sub <parent>] [@abstract]`
+        // Then value + value-annotations follow as additional clauses.
+
+        let mut head = format!("attribute {}", name);
+
+        if let Some(ref parent) = attr.sub {
+            // `sub` replaces the `value` clause; head becomes `attribute X sub Y`
+            head.push_str(&format!(" sub {}", parent));
+            // No value clause — emit bare declaration.
+            out.push_str(&format!("{};\n", head));
+            continue;
+        }
+
+        if attr.is_abstract {
+            // `@abstract` goes before `value`: `attribute X @abstract, value T;`
+            head.push_str(" @abstract");
+        }
+
+        // Build the value clause (with optional value-level annotations).
+        let value_clause = if let Some(ref vt) = attr.value {
+            let mut clause = format!("value {}", vt);
+            if let Some(ref rx) = attr.regex {
+                clause.push_str(&format!(r#" @regex("{}")"#, rx));
+            }
+            if let Some(ref vals) = attr.values {
+                let quoted: Vec<String> = vals.iter().map(|v| format!("\"{}\"", v)).collect();
+                clause.push_str(&format!(" @values({})", quoted.join(", ")));
+            }
+            if let Some(ref rng) = attr.range {
+                clause.push_str(&format!(" @range({})", rng));
+            }
+            Some(clause)
+        } else {
+            None
+        };
+
+        match value_clause {
+            Some(vc) => {
+                // `attribute X [@abstract], value T[@annotation...];`
+                out.push_str(&format!("{}, {};\n", head, vc));
+            }
+            None => {
+                // No value and no sub — emit bare `attribute X;` (best-effort; 05 adds diag)
+                out.push_str(&format!("{};\n", head));
+            }
+        }
     }
 
     // --- entities ---
     for (name, entity) in &schema.entities {
-        let mut clauses: Vec<String> = entity.owns.iter().map(|a| format!("owns {}", a)).collect();
+        // Build the type-head: `entity <name>` + optional sub/abstract token.
+        let mut head = format!("entity {}", name);
+        if let Some(ref parent) = entity.sub {
+            head.push_str(&format!(" sub {}", parent));
+        } else if entity.is_abstract {
+            head.push_str(" @abstract");
+        }
+
+        let mut clauses: Vec<String> = Vec::new();
+        for entry in &entity.owns {
+            let (attr_name, key, unique, card) = owns_parts(entry);
+            let mut clause = format!("owns {}", attr_name);
+            if key {
+                clause.push_str(" @key");
+            }
+            if unique {
+                clause.push_str(" @unique");
+            }
+            if let Some(c) = card {
+                clause.push_str(&format!(" @card({})", c));
+            }
+            clauses.push(clause);
+        }
         for p in &entity.plays {
             clauses.push(format!("plays {}:{}", p.relation, p.role));
         }
+
         if clauses.is_empty() {
-            out.push_str(&format!("entity {};\n", name));
+            out.push_str(&format!("{};\n", head));
         } else {
-            out.push_str(&format!("entity {}, {};\n", name, clauses.join(", ")));
+            out.push_str(&format!("{}, {};\n", head, clauses.join(", ")));
         }
     }
 
     // --- relations ---
     for (name, relation) in &schema.relations {
+        // Build the type-head: `relation <name>` + optional sub/abstract token.
+        let mut head = format!("relation {}", name);
+        if let Some(ref parent) = relation.sub {
+            head.push_str(&format!(" sub {}", parent));
+        } else if relation.is_abstract {
+            head.push_str(" @abstract");
+        }
+
         let mut clauses: Vec<String> = Vec::new();
         for role in &relation.roles {
             let mut clause = format!("relates {}", role.name);
@@ -56,13 +144,25 @@ pub fn emit(schema: &TomlSchema) -> String {
             }
             clauses.push(clause);
         }
-        for a in &relation.owns {
-            clauses.push(format!("owns {}", a));
+        for entry in &relation.owns {
+            let (attr_name, key, unique, card) = owns_parts(entry);
+            let mut clause = format!("owns {}", attr_name);
+            if key {
+                clause.push_str(" @key");
+            }
+            if unique {
+                clause.push_str(" @unique");
+            }
+            if let Some(c) = card {
+                clause.push_str(&format!(" @card({})", c));
+            }
+            clauses.push(clause);
         }
+
         if clauses.is_empty() {
-            out.push_str(&format!("relation {};\n", name));
+            out.push_str(&format!("{};\n", head));
         } else {
-            out.push_str(&format!("relation {}, {};\n", name, clauses.join(", ")));
+            out.push_str(&format!("{}, {};\n", head, clauses.join(", ")));
         }
     }
 
@@ -72,6 +172,10 @@ pub fn emit(schema: &TomlSchema) -> String {
 #[cfg(test)]
 mod tests {
     use crate::toml_to_typeql;
+
+    // -------------------------------------------------------------------------
+    // 01/02 back-compat regression guard
+    // -------------------------------------------------------------------------
 
     /// Feed the canonical attribute+entity slice TOML through `toml_to_typeql`
     /// and verify the emitted TypeQL contains all expected declarations in order.
@@ -153,9 +257,7 @@ roles = [{ name = "participant" }]
         );
     }
 
-    /// A role with an `as` override emits `relates <name> as <target>`. The
-    /// parser accepts a parentless override, so this round-trips without a
-    /// relation parent.
+    /// A role with an `as` override emits `relates <name> as <target>`.
     #[test]
     fn test_emit_role_as_override() {
         let toml_text = r#"
@@ -233,5 +335,304 @@ owns = ["score"]
             result.contains("plays review:document"),
             "expected `plays review:document` on document entity; got:\n{result}"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // attribute abstract / sub / value-annotation emission
+    // -------------------------------------------------------------------------
+
+    /// `abstract = true` on an attribute emits `attribute X @abstract, value T;`.
+    #[test]
+    fn test_emit_attribute_abstract() {
+        let toml_text = r#"
+[attributes.isbn]
+value = "string"
+abstract = true
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("attribute isbn @abstract, value string;"),
+            "expected `attribute isbn @abstract, value string;`; got:\n{result}"
+        );
+    }
+
+    /// `sub = "isbn"` with no `value` emits `attribute isbn-13 sub isbn;` (no `value` token).
+    #[test]
+    fn test_emit_attribute_sub() {
+        let toml_text = r#"
+[attributes.isbn-13]
+sub = "isbn"
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("attribute isbn-13 sub isbn;"),
+            "expected `attribute isbn-13 sub isbn;`; got:\n{result}"
+        );
+        assert!(
+            !result.contains("value"),
+            "sub attribute must NOT emit a `value` clause; got:\n{result}"
+        );
+    }
+
+    /// `regex = "..."` emits `@regex("...")` after `value`.
+    #[test]
+    fn test_emit_attribute_regex() {
+        let toml_text = r#"
+[attributes.status]
+value = "string"
+regex = "^(paid|dispatched)$"
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains(r#"attribute status, value string @regex("^(paid|dispatched)$");"#),
+            "expected @regex after value; got:\n{result}"
+        );
+    }
+
+    /// `values = [...]` emits `@values("a", "b", ...)` after `value`.
+    #[test]
+    fn test_emit_attribute_values() {
+        let toml_text = r#"
+[attributes.reaction]
+value = "string"
+values = ["like", "love", "funny"]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result
+                .contains(r#"attribute reaction, value string @values("like", "love", "funny");"#),
+            "expected @values after value; got:\n{result}"
+        );
+    }
+
+    /// `range = "0..150"` emits `@range(0..150)` after `value`.
+    #[test]
+    fn test_emit_attribute_range() {
+        let toml_text = r#"
+[attributes.age]
+value = "integer"
+range = "0..150"
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("attribute age, value integer @range(0..150);"),
+            "expected @range after value; got:\n{result}"
+        );
+    }
+
+    /// `entity X @abstract` and `entity Y sub X` both emit correctly.
+    #[test]
+    fn test_emit_entity_abstract_and_sub() {
+        let toml_text = r#"
+[entities.book]
+abstract = true
+
+[entities.hardback]
+sub = "book"
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("entity book @abstract;"),
+            "expected `entity book @abstract;`; got:\n{result}"
+        );
+        assert!(
+            result.contains("entity hardback sub book;"),
+            "expected `entity hardback sub book;`; got:\n{result}"
+        );
+    }
+
+    /// `relation authoring sub contribution, ...` emits correctly.
+    #[test]
+    fn test_emit_relation_sub() {
+        let toml_text = r#"
+[relations.contribution]
+roles = [{ name = "contributor" }, { name = "work" }]
+
+[relations.authoring]
+sub = "contribution"
+roles = [{ name = "author", as = "contributor" }]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("relation authoring sub contribution,"),
+            "expected `relation authoring sub contribution,`; got:\n{result}"
+        );
+        assert!(
+            result.contains("relates author as contributor"),
+            "expected `relates author as contributor`; got:\n{result}"
+        );
+    }
+
+    /// Integration smoke: feeds abstract/sub/regex TOML through `toml_to_typeql`
+    /// and asserts the output contains expected declarations.
+    #[test]
+    fn test_emit_p0_integration_smoke() {
+        let toml_text = r#"
+[attributes.isbn]
+value = "string"
+abstract = true
+
+[attributes.isbn-13]
+sub = "isbn"
+
+[attributes.status]
+value = "string"
+regex = "^(paid|dispatched|delivered)$"
+
+[entities.book]
+abstract = true
+owns = [{ attribute = "isbn-13", key = true }]
+
+[entities.hardback]
+sub = "book"
+owns = ["stock"]
+
+[attributes.stock]
+value = "integer"
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+
+        assert!(
+            result.contains("attribute isbn @abstract, value string;"),
+            "expected `attribute isbn @abstract, value string;`; got:\n{result}"
+        );
+        assert!(
+            result.contains("attribute isbn-13 sub isbn;"),
+            "expected `attribute isbn-13 sub isbn;`; got:\n{result}"
+        );
+        assert!(
+            result.contains("entity book @abstract"),
+            "expected `entity book @abstract`; got:\n{result}"
+        );
+        assert!(
+            result.contains("entity hardback sub book"),
+            "expected `entity hardback sub book`; got:\n{result}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // owns-level annotation surface (@key / @unique / @card on owned attributes)
+    // -------------------------------------------------------------------------
+
+    /// `{ attribute = "isbn-13", key = true }` emits `owns isbn-13 @key`.
+    #[test]
+    fn test_emit_owns_key() {
+        let toml_text = r#"
+[entities.book]
+owns = [{ attribute = "isbn-13", key = true }]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("owns isbn-13 @key"),
+            "expected `owns isbn-13 @key`; got:\n{result}"
+        );
+    }
+
+    /// `{ attribute = "isbn-10", unique = true }` emits `owns isbn-10 @unique`.
+    #[test]
+    fn test_emit_owns_unique() {
+        let toml_text = r#"
+[entities.book]
+owns = [{ attribute = "isbn-10", unique = true }]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("owns isbn-10 @unique"),
+            "expected `owns isbn-10 @unique`; got:\n{result}"
+        );
+    }
+
+    /// `{ attribute = "isbn", card = "0..2" }` emits `owns isbn @card(0..2)`.
+    #[test]
+    fn test_emit_owns_card() {
+        let toml_text = r#"
+[entities.book]
+owns = [{ attribute = "isbn", card = "0..2" }]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("owns isbn @card(0..2)"),
+            "expected `owns isbn @card(0..2)`; got:\n{result}"
+        );
+    }
+
+    /// Mixed owns array: annotated table + bare string must emit in array order.
+    #[test]
+    fn test_emit_owns_mixed() {
+        let toml_text = r#"
+[entities.book]
+owns = [
+    { attribute = "isbn-13", key = true },
+    { attribute = "isbn-10", unique = true },
+    { attribute = "isbn", card = "0..2" },
+    "title",
+]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+
+        // All four present
+        assert!(
+            result.contains("owns isbn-13 @key"),
+            "missing `owns isbn-13 @key`; got:\n{result}"
+        );
+        assert!(
+            result.contains("owns isbn-10 @unique"),
+            "missing `owns isbn-10 @unique`; got:\n{result}"
+        );
+        assert!(
+            result.contains("owns isbn @card(0..2)"),
+            "missing `owns isbn @card(0..2)`; got:\n{result}"
+        );
+        assert!(
+            result.contains("owns title"),
+            "missing `owns title`; got:\n{result}"
+        );
+
+        // Order preserved
+        let pos_key = result.find("owns isbn-13 @key").unwrap();
+        let pos_unique = result.find("owns isbn-10 @unique").unwrap();
+        let pos_card = result.find("owns isbn @card(0..2)").unwrap();
+        let pos_title = result.find("owns title").unwrap();
+        assert!(
+            pos_key < pos_unique,
+            "isbn-13 @key must precede isbn-10 @unique"
+        );
+        assert!(
+            pos_unique < pos_card,
+            "isbn-10 @unique must precede isbn @card"
+        );
+        assert!(pos_card < pos_title, "isbn @card must precede title");
+    }
+
+    /// Integration smoke: TOML with annotated owns feeds through correctly.
+    #[test]
+    fn test_emit_p1_integration_smoke() {
+        let toml_text = r#"
+[entities.book]
+owns = [
+    { attribute = "isbn-13", key = true },
+    { attribute = "isbn", card = "0..2" },
+    "title",
+]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains("owns isbn-13 @key"),
+            "missing `owns isbn-13 @key`; got:\n{result}"
+        );
+        assert!(
+            result.contains("owns isbn @card(0..2)"),
+            "missing `owns isbn @card(0..2)`; got:\n{result}"
+        );
+        assert!(
+            result.contains("owns title"),
+            "missing `owns title`; got:\n{result}"
+        );
+
+        // Order: isbn-13 @key < isbn @card < title
+        let k = result.find("owns isbn-13 @key").unwrap();
+        let c = result.find("owns isbn @card(0..2)").unwrap();
+        let t = result.find("owns title").unwrap();
+        assert!(k < c && c < t, "owns order not preserved; got:\n{result}");
     }
 }

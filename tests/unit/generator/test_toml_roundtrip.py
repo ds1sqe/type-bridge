@@ -1,11 +1,12 @@
 # pyright: reportMissingImports=false
 """Round-trip equivalence harness for the TOML schema DSL (#138).
 
-This is the epic's correctness oracle: TOML fixtures and their hand-written
+This is the format's correctness oracle: TOML fixtures and their hand-written
 TQL mirrors must parse to structurally-equivalent ParsedSchema objects, and
 ``generate_models`` must produce byte-for-byte identical packages from both.
 
-Sub-plans 02–06 extend the fixture corpus and reuse the helper defined here.
+Each schema feature adds a fixture pair to the corpus and reuses the helper
+defined here, which compares every ParsedSchema spec type.
 """
 
 from __future__ import annotations
@@ -416,6 +417,133 @@ class TestRelationRoundtrip:
             "attributes.py",
             "entities.py",
             "relations.py",
+            "__init__.py",
+            "registry.py",
+        ]
+        for filename in model_files:
+            toml_file = out_toml / filename
+            tql_file = out_tql / filename
+            assert toml_file.exists(), f"TOML output missing: {filename}"
+            assert tql_file.exists(), f"TQL output missing: {filename}"
+            toml_content = toml_file.read_text(encoding="utf-8")
+            tql_content = tql_file.read_text(encoding="utf-8")
+            assert toml_content == tql_content, (
+                f"{filename} differs between TOML and TQL generate_models outputs.\n"
+                f"--- TOML output ({filename}) ---\n{toml_content}\n"
+                f"--- TQL output ({filename}) ---\n{tql_content}\n"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tests: annotation / inheritance round-trip equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestAnnotationInheritanceRoundtrip:
+    """Round-trip equivalence for the annotations+inheritance fixture.
+
+    Reuses ``assert_roundtrip_equivalent`` (unchanged from 01) to assert that
+    ``annotations_inheritance.toml`` and its hand-written TQL mirror parse to
+    structurally-equivalent IR.  Adds focused assertions on every 03 target
+    field: abstract/sub on attributes+entities, @key/@unique/@card on owns,
+    and @regex/@values/@range on attribute values.
+    """
+
+    def test_annotations_inheritance_roundtrip_equivalent(self) -> None:
+        """annotations_inheritance.toml and .tql must parse to equivalent IR."""
+        assert_roundtrip_equivalent(
+            FIXTURES_DIR / "annotations_inheritance.toml",
+            FIXTURES_DIR / "annotations_inheritance.tql",
+        )
+
+    def test_book_entity_abstract_and_owns_annotations(self) -> None:
+        """Parsed TOML must yield book entity: abstract=True, keys={isbn-13},
+        uniques={isbn-10}, cardinalities={isbn: Cardinality(0,2)}, and title in owns."""
+        from type_bridge.generator.models import Cardinality
+
+        toml_text = (FIXTURES_DIR / "annotations_inheritance.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "book" in schema.entities, "expected 'book' entity in parsed schema"
+        book = schema.entities["book"]
+        assert book.abstract is True, f"expected book.abstract=True, got {book.abstract!r}"
+        assert "isbn-13" in book.keys, f"expected isbn-13 in book.keys, got {book.keys!r}"
+        assert "isbn-10" in book.uniques, f"expected isbn-10 in book.uniques, got {book.uniques!r}"
+        assert "isbn" in book.cardinalities, "expected 'isbn' in book.cardinalities"
+        assert book.cardinalities["isbn"] == Cardinality(min=0, max=2), (
+            f"expected Cardinality(0,2) for isbn, got {book.cardinalities['isbn']!r}"
+        )
+        assert "title" in book.owns, f"expected 'title' in book.owns, got {book.owns!r}"
+
+    def test_hardback_entity_sub_book(self) -> None:
+        """Parsed TOML must yield hardback entity with parent='book'."""
+        toml_text = (FIXTURES_DIR / "annotations_inheritance.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "hardback" in schema.entities, "expected 'hardback' entity in parsed schema"
+        hardback = schema.entities["hardback"]
+        assert hardback.parent == "book", (
+            f"expected hardback.parent='book', got {hardback.parent!r}"
+        )
+
+    def test_isbn_attribute_abstract_and_sub_child(self) -> None:
+        """Parsed TOML must yield isbn attr abstract=True and isbn-13/isbn-10 with parent='isbn'."""
+        toml_text = (FIXTURES_DIR / "annotations_inheritance.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "isbn" in schema.attributes, "expected 'isbn' attribute"
+        isbn = schema.attributes["isbn"]
+        assert isbn.abstract is True, f"expected isbn.abstract=True, got {isbn.abstract!r}"
+
+        assert "isbn-13" in schema.attributes, "expected 'isbn-13' attribute"
+        isbn13 = schema.attributes["isbn-13"]
+        assert isbn13.parent == "isbn", f"expected isbn-13.parent='isbn', got {isbn13.parent!r}"
+
+        assert "isbn-10" in schema.attributes, "expected 'isbn-10' attribute"
+        isbn10 = schema.attributes["isbn-10"]
+        assert isbn10.parent == "isbn", f"expected isbn-10.parent='isbn', got {isbn10.parent!r}"
+
+    def test_attribute_value_annotations(self) -> None:
+        """Parsed TOML must yield status/reaction/age with correct value constraints."""
+        toml_text = (FIXTURES_DIR / "annotations_inheritance.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        # @regex on status
+        assert "status" in schema.attributes, "expected 'status' attribute"
+        status = schema.attributes["status"]
+        assert status.regex is not None, "expected status.regex to be set"
+        assert "paid" in status.regex, f"expected regex to contain 'paid', got {status.regex!r}"
+
+        # @values on reaction
+        assert "reaction" in schema.attributes, "expected 'reaction' attribute"
+        reaction = schema.attributes["reaction"]
+        assert reaction.allowed_values is not None, "expected reaction.allowed_values to be set"
+        assert "like" in reaction.allowed_values, (
+            f"expected 'like' in reaction.allowed_values, got {reaction.allowed_values!r}"
+        )
+
+        # @range on age
+        assert "age" in schema.attributes, "expected 'age' attribute"
+        age = schema.attributes["age"]
+        assert age.range_min == "0", f"expected age.range_min='0', got {age.range_min!r}"
+        assert age.range_max == "150", f"expected age.range_max='150', got {age.range_max!r}"
+
+    def test_generate_models_annotations_byte_identical(self, tmp_path: Path) -> None:
+        """generate_models on annotations_inheritance.toml vs .tql produces identical
+        model files — strong Inv-2 proof through the real renderer for the
+        sub/abstract/annotation codegen paths."""
+        toml_path = FIXTURES_DIR / "annotations_inheritance.toml"
+        tql_path = FIXTURES_DIR / "annotations_inheritance.tql"
+
+        out_toml = tmp_path / "out_toml"
+        out_tql = tmp_path / "out_tql"
+
+        generate_models(toml_path, out_toml)
+        generate_models(tql_path, out_tql)
+
+        model_files = [
+            "attributes.py",
+            "entities.py",
             "__init__.py",
             "registry.py",
         ]
