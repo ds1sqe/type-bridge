@@ -78,7 +78,19 @@ def lower_execution_migration(loaded: LoadedMigration) -> dict[str, Any]:
     or ``None``); a model-initial migration emits a single non-reversible
     ``define_schema`` op carrying its ``SchemaInfo``. This mirrors the TypeQL the
     Python executor previously assembled, so execution semantics are preserved.
+
+    When the ``LoadedMigration`` carries a pre-lowered ``execution_spec`` (from the
+    JSON sidecar written at generation time), that spec is returned directly after
+    a normalize pass for shape parity.  This avoids re-deriving the TypeQL from
+    the loaded ``Migration`` instance for generated migrations, while keeping the
+    fallback path intact for legacy/hand-authored files.
     """
+    if loaded.execution_spec is not None:
+        # The sidecar carries the already-lowered MigrationSpec.  Normalize it
+        # so the shape is identical to what the to_typeql() derivation would
+        # produce after its own normalize_migration_spec call.
+        return _rust_runtime.normalize_migration_spec(loaded.execution_spec)
+
     migration = loaded.migration
     operations: list[dict[str, Any]] = []
 

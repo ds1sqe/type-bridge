@@ -10,6 +10,7 @@ pub mod checksum;
 pub mod error;
 pub mod executor;
 pub mod graph;
+pub mod loader;
 pub mod plan;
 pub mod spec;
 pub mod state;
@@ -23,6 +24,7 @@ pub use checksum::{
 pub use error::{MigrationError, Result};
 pub use executor::{MigrationResult, execute_plan};
 pub use graph::{AppliedMigrationRecord, MigrationValidationError, ValidationCode, validate_graph};
+pub use loader::{load_dir, load_sidecar};
 pub use plan::{ExecutionPlan, ExecutionStep, MigrationAction, MigrationExecution, plan};
 pub use spec::{MigrationDependencySpec, MigrationGraph, MigrationSpec, OperationSpec};
 pub use state::{InMemoryStateStore, MigrationStateStore, TypeDbStateStore};

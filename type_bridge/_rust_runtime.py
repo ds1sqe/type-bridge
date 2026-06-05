@@ -140,6 +140,17 @@ def migration_file_checksum(content: str) -> str:
     return rust_core().calculate_migration_file_checksum(content)
 
 
+def load_migration_sidecar(py_path: str) -> dict[str, Any] | None:
+    """Load the JSON sidecar for a migration .py path through Rust.
+
+    Derives the sidecar path by replacing the .py extension with .json.
+    Returns the deserialized MigrationSpec as a dict when a valid sidecar
+    exists, or None when no sidecar is present.  Raises ValueError if the
+    sidecar exists but cannot be read or deserialized.
+    """
+    return rust_core().load_migration_sidecar(py_path)
+
+
 def validate_migration_graph(
     graph: dict[str, Any],
     applied_records: list[dict[str, Any]] | None = None,

@@ -5,6 +5,7 @@
 //! checks over it. They open no transactions and execute no TypeQL — migration
 //! execution is owned by a later sub-plan.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
@@ -12,7 +13,8 @@ use pythonize::{depythonize, pythonize};
 use tokio::runtime::Runtime;
 use type_bridge_migration::{
     AppliedMigrationRecord, MigrationGraph, MigrationSpec, MigrationStateStore, TypeDbStateStore,
-    check_checksum_drift, execute_plan, migration_file_checksum, plan, validate_graph,
+    check_checksum_drift, execute_plan, load_sidecar, migration_file_checksum, plan,
+    validate_graph,
 };
 
 use crate::orm_runtime::PyRustDatabase;
@@ -53,6 +55,28 @@ fn migration_spec_from_json(py: Python<'_>, json: &str) -> PyResult<PyObject> {
     pythonize(py, &spec)
         .map(|obj| obj.unbind())
         .map_err(|error| py_value_error(error.to_string()))
+}
+
+/// Load the JSON sidecar for a migration `.py` path and return it as a dict.
+///
+/// Derives the sidecar path by replacing the `.py` extension with `.json`.
+/// Returns the deserialized [`MigrationSpec`] as a Python dict when a valid
+/// sidecar exists, or `None` when no sidecar is present.  Raises
+/// `ValueError` if the sidecar exists but cannot be read or deserialized.
+///
+/// Reuses the same serde JSON path as [`migration_spec_from_json`].
+#[pyfunction]
+fn load_migration_sidecar(py: Python<'_>, py_path: &str) -> PyResult<Option<PyObject>> {
+    match load_sidecar(Path::new(py_path)) {
+        Ok(None) => Ok(None),
+        Ok(Some(spec)) => {
+            let obj = pythonize(py, &spec)
+                .map(|o| o.unbind())
+                .map_err(|err| py_value_error(err.to_string()))?;
+            Ok(Some(obj))
+        }
+        Err(err) => Err(py_value_error(err.to_string())),
+    }
 }
 
 /// Serialize a serialized `MigrationGraph` dict to canonical JSON.
@@ -268,6 +292,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(normalize_migration_graph, m)?)?;
     m.add_function(wrap_pyfunction!(migration_spec_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(migration_spec_from_json, m)?)?;
+    m.add_function(wrap_pyfunction!(load_migration_sidecar, m)?)?;
     m.add_function(wrap_pyfunction!(migration_graph_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(migration_graph_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(calculate_migration_file_checksum, m)?)?;

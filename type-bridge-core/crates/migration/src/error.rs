@@ -71,4 +71,10 @@ pub enum MigrationError {
         /// Human-readable error message describing the storage failure.
         message: String,
     },
+    /// A sidecar file IO or JSON decode error in the native loader.
+    #[error("migration loader error: {message}")]
+    Loader {
+        /// Human-readable error message describing the loader failure.
+        message: String,
+    },
 }

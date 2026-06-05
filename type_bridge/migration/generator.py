@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from type_bridge import _rust_runtime
 from type_bridge.attribute.base import Attribute
 from type_bridge.migration import operations as ops
 from type_bridge.migration.info import SchemaInfo
@@ -109,6 +110,7 @@ class MigrationGenerator:
             last = existing[-1]
             dependencies.append((last.migration.app_label, last.migration.name))
 
+        operations: list[ops.Operation] = []
         if empty:
             operations_code = "    operations: ClassVar[list[Operation]] = []"
             models_code = ""
@@ -148,6 +150,14 @@ class MigrationGenerator:
 
         filepath.write_text(content)
         logger.info(f"Created migration: {filepath}")
+
+        # Write the JSON sidecar carrying the lowered MigrationSpec execution IR.
+        # The sidecar is produced from the SAME operations list the .py renders so
+        # both artifacts are byte-identical in execution semantics.  The checksum
+        # is computed over the just-written .py text so it matches what the loader
+        # will compute via migration_file_checksum (04 drift gate invariant).
+        if not empty:
+            self._write_sidecar(filepath, operations, dependencies, migration_name)
 
         return filepath
 
@@ -336,6 +346,82 @@ class MigrationGenerator:
             parts.append(f"and {len(operations) - 3} more")
 
         return ", ".join(parts) or "schema changes"
+
+    def _write_sidecar(
+        self,
+        py_path: Path,
+        operations: list[ops.Operation],
+        dependencies: list[tuple[str, str]],
+        migration_name: str,
+    ) -> None:
+        """Write the JSON sidecar for a generated migration alongside its .py file.
+
+        Builds the execution-ready MigrationSpec from the same operations list
+        that _render_operations rendered into the .py.  Each ops.Operation becomes
+        a run_typeql entry carrying the exact forward/reverse TypeQL strings
+        _render_operations used.  The checksum is computed over the .py text so
+        the drift gate (04) reads a consistent value regardless of which path
+        (sidecar or exec_module) is used.
+
+        The sidecar is omitted if migration_spec_to_json or any serialization step
+        raises — we log the error rather than failing the whole generate() call,
+        since the .py is already written and is fully usable without a sidecar.
+        """
+        try:
+            app_label = self.migrations_dir.name
+
+            # Compute the .py checksum over the just-written file so the sidecar
+            # carries the same value the loader will produce via
+            # _rust_runtime.migration_file_checksum.
+            py_content = py_path.read_text()
+            checksum = _rust_runtime.migration_file_checksum(py_content)
+
+            # Build run_typeql ops — identical to the path lower_execution_migration
+            # takes when it processes the exec_module'd migration.
+            # Generated migrations are operations-only (no .models), so every op
+            # becomes a run_typeql entry.
+            op_specs = []
+            for operation in operations:
+                forward = operation.to_typeql()
+                if not forward:
+                    continue
+                reverse = operation.to_rollback_typeql() or None
+                op_specs.append(
+                    {
+                        "kind": "run_typeql",
+                        "forward": forward,
+                        "reverse": reverse,
+                    }
+                )
+
+            # reversible: generated Migration subclasses inherit the default
+            # reversible=True from the base class (the generator never overrides
+            # it).  lower_execution_migration reads migration.reversible (the class
+            # attribute) as the outer gate, so the sidecar must carry the same
+            # value — True for all generator-produced migrations.
+            reversible = True
+
+            spec: dict = {
+                "app_label": app_label,
+                "name": migration_name,
+                "dependencies": [
+                    {"app_label": dep_app, "migration_name": dep_name}
+                    for dep_app, dep_name in dependencies
+                ],
+                "operations": op_specs,
+                "checksum": checksum,
+                "reversible": reversible,
+            }
+
+            # Normalize through Rust serde so the shape is canonical, then
+            # serialize to JSON and write beside the .py.
+            normalized = _rust_runtime.normalize_migration_spec(spec)
+            json_text = _rust_runtime.migration_spec_to_json(normalized)
+            sidecar_path = py_path.with_suffix(".json")
+            sidecar_path.write_text(json_text)
+            logger.info(f"Created migration sidecar: {sidecar_path}")
+        except Exception as exc:
+            logger.warning(f"Could not write migration sidecar for {py_path}: {exc}")
 
     def _to_class_name(self, name: str) -> str:
         """Convert migration name to class name.
