@@ -7,7 +7,7 @@
     "rootDir": ".",
     "baseUrl": ".",
     "paths": {
-      "@type-bridge/node": ["./typescript/index.ts"]
+      "@type-bridge/node": ["./dist/index.d.ts"]
     },
     "strict": true,
     "target": "ES2022"

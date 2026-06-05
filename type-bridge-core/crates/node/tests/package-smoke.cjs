@@ -3,6 +3,10 @@
 const assert = require("assert");
 const typeBridge = require("../");
 
+// ---------------------------------------------------------------------------
+// Low-level facade — DescriptorRegistry, Marshalling, value builders
+// ---------------------------------------------------------------------------
+
 const registry = new typeBridge.DescriptorRegistry();
 
 const person = registry.registerEntity({
@@ -78,3 +82,65 @@ assert.deepStrictEqual(attrs, [
   ["age", { Long: 42 }],
   ["person-name", { String: "Alice" }],
 ]);
+
+// ---------------------------------------------------------------------------
+// Facade presence — loadNative is a real function
+// ---------------------------------------------------------------------------
+
+assert.strictEqual(typeof typeBridge.loadNative, "function", "loadNative must be a function");
+
+// ---------------------------------------------------------------------------
+// Typed layer — presence assertions
+// ---------------------------------------------------------------------------
+
+assert.strictEqual(typeof typeBridge.Entity, "function", "Entity must be a function");
+// attr is a namespace object (attr.String, attr.Integer, …)
+assert.strictEqual(typeof typeBridge.attr, "object", "attr must be an object");
+assert.strictEqual(typeof typeBridge.attr.String, "function", "attr.String must be a function");
+assert.strictEqual(typeof typeBridge.field, "function", "field must be a function");
+assert.strictEqual(typeof typeBridge.role, "function", "role must be a function");
+assert.strictEqual(typeof typeBridge.Card, "function", "Card must be a function");
+// Key/Unique are string flag tokens passed to field(Attr, Key).
+assert.strictEqual(typeBridge.Key, "Key", "Key must be the 'Key' flag token");
+assert.strictEqual(typeBridge.Unique, "Unique", "Unique must be the 'Unique' flag token");
+assert.strictEqual(typeof typeBridge.TypeFlags, "function", "TypeFlags must be a function");
+assert.strictEqual(typeof typeBridge.generateModels, "function", "generateModels must be a function");
+assert.strictEqual(typeof typeBridge.parseSchema, "function", "parseSchema must be a function");
+
+// ---------------------------------------------------------------------------
+// Typed layer — constructive check: define a model class and read its descriptor
+// ---------------------------------------------------------------------------
+
+// attr.String("type-name") returns an attribute class (constructor).
+class SmokePersonName extends typeBridge.attr.String("smoke-person-name") {}
+
+// field(AttrClass, ...flags) returns a FieldSpec.
+const nameField = typeBridge.field(SmokePersonName, typeBridge.Key);
+
+// Entity("type-name", { fieldKey: FieldSpec }) returns a model base class.
+class SmokePerson extends typeBridge.Entity("smoke-person", {
+  name: nameField,
+}) {}
+
+const descriptor = SmokePerson.descriptor();
+assert.strictEqual(descriptor.type_name, "smoke-person", "Entity descriptor type_name must match");
+assert.ok(Array.isArray(descriptor.owned_attributes), "Entity descriptor owned_attributes must be an array");
+assert.strictEqual(descriptor.owned_attributes.length, 1, "SmokePerson must have exactly one owned attribute");
+assert.strictEqual(descriptor.owned_attributes[0].field_name, "name", "Field name must be 'name'");
+assert.deepStrictEqual(descriptor.owned_attributes[0].annotations, ["Key"], "Key annotation must be present");
+
+// ---------------------------------------------------------------------------
+// Published-tarball contents — the publish artifact must ship the compiled
+// runtime + the native module, or an installed consumer cannot load them.
+// ---------------------------------------------------------------------------
+
+const { execSync } = require("node:child_process");
+const packed = JSON.parse(execSync("npm pack --dry-run --json", { encoding: "utf8" }));
+const packedFiles = packed[0].files.map((f) => f.path);
+assert.ok(packedFiles.includes("dist/index.js"), "tarball must include dist/index.js");
+assert.ok(packedFiles.includes("dist/native.js"), "tarball must include dist/native.js (the loader)");
+assert.ok(
+  packedFiles.some((f) => f.endsWith(".node")),
+  "tarball must include the native .node module",
+);
+assert.ok(!packedFiles.includes("index.js"), "the deleted root index.js must not be published");

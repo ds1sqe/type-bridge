@@ -428,20 +428,17 @@ Names are **not prettified** — no prefix-stripping, no pluralization. A genera
 TypeScript model and its Python counterpart for the same schema produce
 byte-identical descriptors; a cross-language parity test enforces this.
 
-### Forward note on build integration
+### Build integration
 
 The generator writes files that import from the `@type-bridge/node` package
-entrypoint. The published package's compiled output layout is being finalized in a
-separate packaging change, so integrating generated output into a build pipeline
-should be treated as forthcoming — consistent with the note below. This guide
-documents the generator API and the generated surface; it does not cover how the
-package itself is built or distributed.
+entrypoint, which resolves to the package's compiled runtime — so generated models
+are runnable as-is once the package is installed.
 
 ## Packaging note
 
-In this repository the typed layer is consumed as **TypeScript source** (compiled
-or type-stripped at build time); the published package currently ships the typed
-layer as **type declarations** (`dist/*.d.ts`) over the native runtime. Shipping
-the typed layer as runnable JavaScript is a separate, forthcoming packaging change
-and is not covered here — this guide documents the typed API surface, not how the
-package is built or loaded.
+The published package ships the typed layer as **runnable JavaScript** plus type
+declarations (`dist/index.js` + `dist/*.d.ts`) over the native module. The package
+entrypoint exposes both the typed surface (`Entity`, `attr`, `field`, `Relation`,
+`generateModels`, `parseSchema`, …) and the low-level facade; consumers `require`
+or `import` it like any package. This guide documents the typed API surface, not
+the build pipeline.

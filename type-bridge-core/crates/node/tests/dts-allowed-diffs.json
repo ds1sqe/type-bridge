@@ -20,6 +20,10 @@
     {
       "symbol": "generateModels + GenerateModelsOptions + NamingOptions (index.d.ts re-export from generator/index.js)",
       "rationale": "Plan 12: the TypeScript model generator entrypoint, the Node equivalent of Python generate_models(). Naming helpers (toClassName/toFieldName) stay generator-internal and are NOT re-exported at the package root (minimal surface)."
+    },
+    {
+      "symbol": "native.d.ts (new file) + loadNative re-export in index.d.ts",
+      "rationale": "Package migration: the real native loader (TYPE_BRIDGE_NODE_NATIVE_PATH override + package-root .node candidate resolution) moved from the hand-written root index.js into typescript/native.ts so it compiles into dist/. index.ts now re-exports loadNative from native.js (the public signature `loadNative(): NativeModule` is unchanged; the dead ambient stub was removed)."
     }
   ],
   "allowedDiffs": []

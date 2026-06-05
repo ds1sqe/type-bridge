@@ -8,7 +8,9 @@
 //                                     print its descriptor snapshot as JSON
 //
 // `dump` resolves the generated package's `@type-bridge/node` import to the
-// compiled surface via a module resolver patch. The descriptor() output is offline.
+// compiled `dist/` entry via a module resolver patch — the generated files live
+// outside the package tree (under tmp/), so Node's package self-resolution does
+// not apply. The descriptor() output is offline.
 
 const fs = require("fs");
 const path = require("path");
@@ -28,10 +30,10 @@ function generate(schemaPath, outDir) {
 }
 
 function dump() {
-  const surface = path.join(TMP, "node-gen-parity", "typescript", "index.js");
+  const distEntry = path.join(cwd, "dist", "index.js");
   const resolve = Module._resolveFilename;
   Module._resolveFilename = function (request, ...rest) {
-    return resolve.call(this, request === "@type-bridge/node" ? surface : request, ...rest);
+    return resolve.call(this, request === "@type-bridge/node" ? distEntry : request, ...rest);
   };
   const generated = require(path.join(TMP, "node-gen-parity", "tests", "parity", "generated", "index.js"));
   const entities = [];

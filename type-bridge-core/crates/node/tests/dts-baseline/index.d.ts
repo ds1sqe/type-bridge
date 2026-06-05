@@ -1,3 +1,4 @@
+import { loadNative } from "./native.js";
 export type ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime-tz" | "decimal" | "duration";
 export type Annotation = "Key" | "Unique" | {
     Card: [number, number | null];
@@ -134,7 +135,7 @@ export interface DynamicRelationRow extends DynamicEntityRow {
 }
 /**
  * Wire shape of the Rust `DynamicComparisonOp`. `starts_with`/`ends_with` carry
- * the raw literal only — Rust owns regex anchoring and escaping (Plan 09 Gap B).
+ * the raw literal only — Rust owns regex anchoring and escaping.
  */
 export type DynamicComparisonOp = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "like" | "starts_with" | "ends_with";
 /**
@@ -300,7 +301,7 @@ export interface EnsureDatabaseOptions {
  * silent skip.
  */
 export declare function ensureDatabase(address: string, database: string, options?: EnsureDatabaseOptions): void;
-export declare function loadNative(): NativeModule;
+export { loadNative };
 export declare class DescriptorRegistry {
     #private;
     constructor(nativeRegistry?: NativeDescriptorRegistry | null);

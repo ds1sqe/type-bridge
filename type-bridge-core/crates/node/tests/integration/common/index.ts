@@ -4,14 +4,14 @@
  * All tests import from here.  The harness:
  *   - loads the NAPI artifact via TYPE_BRIDGE_NODE_NATIVE_PATH (never the
  *     stale tmp/ binary — that path must be set explicitly or build:native
- *     must have placed one next to index.js);
+ *     must have placed one next to dist/index.js);
  *   - ensures the target database exists (hard-fails on missing TypeDB);
  *   - defines the test schema inside an isolated uniquely-suffixed namespace
  *     so concurrent test suites sharing one database do not collide;
  *   - provides descriptor factories mirroring integration_support.rs so the
  *     TS tests stay in sync with the Rust reference.
  *
- * Runtime note: the package's main entry is CommonJS (index.js).  We load it
+ * Runtime note: the package's main entry is CommonJS (dist/index.js).  We load it
  * via createRequire so that the test files stay ESM (node:test requires it)
  * while remaining compatible with the package's CJS surface.
  */

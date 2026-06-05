@@ -1,3 +1,5 @@
+import { loadNative } from "./native.js";
+
 export type ValueType =
   | "string"
   | "long"
@@ -222,7 +224,7 @@ export interface DynamicRelationRow extends DynamicEntityRow {
 
 /**
  * Wire shape of the Rust `DynamicComparisonOp`. `starts_with`/`ends_with` carry
- * the raw literal only — Rust owns regex anchoring and escaping (Plan 09 Gap B).
+ * the raw literal only — Rust owns regex anchoring and escaping.
  */
 export type DynamicComparisonOp =
   | "eq"
@@ -277,6 +279,13 @@ export function string(value: string): AttributeValue {
 }
 
 export function long(value: bigint): AttributeValue {
+  // Runtime guard for JavaScript callers (the static `bigint` type is erased):
+  // a non-bigint would silently stringify to a wrong wire value otherwise.
+  if (typeof value !== "bigint") {
+    throw new TypeError(
+      "long requires a bigint; use longFromNumberUnsafe for explicit number conversion",
+    );
+  }
   return { value_type: "long", value: value.toString() };
 }
 
@@ -447,11 +456,7 @@ export function ensureDatabase(
   );
 }
 
-declare const nativeModule: NativeModule;
-
-export function loadNative(): NativeModule {
-  return nativeModule;
-}
+export { loadNative };
 
 export class DescriptorRegistry {
   readonly #native: NativeDescriptorRegistry;
@@ -842,7 +847,7 @@ function parseConnectArguments(
 }
 
 // ---------------------------------------------------------------------------
-// Generator — additive re-export (Phase 2: attributes + entities)
+// Generator — additive re-export
 // ---------------------------------------------------------------------------
 export {
   generateModels,
