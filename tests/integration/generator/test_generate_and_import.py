@@ -69,6 +69,101 @@ def _import_generated_package(package_path: Path) -> dict[str, ModuleType]:
             sys.path.remove(parent)
 
 
+def _exec_generated_module(package_path: Path, module_name: str) -> ModuleType:
+    """Execute a single generated submodule (e.g. ``functions``/``structs``).
+
+    Unlike :func:`_import_generated_package`, this exec's the rendered module
+    so a runtime error in the generated source surfaces — ``compile()`` alone
+    would not catch it.
+    """
+    parent = str(package_path.parent)
+    package_name = package_path.name
+
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+
+    try:
+        mod_path = package_path / f"{module_name}.py"
+        mod_name = f"{package_name}.{module_name}"
+        spec = importlib.util.spec_from_file_location(mod_name, mod_path)
+        if not (spec and spec.loader):
+            raise RuntimeError(f"Failed to load spec for {mod_name}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        keys_to_remove = [k for k in sys.modules if k.startswith(package_name)]
+        for key in keys_to_remove:
+            del sys.modules[key]
+        if parent in sys.path:
+            sys.path.remove(parent)
+
+
+class TestGeneratedFunctionsModule:
+    """The generated ``functions.py`` imports and exposes its wrappers.
+
+    The bookstore schema defines several ``fun`` definitions, so generating it
+    produces a ``functions.py``. Exec'ing that module proves the Rust-parsed
+    function IR renders into runnable Python — not merely compilable source.
+    """
+
+    SCHEMA_PATH = FIXTURES_DIR / "bookstore.tql"
+
+    def test_functions_module_generated(self, tmp_path: Path) -> None:
+        """A functions.py file is emitted for a schema containing functions."""
+        output = tmp_path / "bookstore_fns"
+        generate_models(self.SCHEMA_PATH, output)
+        assert (output / "functions.py").exists()
+
+    def test_functions_module_execs(self, tmp_path: Path) -> None:
+        """The rendered functions module exec's and exposes its wrappers."""
+        output = tmp_path / "bookstore_fns"
+        generate_models(self.SCHEMA_PATH, output)
+
+        functions = _exec_generated_module(output, "functions")
+
+        # Stream return (`-> { book }`) and scalar return (`-> double`) both render.
+        assert hasattr(functions, "book_recommendations_for")
+        assert hasattr(functions, "best_discount_for_item")
+        assert callable(functions.book_recommendations_for)
+        assert "book_recommendations_for" in functions.__all__
+
+
+class TestGeneratedStructsModule:
+    """The generated ``structs.py`` imports and exposes its struct class.
+
+    No bundled fixture defines a ``struct``, so this uses an inline schema to
+    exercise the struct generate → exec path end to end, including an optional
+    (``?``) field.
+    """
+
+    SCHEMA = """
+        define
+        entity placeholder;
+        struct full-name,
+            value first string,
+            value last string,
+            value middle string?;
+    """
+
+    def test_structs_module_generated(self, tmp_path: Path) -> None:
+        """A structs.py file is emitted for a schema containing a struct."""
+        output = tmp_path / "struct_pkg"
+        generate_models(self.SCHEMA, output)
+        assert (output / "structs.py").exists()
+
+    def test_structs_module_execs(self, tmp_path: Path) -> None:
+        """The rendered structs module exec's and exposes its struct class."""
+        output = tmp_path / "struct_pkg"
+        generate_models(self.SCHEMA, output)
+
+        structs = _exec_generated_module(output, "structs")
+
+        assert hasattr(structs, "FullName")
+        assert "FullName" in structs.__all__
+
+
 class TestBookstoreSchema:
     """Integration tests for the bookstore schema."""
 

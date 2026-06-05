@@ -282,7 +282,9 @@ class TestParseFunctionsHandling:
 
         # Should parse the function
         assert "get_person" in schema.functions
-        assert schema.functions["get_person"].return_type == "{ person }"
+        rt = schema.functions["get_person"].return_type
+        assert rt.is_stream is True
+        assert [(t.name, t.optional) for t in rt.types] == [("person", False)]
 
 
 class TestParseCardinality:
@@ -486,7 +488,7 @@ class TestParseRange:
     def test_range_invalid_comma_syntax_raises_error(self) -> None:
         """Invalid @range with comma instead of .. raises error.
 
-        Both the Rust and Lark parsers reject @range without '..' syntax.
+        The Rust parser rejects @range without '..' syntax.
         """
         with pytest.raises((ValueError, Exception)):
             parse_tql_schema("""
@@ -497,7 +499,7 @@ class TestParseRange:
     def test_range_invalid_single_value_raises_error(self) -> None:
         """Invalid @range with single value (no ..) raises error.
 
-        Both the Rust and Lark parsers reject @range without '..' syntax.
+        The Rust parser rejects @range without '..' syntax.
         """
         with pytest.raises((ValueError, Exception)):
             parse_tql_schema("""
@@ -946,7 +948,7 @@ class TestCardValidation:
     def test_card_invalid_min_greater_than_max(self) -> None:
         """@card with min > max raises error.
 
-        Both the Rust and Lark parsers reject @card where min > max.
+        The Rust parser rejects @card where min > max.
         """
         with pytest.raises((ValueError, Exception)):
             parse_tql_schema("""
@@ -970,7 +972,7 @@ class TestRegexValidation:
     def test_regex_invalid_pattern(self) -> None:
         """Invalid regex pattern raises error.
 
-        Both the Rust and Lark parsers reject invalid regex patterns.
+        The Rust parser rejects invalid regex patterns.
         """
         with pytest.raises((ValueError, Exception)):
             parse_tql_schema("""
@@ -997,7 +999,7 @@ class TestValuesValidation:
     def test_values_duplicate_raises_error(self) -> None:
         """@values with duplicates raises error.
 
-        Both the Rust and Lark parsers reject duplicate @values.
+        The Rust parser rejects duplicate @values.
         """
         with pytest.raises((ValueError, Exception)):
             parse_tql_schema("""
@@ -1031,7 +1033,7 @@ class TestSubkeyValidation:
 
     def test_subkey_invalid_identifier_starting_with_digit(self) -> None:
         """@subkey with identifier starting with digit raises parse error."""
-        # Both Rust and Lark parsers reject this — different exception types
+        # The Rust parser rejects this
         with pytest.raises((ValueError, Exception)):
             parse_tql_schema("""
                 define
@@ -1041,7 +1043,7 @@ class TestSubkeyValidation:
 
     def test_subkey_invalid_special_chars(self) -> None:
         """@subkey with special characters raises error."""
-        # Both Rust and Lark parsers reject this — different exception types
+        # The Rust parser rejects this
         with pytest.raises((ValueError, Exception)):
             parse_tql_schema("""
                 define

@@ -1,16 +1,16 @@
 //! Winnow-based parser for TypeQL `define` blocks.
 //!
 //! Converts TypeQL schema text into [`TypeSchema`](crate::schema::TypeSchema) structs.
-//! Reference grammar: `type_bridge/generator/typeql.lark`
 
-use winnow::combinator::{alt, delimited, opt, repeat, separated, terminated};
+use winnow::combinator::{alt, delimited, opt, repeat, separated};
 use winnow::error::ContextError;
 use winnow::prelude::*;
 use winnow::token::{literal, take_until, take_while};
 
 use crate::schema::{
-    AttributeType, Cardinality, EntityType, OwnedAttribute, PlayedRole, RelationType, RoleSpec,
-    SchemaError, TypeSchema,
+    AttributeType, Cardinality, EntityType, FunctionType, OwnedAttribute, Parameter, PlayedRole,
+    RelationType, ReturnType, ReturnTypeItem, RoleSpec, SchemaError, StructField, StructType,
+    TypeSchema,
 };
 
 /// Type alias for parser results.
@@ -22,7 +22,8 @@ type PResult<T> = winnow::error::Result<T>;
 
 /// Parse a TypeQL schema string into an unresolved [`TypeSchema`].
 ///
-/// Handles one or more `define` blocks. Functions and structs are skipped.
+/// Handles one or more `define` blocks. Functions and structs are parsed into
+/// the schema's `functions` and `structs` maps.
 pub fn parse_typeql(input: &str) -> Result<TypeSchema, SchemaError> {
     let mut input_ref = input;
     match parse_schema(&mut input_ref) {
@@ -125,6 +126,12 @@ fn parse_schema(input: &mut &str) -> PResult<TypeSchema> {
                         schema.relations.insert(name, relation);
                     }
                 }
+                Statement::Function(func) => {
+                    schema.functions.insert(func.name.clone(), func);
+                }
+                Statement::Struct(struct_type) => {
+                    schema.structs.insert(struct_type.name.clone(), struct_type);
+                }
             }
         }
     }
@@ -147,6 +154,8 @@ enum Statement {
     Attribute(AttributeType),
     Entity(EntityType),
     Relation(RelationType),
+    Function(FunctionType),
+    Struct(StructType),
 }
 
 fn parse_statement(input: &mut &str) -> PResult<Option<Statement>> {
@@ -155,8 +164,8 @@ fn parse_statement(input: &mut &str) -> PResult<Option<Statement>> {
         parse_attribute_def.map(|a| Some(Statement::Attribute(a))),
         parse_entity_def.map(|e| Some(Statement::Entity(e))),
         parse_relation_def.map(|r| Some(Statement::Relation(r))),
-        skip_function_def.map(|_| None),
-        skip_struct_def.map(|_| None),
+        parse_function_def.map(|f| Some(Statement::Function(f))),
+        parse_struct_def.map(|s| Some(Statement::Struct(s))),
     ))
     .parse_next(input)
 }
@@ -538,38 +547,163 @@ fn parse_card_annotation(input: &mut &str) -> PResult<Cardinality> {
 }
 
 // ---------------------------------------------------------------------------
-// Function / Struct skip parsers
+// Function / Struct definition parsers
 // ---------------------------------------------------------------------------
 
-fn skip_function_def(input: &mut &str) -> PResult<()> {
+fn parse_function_def(input: &mut &str) -> PResult<FunctionType> {
     literal("fun").parse_next(input)?;
     ws_comments_required(input)?;
-    // Skip everything until we find "return" followed by ";"
+    let name = identifier(input)?.to_string();
+    ws_comments(input);
+    literal("(").parse_next(input)?;
+    let parameters = parse_param_list(input)?;
+    ws_comments(input);
+    literal(")").parse_next(input)?;
+    ws_comments(input);
+    literal("->").parse_next(input)?;
+    let return_type = parse_return_type_clause(input)?;
+    ws_comments(input);
+    literal(":").parse_next(input)?;
+    skip_function_body(input)?;
+    Ok(FunctionType {
+        name,
+        parameters,
+        return_type,
+    })
+}
+
+fn parse_param_list(input: &mut &str) -> PResult<Vec<Parameter>> {
+    let mut params = Vec::new();
+    ws_comments(input);
+    if input.starts_with(')') {
+        return Ok(params); // empty param list `()`
+    }
+    params.push(parse_param(input)?);
     loop {
-        if input.is_empty() {
-            return Err(ContextError::new());
-        }
-        if let Some(pos) = input.find("return") {
-            *input = &input[pos + 6..];
-            if let Some(semi_pos) = input.find(';') {
-                *input = &input[semi_pos + 1..];
-                return Ok(());
-            }
+        ws_comments(input);
+        if opt(literal::<_, _, ContextError>(","))
+            .parse_next(input)?
+            .is_some()
+        {
+            params.push(parse_param(input)?);
         } else {
-            if let Some(semi_pos) = input.find(';') {
-                *input = &input[semi_pos + 1..];
-                return Ok(());
-            }
-            return Err(ContextError::new());
+            break;
         }
+    }
+    Ok(params)
+}
+
+fn parse_param(input: &mut &str) -> PResult<Parameter> {
+    ws_comments(input);
+    literal("$").parse_next(input)?;
+    let name = identifier(input)?.to_string();
+    ws_comments(input);
+    literal(":").parse_next(input)?;
+    ws_comments(input);
+    // VALUE_TYPE_NAME or IDENTIFIER — both match the identifier pattern.
+    let type_ = identifier(input)?.to_string();
+    Ok(Parameter { name, type_ })
+}
+
+/// Build the STRUCTURED return type. `-> { a, b }` → is_stream=true,
+/// types=["a","b"]; `-> a, b` → is_stream=false, types=["a","b"].
+/// No string formatting — the renderer decides presentation.
+fn parse_return_type_clause(input: &mut &str) -> PResult<ReturnType> {
+    ws_comments(input);
+    if input.starts_with('{') {
+        literal("{").parse_next(input)?;
+        let types = parse_return_type_list(input)?;
+        ws_comments(input);
+        literal("}").parse_next(input)?;
+        Ok(ReturnType {
+            is_stream: true,
+            types,
+        })
+    } else {
+        let types = parse_return_type_list(input)?;
+        Ok(ReturnType {
+            is_stream: false,
+            types,
+        })
     }
 }
 
-fn skip_struct_def(input: &mut &str) -> PResult<()> {
+fn parse_return_type_list(input: &mut &str) -> PResult<Vec<ReturnTypeItem>> {
+    let mut types = vec![parse_return_type(input)?];
+    loop {
+        ws_comments(input);
+        if input.starts_with(',') {
+            literal(",").parse_next(input)?;
+            types.push(parse_return_type(input)?);
+        } else {
+            break;
+        }
+    }
+    Ok(types)
+}
+
+/// One return-type item: identifier + structural optionality.
+/// Optionality is a bool, NOT a `?`-suffix — the IR stays language-neutral.
+fn parse_return_type(input: &mut &str) -> PResult<ReturnTypeItem> {
+    ws_comments(input);
+    let name = identifier(input)?.to_string();
+    ws_comments(input);
+    let optional = opt(literal::<_, _, ContextError>("?"))
+        .parse_next(input)?
+        .is_some();
+    Ok(ReturnTypeItem { name, optional })
+}
+
+/// Skip the function body. A body runs from the signature to the first
+/// `return` clause and its terminating `;` — match that pair and discard it.
+fn skip_function_body(input: &mut &str) -> PResult<()> {
+    if let Some(pos) = input.find("return") {
+        *input = &input[pos + 6..];
+        if let Some(semi) = input.find(';') {
+            *input = &input[semi + 1..];
+            return Ok(());
+        }
+    }
+    Err(ContextError::new())
+}
+
+fn parse_struct_def(input: &mut &str) -> PResult<StructType> {
     literal("struct").parse_next(input)?;
     ws_comments_required(input)?;
-    let _: &str = terminated(take_until(0.., ";"), ";").parse_next(input)?;
-    Ok(())
+    let name = identifier(input)?.to_string();
+    ws_comments(input);
+    opt_comma(input); // optional comma after the struct name
+    let mut fields = vec![parse_struct_field(input)?];
+    loop {
+        ws_comments(input);
+        opt_comma(input);
+        ws_comments(input);
+        match opt(parse_struct_field).parse_next(input)? {
+            Some(f) => fields.push(f),
+            None => break,
+        }
+    }
+    ws_comments(input);
+    literal(";").parse_next(input)?;
+    Ok(StructType { name, fields })
+}
+
+fn parse_struct_field(input: &mut &str) -> PResult<StructField> {
+    ws_comments(input);
+    literal("value").parse_next(input)?;
+    ws_comments_required(input)?;
+    let name = identifier(input)?.to_string();
+    ws_comments_required(input)?;
+    let value_type = value_type_name(input)?.to_string();
+    ws_comments(input);
+    let optional = opt(literal::<_, _, ContextError>("?"))
+        .parse_next(input)?
+        .is_some();
+    Ok(StructField {
+        name,
+        value_type,
+        optional,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,24 +1253,149 @@ mod tests {
         assert_eq!(s2.entities.get("person").unwrap().owns.len(), 2);
     }
 
-    // --- Function/struct skip ---
+    // --- Function/struct parsing ---
 
     #[test]
-    fn test_function_skipped() {
+    fn test_function_parsed_alongside_other_defs() {
         let schema = parse_typeql(
             "define\nattribute name, value string;\nfun calc($d: date) -> integer:\n  match $x = 1;\n  return 30;\nentity person, owns name;\n",
         ).unwrap();
         assert_eq!(schema.attributes.len(), 1);
         assert_eq!(schema.entities.len(), 1);
+        assert_eq!(schema.functions.len(), 1);
+        let func = schema.functions.get("calc").unwrap();
+        assert_eq!(func.parameters.len(), 1);
+        assert_eq!(func.parameters[0].name, "d");
+        assert_eq!(func.parameters[0].type_, "date");
+        assert!(!func.return_type.is_stream);
+        assert_eq!(func.return_type.types.len(), 1);
+        assert_eq!(func.return_type.types[0].name, "integer");
+        assert!(!func.return_type.types[0].optional);
     }
 
     #[test]
-    fn test_struct_skipped() {
+    fn test_struct_parsed_alongside_other_defs() {
         let schema = parse_typeql(
             "define\nattribute name, value string;\nstruct pn, value first string, value last string;\nentity person, owns name;\n",
         ).unwrap();
         assert_eq!(schema.attributes.len(), 1);
         assert_eq!(schema.entities.len(), 1);
+        assert_eq!(schema.structs.len(), 1);
+        let st = schema.structs.get("pn").unwrap();
+        assert_eq!(st.fields.len(), 2);
+        assert_eq!(st.fields[0].name, "first");
+        assert_eq!(st.fields[1].name, "last");
+    }
+
+    // --- Structured return-type contract ---
+
+    /// Assert a return type's items match `(name, optional)` pairs in order.
+    fn assert_return_items(rt: &ReturnType, expected: &[(&str, bool)]) {
+        assert_eq!(
+            rt.types.len(),
+            expected.len(),
+            "item count mismatch: {:?}",
+            rt.types
+        );
+        for (item, (name, optional)) in rt.types.iter().zip(expected) {
+            assert_eq!(item.name, *name);
+            assert_eq!(item.optional, *optional);
+        }
+    }
+
+    #[test]
+    fn test_function_return_stream_single() {
+        let schema = parse_typeql("define\nfun f() -> { int }: return 1;").unwrap();
+        let rt = &schema.functions.get("f").unwrap().return_type;
+        assert!(rt.is_stream);
+        assert_return_items(rt, &[("int", false)]);
+    }
+
+    #[test]
+    fn test_function_return_stream_multi() {
+        let schema =
+            parse_typeql("define\nfun f() -> { user, phone, string }: return 1;").unwrap();
+        let rt = &schema.functions.get("f").unwrap().return_type;
+        assert!(rt.is_stream);
+        assert_return_items(rt, &[("user", false), ("phone", false), ("string", false)]);
+    }
+
+    #[test]
+    fn test_function_return_scalar_single() {
+        let schema = parse_typeql("define\nfun f() -> integer: return 1;").unwrap();
+        let rt = &schema.functions.get("f").unwrap().return_type;
+        assert!(!rt.is_stream);
+        assert_return_items(rt, &[("integer", false)]);
+    }
+
+    #[test]
+    fn test_function_return_scalar_tuple() {
+        let schema = parse_typeql("define\nfun f() -> integer, integer: return 1;").unwrap();
+        let rt = &schema.functions.get("f").unwrap().return_type;
+        assert!(!rt.is_stream);
+        assert_return_items(rt, &[("integer", false), ("integer", false)]);
+    }
+
+    #[test]
+    fn test_function_return_bool() {
+        let schema = parse_typeql("define\nfun f() -> bool: return true;").unwrap();
+        let rt = &schema.functions.get("f").unwrap().return_type;
+        assert!(!rt.is_stream);
+        assert_return_items(rt, &[("bool", false)]);
+    }
+
+    #[test]
+    fn test_function_return_optional_token() {
+        let schema = parse_typeql("define\nfun f() -> place, name?: return 1;").unwrap();
+        let rt = &schema.functions.get("f").unwrap().return_type;
+        assert!(!rt.is_stream);
+        assert_return_items(rt, &[("place", false), ("name", true)]);
+    }
+
+    #[test]
+    fn test_function_multi_param() {
+        let schema =
+            parse_typeql("define\nfun f($birth-date: date, $n: integer) -> bool: return true;")
+                .unwrap();
+        let func = schema.functions.get("f").unwrap();
+        assert_eq!(func.parameters.len(), 2);
+        assert_eq!(func.parameters[0].name, "birth-date");
+        assert_eq!(func.parameters[0].type_, "date");
+        assert_eq!(func.parameters[1].name, "n");
+        assert_eq!(func.parameters[1].type_, "integer");
+    }
+
+    #[test]
+    fn test_function_zero_params() {
+        let schema = parse_typeql("define\nfun f() -> integer: return 1;").unwrap();
+        let func = schema.functions.get("f").unwrap();
+        assert!(func.parameters.is_empty());
+    }
+
+    #[test]
+    fn test_struct_with_optional_field() {
+        let schema = parse_typeql(
+            "define\nstruct person-name, value first string, value middle string?;",
+        )
+        .unwrap();
+        let st = schema.structs.get("person-name").unwrap();
+        assert_eq!(st.fields.len(), 2);
+        assert_eq!(st.fields[0].name, "first");
+        assert_eq!(st.fields[0].value_type, "string");
+        assert!(!st.fields[0].optional);
+        assert_eq!(st.fields[1].name, "middle");
+        assert_eq!(st.fields[1].value_type, "string");
+        assert!(st.fields[1].optional);
+    }
+
+    #[test]
+    fn test_function_param_type_serde_key() {
+        let schema =
+            parse_typeql("define\nfun f($x: integer) -> integer: return 1;").unwrap();
+        let func = schema.functions.get("f").unwrap();
+        let json = serde_json::to_string(&func.parameters[0]).unwrap();
+        assert!(json.contains("\"type\""), "expected \"type\" key: {}", json);
+        assert!(!json.contains("type_"), "type_ leaked into JSON: {}", json);
     }
 
     // --- Multiple define blocks ---

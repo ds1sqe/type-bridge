@@ -28,7 +28,6 @@ The project requires:
 - `type-bridge-core>=1.4.5`: Rust runtime for ORM connectivity and query execution
 - `pydantic>=2.12.4`: For validation and type coercion
 - `isodate==0.7.2`: For Duration type support (ISO 8601)
-- `lark>=1.1.9`: Parser toolkit for TypeQL schema parsing
 - `jinja2>=3.1.0`: Template engine for code generation
 - `typer>=0.15.0`: CLI framework for generator and migration tools
 

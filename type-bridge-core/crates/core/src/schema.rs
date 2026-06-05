@@ -187,6 +187,71 @@ pub struct AttributeType {
 }
 
 // ---------------------------------------------------------------------------
+// FunctionType / StructType
+// ---------------------------------------------------------------------------
+
+/// A TypeDB function definition (signature only; body is parsed and discarded).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionType {
+    /// Function name (e.g. `"calculate-age"`).
+    pub name: String,
+    /// Ordered parameter list.
+    pub parameters: Vec<Parameter>,
+    /// Structured return type (stream flag + ordered type tokens).
+    pub return_type: ReturnType,
+}
+
+/// A single function parameter (`$name: type`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Parameter {
+    /// Parameter name with the leading `$` stripped.
+    pub name: String,
+    /// Parameter type token (a value-type keyword or an identifier).
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+/// A function return type. `is_stream` distinguishes `{ ... }` (stream) from a
+/// bare scalar/tuple. Optionality is structural (`ReturnTypeItem.optional`),
+/// never a `?`-suffix — each binding renders it its own way.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReturnType {
+    /// Whether the return is a stream (`-> { ... }`).
+    pub is_stream: bool,
+    /// Ordered return-type items.
+    pub types: Vec<ReturnTypeItem>,
+}
+
+/// A single return-type entry: a type token plus its optionality.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReturnTypeItem {
+    /// Type token (a value-type keyword or an identifier).
+    pub name: String,
+    /// Whether the type carries a trailing `?` (optional).
+    pub optional: bool,
+}
+
+/// A TypeDB struct definition (TypeDB 3.0 composite value type).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructType {
+    /// Struct name (e.g. `"person-name"`).
+    pub name: String,
+    /// Ordered field list.
+    pub fields: Vec<StructField>,
+}
+
+/// A single struct field (`value name type [?]`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructField {
+    /// Field name.
+    pub name: String,
+    /// TypeDB value type keyword.
+    pub value_type: String,
+    /// Whether the field is optional (trailing `?`).
+    pub optional: bool,
+}
+
+// ---------------------------------------------------------------------------
 // EntityType
 // ---------------------------------------------------------------------------
 
@@ -264,6 +329,12 @@ pub struct TypeSchema {
     pub relations: BTreeMap<String, RelationType>,
     /// All attribute type definitions, keyed by type name. Sorted alphabetically (BTreeMap).
     pub attributes: BTreeMap<String, AttributeType>,
+    /// All function definitions, keyed by name. Do not participate in inheritance.
+    #[serde(default)]
+    pub functions: BTreeMap<String, FunctionType>,
+    /// All struct definitions, keyed by name. Do not participate in inheritance.
+    #[serde(default)]
+    pub structs: BTreeMap<String, StructType>,
 }
 
 /// Provides a default empty [`TypeSchema`] by delegating to [`TypeSchema::new()`].
@@ -281,6 +352,8 @@ impl TypeSchema {
             entities: BTreeMap::new(),
             relations: BTreeMap::new(),
             attributes: BTreeMap::new(),
+            functions: BTreeMap::new(),
+            structs: BTreeMap::new(),
         }
     }
 

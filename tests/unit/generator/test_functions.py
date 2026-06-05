@@ -27,7 +27,8 @@ class TestParseFunctions:
         assert "calculate-age" in schema.functions
         func = schema.functions["calculate-age"]
         assert func.name == "calculate-age"
-        assert func.return_type == "{ int }"
+        assert func.return_type.is_stream is True
+        assert [(t.name, t.optional) for t in func.return_type.types] == [("int", False)]
         assert len(func.parameters) == 1
         assert func.parameters[0].name == "birth-date"
         assert func.parameters[0].type == "date"
@@ -63,7 +64,12 @@ class TestParseFunctions:
         schema = parse_tql_schema(schema_text)
 
         func = schema.functions["all_users_and_phones"]
-        assert func.return_type == "{ user, phone, string }"
+        assert func.return_type.is_stream is True
+        assert [(t.name, t.optional) for t in func.return_type.types] == [
+            ("user", False),
+            ("phone", False),
+            ("string", False),
+        ]
         assert len(func.parameters) == 0
 
     def test_parse_single_scalar_return(self) -> None:
@@ -77,7 +83,8 @@ class TestParseFunctions:
         schema = parse_tql_schema(schema_text)
 
         func = schema.functions["add"]
-        assert func.return_type == "integer"
+        assert func.return_type.is_stream is False
+        assert [(t.name, t.optional) for t in func.return_type.types] == [("integer", False)]
         assert len(func.parameters) == 2
 
     def test_parse_tuple_return(self) -> None:
@@ -91,7 +98,11 @@ class TestParseFunctions:
         schema = parse_tql_schema(schema_text)
 
         func = schema.functions["divide"]
-        assert func.return_type == "integer, integer"
+        assert func.return_type.is_stream is False
+        assert [(t.name, t.optional) for t in func.return_type.types] == [
+            ("integer", False),
+            ("integer", False),
+        ]
 
     def test_parse_bool_return(self) -> None:
         """Parse function with bool return type."""
@@ -104,7 +115,8 @@ class TestParseFunctions:
         schema = parse_tql_schema(schema_text)
 
         func = schema.functions["is_reachable"]
-        assert func.return_type == "bool"
+        assert func.return_type.is_stream is False
+        assert [(t.name, t.optional) for t in func.return_type.types] == [("bool", False)]
 
     def test_parse_optional_return_type(self) -> None:
         """Parse function with optional return type."""
@@ -117,7 +129,11 @@ class TestParseFunctions:
         schema = parse_tql_schema(schema_text)
 
         func = schema.functions["any_place_with_optional_name"]
-        assert func.return_type == "place, name?"
+        assert func.return_type.is_stream is False
+        assert [(t.name, t.optional) for t in func.return_type.types] == [
+            ("place", False),
+            ("name", True),
+        ]
 
     def test_parse_no_parameters(self) -> None:
         """Parse function with no parameters."""
@@ -130,7 +146,8 @@ class TestParseFunctions:
         schema = parse_tql_schema(schema_text)
 
         func = schema.functions["mean_karma"]
-        assert func.return_type == "double"
+        assert func.return_type.is_stream is False
+        assert [(t.name, t.optional) for t in func.return_type.types] == [("double", False)]
         assert len(func.parameters) == 0
 
     def test_parse_aggregate_return(self) -> None:
@@ -144,7 +161,11 @@ class TestParseFunctions:
         schema = parse_tql_schema(schema_text)
 
         func = schema.functions["karma_sum_and_sum_squares"]
-        assert func.return_type == "double, double"
+        assert func.return_type.is_stream is False
+        assert [(t.name, t.optional) for t in func.return_type.types] == [
+            ("double", False),
+            ("double", False),
+        ]
 
 
 class TestRenderFunctions:

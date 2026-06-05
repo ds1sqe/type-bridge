@@ -308,6 +308,22 @@ impl TypeSchema {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
+    /// Get the functions map as a Python dict.
+    #[getter]
+    fn functions(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pythonize(py, &self.inner.functions)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Get the structs map as a Python dict.
+    #[getter]
+    fn structs(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pythonize(py, &self.inner.structs)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
     /// Validate a query (as list of clause dicts) against this schema.
     ///
     /// Convenience method equivalent to `ValidationEngine().validate_query(clauses, schema)`.

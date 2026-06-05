@@ -4,6 +4,22 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Changes
+
+#### Generator parsing routed through the Rust core (#125)
+
+- **`lark` removed** — the generator no longer depends on `lark`. TQL schema
+  parsing runs entirely through the Rust `type_bridge_core` core, which is the
+  single source of the parsed schema. The `typeql.lark` grammar and the
+  lark-vs-Rust differential test have been deleted, and `lark` is dropped from
+  the runtime dependencies.
+- **Structured function return types** — `FunctionSpec.return_type` is now a
+  structured `ReturnTypeSpec` (a `is_stream` flag plus an ordered list of
+  `ReturnTypeItem(name, optional)`) instead of a formatted string. Optionality
+  is carried as a boolean, so the intermediate representation is
+  language-neutral and additive for future bindings. Generated output is
+  unchanged — the renderer reconstructs any `?` tokens at its own emit site.
+
 ### New Features
 
 #### Node.js typed model layer (#124)

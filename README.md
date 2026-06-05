@@ -380,7 +380,6 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 - type-bridge-core>=1.4.5
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
-- lark>=1.1.9 (for schema parsing)
 - jinja2>=3.1.0 (for code generation)
 - typer>=0.15.0 (for CLI)
 

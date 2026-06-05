@@ -68,25 +68,6 @@ def _get_python_type(type_name: str) -> str:
     return base
 
 
-def _parse_return_type(return_type: str) -> tuple[bool, list[str]]:
-    """Parse return type string into components.
-
-    Args:
-        return_type: TypeDB return type (e.g., "integer", "{ artifact, integer }")
-
-    Returns:
-        Tuple of (is_stream, list_of_types)
-    """
-    is_stream = return_type.startswith("{") and return_type.endswith("}")
-    if is_stream:
-        inner = return_type[1:-1].strip()
-    else:
-        inner = return_type
-
-    types = [t.strip() for t in inner.split(",")]
-    return is_stream, types
-
-
 def _get_return_type_hint(is_stream: bool, types: list[str]) -> str:
     """Generate Python return type hint for the function.
 
@@ -127,8 +108,9 @@ def _build_function_context(name: str, spec: FunctionSpec) -> FunctionContext:
             )
         )
 
-    # Parse return type
-    is_stream, return_types = _parse_return_type(spec.return_type)
+    # Reconstruct ?-suffixed string list from structured IR
+    is_stream = spec.return_type.is_stream
+    return_types = [item.name + ("?" if item.optional else "") for item in spec.return_type.types]
     return_hint = _get_return_type_hint(is_stream, return_types)
 
     # Build parameter signature
