@@ -117,6 +117,7 @@ export { AttributeFlags, Card, Flag, Key, TypeFlags, TypeNameCase, Unique, forma
 export { Entity, FieldSpec, ListFieldSpec, Relation, RoleSpec, field, role, type AttributeClass, type EntitySchema, type FieldValue, type IidBearing, type InstanceDict, type InstanceFields, type MergedSchema, type ModelClass, type ModelInstance, type ParentModelClass, type ParentOption, type PlainFieldValue, type RelationSchema, type SchemaSpec, } from "./model.js";
 export { TypedCodecError, attributeToPlain, hydrateAttributeEntries, hydrateAttributes, keyAttributeDescriptor, lowerAttributes, lowerAttributeValue, lowerFilters, plainToAttribute, runtimeAttributeValueFromUnknown, } from "./codec.js";
 export { TypedEntityManager, TypedRelationManager, buildRolePlayers, entityManagerFor, relationManagerFor, type ExactFilters, type ManagerConnection, } from "./manager.js";
+export { parseSchema, type SchemaParserNative, type AttributeType as SchemaAttributeType, type Cardinality as SchemaCardinality, type EntityType as SchemaEntityType, type FunctionType as SchemaFunctionType, type OwnedAttribute as SchemaOwnedAttribute, type Parameter as SchemaParameter, type PlayedRole as SchemaPlayedRole, type RelationType as SchemaRelationType, type ReturnType as SchemaReturnType, type ReturnTypeItem as SchemaReturnTypeItem, type RoleSpec as SchemaRoleSpec, type StructField as SchemaStructField, type StructType as SchemaStructType, type TypeSchema, } from "./parser.js";
 export interface DynamicEntityRow {
     iid: string | null;
     type_name: string | null;
@@ -277,7 +278,10 @@ export interface NativeRuntime {
     ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null): void;
     connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null): NativeRustDatabase;
 }
-export interface NativeModule extends NativeRuntime, NativeMarshalling {
+interface NativeSchemaParser {
+    parseSchemaJson(input: string): string;
+}
+export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
     NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
 }
 export interface RustDatabaseConnectOptions {
@@ -381,3 +385,4 @@ export declare class RustDynamicRelationManager {
     queryGroupByAggregate(spec: DynamicQuerySpec, groupFields: string[], aggregates: AggregateInput[]): unknown[];
     deleteByIid(iid: string): void;
 }
+export { generateModels, type GenerateModelsOptions, type NamingOptions, } from "./generator/index.js";

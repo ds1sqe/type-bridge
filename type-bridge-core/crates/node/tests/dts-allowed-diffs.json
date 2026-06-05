@@ -12,6 +12,14 @@
     {
       "symbol": "attributeToPlain / plainToAttribute (codec.d.ts)",
       "rationale": "Plan 11 Phase 1: serialization-only unwrap / re-brand helpers reused by toDict()/fromDict()."
+    },
+    {
+      "symbol": "parseSchema + TypeSchema/EntityType/RelationType/AttributeType/... (parser.d.ts, new file)",
+      "rationale": "Plan 12 Phase 1: marshalling-only typed wrapper over the new parseSchemaJson NAPI binding; TypeSchema mirrors the Rust serde shape (parse + inheritance resolution stay in Rust). SchemaParserNative is the minimal injected-native contract."
+    },
+    {
+      "symbol": "generateModels + GenerateModelsOptions + NamingOptions (index.d.ts re-export from generator/index.js)",
+      "rationale": "Plan 12: the TypeScript model generator entrypoint, the Node equivalent of Python generate_models(). Naming helpers (toClassName/toFieldName) stay generator-internal and are NOT re-exported at the package root (minimal surface)."
     }
   ],
   "allowedDiffs": []

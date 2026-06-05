@@ -12,6 +12,7 @@ name = "type_bridge_node"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+type-bridge-core-lib = { path = "../core", version = "1.4.5" }
 type-bridge-orm = { path = "../orm", version = "1.4.5", default-features = false, features = ["typedb"] }
 napi = { version = "2", features = ["napi4"] }
 napi-derive = "2"

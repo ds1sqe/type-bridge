@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "../../../tmp/node-gen-parity",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@type-bridge/node": ["./typescript/index.ts"]
+    },
+    "strict": true,
+    "target": "ES2022"
+  },
+  "include": [
+    "typescript/**/*.ts",
+    "tests/parity/generated/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "dist-integration",
+    "../../../tmp/node-gen-parity"
+  ]
+}

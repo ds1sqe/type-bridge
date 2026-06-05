@@ -336,6 +336,107 @@ places, both forced by TypeScript's type system:
    class-level metadata, because TypeScript has no decorator-free way to attach
    that information to a field at the type level.
 
+## Generating models from a schema
+
+The Node package ships a model generator — the TypeScript equivalent of the Python
+`generate_models()`. Given a TypeDB schema in TypeQL, it writes a ready-to-use set
+of typed TypeScript source files so you do not have to author attribute, entity, and
+relation classes by hand.
+
+```text
+schema.tql  →  generateModels()  →  attributes.ts
+                                 →  entities.ts
+                                 →  relations.ts
+                                 →  index.ts        (barrel re-export)
+```
+
+The four generated files mirror the Python generator's output (`.py` files plus
+`__init__.py`). The barrel `index.ts` re-exports all generated classes so consumer
+code can import from a single path.
+
+### Architecture: one parser, two renderers
+
+Parsing and inheritance resolution happen **once** in the shared Rust core. Each
+language then runs its own renderer over that resolved schema. The Python generator
+and the TypeScript generator both consume the same `TypeSchema` — they do not
+re-implement parsing. This is why a model generated from TypeScript and the
+corresponding Python model are structurally equivalent: the shared schema walk
+produces identical descriptors in both renderers.
+
+### Usage
+
+`generateModels` and `parseSchema` are exported from `@type-bridge/node`.
+The native module must be **injected** — obtain it from `loadNative()` and
+pass it via the `native` option:
+
+```ts
+import { generateModels, loadNative } from "@type-bridge/node";
+import { readFileSync } from "node:fs";
+
+const tql = readFileSync("schema.tql", "utf8");
+generateModels(tql, "src/models", { native: loadNative() });
+```
+
+`generateModels` writes `attributes.ts`, `entities.ts`, `relations.ts`, and
+`index.ts` into the output directory. Each file imports only from
+`@type-bridge/node`, so generated code has no transitive dependencies beyond
+the package itself.
+
+### API
+
+```ts
+generateModels(tql: string, outputDir: string, options: GenerateModelsOptions): void
+```
+
+| Parameter   | Type                    | Description                              |
+| ----------- | ----------------------- | ---------------------------------------- |
+| `tql`       | `string`                | TypeDB schema source (TypeQL text)       |
+| `outputDir` | `string`                | Directory to write the four output files |
+| `options`   | `GenerateModelsOptions` | Must include `native`; see below         |
+
+`GenerateModelsOptions` is defined as:
+
+```ts
+type GenerateModelsOptions = { native: SchemaParserNative } & NamingOptions;
+type NamingOptions = { implicitKeyAttributes?: string[] };
+```
+
+`SchemaParserNative` is the native module handle; `loadNative()` returns it.
+`implicitKeyAttributes` lists attribute names that should be treated as `@key`
+even when the schema does not annotate them — useful for convention-based key
+fields such as `id`.
+
+For the lower-level parse step, `parseSchema` is also exported:
+
+```ts
+parseSchema(tql: string, native: SchemaParserNative): TypeSchema
+```
+
+`TypeSchema` is the resolved schema value the Rust core produces. You rarely need
+this directly; it is the intermediate form that `generateModels` consumes.
+
+### Naming
+
+Generated names are mechanical and match the Python generator exactly:
+
+- Class names are **PascalCase** derived from the TypeDB type name:
+  `parity-person` → `ParityPerson`, `company` → `Company`.
+- Field and role keys are **snake\_case** derived from the attribute or role name:
+  `parity-id` → `parity_id`, `parity-tag` → `parity_tag`.
+
+Names are **not prettified** — no prefix-stripping, no pluralization. A generated
+TypeScript model and its Python counterpart for the same schema produce
+byte-identical descriptors; a cross-language parity test enforces this.
+
+### Forward note on build integration
+
+The generator writes files that import from the `@type-bridge/node` package
+entrypoint. The published package's compiled output layout is being finalized in a
+separate packaging change, so integrating generated output into a build pipeline
+should be treated as forthcoming — consistent with the note below. This guide
+documents the generator API and the generated surface; it does not cover how the
+package itself is built or distributed.
+
 ## Packaging note
 
 In this repository the typed layer is consumed as **TypeScript source** (compiled

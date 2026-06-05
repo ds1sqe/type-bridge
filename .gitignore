@@ -43,3 +43,6 @@ typeql-ref/
 type-bridge-core/**/target/
 *.profraw
 *.profdata
+
+# Plan 12 generator cross-language parity build output (ephemeral)
+type-bridge-core/crates/node/tests/parity/generated/

@@ -14,6 +14,7 @@ use napi_derive::napi;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
+use type_bridge_core_lib::schema::TypeSchema;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap,
@@ -1029,6 +1030,21 @@ pub fn normalize_relation_write_batch_json(
         serde_json::from_str(&batch_json).map_err(invalid_json_error("relation batch"))?;
     let batch = relation_write_batch_from_json(&descriptor, &batch)?;
     serde_json::to_string(&batch).map_err(json_serialize_error)
+}
+
+/// Parse a TQL `define` block and return the resolved [`TypeSchema`] as a
+/// JSON string.
+///
+/// This is a marshalling-only binding: parse + inheritance resolution happen in
+/// the shared Rust core; the result is serialized straight to JSON. No query
+/// construction, no generation policy.
+#[napi(js_name = "parseSchemaJson")]
+pub fn parse_schema_json(input: String) -> Result<String> {
+    let schema = TypeSchema::from_typeql(&input)
+        .map_err(|e| Error::from_reason(format!("Failed to parse schema definition: {e}")))?;
+    schema
+        .to_json()
+        .map_err(|e| Error::from_reason(format!("Failed to serialize schema JSON: {e}")))
 }
 
 fn attributes_from_json(

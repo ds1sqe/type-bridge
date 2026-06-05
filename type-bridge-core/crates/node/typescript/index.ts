@@ -184,6 +184,24 @@ export {
   type ExactFilters,
   type ManagerConnection,
 } from "./manager.js";
+export {
+  parseSchema,
+  type SchemaParserNative,
+  type AttributeType as SchemaAttributeType,
+  type Cardinality as SchemaCardinality,
+  type EntityType as SchemaEntityType,
+  type FunctionType as SchemaFunctionType,
+  type OwnedAttribute as SchemaOwnedAttribute,
+  type Parameter as SchemaParameter,
+  type PlayedRole as SchemaPlayedRole,
+  type RelationType as SchemaRelationType,
+  type ReturnType as SchemaReturnType,
+  type ReturnTypeItem as SchemaReturnTypeItem,
+  type RoleSpec as SchemaRoleSpec,
+  type StructField as SchemaStructField,
+  type StructType as SchemaStructType,
+  type TypeSchema,
+} from "./parser.js";
 
 export interface DynamicEntityRow {
   iid: string | null;
@@ -391,7 +409,11 @@ export interface NativeRuntime {
   ): NativeRustDatabase;
 }
 
-export interface NativeModule extends NativeRuntime, NativeMarshalling {
+interface NativeSchemaParser {
+  parseSchemaJson(input: string): string;
+}
+
+export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
   NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
 }
 
@@ -818,3 +840,12 @@ function parseConnectArguments(
     options: maybeOptions ?? {},
   };
 }
+
+// ---------------------------------------------------------------------------
+// Generator — additive re-export (Phase 2: attributes + entities)
+// ---------------------------------------------------------------------------
+export {
+  generateModels,
+  type GenerateModelsOptions,
+  type NamingOptions,
+} from "./generator/index.js";
