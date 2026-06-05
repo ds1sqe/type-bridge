@@ -403,7 +403,7 @@ function isRoleSpec(spec: SchemaSpec): spec is RoleSpec<readonly ModelTokenLike[
 
 function valueTypeForAttributeName(schema: EntitySchema, attrName: string) {
   for (const spec of Object.values(schema)) {
-    if (spec.kind === "field" && spec.attrType.attrName === attrName) {
+    if ((spec.kind === "field" || spec.kind === "list-field") && spec.attrType.attrName === attrName) {
       return spec.attrType.valueType;
     }
   }

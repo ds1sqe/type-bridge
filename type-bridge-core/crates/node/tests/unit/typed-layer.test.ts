@@ -34,11 +34,33 @@ class ParityNote extends attr.String("parity-note") {}
 class ParitySince extends attr.Date("parity-since") {}
 class ParityConfidence extends attr.Integer("parity-confidence") {}
 class ParityKind extends attr.String("parity-kind") {}
+// Multi-value attribute for parity-person.tags (added for Phase 3 full-corpus coverage).
+class ParityTag extends attr.String("parity-tag") {}
 
 class ParityParty extends Entity(TypeFlags({ name: "parity-party", abstract: true }), {
   id: field(ParityId, Key),
   name: field(ParityName).optional(),
 }) {}
+
+// Full parity-person: inherits from ParityParty and adds the multi-value `tags`
+// field. The Phase 1/2 files declared this progressively; here we declare it in
+// full so the complete corpus parity test can reference a single model class.
+class ParityPerson extends Entity(
+  "parity-person",
+  {
+    email: field(ParityEmail, Unique),
+    age: field(ParityAge).optional(),
+    score: field(ParityScore).optional(),
+    active: field(ParityActive).optional(),
+    birth_date: field(ParityBirthDate).optional(),
+    login_at: field(ParityLoginAt).optional(),
+    seen_at: field(ParitySeenAt).optional(),
+    balance: field(ParityBalance).optional(),
+    session_length: field(ParitySessionLength).optional(),
+    tags: field(ParityTag).list(Card(0, 5)),
+  },
+  { parent: ParityParty },
+) {}
 
 class ParityCompany extends Entity("parity-company", {
   id: field(ParityId, Key),
@@ -63,6 +85,35 @@ class ParityTokenOrigin extends Relation("parity-token-origin", {
   issue: role(ParityCompany, { cardinality: Card(1, 1) }),
   kind: field(ParityKind),
 }) {}
+
+// ---------------------------------------------------------------------------
+// Synthetic inherited-relation pair (Phase 3).
+//
+// No relation in descriptors.json carries a parent_type, so coverage for
+// relation inheritance is provided by an inline synthetic pair. These are NOT
+// in the fixture; their expected descriptors are hand-written to match what the
+// typed factory must emit for the `parent_type` + flattened-roles/attrs case.
+//
+// synthetic-base-rel  — abstract parent relation (no parent_type).
+// synthetic-child-rel — concrete child relation that inherits from base.
+// ---------------------------------------------------------------------------
+
+class SyntheticBaseRel extends Relation(
+  TypeFlags({ name: "synthetic-base-rel", abstract: true }),
+  {
+    anchor: role("parity-company", { cardinality: Card(1, 1) }),
+    note: field(ParityNote),
+  },
+) {}
+
+class SyntheticChildRel extends Relation(
+  "synthetic-child-rel",
+  {
+    extra: role("parity-person", { cardinality: Card(0, 5) }),
+    kind: field(ParityKind),
+  },
+  { parent: SyntheticBaseRel },
+) {}
 
 describe("typed attribute and flag layer", () => {
   test("all attribute factories expose the expected wire value type", () => {
@@ -228,6 +279,163 @@ describe("descriptor emission parity", () => {
         attrDescriptor("carded", "parity-name", "string", [{ Card: [1, 5] }], false),
       ],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3: Full-corpus descriptor parity gate (all entities + relations)
+//
+// This is the offline descriptor-equivalence gate the typed surface owes before
+// Plan 11 wires it into the live parity job. Every type in descriptors.json must
+// emit a normalized descriptor byte-identical to the fixture. parity-person —
+// previously deferred in the 07-corpus test above — is included in full here
+// (parent_type, flattened owned_attributes including the multi-value `tags` Card).
+// ---------------------------------------------------------------------------
+
+describe("Phase 3 full-corpus parity gate (all types in descriptors.json)", () => {
+  test("all entities and relations in descriptors.json match the fixture after normalization", () => {
+    const fixture = JSON.parse(
+      fs.readFileSync(
+        path.resolve(process.cwd(), "../../../tests/integration/parity/fixtures/descriptors.json"),
+        "utf8",
+      ),
+    ) as DescriptorSnapshot;
+
+    const actual = normalizeDescriptorSnapshot({
+      version: 1,
+      entities: [
+        ParityParty.descriptor(),
+        ParityPerson.descriptor(),
+        ParityCompany.descriptor(),
+        ParityEmailMessage.descriptor(),
+      ],
+      relations: [ParityMembership.descriptor(), ParityTokenOrigin.descriptor()],
+    });
+
+    const expected = normalizeDescriptorSnapshot({
+      version: fixture.version,
+      entities: fixture.entities,
+      relations: fixture.relations,
+    });
+
+    assert.deepEqual(actual, expected);
+  });
+
+  test("parity-person parent_type and full flattened owned_attributes pass (parity-person deferred gap closed)", () => {
+    const fixture = JSON.parse(
+      fs.readFileSync(
+        path.resolve(process.cwd(), "../../../tests/integration/parity/fixtures/descriptors.json"),
+        "utf8",
+      ),
+    ) as DescriptorSnapshot;
+
+    const fixturePersonRaw = fixture.entities.find((d) => d.type_name === "parity-person");
+    assert.ok(fixturePersonRaw != null, "parity-person must exist in fixture");
+
+    const actual = normalizeDescriptorSnapshot({ version: 1, entities: [ParityPerson.descriptor()], relations: [] });
+    const expected = normalizeDescriptorSnapshot({ version: fixture.version, entities: [fixturePersonRaw], relations: [] });
+
+    assert.deepEqual(actual, expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3: Relation inheritance coverage (synthetic pair, no live TypeDB).
+//
+// No relation in descriptors.json carries a parent_type, so coverage for
+// relation inheritance uses the inline synthetic-base-rel / synthetic-child-rel
+// pair declared at the top of this file. Expected descriptors are hand-written
+// to match what the typed factory must emit under the same flattening rules as
+// entity inheritance.
+// ---------------------------------------------------------------------------
+
+describe("Phase 3 relation inheritance (synthetic parent + child relation)", () => {
+  test("synthetic-base-rel emits is_abstract:true, parent_type:null, its own roles and attrs", () => {
+    const d = SyntheticBaseRel.descriptor() as RelationDescriptor;
+    assert.equal(d.type_name, "synthetic-base-rel");
+    assert.equal(d.is_abstract, true);
+    assert.equal(d.parent_type, null);
+
+    // Owned attributes: just `note` (the only FieldSpec in the base schema).
+    assert.deepEqual(d.owned_attributes, [
+      attrDescriptor("note", "parity-note", "string", [], false),
+    ]);
+
+    // Roles: just `anchor` from the base schema.
+    assert.deepEqual(d.roles, [
+      { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] },
+    ]);
+  });
+
+  test("synthetic-child-rel emits parent_type and flattened inherited roles + attrs", () => {
+    const d = SyntheticChildRel.descriptor() as RelationDescriptor;
+    assert.equal(d.type_name, "synthetic-child-rel");
+    assert.equal(d.is_abstract, false);
+    assert.equal(d.parent_type, "synthetic-base-rel");
+
+    // owned_attributes: parent `note` re-listed, then child-local `kind`.
+    // (Order is normalizer-insensitive; both must be present with correct content.)
+    const fieldNames = d.owned_attributes.map((a) => a.field_name);
+    assert.ok(fieldNames.includes("note"), "inherited `note` must be re-listed");
+    assert.ok(fieldNames.includes("kind"), "child-local `kind` must be present");
+
+    const noteAttr = d.owned_attributes.find((a) => a.field_name === "note");
+    assert.deepEqual(noteAttr, attrDescriptor("note", "parity-note", "string", [], false));
+
+    // roles: inherited `anchor` re-listed, then child-local `extra`.
+    const roleNames = d.roles.map((r) => r.role_name);
+    assert.ok(roleNames.includes("anchor"), "inherited `anchor` role must be re-listed");
+    assert.ok(roleNames.includes("extra"), "child-local `extra` role must be present");
+
+    const anchorRole = d.roles.find((r) => r.role_name === "anchor");
+    assert.deepEqual(anchorRole, {
+      role_name: "anchor",
+      player_type_names: ["parity-company"],
+      cardinality: [1, 1],
+    });
+
+    const extraRole = d.roles.find((r) => r.role_name === "extra");
+    assert.deepEqual(extraRole, {
+      role_name: "extra",
+      player_type_names: ["parity-person"],
+      cardinality: [0, 5],
+    });
+  });
+
+  test("synthetic-child-rel normalized descriptor matches a hand-written expected descriptor", () => {
+    // Hand-written expected: the full descriptor the factory must produce for a
+    // child relation with parent_type, flattened roles, and flattened attrs.
+    const expected = normalizeDescriptorSnapshot({
+      version: 1,
+      entities: [],
+      relations: [
+        {
+          type_name: "synthetic-child-rel",
+          is_abstract: false,
+          parent_type: "synthetic-base-rel",
+          owned_attributes: [
+            // parent attrs re-listed
+            attrDescriptor("note", "parity-note", "string", [], false),
+            // child-local attr
+            attrDescriptor("kind", "parity-kind", "string", [], false),
+          ],
+          roles: [
+            // parent role re-listed
+            { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] as [number, number | null] },
+            // child-local role
+            { role_name: "extra", player_type_names: ["parity-person"], cardinality: [0, 5] as [number, number | null] },
+          ],
+        },
+      ],
+    });
+
+    const actual = normalizeDescriptorSnapshot({
+      version: 1,
+      entities: [],
+      relations: [SyntheticChildRel.descriptor() as RelationDescriptor],
+    });
+
+    assert.deepEqual(actual, expected);
   });
 });
 

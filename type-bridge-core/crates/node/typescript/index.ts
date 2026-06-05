@@ -143,6 +143,7 @@ export {
 export {
   Entity,
   FieldSpec,
+  ListFieldSpec,
   Relation,
   RoleSpec,
   field,
@@ -152,7 +153,10 @@ export {
   type FieldValue,
   type IidBearing,
   type InstanceFields,
+  type MergedSchema,
   type ModelClass,
+  type ParentModelClass,
+  type ParentOption,
   type RelationSchema,
   type SchemaSpec,
 } from "./model.js";

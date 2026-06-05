@@ -16,7 +16,7 @@ import {
   type ValueType,
 } from "./index.js";
 import { type Attribute } from "./attribute.js";
-import type { EntitySchema, FieldSpec, RelationSchema, SchemaSpec } from "./model.js";
+import type { EntitySchema, FieldSpec, ListFieldSpec, RelationSchema, SchemaSpec } from "./model.js";
 
 type AttributeClass = (new (value: never) => Attribute<unknown, string>) & {
   readonly attrName: string;
@@ -27,6 +27,11 @@ type FieldLike = {
   readonly kind: "field";
   readonly attrType: AttributeClass;
   readonly flags: { readonly annotations: readonly unknown[] };
+};
+
+type ListFieldLike = {
+  readonly kind: "list-field";
+  readonly attrType: AttributeClass;
 };
 
 export class TypedCodecError extends Error {
@@ -43,11 +48,27 @@ export function lowerAttributes(
   const lowered: AttributeInput = {};
   const source = instance as Record<string, unknown>;
   for (const [fieldName, spec] of Object.entries(schema)) {
-    if (!isFieldSpec(spec)) {
-      continue;
-    }
     const value = source[fieldName];
     if (value === undefined) {
+      continue;
+    }
+    if (isListFieldSpec(spec)) {
+      // A list field value is Attr[] — lower each element to its plain wire value
+      // and pass the resulting array. The NAPI insert parser already accepts a JS
+      // array per field and lowers it to repeated (attr_name, value) tuples
+      // (crates/node/src/lib.rs, the `value.as_array()` branch).
+      if (!Array.isArray(value)) {
+        throw new TypedCodecError(`List field "${fieldName}" must be an array`);
+      }
+      lowered[fieldName] = (value as unknown[]).map((element) => {
+        if (!isAttributeInstance(element)) {
+          throw new TypedCodecError(`List field "${fieldName}" elements must be Attribute instances`);
+        }
+        return lowerAttributeValue(spec.attrType.valueType, element.value);
+      });
+      continue;
+    }
+    if (!isFieldSpec(spec)) {
       continue;
     }
     if (!isAttributeInstance(value)) {
@@ -79,22 +100,36 @@ export function lowerFilters(
 export function hydrateAttributes(
   row: Pick<DynamicEntityRow, "attributes">,
   schema: EntitySchema | RelationSchema,
-): Record<string, Attribute<unknown, string>> {
+): Record<string, Attribute<unknown, string> | Attribute<unknown, string>[]> {
   return hydrateAttributeEntries(row.attributes, schema);
 }
 
 export function hydrateAttributeEntries(
   entries: readonly (readonly [string, RuntimeAttributeValue])[],
   schema: EntitySchema | RelationSchema,
-): Record<string, Attribute<unknown, string>> {
+): Record<string, Attribute<unknown, string> | Attribute<unknown, string>[]> {
   const fieldsByAttrName = fieldSpecsByAttrName(schema);
-  const hydrated: Record<string, Attribute<unknown, string>> = {};
+  const hydrated: Record<string, Attribute<unknown, string> | Attribute<unknown, string>[]> = {};
   for (const [attrName, value] of entries) {
     const field = fieldsByAttrName.get(attrName);
     if (field === undefined) {
       continue;
     }
-    hydrated[field.fieldName] = hydrateAttributeValue(field.spec.attrType, value);
+    const hydrated_value = hydrateAttributeValue(field.spec.attrType, value);
+    if (field.isList) {
+      // Collect repeated-name tuples into a typed Attr[] for list fields.
+      // TypeDB returns multi-value attributes as repeated [attr_name, value] pairs
+      // with the same attr_name. Each pair is one element of the list.
+      const existing = hydrated[field.fieldName];
+      if (Array.isArray(existing)) {
+        existing.push(hydrated_value);
+      } else {
+        hydrated[field.fieldName] = [hydrated_value];
+      }
+    } else {
+      // Scalar field: single value, same behavior as before (no change).
+      hydrated[field.fieldName] = hydrated_value;
+    }
   }
   return hydrated;
 }
@@ -190,12 +225,15 @@ function hydrateAttributeValue(
 
 function fieldSpecsByAttrName(schema: EntitySchema | RelationSchema): Map<string, {
   fieldName: string;
-  spec: FieldLike;
+  spec: FieldLike | ListFieldLike;
+  isList: boolean;
 }> {
-  const fields = new Map<string, { fieldName: string; spec: FieldLike }>();
+  const fields = new Map<string, { fieldName: string; spec: FieldLike | ListFieldLike; isList: boolean }>();
   for (const [fieldName, spec] of Object.entries(schema)) {
-    if (isFieldSpec(spec)) {
-      fields.set(spec.attrType.attrName, { fieldName, spec });
+    if (isListFieldSpec(spec)) {
+      fields.set(spec.attrType.attrName, { fieldName, spec, isList: true });
+    } else if (isFieldSpec(spec)) {
+      fields.set(spec.attrType.attrName, { fieldName, spec, isList: false });
     }
   }
   return fields;
@@ -203,6 +241,10 @@ function fieldSpecsByAttrName(schema: EntitySchema | RelationSchema): Map<string
 
 function isFieldSpec(spec: SchemaSpec | undefined): spec is FieldSpec<AttributeClass, boolean> {
   return spec !== undefined && spec.kind === "field";
+}
+
+function isListFieldSpec(spec: SchemaSpec | undefined): spec is ListFieldSpec<AttributeClass, boolean> {
+  return spec !== undefined && spec.kind === "list-field";
 }
 
 function isAttributeInstance(value: unknown): value is Attribute<unknown, string> {
