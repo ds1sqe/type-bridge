@@ -336,3 +336,98 @@ class TestGenerateModelsByteIdentical:
                 f"--- TOML output ({filename}) ---\n{toml_content}\n"
                 f"--- TQL output ({filename}) ---\n{tql_content}\n"
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: relation + roles + plays round-trip equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestRelationRoundtrip:
+    """Round-trip equivalence for the relations+roles+plays fixture.
+
+    Reuses ``assert_roundtrip_equivalent`` (unchanged from 01) and adds focused
+    assertions on relation roles, per-role cardinality, and entity plays.
+    """
+
+    def test_relations_roles_roundtrip_equivalent(self) -> None:
+        """relations_roles.toml and relations_roles.tql must parse to equivalent IR."""
+        assert_roundtrip_equivalent(
+            FIXTURES_DIR / "relations_roles.toml",
+            FIXTURES_DIR / "relations_roles.tql",
+        )
+
+    def test_review_relation_roles_order_and_cardinality(self) -> None:
+        """Parsed TOML must contain review relation with roles in TOML array order
+        and with the correct per-role cardinalities."""
+        from type_bridge.generator.models import Cardinality
+
+        toml_text = (FIXTURES_DIR / "relations_roles.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "review" in schema.relations, "expected 'review' relation in parsed schema"
+        review = schema.relations["review"]
+
+        # roles are an ordered list — document comes before reviewer
+        assert len(review.roles) == 2, f"expected 2 roles, got {len(review.roles)}"
+        assert review.roles[0].name == "document", (
+            f"expected first role 'document', got {review.roles[0].name!r}"
+        )
+        assert review.roles[1].name == "reviewer", (
+            f"expected second role 'reviewer', got {review.roles[1].name!r}"
+        )
+
+        # cardinalities: document @card(1..1), reviewer @card(1..3)
+        assert review.roles[0].cardinality == Cardinality(min=1, max=1), (
+            f"document role cardinality mismatch: {review.roles[0].cardinality!r}"
+        )
+        assert review.roles[1].cardinality == Cardinality(min=1, max=3), (
+            f"reviewer role cardinality mismatch: {review.roles[1].cardinality!r}"
+        )
+
+        # relation owns score
+        assert "score" in review.owns, "expected review relation to own 'score'"
+
+    def test_person_plays_review_reviewer(self) -> None:
+        """Parsed TOML must show person plays review:reviewer."""
+        toml_text = (FIXTURES_DIR / "relations_roles.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "person" in schema.entities, "expected 'person' entity in parsed schema"
+        person = schema.entities["person"]
+        assert "review:reviewer" in person.plays, (
+            f"expected 'review:reviewer' in person.plays, got {person.plays!r}"
+        )
+
+    def test_generate_models_relation_byte_identical(self, tmp_path: Path) -> None:
+        """generate_models on relations_roles.toml vs .tql produces identical model files,
+        including relations.py — strong Inv-2 proof that the relation feature flows
+        through the full renderer."""
+        toml_path = FIXTURES_DIR / "relations_roles.toml"
+        tql_path = FIXTURES_DIR / "relations_roles.tql"
+
+        out_toml = tmp_path / "out_toml"
+        out_tql = tmp_path / "out_tql"
+
+        generate_models(toml_path, out_toml)
+        generate_models(tql_path, out_tql)
+
+        model_files = [
+            "attributes.py",
+            "entities.py",
+            "relations.py",
+            "__init__.py",
+            "registry.py",
+        ]
+        for filename in model_files:
+            toml_file = out_toml / filename
+            tql_file = out_tql / filename
+            assert toml_file.exists(), f"TOML output missing: {filename}"
+            assert tql_file.exists(), f"TQL output missing: {filename}"
+            toml_content = toml_file.read_text(encoding="utf-8")
+            tql_content = tql_file.read_text(encoding="utf-8")
+            assert toml_content == tql_content, (
+                f"{filename} differs between TOML and TQL generate_models outputs.\n"
+                f"--- TOML output ({filename}) ---\n{toml_content}\n"
+                f"--- TQL output ({filename}) ---\n{tql_content}\n"
+            )
