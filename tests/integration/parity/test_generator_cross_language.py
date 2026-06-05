@@ -156,8 +156,9 @@ def test_typescript_generator_matches_python_generator(schema_path: Path) -> Non
     # descriptor while the Python facade lists only the relation's own roles.
     # That divergence is a runtime descriptor inconsistency, NOT a generator
     # defect — the generated SOURCE is correct (own roles + ``{ parent }``,
-    # asserted by the node generator-render relation-inheritance test). It is
-    # tracked separately for resolution against the Rust descriptor contract.
+    # asserted by the node generator-render relation-inheritance test). Tracked
+    # by #139 for resolution against the Rust descriptor contract; remove this
+    # filter once both sides emit identical roles for parented relations.
     py_relations = {r["type_name"]: r for r in python["relations"] if r["parent_type"] is None}
     ts_relations = {r["type_name"]: r for r in typescript["relations"] if r["parent_type"] is None}
     assert ts_relations.keys() == py_relations.keys()
