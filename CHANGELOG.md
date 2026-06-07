@@ -22,6 +22,29 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### New Features
 
+#### TOML schema DSL (#138)
+
+- **TOML schema authoring** — schemas may now be authored in TOML as an
+  additive alternative to TypeQL. A new Rust/PyO3 `toml_to_typeql` transpiles a
+  TOML document to canonical TypeQL, which feeds the single existing parse path,
+  so the intermediate representation, renderers, and generated packages are
+  unchanged. Equivalent TOML and `.tql` schemas produce byte-for-byte identical
+  packages. `.tql` authoring remains fully supported.
+- **Full schema surface** — the DSL covers attributes (value types, `sub`,
+  `abstract`, `@regex`/`@values`/`@range`), entities (`owns` with
+  `@key`/`@unique`/`@card`, `plays`, `sub`, `abstract`), relations (`roles` with
+  per-role `@card` and `as` super-role overrides, `owns`, `sub`, `abstract`),
+  functions (signature plus verbatim body), and structs.
+- **Generator routing** — `generate_models` transpiles a `.toml` source by file
+  suffix, or for raw text via an explicit `format="toml"` argument.
+- **Field-level diagnostics** — a semantic validation pass rejects malformed TOML
+  with a clear `ValueError` naming the offending field or type (unknown value
+  type, `value`/`sub` conflict, dangling `sub` parent, missing role player, empty
+  struct, malformed function body) before any TypeQL is emitted.
+- **Known limitations** — the relation-as-entity pattern (a relation that plays
+  roles), abstract subtypes, and per-`plays` cardinality are not yet expressible
+  in TOML and should be authored in `.tql`; see the TOML schema guide.
+
 #### Node.js typed model layer (#124)
 
 - **Branded attributes** — `class Name extends attr.String("name") {}` defines a

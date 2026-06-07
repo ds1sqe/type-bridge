@@ -706,3 +706,373 @@ class TestFunctionsStructsRoundtrip:
                 f"--- TOML output ({filename}) ---\n{toml_content}\n"
                 f"--- TQL output ({filename}) ---\n{tql_content}\n"
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: role cardinality round-trip equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestRoleCardinalityRoundtrip:
+    """Round-trip equivalence for the role-cardinality fixture.
+
+    Asserts that ``role_cardinality.toml`` and its generated TQL mirror parse to
+    structurally-equivalent IR.  Includes focused assertions for all four
+    ``@card`` forms used in this corpus: 2..2 (exact), 1..1 (exact), 2..
+    (unbounded), and 1..3 (range).
+    """
+
+    def test_role_cardinality_roundtrip_equivalent(self) -> None:
+        """role_cardinality.toml and role_cardinality.tql must parse to equivalent IR."""
+        assert_roundtrip_equivalent(
+            FIXTURES_DIR / "role_cardinality.toml",
+            FIXTURES_DIR / "role_cardinality.tql",
+        )
+
+    def test_all_four_card_forms_present(self) -> None:
+        """Parsed TOML must yield relations carrying all four @card forms.
+
+        is_similar_to: similar_memory @card(2..2)
+        friendship:    friend @card(2..2)
+        group_membership: group @card(1..1), member @card(2..)
+        review:        document @card(1..1), reviewer @card(1..3)
+        """
+        from type_bridge.generator.models import Cardinality
+
+        toml_text = (FIXTURES_DIR / "role_cardinality.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        # 2..2 — is_similar_to
+        assert "is_similar_to" in schema.relations
+        similar_roles = {r.name: r for r in schema.relations["is_similar_to"].roles}
+        assert similar_roles["similar_memory"].cardinality == Cardinality(min=2, max=2), (
+            f"expected Cardinality(2,2) on similar_memory, got "
+            f"{similar_roles['similar_memory'].cardinality!r}"
+        )
+
+        # 2..2 — friendship
+        assert "friendship" in schema.relations
+        friend_roles = {r.name: r for r in schema.relations["friendship"].roles}
+        assert friend_roles["friend"].cardinality == Cardinality(min=2, max=2), (
+            f"expected Cardinality(2,2) on friend, got {friend_roles['friend'].cardinality!r}"
+        )
+
+        # 1..1 and 2.. — group_membership
+        assert "group_membership" in schema.relations
+        gm_roles = {r.name: r for r in schema.relations["group_membership"].roles}
+        assert gm_roles["group"].cardinality == Cardinality(min=1, max=1), (
+            f"expected Cardinality(1,1) on group role, got {gm_roles['group'].cardinality!r}"
+        )
+        assert gm_roles["member"].cardinality == Cardinality(min=2, max=None), (
+            f"expected Cardinality(2,None) on member role, got {gm_roles['member'].cardinality!r}"
+        )
+
+        # 1..1 and 1..3 — review
+        assert "review" in schema.relations
+        rv_roles = {r.name: r for r in schema.relations["review"].roles}
+        assert rv_roles["document"].cardinality == Cardinality(min=1, max=1), (
+            f"expected Cardinality(1,1) on document role, got {rv_roles['document'].cardinality!r}"
+        )
+        assert rv_roles["reviewer"].cardinality == Cardinality(min=1, max=3), (
+            f"expected Cardinality(1,3) on reviewer role, got {rv_roles['reviewer'].cardinality!r}"
+        )
+
+    def test_generate_models_role_cardinality_byte_identical(self, tmp_path: Path) -> None:
+        """generate_models on role_cardinality.toml vs .tql produces identical model files."""
+        toml_path = FIXTURES_DIR / "role_cardinality.toml"
+        tql_path = FIXTURES_DIR / "role_cardinality.tql"
+
+        out_toml = tmp_path / "out_toml"
+        out_tql = tmp_path / "out_tql"
+
+        generate_models(toml_path, out_toml)
+        generate_models(tql_path, out_tql)
+
+        model_files = ["attributes.py", "entities.py", "relations.py", "__init__.py", "registry.py"]
+        for filename in model_files:
+            toml_file = out_toml / filename
+            tql_file = out_tql / filename
+            if not toml_file.exists() and not tql_file.exists():
+                continue
+            assert toml_file.exists(), f"TOML output missing: {filename}"
+            assert tql_file.exists(), f"TQL output missing: {filename}"
+            toml_content = toml_file.read_text(encoding="utf-8")
+            tql_content = tql_file.read_text(encoding="utf-8")
+            assert toml_content == tql_content, (
+                f"{filename} differs between TOML and TQL generate_models outputs.\n"
+                f"--- TOML output ({filename}) ---\n{toml_content}\n"
+                f"--- TQL output ({filename}) ---\n{tql_content}\n"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tests: social media round-trip equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestSocialMediaRoundtrip:
+    """Round-trip equivalence for the social-media fixture.
+
+    Asserts that ``social_media.toml`` and its generated TQL mirror parse to
+    structurally-equivalent IR.  Includes focused assertions on:
+    - a ``relates X as Y`` super-role override (e.g. author as subject),
+    - owns_order preservation on an entity with multiple ordered owns,
+    - presence of abstract entities/relations and sub-type inheritance.
+    """
+
+    def test_social_media_roundtrip_equivalent(self) -> None:
+        """social_media.toml and social_media.tql must parse to equivalent IR."""
+        assert_roundtrip_equivalent(
+            FIXTURES_DIR / "social_media.toml",
+            FIXTURES_DIR / "social_media.tql",
+        )
+
+    def test_content_engagement_author_as_subject(self) -> None:
+        """Parsed TOML must yield content-engagement relation with author role
+        overriding subject (relates author as subject)."""
+        toml_text = (FIXTURES_DIR / "social_media.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "content-engagement" in schema.relations, (
+            "expected 'content-engagement' in parsed relations"
+        )
+        ce = schema.relations["content-engagement"]
+        role_map = {r.name: r for r in ce.roles}
+        assert "author" in role_map, (
+            f"expected 'author' role in content-engagement, got {list(role_map.keys())!r}"
+        )
+        assert role_map["author"].overrides == "subject", (
+            f"expected author.overrides='subject', got {role_map['author'].overrides!r}"
+        )
+
+    def test_page_entity_owns_order_preserved(self) -> None:
+        """Parsed TOML must yield page entity with owns_order matching TOML array order."""
+        toml_text = (FIXTURES_DIR / "social_media.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "page" in schema.entities, "expected 'page' entity in parsed schema"
+        page = schema.entities["page"]
+        # page sub content, so the inherited `id` (content's key) precedes page's
+        # own declarations, which keep their TOML array order: name, bio, bio-version.
+        expected_order = ["id", "name", "bio", "bio-version"]
+        assert page.owns_order == expected_order, (
+            f"expected page.owns_order={expected_order!r}, got {page.owns_order!r}"
+        )
+
+    def test_generate_models_social_media_byte_identical(self, tmp_path: Path) -> None:
+        """generate_models on social_media.toml vs .tql produces identical model files."""
+        toml_path = FIXTURES_DIR / "social_media.toml"
+        tql_path = FIXTURES_DIR / "social_media.tql"
+
+        out_toml = tmp_path / "out_toml"
+        out_tql = tmp_path / "out_tql"
+
+        generate_models(toml_path, out_toml)
+        generate_models(tql_path, out_tql)
+
+        model_files = ["attributes.py", "entities.py", "relations.py", "__init__.py", "registry.py"]
+        for filename in model_files:
+            toml_file = out_toml / filename
+            tql_file = out_tql / filename
+            if not toml_file.exists() and not tql_file.exists():
+                continue
+            assert toml_file.exists(), f"TOML output missing: {filename}"
+            assert tql_file.exists(), f"TQL output missing: {filename}"
+            toml_content = toml_file.read_text(encoding="utf-8")
+            tql_content = tql_file.read_text(encoding="utf-8")
+            assert toml_content == tql_content, (
+                f"{filename} differs between TOML and TQL generate_models outputs.\n"
+                f"--- TOML output ({filename}) ---\n{toml_content}\n"
+                f"--- TQL output ({filename}) ---\n{tql_content}\n"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tests: bookstore corpus round-trip equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestBookstoreRoundtrip:
+    """Round-trip equivalence for the bookstore corpus fixture.
+
+    Asserts that ``bookstore_corpus.toml`` and its generated TQL mirror parse to
+    structurally-equivalent IR.  Includes focused assertions on:
+    - stream-return and scalar-return functions with correct ``is_stream`` and params,
+    - the body-discard invariant (FunctionSpec carries no ``body`` attribute),
+    - sub-typed relations with ``relates ... as ...`` overrides,
+    - entities with ``@key``, ``@unique``, ``@card`` owns annotations.
+    """
+
+    def test_bookstore_roundtrip_equivalent(self) -> None:
+        """bookstore_corpus.toml and bookstore_corpus.tql must parse to equivalent IR."""
+        assert_roundtrip_equivalent(
+            FIXTURES_DIR / "bookstore_corpus.toml",
+            FIXTURES_DIR / "bookstore_corpus.tql",
+        )
+
+    def test_stream_and_scalar_functions_parsed(self) -> None:
+        """Parsed TOML must yield at least one stream-return and one scalar-return function.
+
+        Stream: is_review_verified_by_purchase, book_recommendations_for,
+                book_recommendations_by_genre, book_recommendations_by_author,
+                order_line_best_price, transitive_places
+        Scalar: best_discount_for_item
+        """
+        toml_text = (FIXTURES_DIR / "bookstore_corpus.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        # At least one stream function
+        stream_funcs = [name for name, fn in schema.functions.items() if fn.return_type.is_stream]
+        assert len(stream_funcs) >= 1, (
+            f"expected at least one stream-return function, got none; "
+            f"functions: {list(schema.functions.keys())!r}"
+        )
+
+        # At least one scalar function
+        scalar_funcs = [
+            name for name, fn in schema.functions.items() if not fn.return_type.is_stream
+        ]
+        assert len(scalar_funcs) >= 1, (
+            f"expected at least one scalar-return function, got none; "
+            f"functions: {list(schema.functions.keys())!r}"
+        )
+
+        # Spot-check: is_review_verified_by_purchase is stream
+        assert "is_review_verified_by_purchase" in schema.functions, (
+            "expected 'is_review_verified_by_purchase' in functions"
+        )
+        f_stream = schema.functions["is_review_verified_by_purchase"]
+        assert f_stream.return_type.is_stream is True, (
+            f"expected is_stream=True for is_review_verified_by_purchase, "
+            f"got {f_stream.return_type.is_stream!r}"
+        )
+        assert len(f_stream.parameters) == 1, (
+            f"expected 1 parameter for is_review_verified_by_purchase, "
+            f"got {len(f_stream.parameters)}"
+        )
+        assert f_stream.parameters[0].name == "review", (
+            f"expected param name 'review', got {f_stream.parameters[0].name!r}"
+        )
+        assert f_stream.parameters[0].type == "review", (
+            f"expected param type 'review', got {f_stream.parameters[0].type!r}"
+        )
+
+        # Spot-check: best_discount_for_item is scalar
+        assert "best_discount_for_item" in schema.functions, (
+            "expected 'best_discount_for_item' in functions"
+        )
+        f_scalar = schema.functions["best_discount_for_item"]
+        assert f_scalar.return_type.is_stream is False, (
+            f"expected is_stream=False for best_discount_for_item, "
+            f"got {f_scalar.return_type.is_stream!r}"
+        )
+        assert len(f_scalar.parameters) == 2, (
+            f"expected 2 parameters for best_discount_for_item, got {len(f_scalar.parameters)}"
+        )
+
+    def test_function_body_discarded_by_parser(self) -> None:
+        """FunctionSpec must carry no body field — the parser discards it from
+        both the TOML-transpiled and hand-written TQL sources."""
+        toml_text = (FIXTURES_DIR / "bookstore_corpus.toml").read_text(encoding="utf-8")
+        schema_from_toml = parse_tql_schema(toml_to_typeql(toml_text))
+        tql_text = (FIXTURES_DIR / "bookstore_corpus.tql").read_text(encoding="utf-8")
+        schema_from_tql = parse_tql_schema(tql_text)
+
+        for func_name in ("is_review_verified_by_purchase", "best_discount_for_item"):
+            for schema, source in ((schema_from_toml, "TOML"), (schema_from_tql, "TQL")):
+                assert func_name in schema.functions, (
+                    f"[{source}] expected {func_name!r} in functions"
+                )
+                f = schema.functions[func_name]
+                assert not hasattr(f, "body"), (
+                    f"[{source}] FunctionSpec for {func_name!r} must not have a 'body' attribute"
+                )
+
+    def test_generate_models_bookstore_byte_identical(self, tmp_path: Path) -> None:
+        """generate_models on bookstore_corpus.toml vs .tql produces identical model files,
+        including functions.py — strong Inv-2 proof through the full renderer."""
+        toml_path = FIXTURES_DIR / "bookstore_corpus.toml"
+        tql_path = FIXTURES_DIR / "bookstore_corpus.tql"
+
+        out_toml = tmp_path / "out_toml"
+        out_tql = tmp_path / "out_tql"
+
+        generate_models(toml_path, out_toml)
+        generate_models(tql_path, out_tql)
+
+        model_files = [
+            "attributes.py",
+            "entities.py",
+            "relations.py",
+            "__init__.py",
+            "registry.py",
+        ]
+        # functions.py is conditionally generated when the schema has functions
+        conditional_files = ["functions.py"]
+
+        for filename in model_files:
+            toml_file = out_toml / filename
+            tql_file = out_tql / filename
+            assert toml_file.exists(), f"TOML output missing: {filename}"
+            assert tql_file.exists(), f"TQL output missing: {filename}"
+            toml_content = toml_file.read_text(encoding="utf-8")
+            tql_content = tql_file.read_text(encoding="utf-8")
+            assert toml_content == tql_content, (
+                f"{filename} differs between TOML and TQL generate_models outputs.\n"
+                f"--- TOML output ({filename}) ---\n{toml_content}\n"
+                f"--- TQL output ({filename}) ---\n{tql_content}\n"
+            )
+
+        for filename in conditional_files:
+            toml_file = out_toml / filename
+            tql_file = out_tql / filename
+            if toml_file.exists() or tql_file.exists():
+                assert toml_file.exists(), f"TOML output missing conditional: {filename}"
+                assert tql_file.exists(), f"TQL output missing conditional: {filename}"
+                toml_content = toml_file.read_text(encoding="utf-8")
+                tql_content = tql_file.read_text(encoding="utf-8")
+                assert toml_content == tql_content, (
+                    f"{filename} differs between TOML and TQL generate_models outputs.\n"
+                    f"--- TOML output ({filename}) ---\n{toml_content}\n"
+                    f"--- TQL output ({filename}) ---\n{tql_content}\n"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Tests: example schema.toml smoke
+# ---------------------------------------------------------------------------
+
+
+class TestExampleSchemaToml:
+    """Smoke test for the examples/basic/schema.toml fixture.
+
+    Asserts that the example schema transpiles and generates a model package.
+    This test exercises the full path: TOML DSL → TypeQL → ParsedSchema →
+    generate_models output directory.
+    """
+
+    def test_example_schema_transpiles_and_generates(self, tmp_path: Path) -> None:
+        """examples/basic/schema.toml must transpile to valid TypeQL and generate a package.
+
+        Locates the file relative to this test module (tests/unit/generator/ → repo root
+        is three parents up).
+        """
+        # tests/unit/generator/test_toml_roundtrip.py → parents[0]=generator,
+        # parents[1]=unit, parents[2]=tests, parents[3]=repo root
+        repo_root = Path(__file__).resolve().parents[3]
+        schema_toml = repo_root / "examples" / "basic" / "schema.toml"
+
+        assert schema_toml.exists(), (
+            f"examples/basic/schema.toml not found at {schema_toml}; "
+            "a separate agent authors this file"
+        )
+
+        toml_text = schema_toml.read_text(encoding="utf-8")
+        parsed = parse_tql_schema(toml_to_typeql(toml_text))
+        assert parsed is not None, "parse_tql_schema returned None for example schema"
+
+        out_dir = tmp_path / "out"
+        generate_models(schema_toml, out_dir)
+        assert (out_dir / "__init__.py").exists(), (
+            f"generate_models did not produce __init__.py in {out_dir}"
+        )

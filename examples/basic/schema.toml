@@ -1,0 +1,47 @@
+# Example schema for the TOML Schema DSL guide.
+# Demonstrates attributes with annotations, entity owns/plays, and relations with @card.
+
+[attributes.email]
+value = "string"
+regex = "^[^@]+@[^@]+\\.[^@]+$"
+
+[attributes.username]
+value = "string"
+
+[attributes.display-name]
+value = "string"
+
+[attributes.score]
+value = "integer"
+range = "0..10000"
+
+[attributes.tag]
+value = "string"
+values = ["beginner", "intermediate", "expert"]
+
+[attributes.created-at]
+value = "datetime"
+
+[entities.user]
+owns = [
+    { attribute = "username", key = true },
+    "email",
+    "display-name",
+    "score",
+    { attribute = "tag", card = "0..5" },
+]
+plays = [{ relation = "membership", role = "member" }]
+
+[entities.team]
+owns = [
+    { attribute = "display-name", key = true },
+    "created-at",
+]
+plays = [{ relation = "membership", role = "group" }]
+
+[relations.membership]
+roles = [
+    { name = "member", card = "1.." },
+    { name = "group", card = "1..1" },
+]
+owns = ["created-at"]

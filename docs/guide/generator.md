@@ -28,6 +28,8 @@ python -m type_bridge.generator schema.tql \
     --implicit-keys id
 ```
 
+Schemas can also be authored in TOML — see [TOML Schema DSL](toml.md).
+
 ### Programmatic Usage
 
 ```python

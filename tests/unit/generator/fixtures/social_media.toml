@@ -1,0 +1,179 @@
+# Social media schema.
+# Covers: attribute sub chains, @values, @regex, @abstract; entity @abstract,
+# sub, owns @card, plays; relation @abstract, sub, relates ... as ..., owns @card.
+#
+# DSL limitations applied:
+# - Entities with both sub and abstract can only express sub (emitter emits one or
+#   the other; abstract is dropped when sub is present). Affected: page, post.
+# - plays @card(...) is not expressible in the TOML DSL (TomlPlays has no card
+#   field). plays entries are bare role references only.
+
+[entities.content]
+abstract = true
+owns = [{ attribute = "id", key = true }]
+
+[entities.page]
+sub = "content"
+owns = [
+    { attribute = "name", card = "0.." },
+    { attribute = "bio", card = "1..1" },
+    { attribute = "bio-version", card = "1..1" },
+]
+plays = [
+    { relation = "posting", role = "page" },
+    { relation = "following", role = "page" },
+]
+
+[entities.profile]
+sub = "page"
+owns = [
+    { attribute = "name", card = "1..3" },
+    "profile-id",
+]
+plays = [
+    { relation = "content-engagement", role = "author" },
+    { relation = "following", role = "follower" },
+]
+
+[entities.group]
+sub = "page"
+owns = [
+    { attribute = "name", card = "1..1" },
+    "group-id",
+]
+
+[entities.post]
+sub = "content"
+owns = [
+    "post-id",
+    "post-text",
+    { attribute = "creation-timestamp", card = "1..1" },
+]
+plays = [
+    { relation = "posting", role = "post" },
+    { relation = "commenting", role = "parent" },
+    { relation = "reaction", role = "parent" },
+]
+
+[entities.text-post]
+sub = "post"
+owns = [
+    { attribute = "post-text", card = "1..1" },
+]
+
+[entities.image-post]
+sub = "post"
+owns = [
+    { attribute = "post-image", card = "1..10" },
+]
+
+[entities.comment]
+sub = "content"
+owns = [
+    "comment-id",
+    "comment-text",
+    { attribute = "creation-timestamp", card = "1..1" },
+]
+plays = [
+    { relation = "commenting", role = "comment" },
+    { relation = "commenting", role = "parent" },
+    { relation = "reaction", role = "parent" },
+]
+
+[relations.interaction]
+abstract = true
+roles = [
+    { name = "subject", card = "1..1" },
+    { name = "content", card = "1..1" },
+]
+
+[relations.content-engagement]
+sub = "interaction"
+roles = [
+    { name = "author", as = "subject" },
+]
+
+[relations.posting]
+sub = "content-engagement"
+roles = [
+    { name = "page", as = "content" },
+    { name = "post", card = "1..1" },
+]
+
+[relations.commenting]
+sub = "content-engagement"
+roles = [
+    { name = "parent", as = "content" },
+    { name = "comment", card = "1..1" },
+]
+
+[relations.reaction]
+sub = "content-engagement"
+roles = [
+    { name = "parent", as = "content" },
+]
+owns = [
+    { attribute = "emoji", card = "0..9" },
+    { attribute = "creation-timestamp", card = "1..1" },
+]
+
+[relations.following]
+roles = [
+    { name = "follower", card = "1..1" },
+    { name = "page", card = "1..1" },
+]
+
+[attributes.name]
+value = "string"
+
+[attributes.id]
+abstract = true
+value = "string"
+
+[attributes.post-id]
+sub = "id"
+
+[attributes.profile-id]
+sub = "id"
+
+[attributes.group-id]
+sub = "id"
+
+[attributes.comment-id]
+sub = "id"
+
+[attributes.creation-timestamp]
+value = "datetime"
+
+[attributes.emoji]
+value = "string"
+values = ["like", "love", "funny", "surprise", "sad", "angry"]
+
+[attributes.post-image]
+value = "string"
+regex = ".*\\.png$"
+
+[attributes.payload]
+abstract = true
+value = "string"
+
+[attributes.text-payload]
+sub = "payload"
+
+[attributes.image-payload]
+sub = "payload"
+
+[attributes.bio]
+sub = "text-payload"
+
+[attributes.comment-text]
+sub = "text-payload"
+
+[attributes.post-text]
+sub = "text-payload"
+
+[attributes.version]
+value = "integer"
+
+[attributes.bio-version]
+sub = "version"
