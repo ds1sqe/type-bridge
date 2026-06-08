@@ -1,12 +1,14 @@
 import type { Attribute } from "./attribute.js";
 import type { ValueType } from "./index.js";
-import type { EntityDescriptor, RelationDescriptor } from "./index.js";
+import type { AttributeSchemaEntry, EntityDescriptor, RelationDescriptor } from "./index.js";
 import { type CardSpec, type FlagInput, type ResolvedTypeFlags } from "./flags.js";
 import { type IidBearing } from "./iid.js";
 import { type ManagerConnection, type TypedEntityManager, type TypedRelationManager } from "./manager.js";
 export type AttributeClass = (new (value: never) => Attribute<unknown, string>) & {
     readonly attrName: string;
     readonly valueType: ValueType;
+    readonly attributeSchema: AttributeSchemaEntry;
+    readonly attributeSchemaEntries: readonly AttributeSchemaEntry[];
 };
 type ModelClassLike = (new (values: never) => object) & {
     readonly typeName: string;
@@ -127,10 +129,10 @@ type ConstructorInput<Schema extends Record<string, SchemaSpec>> = {
     readonly [Key in OptionalKeys<Schema>]?: FieldValue<Schema[Key]>;
 };
 type OptionalKeys<Schema extends Record<string, SchemaSpec>> = {
-    [Key in keyof Schema]: Schema[Key] extends FieldSpec<AttributeClass, true> | ListFieldSpec<AttributeClass, true> ? Key : never;
+    [Key in keyof Schema]: Schema[Key] extends FieldSpec<AttributeClass, true> | ListFieldSpec<AttributeClass, true> | RoleSpec<readonly []> ? Key : never;
 }[keyof Schema];
 type RequiredKeys<Schema extends Record<string, SchemaSpec>> = Exclude<keyof Schema, OptionalKeys<Schema>>;
-type RoleValue<Players extends readonly ModelToken[]> = RolePlayerInstance<Players[number]> | readonly RolePlayerInstance<Players[number]>[];
+type RoleValue<Players extends readonly ModelToken[]> = Players extends readonly [] ? undefined : RolePlayerInstance<Players[number]> | readonly RolePlayerInstance<Players[number]>[];
 type RolePlayerInstance<Token> = Token extends string ? never : Token extends new (values: never) => infer Instance ? Instance : never;
 /**
  * The canonical hydrated-instance type for a model schema. This is the single
@@ -181,10 +183,12 @@ export type ModelClass<Schema extends Record<string, SchemaSpec>, Descriptor ext
 /** Declare an owned-attribute field on a model schema, with optional flags. */
 export declare function field<Attr extends AttributeClass>(attrType: Attr, ...flags: FlagInput[]): FieldSpec<Attr, false>;
 /**
- * Declare a relation role. Pass one or more player model tokens, optionally
+ * Declare a relation role. Pass zero or more player model tokens, optionally
  * followed by `{ cardinality }`. Player tokens may be model classes or raw type
  * name strings (the latter for players whose typed class is not yet declared).
  */
+export declare function role(): RoleSpec<readonly []>;
+export declare function role(options: RoleOptions): RoleSpec<readonly []>;
 export declare function role<const Players extends readonly [ModelToken, ...ModelToken[]]>(...playersAndOptions: RoleArguments<Players>): RoleSpec<Players>;
 /**
  * Build a hard-typed entity base class from a name (or `TypeFlags`) and a field
@@ -212,5 +216,5 @@ export declare function Relation<const ParentSchema extends RelationSchema, cons
 type RoleOptions = {
     readonly cardinality?: CardSpec | null;
 };
-type RoleArguments<Players extends readonly [ModelToken, ...ModelToken[]]> = [...Players] | [...Players, RoleOptions];
+type RoleArguments<Players extends readonly ModelToken[]> = [...Players] | [...Players, RoleOptions];
 export type { IidBearing };

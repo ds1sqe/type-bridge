@@ -64,6 +64,31 @@ assert.deepStrictEqual(registry.entity("person"), person);
 assert.deepStrictEqual(registry.relation("employment"), employment);
 assert.strictEqual(registry.snapshot().length, 2);
 
+const accepts = registry.registerRelation({
+  type_name: "accepts",
+  is_abstract: false,
+  parent_type: null,
+  owned_attributes: [],
+  roles: [
+    {
+      role_name: "definition",
+      player_type_names: [],
+      cardinality: null,
+    },
+    {
+      role_name: "allowed_value",
+      player_type_names: ["person"],
+      cardinality: null,
+    },
+  ],
+});
+
+assert.deepStrictEqual(accepts.roles[0].player_type_names, []);
+const acceptsTypeql = typeBridge.generateDefineBlock(registry.schemaInfo());
+assert.match(acceptsTypeql, /relates definition/);
+assert.match(acceptsTypeql, /person plays accepts:allowed_value;/);
+assert.doesNotMatch(acceptsTypeql, /plays accepts:definition/);
+
 const marshalling = new typeBridge.Marshalling();
 assert.deepStrictEqual(
   typeBridge.long(9223372036854775807n),

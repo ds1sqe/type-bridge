@@ -2,6 +2,7 @@ import type { Attribute } from "./attribute.js";
 import type { ValueType } from "./index.js";
 import type {
   Annotation,
+  AttributeSchemaEntry,
   EntityDescriptor,
   OwnedAttributeDescriptor,
   RelationDescriptor,
@@ -32,11 +33,14 @@ import {
 export type AttributeClass = (new (value: never) => Attribute<unknown, string>) & {
   readonly attrName: string;
   readonly valueType: ValueType;
+  readonly attributeSchema: AttributeSchemaEntry;
+  readonly attributeSchemaEntries: readonly AttributeSchemaEntry[];
 };
 type ModelClassLike = (new (values: never) => object) & {
   readonly typeName: string;
 };
 type ModelToken = string | ModelClassLike;
+const ATTRIBUTE_SCHEMA_METADATA = Symbol.for("@type-bridge/node.attributeSchemaMetadata");
 
 /**
  * A model class that also exposes its schema, used as a parent reference.
@@ -228,6 +232,7 @@ type OptionalKeys<Schema extends Record<string, SchemaSpec>> = {
   [Key in keyof Schema]: Schema[Key] extends
     | FieldSpec<AttributeClass, true>
     | ListFieldSpec<AttributeClass, true>
+    | RoleSpec<readonly []>
     ? Key
     : never;
 }[keyof Schema];
@@ -237,9 +242,9 @@ type RequiredKeys<Schema extends Record<string, SchemaSpec>> = Exclude<
   OptionalKeys<Schema>
 >;
 
-type RoleValue<Players extends readonly ModelToken[]> =
-  | RolePlayerInstance<Players[number]>
-  | readonly RolePlayerInstance<Players[number]>[];
+type RoleValue<Players extends readonly ModelToken[]> = Players extends readonly []
+  ? undefined
+  : RolePlayerInstance<Players[number]> | readonly RolePlayerInstance<Players[number]>[];
 
 type RolePlayerInstance<Token> = Token extends string
   ? never
@@ -313,11 +318,16 @@ export function field<Attr extends AttributeClass>(
 }
 
 /**
- * Declare a relation role. Pass one or more player model tokens, optionally
+ * Declare a relation role. Pass zero or more player model tokens, optionally
  * followed by `{ cardinality }`. Player tokens may be model classes or raw type
  * name strings (the latter for players whose typed class is not yet declared).
  */
+export function role(): RoleSpec<readonly []>;
+export function role(options: RoleOptions): RoleSpec<readonly []>;
 export function role<const Players extends readonly [ModelToken, ...ModelToken[]]>(
+  ...playersAndOptions: RoleArguments<Players>
+): RoleSpec<Players>;
+export function role<const Players extends readonly ModelToken[]>(
   ...playersAndOptions: RoleArguments<Players>
 ): RoleSpec<Players> {
   const { players, cardinality } = splitRoleArguments(playersAndOptions);
@@ -390,7 +400,7 @@ export function Relation<
 }
 
 type RoleOptions = { readonly cardinality?: CardSpec | null };
-type RoleArguments<Players extends readonly [ModelToken, ...ModelToken[]]> =
+type RoleArguments<Players extends readonly ModelToken[]> =
   | [...Players]
   | [...Players, RoleOptions];
 
@@ -531,15 +541,18 @@ function createModelClass(
         // descriptors.json `parity-person` is the reference.
         owned_attributes: ownedAttributes(parentSchema, schema),
       };
+      attachAttributeSchemaMetadata(descriptor, parentSchema, schema);
 
       if (kind === "entity") {
         return descriptor;
       }
 
-      return {
+      const relationDescriptor: RelationDescriptor = {
         ...descriptor,
         roles: roleDescriptors(mergedSchema),
       };
+      attachAttributeSchemaMetadata(relationDescriptor, parentSchema, schema);
+      return relationDescriptor;
     }
 
     static manager(db: ManagerConnection) {
@@ -628,6 +641,49 @@ function ownedAttributeEntry(
   return null;
 }
 
+function attachAttributeSchemaMetadata(
+  descriptor: EntityDescriptor | RelationDescriptor,
+  parentSchema: Record<string, SchemaSpec>,
+  childSchema: Record<string, SchemaSpec>,
+): void {
+  const metadata = attributeSchemaMetadata(parentSchema, childSchema);
+  if (Object.keys(metadata).length === 0) {
+    return;
+  }
+  Object.defineProperty(descriptor, ATTRIBUTE_SCHEMA_METADATA, {
+    value: metadata,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+}
+
+function attributeSchemaMetadata(
+  parentSchema: Record<string, SchemaSpec>,
+  childSchema: Record<string, SchemaSpec>,
+): Record<string, AttributeSchemaEntry> {
+  const metadata: Record<string, AttributeSchemaEntry> = {};
+  for (const spec of [...Object.values(parentSchema), ...Object.values(childSchema)]) {
+    if (spec instanceof FieldSpec || spec instanceof ListFieldSpec) {
+      for (const entry of spec.attrType.attributeSchemaEntries) {
+        metadata[entry.attr_name] = copyAttributeSchemaEntry(entry);
+      }
+    }
+  }
+  return metadata;
+}
+
+function copyAttributeSchemaEntry(entry: AttributeSchemaEntry): AttributeSchemaEntry {
+  const copy: AttributeSchemaEntry = { ...entry };
+  if (entry.allowed_values !== undefined) {
+    copy.allowed_values = entry.allowed_values === null ? null : [...entry.allowed_values];
+  }
+  if (entry.range !== undefined) {
+    copy.range = entry.range === null ? null : [entry.range[0], entry.range[1]];
+  }
+  return copy;
+}
+
 function roleDescriptors(schema: Record<string, SchemaSpec>): RoleDescriptor[] {
   const descriptors: RoleDescriptor[] = [];
   for (const [roleName, spec] of Object.entries(schema)) {
@@ -659,7 +715,7 @@ function splitRoleArguments(args: readonly unknown[]): {
   cardinality: CardSpec | null;
 } {
   if (args.length === 0) {
-    throw new TypeError("role() requires at least one player type");
+    return { players: [], cardinality: null };
   }
 
   const maybeOptions = args[args.length - 1];

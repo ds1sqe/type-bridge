@@ -5,8 +5,10 @@ Rust/Python shape reconciliation:
   Python public DTOs keep sets of Entity/Relation/Attribute classes.
 - Rust modified entity/relation maps are keyed by type-name strings; Python DTOs
   are keyed by the target-side model classes.
-- Rust modified_attributes are triples ``[name, old_flags, new_flags]``; Python
-  uses ``AttributeFlagChange`` objects.
+- Rust entity/relation modified_attributes are triples ``[name, old_flags,
+  new_flags]``; Python uses ``AttributeFlagChange`` objects.
+- Rust root modified_attributes are attribute type definition-change maps; Python
+  uses ``AttributeTypeChange`` objects keyed by attribute class where available.
 - Rust role player/cardinality changes serialize as dicts; Python keeps
   ``RolePlayerChange``/``RoleCardinalityChange`` DTOs.
 """
@@ -25,6 +27,14 @@ class AttributeFlagChange:
     name: str
     old_flags: str
     new_flags: str
+
+
+@dataclass
+class AttributeTypeChange:
+    """Represents a change in a standalone attribute type definition."""
+
+    name: str
+    changes: dict[str, Any]
 
 
 @dataclass
@@ -124,6 +134,7 @@ class SchemaDiff:
     # Attribute changes
     added_attributes: set[type[Attribute]] = field(default_factory=set)
     removed_attributes: set[type[Attribute]] = field(default_factory=set)
+    modified_attributes: dict[type[Attribute], AttributeTypeChange] = field(default_factory=dict)
 
     # Detailed changes (entity/relation modifications)
     modified_entities: dict[type[Entity], EntityChanges] = field(default_factory=dict)
@@ -143,6 +154,7 @@ class SchemaDiff:
             or self.removed_relations
             or self.added_attributes
             or self.removed_attributes
+            or self.modified_attributes
             or self.modified_entities
             or self.modified_relations
         )
@@ -190,6 +202,14 @@ class SchemaDiff:
             lines.append(f"\nRemoved Attributes ({len(self.removed_attributes)}):")
             for attr in sorted(self.removed_attributes, key=lambda a: a.get_attribute_name()):
                 lines.append(f"  - {attr.get_attribute_name()}")
+
+        if self.modified_attributes:
+            lines.append(f"\nModified Attributes ({len(self.modified_attributes)}):")
+            for attr, changes in sorted(
+                self.modified_attributes.items(), key=lambda item: item[0].get_attribute_name()
+            ):
+                fields = ", ".join(_attribute_type_changed_fields(changes.changes))
+                lines.append(f"  ~ {attr.get_attribute_name()}: {fields}")
 
         if self.modified_entities:
             lines.append(f"\nModified Entities ({len(self.modified_entities)}):")
@@ -268,6 +288,10 @@ class SchemaDiff:
             "removed_attributes": sorted(
                 attr.get_attribute_name() for attr in self.removed_attributes
             ),
+            "modified_attributes": {
+                attr.get_attribute_name(): change.changes
+                for attr, change in self.modified_attributes.items()
+            },
         }
 
 
@@ -318,6 +342,14 @@ def from_rust_schema_diff(
         },
         _rust_diff=rust_diff,
     )
+
+    for attr_name, changes in rust_diff.get("modified_attributes", {}).items():
+        attr = target_attributes.get(attr_name) or current_attributes.get(attr_name)
+        if attr is not None:
+            diff.modified_attributes[attr] = AttributeTypeChange(
+                name=attr_name,
+                changes=dict(changes),
+            )
 
     for type_name, changes in rust_diff.get("modified_entities", {}).items():
         entity = target_entities.get(type_name) or current_entities.get(type_name)
@@ -414,6 +446,22 @@ def _relation_changes_to_rust(changes: RelationChanges) -> dict[str, Any]:
         "abstract_changed": None,
         "parent_changed": None,
     }
+
+
+def _attribute_type_changed_fields(changes: dict[str, Any]) -> list[str]:
+    names = []
+    for key, label in (
+        ("value_type_changed", "value type"),
+        ("parent_changed", "parent"),
+        ("abstract_changed", "abstract"),
+        ("independent_changed", "independent"),
+        ("regex_changed", "regex"),
+        ("allowed_values_changed", "values"),
+        ("range_changed", "range"),
+    ):
+        if changes.get(key) is not None:
+            names.append(label)
+    return names
 
 
 def _entities_by_name(schema: Any | None) -> dict[str, type[Entity]]:

@@ -162,12 +162,6 @@ fn validate_relation_descriptor(descriptor: &RelationDescriptor) -> Result<()> {
                 message: format!("duplicate role name '{}'", role.role_name),
             });
         }
-        if role.player_type_names.is_empty() {
-            return Err(OrmError::DescriptorValidation {
-                type_name: descriptor.type_name.clone(),
-                message: format!("role '{}' has no player types", role.role_name),
-            });
-        }
         for player_type_name in &role.player_type_names {
             validate_type_name(player_type_name)?;
         }

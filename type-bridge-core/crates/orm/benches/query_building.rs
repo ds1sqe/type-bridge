@@ -23,10 +23,7 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
         for attr in &attrs {
             info.attributes
                 .entry(attr.attr_name.clone())
-                .or_insert(AttributeSchemaEntry {
-                    attr_name: attr.attr_name.clone(),
-                    value_type: attr.value_type,
-                });
+                .or_insert_with(|| AttributeSchemaEntry::new(&attr.attr_name, attr.value_type));
         }
 
         info.entities.insert(

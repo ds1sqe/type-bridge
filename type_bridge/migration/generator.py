@@ -54,6 +54,29 @@ def _role_player_type_names(role: object) -> list[str]:
     ]
 
 
+def _attribute_type_change_keyword(changes: dict) -> str:
+    """Choose TypeDB schema keyword for an attribute type definition change."""
+    for key in ("value_type_changed", "parent_changed"):
+        if changes.get(key) is not None:
+            return "redefine"
+
+    for key in ("regex_changed", "allowed_values_changed", "range_changed"):
+        old_new = changes.get(key)
+        if old_new is not None:
+            old, new = old_new
+            if old is not None or new is None:
+                return "redefine"
+
+    for key in ("abstract_changed", "independent_changed"):
+        old_new = changes.get(key)
+        if old_new is not None:
+            old, new = old_new
+            if old is not False or new is not True:
+                return "redefine"
+
+    return "define"
+
+
 class MigrationGenerator:
     """Generates migration files from model changes.
 
@@ -233,6 +256,14 @@ class MigrationGenerator:
             if attr := attributes.get(attr_name):
                 operations.append(ops.AddAttribute(attr))
                 logger.debug(f"Will add attribute: {attr_name}")
+
+        for attr_name, changes in rust_diff.get("modified_attributes", {}).items():
+            if attr := attributes.get(attr_name):
+                keyword = _attribute_type_change_keyword(changes)
+                operations.append(
+                    ops.RunTypeQL(forward=f"{keyword}\n{attr.to_schema_definition()}")
+                )
+                logger.debug(f"Will {keyword} attribute type: {attr_name}")
 
         for entity_name in rust_diff.get("added_entities", []):
             if entity := entities.get(entity_name):

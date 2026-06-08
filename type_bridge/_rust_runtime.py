@@ -258,17 +258,54 @@ def attribute_descriptors(model_cls: type[TypeDBType]) -> list[dict[str, Any]]:
     """Build Rust owned-attribute descriptors from Python model metadata."""
     descriptors = []
     for field_name, attr_info in model_cls.get_all_attributes().items():
-        value_type = rust_value_type(attr_info.typ)
+        attr_entry = attribute_schema_entry(attr_info.typ)
         descriptors.append(
             {
                 "field_name": field_name,
-                "attr_name": attr_info.typ.get_attribute_name(),
-                "value_type": value_type,
+                "attr_name": attr_entry["attr_name"],
+                "value_type": attr_entry["value_type"],
                 "annotations": _annotations(attr_info.flags),
                 "is_optional": _is_optional(attr_info.flags),
             }
         )
     return descriptors
+
+
+def attribute_schema_entry(attr_cls: type[Any]) -> dict[str, Any]:
+    """Build a Rust ``AttributeSchemaEntry`` dict from a Python Attribute class."""
+    entry: dict[str, Any] = {
+        "attr_name": attr_cls.get_attribute_name(),
+        "value_type": rust_value_type(attr_cls),
+    }
+
+    parent_type = attr_cls.get_supertype()
+    if parent_type is not None:
+        entry["parent_type"] = parent_type
+    if attr_cls.is_abstract():
+        entry["is_abstract"] = True
+    if attr_cls.is_independent():
+        entry["is_independent"] = True
+
+    regex_pattern = getattr(attr_cls, "regex_pattern", None)
+    if isinstance(regex_pattern, str):
+        entry["regex"] = regex_pattern
+
+    allowed_values = getattr(attr_cls, "allowed_values", None)
+    if isinstance(allowed_values, (tuple, list)):
+        entry["allowed_values"] = [str(value) for value in allowed_values]
+
+    range_constraint = getattr(attr_cls, "range_constraint", None)
+    if range_constraint is not None:
+        range_min, range_max = range_constraint
+        entry["range"] = [_range_bound(range_min), _range_bound(range_max)]
+
+    return entry
+
+
+def _range_bound(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def rust_value_type(attr_cls: type[Any]) -> str:

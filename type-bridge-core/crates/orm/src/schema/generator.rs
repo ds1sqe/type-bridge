@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::attribute::ValueType;
 
-use super::info::{EntitySchemaEntry, RelationSchemaEntry, SchemaInfo};
+use super::info::{AttributeSchemaEntry, EntitySchemaEntry, RelationSchemaEntry, SchemaInfo};
 
 /// A plays clause collected during relation processing.
 ///
@@ -64,11 +64,7 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
     let attr_names: BTreeSet<&str> = info.attributes.keys().map(|s| s.as_str()).collect();
     for attr_name in &attr_names {
         let attr = &info.attributes[*attr_name];
-        lines.push(format!(
-            "attribute {}, value {};",
-            attr.attr_name,
-            typedb_value_type(&attr.value_type)
-        ));
+        lines.push(build_attribute_definition(attr));
     }
     if !attr_names.is_empty() {
         lines.push(String::new());
@@ -107,7 +103,7 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
             }
         }
 
-        // Build header: entity <name> [sub <parent>] [@abstract]
+        // Build header: entity <name> [@abstract] [sub <parent>]
         let header = build_entity_header(entity);
 
         if parts.is_empty() {
@@ -210,7 +206,7 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
             }
         }
 
-        // Build header: relation <name> [sub <parent>] [@abstract]
+        // Build header: relation <name> [@abstract] [sub <parent>]
         let header = build_relation_header(relation);
 
         if parts.is_empty() {
@@ -264,32 +260,84 @@ fn typedb_value_type(value_type: &ValueType) -> &'static str {
 }
 
 fn card_annotation(min: u32, max: Option<u32>) -> String {
-    let max_str = max
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "*".to_string());
+    // TypeDB 3.x spells an unbounded upper bound as `@card(min..)`; `*` is rejected.
+    let max_str = max.map(|value| value.to_string()).unwrap_or_default();
     format!("@card({min}..{max_str})")
 }
 
-/// Build the entity header line: `entity <name> [sub <parent>] [@abstract]`.
+fn build_attribute_definition(attr: &AttributeSchemaEntry) -> String {
+    let mut definition = format!("attribute {}", attr.attr_name);
+
+    if attr.is_abstract {
+        definition.push_str(" @abstract");
+    }
+    if attr.is_independent {
+        definition.push_str(" @independent");
+    }
+
+    if let Some(ref parent) = attr.parent_type {
+        if attr.is_abstract || attr.is_independent {
+            definition.push_str(&format!(", sub {parent}"));
+        } else {
+            definition.push_str(&format!(" sub {parent}"));
+        }
+    }
+
+    definition.push_str(&format!(", value {}", typedb_value_type(&attr.value_type)));
+
+    if let Some((min, max)) = &attr.range {
+        let min = min.as_deref().unwrap_or_default();
+        let max = max.as_deref().unwrap_or_default();
+        definition.push_str(&format!(" @range({min}..{max})"));
+    }
+    if let Some(ref pattern) = attr.regex {
+        definition.push_str(&format!(" @regex({})", annotation_string_literal(pattern)));
+    }
+    if let Some(ref values) = attr.allowed_values {
+        let values = values
+            .iter()
+            .map(|value| annotation_string_literal(value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        definition.push_str(&format!(" @values({values})"));
+    }
+
+    definition.push(';');
+    definition
+}
+
+fn annotation_string_literal(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\\\""))
+}
+
+/// Build the entity header line: `entity <name> [@abstract] [sub <parent>]`.
 fn build_entity_header(entity: &EntitySchemaEntry) -> String {
     let mut header = format!("entity {}", entity.type_name);
-    if let Some(ref parent) = entity.parent_type {
-        header.push_str(&format!(" sub {parent}"));
-    }
     if entity.is_abstract {
         header.push_str(" @abstract");
+    }
+    if let Some(ref parent) = entity.parent_type {
+        if entity.is_abstract {
+            header.push_str(&format!(", sub {parent}"));
+        } else {
+            header.push_str(&format!(" sub {parent}"));
+        }
     }
     header
 }
 
-/// Build the relation header line: `relation <name> [sub <parent>] [@abstract]`.
+/// Build the relation header line: `relation <name> [@abstract] [sub <parent>]`.
 fn build_relation_header(relation: &RelationSchemaEntry) -> String {
     let mut header = format!("relation {}", relation.type_name);
-    if let Some(ref parent) = relation.parent_type {
-        header.push_str(&format!(" sub {parent}"));
-    }
     if relation.is_abstract {
         header.push_str(" @abstract");
+    }
+    if let Some(ref parent) = relation.parent_type {
+        if relation.is_abstract {
+            header.push_str(&format!(", sub {parent}"));
+        } else {
+            header.push_str(&format!(" sub {parent}"));
+        }
     }
     header
 }
@@ -334,6 +382,7 @@ where
 mod tests {
     use super::*;
     use crate::attribute::ValueType;
+    use crate::descriptor::{EntityDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor};
     use crate::entity::Annotation;
     use crate::schema::info::*;
 
@@ -349,17 +398,11 @@ mod tests {
         let mut info = SchemaInfo::default();
         info.attributes.insert(
             "name".into(),
-            AttributeSchemaEntry {
-                attr_name: "name".into(),
-                value_type: ValueType::String,
-            },
+            AttributeSchemaEntry::new("name", ValueType::String),
         );
         info.attributes.insert(
             "age".into(),
-            AttributeSchemaEntry {
-                attr_name: "age".into(),
-                value_type: ValueType::Long,
-            },
+            AttributeSchemaEntry::new("age", ValueType::Long),
         );
 
         let result = generate_define_block(&info);
@@ -372,14 +415,54 @@ mod tests {
     }
 
     #[test]
+    fn generates_attribute_type_annotations() {
+        let mut info = SchemaInfo::default();
+        let mut email = AttributeSchemaEntry::new("email", ValueType::String);
+        email.regex = Some(r"^[a-z]+@[a-z]+\.[a-z]+$".into());
+        let mut status = AttributeSchemaEntry::new("status", ValueType::String);
+        status.allowed_values = Some(vec!["active".into(), "inactive".into(), "pending".into()]);
+        let mut age = AttributeSchemaEntry::new("age", ValueType::Long);
+        age.range = Some((Some("0".into()), Some("150".into())));
+        let mut language = AttributeSchemaEntry::new("language", ValueType::String);
+        language.is_independent = true;
+
+        info.attributes.insert("email".into(), email);
+        info.attributes.insert("status".into(), status);
+        info.attributes.insert("age".into(), age);
+        info.attributes.insert("language".into(), language);
+
+        let result = generate_define_block(&info);
+
+        assert!(
+            result.contains(r#"attribute email, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");"#)
+        );
+        assert!(result.contains(
+            r#"attribute status, value string @values("active", "inactive", "pending");"#
+        ));
+        assert!(result.contains("attribute age, value integer @range(0..150);"));
+        assert!(result.contains("attribute language @independent, value string;"));
+    }
+
+    #[test]
+    fn generates_abstract_attribute_sub_clause_in_typedb_order() {
+        let mut info = SchemaInfo::default();
+        let mut attr = AttributeSchemaEntry::new("child-id", ValueType::String);
+        attr.is_abstract = true;
+        attr.parent_type = Some("base-id".into());
+        info.attributes.insert("child-id".into(), attr);
+
+        let result = generate_define_block(&info);
+
+        assert!(result.contains("attribute child-id @abstract, sub base-id, value string;"));
+        assert!(!result.contains("attribute child-id sub base-id @abstract"));
+    }
+
+    #[test]
     fn generates_entity_with_key() {
         let mut info = SchemaInfo::default();
         info.attributes.insert(
             "name".into(),
-            AttributeSchemaEntry {
-                attr_name: "name".into(),
-                value_type: ValueType::String,
-            },
+            AttributeSchemaEntry::new("name", ValueType::String),
         );
         info.entities.insert(
             "person".into(),
@@ -587,6 +670,36 @@ mod tests {
     }
 
     #[test]
+    fn generates_abstract_entity_sub_clause_in_typedb_order() {
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "animal".into(),
+            EntitySchemaEntry {
+                type_name: "animal".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        info.entities.insert(
+            "mammal".into(),
+            EntitySchemaEntry {
+                type_name: "mammal".into(),
+                is_abstract: true,
+                parent_type: Some("animal".into()),
+                owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+
+        assert!(result.contains("entity mammal @abstract, sub animal;"));
+        assert!(!result.contains("entity mammal sub animal @abstract"));
+    }
+
+    #[test]
     fn topological_sort_parents_before_children() {
         let mut info = SchemaInfo::default();
         // Insert child first alphabetically (dog before animal is not the case,
@@ -742,6 +855,38 @@ mod tests {
     }
 
     #[test]
+    fn generates_abstract_relation_sub_clause_in_typedb_order() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "connection".into(),
+            RelationSchemaEntry {
+                type_name: "connection".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        info.relations.insert(
+            "interaction".into(),
+            RelationSchemaEntry {
+                type_name: "interaction".into(),
+                is_abstract: true,
+                parent_type: Some("connection".into()),
+                owned_attributes: vec![],
+                roles: vec![],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+
+        assert!(result.contains("relation interaction @abstract, sub connection;"));
+        assert!(!result.contains("relation interaction sub connection @abstract"));
+    }
+
+    #[test]
     fn deduplicates_relation_roles() {
         let mut info = SchemaInfo::default();
         info.relations.insert(
@@ -771,6 +916,84 @@ mod tests {
         // "relates friend" should appear only once
         let count = result.matches("relates friend").count();
         assert_eq!(count, 1, "should deduplicate role names: {result}");
+    }
+
+    #[test]
+    fn descriptors_emit_relates_only_role_without_plays() {
+        let descriptors = vec![
+            TypeDescriptor::Entity(EntityDescriptor {
+                type_name: "player".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+            }),
+            TypeDescriptor::Relation(RelationDescriptor {
+                type_name: "rel".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![
+                    RoleDescriptor {
+                        role_name: "definition".into(),
+                        player_type_names: vec![],
+                        cardinality: None,
+                    },
+                    RoleDescriptor {
+                        role_name: "actor".into(),
+                        player_type_names: vec!["player".into()],
+                        cardinality: None,
+                    },
+                ],
+            }),
+        ];
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        let result = generate_define_block(&info);
+
+        assert_eq!(
+            result,
+            "define\n\nentity player;\n\nrelation rel,\n    relates definition,\n    relates actor;\n\nplayer plays rel:actor;"
+        );
+    }
+
+    #[test]
+    fn relates_only_role_survives_schema_info_serde_roundtrip() {
+        let descriptors = vec![
+            TypeDescriptor::Entity(EntityDescriptor {
+                type_name: "player".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+            }),
+            TypeDescriptor::Relation(RelationDescriptor {
+                type_name: "rel".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![
+                    RoleDescriptor {
+                        role_name: "definition".into(),
+                        player_type_names: vec![],
+                        cardinality: None,
+                    },
+                    RoleDescriptor {
+                        role_name: "actor".into(),
+                        player_type_names: vec!["player".into()],
+                        cardinality: None,
+                    },
+                ],
+            }),
+        ];
+        let info = SchemaInfo::from_descriptors(&descriptors);
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: SchemaInfo = serde_json::from_str(&json).unwrap();
+
+        let result = generate_define_block(&parsed);
+
+        assert_eq!(
+            result,
+            "define\n\nentity player;\n\nrelation rel,\n    relates definition,\n    relates actor;\n\nplayer plays rel:actor;"
+        );
     }
 
     /// When plays-cardinality is present the emitter appends `@card(min..max)`.
@@ -939,9 +1162,9 @@ mod tests {
         );
     }
 
-    /// Unbounded cardinality `(0, None)` renders as `@card(0..*)`.
+    /// Unbounded cardinality `(0, None)` renders as `@card(0..)` (TypeDB rejects `*`).
     #[test]
-    fn plays_card_unbounded_renders_star() {
+    fn plays_card_unbounded_renders_open_upper_bound() {
         let mut info = SchemaInfo::default();
         let mut plays_cards = BTreeMap::new();
         plays_cards.insert("r:slot".to_string(), (0u32, None));
@@ -974,8 +1197,8 @@ mod tests {
 
         let result = generate_define_block(&info);
         assert!(
-            result.contains("thing plays r:slot @card(0..*);"),
-            "expected @card(0..*), got:\n{result}"
+            result.contains("thing plays r:slot @card(0..);"),
+            "expected @card(0..), got:\n{result}"
         );
     }
 

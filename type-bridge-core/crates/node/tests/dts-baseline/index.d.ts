@@ -9,6 +9,12 @@ export interface OwnedAttributeDescriptor {
     value_type: ValueType;
     annotations: Annotation[];
     is_optional: boolean;
+    parent_type?: string | null;
+    is_abstract?: boolean;
+    is_independent?: boolean;
+    regex?: string | null;
+    allowed_values?: string[] | null;
+    range?: [string | null, string | null] | null;
 }
 export interface EntityDescriptor {
     type_name: string;
@@ -35,6 +41,41 @@ export type TypeDescriptor = {
     kind: "relation";
     descriptor: RelationDescriptor;
 };
+export interface OwnedAttributeEntry {
+    attr_name: string;
+    value_type: ValueType;
+    annotations: Annotation[];
+}
+export interface RoleEntry {
+    role_name: string;
+    player_type_names: string[];
+    cardinality: [number, number | null] | null;
+}
+export interface EntitySchemaEntry {
+    type_name: string;
+    is_abstract: boolean;
+    parent_type: string | null;
+    owned_attributes: OwnedAttributeEntry[];
+    plays_cardinalities?: Record<string, [number, number | null]>;
+}
+export interface RelationSchemaEntry extends EntitySchemaEntry {
+    roles: RoleEntry[];
+}
+export interface AttributeSchemaEntry {
+    attr_name: string;
+    value_type: ValueType;
+    parent_type?: string | null;
+    is_abstract?: boolean;
+    is_independent?: boolean;
+    regex?: string | null;
+    allowed_values?: string[] | null;
+    range?: [string | null, string | null] | null;
+}
+export interface SchemaInfo {
+    entities: Record<string, EntitySchemaEntry>;
+    relations: Record<string, RelationSchemaEntry>;
+    attributes: Record<string, AttributeSchemaEntry>;
+}
 export type TransactionType = "read" | "write" | "schema";
 export type AttributeValue = {
     value_type: "string";
@@ -112,7 +153,7 @@ export type RuntimeAttributeValue = {
 } | {
     Duration: string;
 };
-export { Attribute, attr, type AttributeBase, type ComparableAttributeBase, type NumericAttributeBase, type StringAttributeBase, } from "./attribute.js";
+export { Attribute, attr, type AttributeBase, type AttributeTypeOptions, type AttributeTypeParent, type ComparableAttributeBase, type NumericAttributeBase, type StringAttributeBase, } from "./attribute.js";
 export { AggregateSpec, BooleanExpr, ComparisonExpr, NotExpr, QueryExpr, SortExpr, TypedGroupByQuery, TypedQuery, TypedQueryError, agg, } from "./query.js";
 export { AttributeFlags, Card, Flag, Key, TypeFlags, TypeNameCase, Unique, formatTypeName, resolveFlags, type AttributeFlagsOptions, type CardSpec, type FlagInput, type FlagSpec, type ResolvedAttributeFlags, type ResolvedTypeFlags, type TypeFlagsOptions, } from "./flags.js";
 export { Entity, FieldSpec, ListFieldSpec, Relation, RoleSpec, field, role, type AttributeClass, type EntitySchema, type FieldValue, type IidBearing, type InstanceDict, type InstanceFields, type MergedSchema, type ModelClass, type ModelInstance, type ParentModelClass, type ParentOption, type PlainFieldValue, type RelationSchema, type SchemaSpec, } from "./model.js";
@@ -211,6 +252,7 @@ interface NativeDescriptorRegistry {
     entityJson(typeName: string): string;
     relationJson(typeName: string): string;
     snapshotJson(): string;
+    schemaInfoJson(): string;
 }
 interface NativeMarshalling {
     normalizeAttributeValueJson(valueJson: string): string;
@@ -284,6 +326,7 @@ interface NativeSchemaParser {
 }
 export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
     NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
+    generateDefineBlockJson(schemaInfoJson: string): string;
 }
 export interface RustDatabaseConnectOptions {
     username?: string | null;
@@ -302,6 +345,7 @@ export interface EnsureDatabaseOptions {
  */
 export declare function ensureDatabase(address: string, database: string, options?: EnsureDatabaseOptions): void;
 export { loadNative };
+export declare function generateDefineBlock(info: SchemaInfo): string;
 export declare class DescriptorRegistry {
     #private;
     constructor(nativeRegistry?: NativeDescriptorRegistry | null);
@@ -310,6 +354,7 @@ export declare class DescriptorRegistry {
     entity(typeName: string): EntityDescriptor;
     relation(typeName: string): RelationDescriptor;
     snapshot(): TypeDescriptor[];
+    schemaInfo(): SchemaInfo;
 }
 export declare class Marshalling {
     #private;

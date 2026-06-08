@@ -1,4 +1,4 @@
-import type { DynamicComparisonOp, ValueType } from "./index.js";
+import type { AttributeSchemaEntry, DynamicComparisonOp, ValueType } from "./index.js";
 import { lowerAttributeValue } from "./codec.js";
 import { AggregateSpec, ComparisonExpr, SortExpr } from "./query.js";
 
@@ -69,6 +69,24 @@ type AggregateStatics = {
   std(): AggregateSpec;
 };
 
+export type AttributeTypeParent =
+  | {
+      readonly attrName: string;
+      readonly attributeSchema?: AttributeSchemaEntry;
+      readonly attributeSchemaEntries?: readonly AttributeSchemaEntry[];
+    }
+  | string
+  | null;
+
+export interface AttributeTypeOptions {
+  readonly parent?: AttributeTypeParent;
+  readonly abstract?: boolean;
+  readonly independent?: boolean;
+  readonly regex?: string | null;
+  readonly values?: readonly string[] | null;
+  readonly range?: readonly [string | null, string | null] | null;
+}
+
 /**
  * The abstract base class returned by an `attr.*(name)` factory: an abstract
  * `Attribute` constructor branded by `Name`, plus the static `attrName` and
@@ -80,6 +98,8 @@ export type AttributeBase<Value, Brand extends string> = (abstract new (
 ) => Attribute<Value, Brand>) & {
   readonly attrName: Brand;
   readonly valueType: ValueType;
+  readonly attributeSchema: AttributeSchemaEntry;
+  readonly attributeSchemaEntries: readonly AttributeSchemaEntry[];
 };
 
 /** Attribute base with comparison + sort helpers (every value type). */
@@ -163,33 +183,117 @@ function aggregateStatics(name: string): AggregateStatics {
 function namedAttribute<Value, Name extends string>(
   name: Name,
   valueType: ValueType,
-): { new (value: Value): Attribute<Value, Name> } & { readonly attrName: Name; readonly valueType: ValueType } {
+  options?: AttributeTypeOptions,
+): { new (value: Value): Attribute<Value, Name> } & {
+  readonly attrName: Name;
+  readonly valueType: ValueType;
+  readonly attributeSchema: AttributeSchemaEntry;
+  readonly attributeSchemaEntries: readonly AttributeSchemaEntry[];
+} {
+  const attributeSchema = buildAttributeSchema(name, valueType, options);
+  const attributeSchemaEntries = buildAttributeSchemaEntries(attributeSchema, options);
   abstract class NamedAttribute extends Attribute<Value, Name> {
     static readonly attrName = name;
     static readonly valueType = valueType;
+    static readonly attributeSchema = attributeSchema;
+    static readonly attributeSchemaEntries = attributeSchemaEntries;
   }
   return NamedAttribute as never;
 }
 
+function buildAttributeSchema(
+  attrName: string,
+  valueType: ValueType,
+  options?: AttributeTypeOptions,
+): AttributeSchemaEntry {
+  const entry: AttributeSchemaEntry = { attr_name: attrName, value_type: valueType };
+  if (options === undefined) return entry;
+
+  if (options.parent !== undefined) {
+    entry.parent_type = parentTypeName(options.parent);
+  }
+  if (options.abstract !== undefined) {
+    entry.is_abstract = options.abstract;
+  }
+  if (options.independent !== undefined) {
+    entry.is_independent = options.independent;
+  }
+  if (options.regex !== undefined) {
+    entry.regex = options.regex;
+  }
+  if (options.values !== undefined) {
+    entry.allowed_values = options.values == null ? null : [...options.values];
+  }
+  if (options.range !== undefined) {
+    entry.range = options.range == null ? null : [options.range[0], options.range[1]];
+  }
+  return entry;
+}
+
+function buildAttributeSchemaEntries(
+  entry: AttributeSchemaEntry,
+  options?: AttributeTypeOptions,
+): readonly AttributeSchemaEntry[] {
+  const parent = options?.parent;
+  const entries: AttributeSchemaEntry[] = [];
+  if (parent !== undefined && parent !== null && typeof parent !== "string") {
+    const parentEntries =
+      parent.attributeSchemaEntries ??
+      (parent.attributeSchema === undefined ? [] : [parent.attributeSchema]);
+    entries.push(...parentEntries.map(copyAttributeSchemaEntry));
+  }
+  entries.push(copyAttributeSchemaEntry(entry));
+  return entries;
+}
+
+function copyAttributeSchemaEntry(entry: AttributeSchemaEntry): AttributeSchemaEntry {
+  const copy: AttributeSchemaEntry = { ...entry };
+  if (entry.allowed_values !== undefined) {
+    copy.allowed_values = entry.allowed_values === null ? null : [...entry.allowed_values];
+  }
+  if (entry.range !== undefined) {
+    copy.range = entry.range === null ? null : [entry.range[0], entry.range[1]];
+  }
+  return copy;
+}
+
+function parentTypeName(parent: AttributeTypeParent): string | null {
+  if (parent == null || typeof parent === "string") {
+    return parent;
+  }
+  return parent.attrName;
+}
+
 type ComparableFactory<Value> = <const Name extends string>(
   name: Name,
+  options?: AttributeTypeOptions,
 ) => ComparableAttributeBase<Value, Name>;
-type StringFactory = <const Name extends string>(name: Name) => StringAttributeBase<Name>;
+type StringFactory = <const Name extends string>(
+  name: Name,
+  options?: AttributeTypeOptions,
+) => StringAttributeBase<Name>;
 type NumericFactory<Value> = <const Name extends string>(
   name: Name,
+  options?: AttributeTypeOptions,
 ) => NumericAttributeBase<Value, Name>;
 
 function makeComparableFactory<Value>(valueType: ValueType): ComparableFactory<Value> {
-  return <const Name extends string>(name: Name): ComparableAttributeBase<Value, Name> => {
-    const cls = namedAttribute<Value, Name>(name, valueType);
+  return <const Name extends string>(
+    name: Name,
+    options?: AttributeTypeOptions,
+  ): ComparableAttributeBase<Value, Name> => {
+    const cls = namedAttribute<Value, Name>(name, valueType, options);
     Object.assign(cls, comparisonStatics<Value, Name>(name, valueType), orderStatics(name));
     return cls as unknown as ComparableAttributeBase<Value, Name>;
   };
 }
 
 function makeStringFactory(): StringFactory {
-  return <const Name extends string>(name: Name): StringAttributeBase<Name> => {
-    const cls = namedAttribute<string, Name>(name, "string");
+  return <const Name extends string>(
+    name: Name,
+    options?: AttributeTypeOptions,
+  ): StringAttributeBase<Name> => {
+    const cls = namedAttribute<string, Name>(name, "string", options);
     Object.assign(
       cls,
       comparisonStatics<string, Name>(name, "string"),
@@ -201,8 +305,11 @@ function makeStringFactory(): StringFactory {
 }
 
 function makeNumericFactory<Value>(valueType: ValueType): NumericFactory<Value> {
-  return <const Name extends string>(name: Name): NumericAttributeBase<Value, Name> => {
-    const cls = namedAttribute<Value, Name>(name, valueType);
+  return <const Name extends string>(
+    name: Name,
+    options?: AttributeTypeOptions,
+  ): NumericAttributeBase<Value, Name> => {
+    const cls = namedAttribute<Value, Name>(name, valueType, options);
     Object.assign(
       cls,
       comparisonStatics<Value, Name>(name, valueType),

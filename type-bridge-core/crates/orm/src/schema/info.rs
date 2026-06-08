@@ -39,9 +39,10 @@ impl OwnedAttributeEntry {
                 Annotation::Key => parts.push("@key".to_string()),
                 Annotation::Unique => parts.push("@unique".to_string()),
                 Annotation::Card(min, max) => {
+                    // TypeDB 3.x spells an unbounded upper bound as `@card(min..)`.
                     let max_str = match max {
                         Some(m) => m.to_string(),
-                        None => "*".to_string(),
+                        None => String::new(),
                     };
                     parts.push(format!("@card({min}..{max_str})"));
                 }
@@ -111,6 +112,44 @@ pub struct AttributeSchemaEntry {
     pub attr_name: String,
     /// Value type.
     pub value_type: ValueType,
+    /// Parent attribute type name (for `sub` hierarchies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_type: Option<String>,
+    /// Whether this attribute type is abstract.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_abstract: bool,
+    /// Whether this attribute type is independent.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_independent: bool,
+    /// Optional `@regex` pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regex: Option<String>,
+    /// Optional `@values` allowlist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_values: Option<Vec<String>>,
+    /// Optional `@range` bounds. `None` bound means open-ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<(Option<String>, Option<String>)>,
+}
+
+impl AttributeSchemaEntry {
+    /// Build an unconstrained attribute schema entry.
+    pub fn new(attr_name: impl Into<String>, value_type: ValueType) -> Self {
+        Self {
+            attr_name: attr_name.into(),
+            value_type,
+            parent_type: None,
+            is_abstract: false,
+            is_independent: false,
+            regex: None,
+            allowed_values: None,
+            range: None,
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Complete schema information extracted from registered models.
@@ -153,6 +192,15 @@ impl SchemaInfo {
                 AttributeSchemaEntry {
                     attr_name: attr_name.clone(),
                     value_type: value_type_from_typeql(&attr.value_type),
+                    parent_type: attr.parent.clone(),
+                    is_abstract: attr.is_abstract,
+                    is_independent: attr.is_independent,
+                    regex: attr.regex.clone(),
+                    allowed_values: attr.allowed_values.clone(),
+                    range: match (&attr.range_min, &attr.range_max) {
+                        (None, None) => None,
+                        (min, max) => Some((min.clone(), max.clone())),
+                    },
                 },
             );
         }
@@ -439,10 +487,7 @@ fn register_attribute_types(info: &mut SchemaInfo, attributes: &[OwnedAttributeD
     for attr in attributes {
         info.attributes
             .entry(attr.attr_name.clone())
-            .or_insert(AttributeSchemaEntry {
-                attr_name: attr.attr_name.clone(),
-                value_type: attr.value_type,
-            });
+            .or_insert_with(|| AttributeSchemaEntry::new(attr.attr_name.clone(), attr.value_type));
     }
 }
 
@@ -500,17 +545,11 @@ mod tests {
         let mut info = SchemaInfo::default();
         info.attributes.insert(
             "name".into(),
-            AttributeSchemaEntry {
-                attr_name: "name".into(),
-                value_type: ValueType::String,
-            },
+            AttributeSchemaEntry::new("name", ValueType::String),
         );
         info.attributes.insert(
             "age".into(),
-            AttributeSchemaEntry {
-                attr_name: "age".into(),
-                value_type: ValueType::Long,
-            },
+            AttributeSchemaEntry::new("age", ValueType::Long),
         );
         assert!(info.validate().is_ok());
     }
@@ -542,7 +581,7 @@ mod tests {
             value_type: ValueType::String,
             annotations: vec![Annotation::Card(0, None)],
         };
-        assert_eq!(entry.flags_string(), "@card(0..*)");
+        assert_eq!(entry.flags_string(), "@card(0..)");
     }
 
     #[test]
@@ -589,10 +628,7 @@ mod tests {
         );
         info.attributes.insert(
             "name".into(),
-            AttributeSchemaEntry {
-                attr_name: "name".into(),
-                value_type: ValueType::String,
-            },
+            AttributeSchemaEntry::new("name", ValueType::String),
         );
 
         let json = serde_json::to_string(&info).unwrap();
@@ -677,17 +713,11 @@ mod tests {
         );
         assert_eq!(
             info.attributes.get("name"),
-            Some(&AttributeSchemaEntry {
-                attr_name: "name".into(),
-                value_type: ValueType::String,
-            })
+            Some(&AttributeSchemaEntry::new("name", ValueType::String))
         );
         assert_eq!(
             info.attributes.get("since"),
-            Some(&AttributeSchemaEntry {
-                attr_name: "since".into(),
-                value_type: ValueType::Date,
-            })
+            Some(&AttributeSchemaEntry::new("since", ValueType::Date))
         );
     }
 
@@ -720,6 +750,60 @@ mod tests {
         assert!(info.entities.is_empty());
         assert!(info.relations.is_empty());
         assert!(info.attributes.is_empty());
+    }
+
+    #[test]
+    fn from_typeql_preserves_attribute_type_annotations() {
+        let typeql = r#"
+define
+
+attribute base-token @abstract, value string;
+attribute email sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");
+attribute status @independent, value string @values("active", "inactive");
+attribute age, value integer @range(0..150);
+"#;
+        let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
+
+        let base = info
+            .attributes
+            .get("base-token")
+            .expect("base-token missing");
+        assert!(base.is_abstract);
+
+        let email = info.attributes.get("email").expect("email missing");
+        assert_eq!(email.parent_type.as_deref(), Some("base-token"));
+        assert_eq!(email.regex.as_deref(), Some(r"^[a-z]+@[a-z]+\.[a-z]+$"));
+
+        let status = info.attributes.get("status").expect("status missing");
+        assert!(status.is_independent);
+        assert_eq!(
+            status.allowed_values,
+            Some(vec!["active".into(), "inactive".into()])
+        );
+
+        let age = info.attributes.get("age").expect("age missing");
+        assert_eq!(age.range, Some((Some("0".into()), Some("150".into()))));
+
+        let emitted = info.to_typeql().expect("emit failed");
+        assert!(emitted.contains(
+            r#"attribute email sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");"#
+        ));
+        assert!(emitted.contains(
+            r#"attribute status @independent, value string @values("active", "inactive");"#
+        ));
+        assert!(emitted.contains("attribute age, value integer @range(0..150);"));
+    }
+
+    #[test]
+    fn attribute_schema_entry_serde_defaults_preserve_old_json_shape() {
+        let json = r#"{"attr_name":"name","value_type":"string"}"#;
+        let entry: AttributeSchemaEntry = serde_json::from_str(json).expect("deserialize failed");
+
+        assert_eq!(entry, AttributeSchemaEntry::new("name", ValueType::String));
+        assert_eq!(
+            serde_json::to_string(&entry).expect("serialize failed"),
+            r#"{"attr_name":"name","value_type":"string"}"#
+        );
     }
 
     /// `from_typeql` populates `plays_cardinalities` when a `@card` annotation

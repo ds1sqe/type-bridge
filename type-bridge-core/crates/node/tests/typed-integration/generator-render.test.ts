@@ -26,6 +26,14 @@ generateModels(schemaText, out, { native });
 const attributes = fs.readFileSync(path.join(out, "attributes.ts"), "utf8");
 const entities = fs.readFileSync(path.join(out, "entities.ts"), "utf8");
 
+const social = fs.readFileSync(
+  path.join(process.cwd(), "..", "..", "..", "tests", "integration", "generator", "fixtures", "social_media.tql"),
+  "utf8",
+);
+const socialOut = fs.mkdtempSync(path.join(os.tmpdir(), "tsgen-social-"));
+generateModels(social, socialOut, { native });
+const socialAttributes = fs.readFileSync(path.join(socialOut, "attributes.ts"), "utf8");
+
 describe("generator render decisions", () => {
   test("attributes map value_type to the correct attr.* kind, class name = toClassName", () => {
     assert.match(attributes, /export class ParityId extends attr\.String\("parity-id"\) \{\}/);
@@ -76,6 +84,21 @@ describe("generator render decisions", () => {
 
     // parity-id is already @key in the schema — implicit key must not change it.
     assert.match(entitiesImplicit, /parity_id: field\(ParityId, Key\)/);
+  });
+
+  test("attribute type metadata is emitted for constraints and subtyping", () => {
+    assert.match(socialAttributes, /export class Id extends attr\.String\("id", \{ abstract: true \}\) \{\}/);
+    assert.match(socialAttributes, /export class PostId extends attr\.String\("post-id", \{ parent: Id \}\) \{\}/);
+    assert.match(
+      socialAttributes,
+      /export class Emoji extends attr\.String\("emoji", \{ values: \["like","love","funny","surprise","sad","angry"\] \}\) \{\}/,
+    );
+    assert.match(socialAttributes, /export class PostImage extends attr\.String\("post-image", \{ regex: /);
+    assert.match(socialAttributes, /export class Payload extends attr\.String\("payload", \{ abstract: true \}\) \{\}/);
+    assert.match(
+      socialAttributes,
+      /export class TextPayload extends attr\.String\("text-payload", \{ parent: Payload, abstract: true \}\) \{\}/,
+    );
   });
 });
 

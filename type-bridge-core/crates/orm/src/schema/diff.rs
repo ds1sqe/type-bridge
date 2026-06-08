@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::info::{OwnedAttributeEntry, SchemaInfo};
+use crate::attribute::ValueType;
+
+use super::info::{AttributeSchemaEntry, OwnedAttributeEntry, SchemaInfo};
 
 /// Severity assigned to a schema change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +69,40 @@ pub struct RelationChanges {
     pub parent_changed: Option<(Option<String>, Option<String>)>,
 }
 
+/// Changes detected for a standalone attribute type definition.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributeTypeChanges {
+    /// Value type changed: (old, new).
+    pub value_type_changed: Option<(ValueType, ValueType)>,
+    /// Parent attribute type changed: (old, new).
+    pub parent_changed: Option<(Option<String>, Option<String>)>,
+    /// Abstract flag changed: (old, new).
+    pub abstract_changed: Option<(bool, bool)>,
+    /// Independent flag changed: (old, new).
+    pub independent_changed: Option<(bool, bool)>,
+    /// Regex constraint changed: (old, new).
+    pub regex_changed: Option<(Option<String>, Option<String>)>,
+    /// Allowed values constraint changed: (old, new).
+    pub allowed_values_changed: Option<(Option<Vec<String>>, Option<Vec<String>>)>,
+    /// Range constraint changed: (old, new).
+    pub range_changed: Option<(
+        Option<(Option<String>, Option<String>)>,
+        Option<(Option<String>, Option<String>)>,
+    )>,
+}
+
+impl AttributeTypeChanges {
+    fn has_changes(&self) -> bool {
+        self.value_type_changed.is_some()
+            || self.parent_changed.is_some()
+            || self.abstract_changed.is_some()
+            || self.independent_changed.is_some()
+            || self.regex_changed.is_some()
+            || self.allowed_values_changed.is_some()
+            || self.range_changed.is_some()
+    }
+}
+
 /// Change in the player types accepted by one role.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RolePlayerChange {
@@ -110,6 +146,9 @@ pub struct SchemaDiff {
     pub added_attributes: Vec<String>,
     /// Attribute types removed.
     pub removed_attributes: Vec<String>,
+    /// Attribute types with changed definitions.
+    #[serde(default)]
+    pub modified_attributes: BTreeMap<String, AttributeTypeChanges>,
 }
 
 impl SchemaDiff {
@@ -123,6 +162,7 @@ impl SchemaDiff {
             || !self.modified_relations.is_empty()
             || !self.added_attributes.is_empty()
             || !self.removed_attributes.is_empty()
+            || !self.modified_attributes.is_empty()
     }
 
     /// Whether any breaking changes were detected.
@@ -314,6 +354,16 @@ impl SchemaDiff {
                 format!("Remove all ownership and instances of '{attr}' before removing the attribute type"),
             ));
         }
+        for (attr, attr_changes) in &self.modified_attributes {
+            changes.push(classified(
+                ChangeCategory::Breaking,
+                format!(
+                    "Modify attribute type '{attr}': {}",
+                    attribute_type_change_summary(attr_changes)
+                ),
+                "Review existing data before changing attribute type constraints",
+            ));
+        }
 
         changes
     }
@@ -406,6 +456,12 @@ impl SchemaDiff {
         }
         for name in &self.removed_attributes {
             lines.push(format!("- attribute {name}"));
+        }
+        for (name, changes) in &self.modified_attributes {
+            lines.push(format!(
+                "~ attribute {name}: {}",
+                attribute_type_change_summary(changes)
+            ));
         }
 
         if lines.is_empty() {
@@ -586,9 +642,43 @@ impl SchemaDiff {
                 diff.removed_attributes.push(name.clone());
             }
         }
+        for (name, new_entry) in &new.attributes {
+            if let Some(old_entry) = old.attributes.get(name) {
+                let changes = diff_attribute_type(old_entry, new_entry);
+                if changes.has_changes() {
+                    diff.modified_attributes.insert(name.clone(), changes);
+                }
+            }
+        }
 
         diff
     }
+}
+
+fn attribute_type_change_summary(changes: &AttributeTypeChanges) -> String {
+    let mut parts = Vec::new();
+    if changes.value_type_changed.is_some() {
+        parts.push("value type");
+    }
+    if changes.parent_changed.is_some() {
+        parts.push("parent");
+    }
+    if changes.abstract_changed.is_some() {
+        parts.push("abstract");
+    }
+    if changes.independent_changed.is_some() {
+        parts.push("independent");
+    }
+    if changes.regex_changed.is_some() {
+        parts.push("regex");
+    }
+    if changes.allowed_values_changed.is_some() {
+        parts.push("values");
+    }
+    if changes.range_changed.is_some() {
+        parts.push("range");
+    }
+    parts.join(", ")
 }
 
 fn classified(
@@ -679,6 +769,41 @@ fn normalized_cardinality(cardinality: Option<(u32, Option<u32>)>) -> (Option<u3
     cardinality
         .map(|(min, max)| (Some(min), max))
         .unwrap_or((None, None))
+}
+
+fn diff_attribute_type(
+    old_entry: &AttributeSchemaEntry,
+    new_entry: &AttributeSchemaEntry,
+) -> AttributeTypeChanges {
+    let mut changes = AttributeTypeChanges::default();
+
+    if old_entry.value_type != new_entry.value_type {
+        changes.value_type_changed = Some((old_entry.value_type, new_entry.value_type));
+    }
+    if old_entry.parent_type != new_entry.parent_type {
+        changes.parent_changed =
+            Some((old_entry.parent_type.clone(), new_entry.parent_type.clone()));
+    }
+    if old_entry.is_abstract != new_entry.is_abstract {
+        changes.abstract_changed = Some((old_entry.is_abstract, new_entry.is_abstract));
+    }
+    if old_entry.is_independent != new_entry.is_independent {
+        changes.independent_changed = Some((old_entry.is_independent, new_entry.is_independent));
+    }
+    if old_entry.regex != new_entry.regex {
+        changes.regex_changed = Some((old_entry.regex.clone(), new_entry.regex.clone()));
+    }
+    if old_entry.allowed_values != new_entry.allowed_values {
+        changes.allowed_values_changed = Some((
+            old_entry.allowed_values.clone(),
+            new_entry.allowed_values.clone(),
+        ));
+    }
+    if old_entry.range != new_entry.range {
+        changes.range_changed = Some((old_entry.range.clone(), new_entry.range.clone()));
+    }
+
+    changes
 }
 
 /// Compare two lists of owned attributes and produce entity-level changes.
@@ -938,14 +1063,41 @@ mod tests {
         let mut new = SchemaInfo::default();
         new.attributes.insert(
             "name".into(),
-            AttributeSchemaEntry {
-                attr_name: "name".into(),
-                value_type: ValueType::String,
-            },
+            AttributeSchemaEntry::new("name", ValueType::String),
         );
         let diff = SchemaDiff::compute(&old, &new);
         assert!(diff.has_changes());
         assert_eq!(diff.added_attributes, vec!["name"]);
+    }
+
+    #[test]
+    fn detect_modified_attribute_type_constraints() {
+        let mut old = SchemaInfo::default();
+        old.attributes.insert(
+            "email".into(),
+            AttributeSchemaEntry::new("email", ValueType::String),
+        );
+
+        let mut constrained = AttributeSchemaEntry::new("email", ValueType::String);
+        constrained.regex = Some(r"^[a-z]+$".into());
+        constrained.range = Some((None, Some("255".into())));
+        let mut new = SchemaInfo::default();
+        new.attributes.insert("email".into(), constrained);
+
+        let diff = SchemaDiff::compute(&old, &new);
+
+        assert!(diff.has_changes());
+        assert!(diff.has_breaking_changes());
+        let changes = diff.modified_attributes.get("email").unwrap();
+        assert_eq!(
+            changes.regex_changed,
+            Some((None, Some(r"^[a-z]+$".into())))
+        );
+        assert_eq!(
+            changes.range_changed,
+            Some((None, Some((None, Some("255".into())))))
+        );
+        assert!(diff.summary().contains("~ attribute email: regex, range"));
     }
 
     #[test]
@@ -1241,6 +1393,13 @@ mod tests {
                     parent_changed: None,
                 },
             )]),
+            modified_attributes: BTreeMap::from([(
+                "email".into(),
+                AttributeTypeChanges {
+                    regex_changed: Some((None, Some(r"^[a-z]+$".into()))),
+                    ..Default::default()
+                },
+            )]),
         };
 
         let classified = diff.classify();
@@ -1275,6 +1434,10 @@ mod tests {
                 .any(|change| change.category == ChangeCategory::Safe
                     && change.description.contains("Add player type"))
         );
+        assert!(classified.iter().any(|change| {
+            change.category == ChangeCategory::Breaking
+                && change.description.contains("Modify attribute type 'email'")
+        }));
         assert!(
             classified
                 .iter()

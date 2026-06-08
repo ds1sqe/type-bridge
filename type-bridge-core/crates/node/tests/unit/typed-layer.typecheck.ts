@@ -1,4 +1,4 @@
-import { Entity, Key, attr, field } from "../../typescript/index.js";
+import { Entity, Key, Relation, attr, field, role } from "../../typescript/index.js";
 
 class Name extends attr.String("parity-name") {}
 class Email extends attr.String("parity-email") {}
@@ -7,6 +7,11 @@ class Age extends attr.Integer("parity-age") {}
 class Person extends Entity("parity-person", {
   name: field(Name, Key),
   age: field(Age).optional(),
+}) {}
+
+class RelatesOnly extends Relation("relates-only-typecheck", {
+  definition: role(),
+  participant: role(Person),
 }) {}
 
 new Person({ name: new Name("Alice") });
@@ -33,4 +38,13 @@ const email: Email = new Name("Alice");
 // @ts-expect-error branded attributes are not raw strings
 const raw: string = person.name;
 
+const relation = new RelatesOnly({ participant: person });
+const noPlayer: undefined = relation.definition;
+const boundPlayer: Person | readonly Person[] = relation.participant;
+
+// @ts-expect-error relates-only roles do not accept player values
+new RelatesOnly({ definition: person, participant: person });
+
 void maybeAge;
+void noPlayer;
+void boundPlayer;

@@ -179,6 +179,28 @@ fn registry_rejects_duplicate_attributes_and_roles() {
 }
 
 #[test]
+fn registry_accepts_relates_only_role() {
+    let registry = DescriptorRegistry::new();
+    let mut relation = employment_descriptor();
+    relation.roles = vec![RoleDescriptor {
+        role_name: "definition".into(),
+        player_type_names: vec![],
+        cardinality: None,
+    }];
+
+    let registered = registry.register_relation(relation).unwrap();
+
+    assert_eq!(
+        registered
+            .role("definition")
+            .unwrap()
+            .player_type_names
+            .len(),
+        0
+    );
+}
+
+#[test]
 fn concurrent_identical_registration_converges() {
     let registry = Arc::new(DescriptorRegistry::new());
     let handles: Vec<_> = (0..8)

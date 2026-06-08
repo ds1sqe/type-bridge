@@ -27,6 +27,11 @@ class LowerAge(Integer):
     flags = AttributeFlags(name="lower-age")
 
 
+class LowerCode(String):
+    flags = AttributeFlags(name="lower-code")
+    regex_pattern = r"^[A-Z]{3}$"
+
+
 class LowerPerson(Entity):
     flags = TypeFlags(name="lower-person")
 
@@ -149,6 +154,28 @@ def test_model_based_migration_lowers_to_define_schema() -> None:
     assert schema["attributes"]["lower-name"] == {
         "attr_name": "lower-name",
         "value_type": "string",
+    }
+
+
+def test_model_based_migration_preserves_attribute_type_annotations() -> None:
+    class LowerAnnotated(Entity):
+        flags = TypeFlags(name="lower-annotated")
+
+        code: LowerCode
+
+    class InitialMigration(Migration):
+        models: ClassVar[list[type[Entity | Relation]]] = [LowerAnnotated]
+
+    migration = InitialMigration()
+    migration.app_label = "lower"
+    migration.name = "0001_initial"
+
+    spec = lower_migration(migration)
+
+    assert spec["operations"][0]["schema"]["attributes"]["lower-code"] == {
+        "attr_name": "lower-code",
+        "value_type": "string",
+        "regex": r"^[A-Z]{3}$",
     }
 
 

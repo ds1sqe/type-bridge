@@ -118,6 +118,64 @@ describe("typed model layer integration", () => {
     assert.equal(rows.length, 1);
     assert.deepEqual(rowAttribute(rows[0], sinceAttr), { Date: "2026-06-04" });
   });
+
+  test("typed registry schemaInfo preserves attribute type annotations in live define", () => {
+    const annotatedType = `${suffix}-annotated`;
+    const rootAttr = `${suffix}-root-code`;
+    const codeAttr = `${suffix}-code`;
+    const stateAttr = `${suffix}-state`;
+
+    class AnnotatedRootCode extends attr.String(rootAttr, { abstract: true }) {}
+    class AnnotatedCode extends attr.String(codeAttr, {
+      parent: AnnotatedRootCode,
+      regex: "^[A-Z]{2}$",
+    }) {}
+    class AnnotatedState extends attr.String(stateAttr, {
+      values: ["open", "closed"],
+    }) {}
+    class AnnotatedEntity extends Entity(annotatedType, {
+      code: field(AnnotatedCode, Key),
+      state: field(AnnotatedState),
+    }) {}
+
+    const descriptor = AnnotatedEntity.descriptor();
+    const registry = new typeBridge.DescriptorRegistry();
+    registry.registerEntity(descriptor);
+    const typeql = typeBridge.generateDefineBlock(registry.schemaInfo());
+
+    assert.ok(
+      typeql.includes(`attribute ${rootAttr} @abstract, value string;`),
+      "unowned abstract parent attribute must be emitted",
+    );
+    assert.ok(
+      typeql.includes(`attribute ${codeAttr} sub ${rootAttr}, value string @regex("^[A-Z]{2}$");`),
+      "child attribute regex and parent must be emitted",
+    );
+    assert.ok(
+      typeql.includes(`attribute ${stateAttr}, value string @values("open", "closed");`),
+      "allowed values must be emitted",
+    );
+
+    defineSchema(db, typeql);
+    const manager = db.entityManager(descriptor);
+    manager.insert({
+      code: typeBridge.string("AB"),
+      state: typeBridge.string("open"),
+    });
+
+    assert.throws(() =>
+      manager.insert({
+        code: typeBridge.string("bad"),
+        state: typeBridge.string("open"),
+      }),
+    );
+    assert.throws(() =>
+      manager.insert({
+        code: typeBridge.string("CD"),
+        state: typeBridge.string("stale"),
+      }),
+    );
+  });
 });
 
 function connectIntegration() {

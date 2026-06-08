@@ -1,4 +1,4 @@
-import type { ValueType } from "./index.js";
+import type { AttributeSchemaEntry, ValueType } from "./index.js";
 import { AggregateSpec, ComparisonExpr, SortExpr } from "./query.js";
 declare const attributeBrand: unique symbol;
 /**
@@ -44,6 +44,19 @@ type AggregateStatics = {
     median(): AggregateSpec;
     std(): AggregateSpec;
 };
+export type AttributeTypeParent = {
+    readonly attrName: string;
+    readonly attributeSchema?: AttributeSchemaEntry;
+    readonly attributeSchemaEntries?: readonly AttributeSchemaEntry[];
+} | string | null;
+export interface AttributeTypeOptions {
+    readonly parent?: AttributeTypeParent;
+    readonly abstract?: boolean;
+    readonly independent?: boolean;
+    readonly regex?: string | null;
+    readonly values?: readonly string[] | null;
+    readonly range?: readonly [string | null, string | null] | null;
+}
 /**
  * The abstract base class returned by an `attr.*(name)` factory: an abstract
  * `Attribute` constructor branded by `Name`, plus the static `attrName` and
@@ -53,6 +66,8 @@ type AggregateStatics = {
 export type AttributeBase<Value, Brand extends string> = (abstract new (value: Value) => Attribute<Value, Brand>) & {
     readonly attrName: Brand;
     readonly valueType: ValueType;
+    readonly attributeSchema: AttributeSchemaEntry;
+    readonly attributeSchemaEntries: readonly AttributeSchemaEntry[];
 };
 /** Attribute base with comparison + sort helpers (every value type). */
 export type ComparableAttributeBase<Value, Brand extends string> = AttributeBase<Value, Brand> & ComparisonStatics<Value, Brand> & OrderStatics;
@@ -60,9 +75,9 @@ export type ComparableAttributeBase<Value, Brand extends string> = AttributeBase
 export type StringAttributeBase<Brand extends string> = ComparableAttributeBase<string, Brand> & StringStatics;
 /** Attribute base for numeric values: comparison + sort + reduce helpers. */
 export type NumericAttributeBase<Value, Brand extends string> = ComparableAttributeBase<Value, Brand> & AggregateStatics;
-type ComparableFactory<Value> = <const Name extends string>(name: Name) => ComparableAttributeBase<Value, Name>;
-type StringFactory = <const Name extends string>(name: Name) => StringAttributeBase<Name>;
-type NumericFactory<Value> = <const Name extends string>(name: Name) => NumericAttributeBase<Value, Name>;
+type ComparableFactory<Value> = <const Name extends string>(name: Name, options?: AttributeTypeOptions) => ComparableAttributeBase<Value, Name>;
+type StringFactory = <const Name extends string>(name: Name, options?: AttributeTypeOptions) => StringAttributeBase<Name>;
+type NumericFactory<Value> = <const Name extends string>(name: Name, options?: AttributeTypeOptions) => NumericAttributeBase<Value, Name>;
 /**
  * Attribute base-class factories, one per TypeDB value type. Each call returns a
  * branded base to extend: the mandatory `name` is both the schema `attr_name`

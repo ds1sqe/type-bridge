@@ -367,10 +367,7 @@ fn generate_schema_with_cardinality() {
     let mut info = SchemaInfo::default();
     info.attributes.insert(
         "tag".into(),
-        AttributeSchemaEntry {
-            attr_name: "tag".into(),
-            value_type: ValueType::String,
-        },
+        AttributeSchemaEntry::new("tag", ValueType::String),
     );
     info.entities.insert(
         "item".into(),

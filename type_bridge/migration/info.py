@@ -196,7 +196,7 @@ class SchemaInfo:
 
     def to_rust_schema_info(self) -> dict:
         """Serialize this Python model schema to the Rust ``SchemaInfo`` dict shape."""
-        from type_bridge._rust_runtime import descriptor_for_model
+        from type_bridge._rust_runtime import attribute_schema_entry, descriptor_for_model
 
         info: dict = {"entities": {}, "relations": {}, "attributes": {}}
         entity_names = {
@@ -215,6 +215,9 @@ class SchemaInfo:
                 entry["parent_type"] = None
             info["entities"][entry["type_name"]] = entry
             _register_attributes(info, entry["owned_attributes"])
+            for attr_info in entity.get_all_attributes().values():
+                entry = attribute_schema_entry(attr_info.typ)
+                info["attributes"][entry["attr_name"]] = entry
 
         for relation in self.relations:
             if _is_base_model(relation):
@@ -233,6 +236,13 @@ class SchemaInfo:
             ]
             info["relations"][entry["type_name"]] = entry
             _register_attributes(info, entry["owned_attributes"])
+            for attr_info in relation.get_all_attributes().values():
+                entry = attribute_schema_entry(attr_info.typ)
+                info["attributes"][entry["attr_name"]] = entry
+
+        for attr_cls in self.attribute_classes:
+            entry = attribute_schema_entry(attr_cls)
+            info["attributes"][entry["attr_name"]] = entry
 
         return info
 

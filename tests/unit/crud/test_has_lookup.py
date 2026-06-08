@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,6 +17,7 @@ from type_bridge import (
     String,
     TypeFlags,
 )
+from type_bridge.crud.has_lookup import _build_has_query, _hydrate_results
 from type_bridge.models.base import TypeDBType
 from type_bridge.models.registry import ModelRegistry
 
@@ -114,30 +116,22 @@ class TestQueryGeneration:
     """
 
     def test_entity_no_value(self):
-        from type_bridge.crud.has_lookup import _build_has_query
-
         q = _build_has_query(SharedName, kind="entity")
         assert "entity $e" in q
         assert "has SharedName $n" in q
         assert "label($e)" in q
 
     def test_entity_exact_match(self):
-        from type_bridge.crud.has_lookup import _build_has_query
-
         q = _build_has_query(SharedName, "Alice", kind="entity")
         assert "has SharedName $dyn_attr0" in q
         assert '$dyn_attr0 == "Alice"' in q
 
     def test_entity_with_attribute_instance(self):
-        from type_bridge.crud.has_lookup import _build_has_query
-
         q = _build_has_query(SharedName, SharedName("Alice"), kind="entity")
         assert "has SharedName $dyn_attr0" in q
         assert '$dyn_attr0 == "Alice"' in q
 
     def test_relation_kind(self):
-        from type_bridge.crud.has_lookup import _build_has_query
-
         q = _build_has_query(SharedName, kind="relation")
         assert "relation $r" in q
         assert "isa $r" in q
@@ -145,8 +139,6 @@ class TestQueryGeneration:
 
     def test_comparison_expression_no_duplicate_has(self):
         """Expression path should NOT emit a redundant has clause."""
-        from type_bridge.crud.has_lookup import _build_has_query
-
         expr = SharedName.gt(SharedName("B"))
         q = _build_has_query(SharedName, expr, kind="entity")
         # The expression generates its own `has SharedName $x__sharedname`
@@ -156,8 +148,6 @@ class TestQueryGeneration:
         assert "has SharedName $n" not in q
 
     def test_integer_exact_match(self):
-        from type_bridge.crud.has_lookup import _build_has_query
-
         q = _build_has_query(Salary, 120000, kind="relation")
         assert "has Salary $dyn_attr0" in q
         assert "$dyn_attr0 == 120000" in q
@@ -171,8 +161,6 @@ class TestQueryGeneration:
         ``label($t)`` can recover the most-specific subtype label.
         ``label($x)`` is illegal in TypeDB 3 because $x is an Object variable.
         """
-        from type_bridge.crud.has_lookup import _build_has_query
-
         q = _build_has_query(
             SharedName,
             "Alice",
@@ -193,8 +181,6 @@ class TestQueryGeneration:
 
     def test_concrete_relation_narrows_to_type_name(self):
         """Concrete relation narrowing emits $t sub <type_name>; $x isa! $t."""
-        from type_bridge.crud.has_lookup import _build_has_query
-
         q = _build_has_query(
             SharedName,
             value=None,
@@ -210,24 +196,18 @@ class TestQueryGeneration:
 
     def test_base_entity_query_stays_cross_type(self):
         """Regression guard: type_name=None preserves the cross-type form."""
-        from type_bridge.crud.has_lookup import _build_has_query
-
         q = _build_has_query(SharedName, kind="entity", type_name=None)
         assert "entity $e" in q
         assert "label($e)" in q
 
     def test_base_relation_query_stays_cross_type(self):
         """Regression guard: type_name=None preserves the cross-type relation form."""
-        from type_bridge.crud.has_lookup import _build_has_query
-
         q = _build_has_query(SharedName, kind="relation", type_name=None)
         assert "relation $r" in q
         assert "label($r)" in q
 
     def test_concrete_narrowing_with_comparison_expression(self):
         """Narrowed expression path still avoids the duplicate has clause."""
-        from type_bridge.crud.has_lookup import _build_has_query
-
         expr = SharedName.gt(SharedName("B"))
         q = _build_has_query(
             SharedName,
@@ -277,41 +257,29 @@ class TestHasKindDetection:
 
 class TestHydrateResults:
     def test_empty_results(self):
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         assert _hydrate_results([], ModelRegistry, connection=None) == []
 
     def test_missing_type_label_skipped(self):
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         results = [{"_iid": "0x1", "_type": None, "attributes": {"SharedName": "Alice"}}]
         assert _hydrate_results(results, ModelRegistry, connection=None) == []
 
     def test_empty_type_label_skipped(self):
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         results = [{"_iid": "0x1", "_type": "", "attributes": {"SharedName": "Alice"}}]
         assert _hydrate_results(results, ModelRegistry, connection=None) == []
 
     def test_unregistered_type_skipped(self):
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         results = [
             {"_iid": "0x1", "_type": "no_such_type_xyz", "attributes": {"SharedName": "Alice"}}
         ]
         assert _hydrate_results(results, ModelRegistry, connection=None) == []
 
     def test_iid_none_not_set(self):
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         results = [{"_iid": None, "_type": "lookup_person", "attributes": {"SharedName": "Alice"}}]
         instances = _hydrate_results(results, ModelRegistry, connection=None)
         assert len(instances) == 1
         assert instances[0]._iid is None
 
     def test_iid_dict_unwrapped(self):
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         results = [
             {
                 "_iid": {"value": "0xABC"},
@@ -323,8 +291,6 @@ class TestHydrateResults:
         assert instances[0]._iid == "0xABC"
 
     def test_entity_hydration(self):
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         results = [
             {
                 "_iid": "0x1",
@@ -341,10 +307,6 @@ class TestHydrateResults:
         # Stub LookupEmployment.manager so the relation path can route through
         # manager.get(_iid=...) without touching a real database. Returns a
         # pre-built relation that pretends to have role players already set.
-        from unittest.mock import MagicMock
-
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         prebuilt = LookupEmployment(name=SharedName("Engineer"), salary=Salary(100000))
         fake_manager = MagicMock()
         fake_manager.get = MagicMock(return_value=[prebuilt])
@@ -371,10 +333,6 @@ class TestHydrateResults:
         hydration to the existing relation manager (which already extracts
         role players via ``crud/role_players.py``).
         """
-        from unittest.mock import MagicMock
-
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         prebuilt = LookupEmployment(name=SharedName("Mocked"))
         fake_manager = MagicMock()
         fake_manager.get = MagicMock(return_value=[prebuilt])
@@ -406,10 +364,6 @@ class TestHydrateResults:
         The entity hydration path uses the wildcard ``$x.*`` payload directly
         and must NOT issue a follow-up ``manager.get(_iid=...)`` call.
         """
-        from unittest.mock import MagicMock
-
-        from type_bridge.crud.has_lookup import _hydrate_results
-
         fake_manager = MagicMock()
         fake_manager.get = MagicMock(
             side_effect=AssertionError("entity should not call manager.get")

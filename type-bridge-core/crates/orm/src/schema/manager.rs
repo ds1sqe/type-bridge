@@ -49,10 +49,7 @@ impl<'db> SchemaManager<'db> {
                 self.info
                     .attributes
                     .entry(a.attr_name.to_string())
-                    .or_insert(AttributeSchemaEntry {
-                        attr_name: a.attr_name.to_string(),
-                        value_type: a.value_type,
-                    });
+                    .or_insert_with(|| AttributeSchemaEntry::new(a.attr_name, a.value_type));
                 OwnedAttributeEntry {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
@@ -83,10 +80,7 @@ impl<'db> SchemaManager<'db> {
                 self.info
                     .attributes
                     .entry(a.attr_name.to_string())
-                    .or_insert(AttributeSchemaEntry {
-                        attr_name: a.attr_name.to_string(),
-                        value_type: a.value_type,
-                    });
+                    .or_insert_with(|| AttributeSchemaEntry::new(a.attr_name, a.value_type));
                 OwnedAttributeEntry {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
@@ -189,13 +183,8 @@ impl<'db> SchemaManager<'db> {
                         .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str())),
                 ) && let Some(vt) = parse_value_type(vt_str)
                 {
-                    info.attributes.insert(
-                        name.to_string(),
-                        AttributeSchemaEntry {
-                            attr_name: name.to_string(),
-                            value_type: vt,
-                        },
-                    );
+                    info.attributes
+                        .insert(name.to_string(), AttributeSchemaEntry::new(name, vt));
                 }
             }
         }

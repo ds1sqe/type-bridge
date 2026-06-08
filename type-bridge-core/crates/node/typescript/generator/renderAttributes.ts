@@ -2,8 +2,8 @@
  * Render the `attributes.ts` module text from a parsed TypeSchema.
  *
  * Mirrors `type_bridge/generator/render/attributes.py` → `render_attributes()`.
- * Emits one branded `export class <ClassName> extends attr.<Kind>("<name>") {}`
- * per attribute, in deterministic (alphabetical-by-name) order matching the
+ * Emits one branded `export class <ClassName> extends attr.<Kind>("<name>", ...) {}`
+ * per attribute, in deterministic parent-before-child order matching the
  * Python generator's topological/sorted emit.
  *
  * Build-time code generation; no runtime ORM logic.
@@ -78,15 +78,70 @@ function resolveAttrKind(
 }
 
 /**
- * Return attribute names sorted alphabetically — deterministic emit order.
- *
- * Python's `render_attributes` emits in topological order (parents before
- * children); here the generated TS has no inheritance between attribute classes
- * (each extends `attr.<Kind>(name)` directly), so alphabetical order is stable
- * and deterministic without a topo-sort.
+ * Return attribute names in deterministic topological order: parents before
+ * children, with alphabetical order among unrelated attributes.
  */
 function sortedAttrNames(schema: TypeSchema): string[] {
-  return Object.keys(schema.attributes).sort();
+  const sorted: string[] = [];
+  const visited = new Set<string>();
+  const names = Object.keys(schema.attributes).sort();
+
+  function visit(name: string): void {
+    if (visited.has(name)) return;
+    visited.add(name);
+    const parent = schema.attributes[name]?.parent;
+    if (parent && schema.attributes[parent]) {
+      visit(parent);
+    }
+    sorted.push(name);
+  }
+
+  for (const name of names) {
+    visit(name);
+  }
+  return sorted;
+}
+
+function attributeOptionsLiteral(
+  attrName: string,
+  schema: TypeSchema,
+  attrClassMap: Map<string, string>,
+): string {
+  const attribute = schema.attributes[attrName];
+  if (!attribute) return "";
+
+  const fields: string[] = [];
+  if (attribute.parent) {
+    const parentClass = attrClassMap.get(attribute.parent);
+    fields.push(
+      parentClass
+        ? `parent: ${parentClass}`
+        : `parent: ${JSON.stringify(attribute.parent)}`,
+    );
+  }
+  if (attribute.is_abstract) {
+    fields.push(`abstract: true`);
+  }
+  if (attribute.is_independent) {
+    fields.push(`independent: true`);
+  }
+  if (attribute.regex !== null) {
+    fields.push(`regex: ${JSON.stringify(attribute.regex)}`);
+  }
+  if (attribute.allowed_values !== null) {
+    fields.push(`values: ${JSON.stringify(attribute.allowed_values)}`);
+  }
+  if (attribute.range_min !== null || attribute.range_max !== null) {
+    fields.push(
+      `range: [${optionalStringLiteral(attribute.range_min)}, ${optionalStringLiteral(attribute.range_max)}]`,
+    );
+  }
+
+  return fields.length === 0 ? "" : `, { ${fields.join(", ")} }`;
+}
+
+function optionalStringLiteral(value: string | null): string {
+  return value === null ? "null" : JSON.stringify(value);
 }
 
 /**
@@ -101,6 +156,10 @@ function sortedAttrNames(schema: TypeSchema): string[] {
  */
 export function renderAttributes(schema: TypeSchema): string {
   const names = sortedAttrNames(schema);
+  const attrClassMap = new Map<string, string>();
+  for (const name of Object.keys(schema.attributes)) {
+    attrClassMap.set(name, toClassName(name));
+  }
 
   const lines: string[] = [
     `import { attr } from "@type-bridge/node";`,
@@ -108,9 +167,10 @@ export function renderAttributes(schema: TypeSchema): string {
   ];
 
   for (const name of names) {
-    const className = toClassName(name);
+    const className = attrClassMap.get(name) ?? toClassName(name);
     const kind = resolveAttrKind(name, schema);
-    lines.push(`export class ${className} extends attr.${kind}("${name}") {}`);
+    const options = attributeOptionsLiteral(name, schema, attrClassMap);
+    lines.push(`export class ${className} extends attr.${kind}("${name}"${options}) {}`);
   }
 
   // Trailing newline

@@ -19,6 +19,12 @@ export interface OwnedAttributeDescriptor {
   value_type: ValueType;
   annotations: Annotation[];
   is_optional: boolean;
+  parent_type?: string | null;
+  is_abstract?: boolean;
+  is_independent?: boolean;
+  regex?: string | null;
+  allowed_values?: string[] | null;
+  range?: [string | null, string | null] | null;
 }
 
 export interface EntityDescriptor {
@@ -45,6 +51,49 @@ export interface RelationDescriptor {
 export type TypeDescriptor =
   | { kind: "entity"; descriptor: EntityDescriptor }
   | { kind: "relation"; descriptor: RelationDescriptor };
+
+export interface OwnedAttributeEntry {
+  attr_name: string;
+  value_type: ValueType;
+  annotations: Annotation[];
+}
+
+export interface RoleEntry {
+  role_name: string;
+  player_type_names: string[];
+  cardinality: [number, number | null] | null;
+}
+
+export interface EntitySchemaEntry {
+  type_name: string;
+  is_abstract: boolean;
+  parent_type: string | null;
+  owned_attributes: OwnedAttributeEntry[];
+  plays_cardinalities?: Record<string, [number, number | null]>;
+}
+
+export interface RelationSchemaEntry extends EntitySchemaEntry {
+  roles: RoleEntry[];
+}
+
+export interface AttributeSchemaEntry {
+  attr_name: string;
+  value_type: ValueType;
+  parent_type?: string | null;
+  is_abstract?: boolean;
+  is_independent?: boolean;
+  regex?: string | null;
+  allowed_values?: string[] | null;
+  range?: [string | null, string | null] | null;
+}
+
+export interface SchemaInfo {
+  entities: Record<string, EntitySchemaEntry>;
+  relations: Record<string, RelationSchemaEntry>;
+  attributes: Record<string, AttributeSchemaEntry>;
+}
+
+const ATTRIBUTE_SCHEMA_METADATA = Symbol.for("@type-bridge/node.attributeSchemaMetadata");
 
 export type TransactionType = "read" | "write" | "schema";
 
@@ -108,6 +157,8 @@ export {
   Attribute,
   attr,
   type AttributeBase,
+  type AttributeTypeOptions,
+  type AttributeTypeParent,
   type ComparableAttributeBase,
   type NumericAttributeBase,
   type StringAttributeBase,
@@ -333,6 +384,7 @@ interface NativeDescriptorRegistry {
   entityJson(typeName: string): string;
   relationJson(typeName: string): string;
   snapshotJson(): string;
+  schemaInfoJson(): string;
 }
 
 interface NativeMarshalling {
@@ -424,6 +476,7 @@ interface NativeSchemaParser {
 
 export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
   NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
+  generateDefineBlockJson(schemaInfoJson: string): string;
 }
 
 export interface RustDatabaseConnectOptions {
@@ -458,18 +511,25 @@ export function ensureDatabase(
 
 export { loadNative };
 
+export function generateDefineBlock(info: SchemaInfo): string {
+  return loadNative().generateDefineBlockJson(JSON.stringify(info));
+}
+
 export class DescriptorRegistry {
   readonly #native: NativeDescriptorRegistry;
+  readonly #attributeSchemas = new Map<string, AttributeSchemaEntry>();
 
   constructor(nativeRegistry?: NativeDescriptorRegistry | null) {
     this.#native = nativeRegistry ?? new (loadNative().NodeDescriptorRegistry)();
   }
 
   registerEntity(descriptor: EntityDescriptor): EntityDescriptor {
+    this.#rememberAttributeSchemas(descriptor);
     return parseJson(this.#native.registerEntityJson(JSON.stringify(descriptor)));
   }
 
   registerRelation(descriptor: RelationDescriptor): RelationDescriptor {
+    this.#rememberAttributeSchemas(descriptor);
     return parseJson(this.#native.registerRelationJson(JSON.stringify(descriptor)));
   }
 
@@ -484,6 +544,87 @@ export class DescriptorRegistry {
   snapshot(): TypeDescriptor[] {
     return parseJson(this.#native.snapshotJson());
   }
+
+  schemaInfo(): SchemaInfo {
+    const info = parseJson<SchemaInfo>(this.#native.schemaInfoJson());
+    for (const [attrName, entry] of this.#attributeSchemas) {
+      info.attributes[attrName] = {
+        ...(info.attributes[attrName] ?? { attr_name: attrName, value_type: entry.value_type }),
+        ...copyAttributeSchemaEntry(entry),
+      };
+    }
+    return info;
+  }
+
+  #rememberAttributeSchemas(descriptor: EntityDescriptor | RelationDescriptor): void {
+    for (const entry of descriptorAttributeSchemaMetadata(descriptor)) {
+      this.#attributeSchemas.set(entry.attr_name, copyAttributeSchemaEntry(entry));
+    }
+    for (const attribute of descriptor.owned_attributes) {
+      const entry = ownedAttributeSchemaEntry(attribute);
+      if (entry !== null) {
+        this.#attributeSchemas.set(entry.attr_name, entry);
+      }
+    }
+  }
+}
+
+function descriptorAttributeSchemaMetadata(
+  descriptor: EntityDescriptor | RelationDescriptor,
+): AttributeSchemaEntry[] {
+  const metadata = (descriptor as unknown as Record<PropertyKey, unknown>)[
+    ATTRIBUTE_SCHEMA_METADATA
+  ];
+  if (metadata === null || typeof metadata !== "object") {
+    return [];
+  }
+  return Object.values(metadata as Record<string, AttributeSchemaEntry>).map(copyAttributeSchemaEntry);
+}
+
+function ownedAttributeSchemaEntry(
+  attribute: OwnedAttributeDescriptor,
+): AttributeSchemaEntry | null {
+  if (!hasAttributeTypeMetadata(attribute)) {
+    return null;
+  }
+  const entry: AttributeSchemaEntry = {
+    attr_name: attribute.attr_name,
+    value_type: attribute.value_type,
+  };
+  if (attribute.parent_type !== undefined) entry.parent_type = attribute.parent_type;
+  if (attribute.is_abstract !== undefined) entry.is_abstract = attribute.is_abstract;
+  if (attribute.is_independent !== undefined) entry.is_independent = attribute.is_independent;
+  if (attribute.regex !== undefined) entry.regex = attribute.regex;
+  if (attribute.allowed_values !== undefined) {
+    entry.allowed_values =
+      attribute.allowed_values == null ? null : [...attribute.allowed_values];
+  }
+  if (attribute.range !== undefined) {
+    entry.range = attribute.range == null ? null : [attribute.range[0], attribute.range[1]];
+  }
+  return entry;
+}
+
+function hasAttributeTypeMetadata(attribute: OwnedAttributeDescriptor): boolean {
+  return (
+    attribute.parent_type !== undefined ||
+    attribute.is_abstract !== undefined ||
+    attribute.is_independent !== undefined ||
+    attribute.regex !== undefined ||
+    attribute.allowed_values !== undefined ||
+    attribute.range !== undefined
+  );
+}
+
+function copyAttributeSchemaEntry(entry: AttributeSchemaEntry): AttributeSchemaEntry {
+  const copy: AttributeSchemaEntry = { ...entry };
+  if (entry.allowed_values !== undefined) {
+    copy.allowed_values = entry.allowed_values === null ? null : [...entry.allowed_values];
+  }
+  if (entry.range !== undefined) {
+    copy.range = entry.range === null ? null : [entry.range[0], entry.range[1]];
+  }
+  return copy;
 }
 
 export class Marshalling {

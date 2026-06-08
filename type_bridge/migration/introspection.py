@@ -23,6 +23,12 @@ class IntrospectedAttribute:
 
     name: str
     value_type: str  # string, integer, double, boolean, datetime, etc.
+    parent_type: str | None = None
+    is_abstract: bool = False
+    is_independent: bool = False
+    regex: str | None = None
+    allowed_values: list[str] | None = None
+    range: list[str | None] | tuple[str | None, str | None] | None = None
 
 
 @dataclass
@@ -53,6 +59,7 @@ class IntrospectedRelation:
     name: str
     roles: dict[str, IntrospectedRole] = field(default_factory=dict)
     supertype: str | None = None
+    is_abstract: bool = False
 
 
 @dataclass
@@ -61,6 +68,7 @@ class IntrospectedEntity:
 
     name: str
     supertype: str | None = None
+    is_abstract: bool = False
 
 
 @dataclass
@@ -110,12 +118,21 @@ class IntrospectedSchema:
             schema.attributes[attr_name] = IntrospectedAttribute(
                 name=attr_name,
                 value_type=attr.get("value_type", "string"),
+                parent_type=attr.get("parent_type"),
+                is_abstract=bool(attr.get("is_abstract", False)),
+                is_independent=bool(attr.get("is_independent", False)),
+                regex=attr.get("regex"),
+                allowed_values=list(attr["allowed_values"])
+                if attr.get("allowed_values") is not None
+                else None,
+                range=attr.get("range"),
             )
 
         for entity_name, entity in info.get("entities", {}).items():
             schema.entities[entity_name] = IntrospectedEntity(
                 name=entity_name,
                 supertype=entity.get("parent_type"),
+                is_abstract=bool(entity.get("is_abstract", False)),
             )
             schema._add_ownerships_from_rust_entry(entity_name, entity)
 
@@ -123,6 +140,7 @@ class IntrospectedSchema:
             schema.relations[relation_name] = IntrospectedRelation(
                 name=relation_name,
                 supertype=relation.get("parent_type"),
+                is_abstract=bool(relation.get("is_abstract", False)),
             )
             for role in relation.get("roles", []):
                 role_name = role["role_name"]
@@ -156,13 +174,14 @@ class IntrospectedSchema:
                 "attr_name": attr_name,
                 "value_type": _rust_value_type(attr.value_type),
             }
+            _add_attribute_metadata(info["attributes"][attr_name], attr)
 
         for entity_name, entity in self.entities.items():
             if entity_name == "entity":
                 continue
             info["entities"][entity_name] = {
                 "type_name": entity_name,
-                "is_abstract": False,
+                "is_abstract": entity.is_abstract,
                 "parent_type": entity.supertype,
                 "owned_attributes": self._owned_attributes_for(entity_name, info),
             }
@@ -172,7 +191,7 @@ class IntrospectedSchema:
                 continue
             info["relations"][relation_name] = {
                 "type_name": relation_name,
-                "is_abstract": False,
+                "is_abstract": relation.is_abstract,
                 "parent_type": relation.supertype,
                 "owned_attributes": self._owned_attributes_for(relation_name, info),
                 "roles": [
@@ -198,6 +217,8 @@ class IntrospectedSchema:
                 ownership.attribute_name,
                 {"attr_name": ownership.attribute_name, "value_type": value_type},
             )
+            if attr is not None:
+                _add_attribute_metadata(info["attributes"][ownership.attribute_name], attr)
             attrs.append(
                 {
                     "attr_name": ownership.attribute_name,
@@ -221,6 +242,23 @@ def _rust_value_type(value_type: str) -> str:
         "decimal": "decimal",
         "duration": "duration",
     }.get(value_type, "string")
+
+
+def _add_attribute_metadata(entry: dict, attr: IntrospectedAttribute) -> None:
+    if attr.parent_type is not None:
+        entry["parent_type"] = attr.parent_type
+    if attr.is_abstract:
+        entry["is_abstract"] = True
+    if attr.is_independent:
+        entry["is_independent"] = True
+    if attr.regex is not None:
+        entry["regex"] = attr.regex
+    if attr.allowed_values is not None:
+        entry["allowed_values"] = list(attr.allowed_values)
+    if attr.range is not None:
+        bounds = list(attr.range)
+        if len(bounds) == 2:
+            entry["range"] = [bounds[0], bounds[1]]
 
 
 def _player_type_name(player: object) -> str:

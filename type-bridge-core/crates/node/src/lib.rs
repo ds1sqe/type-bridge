@@ -20,8 +20,8 @@ use type_bridge_orm::{
     AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
     DynamicEntityManager, DynamicEntityRow, DynamicExpr, DynamicRelationManager,
     DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, EntityDescriptor, Filter, OrmError,
-    OwnedAttributeDescriptor, RelationDescriptor, TransactionContext, TxType, TypeDescriptor,
-    ValueType,
+    OwnedAttributeDescriptor, RelationDescriptor, SchemaInfo, TransactionContext, TxType,
+    TypeDescriptor, ValueType,
 };
 
 /// JSON-deserialized spec for expression-tree queries.
@@ -184,6 +184,14 @@ impl NodeDescriptorRegistry {
     pub fn snapshot_json(&self) -> Result<String> {
         let snapshot: Vec<TypeDescriptor> = self.inner.snapshot();
         serde_json::to_string(&snapshot).map_err(json_serialize_error)
+    }
+
+    /// Return the registered descriptors as migration-facing SchemaInfo JSON.
+    #[napi(js_name = "schemaInfoJson")]
+    pub fn schema_info_json(&self) -> Result<String> {
+        let snapshot: Vec<TypeDescriptor> = self.inner.snapshot();
+        let info = SchemaInfo::from_descriptors(&snapshot);
+        serde_json::to_string(&info).map_err(json_serialize_error)
     }
 }
 
@@ -1053,6 +1061,18 @@ pub fn parse_schema_json(input: String) -> Result<String> {
     schema
         .to_json()
         .map_err(|e| Error::from_reason(format!("Failed to serialize schema JSON: {e}")))
+}
+
+/// Generate a TypeQL `define` block from serialized SchemaInfo JSON.
+#[napi(js_name = "generateDefineBlockJson")]
+pub fn generate_define_block_json(schema_info_json: String) -> Result<String> {
+    let info: SchemaInfo =
+        serde_json::from_str(&schema_info_json).map_err(invalid_json_error("schema info"))?;
+    info.validate()
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    Ok(type_bridge_orm::schema::generator::generate_define_block(
+        &info,
+    ))
 }
 
 fn attributes_from_json(

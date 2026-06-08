@@ -1,10 +1,6 @@
 import { type AttributeInput, type AttributeValue, type DynamicEntityRow, type OwnedAttributeDescriptor, type RuntimeAttributeValue, type ValueType } from "./index.js";
 import { type Attribute } from "./attribute.js";
-import type { EntitySchema, RelationSchema } from "./model.js";
-type AttributeClass = (new (value: never) => Attribute<unknown, string>) & {
-    readonly attrName: string;
-    readonly valueType: ValueType;
-};
+import type { AttributeClass, EntitySchema, RelationSchema } from "./model.js";
 export declare class TypedCodecError extends Error {
     constructor(message: string);
 }
@@ -38,4 +34,3 @@ export declare function hydrateAttributeEntries(entries: readonly (readonly [str
 export declare function runtimeAttributeValueFromUnknown(value: unknown, valueType?: ValueType): RuntimeAttributeValue;
 export declare function keyAttributeDescriptor(schema: EntitySchema): OwnedAttributeDescriptor | null;
 export declare function lowerAttributeValue(valueType: ValueType, value: unknown): AttributeValue;
-export {};

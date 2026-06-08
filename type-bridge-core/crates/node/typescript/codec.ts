@@ -16,12 +16,14 @@ import {
   type ValueType,
 } from "./index.js";
 import { type Attribute } from "./attribute.js";
-import type { EntitySchema, FieldSpec, ListFieldSpec, RelationSchema, SchemaSpec } from "./model.js";
-
-type AttributeClass = (new (value: never) => Attribute<unknown, string>) & {
-  readonly attrName: string;
-  readonly valueType: ValueType;
-};
+import type {
+  AttributeClass,
+  EntitySchema,
+  FieldSpec,
+  ListFieldSpec,
+  RelationSchema,
+  SchemaSpec,
+} from "./model.js";
 
 type FieldLike = {
   readonly kind: "field";

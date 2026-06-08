@@ -297,10 +297,7 @@ mod tests {
         let mut schema = SchemaInfo::default();
         schema.attributes.insert(
             "name".to_string(),
-            AttributeSchemaEntry {
-                attr_name: "name".to_string(),
-                value_type: ValueType::String,
-            },
+            AttributeSchemaEntry::new("name", ValueType::String),
         );
         schema.entities.insert(
             "person".to_string(),
@@ -577,10 +574,7 @@ mod tests {
         let g = graph(vec![migration(
             "0001_add_attr",
             vec![OperationSpec::AddAttribute {
-                attribute: AttributeSchemaEntry {
-                    attr_name: "score".to_string(),
-                    value_type: ValueType::Long,
-                },
+                attribute: AttributeSchemaEntry::new("score", ValueType::Long),
             }],
             vec![],
         )]);

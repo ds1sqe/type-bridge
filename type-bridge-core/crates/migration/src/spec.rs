@@ -184,10 +184,7 @@ mod tests {
     use type_bridge_orm::ValueType;
 
     fn attribute(name: &str) -> AttributeSchemaEntry {
-        AttributeSchemaEntry {
-            attr_name: name.to_string(),
-            value_type: ValueType::String,
-        }
+        AttributeSchemaEntry::new(name, ValueType::String)
     }
 
     fn schema() -> SchemaInfo {

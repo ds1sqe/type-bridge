@@ -302,14 +302,16 @@ def _schema_info_for_models(models: Sequence[type[Any]]) -> dict[str, Any]:
             registry.register_relation(descriptor)
         else:
             registry.register_entity(descriptor)
-    return registry.schema_info()
+    schema = registry.schema_info()
+    for model in models:
+        for attr_info in model.get_all_attributes().values():
+            entry = _rust_runtime.attribute_schema_entry(attr_info.typ)
+            schema["attributes"][entry["attr_name"]] = entry
+    return schema
 
 
 def _attribute_entry(attribute: type[Any]) -> dict[str, Any]:
-    return {
-        "attr_name": attribute.get_attribute_name(),
-        "value_type": _rust_runtime.rust_value_type(attribute),
-    }
+    return _rust_runtime.attribute_schema_entry(attribute)
 
 
 def _owned_attribute_entry(

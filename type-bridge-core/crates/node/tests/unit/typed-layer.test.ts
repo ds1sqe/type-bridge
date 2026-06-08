@@ -5,6 +5,7 @@ import { describe, test } from "node:test";
 
 import {
   Card,
+  DescriptorRegistry,
   Entity,
   Flag,
   Key,
@@ -17,6 +18,7 @@ import {
   formatTypeName,
   resolveFlags,
   role,
+  type SchemaInfo,
 } from "../../typescript/index.js";
 
 class ParityId extends attr.String("parity-id") {}
@@ -115,6 +117,11 @@ class SyntheticChildRel extends Relation(
   { parent: SyntheticBaseRel },
 ) {}
 
+class RelatesOnlyRel extends Relation("typed-relates-only-rel", {
+  definition: role(),
+  actor: role(ParityCompany),
+}) {}
+
 describe("typed attribute and flag layer", () => {
   test("all attribute factories expose the expected wire value type", () => {
     assert.equal(ParityName.valueType, "string");
@@ -156,6 +163,76 @@ describe("typed attribute and flag layer", () => {
       kind: "flag",
       annotations: ["Unique"],
       cardinality: null,
+    });
+  });
+
+  test("attribute type metadata reaches schemaInfo without changing descriptor JSON", () => {
+    class TsRootCode extends attr.String("ts-root-code", { abstract: true }) {}
+    class TsCode extends attr.String("ts-code", {
+      parent: TsRootCode,
+      regex: "^[A-Z]+$",
+    }) {}
+    class TsState extends attr.String("ts-state", {
+      values: ["open", "closed"],
+      independent: true,
+    }) {}
+    class TsScore extends attr.Integer("ts-score", { range: ["1", "5"] }) {}
+    class TsAnnotated extends Entity("ts-annotated", {
+      code: field(TsCode),
+      state: field(TsState),
+      score: field(TsScore),
+    }) {}
+
+    const descriptor = TsAnnotated.descriptor();
+    assert.deepEqual(descriptor.owned_attributes, [
+      {
+        field_name: "code",
+        attr_name: "ts-code",
+        value_type: "string",
+        annotations: [],
+        is_optional: false,
+      },
+      {
+        field_name: "state",
+        attr_name: "ts-state",
+        value_type: "string",
+        annotations: [],
+        is_optional: false,
+      },
+      {
+        field_name: "score",
+        attr_name: "ts-score",
+        value_type: "long",
+        annotations: [],
+        is_optional: false,
+      },
+    ]);
+
+    const registry = new DescriptorRegistry(fakeNativeRegistry());
+    registry.registerEntity(descriptor);
+    const info = registry.schemaInfo();
+
+    assert.deepEqual(info.attributes["ts-root-code"], {
+      attr_name: "ts-root-code",
+      value_type: "string",
+      is_abstract: true,
+    });
+    assert.deepEqual(info.attributes["ts-code"], {
+      attr_name: "ts-code",
+      value_type: "string",
+      parent_type: "ts-root-code",
+      regex: "^[A-Z]+$",
+    });
+    assert.deepEqual(info.attributes["ts-state"], {
+      attr_name: "ts-state",
+      value_type: "string",
+      is_independent: true,
+      allowed_values: ["open", "closed"],
+    });
+    assert.deepEqual(info.attributes["ts-score"], {
+      attr_name: "ts-score",
+      value_type: "long",
+      range: ["1", "5"],
     });
   });
 });
@@ -210,6 +287,21 @@ describe("typed Entity and Relation factories", () => {
         role_name: "evidence",
         player_type_names: ["parity-person", "parity-email-message"],
         cardinality: [0, 5],
+      },
+    ]);
+  });
+
+  test("relations can emit a relates-only role without player types", () => {
+    assert.deepEqual(RelatesOnlyRel.descriptor().roles, [
+      {
+        role_name: "definition",
+        player_type_names: [],
+        cardinality: null,
+      },
+      {
+        role_name: "actor",
+        player_type_names: ["parity-company"],
+        cardinality: null,
       },
     ]);
   });
@@ -465,6 +557,7 @@ type RoleDescriptor = {
   player_type_names: string[];
   cardinality: [number, number | null] | null;
 };
+type SchemaValueType = SchemaInfo["attributes"][string]["value_type"];
 
 function attrDescriptor(
   fieldName: string,
@@ -500,6 +593,81 @@ function normalizeTypeDescriptor(descriptor: EntityDescriptor): EntityDescriptor
       .map(normalizeAttributeDescriptor)
       .sort((left, right) => left.field_name.localeCompare(right.field_name)),
   };
+}
+
+function fakeNativeRegistry() {
+  const entities = new Map<string, EntityDescriptor>();
+  const relations = new Map<string, RelationDescriptor>();
+
+  return {
+    registerEntityJson(descriptorJson: string): string {
+      const descriptor = JSON.parse(descriptorJson) as EntityDescriptor;
+      entities.set(descriptor.type_name, descriptor);
+      return JSON.stringify(descriptor);
+    },
+    registerRelationJson(descriptorJson: string): string {
+      const descriptor = JSON.parse(descriptorJson) as RelationDescriptor;
+      relations.set(descriptor.type_name, descriptor);
+      return JSON.stringify(descriptor);
+    },
+    entityJson(typeName: string): string {
+      return JSON.stringify(entities.get(typeName));
+    },
+    relationJson(typeName: string): string {
+      return JSON.stringify(relations.get(typeName));
+    },
+    snapshotJson(): string {
+      return JSON.stringify([
+        ...[...entities.values()].map((descriptor) => ({ kind: "entity", descriptor })),
+        ...[...relations.values()].map((descriptor) => ({ kind: "relation", descriptor })),
+      ]);
+    },
+    schemaInfoJson(): string {
+      const info: SchemaInfo = { entities: {}, relations: {}, attributes: {} };
+      for (const descriptor of entities.values()) {
+        info.entities[descriptor.type_name] = {
+          type_name: descriptor.type_name,
+          is_abstract: descriptor.is_abstract,
+          parent_type: descriptor.parent_type,
+          owned_attributes: schemaOwnedAttributes(descriptor.owned_attributes),
+        };
+        rememberFallbackAttributes(info, descriptor.owned_attributes);
+      }
+      for (const descriptor of relations.values()) {
+        info.relations[descriptor.type_name] = {
+          type_name: descriptor.type_name,
+          is_abstract: descriptor.is_abstract,
+          parent_type: descriptor.parent_type,
+          owned_attributes: schemaOwnedAttributes(descriptor.owned_attributes),
+          roles: descriptor.roles,
+        };
+        rememberFallbackAttributes(info, descriptor.owned_attributes);
+      }
+      return JSON.stringify(info);
+    },
+  };
+}
+
+function schemaOwnedAttributes(
+  attributes: EntityDescriptor["owned_attributes"],
+): SchemaInfo["entities"][string]["owned_attributes"] {
+  return attributes.map((attribute) => ({
+    attr_name: attribute.attr_name,
+    value_type: attribute.value_type as SchemaValueType,
+    annotations: attribute.annotations,
+  }));
+}
+
+function rememberFallbackAttributes(
+  info: SchemaInfo,
+  attributes: EntityDescriptor["owned_attributes"],
+): void {
+  for (const attribute of attributes) {
+    info.attributes[attribute.attr_name] ??= {
+      attr_name: attribute.attr_name,
+      value_type: attribute.value_type as SchemaValueType,
+    };
+  }
 }
 
 function normalizeRelationDescriptor(descriptor: RelationDescriptor): RelationDescriptor {
