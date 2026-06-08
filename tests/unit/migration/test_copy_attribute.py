@@ -103,7 +103,7 @@ def test_copy_attribute_is_reversible() -> None:
 
 def test_copy_attribute_lowers_to_copy_attribute_ir() -> None:
     """_operation_spec carries the op's TypeQL (one source — invariant 2)."""
-    from type_bridge.migration._lower import _operation_spec  # type: ignore[attr-defined]
+    from type_bridge.migration._lower import _operation_spec
 
     op = ops.CopyAttribute(owner=CopyAttrPerson, source="old-name", dest="new-name")
     spec = _operation_spec(op)
@@ -117,7 +117,7 @@ def test_copy_attribute_lowers_to_copy_attribute_ir() -> None:
 
 def test_copy_attribute_with_filter_carries_filter_in_forward() -> None:
     """The filter is embedded in the carried forward TypeQL, not a separate field."""
-    from type_bridge.migration._lower import _operation_spec  # type: ignore[attr-defined]
+    from type_bridge.migration._lower import _operation_spec
 
     op = ops.CopyAttribute(
         owner=CopyAttrPerson,

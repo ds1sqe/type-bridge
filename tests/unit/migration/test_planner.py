@@ -11,7 +11,7 @@ from __future__ import annotations
 
 # pyright: reportMissingImports=false
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -22,7 +22,11 @@ from type_bridge.migration._lower import lower_execution_graph
 from type_bridge.migration.base import Migration
 from type_bridge.migration.executor import MigrationError, MigrationExecutor
 from type_bridge.migration.loader import LoadedMigration
-from type_bridge.migration.state import MigrationRecord, MigrationState
+from type_bridge.migration.state import (
+    MigrationRecord,
+    MigrationState,
+    MigrationStateManager,
+)
 
 
 class PlannerName(String):
@@ -154,8 +158,9 @@ def _executor_with(
     state_manager: _RecordingStateManager,
     loaded: list[LoadedMigration],
 ) -> MigrationExecutor:
-    executor = MigrationExecutor(db=object(), migrations_dir=Path("migrations"))  # type: ignore[arg-type]
-    executor.state_manager = state_manager  # type: ignore[assignment]
+    dummy_db: Any = object()
+    executor = MigrationExecutor(db=dummy_db, migrations_dir=Path("migrations"))
+    executor.state_manager = cast(MigrationStateManager, state_manager)
 
     monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
     # Preflight and execution lowering call into Rust serde / validation; the
@@ -170,11 +175,12 @@ def _executor_with(
 
 
 def _runtypeql_migration(name: str) -> Migration:
-    migration = Migration()
-    migration.operations = [  # type: ignore[misc]
-        ops.RunTypeQL(forward=f"define attribute {name}-a, value string;")
-    ]
-    return migration
+    class _RunTypeQLMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [
+            ops.RunTypeQL(forward=f"define attribute {name}-a, value string;")
+        ]
+
+    return _RunTypeQLMigration()
 
 
 def test_migrate_records_state_in_result_order(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,7 +237,7 @@ def test_migrate_records_unapplied_for_rollback_results(monkeypatch: pytest.Monk
         ]
     )
     state_manager = _RecordingStateManager()
-    state_manager.load_state = lambda: MigrationState(  # type: ignore[method-assign]
+    state_manager.load_state = lambda: MigrationState(
         applied=[
             MigrationRecord(
                 app_label="app", name="0002_b", applied_at="2026-01-01T00:00:00", checksum="csum-b"
@@ -336,7 +342,8 @@ def test_sqlmigrate_preview_equals_lowered_forward(monkeypatch: pytest.MonkeyPat
 
     loaded = _loaded(PreviewMigration(), "planner", "0001_preview", "csum")
 
-    executor = MigrationExecutor(db=object(), migrations_dir=Path("migrations"))  # type: ignore[arg-type]
+    dummy_db: Any = object()
+    executor = MigrationExecutor(db=dummy_db, migrations_dir=Path("migrations"))
     monkeypatch.setattr(executor.loader, "get_by_name", lambda name: loaded)
 
     forward = executor.sqlmigrate("0001_preview")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from type_bridge import (
@@ -265,8 +267,9 @@ class TestHasKindDetection:
 
     def test_typedbtype_has_raises_typeerror(self):
         """Calling has() directly on TypeDBType must raise TypeError."""
+        dummy_connection: Any = object()
         with pytest.raises(TypeError, match="must be called on Entity or Relation"):
-            TypeDBType.has(object(), SharedName)  # type: ignore[arg-type]
+            TypeDBType.has(dummy_connection, SharedName)
 
 
 # ── Hydration edge cases ───────────────────────────────────────────
@@ -334,7 +337,7 @@ class TestHydrateResults:
         assert isinstance(instances[0], LookupPerson)
         assert instances[0].name.value == "Alice"
 
-    def test_relation_hydration_without_role_players(self):
+    def test_relation_hydration_without_role_players(self, monkeypatch):
         # Stub LookupEmployment.manager so the relation path can route through
         # manager.get(_iid=...) without touching a real database. Returns a
         # pre-built relation that pretends to have role players already set.
@@ -346,24 +349,22 @@ class TestHydrateResults:
         fake_manager = MagicMock()
         fake_manager.get = MagicMock(return_value=[prebuilt])
 
-        original_manager = LookupEmployment.manager
-        LookupEmployment.manager = classmethod(lambda cls, conn: fake_manager)  # type: ignore[method-assign]
-        try:
-            results = [
-                {
-                    "_iid": "0x2",
-                    "_type": "lookup_employment",
-                    "attributes": {"SharedName": "Engineer", "Salary": 100000},
-                }
-            ]
-            instances = _hydrate_results(results, ModelRegistry, connection=object())
-        finally:
-            LookupEmployment.manager = original_manager  # type: ignore[method-assign]
+        monkeypatch.setattr(
+            LookupEmployment, "manager", classmethod(lambda cls, conn: fake_manager)
+        )
+        results = [
+            {
+                "_iid": "0x2",
+                "_type": "lookup_employment",
+                "attributes": {"SharedName": "Engineer", "Salary": 100000},
+            }
+        ]
+        instances = _hydrate_results(results, ModelRegistry, connection=object())
 
         assert len(instances) == 1
         assert instances[0] is prebuilt
 
-    def test_relation_path_uses_manager_get_for_role_players(self):
+    def test_relation_path_uses_manager_get_for_role_players(self, monkeypatch):
         """Relations must route through manager.get(_iid=...) for role players.
 
         This pins the contract that ``_hydrate_results`` delegates relation
@@ -378,30 +379,28 @@ class TestHydrateResults:
         fake_manager = MagicMock()
         fake_manager.get = MagicMock(return_value=[prebuilt])
 
-        original_manager = LookupEmployment.manager
-        LookupEmployment.manager = classmethod(lambda cls, conn: fake_manager)  # type: ignore[method-assign]
-        try:
-            results = [
-                {
-                    "_iid": "0xABC",
-                    "_type": "lookup_employment",
-                    "attributes": {"SharedName": "Engineer"},
-                }
-            ]
-            sentinel_connection = object()
-            instances = _hydrate_results(
-                results,
-                ModelRegistry,
-                connection=sentinel_connection,
-            )
-        finally:
-            LookupEmployment.manager = original_manager  # type: ignore[method-assign]
+        monkeypatch.setattr(
+            LookupEmployment, "manager", classmethod(lambda cls, conn: fake_manager)
+        )
+        results = [
+            {
+                "_iid": "0xABC",
+                "_type": "lookup_employment",
+                "attributes": {"SharedName": "Engineer"},
+            }
+        ]
+        sentinel_connection = object()
+        instances = _hydrate_results(
+            results,
+            ModelRegistry,
+            connection=sentinel_connection,
+        )
 
         # manager.get must have been called with the IID from the wildcard fetch
         fake_manager.get.assert_called_once_with(_iid="0xABC")
         assert instances == [prebuilt]
 
-    def test_entity_path_does_not_call_manager_get(self):
+    def test_entity_path_does_not_call_manager_get(self, monkeypatch):
         """Entities must stay single-query — no N+1 regression.
 
         The entity hydration path uses the wildcard ``$x.*`` payload directly
@@ -416,23 +415,19 @@ class TestHydrateResults:
             side_effect=AssertionError("entity should not call manager.get")
         )
 
-        original_manager = LookupPerson.manager
-        LookupPerson.manager = classmethod(lambda cls, conn: fake_manager)  # type: ignore[method-assign]
-        try:
-            results = [
-                {
-                    "_iid": "0xDEF",
-                    "_type": "lookup_person",
-                    "attributes": {"SharedName": "Alice"},
-                }
-            ]
-            instances = _hydrate_results(
-                results,
-                ModelRegistry,
-                connection=object(),
-            )
-        finally:
-            LookupPerson.manager = original_manager  # type: ignore[method-assign]
+        monkeypatch.setattr(LookupPerson, "manager", classmethod(lambda cls, conn: fake_manager))
+        results = [
+            {
+                "_iid": "0xDEF",
+                "_type": "lookup_person",
+                "attributes": {"SharedName": "Alice"},
+            }
+        ]
+        instances = _hydrate_results(
+            results,
+            ModelRegistry,
+            connection=object(),
+        )
 
         fake_manager.get.assert_not_called()
         assert len(instances) == 1

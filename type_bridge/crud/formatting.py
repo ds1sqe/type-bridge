@@ -9,7 +9,7 @@ from isodate import Duration as IsodateDuration
 
 try:
     from type_bridge_core import (
-        format_value as _rust_format_value,  # type: ignore[import-not-found]
+        format_value as _rust_format_value,
     )
 
     _USE_RUST = True

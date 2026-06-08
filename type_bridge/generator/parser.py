@@ -26,11 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Rust core availability
 try:
-    from type_bridge_core import TypeSchema as _RustTypeSchema  # type: ignore[import-not-found]
+    from type_bridge_core import TypeSchema as _RustTypeSchema
 
     _RUST_SCHEMA_AVAILABLE = True
 except ImportError:
-    _RustTypeSchema = None  # type: ignore[assignment, misc]
+    _RustTypeSchema = None
     _RUST_SCHEMA_AVAILABLE = False
 
 

@@ -22,15 +22,15 @@ pytestmark = pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extension not a
 # Use try/except so the module can still be collected when Rust is absent.
 try:
     from type_bridge_core import (
-        ValueCoercer,  # type: ignore[import-not-found]
-        coerce_value,  # type: ignore[import-not-found]
+        ValueCoercer,
+        coerce_value,
     )
-    from type_bridge_core import format_value as rust_format_value  # type: ignore[import-not-found]
+    from type_bridge_core import format_value as rust_format_value
 except ImportError:  # pragma: no cover
     # Cast to Any so pyright doesn't narrow to None; tests are skipped at runtime.
-    ValueCoercer: Any = None  # type: ignore[no-redef]
-    coerce_value: Any = None  # type: ignore[no-redef]
-    rust_format_value: Any = None  # type: ignore[no-redef]
+    ValueCoercer: Any = None
+    coerce_value: Any = None
+    rust_format_value: Any = None
 
 # Python reference implementation (always available)
 

@@ -15,7 +15,7 @@ import pytest
 HAS_RUST_CORE = False
 TypeSchema: Any = None
 try:
-    from type_bridge_core import TypeSchema  # type: ignore[no-redef]
+    from type_bridge_core import TypeSchema
 
     HAS_RUST_CORE = True
 except ImportError:

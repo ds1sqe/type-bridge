@@ -8,10 +8,11 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
-import isodate  # pyright: ignore[reportMissingModuleSource]
+import isodate
 
 if TYPE_CHECKING:
     from type_bridge.models.base import TypeDBType
+    from type_bridge.models.relation import Relation
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ PYTHON_TO_RUST_VALUE_TYPE = {
 def rust_core() -> Any:
     """Import the optional Rust extension or raise a backend-specific error."""
     try:
-        import type_bridge_core  # type: ignore[import-not-found]
+        import type_bridge_core
     except ImportError as exc:
         raise RuntimeError(
             "TYPE_BRIDGE_BACKEND=rust requires the type_bridge_core Rust extension"
@@ -210,7 +211,7 @@ def entity_descriptor(model_cls: type[TypeDBType]) -> dict[str, Any]:
     }
 
 
-def relation_descriptor(model_cls: type[TypeDBType]) -> dict[str, Any]:
+def relation_descriptor(model_cls: type[Relation]) -> dict[str, Any]:
     """Build a relation descriptor dict from Python class metadata."""
     roles = []
     for role in _relation_roles(model_cls):
@@ -227,8 +228,8 @@ def relation_descriptor(model_cls: type[TypeDBType]) -> dict[str, Any]:
     return descriptor
 
 
-def _relation_roles(model_cls: type[TypeDBType]) -> list[Any]:
-    roles = list(model_cls.get_roles().values())  # type: ignore[attr-defined]
+def _relation_roles(model_cls: type[Relation]) -> list[Any]:
+    roles = list(model_cls.get_roles().values())
     if roles:
         return [
             _RoleMetadata(

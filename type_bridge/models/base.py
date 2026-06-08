@@ -280,7 +280,7 @@ class TypeDBType(BaseModel, ABC):
             data = dict(values)  # Copy to avoid mutating input
         else:
             # Let Pydantic handle other types (will likely fail validation)
-            return values  # type: ignore[return-value]
+            return values
 
         # Wrap raw values in Attribute instances
         all_attrs = cls.get_all_attributes()

@@ -72,7 +72,7 @@ def _write_backfill_migration(
     The migration depends on the initial schema migration so the executor
     applies them in order.  Returns the path of the written .py file.
     """
-    from type_bridge import _rust_runtime  # type: ignore[import]
+    from type_bridge import _rust_runtime
 
     name = "0002_backfill_dst"
 

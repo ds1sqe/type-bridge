@@ -90,7 +90,7 @@ def _make_run_typeql_spec(
     dependencies: list[dict] | None = None,
 ) -> dict:
     """Build a minimal MigrationSpec dict matching the Rust serde shape."""
-    from type_bridge import _rust_runtime  # type: ignore[import]
+    from type_bridge import _rust_runtime
 
     # The .py text we write is the checksum source.
     py_text = f"# migration: {name}\nclass Migration: pass\n"
@@ -125,7 +125,7 @@ def _write_migration(
 
     Returns `(py_path, json_path)`.
     """
-    from type_bridge import _rust_runtime  # type: ignore[import]
+    from type_bridge import _rust_runtime
 
     migrations_dir.mkdir(parents=True, exist_ok=True)
 

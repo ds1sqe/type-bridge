@@ -132,7 +132,7 @@ def generate_models(
         format is None and schema_source_path is not None and schema_source_path.suffix == ".toml"
     )
     if _is_toml:
-        from type_bridge_core import toml_to_typeql  # type: ignore[import-not-found]
+        from type_bridge_core import toml_to_typeql
 
         schema_text = toml_to_typeql(schema_text)
 

@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("type_bridge_core")
 
-from type_bridge_core import toml_to_typeql  # type: ignore[import]
+from type_bridge_core import toml_to_typeql
 
 from type_bridge.generator.parser import parse_tql_schema
 

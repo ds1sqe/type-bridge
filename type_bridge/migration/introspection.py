@@ -224,8 +224,9 @@ def _rust_value_type(value_type: str) -> str:
 
 
 def _player_type_name(player: object) -> str:
-    if hasattr(player, "get_type_name"):
-        return player.get_type_name()  # type: ignore[no-any-return, attr-defined]
+    getter = getattr(player, "get_type_name", None)
+    if callable(getter):
+        return str(getter())
     return str(player)
 
 

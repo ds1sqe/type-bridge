@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from type_bridge_core import (
-        ValidationEngine as _RustValidationEngine,  # type: ignore[import-not-found]
+        ValidationEngine as _RustValidationEngine,
     )
 
     _rust_validator: Any = _RustValidationEngine()
@@ -239,7 +239,7 @@ def validate_query_against_schema(
     """
     try:
         from type_bridge_core import (
-            ValidationEngine as _RustEngine,  # type: ignore[import-not-found]
+            ValidationEngine as _RustEngine,
         )
 
         engine = _RustEngine()
@@ -282,7 +282,7 @@ def validate_entity_data(
     """
     try:
         from type_bridge_core import (
-            ValidationEngine as _RustEngine,  # type: ignore[import-not-found]
+            ValidationEngine as _RustEngine,
         )
 
         engine = _RustEngine()
