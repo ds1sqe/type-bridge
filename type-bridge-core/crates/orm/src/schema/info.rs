@@ -73,6 +73,13 @@ pub struct EntitySchemaEntry {
     pub parent_type: Option<String>,
     /// Owned attributes.
     pub owned_attributes: Vec<OwnedAttributeEntry>,
+    /// Plays-side cardinality overlay, keyed by role_ref `"{relation}:{role}"`.
+    ///
+    /// Distinct from relates-side `RoleEntry.cardinality`: this constrains
+    /// relations-per-player, not players-per-relation. Populated from
+    /// `PlayedRole.cardinality`; empty when no plays-card is declared.
+    #[serde(default)]
+    pub plays_cardinalities: BTreeMap<String, (u32, Option<u32>)>,
 }
 
 /// Schema entry for a relation type.
@@ -88,6 +95,13 @@ pub struct RelationSchemaEntry {
     pub owned_attributes: Vec<OwnedAttributeEntry>,
     /// Roles and their player types.
     pub roles: Vec<RoleEntry>,
+    /// Plays-side cardinality overlay, keyed by role_ref `"{relation}:{role}"`.
+    ///
+    /// Distinct from relates-side `RoleEntry.cardinality`: this constrains
+    /// relations-per-player, not players-per-relation. Populated from
+    /// `PlayedRole.cardinality`; empty when no plays-card is declared.
+    #[serde(default)]
+    pub plays_cardinalities: BTreeMap<String, (u32, Option<u32>)>,
 }
 
 /// Metadata for a standalone attribute type.
@@ -143,9 +157,13 @@ impl SchemaInfo {
             );
         }
 
-        let role_players = role_players_from_schema(schema);
+        let PlaysData {
+            role_players,
+            plays_cards,
+        } = plays_data_from_schema(schema);
 
         for (entity_name, entity) in &schema.entities {
+            let plays_cardinalities = plays_cards.get(entity_name).cloned().unwrap_or_default();
             info.entities.insert(
                 entity_name.clone(),
                 EntitySchemaEntry {
@@ -156,6 +174,7 @@ impl SchemaInfo {
                         &entity.owns,
                         &info.attributes,
                     ),
+                    plays_cardinalities,
                 },
             );
         }
@@ -177,6 +196,8 @@ impl SchemaInfo {
                 })
                 .collect();
 
+            let plays_cardinalities = plays_cards.get(relation_name).cloned().unwrap_or_default();
+
             info.relations.insert(
                 relation_name.clone(),
                 RelationSchemaEntry {
@@ -188,6 +209,7 @@ impl SchemaInfo {
                         &info.attributes,
                     ),
                     roles,
+                    plays_cardinalities,
                 },
             );
         }
@@ -216,6 +238,7 @@ impl SchemaInfo {
                             is_abstract: entity.is_abstract,
                             parent_type: entity.parent_type.clone(),
                             owned_attributes: owned_attribute_entries(&entity.owned_attributes),
+                            plays_cardinalities: BTreeMap::new(),
                         },
                     );
                 }
@@ -239,6 +262,7 @@ impl SchemaInfo {
                             parent_type: relation.parent_type.clone(),
                             owned_attributes: owned_attribute_entries(&relation.owned_attributes),
                             roles,
+                            plays_cardinalities: BTreeMap::new(),
                         },
                     );
                 }
@@ -324,32 +348,55 @@ fn annotations_from_typeql(attr: &core_schema::OwnedAttribute) -> Vec<Annotation
     annotations
 }
 
-fn role_players_from_schema(
-    schema: &core_schema::TypeSchema,
-) -> BTreeMap<(String, String), BTreeSet<String>> {
-    let mut players: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-
-    for (entity_name, entity) in &schema.entities {
-        add_played_roles(&mut players, entity_name, &entity.plays);
-    }
-    for (relation_name, relation) in &schema.relations {
-        add_played_roles(&mut players, relation_name, &relation.plays);
-    }
-
-    players
+/// `plays`-derived data, built in a single pass over the schema. Both maps come
+/// from the same `PlayedRole` walk, so they are collected together rather than in
+/// two separate traversals.
+struct PlaysData {
+    /// (relation, role) → player type names. Players are grouped because
+    /// relates-side cardinality belongs to the role, not the individual player.
+    role_players: BTreeMap<(String, String), BTreeSet<String>>,
+    /// player type name → (role_ref → (min, max)). Only `@card`-annotated plays
+    /// appear; bare plays are omitted so the overlay stays empty by default,
+    /// preserving the bare `… plays r:role;` emission.
+    plays_cards: BTreeMap<String, BTreeMap<String, (u32, Option<u32>)>>,
 }
 
-fn add_played_roles(
-    players: &mut BTreeMap<(String, String), BTreeSet<String>>,
+fn plays_data_from_schema(schema: &core_schema::TypeSchema) -> PlaysData {
+    let mut data = PlaysData {
+        role_players: BTreeMap::new(),
+        plays_cards: BTreeMap::new(),
+    };
+
+    for (entity_name, entity) in &schema.entities {
+        accumulate_plays(&mut data, entity_name, &entity.plays);
+    }
+    for (relation_name, relation) in &schema.relations {
+        accumulate_plays(&mut data, relation_name, &relation.plays);
+    }
+
+    data
+}
+
+/// Fold one player type's `plays` clauses into both the role→players inversion
+/// and the plays-card overlay in a single walk. A bare plays contributes only to
+/// the inversion; a `@card`-annotated plays also seeds the overlay.
+fn accumulate_plays(
+    data: &mut PlaysData,
     player_type_name: &str,
     played_roles: &[core_schema::PlayedRole],
 ) {
     for played in played_roles {
         if let Some((relation_name, role_name)) = split_role_ref(&played.role_ref) {
-            players
+            data.role_players
                 .entry((relation_name.to_string(), role_name.to_string()))
                 .or_default()
                 .insert(player_type_name.to_string());
+        }
+        if let Some(cardinality) = &played.cardinality {
+            data.plays_cards
+                .entry(player_type_name.to_string())
+                .or_default()
+                .insert(played.role_ref.clone(), cardinality_tuple(cardinality));
         }
     }
 }
@@ -424,6 +471,7 @@ mod tests {
                 is_abstract: false,
                 parent_type: None,
                 owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         assert!(info.get_entity_by_name("person").is_some());
@@ -441,6 +489,7 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 roles: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         assert!(info.get_relation_by_name("employment").is_some());
@@ -520,6 +569,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         info.relations.insert(
@@ -534,6 +584,7 @@ mod tests {
                     player_type_names: vec!["person".into()],
                     cardinality: None,
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         info.attributes.insert(
@@ -602,6 +653,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             })
         );
         assert_eq!(
@@ -620,6 +672,7 @@ mod tests {
                     player_type_names: vec!["person".into(), "company".into()],
                     cardinality: Some((1, Some(2))),
                 },],
+                plays_cardinalities: BTreeMap::new(),
             })
         );
         assert_eq!(
@@ -667,5 +720,157 @@ mod tests {
         assert!(info.entities.is_empty());
         assert!(info.relations.is_empty());
         assert!(info.attributes.is_empty());
+    }
+
+    /// `from_typeql` populates `plays_cardinalities` when a `@card` annotation
+    /// is present on a plays clause.
+    #[test]
+    fn from_typeql_populates_plays_cardinalities() {
+        // The parser merges entity blocks that share the same type name, so the
+        // plays clause can live in a second entity block after the relation.
+        let typeql = r#"
+define
+
+attribute allowed-val, value string;
+attribute allowed-nm, value string;
+
+entity tval, owns allowed-nm @key;
+entity tattr, owns allowed-nm @key;
+
+relation accepts, relates allowed-val, relates allowed-nm;
+
+entity tval, plays accepts:allowed-val @card(0..1);
+entity tattr, plays accepts:allowed-nm;
+"#;
+        let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
+
+        let tval = info.entities.get("tval").expect("tval missing");
+        assert_eq!(
+            tval.plays_cardinalities.get("accepts:allowed-val"),
+            Some(&(0, Some(1))),
+            "tval should have plays-card for accepts:allowed-val"
+        );
+
+        // tattr plays without @card → its map must be empty
+        let tattr = info.entities.get("tattr").expect("tattr missing");
+        assert!(
+            tattr.plays_cardinalities.is_empty(),
+            "tattr has no plays-card; map should be empty"
+        );
+    }
+
+    /// Per-player boundary: two players of the same role, only one has plays-card.
+    #[test]
+    fn plays_cardinalities_per_player_boundary() {
+        let typeql = r#"
+define
+
+attribute label, value string;
+
+entity player-a, owns label @key;
+entity player-b, owns label @key;
+
+relation link, relates member;
+
+entity player-a, plays link:member @card(1..1);
+entity player-b, plays link:member;
+"#;
+        let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
+
+        let a = info.entities.get("player-a").expect("player-a missing");
+        assert_eq!(
+            a.plays_cardinalities.get("link:member"),
+            Some(&(1, Some(1))),
+            "player-a should have plays-card"
+        );
+
+        let b = info.entities.get("player-b").expect("player-b missing");
+        assert!(
+            !b.plays_cardinalities.contains_key("link:member"),
+            "player-b should have no plays-card for link:member"
+        );
+    }
+
+    /// Integration smoke: a plays-card authored as inline TypeQL survives the
+    /// full parse → IR → emit boundary. The parser reads the inline
+    /// `entity X, plays r:role` form (TypeDB's export grammar); the emitter
+    /// renders the standalone `X plays r:role;` form (TypeDB's define grammar).
+    /// This is the realistic introspect-then-re-emit flow, not byte idempotence
+    /// — the two grammars are intentionally asymmetric, so
+    /// `from_typeql(to_typeql(..))` is not a valid oracle.
+    #[test]
+    fn plays_card_survives_parse_to_emit_boundary() {
+        let typeql = r#"
+define
+
+attribute label, value string;
+
+entity holder, owns label @key;
+
+relation owns-one, relates slot;
+
+entity holder, plays owns-one:slot @card(0..1);
+"#;
+        let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
+        let emitted = info.to_typeql().expect("emit failed");
+        assert!(
+            emitted.contains("holder plays owns-one:slot @card(0..1);"),
+            "plays-card must survive parse->IR->emit: {emitted}"
+        );
+    }
+
+    /// Serde round-trip: a `SchemaInfo` carrying a `plays_cardinalities` entry
+    /// serializes and deserializes correctly.
+    #[test]
+    fn plays_cardinalities_serde_roundtrip() {
+        let mut cards = BTreeMap::new();
+        cards.insert("accepts:allowed-value".to_string(), (0u32, Some(1u32)));
+
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "tval".into(),
+            EntitySchemaEntry {
+                type_name: "tval".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: cards.clone(),
+            },
+        );
+
+        let json = serde_json::to_string(&info).expect("serialize failed");
+        let parsed: SchemaInfo = serde_json::from_str(&json).expect("deserialize failed");
+
+        assert_eq!(
+            parsed.entities.get("tval").unwrap().plays_cardinalities,
+            cards,
+            "plays_cardinalities must round-trip through JSON"
+        );
+    }
+
+    /// Serde back-compat: a JSON payload that omits `plays_cardinalities`
+    /// deserializes successfully and defaults to an empty map.
+    #[test]
+    fn plays_cardinalities_serde_default_when_absent() {
+        // JSON for an EntitySchemaEntry without the plays_cardinalities field
+        let json = r#"{
+            "entities": {
+                "person": {
+                    "type_name": "person",
+                    "is_abstract": false,
+                    "parent_type": null,
+                    "owned_attributes": []
+                }
+            },
+            "relations": {},
+            "attributes": {}
+        }"#;
+
+        let info: SchemaInfo = serde_json::from_str(json).expect("deserialize failed");
+        let person = info.entities.get("person").expect("person missing");
+        assert!(
+            person.plays_cardinalities.is_empty(),
+            "missing plays_cardinalities field should default to empty map"
+        );
     }
 }

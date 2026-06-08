@@ -6,6 +6,34 @@ use crate::attribute::ValueType;
 
 use super::info::{EntitySchemaEntry, RelationSchemaEntry, SchemaInfo};
 
+/// A plays clause collected during relation processing.
+///
+/// Carries the optional plays-side cardinality overlay so that emission can
+/// append `@card(min..max)` when present, and omit it entirely when absent,
+/// preserving byte-identical output for the no-card case.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct PlaysClause {
+    player: String,
+    role_ref: String,
+    cardinality: Option<(u32, Option<u32>)>,
+}
+
+/// Look up the plays-side cardinality for `(player, role_ref)` in the schema.
+///
+/// Checks entities first, then relations, so that both entity-players and
+/// relation-players are covered (master invariant: relation-as-player).
+/// Returns `None` when the player has no `@card` on this plays clause.
+fn plays_card_for(info: &SchemaInfo, player: &str, role_ref: &str) -> Option<(u32, Option<u32>)> {
+    info.entities
+        .get(player)
+        .and_then(|e| e.plays_cardinalities.get(role_ref).copied())
+        .or_else(|| {
+            info.relations
+                .get(player)
+                .and_then(|r| r.plays_cardinalities.get(role_ref).copied())
+        })
+}
+
 /// Generate a TypeQL `define` block from the given schema info.
 ///
 /// Output is deterministic (alphabetically sorted) and produces syntax like:
@@ -103,8 +131,8 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
     // 3. Relation definitions (topologically sorted)
     let relation_order = topological_sort(&info.relations, |r| r.parent_type.as_deref());
 
-    // Collect plays clauses: (player_type, relation:role)
-    let mut plays_clauses: Vec<(String, String)> = Vec::new();
+    // Collect plays clauses: player_type, relation:role, optional cardinality
+    let mut plays_clauses: Vec<PlaysClause> = Vec::new();
 
     for relation_name in &relation_order {
         let relation = &info.relations[relation_name.as_str()];
@@ -138,10 +166,13 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
             if parent_role_names.contains(role.role_name.as_str()) {
                 // Still collect plays clause for inherited roles
                 for player_type_name in &role.player_type_names {
-                    plays_clauses.push((
-                        player_type_name.clone(),
-                        format!("{}:{}", relation.type_name, role.role_name),
-                    ));
+                    let role_ref = format!("{}:{}", relation.type_name, role.role_name);
+                    let cardinality = plays_card_for(info, player_type_name, &role_ref);
+                    plays_clauses.push(PlaysClause {
+                        player: player_type_name.clone(),
+                        role_ref,
+                        cardinality,
+                    });
                 }
                 continue;
             }
@@ -157,10 +188,13 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
                 }
             }
             for player_type_name in &role.player_type_names {
-                plays_clauses.push((
-                    player_type_name.clone(),
-                    format!("{}:{}", relation.type_name, role.role_name),
-                ));
+                let role_ref = format!("{}:{}", relation.type_name, role.role_name);
+                let cardinality = plays_card_for(info, player_type_name, &role_ref);
+                plays_clauses.push(PlaysClause {
+                    player: player_type_name.clone(),
+                    role_ref,
+                    cardinality,
+                });
             }
         }
 
@@ -194,13 +228,21 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
         }
     }
 
-    // 4. Plays clauses (sorted by player type, then role)
+    // 4. Plays clauses (sorted by player type, then role, then cardinality)
     if !plays_clauses.is_empty() {
         lines.push(String::new());
         plays_clauses.sort();
         plays_clauses.dedup();
-        for (player, role_ref) in &plays_clauses {
-            lines.push(format!("{player} plays {role_ref};"));
+        for c in &plays_clauses {
+            match c.cardinality {
+                Some((min, max)) => lines.push(format!(
+                    "{} plays {} {};",
+                    c.player,
+                    c.role_ref,
+                    card_annotation(min, max)
+                )),
+                None => lines.push(format!("{} plays {};", c.player, c.role_ref)),
+            }
         }
     }
 
@@ -350,6 +392,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -379,6 +422,7 @@ mod tests {
                         annotations: vec![],
                     },
                 ],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -413,6 +457,7 @@ mod tests {
                         cardinality: None,
                     },
                 ],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -439,6 +484,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Card(2, Some(5))],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -460,6 +506,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Unique],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -481,6 +528,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -506,6 +554,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         info.entities.insert(
@@ -526,6 +575,7 @@ mod tests {
                         annotations: vec![],
                     },
                 ],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -548,6 +598,7 @@ mod tests {
                 is_abstract: false,
                 parent_type: Some("mammal".into()),
                 owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         info.entities.insert(
@@ -557,6 +608,7 @@ mod tests {
                 is_abstract: true,
                 parent_type: None,
                 owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -583,6 +635,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         info.entities.insert(
@@ -603,6 +656,7 @@ mod tests {
                         annotations: vec![],
                     },
                 ],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -639,6 +693,7 @@ mod tests {
                     player_type_names: vec!["node".into()],
                     cardinality: None,
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -660,6 +715,7 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 roles: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         info.relations.insert(
@@ -674,6 +730,7 @@ mod tests {
                     player_type_names: vec!["person".into()],
                     cardinality: None,
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -706,6 +763,7 @@ mod tests {
                         cardinality: None,
                     },
                 ],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -713,5 +771,262 @@ mod tests {
         // "relates friend" should appear only once
         let count = result.matches("relates friend").count();
         assert_eq!(count, 1, "should deduplicate role names: {result}");
+    }
+
+    /// When plays-cardinality is present the emitter appends `@card(min..max)`.
+    #[test]
+    fn plays_card_emitted_when_present() {
+        let mut info = SchemaInfo::default();
+        let mut plays_cards = BTreeMap::new();
+        plays_cards.insert("r:role".to_string(), (0u32, Some(1u32)));
+
+        info.entities.insert(
+            "player".into(),
+            EntitySchemaEntry {
+                type_name: "player".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: plays_cards,
+            },
+        );
+        info.relations.insert(
+            "r".into(),
+            RelationSchemaEntry {
+                type_name: "r".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "role".into(),
+                    player_type_names: vec!["player".into()],
+                    cardinality: None,
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("player plays r:role @card(0..1);"),
+            "expected plays @card annotation, got:\n{result}"
+        );
+    }
+
+    /// When no plays-card is present, the plays line is byte-identical to the
+    /// pre-existing format: exactly `person plays employment:employee;`.
+    #[test]
+    fn plays_line_byte_identical_when_no_card() {
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        info.relations.insert(
+            "employment".into(),
+            RelationSchemaEntry {
+                type_name: "employment".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "employee".into(),
+                    player_type_names: vec!["person".into()],
+                    cardinality: None,
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        // Assert full line, not just contains — no trailing @card
+        assert!(
+            result
+                .lines()
+                .any(|l| l == "person plays employment:employee;"),
+            "expected bare plays line, got:\n{result}"
+        );
+    }
+
+    /// Relates-side `@card` and plays-side `@card` coexist independently.
+    #[test]
+    fn relates_card_and_plays_card_coexist() {
+        let mut info = SchemaInfo::default();
+        let mut plays_cards = BTreeMap::new();
+        plays_cards.insert("employment:employee".to_string(), (0u32, Some(1u32)));
+
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: plays_cards,
+            },
+        );
+        info.relations.insert(
+            "employment".into(),
+            RelationSchemaEntry {
+                type_name: "employment".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "employee".into(),
+                    player_type_names: vec!["person".into()],
+                    cardinality: Some((1, Some(1))),
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("relates employee @card(1..1)"),
+            "expected relates @card(1..1), got:\n{result}"
+        );
+        assert!(
+            result.contains("person plays employment:employee @card(0..1);"),
+            "expected plays @card(0..1), got:\n{result}"
+        );
+    }
+
+    /// A relation that plays a role in another relation emits `@card` correctly.
+    #[test]
+    fn relation_as_player_emits_plays_card() {
+        let mut info = SchemaInfo::default();
+        let mut plays_cards = BTreeMap::new();
+        plays_cards.insert("a:role".to_string(), (1u32, Some(1u32)));
+
+        info.relations.insert(
+            "a".into(),
+            RelationSchemaEntry {
+                type_name: "a".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "role".into(),
+                    player_type_names: vec!["b".into()],
+                    cardinality: None,
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        info.relations.insert(
+            "b".into(),
+            RelationSchemaEntry {
+                type_name: "b".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![],
+                plays_cardinalities: plays_cards,
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("b plays a:role @card(1..1);"),
+            "expected relation-as-player plays @card, got:\n{result}"
+        );
+    }
+
+    /// Unbounded cardinality `(0, None)` renders as `@card(0..*)`.
+    #[test]
+    fn plays_card_unbounded_renders_star() {
+        let mut info = SchemaInfo::default();
+        let mut plays_cards = BTreeMap::new();
+        plays_cards.insert("r:slot".to_string(), (0u32, None));
+
+        info.entities.insert(
+            "thing".into(),
+            EntitySchemaEntry {
+                type_name: "thing".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: plays_cards,
+            },
+        );
+        info.relations.insert(
+            "r".into(),
+            RelationSchemaEntry {
+                type_name: "r".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "slot".into(),
+                    player_type_names: vec!["thing".into()],
+                    cardinality: None,
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("thing plays r:slot @card(0..*);"),
+            "expected @card(0..*), got:\n{result}"
+        );
+    }
+
+    /// A repeated role (same name twice) whose player carries plays-card must
+    /// still emit the annotated plays line exactly once — the sort+dedup over
+    /// `PlaysClause` collapses the duplicate without dropping the `@card`.
+    #[test]
+    fn plays_card_deduplicated_when_role_repeated() {
+        let mut info = SchemaInfo::default();
+        let mut plays_cards = BTreeMap::new();
+        plays_cards.insert("friendship:friend".to_string(), (0u32, Some(5u32)));
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: plays_cards,
+            },
+        );
+        info.relations.insert(
+            "friendship".into(),
+            RelationSchemaEntry {
+                type_name: "friendship".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![
+                    RoleEntry {
+                        role_name: "friend".into(),
+                        player_type_names: vec!["person".into()],
+                        cardinality: None,
+                    },
+                    RoleEntry {
+                        role_name: "friend".into(),
+                        player_type_names: vec!["person".into()],
+                        cardinality: None,
+                    },
+                ],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        let count = result
+            .matches("person plays friendship:friend @card(0..5);")
+            .count();
+        assert_eq!(
+            count, 1,
+            "annotated plays line must dedupe to one:\n{result}"
+        );
     }
 }

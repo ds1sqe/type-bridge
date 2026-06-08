@@ -177,6 +177,8 @@ pub enum OperationSpec {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use type_bridge_orm::Annotation;
     use type_bridge_orm::ValueType;
@@ -204,6 +206,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         schema

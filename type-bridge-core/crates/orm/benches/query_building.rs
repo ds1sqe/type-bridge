@@ -36,6 +36,7 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
                 is_abstract: false,
                 parent_type: None,
                 owned_attributes: attrs,
+                plays_cardinalities: std::collections::BTreeMap::new(),
             },
         );
     }
@@ -66,6 +67,7 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
                         cardinality: None,
                     },
                 ],
+                plays_cardinalities: std::collections::BTreeMap::new(),
             },
         );
     }

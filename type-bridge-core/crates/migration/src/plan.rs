@@ -273,6 +273,8 @@ fn op_kind_name(op: &OperationSpec) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use type_bridge_orm::schema::info::{
         AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry, SchemaInfo,
@@ -311,6 +313,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         OperationSpec::DefineSchema { schema }

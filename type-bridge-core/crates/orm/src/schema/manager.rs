@@ -1,5 +1,7 @@
 //! Schema manager for registering models and syncing schema.
 
+use std::collections::BTreeMap;
+
 use crate::entity::TypeBridgeEntity;
 use crate::error::Result;
 use crate::relation::TypeBridgeRelation;
@@ -66,6 +68,7 @@ impl<'db> SchemaManager<'db> {
                 is_abstract: E::IS_ABSTRACT,
                 parent_type: E::PARENT_TYPE.map(String::from),
                 owned_attributes: owned_entries,
+                plays_cardinalities: BTreeMap::new(),
             },
         );
     }
@@ -109,6 +112,7 @@ impl<'db> SchemaManager<'db> {
                 parent_type: R::PARENT_TYPE.map(String::from),
                 owned_attributes: owned_entries,
                 roles,
+                plays_cardinalities: BTreeMap::new(),
             },
         );
     }
@@ -216,6 +220,7 @@ impl<'db> SchemaManager<'db> {
                             is_abstract: false,
                             parent_type: None,
                             owned_attributes: owned,
+                            plays_cardinalities: BTreeMap::new(),
                         },
                     );
                 }
@@ -244,6 +249,7 @@ impl<'db> SchemaManager<'db> {
                             parent_type: None,
                             owned_attributes: owned,
                             roles,
+                            plays_cardinalities: BTreeMap::new(),
                         },
                     );
                 }

@@ -1,5 +1,6 @@
 //! Integration tests for the schema management module.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use type_bridge_orm::schema::info::*;
@@ -382,6 +383,7 @@ fn generate_schema_with_cardinality() {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Card(2, Some(5))],
             }],
+            plays_cardinalities: BTreeMap::new(),
         },
     );
 
@@ -496,6 +498,7 @@ fn schema_diff_detects_removed_attribute() {
                     annotations: vec![],
                 },
             ],
+            plays_cardinalities: BTreeMap::new(),
         },
     );
 
@@ -512,6 +515,7 @@ fn schema_diff_detects_removed_attribute() {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Key],
             }],
+            plays_cardinalities: BTreeMap::new(),
         },
     );
 

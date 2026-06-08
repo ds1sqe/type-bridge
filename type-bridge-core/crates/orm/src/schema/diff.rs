@@ -744,6 +744,7 @@ mod tests {
             is_abstract: false,
             parent_type: None,
             owned_attributes: attrs,
+            plays_cardinalities: BTreeMap::new(),
         }
     }
 
@@ -777,6 +778,7 @@ mod tests {
                     cardinality,
                 })
                 .collect(),
+            plays_cardinalities: BTreeMap::new(),
         }
     }
 
@@ -992,6 +994,7 @@ mod tests {
                 is_abstract: true,
                 parent_type: None,
                 owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -1017,6 +1020,7 @@ mod tests {
                 is_abstract: false,
                 parent_type: Some("animal".into()),
                 owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -1045,6 +1049,7 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 roles: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
@@ -1096,6 +1101,7 @@ mod tests {
                     player_type_names: vec!["person".into()],
                     cardinality: None,
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
 
