@@ -17,11 +17,11 @@ use tokio::runtime::Runtime;
 use type_bridge_core_lib::schema::TypeSchema;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
-    AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap,
-    DynamicComparisonOp, DynamicEntityManager, DynamicEntityRow, DynamicExpr,
-    DynamicRelationManager, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort,
-    EntityDescriptor, Filter, OrmError, OwnedAttributeDescriptor, RelationDescriptor,
-    TransactionContext, TxType, TypeDescriptor, ValueType,
+    AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
+    DynamicEntityManager, DynamicEntityRow, DynamicExpr, DynamicRelationManager,
+    DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, EntityDescriptor, Filter, OrmError,
+    OwnedAttributeDescriptor, RelationDescriptor, TransactionContext, TxType, TypeDescriptor,
+    ValueType,
 };
 
 /// JSON-deserialized spec for expression-tree queries.
@@ -535,7 +535,11 @@ impl NodeDynamicEntityManager {
     /// Run aggregate reductions over entities matching an expression-tree query
     /// spec. `aggregates_json`: `DynamicAggregate[]`.
     #[napi(js_name = "queryAggregateJson")]
-    pub fn query_aggregate_json(&self, spec_json: String, aggregates_json: String) -> Result<String> {
+    pub fn query_aggregate_json(
+        &self,
+        spec_json: String,
+        aggregates_json: String,
+    ) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
         let (exprs, ..) = spec.exprs()?;
@@ -814,7 +818,11 @@ impl NodeDynamicRelationManager {
     /// Run aggregate reductions over relations matching an expression-tree query
     /// spec. `aggregates_json`: `DynamicAggregate[]`.
     #[napi(js_name = "queryAggregateJson")]
-    pub fn query_aggregate_json(&self, spec_json: String, aggregates_json: String) -> Result<String> {
+    pub fn query_aggregate_json(
+        &self,
+        spec_json: String,
+        aggregates_json: String,
+    ) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
         let (exprs, ..) = spec.exprs()?;

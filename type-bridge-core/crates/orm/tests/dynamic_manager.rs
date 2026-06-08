@@ -1239,12 +1239,10 @@ async fn dynamic_relation_manager_aggregate_with_query_executes_reduce_query() {
 #[tokio::test]
 async fn dynamic_relation_manager_group_by_aggregate_with_query_executes_reduce_query() {
     let descriptor = Arc::new(employment_descriptor());
-    let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({
-            "$group0": {"value": "Engineer"},
-            "$count": {"value": 3},
-        }),
-    ])]);
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![serde_json::json!({
+        "$group0": {"value": "Engineer"},
+        "$count": {"value": 3},
+    })])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
     let manager = DynamicRelationManager::new(&db, descriptor);

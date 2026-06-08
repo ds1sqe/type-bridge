@@ -227,7 +227,8 @@ impl DynamicExpr {
                             AttributeValue::String(s) => s.as_str(),
                             _ => {
                                 return Err(OrmError::QueryExecution(
-                                    "DynamicComparisonOp::StartsWith requires a String value".into(),
+                                    "DynamicComparisonOp::StartsWith requires a String value"
+                                        .into(),
                                 ));
                             }
                         };
@@ -667,7 +668,11 @@ pub(crate) fn entity_expr_group_by_aggregate_clauses(
 
     let mut group_vars = Vec::with_capacity(group_fields.len());
     for (index, field) in group_fields.iter().enumerate() {
-        let attr = resolve_attribute_descriptor(&descriptor.type_name, &descriptor.owned_attributes, field)?;
+        let attr = resolve_attribute_descriptor(
+            &descriptor.type_name,
+            &descriptor.owned_attributes,
+            field,
+        )?;
         let group_var = format!("$group{index}");
         match_patterns.push(Pattern::Has {
             thing_var: var.to_string(),
@@ -1122,14 +1127,12 @@ pub(crate) fn relation_expr_aggregate_clauses(
         .collect();
 
     let mut counter = 0;
-    let mut match_patterns = vec![
-        Pattern::Relation {
-            variable: var.to_string(),
-            type_name: descriptor.type_name.clone(),
-            role_players,
-            constraints: vec![],
-        },
-    ];
+    let mut match_patterns = vec![Pattern::Relation {
+        variable: var.to_string(),
+        type_name: descriptor.type_name.clone(),
+        role_players,
+        constraints: vec![],
+    }];
     for expression in expressions {
         match_patterns.extend(expression.to_patterns(var, &mut counter)?);
     }
@@ -1177,21 +1180,23 @@ pub(crate) fn relation_expr_group_by_aggregate_clauses(
         .collect();
 
     let mut counter = 0;
-    let mut match_patterns = vec![
-        Pattern::Relation {
-            variable: var.to_string(),
-            type_name: descriptor.type_name.clone(),
-            role_players,
-            constraints: vec![],
-        },
-    ];
+    let mut match_patterns = vec![Pattern::Relation {
+        variable: var.to_string(),
+        type_name: descriptor.type_name.clone(),
+        role_players,
+        constraints: vec![],
+    }];
     for expression in expressions {
         match_patterns.extend(expression.to_patterns(var, &mut counter)?);
     }
 
     let mut group_vars = Vec::with_capacity(group_fields.len());
     for (index, field) in group_fields.iter().enumerate() {
-        let attr = resolve_attribute_descriptor(&descriptor.type_name, &descriptor.owned_attributes, field)?;
+        let attr = resolve_attribute_descriptor(
+            &descriptor.type_name,
+            &descriptor.owned_attributes,
+            field,
+        )?;
         let group_var = format!("$group{index}");
         match_patterns.push(Pattern::Has {
             thing_var: var.to_string(),

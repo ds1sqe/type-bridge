@@ -1313,8 +1313,7 @@ mod tests {
 
     #[test]
     fn test_function_return_stream_multi() {
-        let schema =
-            parse_typeql("define\nfun f() -> { user, phone, string }: return 1;").unwrap();
+        let schema = parse_typeql("define\nfun f() -> { user, phone, string }: return 1;").unwrap();
         let rt = &schema.functions.get("f").unwrap().return_type;
         assert!(rt.is_stream);
         assert_return_items(rt, &[("user", false), ("phone", false), ("string", false)]);
@@ -1374,10 +1373,9 @@ mod tests {
 
     #[test]
     fn test_struct_with_optional_field() {
-        let schema = parse_typeql(
-            "define\nstruct person-name, value first string, value middle string?;",
-        )
-        .unwrap();
+        let schema =
+            parse_typeql("define\nstruct person-name, value first string, value middle string?;")
+                .unwrap();
         let st = schema.structs.get("person-name").unwrap();
         assert_eq!(st.fields.len(), 2);
         assert_eq!(st.fields[0].name, "first");
@@ -1390,8 +1388,7 @@ mod tests {
 
     #[test]
     fn test_function_param_type_serde_key() {
-        let schema =
-            parse_typeql("define\nfun f($x: integer) -> integer: return 1;").unwrap();
+        let schema = parse_typeql("define\nfun f($x: integer) -> integer: return 1;").unwrap();
         let func = schema.functions.get("f").unwrap();
         let json = serde_json::to_string(&func.parameters[0]).unwrap();
         assert!(json.contains("\"type\""), "expected \"type\" key: {}", json);
