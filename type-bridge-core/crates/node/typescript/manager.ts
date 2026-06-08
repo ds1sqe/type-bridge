@@ -1,6 +1,7 @@
 import {
   type AttributeInput,
   type AttributeValue,
+  type DynamicEntityRow,
   type DynamicRelationRow,
   type DynamicRolePlayer,
   type EntityDescriptor,
@@ -11,6 +12,7 @@ import {
   type RustDynamicRelationManager,
   type RustTransactionContext,
 } from "./index.js";
+import { TypedQuery } from "./query.js";
 import { type Attribute } from "./attribute.js";
 import {
   hydrateAttributeEntries,
@@ -117,6 +119,11 @@ export class TypedEntityManager<T extends IidBearing> {
     return this.#dynamic.count(lowerTypedFilters(filters, this.#modelClass.schema));
   }
 
+  query(): TypedQuery<T, DynamicEntityRow> {
+    const modelClass = this.#modelClass;
+    return new TypedQuery(this.#dynamic, (rows) => rows.map((row) => hydrateEntity(modelClass, row)));
+  }
+
   delete(instanceOrIid: T | string): void {
     this.#dynamic.deleteByIid(resolveIid(instanceOrIid, "entity"));
   }
@@ -194,6 +201,11 @@ export class TypedRelationManager<T extends IidBearing> {
 
   count(filters?: ExactFilters<T> | null): bigint {
     return this.#dynamic.count(lowerTypedFilters(filters, this.#modelClass.schema));
+  }
+
+  query(): TypedQuery<T, DynamicRelationRow> {
+    const modelClass = this.#modelClass;
+    return new TypedQuery(this.#dynamic, (rows) => hydrateRelationRows(modelClass, rows));
   }
 
   delete(instanceOrIid: T | string): void {
@@ -391,7 +403,7 @@ function isRoleSpec(spec: SchemaSpec): spec is RoleSpec<readonly ModelTokenLike[
 
 function valueTypeForAttributeName(schema: EntitySchema, attrName: string) {
   for (const spec of Object.values(schema)) {
-    if (spec.kind === "field" && spec.attrType.attrName === attrName) {
+    if ((spec.kind === "field" || spec.kind === "list-field") && spec.attrType.attrName === attrName) {
       return spec.attrType.valueType;
     }
   }

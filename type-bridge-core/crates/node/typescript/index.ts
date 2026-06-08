@@ -1,3 +1,5 @@
+import { loadNative } from "./native.js";
+
 export type ValueType =
   | "string"
   | "long"
@@ -102,7 +104,26 @@ export type RuntimeAttributeValue =
   | { Decimal: string }
   | { Duration: string };
 
-export { Attribute, attr, type AttributeBase } from "./attribute.js";
+export {
+  Attribute,
+  attr,
+  type AttributeBase,
+  type ComparableAttributeBase,
+  type NumericAttributeBase,
+  type StringAttributeBase,
+} from "./attribute.js";
+export {
+  AggregateSpec,
+  BooleanExpr,
+  ComparisonExpr,
+  NotExpr,
+  QueryExpr,
+  SortExpr,
+  TypedGroupByQuery,
+  TypedQuery,
+  TypedQueryError,
+  agg,
+} from "./query.js";
 export {
   AttributeFlags,
   Card,
@@ -124,6 +145,7 @@ export {
 export {
   Entity,
   FieldSpec,
+  ListFieldSpec,
   Relation,
   RoleSpec,
   field,
@@ -132,19 +154,27 @@ export {
   type EntitySchema,
   type FieldValue,
   type IidBearing,
+  type InstanceDict,
   type InstanceFields,
+  type MergedSchema,
   type ModelClass,
+  type ModelInstance,
+  type ParentModelClass,
+  type ParentOption,
+  type PlainFieldValue,
   type RelationSchema,
   type SchemaSpec,
 } from "./model.js";
 export {
   TypedCodecError,
+  attributeToPlain,
   hydrateAttributeEntries,
   hydrateAttributes,
   keyAttributeDescriptor,
   lowerAttributes,
   lowerAttributeValue,
   lowerFilters,
+  plainToAttribute,
   runtimeAttributeValueFromUnknown,
 } from "./codec.js";
 export {
@@ -156,6 +186,24 @@ export {
   type ExactFilters,
   type ManagerConnection,
 } from "./manager.js";
+export {
+  parseSchema,
+  type SchemaParserNative,
+  type AttributeType as SchemaAttributeType,
+  type Cardinality as SchemaCardinality,
+  type EntityType as SchemaEntityType,
+  type FunctionType as SchemaFunctionType,
+  type OwnedAttribute as SchemaOwnedAttribute,
+  type Parameter as SchemaParameter,
+  type PlayedRole as SchemaPlayedRole,
+  type RelationType as SchemaRelationType,
+  type ReturnType as SchemaReturnType,
+  type ReturnTypeItem as SchemaReturnTypeItem,
+  type RoleSpec as SchemaRoleSpec,
+  type StructField as SchemaStructField,
+  type StructType as SchemaStructType,
+  type TypeSchema,
+} from "./parser.js";
 
 export interface DynamicEntityRow {
   iid: string | null;
@@ -174,11 +222,70 @@ export interface DynamicRelationRow extends DynamicEntityRow {
   role_players: DynamicRolePlayer[];
 }
 
+/**
+ * Wire shape of the Rust `DynamicComparisonOp`. `starts_with`/`ends_with` carry
+ * the raw literal only — Rust owns regex anchoring and escaping.
+ */
+export type DynamicComparisonOp =
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "contains"
+  | "like"
+  | "starts_with"
+  | "ends_with";
+
+/**
+ * Wire shape of the Rust `DynamicExpr` expression tree. Comparison values use the
+ * same precision-safe {@link AttributeValue} `{ value_type, value }` encoding as
+ * CRUD filters (`long` carried as a string) — the Node binding decodes them
+ * through its shared value convention, so `long` keeps full i64 precision rather
+ * than being capped at the JS safe-integer range.
+ */
+export type DynamicExpr =
+  | { kind: "compare"; attr_name: string; operator: DynamicComparisonOp; value: AttributeValue }
+  | { kind: "iid"; iid: string }
+  | { kind: "is_null"; attr_name: string; is_null: boolean }
+  | { kind: "and"; exprs: DynamicExpr[] }
+  | { kind: "or"; exprs: DynamicExpr[] }
+  | { kind: "not"; expr: DynamicExpr }
+  | { kind: "role_player"; role_name: string; expr: DynamicExpr };
+
+/** Wire shape of the Rust `SortDir` (bare PascalCase variant names). */
+export type DynamicSortDir = "Asc" | "Desc";
+
+/** Wire shape of the Rust `DynamicSort`. */
+export type DynamicSort =
+  | { kind: "attribute"; attr_name: string; direction: DynamicSortDir }
+  | { kind: "role_player_attribute"; role_name: string; attr_name: string; direction: DynamicSortDir };
+
+/**
+ * Wire shape of the Rust `DynamicQuerySpecJson`. All fields are optional; an empty
+ * `expr` matches every row. `limit`/`offset` apply only to `query`, not to
+ * `queryCount`/`queryAggregate`/`queryGroupByAggregate`.
+ */
+export interface DynamicQuerySpec {
+  expr?: DynamicExpr[];
+  sort?: DynamicSort[];
+  limit?: number | null;
+  offset?: number | null;
+}
+
 export function string(value: string): AttributeValue {
   return { value_type: "string", value };
 }
 
 export function long(value: bigint): AttributeValue {
+  // Runtime guard for JavaScript callers (the static `bigint` type is erased):
+  // a non-bigint would silently stringify to a wrong wire value otherwise.
+  if (typeof value !== "bigint") {
+    throw new TypeError(
+      "long requires a bigint; use longFromNumberUnsafe for explicit number conversion",
+    );
+  }
   return { value_type: "long", value: value.toString() };
 }
 
@@ -270,6 +377,10 @@ export interface NativeDynamicEntityManager {
   aggregateJson(aggregatesJson: string, filtersJson?: string | null): string;
   groupByAggregateJson(groupFieldsJson: string, aggregatesJson: string, filtersJson?: string | null): string;
   deleteByIid(iid: string): void;
+  queryJson(specJson: string): string;
+  queryCountJson(specJson: string): string;
+  queryAggregateJson(specJson: string, aggregatesJson: string): string;
+  queryGroupByAggregateJson(specJson: string, groupFieldsJson: string, aggregatesJson: string): string;
 }
 
 export interface NativeDynamicRelationManager {
@@ -286,6 +397,10 @@ export interface NativeDynamicRelationManager {
   aggregateJson(aggregatesJson: string, filtersJson?: string | null): string;
   groupByAggregateJson(groupFieldsJson: string, aggregatesJson: string, filtersJson?: string | null): string;
   deleteByIid(iid: string): void;
+  queryJson(specJson: string): string;
+  queryCountJson(specJson: string): string;
+  queryAggregateJson(specJson: string, aggregatesJson: string): string;
+  queryGroupByAggregateJson(specJson: string, groupFieldsJson: string, aggregatesJson: string): string;
 }
 
 export interface NativeRuntime {
@@ -303,7 +418,11 @@ export interface NativeRuntime {
   ): NativeRustDatabase;
 }
 
-export interface NativeModule extends NativeRuntime, NativeMarshalling {
+interface NativeSchemaParser {
+  parseSchemaJson(input: string): string;
+}
+
+export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
   NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
 }
 
@@ -337,11 +456,7 @@ export function ensureDatabase(
   );
 }
 
-declare const nativeModule: NativeModule;
-
-export function loadNative(): NativeModule {
-  return nativeModule;
-}
+export { loadNative };
 
 export class DescriptorRegistry {
   readonly #native: NativeDescriptorRegistry;
@@ -565,6 +680,32 @@ export class RustDynamicEntityManager {
     );
   }
 
+  query(spec: DynamicQuerySpec): DynamicEntityRow[] {
+    return parseJson(this.#native.queryJson(JSON.stringify(spec)));
+  }
+
+  queryCount(spec: DynamicQuerySpec): bigint {
+    return BigInt(this.#native.queryCountJson(JSON.stringify(spec)));
+  }
+
+  queryAggregate(spec: DynamicQuerySpec, aggregates: AggregateInput[]): unknown[] {
+    return parseJson(this.#native.queryAggregateJson(JSON.stringify(spec), JSON.stringify(aggregates)));
+  }
+
+  queryGroupByAggregate(
+    spec: DynamicQuerySpec,
+    groupFields: string[],
+    aggregates: AggregateInput[],
+  ): unknown[] {
+    return parseJson(
+      this.#native.queryGroupByAggregateJson(
+        JSON.stringify(spec),
+        JSON.stringify(groupFields),
+        JSON.stringify(aggregates),
+      ),
+    );
+  }
+
   deleteByIid(iid: string): void {
     this.#native.deleteByIid(iid);
   }
@@ -634,6 +775,32 @@ export class RustDynamicRelationManager {
     );
   }
 
+  query(spec: DynamicQuerySpec): DynamicRelationRow[] {
+    return parseJson(this.#native.queryJson(JSON.stringify(spec)));
+  }
+
+  queryCount(spec: DynamicQuerySpec): bigint {
+    return BigInt(this.#native.queryCountJson(JSON.stringify(spec)));
+  }
+
+  queryAggregate(spec: DynamicQuerySpec, aggregates: AggregateInput[]): unknown[] {
+    return parseJson(this.#native.queryAggregateJson(JSON.stringify(spec), JSON.stringify(aggregates)));
+  }
+
+  queryGroupByAggregate(
+    spec: DynamicQuerySpec,
+    groupFields: string[],
+    aggregates: AggregateInput[],
+  ): unknown[] {
+    return parseJson(
+      this.#native.queryGroupByAggregateJson(
+        JSON.stringify(spec),
+        JSON.stringify(groupFields),
+        JSON.stringify(aggregates),
+      ),
+    );
+  }
+
   deleteByIid(iid: string): void {
     this.#native.deleteByIid(iid);
   }
@@ -678,3 +845,12 @@ function parseConnectArguments(
     options: maybeOptions ?? {},
   };
 }
+
+// ---------------------------------------------------------------------------
+// Generator — additive re-export
+// ---------------------------------------------------------------------------
+export {
+  generateModels,
+  type GenerateModelsOptions,
+  type NamingOptions,
+} from "./generator/index.js";

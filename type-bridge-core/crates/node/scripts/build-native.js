@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 /**
- * Build the NAPI cdylib and place it next to index.js under the
- * platform-triple filename the package loader probes for.
+ * Build the NAPI cdylib and copy it to the package root under the
+ * platform-triple filename the native loader probes for.
  *
- * The package ships a hand-written index.js loader (see nativeCandidates in
- * index.js), so `napi build` is deliberately not used: it would regenerate
- * index.js and clobber the hand-authored public surface. This script only
- * compiles the crate and copies the artifact — it never touches index.js.
+ * `napi build` is deliberately not used: this script only compiles the crate
+ * and copies the artifact. The TypeScript surface (including the native loader)
+ * is compiled separately via `build:types` (tsc).
  *
  * The crate lives in a cargo workspace, so the cdylib lands in the workspace
  * target dir (../../target/release), not a crate-local one.

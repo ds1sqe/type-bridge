@@ -283,6 +283,38 @@ pub fn build_dynamic_entity_expr_count(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build an expression-aware aggregate query for a runtime entity descriptor.
+pub fn build_dynamic_entity_expr_aggregate(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<String> {
+    let clauses =
+        crate::dynamic::entity_expr_aggregate_clauses(descriptor, expressions, aggregates, var)?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an expression-aware group-by aggregate query for a runtime entity descriptor.
+pub fn build_dynamic_entity_expr_group_by_aggregate(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    group_fields: &[String],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_expr_group_by_aggregate_clauses(
+        descriptor,
+        expressions,
+        group_fields,
+        aggregates,
+        var,
+    )?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
 /// Build an aggregate query for a runtime entity descriptor.
 pub fn build_dynamic_entity_aggregate(
     descriptor: &EntityDescriptor,
@@ -618,6 +650,38 @@ pub fn build_dynamic_relation_expr_count(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::dynamic::relation_expr_count_clauses(descriptor, expressions, var)?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an expression-aware aggregate query for a runtime relation descriptor.
+pub fn build_dynamic_relation_expr_aggregate(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<String> {
+    let clauses =
+        crate::dynamic::relation_expr_aggregate_clauses(descriptor, expressions, aggregates, var)?;
+    let compiler = QueryCompiler::new();
+    Ok(compiler.compile(&clauses))
+}
+
+/// Build an expression-aware group-by aggregate query for a runtime relation descriptor.
+pub fn build_dynamic_relation_expr_group_by_aggregate(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    group_fields: &[String],
+    aggregates: &[DynamicAggregate],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_expr_group_by_aggregate_clauses(
+        descriptor,
+        expressions,
+        group_fields,
+        aggregates,
+        var,
+    )?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }

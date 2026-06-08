@@ -2376,8 +2376,10 @@ version = "1.4.5"
 dependencies = [
  "napi",
  "napi-derive",
+ "serde",
  "serde_json",
  "tokio",
+ "type-bridge-core-lib",
  "type-bridge-orm",
 ]
 

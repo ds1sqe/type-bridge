@@ -149,6 +149,9 @@ describe("typed value codec", () => {
     const hydrated = hydrateAttributes(row, AllValues.schema);
     for (const item of cases) {
       const actual = hydrated[item.fieldName];
+      if (Array.isArray(actual)) {
+        assert.fail(`${item.fieldName} should hydrate to a scalar attribute, not an array`);
+      }
       assert.ok(actual.constructor === item.attr.constructor);
       assert.equal(actual.value, item.attr.value);
     }

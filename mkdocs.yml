@@ -98,6 +98,7 @@ nav:
     - Code Generator: guide/generator.md
     - TOML Schema DSL: guide/toml.md
     - API DTOs: guide/dto.md
+    - TypeScript Typed Surface: guide/typescript.md
     - Functions: guide/functions.md
     - Validation: guide/validation.md
     - Logging: guide/logging.md

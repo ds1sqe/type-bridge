@@ -193,6 +193,23 @@ impl<'db> DynamicEntityManager<'db> {
         extract_rows(&self.descriptor.type_name, result)
     }
 
+    /// Run aggregate reductions over entities matching dynamic expressions.
+    pub async fn aggregate_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+        aggregates: &[DynamicAggregate],
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        let typeql = query_builder::build_dynamic_entity_expr_aggregate(
+            &self.descriptor,
+            expressions,
+            aggregates,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXPR AGGREGATE");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_rows(&self.descriptor.type_name, result)
+    }
+
     /// Run grouped aggregate reductions over entities matching equality filters.
     pub async fn group_by_aggregate(
         &self,
@@ -208,6 +225,25 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC GROUP BY AGGREGATE");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_rows(&self.descriptor.type_name, result)
+    }
+
+    /// Run grouped aggregate reductions over entities matching dynamic expressions.
+    pub async fn group_by_aggregate_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+        group_fields: &[String],
+        aggregates: &[DynamicAggregate],
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        let typeql = query_builder::build_dynamic_entity_expr_group_by_aggregate(
+            &self.descriptor,
+            expressions,
+            group_fields,
+            aggregates,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXPR GROUP BY AGGREGATE");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }
@@ -509,6 +545,23 @@ impl<'db> DynamicRelationManager<'db> {
         extract_rows(&self.descriptor.type_name, result)
     }
 
+    /// Run aggregate reductions over relations matching dynamic expressions.
+    pub async fn aggregate_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+        aggregates: &[DynamicAggregate],
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        let typeql = query_builder::build_dynamic_relation_expr_aggregate(
+            &self.descriptor,
+            expressions,
+            aggregates,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR AGGREGATE");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_rows(&self.descriptor.type_name, result)
+    }
+
     /// Run grouped aggregate reductions over relations matching equality filters.
     pub async fn group_by_aggregate(
         &self,
@@ -524,6 +577,25 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION GROUP BY AGGREGATE");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_rows(&self.descriptor.type_name, result)
+    }
+
+    /// Run grouped aggregate reductions over relations matching dynamic expressions.
+    pub async fn group_by_aggregate_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+        group_fields: &[String],
+        aggregates: &[DynamicAggregate],
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        let typeql = query_builder::build_dynamic_relation_expr_group_by_aggregate(
+            &self.descriptor,
+            expressions,
+            group_fields,
+            aggregates,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR GROUP BY AGGREGATE");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }

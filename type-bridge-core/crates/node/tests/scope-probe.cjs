@@ -7,7 +7,6 @@ const root = path.resolve(__dirname, "..");
 const scannedPaths = [
   "Cargo.toml",
   "package.json",
-  "index.js",
   "src",
   "typescript",
 ].map((entry) => path.join(root, entry));
