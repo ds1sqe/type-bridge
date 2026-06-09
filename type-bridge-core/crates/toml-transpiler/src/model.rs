@@ -1,6 +1,6 @@
 //! Typed serde intermediate model for the TOML schema DSL.
 //!
-//! Attribute, entity-owns, relation/role, entity-plays, sub/abstract,
+//! Attribute, entity-owns, relation/role, entity/relation-plays, sub/abstract,
 //! annotation, function, and struct fields are all present.
 
 use indexmap::IndexMap;
@@ -87,9 +87,9 @@ pub struct TomlEntity {
     pub plays: Vec<TomlPlays>,
 }
 
-/// A single `plays` entry on an entity: `{ relation, role }`.
+/// A single `plays` entry on an entity or relation: `{ relation, role, card? }`.
 ///
-/// Emitted as `plays <relation>:<role>`.
+/// Emitted as `plays <relation>:<role>` with optional `@card(...)`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlPlays {
@@ -97,12 +97,16 @@ pub struct TomlPlays {
     pub relation: String,
     /// The role name within that relation.
     pub role: String,
+    /// Optional cardinality: verbatim `m..n` or `m..` string.
+    #[serde(default)]
+    pub card: Option<String>,
 }
 
 /// A single relation type declaration.
 ///
 /// `roles` is an ordered array of role descriptors; `owns` reuses the entity
-/// owns convention (ordered array, default empty).
+/// owns convention (ordered array, default empty); `plays` lists the roles this
+/// relation plays, in declaration order.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlRelation {
@@ -118,6 +122,9 @@ pub struct TomlRelation {
     /// Attribute owns entries (bare names or annotated tables), in declaration order.
     #[serde(default)]
     pub owns: Vec<TomlOwns>,
+    /// Roles this relation plays, in declaration order.
+    #[serde(default)]
+    pub plays: Vec<TomlPlays>,
 }
 
 /// A single role descriptor inside a `[relations.NAME]` table.
@@ -281,6 +288,24 @@ roles = [{ name = "reviewer", cart = "1..3" }]
         );
     }
 
+    /// An unknown key inside a plays inline table must produce a
+    /// deserialisation error — `TomlPlays` carries `#[serde(deny_unknown_fields)]`.
+    #[test]
+    fn test_malformed_toml_unknown_plays_key() {
+        let toml_text = r#"
+[entities.person]
+plays = [{ relation = "review", role = "reviewer", cart = "0..1" }]
+
+[relations.review]
+roles = [{ name = "reviewer" }]
+"#;
+        let result: Result<TomlSchema, _> = toml::from_str(toml_text);
+        assert!(
+            result.is_err(),
+            "expected Err for unknown plays key `cart`, got Ok"
+        );
+    }
+
     /// An unknown key in an annotated owns table must produce a deserialisation
     /// error: `kye` (a typo for `key`) must be rejected, not silently dropped by
     /// the untagged enum falling back to the bare-string variant.
@@ -359,6 +384,44 @@ sub = "isbn"
         let attr = &schema.attributes["isbn-13"];
         assert_eq!(attr.sub, Some("isbn".to_string()));
         assert!(attr.value.is_none());
+    }
+
+    /// An entity plays entry can carry an optional cardinality string.
+    #[test]
+    fn test_entity_plays_card_parses() {
+        let toml_text = r#"
+[entities.person]
+plays = [{ relation = "review", role = "reviewer", card = "0..1" }]
+
+[relations.review]
+roles = [{ name = "reviewer" }]
+"#;
+        let result: Result<TomlSchema, _> = toml::from_str(toml_text);
+        assert!(result.is_ok(), "expected Ok, got Err: {:?}", result);
+        let schema = result.unwrap();
+        let plays = &schema.entities["person"].plays[0];
+        assert_eq!(plays.relation, "review");
+        assert_eq!(plays.role, "reviewer");
+        assert_eq!(plays.card.as_deref(), Some("0..1"));
+    }
+
+    /// A relation can play roles in other relations, symmetric with entities.
+    #[test]
+    fn test_relation_plays_parses() {
+        let toml_text = r#"
+[relations.publication]
+plays = [{ relation = "contribution", role = "work" }]
+
+[relations.contribution]
+roles = [{ name = "work" }]
+"#;
+        let result: Result<TomlSchema, _> = toml::from_str(toml_text);
+        assert!(result.is_ok(), "expected Ok, got Err: {:?}", result);
+        let schema = result.unwrap();
+        let plays = &schema.relations["publication"].plays[0];
+        assert_eq!(plays.relation, "contribution");
+        assert_eq!(plays.role, "work");
+        assert_eq!(plays.card.as_deref(), None);
     }
 
     // -------------------------------------------------------------------------

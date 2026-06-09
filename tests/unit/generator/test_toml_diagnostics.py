@@ -202,6 +202,42 @@ roles = [{ name = "reviewer" }]
 
 
 # ---------------------------------------------------------------------------
+# Missing role player — relation-level plays
+# ---------------------------------------------------------------------------
+
+
+def test_relation_plays_missing_relation_raises() -> None:
+    """Relation plays entry referencing an undefined relation raises ValueError."""
+    toml_text = """
+[relations.publication]
+plays = [{ relation = "nope", role = "work" }]
+"""
+    with pytest.raises(ValueError, match="publication"):
+        toml_to_typeql(toml_text)
+    with pytest.raises(ValueError, match="nope"):
+        toml_to_typeql(toml_text)
+    with pytest.raises(ValueError, match="work"):
+        toml_to_typeql(toml_text)
+
+
+def test_relation_plays_missing_role_raises() -> None:
+    """Relation plays entry referencing an undefined role name raises ValueError."""
+    toml_text = """
+[relations.publication]
+plays = [{ relation = "contribution", role = "ghost-role" }]
+
+[relations.contribution]
+roles = [{ name = "work" }]
+"""
+    with pytest.raises(ValueError, match="publication"):
+        toml_to_typeql(toml_text)
+    with pytest.raises(ValueError, match="contribution"):
+        toml_to_typeql(toml_text)
+    with pytest.raises(ValueError, match="ghost-role"):
+        toml_to_typeql(toml_text)
+
+
+# ---------------------------------------------------------------------------
 # Empty struct
 # ---------------------------------------------------------------------------
 

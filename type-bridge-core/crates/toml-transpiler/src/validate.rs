@@ -180,13 +180,16 @@ fn check_plays_entry(
     }
 }
 
-/// Check 4: every `plays { relation, role }` entry on entities must reference
-/// a defined relation with a declared role of that name.
-///
-/// Only entities carry `plays` entries in the current model; relations do not.
+/// Check 4: every `plays { relation, role }` entry on entities and relations
+/// must reference a defined relation with a declared role of that name.
 fn check_missing_role_players(schema: &TomlSchema) -> Result<(), TranspileError> {
     for (name, entity) in &schema.entities {
         for plays in &entity.plays {
+            check_plays_entry(name, plays, schema)?;
+        }
+    }
+    for (name, relation) in &schema.relations {
+        for plays in &relation.plays {
             check_plays_entry(name, plays, schema)?;
         }
     }
@@ -520,6 +523,77 @@ roles = [{ name = "reviewer" }]
         );
     }
 
+    #[test]
+    fn test_missing_role_relation_for_relation_player() {
+        let toml_text = r#"
+[relations.publication]
+plays = [{ relation = "nope", role = "work" }]
+"#;
+        let schema: TomlSchema = toml::from_str(toml_text).unwrap();
+        let err = validate(&schema).expect_err("expected MissingRoleRelation");
+        assert!(
+            matches!(
+                err,
+                TranspileError::MissingRoleRelation {
+                    ref player,
+                    ref relation,
+                    ref role,
+                } if player == "publication" && relation == "nope" && role == "work"
+            ),
+            "wrong variant or fields: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("publication"),
+            "message must name the relation player; got: {msg}"
+        );
+        assert!(
+            msg.contains("nope"),
+            "message must name the missing relation; got: {msg}"
+        );
+        assert!(
+            msg.contains("work"),
+            "message must name the role; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_role_for_relation_player() {
+        let toml_text = r#"
+[relations.publication]
+plays = [{ relation = "contribution", role = "ghost-role" }]
+
+[relations.contribution]
+roles = [{ name = "work" }]
+"#;
+        let schema: TomlSchema = toml::from_str(toml_text).unwrap();
+        let err = validate(&schema).expect_err("expected MissingRole");
+        assert!(
+            matches!(
+                err,
+                TranspileError::MissingRole {
+                    ref player,
+                    ref relation,
+                    ref role,
+                } if player == "publication" && relation == "contribution" && role == "ghost-role"
+            ),
+            "wrong variant or fields: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("publication"),
+            "message must name the relation player; got: {msg}"
+        );
+        assert!(
+            msg.contains("contribution"),
+            "message must name the target relation; got: {msg}"
+        );
+        assert!(
+            msg.contains("ghost-role"),
+            "message must name the missing role; got: {msg}"
+        );
+    }
+
     // ------------------------------------------------------------------
     // Check 5 — empty struct
     // ------------------------------------------------------------------
@@ -599,7 +673,10 @@ sub = "book"
 
 [entities.person]
 owns = ["isbn"]
-plays = [{ relation = "review", role = "reviewer" }]
+plays = [{ relation = "review", role = "reviewer", card = "0..1" }]
+
+[relations.publication]
+plays = [{ relation = "review", role = "subject" }]
 
 [relations.review]
 roles = [{ name = "reviewer", card = "1..3" }, { name = "subject" }]

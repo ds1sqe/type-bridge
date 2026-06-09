@@ -7,8 +7,9 @@ import pytest
 
 pytest.importorskip("type_bridge_core")
 
-from type_bridge_core import toml_to_typeql
+from type_bridge_core import TypeSchema, toml_to_typeql
 
+from type_bridge.generator.models import Cardinality
 from type_bridge.generator.parser import parse_tql_schema
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,101 @@ class TestTomlToTypeqlBinding:
         schema = parse_tql_schema(typeql)
         person = schema.entities["person"]
         assert set(person.owns) >= {"name", "age"}
+
+    def test_abstract_subtype_heads_reach_rust_schema(self) -> None:
+        """TOML abstract subtypes must emit both tokens and parse through Rust TypeSchema."""
+        toml_text = """
+[attributes.payload]
+value = "string"
+
+[attributes.text-payload]
+abstract = true
+sub = "payload"
+
+[entities.content]
+abstract = true
+
+[entities.page]
+abstract = true
+sub = "content"
+
+[relations.interaction]
+abstract = true
+
+[relations.content-engagement]
+abstract = true
+sub = "interaction"
+"""
+        typeql = toml_to_typeql(toml_text)
+        assert "attribute text-payload @abstract, sub payload;" in typeql
+        assert "entity page @abstract, sub content;" in typeql
+        assert "relation content-engagement @abstract, sub interaction;" in typeql
+
+        schema = TypeSchema.from_typeql(typeql)
+        assert schema.attributes["text-payload"]["is_abstract"] is True
+        assert schema.attributes["text-payload"]["parent"] == "payload"
+        assert schema.entities["page"]["is_abstract"] is True
+        assert schema.entities["page"]["parent"] == "content"
+        assert schema.relations["content-engagement"]["is_abstract"] is True
+        assert schema.relations["content-engagement"]["parent"] == "interaction"
+
+    def test_entity_plays_cardinality_reaches_generator_parser(self) -> None:
+        """Entity plays card emits @card and populates ParsedSchema.plays_cardinalities."""
+        toml_text = """
+[entities.post]
+plays = [
+    { relation = "posting", role = "post", card = "1" },
+    { relation = "reaction", role = "parent", card = "0..5" },
+    { relation = "commenting", role = "parent", card = "1.." },
+]
+
+[relations.posting]
+roles = [{ name = "post" }]
+
+[relations.reaction]
+roles = [{ name = "parent" }]
+
+[relations.commenting]
+roles = [{ name = "parent" }]
+"""
+        typeql = toml_to_typeql(toml_text)
+        assert "plays posting:post @card(1)" in typeql
+        assert "plays reaction:parent @card(0..5)" in typeql
+        assert "plays commenting:parent @card(1..)" in typeql
+
+        schema = parse_tql_schema(typeql)
+        post = schema.entities["post"]
+        assert post.plays_cardinalities["posting:post"] == Cardinality(1, 1)
+        assert post.plays_cardinalities["reaction:parent"] == Cardinality(0, 5)
+        assert post.plays_cardinalities["commenting:parent"] == Cardinality(1, None)
+
+    def test_relation_plays_reaches_rust_schema(self) -> None:
+        """Relation-level plays must survive through Rust TypeSchema, not only TypeQL text."""
+        toml_text = """
+[relations.publication]
+plays = [
+    { relation = "contribution", role = "work" },
+    { relation = "review", role = "reviewed", card = "0..5" },
+]
+
+[relations.contribution]
+roles = [{ name = "work" }]
+
+[relations.review]
+roles = [{ name = "reviewed" }]
+"""
+        typeql = toml_to_typeql(toml_text)
+        assert (
+            "relation publication, plays contribution:work, plays review:reviewed @card(0..5);"
+        ) in typeql
+
+        schema = TypeSchema.from_typeql(typeql)
+        plays = {
+            entry["role_ref"]: entry["cardinality"]
+            for entry in schema.get_all_plays_roles("publication")
+        }
+        assert plays["contribution:work"] is None
+        assert plays["review:reviewed"] == {"min": 0, "max": 5}
 
 
 # ---------------------------------------------------------------------------

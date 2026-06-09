@@ -124,9 +124,12 @@ owns = [
 ```toml
 plays = [
     { relation = "employment", role = "employee" },
-    { relation = "friendship", role = "friend"   },
+    { relation = "friendship", role = "friend", card = "0..5" },
 ]
 ```
+
+Set `card` on a `plays` entry to emit plays-side cardinality:
+`plays relation:role @card(...)`.
 
 **Full entity example:**
 
@@ -159,6 +162,7 @@ sub      = "parent"    # optional; inherit from another relation
 abstract = true        # optional; mark as abstract
 roles    = [...]       # list of role definitions (see below)
 owns     = [...]       # list of owned attributes (same syntax as entities)
+plays    = [...]       # roles this relation itself plays
 ```
 
 **`roles` entries** define the roles a relation relates. Each role is a table:
@@ -174,6 +178,18 @@ roles = [
 `card` sets the `@card` annotation on the role. `as` sets a role override
 (`as contributor`).
 
+Relations can also play roles in other relations, using the same `plays`
+entry syntax as entities:
+
+```toml
+[relations.publication]
+roles = [{ name = "publisher" }]
+plays = [
+    { relation = "contribution", role = "work" },
+    { relation = "review", role = "reviewed", card = "0..5" },
+]
+```
+
 **Full relation example:**
 
 ```toml
@@ -183,6 +199,7 @@ roles = [
     { name = "group",  card = "1..1" },
 ]
 owns = ["joined-at"]
+plays = []
 ```
 
 ### Functions
@@ -334,21 +351,13 @@ the offending field or type. Common errors:
 | Struct with no fields | `"Struct 'empty-struct': fields list is empty"` |
 | Malformed function body | `"Function 'my-fn': body does not contain a return statement"` |
 
-## Limitations
+## Current Scope
 
-The TOML DSL covers entities that own attributes and play roles in relations,
-and relations that relate roles and own attributes. A few TypeQL constructs are
-not yet expressible in the TOML front-end; schemas that use them should be
-authored in `.tql` directly. Each is a known gap slated for a follow-up:
-
-- **Relation-as-entity** — a relation that itself *plays* roles in other
-  relations (common in deeply recursive or type-theoretic models). The TOML
-  relation table has no `plays` field.
-- **Abstract subtypes** — a type that is both `abstract` and `sub` another
-  type. The emitter currently renders only one of the two on entities and
-  relations, so mark a subtype abstract in `.tql`.
-- **Per-`plays` cardinality** — a `@card(...)` annotation on an entity's
-  `plays` entry. TOML `plays` entries carry only the relation and role.
+The TOML DSL covers attributes, entities, relations, functions, and structs for
+the schema forms used by the generator. It supports abstract subtypes,
+relation-level `plays`, and per-`plays` cardinality. TOML is still a front-end
+to TypeQL: emitted TypeQL is parsed by the shared schema parser before model
+generation.
 
 ## See Also
 

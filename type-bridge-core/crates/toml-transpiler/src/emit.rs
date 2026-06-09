@@ -3,7 +3,7 @@
 //! [`emit`] is a total function over the typed model — it never inspects raw
 //! `toml::Value` tables and never calls `.unwrap()` on optional fields.
 
-use crate::model::{TomlOwns, TomlSchema};
+use crate::model::{TomlOwns, TomlPlays, TomlSchema};
 
 /// Normalise a `TomlOwns` entry into `(name, key, unique, card)`.
 fn owns_parts(entry: &TomlOwns) -> (&str, bool, bool, Option<&str>) {
@@ -13,20 +13,45 @@ fn owns_parts(entry: &TomlOwns) -> (&str, bool, bool, Option<&str>) {
     }
 }
 
+/// Build a type declaration head that preserves both `@abstract` and `sub`.
+fn type_head(kind: &str, name: &str, is_abstract: bool, parent: Option<&str>) -> String {
+    let mut head = format!("{kind} {name}");
+    if is_abstract {
+        head.push_str(" @abstract");
+    }
+    if let Some(parent) = parent {
+        if is_abstract {
+            head.push_str(&format!(", sub {parent}"));
+        } else {
+            head.push_str(&format!(" sub {parent}"));
+        }
+    }
+    head
+}
+
+/// Emit a `plays` clause with optional plays-side cardinality.
+fn plays_clause(entry: &TomlPlays) -> String {
+    let mut clause = format!("plays {}:{}", entry.relation, entry.role);
+    if let Some(ref card) = entry.card {
+        clause.push_str(&format!(" @card({card})"));
+    }
+    clause
+}
+
 /// Emit a canonical TypeQL `define` block from a typed schema model.
 ///
 /// Output format:
 /// ```text
 /// define
-/// attribute <name>[sub <parent>], value <type>[@ regex(...)];
+/// attribute <name> [@abstract][, sub <parent>], value <type>[@ regex(...)];
 ///   -- OR --
 /// attribute <name> @abstract, value <type>;
 ///   -- OR --
-/// attribute <name> sub <parent>;            (no value clause)
+/// attribute <name> [@abstract,] sub <parent>;            (no value clause)
 /// ...
-/// entity <name>[@abstract | sub <parent>][, owns <a>[@key|@unique|@card(m..n)], plays <r>:<role>];
+/// entity <name>[@abstract][, sub <parent>][, owns <a>[@key|@unique|@card(m..n)], plays <r>:<role>[@card(m..n)]];
 /// ...
-/// relation <name>[@abstract | sub <parent>][, relates <r>[@ card(m..n)], owns <a>[@key|...]];
+/// relation <name>[@abstract][, sub <parent>][, relates <r>[@ card(m..n)], owns <a>[@key|...], plays <r>:<role>[@card(m..n)]];
 /// ...
 /// <signature>:
 /// <body>
@@ -47,20 +72,7 @@ pub fn emit(schema: &TomlSchema) -> String {
         // The head itself is: `attribute <name>[sub <parent>] [@abstract]`
         // Then value + value-annotations follow as additional clauses.
 
-        let mut head = format!("attribute {}", name);
-
-        if let Some(ref parent) = attr.sub {
-            // `sub` replaces the `value` clause; head becomes `attribute X sub Y`
-            head.push_str(&format!(" sub {}", parent));
-            // No value clause — emit bare declaration.
-            out.push_str(&format!("{};\n", head));
-            continue;
-        }
-
-        if attr.is_abstract {
-            // `@abstract` goes before `value`: `attribute X @abstract, value T;`
-            head.push_str(" @abstract");
-        }
+        let head = type_head("attribute", name, attr.is_abstract, attr.sub.as_deref());
 
         // Build the value clause (with optional value-level annotations).
         let value_clause = if let Some(ref vt) = attr.value {
@@ -86,7 +98,7 @@ pub fn emit(schema: &TomlSchema) -> String {
                 out.push_str(&format!("{}, {};\n", head, vc));
             }
             None => {
-                // No value and no sub — emit bare `attribute X;` (best-effort; 05 adds diag)
+                // No value clause: valid for sub-attributes after validation.
                 out.push_str(&format!("{};\n", head));
             }
         }
@@ -94,13 +106,8 @@ pub fn emit(schema: &TomlSchema) -> String {
 
     // --- entities ---
     for (name, entity) in &schema.entities {
-        // Build the type-head: `entity <name>` + optional sub/abstract token.
-        let mut head = format!("entity {}", name);
-        if let Some(ref parent) = entity.sub {
-            head.push_str(&format!(" sub {}", parent));
-        } else if entity.is_abstract {
-            head.push_str(" @abstract");
-        }
+        // Build the type-head: `entity <name>` + optional abstract/sub tokens.
+        let head = type_head("entity", name, entity.is_abstract, entity.sub.as_deref());
 
         let mut clauses: Vec<String> = Vec::new();
         for entry in &entity.owns {
@@ -118,7 +125,7 @@ pub fn emit(schema: &TomlSchema) -> String {
             clauses.push(clause);
         }
         for p in &entity.plays {
-            clauses.push(format!("plays {}:{}", p.relation, p.role));
+            clauses.push(plays_clause(p));
         }
 
         if clauses.is_empty() {
@@ -130,13 +137,13 @@ pub fn emit(schema: &TomlSchema) -> String {
 
     // --- relations ---
     for (name, relation) in &schema.relations {
-        // Build the type-head: `relation <name>` + optional sub/abstract token.
-        let mut head = format!("relation {}", name);
-        if let Some(ref parent) = relation.sub {
-            head.push_str(&format!(" sub {}", parent));
-        } else if relation.is_abstract {
-            head.push_str(" @abstract");
-        }
+        // Build the type-head: `relation <name>` + optional abstract/sub tokens.
+        let head = type_head(
+            "relation",
+            name,
+            relation.is_abstract,
+            relation.sub.as_deref(),
+        );
 
         let mut clauses: Vec<String> = Vec::new();
         for role in &relation.roles {
@@ -162,6 +169,9 @@ pub fn emit(schema: &TomlSchema) -> String {
                 clause.push_str(&format!(" @card({})", c));
             }
             clauses.push(clause);
+        }
+        for p in &relation.plays {
+            clauses.push(plays_clause(p));
         }
 
         if clauses.is_empty() {
@@ -379,6 +389,72 @@ owns = ["score"]
         );
     }
 
+    /// Entity plays entries can carry plays-side cardinality.
+    #[test]
+    fn test_emit_entity_plays_cardinality() {
+        let toml_text = r#"
+[entities.post]
+plays = [
+    { relation = "posting", role = "post", card = "1" },
+    { relation = "reaction", role = "parent", card = "0..5" },
+    { relation = "commenting", role = "parent", card = "1.." },
+]
+
+[relations.posting]
+roles = [{ name = "post" }]
+
+[relations.reaction]
+roles = [{ name = "parent" }]
+
+[relations.commenting]
+roles = [{ name = "parent" }]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed on valid input");
+
+        assert!(
+            result.contains("plays posting:post @card(1)"),
+            "expected exact plays @card; got:\n{result}"
+        );
+        assert!(
+            result.contains("plays reaction:parent @card(0..5)"),
+            "expected bounded plays @card; got:\n{result}"
+        );
+        assert!(
+            result.contains("plays commenting:parent @card(1..)"),
+            "expected unbounded plays @card; got:\n{result}"
+        );
+    }
+
+    /// Relations can play roles in other relations; relation clauses emit
+    /// after relates and owns clauses.
+    #[test]
+    fn test_emit_relation_level_plays() {
+        let toml_text = r#"
+[attributes.title]
+value = "string"
+
+[relations.publication]
+roles = [{ name = "publisher" }]
+owns = ["title"]
+plays = [
+    { relation = "contribution", role = "work" },
+    { relation = "review", role = "reviewed", card = "0..5" },
+]
+
+[relations.contribution]
+roles = [{ name = "work" }]
+
+[relations.review]
+roles = [{ name = "reviewed" }]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed on valid input");
+
+        assert!(
+            result.contains("relation publication, relates publisher, owns title, plays contribution:work, plays review:reviewed @card(0..5);"),
+            "expected relation-level plays after roles and owns; got:\n{result}"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // attribute abstract / sub / value-annotation emission
     // -------------------------------------------------------------------------
@@ -416,6 +492,47 @@ sub = "isbn"
         assert!(
             !result.contains("isbn-13 sub isbn,"),
             "sub attribute must NOT emit a `value` clause; got:\n{result}"
+        );
+    }
+
+    /// `abstract = true` and `sub = "..."` must both be emitted when present.
+    #[test]
+    fn test_emit_abstract_subtype_heads() {
+        let toml_text = r#"
+[attributes.payload]
+value = "string"
+
+[attributes.text-payload]
+abstract = true
+sub = "payload"
+
+[entities.content]
+abstract = true
+
+[entities.page]
+abstract = true
+sub = "content"
+
+[relations.interaction]
+abstract = true
+
+[relations.content-engagement]
+abstract = true
+sub = "interaction"
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+
+        assert!(
+            result.contains("attribute text-payload @abstract, sub payload;"),
+            "expected abstract sub-attribute; got:\n{result}"
+        );
+        assert!(
+            result.contains("entity page @abstract, sub content;"),
+            "expected abstract sub-entity; got:\n{result}"
+        );
+        assert!(
+            result.contains("relation content-engagement @abstract, sub interaction;"),
+            "expected abstract sub-relation; got:\n{result}"
         );
     }
 

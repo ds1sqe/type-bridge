@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("type_bridge_core")
 
-from type_bridge_core import toml_to_typeql
+from type_bridge_core import TypeSchema, toml_to_typeql
 
 from type_bridge.generator import generate_models
 from type_bridge.generator.models import (
@@ -31,6 +31,8 @@ from type_bridge.generator.models import (
 from type_bridge.generator.parser import parse_tql_schema
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+INTEGRATION_FIXTURES_DIR = REPO_ROOT / "tests" / "integration" / "generator" / "fixtures"
 
 
 # ---------------------------------------------------------------------------
@@ -859,6 +861,32 @@ class TestSocialMediaRoundtrip:
             f"expected page.owns_order={expected_order!r}, got {page.owns_order!r}"
         )
 
+    def test_social_media_abstract_subtypes_preserved(self) -> None:
+        """Full social-media TOML must preserve abstract subtypes across type families."""
+        toml_text = (FIXTURES_DIR / "social_media.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert schema.entities["page"].abstract is True
+        assert schema.entities["page"].parent == "content"
+        assert schema.entities["post"].abstract is True
+        assert schema.entities["post"].parent == "content"
+        assert schema.relations["content-engagement"].abstract is True
+        assert schema.relations["content-engagement"].parent == "interaction"
+        assert schema.attributes["text-payload"].abstract is True
+        assert schema.attributes["text-payload"].parent == "payload"
+        assert schema.attributes["image-payload"].abstract is True
+        assert schema.attributes["image-payload"].parent == "payload"
+
+    def test_social_media_post_plays_cardinality_preserved(self) -> None:
+        """The social-media post fixture carries plays posting:post @card(1)."""
+        from type_bridge.generator.models import Cardinality
+
+        toml_text = (FIXTURES_DIR / "social_media.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        post = schema.entities["post"]
+        assert post.plays_cardinalities["posting:post"] == Cardinality(min=1, max=1)
+
     def test_generate_models_social_media_byte_identical(self, tmp_path: Path) -> None:
         """generate_models on social_media.toml vs .tql produces identical model files."""
         toml_path = FIXTURES_DIR / "social_media.toml"
@@ -885,6 +913,65 @@ class TestSocialMediaRoundtrip:
                 f"--- TOML output ({filename}) ---\n{toml_content}\n"
                 f"--- TQL output ({filename}) ---\n{tql_content}\n"
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: type-theoretic relation-plays corpus
+# ---------------------------------------------------------------------------
+
+
+class TestTypeTheoreticRelationPlays:
+    """Relation-level plays coverage for the type-theoretic corpus.
+
+    The Python generator IR does not currently retain relation-as-player plays,
+    so these assertions intentionally use Rust ``TypeSchema`` as the oracle.
+    """
+
+    def test_type_theoretic_toml_transpiles_to_rust_schema(self) -> None:
+        """The TOML mirror must be accepted by the Rust TypeSchema parser."""
+        toml_text = (FIXTURES_DIR / "type_theoretic.toml").read_text(encoding="utf-8")
+        typeql = toml_to_typeql(toml_text)
+        schema = TypeSchema.from_typeql(typeql)
+
+        assert "publication" in schema.relations
+        assert "city" in schema.relations
+        assert "world" in schema.entities
+
+    def test_type_theoretic_relation_plays_preserved(self) -> None:
+        """Relation-level plays must survive TOML -> TypeQL -> Rust TypeSchema."""
+        toml_text = (FIXTURES_DIR / "type_theoretic.toml").read_text(encoding="utf-8")
+        schema = TypeSchema.from_typeql(toml_to_typeql(toml_text))
+
+        publication_plays = {
+            entry["role_ref"] for entry in schema.get_all_plays_roles("publication")
+        }
+        assert publication_plays == {
+            "contribution:work",
+            "promotion-inclusion:item",
+            "order-line:item",
+            "review:reviewed",
+            "recommendation:recommended",
+        }
+
+        city_plays = {entry["role_ref"] for entry in schema.get_all_plays_roles("city")}
+        assert city_plays == {
+            "publication:location",
+            "user:location",
+            "address:location",
+        }
+
+    def test_type_theoretic_toml_relation_plays_match_source_tql(self) -> None:
+        """Compare relation-level plays against the source TQL through Rust TypeSchema."""
+        toml_text = (FIXTURES_DIR / "type_theoretic.toml").read_text(encoding="utf-8")
+        tql_text = (INTEGRATION_FIXTURES_DIR / "type_theoretic.tql").read_text(encoding="utf-8")
+
+        toml_schema = TypeSchema.from_typeql(toml_to_typeql(toml_text))
+        tql_schema = TypeSchema.from_typeql(tql_text)
+
+        for relation in ("publication", "user", "order", "city", "country"):
+            toml_plays = {entry["role_ref"] for entry in toml_schema.get_all_plays_roles(relation)}
+            tql_plays = {entry["role_ref"] for entry in tql_schema.get_all_plays_roles(relation)}
+            assert toml_plays == tql_plays, f"{relation} relation plays differ"
 
 
 # ---------------------------------------------------------------------------

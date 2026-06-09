@@ -1,18 +1,13 @@
 # Social media schema.
 # Covers: attribute sub chains, @values, @regex, @abstract; entity @abstract,
 # sub, owns @card, plays; relation @abstract, sub, relates ... as ..., owns @card.
-#
-# DSL limitations applied:
-# - Entities with both sub and abstract can only express sub (emitter emits one or
-#   the other; abstract is dropped when sub is present). Affected: page, post.
-# - plays @card(...) is not expressible in the TOML DSL (TomlPlays has no card
-#   field). plays entries are bare role references only.
 
 [entities.content]
 abstract = true
 owns = [{ attribute = "id", key = true }]
 
 [entities.page]
+abstract = true
 sub = "content"
 owns = [
     { attribute = "name", card = "0.." },
@@ -43,6 +38,7 @@ owns = [
 ]
 
 [entities.post]
+abstract = true
 sub = "content"
 owns = [
     "post-id",
@@ -50,7 +46,7 @@ owns = [
     { attribute = "creation-timestamp", card = "1..1" },
 ]
 plays = [
-    { relation = "posting", role = "post" },
+    { relation = "posting", role = "post", card = "1" },
     { relation = "commenting", role = "parent" },
     { relation = "reaction", role = "parent" },
 ]
@@ -88,6 +84,7 @@ roles = [
 ]
 
 [relations.content-engagement]
+abstract = true
 sub = "interaction"
 roles = [
     { name = "author", as = "subject" },
@@ -158,9 +155,11 @@ abstract = true
 value = "string"
 
 [attributes.text-payload]
+abstract = true
 sub = "payload"
 
 [attributes.image-payload]
+abstract = true
 sub = "payload"
 
 [attributes.bio]
