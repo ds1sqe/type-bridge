@@ -219,7 +219,7 @@ def relation_descriptor(model_cls: type[Relation]) -> dict[str, Any]:
             {
                 "role_name": role.role_name,
                 "player_type_names": [typ.get_type_name() for typ in role.player_types],
-                "cardinality": _cardinality_tuple(role.cardinality),
+                "cardinality": cardinality_tuple(role.cardinality),
             }
         )
 
@@ -548,7 +548,7 @@ def _is_optional(flags: Any) -> bool:
     return flags.card_min == 0
 
 
-def _cardinality_tuple(cardinality: Any) -> list[Any] | None:
+def cardinality_tuple(cardinality: Any) -> list[Any] | None:
     if cardinality is None:
         return None
     return [cardinality.min if cardinality.min is not None else 0, cardinality.max]

@@ -593,6 +593,67 @@ class TestRoleCardinalitySchema:
         assert len(membership.member) == 3
 
 
+class TestPlaysCardinalitySchema:
+    """Plays-side cardinality survives the full generate → import → re-emit round-trip.
+
+    A ``plays r:role @card(0..1)`` in the source schema must render onto the generated
+    relation's ``Role(..., plays_cardinality=Card(0, 1))`` and re-emit the identical
+    ``@card`` clause through ``to_typeql()`` (#130).
+    """
+
+    SCHEMA = """
+        define
+        entity company,
+            plays employment:employer @card(0..1);
+        entity person,
+            plays employment:employee;
+
+        define
+        relation employment,
+            relates employer,
+            relates employee;
+    """
+
+    @pytest.fixture
+    def generated_package(self, tmp_path: Path) -> dict[str, ModuleType]:
+        output = tmp_path / "plays_card"
+        generate_models(self.SCHEMA, output)
+        return _import_generated_package(output)
+
+    def test_generated_role_carries_plays_cardinality(
+        self, generated_package: dict[str, ModuleType]
+    ) -> None:
+        relations = generated_package["relations"]
+        roles = relations.Employment.get_roles()
+
+        employer = roles["employer"]
+        assert employer.plays_cardinality is not None
+        assert (employer.plays_cardinality.min, employer.plays_cardinality.max) == (0, 1)
+        # The other role's player has no plays-card, so it stays unset.
+        assert roles["employee"].plays_cardinality is None
+
+    def test_plays_cardinality_round_trips_through_to_typeql(
+        self, generated_package: dict[str, ModuleType]
+    ) -> None:
+        core = pytest.importorskip("type_bridge_core")
+        if not hasattr(core, "generate_define_block"):
+            pytest.skip("type_bridge_core extension does not expose generate_define_block")
+        from type_bridge.migration.info import SchemaInfo
+
+        entities = generated_package["entities"]
+        relations = generated_package["relations"]
+
+        schema = SchemaInfo()
+        schema.entities.append(entities.Company)
+        schema.entities.append(entities.Person)
+        schema.relations.append(relations.Employment)
+
+        typeql = schema.to_typeql()
+
+        assert "company plays employment:employer @card(0..1);" in typeql
+        assert "person plays employment:employee;" in typeql
+
+
 class TestApiDtoGeneration:
     """Integration tests for API DTO generation."""
 

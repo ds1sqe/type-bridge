@@ -196,7 +196,11 @@ class SchemaInfo:
 
     def to_rust_schema_info(self) -> dict:
         """Serialize this Python model schema to the Rust ``SchemaInfo`` dict shape."""
-        from type_bridge._rust_runtime import attribute_schema_entry, descriptor_for_model
+        from type_bridge._rust_runtime import (
+            attribute_schema_entry,
+            cardinality_tuple,
+            descriptor_for_model,
+        )
 
         info: dict = {"entities": {}, "relations": {}, "attributes": {}}
         entity_names = {
@@ -244,6 +248,26 @@ class SchemaInfo:
             entry = attribute_schema_entry(attr_cls)
             info["attributes"][entry["attr_name"]] = entry
 
+        # Resolve relation-side plays_cardinality authoring into the entity-side IR overlay.
+        # Plays-card is semantically per-player (relations-per-player), but Python declares
+        # it on the relation's Role; here it lands on each player's entry keyed
+        # "{relation}:{role}", which generate_define_block reads to emit @card on the plays
+        # line. A relates-only role (no players) carries no overlay.
+        for relation in self.relations:
+            if _is_base_model(relation):
+                continue
+            relation_name = relation.get_type_name()
+            for role in relation.get_roles().values():
+                if role.plays_cardinality is None:
+                    continue
+                card = cardinality_tuple(role.plays_cardinality)
+                key = f"{relation_name}:{role.role_name}"
+                for player_name in role.player_types:
+                    if player_name in info["entities"]:
+                        info["entities"][player_name]["plays_cardinalities"][key] = card
+                    elif player_name in info["relations"]:
+                        info["relations"][player_name]["plays_cardinalities"][key] = card
+
         return info
 
 
@@ -260,6 +284,10 @@ def _schema_entry_from_descriptor(descriptor: dict) -> dict:
             }
             for attr in descriptor["owned_attributes"]
         ],
+        # Entity-side plays-card overlay, keyed "{relation}:{role}". Populated by the
+        # overlay pass in to_rust_schema_info from each relation's player-side authoring;
+        # empty here so the no-plays-card path emits a bare plays line unchanged.
+        "plays_cardinalities": {},
     }
 
 

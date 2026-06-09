@@ -347,6 +347,30 @@ class TestRenderRelations:
         assert "list[attributes.Tag]" in source
         assert "Card" in source
 
+    def test_relation_role_renders_plays_cardinality(self) -> None:
+        """A plays-side @card on a player renders plays_cardinality on the relation role."""
+        schema = parse_tql_schema("""
+            define
+            entity company,
+                plays employment:employer @card(0..1);
+            entity person,
+                plays employment:employee;
+
+            define
+            relation employment,
+                relates employer,
+                relates employee;
+        """)
+        attr_names = build_class_name_map(schema.attributes)
+        entity_names = build_class_name_map(schema.entities)
+        relation_names = build_class_name_map(schema.relations)
+        source = render_relations(schema, attr_names, entity_names, relation_names)
+
+        assert 'Role("employer", entities.Company, plays_cardinality=Card(0, 1))' in source
+        # The role whose player carries no plays-card stays the bare form.
+        assert 'Role("employee", entities.Person)' in source
+        assert "Card" in source
+
     def test_relation_inherits_key_from_parent(self) -> None:
         """Child relation inherits @key constraint from parent."""
         schema = parse_tql_schema("""
@@ -766,14 +790,15 @@ class TestBookstoreSchema:
 
 
 class TestPlaysCardinalityRendering:
-    """Tests for entity plays cardinality rendering.
+    """Plays-side cardinality renders on the relation's Role (#130).
 
-    When entities declare `plays relation:role @card(0..5)`, the cardinality
-    should be rendered as a TODO comment (until TypeDB supports it at runtime).
+    Plays-card is authored player-side as ``Role(..., plays_cardinality=Card(..))`` and so
+    renders on the relation role, not as an entity-side comment. It coexists with the
+    relates-side ``cardinality`` on the same role.
     """
 
-    def test_plays_cardinality_rendered_as_todo(self) -> None:
-        """Entity plays cardinality should be rendered as TODO comment."""
+    def test_plays_cardinality_renders_on_relation_role(self) -> None:
+        """Plays-card renders as plays_cardinality on the role, beside relates-side card."""
         schema = parse_tql_schema("""
             define
             entity person,
@@ -785,13 +810,15 @@ class TestPlaysCardinalityRendering:
         """)
         attr_names = build_class_name_map(schema.attributes)
         entity_names = build_class_name_map(schema.entities)
-        source = render_entities(schema, attr_names, entity_names)
+        relation_names = build_class_name_map(schema.relations)
+        source = render_relations(schema, attr_names, entity_names, relation_names)
 
-        # Should have TODO comment about plays cardinality
-        assert "# TODO: plays cardinality" in source or "@card(0..5)" in source
+        # Both cardinalities sit on the one role (invariant 4: distinct, may coexist).
+        assert "cardinality=Card(2, 2)" in source
+        assert "plays_cardinality=Card(0, 5)" in source
 
     def test_plays_cardinality_unbounded(self) -> None:
-        """Unbounded plays cardinality should be rendered."""
+        """Unbounded plays-card renders the single-argument Card form."""
         schema = parse_tql_schema("""
             define
             entity employee,
@@ -808,10 +835,10 @@ class TestPlaysCardinalityRendering:
         """)
         attr_names = build_class_name_map(schema.attributes)
         entity_names = build_class_name_map(schema.entities)
-        source = render_entities(schema, attr_names, entity_names)
+        relation_names = build_class_name_map(schema.relations)
+        source = render_relations(schema, attr_names, entity_names, relation_names)
 
-        # Should indicate the cardinality constraint somewhere
-        assert "@card(1..)" in source or "plays_cardinality" in source.lower()
+        assert "plays_cardinality=Card(1)" in source
 
 
 class TestDocstringExtraction:

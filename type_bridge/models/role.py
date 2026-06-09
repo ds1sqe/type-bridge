@@ -39,6 +39,7 @@ class Role[T: "TypeDBType"]:
         player_type: type[T] | None = None,
         *additional_player_types: type[T],
         cardinality: Card | None = None,
+        plays_cardinality: Card | None = None,
     ):
         """Initialize a role.
 
@@ -46,17 +47,24 @@ class Role[T: "TypeDBType"]:
             role_name: The name of the role in TypeDB
             player_type: The optional type (Entity or Relation) that can play this role
             additional_player_types: Optional additional types allowed to play this role
-            cardinality: Optional cardinality constraint for the role (e.g., Card(2, 2) for exactly 2)
+            cardinality: Optional relates-side cardinality — players allowed per relation
+                (e.g., Card(2, 2) for exactly 2 players)
+            plays_cardinality: Optional plays-side cardinality — relations a single player
+                may play this role in (e.g., Card(0, 1) to enforce "at most one"). Distinct
+                from ``cardinality``; attaches to the player's plays edge, so it requires a
+                player type.
 
         Raises:
             ReservedWordError: If role_name is a TypeQL reserved word
-            TypeError: If player type is a library base class (Entity, Relation, TypeDBType)
+            TypeError: If player type is a library base class (Entity, Relation, TypeDBType),
+                or if plays_cardinality is set on a relates-only role (no player type)
         """
         # Validate role name doesn't conflict with TypeQL reserved words
         validate_reserved_word(role_name, "role")
 
         self.role_name = role_name
         self.cardinality = cardinality
+        self.plays_cardinality = plays_cardinality
         unique_types: list[type[T]] = []
         if player_type is None:
             if additional_player_types:
@@ -78,6 +86,12 @@ class Role[T: "TypeDBType"]:
         self.player_type = (
             self.player_entity_type.get_type_name() if self.player_entity_type else None
         )
+        if plays_cardinality is not None and not self.player_entity_types:
+            raise TypeError(
+                f"Role '{role_name}' sets plays_cardinality but declares no player type. "
+                "Plays-side cardinality constrains a player's plays edge; a relates-only "
+                "role has no plays edge to constrain."
+            )
         self.attr_name: str | None = None
 
     def _validate_player_type(self, typ: type[T]) -> None:
@@ -168,6 +182,7 @@ class Role[T: "TypeDBType"]:
                 role_name=self.role_name,
                 player_types=self.player_entity_types,
                 cardinality=self.cardinality,
+                plays_cardinality=self.plays_cardinality,
             )
         if self.is_relates_only:
             return None
@@ -223,6 +238,7 @@ class Role[T: "TypeDBType"]:
         player_type: type[T],
         *additional_player_types: type[T],
         cardinality: Card | None = None,
+        plays_cardinality: Card | None = None,
     ) -> Role[T]:
         """Define a role playable by multiple entity types.
 
@@ -230,11 +246,19 @@ class Role[T: "TypeDBType"]:
             role_name: The name of the role in TypeDB
             player_type: The first entity type that can play this role
             additional_player_types: Additional entity types allowed to play this role
-            cardinality: Optional cardinality constraint for the role
+            cardinality: Optional relates-side cardinality constraint for the role
+            plays_cardinality: Optional plays-side cardinality applied to every player's
+                plays edge for this role
         """
         if len((player_type, *additional_player_types)) < 2:
             raise ValueError("Role.multi requires at least two player types")
-        return cls(role_name, player_type, *additional_player_types, cardinality=cardinality)
+        return cls(
+            role_name,
+            player_type,
+            *additional_player_types,
+            cardinality=cardinality,
+            plays_cardinality=plays_cardinality,
+        )
 
     @classmethod
     def __get_pydantic_core_schema__(

@@ -49,10 +49,25 @@ def _render_card_arg(cardinality: Cardinality | None) -> str:
     return f", cardinality=Card({cardinality.min}, {cardinality.max})"
 
 
+def _render_plays_card_arg(plays_cardinality: Cardinality | None) -> str:
+    """Render the plays_cardinality argument for a role, if present.
+
+    Unlike relates-side cardinality there is no default to omit: an absent plays-card
+    means unconstrained, so any value present in the schema must be emitted verbatim —
+    including ``Card(1, 1)``, which means "plays this role in exactly one relation".
+    """
+    if plays_cardinality is None:
+        return ""
+    if plays_cardinality.max is None:
+        return f", plays_cardinality=Card({plays_cardinality.min})"
+    return f", plays_cardinality=Card({plays_cardinality.min}, {plays_cardinality.max})"
+
+
 def _render_role_field(
     role_name: str,
     player_classes: list[str],
     cardinality: Cardinality | None = None,
+    plays_cardinality: Cardinality | None = None,
 ) -> str | None:
     """Render a single role field declaration."""
     if not player_classes:
@@ -60,11 +75,13 @@ def _render_role_field(
 
     py_name = to_python_name(role_name)
     card_arg = _render_card_arg(cardinality)
+    plays_card_arg = _render_plays_card_arg(plays_cardinality)
 
     if len(player_classes) == 1:
         player = player_classes[0]
         return (
-            f'{py_name}: Role[entities.{player}] = Role("{role_name}", entities.{player}{card_arg})'
+            f"{py_name}: Role[entities.{player}] = "
+            f'Role("{role_name}", entities.{player}{card_arg}{plays_card_arg})'
         )
 
     primary, *rest = player_classes
@@ -73,7 +90,7 @@ def _render_role_field(
 
     return (
         f"{py_name}: Role[{union_type}] = "
-        f'_multi(Role.multi("{role_name}", entities.{primary}, {extras}{card_arg}))'
+        f'_multi(Role.multi("{role_name}", entities.{primary}, {extras}{card_arg}{plays_card_arg}))'
     )
 
 
@@ -144,7 +161,17 @@ def _build_relation_context(
         players = minimal_role_players(schema, relation_name, role.name)
         player_classes = [entity_class_names[p] for p in players if p in entity_class_names]
 
-        role_line = _render_role_field(role.name, player_classes, role.cardinality)
+        # Plays-card is stored entity-side, keyed "{relation}:{role}". Authoring applies one
+        # value to all players of a role, so the first player carrying it is authoritative.
+        plays_card = None
+        role_ref = f"{relation_name}:{role.name}"
+        for player in players:
+            entity = schema.entities.get(player)
+            if entity is not None and role_ref in entity.plays_cardinalities:
+                plays_card = entity.plays_cardinalities[role_ref]
+                break
+
+        role_line = _render_role_field(role.name, player_classes, role.cardinality, plays_card)
         if role_line:
             role_fields.append(role_line)
 
@@ -196,9 +223,18 @@ def _needs_card_for_roles(schema: ParsedSchema) -> bool:
     return False
 
 
+def _needs_card_for_plays(schema: ParsedSchema) -> bool:
+    """Check if any entity carries a plays-card, which renders a Card on the relation role."""
+    return any(entity.plays_cardinalities for entity in schema.entities.values())
+
+
 def _needs_card_import(schema: ParsedSchema) -> bool:
     """Check if any relation uses multi-valued attributes or role cardinalities requiring Card."""
-    return _needs_card_for_attributes(schema) or _needs_card_for_roles(schema)
+    return (
+        _needs_card_for_attributes(schema)
+        or _needs_card_for_roles(schema)
+        or _needs_card_for_plays(schema)
+    )
 
 
 def _needs_key_import(schema: ParsedSchema) -> bool:
