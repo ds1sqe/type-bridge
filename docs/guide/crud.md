@@ -851,6 +851,17 @@ emp_manager.insert(emp)  # Uses name (@key) for matching
 
 **Best practice**: Fetch entities from the database when you need to use them as role players. This populates `_iid` and enables faster, more precise matching.
 
+### Role Cardinality Enforcement
+
+TypeDB enforces both role-cardinality sides when relation CRUD writes execute.
+`Role(..., cardinality=Card(...))` constrains how many players fill that role in
+one relation instance. `Role(..., plays_cardinality=Card(...))` constrains how
+many relation instances a single player may participate in for that role.
+
+If a relation `insert()` or `put()` would violate plays-side cardinality, the
+write fails at the database boundary. TypeBridge does not bypass or silently
+relax that schema constraint.
+
 ### Insert Relations
 
 ```python

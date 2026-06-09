@@ -22,6 +22,21 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### New Features
 
+#### Plays-side role cardinality (#130)
+
+- **Cross-language plays-cardinality authoring** — Rust `SchemaInfo`, Python
+  `Role(..., plays_cardinality=Card(...))`, TypeScript
+  `role(..., { playsCardinality: Card(...) })`, and TOML `plays = [{ card =
+  "..." }]` now emit `plays relation:role @card(...)` through the shared Rust
+  schema emitter/parser path.
+- **Relates/plays separation** — relates-side `cardinality` still constrains
+  players per relation instance, while plays-side cardinality constrains how
+  many relation instances a single player may participate in for that role. The
+  two constraints may coexist on the same role.
+- **Generated surface round-trip** — parsed TypeQL with plays-side `@card`
+  renders back to Python and TypeScript role declarations, preserving
+  authoring/render parity.
+
 #### TOML schema DSL (#138)
 
 - **TOML schema authoring** — schemas may now be authored in TOML as an
@@ -32,18 +47,16 @@ All notable changes to TypeBridge will be documented in this file.
   packages. `.tql` authoring remains fully supported.
 - **Full schema surface** — the DSL covers attributes (value types, `sub`,
   `abstract`, `@regex`/`@values`/`@range`), entities (`owns` with
-  `@key`/`@unique`/`@card`, `plays`, `sub`, `abstract`), relations (`roles` with
-  per-role `@card` and `as` super-role overrides, `owns`, `sub`, `abstract`),
-  functions (signature plus verbatim body), and structs.
+  `@key`/`@unique`/`@card`, `plays` with optional per-plays `@card`, `sub`,
+  `abstract`), relations (`roles` with per-role `@card` and `as` super-role
+  overrides, `owns`, relation-level `plays`, `sub`, `abstract`), functions
+  (signature plus verbatim body), and structs.
 - **Generator routing** — `generate_models` transpiles a `.toml` source by file
   suffix, or for raw text via an explicit `format="toml"` argument.
 - **Field-level diagnostics** — a semantic validation pass rejects malformed TOML
   with a clear `ValueError` naming the offending field or type (unknown value
   type, `value`/`sub` conflict, dangling `sub` parent, missing role player, empty
   struct, malformed function body) before any TypeQL is emitted.
-- **Known limitations** — the relation-as-entity pattern (a relation that plays
-  roles), abstract subtypes, and per-`plays` cardinality are not yet expressible
-  in TOML and should be authored in `.tql`; see the TOML schema guide.
 
 #### Node.js typed model layer (#124)
 

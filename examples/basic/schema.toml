@@ -1,5 +1,5 @@
 # Example schema for the TOML Schema DSL guide.
-# Demonstrates attributes with annotations, entity owns/plays, and relations with @card.
+# Demonstrates attributes with annotations, entity owns/plays, and relates/plays @card.
 
 [attributes.email]
 value = "string"
@@ -37,7 +37,7 @@ owns = [
     { attribute = "display-name", key = true },
     "created-at",
 ]
-plays = [{ relation = "membership", role = "group" }]
+plays = [{ relation = "membership", role = "group", card = "0..1" }]
 
 [relations.membership]
 roles = [

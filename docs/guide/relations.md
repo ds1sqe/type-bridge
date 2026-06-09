@@ -107,6 +107,10 @@ class Employment(Relation):
 - `field_name`: Python field name (e.g., `employee`, `employer`)
 - `Role[EntityType]`: Type hint for role player type
 - `Role("role_name", EntityType)`: Role definition with TypeDB role name and player type
+- `cardinality=Card(...)`: relates-side cardinality, or players of this role
+  per relation instance
+- `plays_cardinality=Card(...)`: plays-side cardinality, or relation instances
+  a single player may play in this role
 
 ## Type-Safe Role Access
 
@@ -344,9 +348,9 @@ person plays employment:employee;
 company plays employment:employer;
 ```
 
-## Role Cardinality
+## Relates-side Role Cardinality
 
-Specify how many times an entity can play a role:
+Specify how many players can fill a role inside one relation instance:
 
 ```python
 from type_bridge import Relation, TypeFlags, Role, Card
@@ -355,7 +359,7 @@ class Friendship(Relation):
     flags = TypeFlags(name="friendship")
 
     # Both friends must be Person, exactly 2 role players
-    friend: Role[Person] = Role("friend", Person, Card(2, 2))
+    friend: Role[Person] = Role("friend", Person, cardinality=Card(2, 2))
 ```
 
 **Generated TypeQL**:
@@ -366,6 +370,40 @@ relation friendship,
 
 person plays friendship:friend;
 ```
+
+## Plays-side Role Cardinality
+
+Specify how many relation instances a single player may participate in for a
+role. This is distinct from relates-side cardinality.
+
+```python
+from type_bridge import Card, Relation, Role, TypeFlags
+
+class Employment(Relation):
+    flags = TypeFlags(name="employment")
+
+    employee: Role[Person] = Role("employee", Person)
+    employer: Role[Company] = Role(
+        "employer",
+        Company,
+        cardinality=Card(1, 1),        # one employer per employment
+        plays_cardinality=Card(0, 1),  # at most one employment per company
+    )
+```
+
+**Generated TypeQL**:
+
+```typeql
+relation employment,
+    relates employee,
+    relates employer @card(1..1);
+
+person plays employment:employee;
+company plays employment:employer @card(0..1);
+```
+
+For multi-player roles declared with `Role.multi(...)`, the same
+`plays_cardinality` applies to each declared player type.
 
 ## Python Inheritance for Relations
 
@@ -380,13 +418,13 @@ class SocialRelation(Relation):
     flags = TypeFlags(name="social-relation", abstract=True)
 
     # Abstract role (will be overridden in subclasses)
-    related: Role[Person] = Role("related", Person, Card(2))
+    related: Role[Person] = Role("related", Person, cardinality=Card(2, 2))
 
 class Friendship(SocialRelation):
     flags = TypeFlags(name="friendship")
 
     # Override role with specific semantics
-    friend: Role[Person] = Role("friend", Person, Card(2))
+    friend: Role[Person] = Role("friend", Person, cardinality=Card(2, 2))
 ```
 
 **Generated TypeQL**:
@@ -430,12 +468,12 @@ from type_bridge import Relation, TypeFlags, Role
 class Relation(Relation):
     flags = TypeFlags(name="relation", abstract=True)
 
-    related: Role[Entity] = Role("related", Entity, Card(2))
+    related: Role[Entity] = Role("related", Entity, cardinality=Card(2, 2))
 
 class Friendship(Relation):
     flags = TypeFlags(name="friendship")
 
-    friend: Role[Person] = Role("friend", Person, Card(2))
+    friend: Role[Person] = Role("friend", Person, cardinality=Card(2, 2))
 ```
 
 **Generated TypeQL**:
@@ -720,13 +758,13 @@ Create abstract base relations for common patterns:
 ```python
 class SocialRelation(Relation):
     flags = TypeFlags(abstract=True)
-    related: Role[Person] = Role("related", Person, Card(2))
+    related: Role[Person] = Role("related", Person, cardinality=Card(2, 2))
 
 class Friendship(SocialRelation):
-    friend: Role[Person] = Role("friend", Person, Card(2))
+    friend: Role[Person] = Role("friend", Person, cardinality=Card(2, 2))
 
 class Partnership(SocialRelation):
-    partner: Role[Person] = Role("partner", Person, Card(2))
+    partner: Role[Person] = Role("partner", Person, cardinality=Card(2, 2))
 ```
 
 ### 4. Explicit Defaults for Optional Attributes
@@ -746,6 +784,6 @@ salary: Salary | None
 - [Entities](entities.md) - How to define entities that play roles
 - [Attributes](attributes.md) - Attributes that relations can own
 - [Abstract Types](abstract-types.md) - Working with abstract relations and polymorphic roles
-- [Cardinality](cardinality.md) - Cardinality constraints for roles and attributes
+- [Cardinality](cardinality.md) - Owned-attribute, relates-side, and plays-side cardinality
 - [CRUD Operations](crud.md) - Working with relations in the database
 - [Queries](queries.md) - Querying relations and role players

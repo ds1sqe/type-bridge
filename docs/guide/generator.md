@@ -298,7 +298,12 @@ class Employment(Relation):
 class Friendship(SocialRelation):
     flags = TypeFlags(name="friendship")
     # Symmetric role - multiple friends allowed per friendship
-    friend: Role[entities.Person] = Role("friend", entities.Person, cardinality=Card(0, 1000))
+    friend: Role[entities.User] = Role(
+        "friend",
+        entities.User,
+        cardinality=Card(0, 1000),
+        plays_cardinality=Card(0, 100),
+    )
 
 class Parentship(Relation):
     flags = TypeFlags(name="parentship")

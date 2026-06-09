@@ -125,7 +125,9 @@ alice.age?.value;  // 37n | undefined (optional)
 
 `Relation(name, schema)` builds a relation; the schema may contain `role(...)`
 specs alongside `field(...)` attributes. A role names the player model(s) and its
-cardinality.
+cardinality. `cardinality` is relates-side: players of that role per relation
+instance. `playsCardinality` is plays-side: relation instances a single player
+may participate in for that role.
 
 ```ts
 import { Card, Entity, Relation, attr, field, role } from "@type-bridge/node";
@@ -136,7 +138,10 @@ class Company extends Entity("company", { id: field(Id, Key) }) {}
 
 class Employment extends Relation("employment", {
   employee: role(Person, { cardinality: Card(1, 1) }),
-  employer: role(Company, { cardinality: Card(1, 1) }),
+  employer: role(Company, {
+    cardinality: Card(1, 1),
+    playsCardinality: Card(0, 1),
+  }),
   since: field(Since),
 }) {}
 
@@ -152,6 +157,12 @@ player whose typed class is not declared yet:
 
 ```ts
 evidence: role("person", EmailMessage, { cardinality: Card(0, 5) }),
+```
+
+For multi-player roles, `playsCardinality` applies to every declared player:
+
+```ts
+contributor: role(Person, Contractor, { playsCardinality: Card(0, 5) }),
 ```
 
 ## Flags: `Key`, `Unique`, `Card`, `TypeFlags`

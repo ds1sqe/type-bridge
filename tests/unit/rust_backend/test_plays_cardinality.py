@@ -8,6 +8,9 @@ no-card path that the Rust core emitter consumes.
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
 from type_bridge import Card, Entity, Relation, Role, TypeFlags
@@ -119,3 +122,24 @@ def test_no_plays_card_emits_bare_plays_line_byte_identical() -> None:
     # plays line is the bare form unchanged from today.
     assert "pc-person plays pc-contract:party;" in typeql
     assert "@card" not in typeql
+
+
+def test_plays_side_example_generates_documented_clauses() -> None:
+    core = pytest.importorskip("type_bridge_core")
+    if not hasattr(core, "generate_define_block"):
+        pytest.skip("type_bridge_core extension does not expose generate_define_block")
+
+    # The plays-side guide and the cardinality docs point at this example; run it so a
+    # change to its generated schema is caught instead of silently drifting from the docs.
+    repo_root = Path(__file__).resolve().parents[3]
+    example_path = repo_root / "examples" / "patterns" / "cardinality_02_plays_side.py"
+    assert example_path.exists(), f"example not found at {example_path}"
+
+    spec = importlib.util.spec_from_file_location("cardinality_02_plays_side", example_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    typeql = module.generated_schema()
+    assert "relates employer @card(1..1)" in typeql
+    assert "company plays employment:employer @card(0..1);" in typeql

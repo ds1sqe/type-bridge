@@ -138,7 +138,7 @@ class Company(Entity):
     name: Name = Flag(Key)
 ```
 
-### Role Cardinality
+### Relates-side Role Cardinality
 
 For relations where the same role has multiple players of the same type:
 
@@ -148,7 +148,11 @@ from type_bridge import Relation, Role, Card, TypeFlags
 # Exactly 2 Memory entities playing the same role
 class IsSimilarTo(Relation):
     flags = TypeFlags(name="is_similar_to")
-    similar_memory: Role[Memory] = Role("similar_memory", Memory, Card(2, 2))
+    similar_memory: Role[Memory] = Role(
+        "similar_memory",
+        Memory,
+        cardinality=Card(2, 2),
+    )
 
 # Generates: relation is_similar_to, relates similar_memory @card(2..2);
 ```

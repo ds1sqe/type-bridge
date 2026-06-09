@@ -142,19 +142,26 @@ class TypeFlags:
 
 
 class Card:
-    """Cardinality marker for multi-value attribute ownership.
+    """Cardinality marker for TypeDB ``@card`` annotations.
 
-    IMPORTANT: Card() should only be used with list[Type] annotations.
-    For optional single values, use Optional[Type] instead.
+    Use ``Card`` with ``Flag(Card(...))`` for multi-value attribute ownership,
+    with ``Role(..., cardinality=Card(...))`` for relates-side cardinality, and
+    with ``Role(..., plays_cardinality=Card(...))`` for plays-side cardinality.
+    For optional single-value attributes, use ``Type | None`` instead.
 
     Args:
         min: Minimum cardinality (default: None, which means unspecified)
         max: Maximum cardinality (default: None, which means unbounded)
 
     Examples:
-        tags: list[Tag] = Flag(Card(min=2))      # @card(2..) - at least two
-        jobs: list[Job] = Flag(Card(1, 5))       # @card(1..5) - one to five
-        ids: list[ID] = Flag(Key, Card(min=1))   # @key @card(1..)
+        tags: list[Tag] = Flag(Card(min=2))      # owns tag @card(2..)
+        jobs: list[Job] = Flag(Card(1, 5))       # owns job @card(1..5)
+        owner: Role[Company] = Role(
+            "owner",
+            Company,
+            cardinality=Card(1, 1),              # relates owner @card(1..1)
+            plays_cardinality=Card(0, 1),        # plays rel:owner @card(0..1)
+        )
 
         # INCORRECT - use Optional[Type] instead:
         # age: Age = Flag(Card(min=0, max=1))    # ❌ Wrong!
