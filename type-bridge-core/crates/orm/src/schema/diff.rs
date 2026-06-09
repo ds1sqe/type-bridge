@@ -69,6 +69,15 @@ pub struct RelationChanges {
     pub parent_changed: Option<(Option<String>, Option<String>)>,
 }
 
+/// An optional list-of-strings constraint value (absent when unconstrained).
+type OptStringList = Option<Vec<String>>;
+
+/// A range constraint as `(min, max)`, each bound optional.
+type RangeBounds = (Option<String>, Option<String>);
+
+/// An optional range constraint value (absent when unconstrained).
+type OptRange = Option<RangeBounds>;
+
 /// Changes detected for a standalone attribute type definition.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttributeTypeChanges {
@@ -83,12 +92,9 @@ pub struct AttributeTypeChanges {
     /// Regex constraint changed: (old, new).
     pub regex_changed: Option<(Option<String>, Option<String>)>,
     /// Allowed values constraint changed: (old, new).
-    pub allowed_values_changed: Option<(Option<Vec<String>>, Option<Vec<String>>)>,
+    pub allowed_values_changed: Option<(OptStringList, OptStringList)>,
     /// Range constraint changed: (old, new).
-    pub range_changed: Option<(
-        Option<(Option<String>, Option<String>)>,
-        Option<(Option<String>, Option<String>)>,
-    )>,
+    pub range_changed: Option<(OptRange, OptRange)>,
 }
 
 impl AttributeTypeChanges {

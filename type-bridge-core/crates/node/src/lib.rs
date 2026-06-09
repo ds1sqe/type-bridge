@@ -115,11 +115,24 @@ fn exprs_into_exprs(exprs: Vec<DynamicExprJson>) -> Result<Vec<DynamicExpr>> {
     exprs.into_iter().map(DynamicExprJson::into_expr).collect()
 }
 
+/// Decoded query-spec parts produced from a `DynamicQuerySpecJson`.
+struct DecodedQuerySpec {
+    exprs: Vec<DynamicExpr>,
+    sort: Vec<DynamicSort>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+}
+
 impl DynamicQuerySpecJson {
     /// Decode the spec's expression list into shared `DynamicExpr` values.
-    fn exprs(self) -> Result<(Vec<DynamicExpr>, Vec<DynamicSort>, Option<u64>, Option<u64>)> {
+    fn exprs(self) -> Result<DecodedQuerySpec> {
         let exprs = exprs_into_exprs(self.expr)?;
-        Ok((exprs, self.sort, self.limit, self.offset))
+        Ok(DecodedQuerySpec {
+            exprs,
+            sort: self.sort,
+            limit: self.limit,
+            offset: self.offset,
+        })
     }
 }
 
@@ -516,7 +529,12 @@ impl NodeDynamicEntityManager {
     pub fn query_json(&self, spec_json: String) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
-        let (exprs, sort, limit, offset) = spec.exprs()?;
+        let DecodedQuerySpec {
+            exprs,
+            sort,
+            limit,
+            offset,
+        } = spec.exprs()?;
         let manager = self.manager()?;
         let rows = self
             .runtime
@@ -531,7 +549,7 @@ impl NodeDynamicEntityManager {
     pub fn query_count_json(&self, spec_json: String) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
-        let (exprs, ..) = spec.exprs()?;
+        let DecodedQuerySpec { exprs, .. } = spec.exprs()?;
         let manager = self.manager()?;
         let count = self
             .runtime
@@ -550,7 +568,7 @@ impl NodeDynamicEntityManager {
     ) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
-        let (exprs, ..) = spec.exprs()?;
+        let DecodedQuerySpec { exprs, .. } = spec.exprs()?;
         let aggregates =
             aggregates_from_json_string(&self.descriptor.owned_attributes, &aggregates_json)?;
         let manager = self.manager()?;
@@ -573,7 +591,7 @@ impl NodeDynamicEntityManager {
     ) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
-        let (exprs, ..) = spec.exprs()?;
+        let DecodedQuerySpec { exprs, .. } = spec.exprs()?;
         let group_fields =
             group_fields_from_json_string(&self.descriptor.owned_attributes, &group_fields_json)?;
         let aggregates =
@@ -799,7 +817,12 @@ impl NodeDynamicRelationManager {
     pub fn query_json(&self, spec_json: String) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
-        let (exprs, sort, limit, offset) = spec.exprs()?;
+        let DecodedQuerySpec {
+            exprs,
+            sort,
+            limit,
+            offset,
+        } = spec.exprs()?;
         let manager = self.manager()?;
         let rows = self
             .runtime
@@ -814,7 +837,7 @@ impl NodeDynamicRelationManager {
     pub fn query_count_json(&self, spec_json: String) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
-        let (exprs, ..) = spec.exprs()?;
+        let DecodedQuerySpec { exprs, .. } = spec.exprs()?;
         let manager = self.manager()?;
         let count = self
             .runtime
@@ -833,7 +856,7 @@ impl NodeDynamicRelationManager {
     ) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
-        let (exprs, ..) = spec.exprs()?;
+        let DecodedQuerySpec { exprs, .. } = spec.exprs()?;
         let aggregates =
             aggregates_from_json_string(&self.descriptor.owned_attributes, &aggregates_json)?;
         let manager = self.manager()?;
@@ -856,7 +879,7 @@ impl NodeDynamicRelationManager {
     ) -> Result<String> {
         let spec: DynamicQuerySpecJson =
             serde_json::from_str(&spec_json).map_err(invalid_json_error("query spec"))?;
-        let (exprs, ..) = spec.exprs()?;
+        let DecodedQuerySpec { exprs, .. } = spec.exprs()?;
         let group_fields =
             group_fields_from_json_string(&self.descriptor.owned_attributes, &group_fields_json)?;
         let aggregates =
