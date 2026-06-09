@@ -7,7 +7,7 @@ This guide covers TypeDB-specific concepts, driver API, TypeQL syntax, and integ
 - [Key TypeDB Concepts](#key-typedb-concepts)
 - [TypeDB ORM Design Considerations](#typedb-orm-design-considerations)
 - [TypeQL Syntax Requirements](#typeql-syntax-requirements)
-**Verified with TypeDB 3.10.4 and typedb-driver==3.10.0.**
+**Verified with TypeDB 3.11.5 and typedb-driver==3.11.5.**
 
 ## TypeDB Driver 3.x API
 
@@ -323,7 +323,7 @@ The driver API for 3.x differs from earlier versions:
 Transactions are created directly on the driver:
 
 ```python
-# ✅ TypeDB 3.10.4
+# ✅ TypeDB 3.11.5
 driver.transaction(database_name, TransactionType.READ)
 
 # ❌ Old API (TypeDB 2.x)
@@ -494,7 +494,7 @@ If migrating from TypeDB 2.x:
 - Ensure correct clause ordering
 
 **Driver changes:**
-- Update to `typedb-driver==3.10.0`
+- Update to `typedb-driver==3.11.5`
 - Remove session management code
 - Add credentials for authentication
 - Use `transaction.query()` instead of separate query methods

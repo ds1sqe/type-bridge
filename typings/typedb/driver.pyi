@@ -33,8 +33,22 @@ from typedb.common.exception import *
 class Credentials:
     def __init__(self, username: str, password: str) -> None: ...
 
+class DriverTlsConfig:
+    @staticmethod
+    def disabled() -> DriverTlsConfig: ...
+    @staticmethod
+    def enabled_with_native_root_ca() -> DriverTlsConfig: ...
+    @staticmethod
+    def enabled_with_root_ca(root_ca_path: str) -> DriverTlsConfig: ...
+
 class DriverOptions:
-    def __init__(self, is_tls_enabled: bool = False) -> None: ...
+    def __init__(
+        self,
+        tls_config: DriverTlsConfig,
+        *,
+        primary_failover_retries: int | None = ...,
+        request_timeout_millis: int | None = ...,
+    ) -> None: ...
 
 class Driver:
     databases: Any
@@ -57,7 +71,7 @@ class TypeDB:
     DEFAULT_ADDRESS: str
     @staticmethod
     def driver(
-        address: str,
+        addresses: str,
         credentials: Credentials | None = ...,
         driver_options: DriverOptions | None = ...,
     ) -> Driver: ...

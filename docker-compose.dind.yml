@@ -29,7 +29,7 @@ services:
       DOCKER_HOST: tcp://docker:2375
       DOCKER_TLS_CERTDIR: ""
       TYPEDB_ADDRESS: docker:1730
-      TYPEDB_IMAGE: typedb/typedb:3.10.4
+      TYPEDB_IMAGE: typedb/typedb:3.11.5
       TYPEDB_PORT: 1730
       UV_CACHE_DIR: /tmp/uv-cache
     volumes:

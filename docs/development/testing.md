@@ -244,7 +244,7 @@ Integration tests require a running TypeDB 3.x server.
 **Option 1b: Use Docker-in-Docker (Pinned Environment)**
 
 ```bash
-# Runs tests in Python 3.13.5 with Docker 28.1.1 and TypeDB 3.10.4
+# Runs tests in Python 3.13.5 with Docker 28.1.1 and TypeDB 3.11.5
 ./test-integration-dind.sh
 ./test-integration-dind.sh tests/integration/crud/relations/test_fetch.py -v
 ```
@@ -329,12 +329,12 @@ uv run pytest tests/integration/crud/relations/test_multi_role.py -v
 
 **Configuration:**
 
-The project includes `docker-compose.yml` for TypeDB 3.10.4:
+The project includes `docker-compose.yml` for TypeDB 3.11.5:
 
 ```yaml
 services:
   typedb:
-    image: ${TYPEDB_IMAGE:-typedb/typedb:3.10.4}
+    image: ${TYPEDB_IMAGE:-typedb/typedb:3.11.5}
     ports:
       - "${TYPEDB_PORT:-1730}:1729"
 ```

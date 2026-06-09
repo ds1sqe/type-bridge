@@ -265,7 +265,7 @@ jobs:
     # Start TypeDB as a service container (runs first, before steps)
     services:
       typedb:
-        image: typedb/typedb:3.10.4
+        image: typedb/typedb:3.11.5
         ports:
           - 1729:1729
 

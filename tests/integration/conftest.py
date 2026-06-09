@@ -42,7 +42,7 @@ def typedb_driver(docker_typedb):
     """
     try:
         driver = TypeDB.driver(
-            address=TEST_DB_ADDRESS,
+            addresses=TEST_DB_ADDRESS,
             credentials=Credentials(username="admin", password="password"),
             driver_options=create_driver_options(is_tls_enabled=False),
         )

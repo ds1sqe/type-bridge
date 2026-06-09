@@ -119,7 +119,7 @@ def db(docker_typedb):
     from type_bridge import Credentials, TypeDB, create_driver_options
 
     driver = TypeDB.driver(
-        address=TEST_DB_ADDRESS,
+        addresses=TEST_DB_ADDRESS,
         credentials=Credentials(username="admin", password="password"),
         driver_options=create_driver_options(is_tls_enabled=False),
     )

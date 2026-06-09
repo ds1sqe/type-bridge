@@ -25,7 +25,7 @@ uv pip install -e ".[dev]"
 ### Project Dependencies
 
 The project requires:
-- `typedb-driver==3.10.0`: Official Python driver for TypeDB connectivity
+- `typedb-driver==3.11.5`: Official Python driver for TypeDB connectivity
 - `pydantic>=2.12.4`: For validation and type coercion
 - `isodate==0.7.2`: For Duration type support (ISO 8601)
 - `lark>=1.1.9`: Parser toolkit for TypeQL schema parsing
@@ -42,7 +42,7 @@ Development dependencies include:
 
 ### Integration Tests with TypeDB
 
-Integration tests are validated against TypeDB 3.10.4. The project includes Docker/Podman configuration for automated setup.
+Integration tests are validated against TypeDB 3.11.5. The project includes Docker/Podman configuration for automated setup.
 
 **Requirements:**
 - Docker or Podman with Compose support installed
@@ -55,7 +55,7 @@ Integration tests are validated against TypeDB 3.10.4. The project includes Dock
 ./test-integration.sh -v       # With verbose output
 
 # Fully pinned runner using Docker-in-Docker
-./test-integration-dind.sh     # Python 3.13.5 + TypeDB 3.10.4
+./test-integration-dind.sh     # Python 3.13.5 + TypeDB 3.11.5
 ```
 
 ### Manual Docker Control
