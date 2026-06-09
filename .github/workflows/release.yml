@@ -97,6 +97,7 @@ jobs:
     needs: test
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -132,6 +133,12 @@ jobs:
 
       - name: Build wheel
         uses: PyO3/maturin-action@v1
+        env:
+          # The manylinux aarch64 cross-compiler does not define the ARM ACLE
+          # macro __ARM_ARCH that ring's pregenerated assembly requires. The
+          # variable name is target-suffixed, so it only affects the aarch64
+          # Linux wheel even though it is declared on every matrix leg.
+          CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '-D__ARM_ARCH=8' || '' }}
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -i python3.13
