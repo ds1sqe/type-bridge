@@ -102,6 +102,20 @@ class RustEmployment(Relation):
     score: RustScore | None = None
 
 
+class RustInteraction(Relation):
+    flags = TypeFlags(name="rust-interaction", abstract=True)
+
+    participant: Role[RustPerson] = Role("participant", RustPerson)
+
+
+class RustCollaboration(RustInteraction):
+    """Subtype relation that declares no own roles, only an extra attribute."""
+
+    flags = TypeFlags(name="rust-collaboration", abstract=True)
+
+    score: RustScore | None = None
+
+
 def test_entity_descriptor_translates_all_value_types() -> None:
     descriptor = descriptor_for_model(RustPerson)
 
@@ -141,6 +155,30 @@ def test_relation_descriptor_translates_roles() -> None:
             "player_type_names": ["rust-company"],
             "cardinality": [1, 1],
         },
+    ]
+
+
+def test_subtype_relation_descriptor_excludes_inherited_roles() -> None:
+    """A subtype relation with no own roles must not carry inherited roles.
+
+    An inherited role belongs to the declaring relation; stamping it onto the
+    subtype descriptor would scope a player's ``plays`` edge to the subtype
+    (``plays rust-collaboration:participant``), which TypeDB rejects.
+    """
+    descriptor = descriptor_for_model(RustCollaboration)
+
+    assert descriptor["type_name"] == "rust-collaboration"
+    assert descriptor["parent_type"] == "rust-interaction"
+    assert descriptor["roles"] == []
+
+    # The declaring relation still carries the role.
+    parent = descriptor_for_model(RustInteraction)
+    assert parent["roles"] == [
+        {
+            "role_name": "participant",
+            "player_type_names": ["rust-person"],
+            "cardinality": None,
+        }
     ]
 
 

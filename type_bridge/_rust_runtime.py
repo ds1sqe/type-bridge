@@ -240,8 +240,15 @@ def _relation_roles(model_cls: type[Relation]) -> list[Any]:
             for role in roles
         ]
 
+    # Only own-declared fields contribute roles. A subtype relation inherits its
+    # parent's role fields through ``model_fields``, but those roles belong to the
+    # declaring relation; emitting them here would scope a player's ``plays`` edge
+    # to the subtype (e.g. ``plays collaboration:participant``) which TypeDB rejects.
+    own_fields = model_cls.__dict__.get("__annotations__", {})
     fallback_roles = []
-    for field in getattr(model_cls, "model_fields", {}).values():
+    for field_name, field in getattr(model_cls, "model_fields", {}).items():
+        if field_name not in own_fields:
+            continue
         default = getattr(field, "default", None)
         role_name = getattr(default, "role_name", None)
         player_types = getattr(default, "player_types", None)
