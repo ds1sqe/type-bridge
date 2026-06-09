@@ -1,4 +1,4 @@
-import { Entity, Key, Relation, attr, field, role } from "../../typescript/index.js";
+import { Card, Entity, Key, Relation, attr, field, role } from "../../typescript/index.js";
 
 class Name extends attr.String("parity-name") {}
 class Email extends attr.String("parity-email") {}
@@ -12,6 +12,10 @@ class Person extends Entity("parity-person", {
 class RelatesOnly extends Relation("relates-only-typecheck", {
   definition: role(),
   participant: role(Person),
+}) {}
+
+class PlaysCardRelation extends Relation("plays-card-typecheck", {
+  constrained: role(Person, { playsCardinality: Card(0, 1) }),
 }) {}
 
 new Person({ name: new Name("Alice") });
@@ -41,10 +45,16 @@ const raw: string = person.name;
 const relation = new RelatesOnly({ participant: person });
 const noPlayer: undefined = relation.definition;
 const boundPlayer: Person | readonly Person[] = relation.participant;
+const playsCardRelation = new PlaysCardRelation({ constrained: person });
+const constrainedPlayer: Person | readonly Person[] = playsCardRelation.constrained;
 
 // @ts-expect-error relates-only roles do not accept player values
 new RelatesOnly({ definition: person, participant: person });
 
+// @ts-expect-error playsCardinality requires at least one role player
+role({ playsCardinality: Card(0, 1) });
+
 void maybeAge;
 void noPlayer;
 void boundPlayer;
+void constrainedPlayer;

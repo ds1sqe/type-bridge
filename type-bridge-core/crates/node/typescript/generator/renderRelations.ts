@@ -8,10 +8,10 @@
  *   Remove ancestor types when a descendant is also present (minimal set).
  *   This is the exact algorithm of `minimal_role_players()` in models.py.
  *
- * Cardinality source:
- *   Use the role's own `RoleSpec.cardinality` (from the relation definition),
- *   mirroring `_build_relation_context` line 147: `role.cardinality`.
- *   The plays-side `PlayedRole.cardinality` is NOT used (Python ignores it too).
+ * Cardinality sources:
+ *   Relates-side cardinality comes from the relation role definition
+ *   (`RoleSpec.cardinality`). Plays-side cardinality comes from the player's
+ *   `PlayedRole.cardinality` and renders as `playsCardinality` on `role(...)`.
  *
  * Field key = toFieldName(role.name) / toFieldName(attr.name).
  * Class names = toClassName(typeName) for all players / attr types.
@@ -31,9 +31,9 @@ import { isCardSingle, isCardRequired, isCardMulti, isCardOptionalSingle } from 
 // uses explicit Card()), but skip if it is the default single (1,1).
 // ---------------------------------------------------------------------------
 
-function renderCardArg(card: Cardinality | null): string {
+function renderCardArg(card: Cardinality | null, omitDefaultSingle = true): string {
   if (card === null) return "";
-  if (card.min === 1 && card.max === 1) return "";
+  if (omitDefaultSingle && card.min === 1 && card.max === 1) return "";
   const maxStr = card.max === null ? "null" : String(card.max);
   return `Card(${card.min}, ${maxStr})`;
 }
@@ -42,9 +42,17 @@ function renderCardArg(card: Cardinality | null): string {
 // role() call renderer — mirrors `_render_role_field` in relations.py
 // ---------------------------------------------------------------------------
 
-function renderRoleCall(players: string[], card: Cardinality | null): string {
+function renderRoleCall(
+  players: string[],
+  card: Cardinality | null,
+  playsCardinality: Cardinality | null,
+): string {
   const cardArg = renderCardArg(card);
-  const cardOptions = cardArg ? `{ cardinality: ${cardArg} }` : null;
+  const playsCardArg = renderCardArg(playsCardinality, false);
+  const options: string[] = [];
+  if (cardArg) options.push(`cardinality: ${cardArg}`);
+  if (playsCardArg) options.push(`playsCardinality: ${playsCardArg}`);
+  const cardOptions = options.length > 0 ? `{ ${options.join(", ")} }` : null;
 
   if (players.length === 1) {
     const args = cardOptions ? `${players[0]!}, ${cardOptions}` : players[0]!;
@@ -55,6 +63,23 @@ function renderRoleCall(players: string[], card: Cardinality | null): string {
   const playerArgs = players.join(", ");
   const args = cardOptions ? `${playerArgs}, ${cardOptions}` : playerArgs;
   return `role(${args})`;
+}
+
+function playsCardinalityForRole(
+  schema: TypeSchema,
+  relationName: string,
+  roleName: string,
+  players: string[],
+): Cardinality | null {
+  const roleToken = `${relationName}:${roleName}`;
+  for (const player of players) {
+    const entity = schema.entities[player];
+    const played = entity?.plays.find((entry) => entry.role_ref === roleToken);
+    if (played?.cardinality !== null && played?.cardinality !== undefined) {
+      return played.cardinality;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +176,10 @@ function needsCardImport(schema: TypeSchema): boolean {
       if (role.cardinality !== null) {
         const c = role.cardinality;
         if (!(c.min === 1 && c.max === 1)) return true;
+      }
+      const players = minimalRolePlayers(schema, relation.name, role.name);
+      if (playsCardinalityForRole(schema, relation.name, role.name, players) !== null) {
+        return true;
       }
     }
     // Check attribute cardinalities (multi-valued)
@@ -355,7 +384,17 @@ export function renderRelations(schema: TypeSchema, options?: NamingOptions): st
       );
 
       const roleKey = toFieldName(roleSpec.name);
-      const roleCall = renderRoleCall(playerClassRefs, roleSpec.cardinality);
+      const playsCardinality = playsCardinalityForRole(
+        schema,
+        relName,
+        roleSpec.name,
+        players,
+      );
+      const roleCall = renderRoleCall(
+        playerClassRefs,
+        roleSpec.cardinality,
+        playsCardinality,
+      );
       fieldEntries.push(`  ${roleKey}: ${roleCall},`);
     }
 

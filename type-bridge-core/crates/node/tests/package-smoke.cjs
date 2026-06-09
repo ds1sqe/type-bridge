@@ -89,6 +89,45 @@ assert.match(acceptsTypeql, /relates definition/);
 assert.match(acceptsTypeql, /person plays accepts:allowed_value;/);
 assert.doesNotMatch(acceptsTypeql, /plays accepts:definition/);
 
+const rawPlaysCardSchema = {
+  entities: {
+    company: {
+      type_name: "company",
+      is_abstract: false,
+      parent_type: null,
+      owned_attributes: [],
+      plays_cardinalities: {
+        "employment:employer": [0, 1],
+      },
+    },
+  },
+  relations: {
+    employment: {
+      type_name: "employment",
+      is_abstract: false,
+      parent_type: null,
+      owned_attributes: [],
+      roles: [
+        {
+          role_name: "employer",
+          player_type_names: ["company"],
+          cardinality: null,
+        },
+      ],
+      plays_cardinalities: {},
+    },
+  },
+  attributes: {},
+};
+const rawPlaysCardTypeql = typeBridge.generateDefineBlock(rawPlaysCardSchema);
+assert.match(rawPlaysCardTypeql, /company plays employment:employer @card\(0\.\.1\);/);
+
+const rawBarePlaysSchema = structuredClone(rawPlaysCardSchema);
+rawBarePlaysSchema.entities.company.plays_cardinalities = {};
+const rawBarePlaysTypeql = typeBridge.generateDefineBlock(rawBarePlaysSchema);
+assert.match(rawBarePlaysTypeql, /^company plays employment:employer;$/m);
+assert.doesNotMatch(rawBarePlaysTypeql, /company plays employment:employer @card/);
+
 const marshalling = new typeBridge.Marshalling();
 assert.deepStrictEqual(
   typeBridge.long(9223372036854775807n),

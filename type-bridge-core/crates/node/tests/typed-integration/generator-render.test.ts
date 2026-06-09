@@ -34,6 +34,26 @@ const socialOut = fs.mkdtempSync(path.join(os.tmpdir(), "tsgen-social-"));
 generateModels(social, socialOut, { native });
 const socialAttributes = fs.readFileSync(path.join(socialOut, "attributes.ts"), "utf8");
 
+const playsCardinalitySchema = `
+define
+entity ts-card-person,
+  plays ts-card-employment:employee @card(1..1),
+  plays ts-card-review:reviewer @card(0..5);
+entity ts-card-company,
+  plays ts-card-employment:employer @card(0..1);
+relation ts-card-employment,
+  relates employee,
+  relates employer @card(1..1);
+relation ts-card-review,
+  relates reviewer @card(2..2);
+`;
+const playsCardinalityOut = fs.mkdtempSync(path.join(os.tmpdir(), "tsgen-plays-card-"));
+generateModels(playsCardinalitySchema, playsCardinalityOut, { native });
+const playsCardinalityRelations = fs.readFileSync(
+  path.join(playsCardinalityOut, "relations.ts"),
+  "utf8",
+);
+
 describe("generator render decisions", () => {
   test("attributes map value_type to the correct attr.* kind, class name = toClassName", () => {
     assert.match(attributes, /export class ParityId extends attr\.String\("parity-id"\) \{\}/);
@@ -99,6 +119,22 @@ describe("generator render decisions", () => {
       socialAttributes,
       /export class TextPayload extends attr\.String\("text-payload", \{ parent: Payload, abstract: true \}\) \{\}/,
     );
+  });
+
+  test("plays-side cardinality renders as playsCardinality on relation roles", () => {
+    assert.match(
+      playsCardinalityRelations,
+      /employee: role\(TsCardPerson, \{ playsCardinality: Card\(1, 1\) \}\)/,
+    );
+    assert.match(
+      playsCardinalityRelations,
+      /employer: role\(TsCardCompany, \{ playsCardinality: Card\(0, 1\) \}\)/,
+    );
+    assert.match(
+      playsCardinalityRelations,
+      /reviewer: role\(TsCardPerson, \{ cardinality: Card\(2, 2\), playsCardinality: Card\(0, 5\) \}\)/,
+    );
+    assert.match(playsCardinalityRelations, /import \{ Card, Relation, field, role \}/);
   });
 });
 

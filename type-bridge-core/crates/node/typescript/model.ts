@@ -41,6 +41,9 @@ type ModelClassLike = (new (values: never) => object) & {
 };
 type ModelToken = string | ModelClassLike;
 const ATTRIBUTE_SCHEMA_METADATA = Symbol.for("@type-bridge/node.attributeSchemaMetadata");
+const ROLE_PLAYS_CARDINALITY_METADATA = Symbol.for(
+  "@type-bridge/node.rolePlaysCardinalityMetadata",
+);
 
 /**
  * A model class that also exposes its schema, used as a parent reference.
@@ -135,16 +138,28 @@ export class ListFieldSpec<Attr extends AttributeClass, Optional extends boolean
 }
 
 /**
- * A declared relation role: its permitted player model(s) and optional
- * cardinality. Produced by `role()`; consumed by the model factory to emit
- * `roles[*]`. Multi-player roles list more than one player token.
+ * A declared relation role: its permitted player model(s), optional
+ * relates-side cardinality, and optional plays-side cardinality. Produced by
+ * `role()`; consumed by the model factory to emit `roles[*]` plus metadata
+ * used by `DescriptorRegistry.schemaInfo()`. Multi-player roles list more than
+ * one player token.
  */
 export class RoleSpec<Players extends readonly ModelToken[]> {
   readonly kind = "role";
   readonly cardinality: [number, number | null] | null;
+  readonly playsCardinality: [number, number | null] | null;
 
-  constructor(readonly players: Players, cardinality?: CardSpec | null) {
+  constructor(
+    readonly players: Players,
+    cardinality?: CardSpec | null,
+    playsCardinality?: CardSpec | null,
+  ) {
+    if (playsCardinality != null && players.length === 0) {
+      throw new TypeError("playsCardinality requires at least one role player");
+    }
     this.cardinality = cardinality == null ? null : [cardinality.min, cardinality.max];
+    this.playsCardinality =
+      playsCardinality == null ? null : [playsCardinality.min, playsCardinality.max];
   }
 }
 
@@ -247,7 +262,7 @@ type RoleValue<Players extends readonly ModelToken[]> = Players extends readonly
   : RolePlayerInstance<Players[number]> | readonly RolePlayerInstance<Players[number]>[];
 
 type RolePlayerInstance<Token> = Token extends string
-  ? never
+  ? object
   : Token extends new (values: never) => infer Instance
     ? Instance
     : never;
@@ -319,19 +334,24 @@ export function field<Attr extends AttributeClass>(
 
 /**
  * Declare a relation role. Pass zero or more player model tokens, optionally
- * followed by `{ cardinality }`. Player tokens may be model classes or raw type
- * name strings (the latter for players whose typed class is not yet declared).
+ * followed by `{ cardinality, playsCardinality }`. Player tokens may be model
+ * classes or raw type name strings (the latter for players whose typed class is
+ * not yet declared). `cardinality` is relates-side; `playsCardinality` is
+ * player-side and therefore requires at least one player token.
  */
 export function role(): RoleSpec<readonly []>;
-export function role(options: RoleOptions): RoleSpec<readonly []>;
+export function role(options: RelatesOnlyRoleOptions): RoleSpec<readonly []>;
 export function role<const Players extends readonly [ModelToken, ...ModelToken[]]>(
-  ...playersAndOptions: RoleArguments<Players>
+  ...players: Players
+): RoleSpec<Players>;
+export function role<const Players extends readonly [ModelToken, ...ModelToken[]]>(
+  ...playersAndOptions: [...Players, RoleOptions]
 ): RoleSpec<Players>;
 export function role<const Players extends readonly ModelToken[]>(
   ...playersAndOptions: RoleArguments<Players>
 ): RoleSpec<Players> {
-  const { players, cardinality } = splitRoleArguments(playersAndOptions);
-  return new RoleSpec(players as Players, cardinality);
+  const { players, cardinality, playsCardinality } = splitRoleArguments(playersAndOptions);
+  return new RoleSpec(players as Players, cardinality, playsCardinality);
 }
 
 /**
@@ -399,7 +419,14 @@ export function Relation<
   return createModelClass(typeNameOrFlags, schema, "relation", options?.parent ?? null) as never;
 }
 
-type RoleOptions = { readonly cardinality?: CardSpec | null };
+type RelatesOnlyRoleOptions = {
+  readonly cardinality?: CardSpec | null;
+  readonly playsCardinality?: never;
+};
+type RoleOptions = {
+  readonly cardinality?: CardSpec | null;
+  readonly playsCardinality?: CardSpec | null;
+};
 type RoleArguments<Players extends readonly ModelToken[]> =
   | [...Players]
   | [...Players, RoleOptions];
@@ -552,6 +579,7 @@ function createModelClass(
         roles: roleDescriptors(mergedSchema),
       };
       attachAttributeSchemaMetadata(relationDescriptor, parentSchema, schema);
+      attachRolePlaysCardinalityMetadata(relationDescriptor, mergedSchema);
       return relationDescriptor;
     }
 
@@ -658,6 +686,22 @@ function attachAttributeSchemaMetadata(
   });
 }
 
+function attachRolePlaysCardinalityMetadata(
+  descriptor: RelationDescriptor,
+  schema: Record<string, SchemaSpec>,
+): void {
+  const metadata = rolePlaysCardinalityMetadata(schema);
+  if (Object.keys(metadata).length === 0) {
+    return;
+  }
+  Object.defineProperty(descriptor, ROLE_PLAYS_CARDINALITY_METADATA, {
+    value: metadata,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+}
+
 function attributeSchemaMetadata(
   parentSchema: Record<string, SchemaSpec>,
   childSchema: Record<string, SchemaSpec>,
@@ -668,6 +712,18 @@ function attributeSchemaMetadata(
       for (const entry of spec.attrType.attributeSchemaEntries) {
         metadata[entry.attr_name] = copyAttributeSchemaEntry(entry);
       }
+    }
+  }
+  return metadata;
+}
+
+function rolePlaysCardinalityMetadata(
+  schema: Record<string, SchemaSpec>,
+): Record<string, [number, number | null]> {
+  const metadata: Record<string, [number, number | null]> = {};
+  for (const [roleName, spec] of Object.entries(schema)) {
+    if (spec instanceof RoleSpec && spec.playsCardinality !== null) {
+      metadata[roleName] = [spec.playsCardinality[0], spec.playsCardinality[1]];
     }
   }
   return metadata;
@@ -713,9 +769,10 @@ function copyAnnotation(annotation: Annotation): Annotation {
 function splitRoleArguments(args: readonly unknown[]): {
   players: readonly ModelToken[];
   cardinality: CardSpec | null;
+  playsCardinality: CardSpec | null;
 } {
   if (args.length === 0) {
-    return { players: [], cardinality: null };
+    return { players: [], cardinality: null, playsCardinality: null };
   }
 
   const maybeOptions = args[args.length - 1];
@@ -723,24 +780,26 @@ function splitRoleArguments(args: readonly unknown[]): {
     return {
       players: args.slice(0, -1) as ModelToken[],
       cardinality: maybeOptions.cardinality ?? null,
+      playsCardinality: maybeOptions.playsCardinality ?? null,
     };
   }
 
   return {
     players: args as ModelToken[],
     cardinality: null,
+    playsCardinality: null,
   };
 }
 
-// Distinguishes a trailing `{ cardinality }` options object from a player token.
+// Distinguishes a trailing role-options object from a player token.
 // Safe while player tokens are only strings or model classes (neither carries a
-// `cardinality` property); if `role()` gains richer player tokens in a later
+// cardinality option property); if `role()` gains richer player tokens in a later
 // plan, this discriminator must be revisited.
 function isRoleOptions(value: unknown): value is RoleOptions {
   return (
     typeof value === "object" &&
     value !== null &&
-    "cardinality" in value &&
+    ("cardinality" in value || "playsCardinality" in value) &&
     !(value instanceof FieldSpec) &&
     !(value instanceof RoleSpec)
   );

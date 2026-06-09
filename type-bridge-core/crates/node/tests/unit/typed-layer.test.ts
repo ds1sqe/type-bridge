@@ -122,6 +122,23 @@ class RelatesOnlyRel extends Relation("typed-relates-only-rel", {
   actor: role(ParityCompany),
 }) {}
 
+class PlaysCardEmployment extends Relation("typed-plays-card-employment", {
+  employee: role(ParityPerson),
+  employer: role(ParityCompany, { cardinality: Card(1, 1), playsCardinality: Card(0, 1) }),
+}) {}
+
+class PlaysCardMulti extends Relation("typed-plays-card-multi", {
+  participant: role(ParityPerson, ParityCompany, { playsCardinality: Card(0, 5) }),
+}) {}
+
+class PlaysCardContract extends Relation("typed-plays-card-contract", {
+  party: role(ParityPerson),
+}) {}
+
+class PlaysCardDispute extends Relation("typed-plays-card-dispute", {
+  subject: role(PlaysCardContract, { playsCardinality: Card(0, 1) }),
+}) {}
+
 describe("typed attribute and flag layer", () => {
   test("all attribute factories expose the expected wire value type", () => {
     assert.equal(ParityName.valueType, "string");
@@ -304,6 +321,75 @@ describe("typed Entity and Relation factories", () => {
         cardinality: null,
       },
     ]);
+  });
+
+  test("playsCardinality stays out of descriptor JSON and rejects relates-only roles", () => {
+    const spec = role(ParityCompany, { playsCardinality: Card(0, 1) });
+    assert.deepEqual(spec.playsCardinality, [0, 1]);
+
+    const descriptor = PlaysCardEmployment.descriptor() as RelationDescriptor;
+    assert.deepEqual(descriptor.roles, [
+      {
+        role_name: "employee",
+        player_type_names: ["parity-person"],
+        cardinality: null,
+      },
+      {
+        role_name: "employer",
+        player_type_names: ["parity-company"],
+        cardinality: [1, 1],
+      },
+    ]);
+    assert.deepEqual(JSON.parse(JSON.stringify(descriptor)), descriptor);
+
+    assert.throws(
+      () => role({ playsCardinality: Card(0, 1) } as never),
+      /playsCardinality requires at least one role player/,
+    );
+  });
+
+  test("schemaInfo overlays playsCardinality onto registered entity and relation players", () => {
+    const registry = new DescriptorRegistry(fakeNativeRegistry());
+    registry.registerEntity(ParityPerson.descriptor());
+    registry.registerEntity(ParityCompany.descriptor());
+    registry.registerRelation(PlaysCardEmployment.descriptor());
+    registry.registerRelation(PlaysCardMulti.descriptor());
+    registry.registerRelation(PlaysCardContract.descriptor());
+    registry.registerRelation(PlaysCardDispute.descriptor());
+    registry.registerRelation(RelatesOnlyRel.descriptor());
+
+    const info = registry.schemaInfo();
+    assert.deepEqual(
+      info.entities["parity-company"].plays_cardinalities?.[
+        "typed-plays-card-employment:employer"
+      ],
+      [0, 1],
+    );
+    assert.deepEqual(
+      info.entities["parity-person"].plays_cardinalities?.[
+        "typed-plays-card-multi:participant"
+      ],
+      [0, 5],
+    );
+    assert.deepEqual(
+      info.entities["parity-company"].plays_cardinalities?.[
+        "typed-plays-card-multi:participant"
+      ],
+      [0, 5],
+    );
+    assert.deepEqual(
+      info.relations["typed-plays-card-contract"].plays_cardinalities?.[
+        "typed-plays-card-dispute:subject"
+      ],
+      [0, 1],
+    );
+    assert.deepEqual(
+      info.entities["parity-person"].plays_cardinalities?.[
+        "typed-relates-only-rel:definition"
+      ],
+      undefined,
+    );
+    assert.deepEqual(info.relations["typed-relates-only-rel"].plays_cardinalities, {});
   });
 });
 
