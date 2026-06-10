@@ -462,10 +462,13 @@ jobs:
         working-directory: type-bridge-core/crates/node
         run: npm ci
 
+      # build:types is required too: the dynamic parity readers require() the package
+      # root, which resolves to dist/index.js — build:native only produces the cdylib.
       - name: Build Node parity prerequisites
         working-directory: type-bridge-core/crates/node
         run: |
           npm run build:native
+          npm run build:types
           npm run build:typed-integration
           npm run build:parity-reader
           npm run build:generator-parity
@@ -561,18 +564,23 @@ jobs:
             ${{ runner.os }}-cargo-node-
             ${{ runner.os }}-cargo-
 
+      # Node >= 22 is required here (unlike the other Node jobs): run-integration.js
+      # executes the .test.ts files directly via node --test, relying on Node's
+      # built-in type stripping, which Node 20 does not have.
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: type-bridge-core/crates/node/package-lock.json
 
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Build native module
-        run: npm run build:native
+      # Full build (native cdylib + tsc dist/): the integration tests require() the
+      # package root, which resolves to dist/index.js, so build:native alone is not enough.
+      - name: Build package
+        run: npm run build
 
       - name: Export native artifact path
         run: echo "TYPE_BRIDGE_NODE_NATIVE_PATH=$(ls "$PWD"/type_bridge_node.*.node | head -1)" >> "$GITHUB_ENV"
