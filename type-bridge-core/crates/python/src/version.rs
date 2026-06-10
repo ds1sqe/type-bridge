@@ -12,6 +12,7 @@
 //! | `max_supported_line` | function | Returns the ceiling line as `"3.11"` |
 //! | `band` | function | Protocol-band lookup; `None` for unmapped versions |
 //! | `check_supported` | function | Window + band gate; raises `VersionError` on failure |
+//! | `embedded_driver_version` | function | The typedb-driver version compiled into the Rust runtime |
 //! | `server_version` | function | HTTP probe → detected server version string |
 
 use pyo3::exceptions::PyException;
@@ -93,6 +94,20 @@ pub fn check_supported(driver: &str, server: &str) -> PyResult<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Embedded runtime driver
+// ---------------------------------------------------------------------------
+
+/// Return the `typedb-driver` version compiled into the Rust runtime.
+///
+/// Every TypeBridge transaction executes through the embedded Rust driver,
+/// so its protocol band — not only the installed Python driver's — must
+/// match the server. The connect-time gate checks both.
+#[pyfunction]
+pub fn embedded_driver_version() -> &'static str {
+    type_bridge_orm::session::real_driver::PINNED_DRIVER_VERSION
+}
+
+// ---------------------------------------------------------------------------
 // HTTP probe
 // ---------------------------------------------------------------------------
 
@@ -134,6 +149,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(max_supported_line, m)?)?;
     m.add_function(wrap_pyfunction!(band, m)?)?;
     m.add_function(wrap_pyfunction!(check_supported, m)?)?;
+    m.add_function(wrap_pyfunction!(embedded_driver_version, m)?)?;
     m.add_function(wrap_pyfunction!(server_version, m)?)?;
     Ok(())
 }

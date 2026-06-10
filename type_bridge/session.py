@@ -6,6 +6,8 @@ import logging
 import warnings
 from typing import TYPE_CHECKING, Any, overload
 
+import type_bridge.typedb_driver as typedb_driver
+import type_bridge.version as version
 from type_bridge.proxy import ProxyDatabase, ProxyTransaction, ProxyTransactionContext
 from type_bridge.typedb_driver import (
     Credentials,
@@ -204,11 +206,26 @@ class Database:
                 else None
             )
 
-            # Create driver options
-            # Disable TLS for local connections (non-HTTPS addresses)
+            # TLS flag is needed by both the version probe and driver-options construction.
             is_tls_enabled = self.address.startswith("https://")
-            driver_options = create_driver_options(is_tls_enabled=is_tls_enabled)
             logger.debug(f"TLS enabled: {is_tls_enabled}")
+
+            # Version gate — probe versions and fail before any driver construction
+            # when either driver/server pair is out-of-window or cross-band.
+            # Transactions execute through the embedded Rust runtime driver, so
+            # the server must match BOTH the installed Python driver and the
+            # embedded one. UnsupportedVersionError (and core VersionError from
+            # an unreachable probe) propagate uncaught — fail-closed.
+            detected_driver = typedb_driver.driver_version()
+            detected_server = typedb_driver.server_version(self.address, tls=is_tls_enabled)
+            version.ensure_supported(detected_driver, detected_server)
+            version.ensure_runtime_supported(
+                typedb_driver.embedded_driver_version(), detected_server
+            )
+            logger.debug(f"Version gate passed: driver={detected_driver}, server={detected_server}")
+
+            # Create driver options (band-keyed dispatch on the installed driver)
+            driver_options = create_driver_options(is_tls_enabled=is_tls_enabled)
 
             # Connect to TypeDB
             try:

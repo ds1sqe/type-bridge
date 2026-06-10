@@ -41,6 +41,10 @@ type-bridge = "type_bridge.migration.__main__:main"
 
 [project.optional-dependencies]
 dev = [
+    # Pinned to the band-7 line: the repo's shared test server (compose
+    # default 3.10.4) also serves the Rust/Node tiers, whose driver is
+    # band-7. Bump together with the compose default and the Rust driver
+    # pin — never alone.
     "typedb-driver==3.10.0",
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
@@ -59,7 +63,7 @@ docs = [
     "mkdocs-section-index>=0.3",
 ]
 typedb-driver = [
-    "typedb-driver==3.10.0",
+    "typedb-driver>=3.8,<3.12",
 ]
 
 [tool.ty.environment]

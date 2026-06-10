@@ -98,6 +98,15 @@ def check_supported(driver: str, server: str) -> None:
     """
     ...
 
+def embedded_driver_version() -> str:
+    """Return the typedb-driver version compiled into the Rust runtime.
+
+    Every TypeBridge transaction executes through the embedded Rust driver,
+    so its protocol band must match the server alongside the installed
+    Python driver's.
+    """
+    ...
+
 def server_version(address: str, http_port: int = 8000, tls: bool = False) -> str:
     """Query the TypeDB HTTP API for the server version.
 

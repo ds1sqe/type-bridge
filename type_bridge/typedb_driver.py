@@ -13,8 +13,11 @@ Example:
 
 from __future__ import annotations
 
+import importlib.metadata
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+
+import type_bridge_core as _core
 
 _MISSING_DRIVER_MESSAGE = (
     "The Python TypeDB driver is required for this operation. Install "
@@ -60,20 +63,101 @@ def raise_missing_typedb_driver() -> None:
     raise ImportError(_MISSING_DRIVER_MESSAGE)
 
 
-def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
-    """Create TypeDB driver options across supported driver versions."""
-    try:
-        return DriverOptions(is_tls_enabled=is_tls_enabled)
-    except TypeError:
-        typedb_driver = __import__("typedb.driver", fromlist=["DriverTlsConfig"])
-        driver_tls_config = getattr(typedb_driver, "DriverTlsConfig")
+def _load_tls_config() -> Any:
+    """Import and return ``DriverTlsConfig`` from the band-8 typedb driver.
 
+    Isolated so tests can patch ``type_bridge.typedb_driver._load_tls_config``
+    without needing the real band-8 driver installed.
+    """
+    from typedb.driver import DriverTlsConfig  # type: ignore[attr-defined]
+
+    return DriverTlsConfig
+
+
+def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
+    """Create TypeDB driver options using explicit band-keyed dispatch.
+
+    The same band map that drives the version gate drives option construction:
+    band-7 drivers (3.8/3.10) use the keyword form
+    ``DriverOptions(is_tls_enabled=…)``; band-8 drivers (3.11) use the
+    positional ``DriverOptions(tls_config)`` form.
+
+    Args:
+        is_tls_enabled: Whether to enable TLS for the driver connection.
+
+    Returns:
+        Configured ``DriverOptions`` instance.
+
+    Raises:
+        UnsupportedVersionError: When the installed driver version is outside
+            the supported range (no known band).
+    """
+    import type_bridge.version as _version  # local import avoids circular dependency
+
+    installed = driver_version()
+    b = _version.band(installed)
+
+    if b == 7:
+        return DriverOptions(is_tls_enabled=is_tls_enabled)
+    elif b == 8:
+        driver_tls_config = _load_tls_config()
         tls_config = (
             driver_tls_config.enabled_with_native_root_ca()
             if is_tls_enabled
             else driver_tls_config.disabled()
         )
         return DriverOptions(tls_config)
+    else:
+        min_v = _version.min_supported_version()
+        max_l = _version.max_supported_line()
+        raise _version.UnsupportedVersionError(
+            f"Installed typedb-driver {installed!r} has no known protocol band; "
+            f"supported driver lines fall in {min_v}–{max_l}.x. "
+            f"Install a supported driver version (e.g. `pip install typedb-driver~=3.10`)."
+        )
+
+
+def driver_version() -> str:
+    """Return the installed typedb-driver package version.
+
+    This is the one version fact Python computes itself: a Python-runtime
+    metadata query that Rust cannot observe.  The result matches whatever
+    ``typedb-driver`` release is installed in the current environment.
+    """
+    return importlib.metadata.version("typedb-driver")
+
+
+def embedded_driver_version() -> str:
+    """Return the typedb-driver version compiled into the Rust runtime.
+
+    Every TypeBridge transaction executes through the embedded Rust driver
+    (the Python ORM backend was retired), so the server must be
+    protocol-compatible with this version as well as with the installed
+    Python driver.  Delegates to ``type_bridge_core.embedded_driver_version``.
+    """
+    return _core.embedded_driver_version()
+
+
+def server_version(address: str, *, http_port: int = 8000, tls: bool = False) -> str:
+    """Return the TypeDB server version by probing its HTTP API.
+
+    Delegates entirely to ``type_bridge_core.server_version``; no HTTP code
+    lives here.  ``address`` follows the connect-address form ``"host:1729"``;
+    the core layer derives the HTTP host from it and handles TLS.
+
+    Args:
+        address: Connect address in ``"host:port"`` form (e.g. ``"localhost:1729"``).
+        http_port: HTTP API port (default 8000).
+        tls: Whether to use HTTPS for the version probe.
+
+    Returns:
+        Version string reported by the server (e.g. ``"3.10.4"``).
+
+    Raises:
+        type_bridge_core.VersionError: When the endpoint is unreachable or the
+            response cannot be parsed.
+    """
+    return _core.server_version(address, http_port, tls)
 
 
 __all__ = [
@@ -82,4 +166,7 @@ __all__ = [
     "TransactionType",
     "TypeDB",
     "create_driver_options",
+    "driver_version",
+    "embedded_driver_version",
+    "server_version",
 ]
