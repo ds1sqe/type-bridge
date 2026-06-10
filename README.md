@@ -373,16 +373,16 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 
 ## Requirements
 
-- Python 3.13+
-- TypeDB 3.10.4 server
+- Python 3.12–3.13
+- TypeDB 3.11.x server (see the [compatibility table](docs/development/typedb.md#server-and-driver-compatibility) for the full support window and band model)
 - type-bridge-core>=1.4.5
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
 - jinja2>=3.1.0 (for code generation)
 - typer>=0.15.0 (for CLI)
 
-`typedb-driver==3.10.0` is required only for direct Python driver APIs and
-development/integration tests.
+`typedb-driver` (`~=3.11`) is required only for direct Python driver APIs and
+development/integration tests; install via `uv sync --extra dev` or `pip install type-bridge[typedb-driver]`.
 
 ## Release Notes
 

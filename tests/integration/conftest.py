@@ -41,8 +41,10 @@ def typedb_driver(docker_typedb):
         ConnectionError: If TypeDB server is not running
     """
     try:
+        # Address passed positionally: the band-8 driver renamed the keyword
+        # (address -> addresses); the positional form works on every band.
         driver = TypeDB.driver(
-            address=TEST_DB_ADDRESS,
+            TEST_DB_ADDRESS,
             credentials=Credentials(username="admin", password="password"),
             driver_options=create_driver_options(is_tls_enabled=False),
         )

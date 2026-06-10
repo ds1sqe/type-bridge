@@ -4,15 +4,62 @@ This guide covers TypeDB-specific concepts, driver API, TypeQL syntax, and integ
 
 ## Table of Contents
 
+- [Server and Driver Compatibility](#server-and-driver-compatibility)
 - [Key TypeDB Concepts](#key-typedb-concepts)
 - [TypeDB ORM Design Considerations](#typedb-orm-design-considerations)
 - [TypeQL Syntax Requirements](#typeql-syntax-requirements)
-**Verified with TypeDB 3.10.4 and typedb-driver==3.10.0.**
-
-## TypeDB Driver 3.x API
-
 - [TypeDB Driver 3.x API](#typedb-driver-3x-api)
 - [TypeDB 3.x Syntax and Behavior Changes](#typedb-3x-syntax-and-behavior-changes)
+
+## Server and Driver Compatibility
+
+### Support window
+
+TypeBridge supports TypeDB servers in the **3.8.x through 3.11.x** range. There is no
+published 3.9 line (TypeDB skipped it); verified available tags are `3.8.3`, `3.10.4`,
+and `3.11.5`. Server `3.7.x` is protocol-compatible with band 7 (see below) but falls
+below the declared floor and is not supported.
+
+### Protocol bands
+
+TypeDB uses a protocol-band model. Compatibility is measured between driver and server
+within a band; cross-band connections always fail at connect time.
+
+| Band | Server / driver versions | Intra-band interop |
+|------|--------------------------|--------------------|
+| 7    | 3.7\*, 3.8, 3.10         | Full (3.7 is below the support floor) |
+| 8    | 3.11                     | Full |
+
+\* 3.7 is protocol-compatible with band 7 but unsupported. The band map is declared once
+in `crates/core`'s version module and consumed by every tier.
+
+### One band per release
+
+Every TypeBridge transaction executes through the Rust driver embedded in the installed
+wheel. Therefore each type-bridge release operates against exactly **one** protocol band
+— the band its wheel embeds.
+
+**This release line** embeds the band-8 (3.11) driver:
+
+| Dimension | Supported range | Notes |
+|-----------|-----------------|-------|
+| TypeDB server | 3.11.x | Band-8 servers only |
+| Python `typedb-driver` | `~=3.11` (e.g. 3.11.5) | Must match band 8; the `dev` extra pins `~=3.11.5`; the `typedb-driver` extra allows `>=3.8,<3.12` (spans release lines, not for mixing bands) |
+| CPython interpreter | 3.12–3.13 | Floor: PEP 695 syntax in the codebase; ceiling tracks the highest CPython the typedb-driver publishes wheels for |
+
+Band-7 servers (3.8.x / 3.10.x) are served by the **previous type-bridge release line**.
+
+### Update-safety contract
+
+If you upgrade type-bridge while your TypeDB server remains on band 7 (3.8.x or 3.10.x),
+`Database.connect()` raises a human-readable, actionable error that names the embedded
+runtime driver version and your server version and tells you exactly what to do (use a
+type-bridge release matching your server line, or a server matching this release) —
+before any transaction is attempted, never mid-operation. The error never exposes raw
+protocol numbers.
+
+The probe calls `GET :8000/v1/version` on the server's HTTP API port. If that endpoint is
+unreachable the probe fails closed (connection refused, not a silent pass).
 
 ## Key TypeDB Concepts
 
@@ -323,7 +370,7 @@ The driver API for 3.x differs from earlier versions:
 Transactions are created directly on the driver:
 
 ```python
-# ✅ TypeDB 3.10.4
+# ✅ TypeDB 3.x
 driver.transaction(database_name, TransactionType.READ)
 
 # ❌ Old API (TypeDB 2.x)
@@ -494,7 +541,7 @@ If migrating from TypeDB 2.x:
 - Ensure correct clause ordering
 
 **Driver changes:**
-- Update to `typedb-driver==3.10.0`
+- Update `typedb-driver` to the band-8 line (`~=3.11`)
 - Remove session management code
 - Add credentials for authentication
 - Use `transaction.query()` instead of separate query methods

@@ -1,4 +1,4 @@
-use typedb_driver::{Credentials, DriverOptions, TypeDBDriver};
+use typedb_driver::{Addresses, Credentials, DriverOptions, DriverTlsConfig, TypeDBDriver};
 
 pub async fn ensure_database_exists(
     address: &str,
@@ -7,9 +7,10 @@ pub async fn ensure_database_exists(
     password: &str,
     context: &str,
 ) {
-    let options = DriverOptions::new(false, None)
-        .unwrap_or_else(|error| panic!("{context}: TypeDB driver options failed: {error}"));
-    let driver = TypeDBDriver::new(address, Credentials::new(username, password), options)
+    let options = DriverOptions::new(DriverTlsConfig::disabled());
+    let addresses = Addresses::try_from_address_str(address)
+        .unwrap_or_else(|error| panic!("{context}: invalid TypeDB address {address}: {error}"));
+    let driver = TypeDBDriver::new(addresses, Credentials::new(username, password), options)
         .await
         .unwrap_or_else(|error| {
             panic!("{context}: failed to connect to TypeDB at {address}: {error}")

@@ -57,15 +57,15 @@ fn cargo_lock_pin() {
          update the constant in crates/orm/src/session/real_driver.rs"
     );
 
-    // Also assert the pinned driver is in the expected protocol band (7).
+    // Also assert the pinned driver is in the expected protocol band (8).
     // A dep bump that crosses a band boundary requires a conscious update here.
     let pinned: core_version::Version = PINNED_DRIVER_VERSION
         .parse()
         .expect("PINNED_DRIVER_VERSION must be a valid version string");
     assert_eq!(
         core_version::band(&pinned),
-        Some(7),
-        "pinned driver {PINNED_DRIVER_VERSION} is no longer in band 7; \
+        Some(8),
+        "pinned driver {PINNED_DRIVER_VERSION} is no longer in band 8; \
          update PINNED_DRIVER_VERSION and review the compatibility window"
     );
 }

@@ -4,7 +4,10 @@ use std::pin::Pin;
 use futures::TryStreamExt;
 use type_bridge_core_lib::version;
 use typedb_driver::answer::QueryAnswer;
-use typedb_driver::{Credentials, DriverOptions, Transaction, TransactionType, TypeDBDriver};
+use typedb_driver::{
+    Addresses, Credentials, DriverOptions, DriverTlsConfig, Transaction, TransactionType,
+    TypeDBDriver,
+};
 
 use super::backend::{DriverBackend, QueryResultKind, TransactionOps};
 use super::client::concept_to_json;
@@ -17,7 +20,7 @@ use crate::error::PipelineError;
 // equivalent const; we declare independently here so server never grows an
 // orm dependency, and the `tests::cargo_lock_pin` below keeps this copy
 // honest against the lock.
-const PINNED_DRIVER_VERSION: &str = "3.8.1";
+const PINNED_DRIVER_VERSION: &str = "3.11.5";
 
 /// Real TypeDB driver backend wrapping `TypeDBDriver`.
 pub(crate) struct RealTypeDBBackend {
@@ -53,12 +56,15 @@ impl RealTypeDBBackend {
             .map_err(PipelineError::UnsupportedVersion)?;
 
         // --- driver construction (only reached when versions are compatible) ---
+        // TLS is not plumbed in this crate today; the band-8 driver's
+        // `DriverTlsConfig::default()` would ENABLE it, so disable explicitly.
+        let addresses = Addresses::try_from_address_str(&config.address).map_err(|e| {
+            PipelineError::Connection(format!("Invalid TypeDB address {}: {e}", config.address))
+        })?;
         let driver = TypeDBDriver::new(
-            &config.address,
+            addresses,
             Credentials::new(&config.username, &config.password),
-            DriverOptions::new(false, None).map_err(|e| {
-                PipelineError::Connection(format!("Failed to create driver options: {e}"))
-            })?,
+            DriverOptions::new(DriverTlsConfig::disabled()),
         )
         .await
         .map_err(|e| {
@@ -213,8 +219,8 @@ mod tests {
         let pinned: core_version::Version = PINNED_DRIVER_VERSION.parse().unwrap();
         assert_eq!(
             core_version::band(&pinned),
-            Some(7),
-            "pinned driver version {PINNED_DRIVER_VERSION} left protocol band 7; \
+            Some(8),
+            "pinned driver version {PINNED_DRIVER_VERSION} left protocol band 8; \
              review the gate expectations before accepting the bump"
         );
     }

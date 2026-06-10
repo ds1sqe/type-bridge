@@ -2,8 +2,8 @@
 
 ## Requirements
 
-- Python 3.13+
-- TypeDB 3.10.4 server (for database operations)
+- Python 3.12–3.13
+- TypeDB 3.11.x server (for database operations; see [compatibility table](../development/typedb.md#server-and-driver-compatibility) for the full support window)
 
 ## Install from PyPI
 

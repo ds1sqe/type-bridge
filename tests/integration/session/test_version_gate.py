@@ -1,6 +1,6 @@
 """Integration tests for the version gate (type_bridge/version.py wiring).
 
-Requires a running TypeDB server (band-7, 3.10.4 compose default).
+Requires a running TypeDB server (band-8, 3.11.5 compose default).
 All tests use @pytest.mark.integration.
 """
 
@@ -22,7 +22,7 @@ from type_bridge.session import Database
 @pytest.mark.integration
 @pytest.mark.order(410)
 class TestVersionGateLivePositive:
-    """Gate passes on the live compose server (band-7 driver × band-7 server)."""
+    """Gate passes on the live compose server (band-8 driver × band-8 server)."""
 
     def test_connect_passes_version_gate(self, clean_db: Database):
         """Database.connect() succeeds against the live server — gate green."""
@@ -90,13 +90,13 @@ class TestVersionGateLiveNegative:
     """Gate fires before driver construction when the detector is monkeypatched."""
 
     def test_cross_band_raises_before_driver_constructed(self, monkeypatch: pytest.MonkeyPatch):
-        """Monkeypatching driver_version to 3.11.5 (band-8) with a band-7 server
+        """Monkeypatching driver_version to 3.10.0 (band-7) with a band-8 server
         causes connect() to raise UnsupportedVersionError before TypeDB.driver is
         called."""
         import type_bridge.session as session_mod
         from tests.integration.conftest import TEST_DB_ADDRESS
 
-        monkeypatch.setattr(_tdm, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(_tdm, "driver_version", lambda: "3.10.0")
 
         # Spy on TypeDB.driver to assert it is never reached.
         # Patch at session_mod.TypeDB — the name bound there via `from ... import`.
@@ -125,17 +125,17 @@ class TestVersionGateLiveNegative:
         """Error message from live gate contains both driver and server version strings."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
-        monkeypatch.setattr(_tdm, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(_tdm, "driver_version", lambda: "3.10.0")
 
         db = Database(address=TEST_DB_ADDRESS, database="test_gate_message")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
             db.connect()
 
         msg = str(exc_info.value)
-        # "3.11" from the monkeypatched driver
-        assert "3.11" in msg, f"Driver version missing from: {msg!r}"
-        # The real server version (3.10.x) should appear
-        assert "3.10" in msg, f"Server version missing from: {msg!r}"
+        # "3.10" from the monkeypatched driver
+        assert "3.10" in msg, f"Driver version missing from: {msg!r}"
+        # The real server version (3.11.x) should appear
+        assert "3.11" in msg, f"Server version missing from: {msg!r}"
         assert "install" in msg.lower(), f"'install' hint missing from: {msg!r}"
 
 

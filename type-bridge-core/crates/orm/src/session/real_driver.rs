@@ -5,7 +5,10 @@
 use futures::TryStreamExt;
 use type_bridge_core_lib::version as core_version;
 use typedb_driver::answer::QueryAnswer;
-use typedb_driver::{Credentials, DriverOptions, Transaction, TransactionType, TypeDBDriver};
+use typedb_driver::{
+    Addresses, Credentials, DriverOptions, DriverTlsConfig, Transaction, TransactionType,
+    TypeDBDriver,
+};
 
 use super::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType};
 use crate::error::OrmError;
@@ -20,7 +23,7 @@ use crate::error::OrmError;
 /// When the `typedb-driver` dependency is bumped, update this constant to
 /// match the new `Cargo.lock` entry — the `version_gate_tests::cargo_lock_pin`
 /// test will catch any divergence.
-pub const PINNED_DRIVER_VERSION: &str = "3.8.1";
+pub const PINNED_DRIVER_VERSION: &str = "3.11.5";
 
 /// Real TypeDB backend wrapping [`TypeDBDriver`].
 pub struct RealBackend {
@@ -71,11 +74,14 @@ async fn gated_driver(
         "Version gate passed"
     );
 
+    // TLS is not plumbed in this crate today; the band-8 driver's
+    // `DriverTlsConfig::default()` would ENABLE it, so disable explicitly.
+    let addresses = Addresses::try_from_address_str(address)
+        .map_err(|e| OrmError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
     TypeDBDriver::new(
-        address,
+        addresses,
         Credentials::new(username, password),
-        DriverOptions::new(false, None)
-            .map_err(|e| OrmError::Connection(format!("Driver options error: {e}")))?,
+        DriverOptions::new(DriverTlsConfig::disabled()),
     )
     .await
     .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))

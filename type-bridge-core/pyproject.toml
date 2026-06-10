@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "type-bridge-core"
 version = "1.4.5"
 description = "Rust core for type-bridge ORM"
-requires-python = ">=3.13,<3.15"
+requires-python = ">=3.12,<3.14"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",

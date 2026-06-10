@@ -414,6 +414,9 @@ class TestConnectVersionGate:
         # - TypeDB / DriverOptions → resolved as names in session_mod (from ... import)
         monkeypatch.setattr(tdm, "driver_version", lambda: "3.10.0")
         monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.10.4")
+        # Embedded read mocked too, so the test is independent of the wheel's
+        # real embedded driver band.
+        monkeypatch.setattr(tdm, "embedded_driver_version", lambda: "3.10.0")
 
         fake_driver = MagicMock()
         mock_typedb = MagicMock()
