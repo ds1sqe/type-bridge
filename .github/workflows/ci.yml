@@ -323,7 +323,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        test-group: [crud, queries, schema, expressions]
+        test-group: [crud, queries, schema, expressions, migration]
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
@@ -386,3 +386,121 @@ jobs:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
         run: uv run pytest tests/integration/${{ matrix.test-group }} -m integration -v --tb=short
+
+  # Cross-language parity gate: the #110 single-core / thin-bindings invariant only
+  # holds if a semantic divergence between the Python and Node sides reds CI. These
+  # tests shell out to the Node binding, so this job builds the Node prerequisites
+  # first, then runs them against live TypeDB under TYPE_BRIDGE_PARITY_STRICT so a
+  # "Node not built" skip fails the job instead of passing it silently (false green).
+  cross-language-parity:
+    name: Cross-language parity
+    runs-on: ubuntu-latest
+
+    services:
+      typedb:
+        image: typedb/typedb:3.10.4
+        ports:
+          - 1729:1729
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-parity-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-parity-
+            ${{ runner.os }}-cargo-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: type-bridge-core/crates/node
+        run: npm ci
+
+      - name: Build Node parity prerequisites
+        working-directory: type-bridge-core/crates/node
+        run: |
+          npm run build:native
+          npm run build:typed-integration
+          npm run build:parity-reader
+          npm run build:generator-parity
+
+      - name: Export native artifact path
+        working-directory: type-bridge-core/crates/node
+        run: echo "TYPE_BRIDGE_NODE_NATIVE_PATH=$(ls "$PWD"/type_bridge_node.*.node | head -1)" >> "$GITHUB_ENV"
+
+      - name: Wait for TypeDB server to be ready
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost 1729 2>/dev/null; then
+              echo "TypeDB server is ready on port 1729"
+              break
+            fi
+            echo "Waiting for port 1729... ($i/30)"
+            sleep 2
+          done
+          if ! nc -z localhost 1729 2>/dev/null; then
+            echo "ERROR: TypeDB server did not start within 60 seconds"
+            docker logs ${{ job.services.typedb.id }} 2>&1 || true
+            exit 1
+          fi
+
+      - name: Run cross-language parity (strict — skips for an unbuilt Node binding fail)
+        env:
+          USE_DOCKER: false
+          TYPEDB_ADDRESS: localhost:1729
+          TYPE_BRIDGE_PARITY_STRICT: "1"
+        # The `integration or not integration` marker overrides pyproject's default
+        # `-m 'not integration'` filter so this gate runs BOTH the live-TypeDB parity
+        # tests and the offline cross-language ones (descriptor snapshots, generator
+        # parity, fixture contract) — the latter otherwise run in no CI job.
+        run: |
+          uv run pytest tests/integration/parity -m "integration or not integration" \
+            -ra --tb=short --junitxml=parity-results.xml
+
+      - name: Assert parity tests actually ran (guard against zero-collected)
+        if: always()
+        run: |
+          uv run python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("parity-results.xml")
+          root = tree.getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests = int(suite.get("tests", "0"))
+          skipped = int(suite.get("skipped", "0"))
+          ran = tests - skipped
+          print(f"parity: tests={tests} skipped={skipped} ran={ran}")
+          if ran <= 0:
+              print("ERROR: no parity test executed — gate would be a no-op")
+              sys.exit(1)
+          PY
