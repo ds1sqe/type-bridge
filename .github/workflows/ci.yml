@@ -147,6 +147,62 @@ jobs:
           name: ${{ matrix.artifact }}
           path: type-bridge-core/dist/*.whl
 
+  # Node binding is a required CI gate: the #124 NAPI pillar was previously untested
+  # in CI, so its native + TypeScript surface and database-free gates run here to keep
+  # the #110 single-core / thin-bindings invariant from silently regressing.
+  node-check:
+    name: Node binding
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-node-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-node-
+            ${{ runner.os }}-cargo-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build native module and TypeScript surface
+        run: npm run build
+
+      - name: Verify native module built
+        run: ls type_bridge_node.*.node
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: DTS baseline parity
+        run: npm run test:dts
+
+      - name: Package smoke
+        run: npm run smoke:package
+
   # Code quality: linting and formatting (parallel)
   lint:
     name: Python ${{ matrix.check }}
