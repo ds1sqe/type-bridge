@@ -204,6 +204,68 @@ jobs:
           name: python-dist
           path: dist/
 
+  # Build and pack the @type-bridge/node binding for the GitHub Release. The
+  # registry publish is staged but stays inert until an NPM_TOKEN secret exists,
+  # so tagging a release never fails for a missing token.
+  build-node:
+    name: Build Node binding package
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+          registry-url: https://registry.npmjs.org
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build native module and TypeScript surface
+        run: npm run build
+
+      - name: Pack npm tarball
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination dist
+
+      - name: Upload npm tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-package
+          path: type-bridge-core/crates/node/dist/*.tgz
+
+      # secrets are unavailable in step `if:` conditions, so detect the token in a
+      # step (via env, never echoed) and gate the publish on this step's output.
+      - name: Detect npm token
+        id: npm_token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No NPM_TOKEN secret; skipping the npm registry publish."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm registry
+        if: steps.npm_token.outputs.present == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
   # Publish type-bridge-core to PyPI (must complete before type-bridge)
   publish-core-pypi:
     name: Publish type-bridge-core to PyPI
@@ -257,7 +319,7 @@ jobs:
   # Create draft GitHub Release with all artifacts
   github-release:
     name: Create GitHub Release
-    needs: [publish-python-pypi, publish-crates]
+    needs: [publish-python-pypi, publish-crates, build-node]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -282,6 +344,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-dist
+          path: dist/
+
+      - name: Download Node package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: node-package
           path: dist/
 
       - name: Create draft release

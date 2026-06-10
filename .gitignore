@@ -21,6 +21,10 @@ package-lock.json
 # NAPI native build artifacts
 *.node
 
+# Compiled PyO3 extension maturin builds into the python-source package locally
+# (the mixed layout); the published copy ships in the wheel, not the source tree.
+type-bridge-core/python/type_bridge_core/*.so
+
 # IDE
 .idea/
 .vscode/

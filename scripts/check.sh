@@ -66,14 +66,33 @@ run_python() {
         uv run pytest tests/unit/ -x --tb=short -q
 }
 
+# ── Node checks (matching ci.yml node-check job) ────────────────────────────
+run_node() {
+    printf "${BOLD}━━━ Node ━━━${RESET}\n\n"
+
+    # npm run executes each script with the node crate as its working directory,
+    # so the scripts' relative paths (e.g. ../../../tmp/node-unit) resolve.
+    pushd type-bridge-core/crates/node >/dev/null
+
+    run_step "npm ci"                npm ci
+    run_step "npm run build"         npm run build
+    run_step "npm run typecheck"     npm run typecheck
+    run_step "npm run test:unit"     npm run test:unit
+    run_step "npm run test:dts"      npm run test:dts
+    run_step "npm run smoke:package" npm run smoke:package
+
+    popd >/dev/null
+}
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 target="${1:-all}"
 case "$target" in
     rust)   run_rust   ;;
     python) run_python ;;
-    all)    run_rust; run_python ;;
+    node)   run_node   ;;
+    all)    run_rust; run_python; run_node ;;
     *)
-        echo "Usage: $0 [rust|python|all]"
+        echo "Usage: $0 [rust|python|node|all]"
         exit 1
         ;;
 esac
