@@ -289,6 +289,12 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.12", "3.13.5"]
+    env:
+      # The repo's .python-version pins 3.13 for local dev; without these,
+      # uv ignores the matrix interpreter and downloads a managed build
+      # whose missing shared libpython breaks the typedb native driver.
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_PREFERENCE: only-system
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
