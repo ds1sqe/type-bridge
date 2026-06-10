@@ -478,14 +478,20 @@ fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
     ws_comments_required(input)?;
     let name = identifier(input)?;
 
+    // Parse the optional ordered-role marker `[]` immediately after the name.
+    // TypeDB only accepts `@distinct` on ordered roles (e.g. `relates member[] @distinct`);
+    // the bare form `relates member @distinct` is rejected by all server versions.
+    let ordered = opt(literal("[]")).parse_next(input)?.is_some();
+
     let mut role = RoleSpec {
         name: name.to_string(),
         overrides: None,
         cardinality: None,
         distinct: false,
+        ordered,
     };
 
-    // Parse optional "as <parent_role>"
+    // Parse optional "as <parent_role>" — the override comes after the `[]` marker.
     ws_comments(input);
     if opt(literal("as")).parse_next(input)?.is_some() {
         ws_comments_required(input)?;
@@ -1181,10 +1187,73 @@ mod tests {
         assert_eq!(rel.roles[0].overrides.as_deref(), Some("contributor"));
     }
 
+    // Bare `relates member @distinct` (no `[]`) must be rejected: TypeDB servers
+    // refuse this form with "Invalid ordering ''" (SVL21) on every known version.
+    // Validation runs inside `from_typeql` (which calls `validate()` after parsing).
     #[test]
-    fn test_parse_relation_role_distinct() {
-        let schema = parse_typeql("define\nrelation team, relates member @distinct;").unwrap();
-        assert!(schema.relations.get("team").unwrap().roles[0].distinct);
+    fn test_parse_relation_role_distinct_bare_rejected() {
+        let err = TypeSchema::from_typeql("define\nrelation team, relates member @distinct;")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("@distinct"),
+            "expected teaching message mentioning @distinct, got: {msg}"
+        );
+        assert!(
+            msg.contains("[]"),
+            "expected teaching message mentioning ordered-role syntax `[]`, got: {msg}"
+        );
+    }
+
+    // `relates member[] @distinct` — the only form TypeDB accepts.
+    #[test]
+    fn test_parse_relation_role_ordered_distinct() {
+        let schema = parse_typeql("define\nrelation team, relates member[] @distinct;").unwrap();
+        let role = &schema.relations.get("team").unwrap().roles[0];
+        assert!(role.ordered, "role should be marked ordered");
+        assert!(role.distinct, "role should be marked distinct");
+    }
+
+    // Ordered without @distinct — valid.
+    #[test]
+    fn test_parse_relation_role_ordered_no_distinct() {
+        let schema = parse_typeql("define\nrelation queue, relates item[];").unwrap();
+        let role = &schema.relations.get("queue").unwrap().roles[0];
+        assert!(role.ordered, "role should be marked ordered");
+        assert!(!role.distinct, "role should not be marked distinct");
+    }
+
+    // Plain bare role — ordered and distinct both false.
+    #[test]
+    fn test_parse_relation_role_bare() {
+        let schema = parse_typeql("define\nrelation friendship, relates friend;").unwrap();
+        let role = &schema.relations.get("friendship").unwrap().roles[0];
+        assert!(!role.ordered, "plain role should not be ordered");
+        assert!(!role.distinct, "plain role should not be distinct");
+    }
+
+    // Ordered role with `as <parent>` override.
+    #[test]
+    fn test_parse_relation_role_ordered_with_override() {
+        let schema = parse_typeql(
+            "define\nrelation authoring sub contribution, relates author[] as contributor;",
+        )
+        .unwrap();
+        let role = &schema.relations.get("authoring").unwrap().roles[0];
+        assert_eq!(role.name, "author");
+        assert!(role.ordered, "role should be ordered");
+        assert_eq!(role.overrides.as_deref(), Some("contributor"));
+    }
+
+    // Ordered role with both @card and @distinct.
+    #[test]
+    fn test_parse_relation_role_ordered_card_and_distinct() {
+        let schema =
+            parse_typeql("define\nrelation team, relates member[] @card(0..) @distinct;").unwrap();
+        let role = &schema.relations.get("team").unwrap().roles[0];
+        assert!(role.ordered);
+        assert!(role.distinct);
+        assert_eq!(role.cardinality, Some(Cardinality { min: 0, max: None }));
     }
 
     #[test]

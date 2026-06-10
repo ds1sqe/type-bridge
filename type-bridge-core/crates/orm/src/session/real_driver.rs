@@ -3,29 +3,92 @@
 //! This module is only compiled when the `typedb` feature is enabled.
 
 use futures::TryStreamExt;
+use type_bridge_core_lib::version as core_version;
 use typedb_driver::answer::QueryAnswer;
 use typedb_driver::{Credentials, DriverOptions, Transaction, TransactionType, TypeDBDriver};
 
 use super::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType};
 use crate::error::OrmError;
 
+/// The compile-pinned `typedb-driver` crate version resolved in `Cargo.lock`.
+///
+/// This constant records the exact driver version the ORM crate was built
+/// against.  It is the factual counterpart to the policy window declared in
+/// `type_bridge_core_lib::version`: the window says which versions are allowed;
+/// this constant says which version is currently in use.
+///
+/// When the `typedb-driver` dependency is bumped, update this constant to
+/// match the new `Cargo.lock` entry — the `version_gate_tests::cargo_lock_pin`
+/// test will catch any divergence.
+pub const PINNED_DRIVER_VERSION: &str = "3.8.1";
+
 /// Real TypeDB backend wrapping [`TypeDBDriver`].
 pub struct RealBackend {
     driver: TypeDBDriver,
 }
 
+/// Version-gated [`TypeDBDriver`] constructor.
+///
+/// Before allocating any gRPC connection, this helper:
+///
+/// 1. Probes the TypeDB HTTP version endpoint (port 8000, plain HTTP — TLS is
+///    not plumbed in this crate today).
+/// 2. Runs [`core_version::check_supported`] against the compile-pinned driver
+///    version ([`PINNED_DRIVER_VERSION`]) and the probed server version.
+/// 3. Only on success, constructs and returns a live [`TypeDBDriver`].
+///
+/// Any version incompatibility surfaces as [`OrmError::UnsupportedVersion`]
+/// **before** the gRPC handshake — fail fast, never silently.
+async fn gated_driver(
+    address: &str,
+    username: &str,
+    password: &str,
+) -> Result<TypeDBDriver, OrmError> {
+    // Parse the compile-pinned driver version.  The literal is controlled by
+    // this crate; a parse failure is a programming error, not a runtime one.
+    let driver_version: core_version::Version = PINNED_DRIVER_VERSION
+        .parse()
+        .expect("PINNED_DRIVER_VERSION is not a valid version string — update the constant");
+
+    // Probe the server version over HTTP (blocking I/O; offload to a
+    // dedicated thread so we don't block the async executor).
+    let address_owned = address.to_string();
+    let server_version = tokio::task::spawn_blocking(move || {
+        core_version::server_version(&address_owned, 8000, false)
+    })
+    .await
+    .map_err(|e| OrmError::Connection(format!("Version probe task panicked: {e}")))?
+    .map_err(OrmError::UnsupportedVersion)?;
+
+    // Gate: both endpoints must be in-window and on the same protocol band.
+    core_version::check_supported(&driver_version, &server_version)
+        .map_err(OrmError::UnsupportedVersion)?;
+
+    tracing::debug!(
+        address,
+        driver_version = %driver_version,
+        server_version = %server_version,
+        "Version gate passed"
+    );
+
+    TypeDBDriver::new(
+        address,
+        Credentials::new(username, password),
+        DriverOptions::new(false, None)
+            .map_err(|e| OrmError::Connection(format!("Driver options error: {e}")))?,
+    )
+    .await
+    .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))
+}
+
 impl RealBackend {
     /// Connect to a TypeDB server.
+    ///
+    /// Probes the server version via HTTP before opening any gRPC connection.
+    /// Returns [`OrmError::UnsupportedVersion`] when the server is outside the
+    /// supported window or on a different protocol band than the driver.
     pub async fn connect(address: &str, username: &str, password: &str) -> Result<Self, OrmError> {
-        let driver = TypeDBDriver::new(
-            address,
-            Credentials::new(username, password),
-            DriverOptions::new(false, None)
-                .map_err(|e| OrmError::Connection(format!("Driver options error: {e}")))?,
-        )
-        .await
-        .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))?;
-
+        let driver = gated_driver(address, username, password).await?;
         tracing::info!(address, "Connected to TypeDB");
         Ok(Self { driver })
     }
@@ -33,24 +96,20 @@ impl RealBackend {
 
 /// Ensure a TypeDB database exists, creating it if absent.
 ///
-/// Connects with a standalone driver, checks whether the named database exists,
-/// and creates it only when it does not.  Returns `Err` on any TypeDB failure
-/// (including unreachable server) so callers can treat the error as a hard
-/// failure rather than silently skipping.
+/// Probes the server version via HTTP before opening any gRPC connection.
+/// Returns [`OrmError::UnsupportedVersion`] when the server is outside the
+/// supported window or on a different protocol band than the driver.
+///
+/// On all other TypeDB failures (including unreachable server) the error is
+/// returned so callers can treat it as a hard failure rather than silently
+/// skipping.
 pub async fn ensure_database_exists(
     address: &str,
     database: &str,
     username: &str,
     password: &str,
 ) -> Result<(), OrmError> {
-    let driver = TypeDBDriver::new(
-        address,
-        Credentials::new(username, password),
-        DriverOptions::new(false, None)
-            .map_err(|e| OrmError::Connection(format!("Driver options error: {e}")))?,
-    )
-    .await
-    .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))?;
+    let driver = gated_driver(address, username, password).await?;
 
     let databases = driver.databases();
     let exists = databases

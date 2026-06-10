@@ -30,6 +30,7 @@ export interface RoleSpec {
   overrides: string | null;
   cardinality: Cardinality | null;
   distinct: boolean;
+  ordered: boolean;
 }
 
 export interface EntityType {

@@ -142,7 +142,8 @@ pub struct PlayedRole {
 ///
 /// Roles may override a parent relation's role via the `as` keyword
 /// (e.g. `relates author as contributor`), carry a cardinality constraint,
-/// or be marked `@distinct`.
+/// or be marked `@distinct`.  The `@distinct` annotation is valid only on
+/// ordered roles (declared with `[]`, e.g. `relates member[] @distinct`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleSpec {
     /// The local name of the role (e.g. `"friend"`, `"author"`).
@@ -153,6 +154,11 @@ pub struct RoleSpec {
     pub cardinality: Option<Cardinality>,
     /// Whether the role is annotated with `@distinct`, requiring unique role-players.
     pub distinct: bool,
+    /// Whether the role is declared as an ordered list (`relates name[]`).
+    ///
+    /// `@distinct` is only valid when this field is `true`.
+    #[serde(default)]
+    pub ordered: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +469,7 @@ impl TypeSchema {
         self.validate_regex_patterns()?;
         self.validate_values()?;
         self.validate_subkeys()?;
+        self.validate_role_annotations()?;
         Ok(())
     }
 
@@ -592,6 +599,27 @@ impl TypeSchema {
             for own in &relation.owns {
                 if let Some(ref id) = own.subkey_group {
                     check_subkey(id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Enforce that `@distinct` is only used on ordered roles (`relates name[]`).
+    ///
+    /// TypeDB servers reject `relates member @distinct` with "Invalid ordering ''"
+    /// (SVL21).  The correct form is `relates member[] @distinct`.
+    fn validate_role_annotations(&self) -> Result<(), SchemaError> {
+        for (rel_name, relation) in &self.relations {
+            for role in &relation.roles {
+                if role.distinct && !role.ordered {
+                    return Err(SchemaError::ValidationError {
+                        message: format!(
+                            "@distinct requires an ordered role in relation '{}': \
+                             use `relates {}[] @distinct` instead of `relates {} @distinct`.",
+                            rel_name, role.name, role.name
+                        ),
+                    });
                 }
             }
         }
@@ -992,12 +1020,14 @@ mod tests {
                         overrides: None,
                         cardinality: None,
                         distinct: false,
+                        ordered: false,
                     },
                     RoleSpec {
                         name: "work".to_string(),
                         overrides: None,
                         cardinality: None,
                         distinct: false,
+                        ordered: false,
                     },
                 ],
                 owns: vec![],
@@ -1016,6 +1046,7 @@ mod tests {
                     overrides: Some("contributor".to_string()),
                     cardinality: None,
                     distinct: false,
+                    ordered: false,
                 }],
                 owns: vec![],
                 owns_order: vec![],
