@@ -14,6 +14,16 @@ uv.lock
 # TypeScript
 node_modules/
 packages/typescript/dist/
+package-lock.json
+# Commit the Node binding's lockfile so CI installs with `npm ci` (reproducible).
+!type-bridge-core/crates/node/package-lock.json
+
+# NAPI native build artifacts
+*.node
+
+# Compiled PyO3 extension maturin builds into the python-source package locally
+# (the mixed layout); the published copy ships in the wheel, not the source tree.
+type-bridge-core/python/type_bridge_core/*.so
 
 # IDE
 .idea/
@@ -39,3 +49,6 @@ typeql-ref/
 type-bridge-core/**/target/
 *.profraw
 *.profdata
+
+# Plan 12 generator cross-language parity build output (ephemeral)
+type-bridge-core/crates/node/tests/parity/generated/

@@ -320,6 +320,9 @@ impl QueryCompiler {
                             .replace("\r", "\\r")
                             .replace("\t", "\\t")
                     )
+                } else if lit.value_type == "decimal" {
+                    s.strip_suffix("dec")
+                        .map_or_else(|| format!("{s}dec"), |value| format!("{value}dec"))
                 } else {
                     // Dates, datetimes, durations are passed as strings but not quoted in TypeQL
                     s.clone()
@@ -496,6 +499,20 @@ mod tests {
                 value_type: "decimal".into()
             }),
             "3.15dec"
+        );
+        assert_eq!(
+            c.format_literal(&LiteralValue {
+                value: json!("10.25"),
+                value_type: "decimal".into()
+            }),
+            "10.25dec"
+        );
+        assert_eq!(
+            c.format_literal(&LiteralValue {
+                value: json!("10.25dec"),
+                value_type: "decimal".into()
+            }),
+            "10.25dec"
         );
     }
 

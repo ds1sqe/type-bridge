@@ -31,11 +31,28 @@ impl Transaction {
 
     /// Commit this transaction.
     pub async fn commit(&mut self) -> Result<()> {
-        let tx = self
+        let mut tx = self
             .inner
-            .as_mut()
+            .take()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
         tx.commit().await
+    }
+
+    /// Roll back this transaction.
+    pub async fn rollback(&mut self) -> Result<()> {
+        let mut tx = self
+            .inner
+            .take()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.rollback().await
+    }
+
+    /// Close this transaction without committing.
+    pub async fn close(&mut self) -> Result<()> {
+        let Some(mut tx) = self.inner.take() else {
+            return Ok(());
+        };
+        tx.close().await
     }
 
     /// The transaction type.

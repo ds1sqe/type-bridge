@@ -1,0 +1,38 @@
+[package]
+name = "type-bridge-migration"
+version = "1.4.5"
+edition = "2024"
+description = "Migration IR and planning substrate for type-bridge"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# The CLI bin is declared explicitly below; src/bin/display.rs is a module of
+# that bin, not its own target. Disable bin auto-discovery so it is not built
+# as a second binary.
+autobins = false
+
+[lib]
+name = "type_bridge_migration"
+path = "src/lib.rs"
+
+[[bin]]
+name = "type-bridge-migration"
+path = "src/bin/type_bridge_migration.rs"
+
+[dependencies]
+type-bridge-orm = { path = "../orm", version = "1.4.5", default-features = false, features = ["typedb"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+anstyle = "1"
+anstream = "0.6"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

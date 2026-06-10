@@ -17,3 +17,4 @@ classifiers = [
 manifest-path = "crates/python/Cargo.toml"
 features = ["pyo3/extension-module"]
 module-name = "type_bridge_core"
+python-source = "python"

@@ -68,6 +68,20 @@ class SchemaConflictError(Exception):
                 lines.append(f"   - {attr.get_attribute_name()}")
             lines.append("")
 
+        if self.diff.modified_attributes:
+            lines.append(f"⚠️  Modified Attributes ({len(self.diff.modified_attributes)}):")
+            for attr, attr_change in sorted(
+                self.diff.modified_attributes.items(),
+                key=lambda item: item[0].get_attribute_name(),
+            ):
+                changed = ", ".join(
+                    key.replace("_changed", "").replace("_", " ")
+                    for key, value in attr_change.changes.items()
+                    if value is not None
+                )
+                lines.append(f"   ~ {attr.get_attribute_name()}: {changed}")
+            lines.append("")
+
         # Show modified items (potentially breaking changes)
         if self.diff.modified_entities:
             lines.append(f"⚠️  Modified Entities ({len(self.diff.modified_entities)}):")
@@ -121,6 +135,7 @@ class SchemaConflictError(Exception):
             self.diff.removed_entities
             or self.diff.removed_relations
             or self.diff.removed_attributes
+            or self.diff.modified_attributes
             or self.diff.modified_entities
             or self.diff.modified_relations
         )

@@ -4,11 +4,13 @@
 //! `TypeBridgeRelation` trait impls at registration time, enabling
 //! runtime schema operations without generic type parameters.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use type_bridge_core_lib::schema as core_schema;
 
 use crate::attribute::ValueType;
+use crate::descriptor::{OwnedAttributeDescriptor, TypeDescriptor};
 use crate::entity::Annotation;
 
 use super::diff::SchemaDiff;
@@ -37,9 +39,10 @@ impl OwnedAttributeEntry {
                 Annotation::Key => parts.push("@key".to_string()),
                 Annotation::Unique => parts.push("@unique".to_string()),
                 Annotation::Card(min, max) => {
+                    // TypeDB 3.x spells an unbounded upper bound as `@card(min..)`.
                     let max_str = match max {
                         Some(m) => m.to_string(),
-                        None => "*".to_string(),
+                        None => String::new(),
                     };
                     parts.push(format!("@card({min}..{max_str})"));
                 }
@@ -54,8 +57,10 @@ impl OwnedAttributeEntry {
 pub struct RoleEntry {
     /// Role name (e.g. `"employee"`).
     pub role_name: String,
-    /// Entity type that plays this role.
-    pub player_type_name: String,
+    /// Entity types that can play this role.
+    pub player_type_names: Vec<String>,
+    /// Optional role cardinality, where `None` max means unbounded.
+    pub cardinality: Option<(u32, Option<u32>)>,
 }
 
 /// Schema entry for an entity type.
@@ -69,6 +74,13 @@ pub struct EntitySchemaEntry {
     pub parent_type: Option<String>,
     /// Owned attributes.
     pub owned_attributes: Vec<OwnedAttributeEntry>,
+    /// Plays-side cardinality overlay, keyed by role_ref `"{relation}:{role}"`.
+    ///
+    /// Distinct from relates-side `RoleEntry.cardinality`: this constrains
+    /// relations-per-player, not players-per-relation. Populated from
+    /// `PlayedRole.cardinality`; empty when no plays-card is declared.
+    #[serde(default)]
+    pub plays_cardinalities: BTreeMap<String, (u32, Option<u32>)>,
 }
 
 /// Schema entry for a relation type.
@@ -84,6 +96,13 @@ pub struct RelationSchemaEntry {
     pub owned_attributes: Vec<OwnedAttributeEntry>,
     /// Roles and their player types.
     pub roles: Vec<RoleEntry>,
+    /// Plays-side cardinality overlay, keyed by role_ref `"{relation}:{role}"`.
+    ///
+    /// Distinct from relates-side `RoleEntry.cardinality`: this constrains
+    /// relations-per-player, not players-per-relation. Populated from
+    /// `PlayedRole.cardinality`; empty when no plays-card is declared.
+    #[serde(default)]
+    pub plays_cardinalities: BTreeMap<String, (u32, Option<u32>)>,
 }
 
 /// Metadata for a standalone attribute type.
@@ -93,10 +112,48 @@ pub struct AttributeSchemaEntry {
     pub attr_name: String,
     /// Value type.
     pub value_type: ValueType,
+    /// Parent attribute type name (for `sub` hierarchies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_type: Option<String>,
+    /// Whether this attribute type is abstract.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_abstract: bool,
+    /// Whether this attribute type is independent.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_independent: bool,
+    /// Optional `@regex` pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regex: Option<String>,
+    /// Optional `@values` allowlist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_values: Option<Vec<String>>,
+    /// Optional `@range` bounds. `None` bound means open-ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<(Option<String>, Option<String>)>,
+}
+
+impl AttributeSchemaEntry {
+    /// Build an unconstrained attribute schema entry.
+    pub fn new(attr_name: impl Into<String>, value_type: ValueType) -> Self {
+        Self {
+            attr_name: attr_name.into(),
+            value_type,
+            parent_type: None,
+            is_abstract: false,
+            is_independent: false,
+            regex: None,
+            allowed_values: None,
+            range: None,
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Complete schema information extracted from registered models.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaInfo {
     /// Registered entity types, keyed by type name.
     pub entities: BTreeMap<String, EntitySchemaEntry>,
@@ -107,6 +164,162 @@ pub struct SchemaInfo {
 }
 
 impl SchemaInfo {
+    /// Parse an exported TypeDB `define` schema into migration-facing schema IR.
+    ///
+    /// This is used for live introspection because TypeDB's schema export
+    /// preserves annotations that are not currently queryable through schema
+    /// match clauses.
+    pub fn from_typeql(input: &str) -> Result<Self, SchemaError> {
+        if input.trim() == "define" {
+            return Ok(Self::default());
+        }
+
+        let schema = core_schema::TypeSchema::from_typeql(input).map_err(|error| {
+            SchemaError::Validation {
+                message: error.to_string(),
+            }
+        })?;
+        Ok(Self::from_type_schema(&schema))
+    }
+
+    /// Bridge the parser-facing TypeQL schema into the migration-facing schema IR.
+    pub fn from_type_schema(schema: &core_schema::TypeSchema) -> Self {
+        let mut info = Self::default();
+
+        for (attr_name, attr) in &schema.attributes {
+            info.attributes.insert(
+                attr_name.clone(),
+                AttributeSchemaEntry {
+                    attr_name: attr_name.clone(),
+                    value_type: value_type_from_typeql(&attr.value_type),
+                    parent_type: attr.parent.clone(),
+                    is_abstract: attr.is_abstract,
+                    is_independent: attr.is_independent,
+                    regex: attr.regex.clone(),
+                    allowed_values: attr.allowed_values.clone(),
+                    range: match (&attr.range_min, &attr.range_max) {
+                        (None, None) => None,
+                        (min, max) => Some((min.clone(), max.clone())),
+                    },
+                },
+            );
+        }
+
+        let PlaysData {
+            role_players,
+            plays_cards,
+        } = plays_data_from_schema(schema);
+
+        for (entity_name, entity) in &schema.entities {
+            let plays_cardinalities = plays_cards.get(entity_name).cloned().unwrap_or_default();
+            info.entities.insert(
+                entity_name.clone(),
+                EntitySchemaEntry {
+                    type_name: entity_name.clone(),
+                    is_abstract: entity.is_abstract,
+                    parent_type: entity.parent.clone(),
+                    owned_attributes: owned_attribute_entries_from_typeql(
+                        &entity.owns,
+                        &info.attributes,
+                    ),
+                    plays_cardinalities,
+                },
+            );
+        }
+
+        for (relation_name, relation) in &schema.relations {
+            let roles = relation
+                .roles
+                .iter()
+                .map(|role| {
+                    let player_type_names = role_players
+                        .get(&(relation_name.clone(), role.name.clone()))
+                        .map(|players| players.iter().cloned().collect())
+                        .unwrap_or_default();
+                    RoleEntry {
+                        role_name: role.name.clone(),
+                        player_type_names,
+                        cardinality: role.cardinality.as_ref().map(cardinality_tuple),
+                    }
+                })
+                .collect();
+
+            let plays_cardinalities = plays_cards.get(relation_name).cloned().unwrap_or_default();
+
+            info.relations.insert(
+                relation_name.clone(),
+                RelationSchemaEntry {
+                    type_name: relation_name.clone(),
+                    is_abstract: relation.is_abstract,
+                    parent_type: relation.parent.clone(),
+                    owned_attributes: owned_attribute_entries_from_typeql(
+                        &relation.owns,
+                        &info.attributes,
+                    ),
+                    roles,
+                    plays_cardinalities,
+                },
+            );
+        }
+
+        info
+    }
+
+    /// Bridge the CRUD-facing descriptor IR into the migration-facing schema IR.
+    ///
+    /// Descriptors are what Python models register for CRUD; the diff and
+    /// breaking-change engine reads `SchemaInfo`. This constructor is the only
+    /// crossing between the two — there is no second schema engine. Relation
+    /// roles keep their player set grouped because cardinality belongs to the
+    /// role, not to each individual player type.
+    pub fn from_descriptors(descriptors: &[TypeDescriptor]) -> Self {
+        let mut info = Self::default();
+
+        for descriptor in descriptors {
+            match descriptor {
+                TypeDescriptor::Entity(entity) => {
+                    register_attribute_types(&mut info, &entity.owned_attributes);
+                    info.entities.insert(
+                        entity.type_name.clone(),
+                        EntitySchemaEntry {
+                            type_name: entity.type_name.clone(),
+                            is_abstract: entity.is_abstract,
+                            parent_type: entity.parent_type.clone(),
+                            owned_attributes: owned_attribute_entries(&entity.owned_attributes),
+                            plays_cardinalities: BTreeMap::new(),
+                        },
+                    );
+                }
+                TypeDescriptor::Relation(relation) => {
+                    register_attribute_types(&mut info, &relation.owned_attributes);
+                    let roles = relation
+                        .roles
+                        .iter()
+                        .map(|role| RoleEntry {
+                            role_name: role.role_name.clone(),
+                            player_type_names: role.player_type_names.clone(),
+                            cardinality: role.cardinality,
+                        })
+                        .collect();
+
+                    info.relations.insert(
+                        relation.type_name.clone(),
+                        RelationSchemaEntry {
+                            type_name: relation.type_name.clone(),
+                            is_abstract: relation.is_abstract,
+                            parent_type: relation.parent_type.clone(),
+                            owned_attributes: owned_attribute_entries(&relation.owned_attributes),
+                            roles,
+                            plays_cardinalities: BTreeMap::new(),
+                        },
+                    );
+                }
+            }
+        }
+
+        info
+    }
+
     /// Look up an entity by name.
     pub fn get_entity_by_name(&self, name: &str) -> Option<&EntitySchemaEntry> {
         self.entities.get(name)
@@ -152,9 +365,138 @@ impl SchemaInfo {
     }
 }
 
+fn owned_attribute_entries_from_typeql(
+    attrs: &[core_schema::OwnedAttribute],
+    known_attrs: &BTreeMap<String, AttributeSchemaEntry>,
+) -> Vec<OwnedAttributeEntry> {
+    attrs
+        .iter()
+        .map(|attr| OwnedAttributeEntry {
+            attr_name: attr.name.clone(),
+            value_type: known_attrs
+                .get(&attr.name)
+                .map(|entry| entry.value_type)
+                .unwrap_or(ValueType::String),
+            annotations: annotations_from_typeql(attr),
+        })
+        .collect()
+}
+
+fn annotations_from_typeql(attr: &core_schema::OwnedAttribute) -> Vec<Annotation> {
+    let mut annotations = Vec::new();
+    if attr.is_key {
+        annotations.push(Annotation::Key);
+    }
+    if attr.is_unique {
+        annotations.push(Annotation::Unique);
+    }
+    if let Some(cardinality) = &attr.cardinality {
+        annotations.push(Annotation::Card(cardinality.min, cardinality.max));
+    }
+    annotations
+}
+
+/// `plays`-derived data, built in a single pass over the schema. Both maps come
+/// from the same `PlayedRole` walk, so they are collected together rather than in
+/// two separate traversals.
+struct PlaysData {
+    /// (relation, role) → player type names. Players are grouped because
+    /// relates-side cardinality belongs to the role, not the individual player.
+    role_players: BTreeMap<(String, String), BTreeSet<String>>,
+    /// player type name → (role_ref → (min, max)). Only `@card`-annotated plays
+    /// appear; bare plays are omitted so the overlay stays empty by default,
+    /// preserving the bare `… plays r:role;` emission.
+    plays_cards: BTreeMap<String, BTreeMap<String, (u32, Option<u32>)>>,
+}
+
+fn plays_data_from_schema(schema: &core_schema::TypeSchema) -> PlaysData {
+    let mut data = PlaysData {
+        role_players: BTreeMap::new(),
+        plays_cards: BTreeMap::new(),
+    };
+
+    for (entity_name, entity) in &schema.entities {
+        accumulate_plays(&mut data, entity_name, &entity.plays);
+    }
+    for (relation_name, relation) in &schema.relations {
+        accumulate_plays(&mut data, relation_name, &relation.plays);
+    }
+
+    data
+}
+
+/// Fold one player type's `plays` clauses into both the role→players inversion
+/// and the plays-card overlay in a single walk. A bare plays contributes only to
+/// the inversion; a `@card`-annotated plays also seeds the overlay.
+fn accumulate_plays(
+    data: &mut PlaysData,
+    player_type_name: &str,
+    played_roles: &[core_schema::PlayedRole],
+) {
+    for played in played_roles {
+        if let Some((relation_name, role_name)) = split_role_ref(&played.role_ref) {
+            data.role_players
+                .entry((relation_name.to_string(), role_name.to_string()))
+                .or_default()
+                .insert(player_type_name.to_string());
+        }
+        if let Some(cardinality) = &played.cardinality {
+            data.plays_cards
+                .entry(player_type_name.to_string())
+                .or_default()
+                .insert(played.role_ref.clone(), cardinality_tuple(cardinality));
+        }
+    }
+}
+
+fn split_role_ref(role_ref: &str) -> Option<(&str, &str)> {
+    let (relation_name, role_name) = role_ref.split_once(':')?;
+    if relation_name.is_empty() || role_name.is_empty() {
+        return None;
+    }
+    Some((relation_name, role_name))
+}
+
+fn cardinality_tuple(cardinality: &core_schema::Cardinality) -> (u32, Option<u32>) {
+    (cardinality.min, cardinality.max)
+}
+
+fn value_type_from_typeql(value_type: &str) -> ValueType {
+    match value_type {
+        "integer" => ValueType::Long,
+        other => ValueType::parse(other).unwrap_or(ValueType::String),
+    }
+}
+
+fn owned_attribute_entries(attributes: &[OwnedAttributeDescriptor]) -> Vec<OwnedAttributeEntry> {
+    attributes
+        .iter()
+        .map(|attr| {
+            // Python descriptors emit scalar optionality as `Annotation::Card(0, Some(1))`.
+            // `is_optional` remains descriptor-only dynamic-manager metadata.
+            OwnedAttributeEntry {
+                attr_name: attr.attr_name.clone(),
+                value_type: attr.value_type,
+                annotations: attr.annotations.clone(),
+            }
+        })
+        .collect()
+}
+
+fn register_attribute_types(info: &mut SchemaInfo, attributes: &[OwnedAttributeDescriptor]) {
+    for attr in attributes {
+        info.attributes
+            .entry(attr.attr_name.clone())
+            .or_insert_with(|| AttributeSchemaEntry::new(attr.attr_name.clone(), attr.value_type));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::descriptor::{
+        EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
+    };
 
     #[test]
     fn schema_info_empty() {
@@ -174,6 +516,7 @@ mod tests {
                 is_abstract: false,
                 parent_type: None,
                 owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         assert!(info.get_entity_by_name("person").is_some());
@@ -191,6 +534,7 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 roles: vec![],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         assert!(info.get_relation_by_name("employment").is_some());
@@ -201,17 +545,11 @@ mod tests {
         let mut info = SchemaInfo::default();
         info.attributes.insert(
             "name".into(),
-            AttributeSchemaEntry {
-                attr_name: "name".into(),
-                value_type: ValueType::String,
-            },
+            AttributeSchemaEntry::new("name", ValueType::String),
         );
         info.attributes.insert(
             "age".into(),
-            AttributeSchemaEntry {
-                attr_name: "age".into(),
-                value_type: ValueType::Long,
-            },
+            AttributeSchemaEntry::new("age", ValueType::Long),
         );
         assert!(info.validate().is_ok());
     }
@@ -243,7 +581,7 @@ mod tests {
             value_type: ValueType::String,
             annotations: vec![Annotation::Card(0, None)],
         };
-        assert_eq!(entry.flags_string(), "@card(0..*)");
+        assert_eq!(entry.flags_string(), "@card(0..)");
     }
 
     #[test]
@@ -270,6 +608,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         info.relations.insert(
@@ -281,16 +620,15 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![RoleEntry {
                     role_name: "employee".into(),
-                    player_type_name: "person".into(),
+                    player_type_names: vec!["person".into()],
+                    cardinality: None,
                 }],
+                plays_cardinalities: BTreeMap::new(),
             },
         );
         info.attributes.insert(
             "name".into(),
-            AttributeSchemaEntry {
-                attr_name: "name".into(),
-                value_type: ValueType::String,
-            },
+            AttributeSchemaEntry::new("name", ValueType::String),
         );
 
         let json = serde_json::to_string(&info).unwrap();
@@ -301,6 +639,322 @@ mod tests {
         assert_eq!(
             info.entities.get("person").unwrap().owned_attributes,
             parsed.entities.get("person").unwrap().owned_attributes,
+        );
+    }
+
+    #[test]
+    fn from_descriptors_lowers_entities_relations_roles_and_attribute_side_map() {
+        let descriptors = vec![
+            TypeDescriptor::Entity(EntityDescriptor {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: Some("thing".into()),
+                owned_attributes: vec![OwnedAttributeDescriptor {
+                    field_name: "name".into(),
+                    attr_name: "name".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Key],
+                    is_optional: false,
+                }],
+            }),
+            TypeDescriptor::Relation(RelationDescriptor {
+                type_name: "employment".into(),
+                is_abstract: true,
+                parent_type: Some("contract".into()),
+                owned_attributes: vec![OwnedAttributeDescriptor {
+                    field_name: "since".into(),
+                    attr_name: "since".into(),
+                    value_type: ValueType::Date,
+                    annotations: vec![],
+                    is_optional: false,
+                }],
+                roles: vec![RoleDescriptor {
+                    role_name: "participant".into(),
+                    player_type_names: vec!["person".into(), "company".into()],
+                    cardinality: Some((1, Some(2))),
+                }],
+            }),
+        ];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        assert_eq!(
+            info.entities.get("person"),
+            Some(&EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: Some("thing".into()),
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "name".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Key],
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            })
+        );
+        assert_eq!(
+            info.relations.get("employment"),
+            Some(&RelationSchemaEntry {
+                type_name: "employment".into(),
+                is_abstract: true,
+                parent_type: Some("contract".into()),
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "since".into(),
+                    value_type: ValueType::Date,
+                    annotations: vec![],
+                }],
+                roles: vec![RoleEntry {
+                    role_name: "participant".into(),
+                    player_type_names: vec!["person".into(), "company".into()],
+                    cardinality: Some((1, Some(2))),
+                },],
+                plays_cardinalities: BTreeMap::new(),
+            })
+        );
+        assert_eq!(
+            info.attributes.get("name"),
+            Some(&AttributeSchemaEntry::new("name", ValueType::String))
+        );
+        assert_eq!(
+            info.attributes.get("since"),
+            Some(&AttributeSchemaEntry::new("since", ValueType::Date))
+        );
+    }
+
+    #[test]
+    fn from_descriptors_preserves_cardinality_annotation_for_optional_attributes() {
+        let descriptors = vec![TypeDescriptor::Entity(EntityDescriptor {
+            type_name: "person".into(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![OwnedAttributeDescriptor {
+                field_name: "age".into(),
+                attr_name: "age".into(),
+                value_type: ValueType::Long,
+                annotations: vec![Annotation::Card(0, Some(1))],
+                is_optional: true,
+            }],
+        })];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+        let attr = &info.entities["person"].owned_attributes[0];
+
+        assert_eq!(attr.annotations, vec![Annotation::Card(0, Some(1))]);
+        assert_eq!(attr.flags_string(), "@card(0..1)");
+    }
+
+    #[test]
+    fn from_descriptors_empty_yields_empty_schema() {
+        let info = SchemaInfo::from_descriptors(&[]);
+
+        assert!(info.entities.is_empty());
+        assert!(info.relations.is_empty());
+        assert!(info.attributes.is_empty());
+    }
+
+    #[test]
+    fn from_typeql_preserves_attribute_type_annotations() {
+        let typeql = r#"
+define
+
+attribute base-token @abstract, value string;
+attribute email sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");
+attribute status @independent, value string @values("active", "inactive");
+attribute age, value integer @range(0..150);
+"#;
+        let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
+
+        let base = info
+            .attributes
+            .get("base-token")
+            .expect("base-token missing");
+        assert!(base.is_abstract);
+
+        let email = info.attributes.get("email").expect("email missing");
+        assert_eq!(email.parent_type.as_deref(), Some("base-token"));
+        assert_eq!(email.regex.as_deref(), Some(r"^[a-z]+@[a-z]+\.[a-z]+$"));
+
+        let status = info.attributes.get("status").expect("status missing");
+        assert!(status.is_independent);
+        assert_eq!(
+            status.allowed_values,
+            Some(vec!["active".into(), "inactive".into()])
+        );
+
+        let age = info.attributes.get("age").expect("age missing");
+        assert_eq!(age.range, Some((Some("0".into()), Some("150".into()))));
+
+        let emitted = info.to_typeql().expect("emit failed");
+        assert!(emitted.contains(
+            r#"attribute email sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");"#
+        ));
+        assert!(emitted.contains(
+            r#"attribute status @independent, value string @values("active", "inactive");"#
+        ));
+        assert!(emitted.contains("attribute age, value integer @range(0..150);"));
+    }
+
+    #[test]
+    fn attribute_schema_entry_serde_defaults_preserve_old_json_shape() {
+        let json = r#"{"attr_name":"name","value_type":"string"}"#;
+        let entry: AttributeSchemaEntry = serde_json::from_str(json).expect("deserialize failed");
+
+        assert_eq!(entry, AttributeSchemaEntry::new("name", ValueType::String));
+        assert_eq!(
+            serde_json::to_string(&entry).expect("serialize failed"),
+            r#"{"attr_name":"name","value_type":"string"}"#
+        );
+    }
+
+    /// `from_typeql` populates `plays_cardinalities` when a `@card` annotation
+    /// is present on a plays clause.
+    #[test]
+    fn from_typeql_populates_plays_cardinalities() {
+        // The parser merges entity blocks that share the same type name, so the
+        // plays clause can live in a second entity block after the relation.
+        let typeql = r#"
+define
+
+attribute allowed-val, value string;
+attribute allowed-nm, value string;
+
+entity tval, owns allowed-nm @key;
+entity tattr, owns allowed-nm @key;
+
+relation accepts, relates allowed-val, relates allowed-nm;
+
+entity tval, plays accepts:allowed-val @card(0..1);
+entity tattr, plays accepts:allowed-nm;
+"#;
+        let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
+
+        let tval = info.entities.get("tval").expect("tval missing");
+        assert_eq!(
+            tval.plays_cardinalities.get("accepts:allowed-val"),
+            Some(&(0, Some(1))),
+            "tval should have plays-card for accepts:allowed-val"
+        );
+
+        // tattr plays without @card → its map must be empty
+        let tattr = info.entities.get("tattr").expect("tattr missing");
+        assert!(
+            tattr.plays_cardinalities.is_empty(),
+            "tattr has no plays-card; map should be empty"
+        );
+    }
+
+    /// Per-player boundary: two players of the same role, only one has plays-card.
+    #[test]
+    fn plays_cardinalities_per_player_boundary() {
+        let typeql = r#"
+define
+
+attribute label, value string;
+
+entity player-a, owns label @key;
+entity player-b, owns label @key;
+
+relation link, relates member;
+
+entity player-a, plays link:member @card(1..1);
+entity player-b, plays link:member;
+"#;
+        let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
+
+        let a = info.entities.get("player-a").expect("player-a missing");
+        assert_eq!(
+            a.plays_cardinalities.get("link:member"),
+            Some(&(1, Some(1))),
+            "player-a should have plays-card"
+        );
+
+        let b = info.entities.get("player-b").expect("player-b missing");
+        assert!(
+            !b.plays_cardinalities.contains_key("link:member"),
+            "player-b should have no plays-card for link:member"
+        );
+    }
+
+    /// Integration smoke: a plays-card authored as inline TypeQL survives the
+    /// full parse → IR → emit boundary. The parser reads the inline
+    /// `entity X, plays r:role` form (TypeDB's export grammar); the emitter
+    /// renders the standalone `X plays r:role;` form (TypeDB's define grammar).
+    /// This is the realistic introspect-then-re-emit flow, not byte idempotence
+    /// — the two grammars are intentionally asymmetric, so
+    /// `from_typeql(to_typeql(..))` is not a valid oracle.
+    #[test]
+    fn plays_card_survives_parse_to_emit_boundary() {
+        let typeql = r#"
+define
+
+attribute label, value string;
+
+entity holder, owns label @key;
+
+relation owns-one, relates slot;
+
+entity holder, plays owns-one:slot @card(0..1);
+"#;
+        let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
+        let emitted = info.to_typeql().expect("emit failed");
+        assert!(
+            emitted.contains("holder plays owns-one:slot @card(0..1);"),
+            "plays-card must survive parse->IR->emit: {emitted}"
+        );
+    }
+
+    /// Serde round-trip: a `SchemaInfo` carrying a `plays_cardinalities` entry
+    /// serializes and deserializes correctly.
+    #[test]
+    fn plays_cardinalities_serde_roundtrip() {
+        let mut cards = BTreeMap::new();
+        cards.insert("accepts:allowed-value".to_string(), (0u32, Some(1u32)));
+
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "tval".into(),
+            EntitySchemaEntry {
+                type_name: "tval".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: cards.clone(),
+            },
+        );
+
+        let json = serde_json::to_string(&info).expect("serialize failed");
+        let parsed: SchemaInfo = serde_json::from_str(&json).expect("deserialize failed");
+
+        assert_eq!(
+            parsed.entities.get("tval").unwrap().plays_cardinalities,
+            cards,
+            "plays_cardinalities must round-trip through JSON"
+        );
+    }
+
+    /// Serde back-compat: a JSON payload that omits `plays_cardinalities`
+    /// deserializes successfully and defaults to an empty map.
+    #[test]
+    fn plays_cardinalities_serde_default_when_absent() {
+        // JSON for an EntitySchemaEntry without the plays_cardinalities field
+        let json = r#"{
+            "entities": {
+                "person": {
+                    "type_name": "person",
+                    "is_abstract": false,
+                    "parent_type": null,
+                    "owned_attributes": []
+                }
+            },
+            "relations": {},
+            "attributes": {}
+        }"#;
+
+        let info: SchemaInfo = serde_json::from_str(json).expect("deserialize failed");
+        let person = info.entities.get("person").expect("person missing");
+        assert!(
+            person.plays_cardinalities.is_empty(),
+            "missing plays_cardinalities field should default to empty map"
         );
     }
 }

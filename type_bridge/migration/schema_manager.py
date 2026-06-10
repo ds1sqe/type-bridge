@@ -149,6 +149,7 @@ class SchemaManager:
             diff.removed_entities
             or diff.removed_relations
             or diff.removed_attributes
+            or diff.modified_attributes
             or diff.modified_entities
             or diff.modified_relations
         )

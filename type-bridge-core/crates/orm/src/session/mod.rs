@@ -16,3 +16,6 @@ pub use backend::TxType;
 pub use context::TransactionContext;
 pub use database::Database;
 pub use transaction::Transaction;
+
+#[cfg(feature = "typedb")]
+pub use real_driver::ensure_database_exists;

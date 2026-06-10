@@ -1,0 +1,15 @@
+define
+attribute name, value string;
+attribute score, value integer;
+entity player, owns name;
+entity game, owns name, owns score;
+relation participation, relates game, relates participant;
+fun top-scorer($g: game) -> { player }:
+  match
+    ($g, $p) isa participation;
+  return { $p };
+fun max-score($g: game) -> double:
+  match
+    $g has score $s;
+  return max($s);
+struct player-stats, value wins integer, value losses integer, value nickname string?;

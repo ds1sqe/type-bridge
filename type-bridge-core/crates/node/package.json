@@ -1,0 +1,53 @@
+{
+  "name": "@type-bridge/node",
+  "version": "1.4.5",
+  "description": "Node.js NAPI facade for the type-bridge Rust ORM runtime",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "*.node",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build:native && npm run build:types",
+    "prepublishOnly": "npm run build",
+    "build:native": "node scripts/build-native.js",
+    "build:types": "tsc -p tsconfig.json",
+    "build:typed-integration": "tsc -p tsconfig.typed-integration.json",
+    "build:parity-reader": "tsc -p tsconfig.parity.json",
+    "build:generator-parity": "tsc -p tsconfig.generator-parity.json",
+    "scope:probe": "node tests/scope-probe.cjs",
+    "dts:parity": "node tests/dts-parity.cjs",
+    "dts:baseline": "node tests/dts-parity.cjs --update",
+    "test:dts": "node --test tests/dts-parity.test.cjs",
+    "smoke:package": "node tests/package-smoke.cjs",
+    "test:unit": "tsc -p tsconfig.unit.json && node --test ../../../tmp/node-unit/tests/unit/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "typecheck:integration": "tsc -p tsconfig.integration.json",
+    "test:typed-integration": "npm run build:typed-integration && node --test ../../../tmp/node-typed-integration/tests/typed-integration/*.test.js ../../../tmp/node-typed-integration/tests/integration/typed/*.test.js",
+    "test:integration": "node scripts/run-integration.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "napi": {
+    "name": "type_bridge_node",
+    "triples": {
+      "defaults": true
+    }
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4",
+    "@types/node": "^25.9.1",
+    "typescript": "^5.5.0"
+  }
+}

@@ -31,6 +31,43 @@ impl RealBackend {
     }
 }
 
+/// Ensure a TypeDB database exists, creating it if absent.
+///
+/// Connects with a standalone driver, checks whether the named database exists,
+/// and creates it only when it does not.  Returns `Err` on any TypeDB failure
+/// (including unreachable server) so callers can treat the error as a hard
+/// failure rather than silently skipping.
+pub async fn ensure_database_exists(
+    address: &str,
+    database: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), OrmError> {
+    let driver = TypeDBDriver::new(
+        address,
+        Credentials::new(username, password),
+        DriverOptions::new(false, None)
+            .map_err(|e| OrmError::Connection(format!("Driver options error: {e}")))?,
+    )
+    .await
+    .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))?;
+
+    let databases = driver.databases();
+    let exists = databases
+        .contains(database)
+        .await
+        .map_err(|e| OrmError::Connection(format!("Database lookup failed: {e}")))?;
+
+    if !exists {
+        databases
+            .create(database)
+            .await
+            .map_err(|e| OrmError::Connection(format!("Database create failed: {e}")))?;
+    }
+
+    Ok(())
+}
+
 impl DriverBackend for RealBackend {
     fn open_transaction(
         &self,
@@ -57,6 +94,21 @@ impl DriverBackend for RealBackend {
 
     fn is_open(&self) -> bool {
         self.driver.is_open()
+    }
+
+    fn schema_text(&self, database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            let db = self
+                .driver
+                .databases()
+                .get(&database)
+                .await
+                .map_err(|e| OrmError::Connection(format!("Database lookup failed: {e}")))?;
+            db.schema()
+                .await
+                .map_err(|e| OrmError::Connection(format!("Schema export failed: {e}")))
+        })
     }
 }
 
@@ -127,6 +179,29 @@ impl TransactionOps for RealTransaction {
             t.commit()
                 .await
                 .map_err(|e| OrmError::Transaction(format!("Commit failed: {e}")))
+        })
+    }
+
+    fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        let tx = self.transaction.take();
+        Box::pin(async move {
+            let t =
+                tx.ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+            t.rollback()
+                .await
+                .map_err(|e| OrmError::Transaction(format!("Rollback failed: {e}")))
+        })
+    }
+
+    fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        let tx = self.transaction.take();
+        Box::pin(async move {
+            let Some(t) = tx else {
+                return Ok(());
+            };
+            t.close()
+                .await
+                .map_err(|e| OrmError::Transaction(format!("Close failed: {e}")))
         })
     }
 }

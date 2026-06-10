@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/python", "crates/server", "crates/orm", "crates/orm-derive"]
+members = [
+    "crates/core",
+    "crates/migration",
+    "crates/python",
+    "crates/server",
+    "crates/orm",
+    "crates/orm-derive",
+    "crates/node",
+    "crates/toml-transpiler",
+]
 
 [workspace.package]
 license = "MIT"

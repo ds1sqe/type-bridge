@@ -1,0 +1,59 @@
+# Role cardinality test schema.
+# Covers four @card forms: 2..2 (exact), 1..1 (exact), 2.. (unbounded), 1..3 (range).
+
+[attributes.name]
+value = "string"
+
+[attributes.content]
+value = "string"
+
+[attributes.score]
+value = "double"
+
+[entities.memory]
+owns = ["name", "content"]
+plays = [{ relation = "is_similar_to", role = "similar_memory" }]
+
+[entities.person]
+owns = ["name"]
+plays = [
+    { relation = "friendship", role = "friend" },
+    { relation = "group_membership", role = "member" },
+    { relation = "review", role = "reviewer" },
+]
+
+[entities.document]
+owns = ["name", "content"]
+plays = [{ relation = "review", role = "document" }]
+
+[entities.group]
+owns = ["name"]
+plays = [{ relation = "group_membership", role = "group" }]
+
+# Exact cardinality: exactly 2 similar memories
+[relations.is_similar_to]
+roles = [
+    { name = "similar_memory", card = "2..2" },
+]
+owns = ["score"]
+
+# Symmetric relation: exactly 2 friends
+[relations.friendship]
+roles = [
+    { name = "friend", card = "2..2" },
+]
+
+# Group with bounded group count and unbounded members
+[relations.group_membership]
+roles = [
+    { name = "group", card = "1..1" },
+    { name = "member", card = "2.." },
+]
+
+# Mixed: exactly 1 document, 1 to 3 reviewers
+[relations.review]
+roles = [
+    { name = "document", card = "1..1" },
+    { name = "reviewer", card = "1..3" },
+]
+owns = ["score"]

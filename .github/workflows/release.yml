@@ -20,7 +20,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,7 +30,7 @@ jobs:
           python-version: "3.13.5"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
@@ -56,13 +58,23 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
 
       - name: Publish type-bridge-core-lib
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p type-bridge-core-lib || true
+        # `|| true` swallowed every error; instead skip only when this version is
+        # already on crates.io and let any other failure red the job.
+        run: |
+          if ! out="$(cargo publish -p type-bridge-core-lib 2>&1)"; then
+            echo "$out"
+            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
+              || { echo "type-bridge-core-lib publish failed (not already-published)"; exit 1; }
+            echo "type-bridge-core-lib already published at this version; skipping."
+          fi
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -71,7 +83,13 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p type-bridge-orm-derive || true
+        run: |
+          if ! out="$(cargo publish -p type-bridge-orm-derive 2>&1)"; then
+            echo "$out"
+            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
+              || { echo "type-bridge-orm-derive publish failed (not already-published)"; exit 1; }
+            echo "type-bridge-orm-derive already published at this version; skipping."
+          fi
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -80,7 +98,13 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p type-bridge-orm || true
+        run: |
+          if ! out="$(cargo publish -p type-bridge-orm 2>&1)"; then
+            echo "$out"
+            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
+              || { echo "type-bridge-orm publish failed (not already-published)"; exit 1; }
+            echo "type-bridge-orm already published at this version; skipping."
+          fi
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -89,7 +113,13 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p type-bridge-server || true
+        run: |
+          if ! out="$(cargo publish -p type-bridge-server 2>&1)"; then
+            echo "$out"
+            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
+              || { echo "type-bridge-server publish failed (not already-published)"; exit 1; }
+            echo "type-bridge-server already published at this version; skipping."
+          fi
 
   # Build type-bridge-core wheels for all platforms
   build-core-wheels:
@@ -97,6 +127,7 @@ jobs:
     needs: test
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -120,7 +151,7 @@ jobs:
 
       - name: Set up QEMU (Linux aarch64 cross-compilation)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           platforms: arm64
 
@@ -131,7 +162,13 @@ jobs:
           python-version: "3.13.5"
 
       - name: Build wheel
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        env:
+          # The manylinux aarch64 cross-compiler does not define the ARM ACLE
+          # macro __ARM_ARCH that ring's pregenerated assembly requires. The
+          # variable name is target-suffixed, so it only affects the aarch64
+          # Linux wheel even though it is declared on every matrix leg.
+          CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '-D__ARM_ARCH=8' || '' }}
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -i python3.13
@@ -154,7 +191,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build sdist
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: sdist
           args: --out dist
@@ -181,12 +218,14 @@ jobs:
           python-version: "3.13.5"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
 
       - name: Build package
         run: uv build
@@ -196,6 +235,70 @@ jobs:
         with:
           name: python-dist
           path: dist/
+
+  # Build and pack the @type-bridge/node binding for the GitHub Release. The
+  # registry publish is staged but stays inert until an NPM_TOKEN secret exists,
+  # so tagging a release never fails for a missing token.
+  build-node:
+    name: Build Node binding package
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+          registry-url: https://registry.npmjs.org
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build native module and TypeScript surface
+        run: npm run build
+
+      - name: Pack npm tarball
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination dist
+
+      - name: Upload npm tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-package
+          path: type-bridge-core/crates/node/dist/*.tgz
+
+      # secrets are unavailable in step `if:` conditions, so detect the token in a
+      # step (via env, never echoed) and gate the publish on this step's output.
+      - name: Detect npm token
+        id: npm_token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No NPM_TOKEN secret; skipping the npm registry publish."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm registry
+        if: steps.npm_token.outputs.present == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
 
   # Publish type-bridge-core to PyPI (must complete before type-bridge)
   publish-core-pypi:
@@ -223,7 +326,7 @@ jobs:
         run: ls -la dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           skip-existing: true
 
@@ -243,14 +346,14 @@ jobs:
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           skip-existing: true
 
   # Create draft GitHub Release with all artifacts
   github-release:
     name: Create GitHub Release
-    needs: [publish-python-pypi, publish-crates]
+    needs: [publish-python-pypi, publish-crates, build-node]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -277,8 +380,14 @@ jobs:
           name: python-dist
           path: dist/
 
+      - name: Download Node package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: node-package
+          path: dist/
+
       - name: Create draft release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           draft: true
           generate_release_notes: true

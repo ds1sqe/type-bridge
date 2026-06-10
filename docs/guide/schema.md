@@ -48,7 +48,7 @@ class SchemaManager:
 Register entity and relation types before generating schema:
 
 ```python
-from type_bridge import Entity, Relation, TypeFlags, Role
+from type_bridge import Card, Entity, Relation, TypeFlags, Role
 
 class Person(Entity):
     flags = TypeFlags(name="person")
@@ -62,7 +62,12 @@ class Company(Entity):
 class Employment(Relation):
     flags = TypeFlags(name="employment")
     employee: Role[Person] = Role("employee", Person)
-    employer: Role[Company] = Role("employer", Company)
+    employer: Role[Company] = Role(
+        "employer",
+        Company,
+        cardinality=Card(1, 1),
+        plays_cardinality=Card(0, 1),
+    )
     position: Position
 
 # Register all models
@@ -94,11 +99,11 @@ print(typeql_schema)
 #
 # relation employment,
 #     relates employee,
-#     relates employer,
+#     relates employer @card(1..1),
 #     owns position @card(1..1);
 #
 # person plays employment:employee;
-# company plays employment:employer;
+# company plays employment:employer @card(0..1);
 ```
 
 ### Sync Schema to Database

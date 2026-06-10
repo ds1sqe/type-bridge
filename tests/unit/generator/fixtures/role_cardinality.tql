@@ -1,0 +1,12 @@
+define
+attribute name, value string;
+attribute content, value string;
+attribute score, value double;
+entity memory, owns name, owns content, plays is_similar_to:similar_memory;
+entity person, owns name, plays friendship:friend, plays group_membership:member, plays review:reviewer;
+entity document, owns name, owns content, plays review:document;
+entity group, owns name, plays group_membership:group;
+relation is_similar_to, relates similar_memory @card(2..2), owns score;
+relation friendship, relates friend @card(2..2);
+relation group_membership, relates group @card(1..1), relates member @card(2..);
+relation review, relates document @card(1..1), relates reviewer @card(1..3), owns score;

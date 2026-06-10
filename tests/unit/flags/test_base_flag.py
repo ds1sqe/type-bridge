@@ -218,7 +218,7 @@ class TestBaseFlag:
 
         # Concrete entities should appear
         assert "entity person" in schema
-        assert "entity company, sub person" in schema
+        assert "entity company sub person" in schema
 
     def test_is_base_default_false(self):
         """Test that base defaults to False for normal entities."""

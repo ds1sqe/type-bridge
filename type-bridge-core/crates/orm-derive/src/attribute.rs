@@ -38,6 +38,11 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
 
     // Parse #[attribute(name = "...", value_type = "...")]
     let (attr_name, value_type) = parse_attribute_attrs(&input.attrs)?;
+    let value_type = match value_type.as_str() {
+        "integer" | "int" => "long".to_string(),
+        "bool" => "boolean".to_string(),
+        _ => value_type,
+    };
 
     // Map value_type string to ValueType enum variant
     let value_type_enum = match value_type.as_str() {

@@ -1,0 +1,40 @@
+[attributes.isbn]
+value = "string"
+abstract = true
+
+[attributes.isbn-13]
+sub = "isbn"
+
+[attributes.isbn-10]
+sub = "isbn"
+
+[attributes.title]
+value = "string"
+
+[attributes.stock]
+value = "integer"
+
+[attributes.status]
+value = "string"
+regex = "^(paid|dispatched|delivered|returned|canceled)$"
+
+[attributes.reaction]
+value = "string"
+values = ["like", "love", "funny"]
+
+[attributes.age]
+value = "integer"
+range = "0..150"
+
+[entities.book]
+abstract = true
+owns = [
+    { attribute = "isbn-13", key = true },
+    { attribute = "isbn-10", unique = true },
+    { attribute = "isbn", card = "0..2" },
+    "title",
+]
+
+[entities.hardback]
+sub = "book"
+owns = ["stock"]

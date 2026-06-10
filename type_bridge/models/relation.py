@@ -107,6 +107,16 @@ class Relation(TypeDBType):
         for role_name, role in cls._roles.items():
             type.__setattr__(cls, role_name, role)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Reject instance assignment to roles that declare no player."""
+        role = self.__class__._roles.get(name)
+        if role is not None and role.is_relates_only:
+            raise TypeError(
+                f"Role '{role.role_name}' is relates-only; it declares no player "
+                "to bind on this relation"
+            )
+        super().__setattr__(name, value)
+
     @classmethod
     def _get_base_type_class(cls) -> type[Relation]:
         """Return Relation as the base type class for supertype resolution."""
@@ -144,17 +154,20 @@ class Relation(TypeDBType):
         return data
 
     @model_validator(mode="after")
-    def _validate_required_roles(self) -> Self:
-        """Reject missing role players for roles with required cardinality."""
+    def _normalize_unbound_role_defaults(self) -> Self:
+        """Replace leaked class-level RoleRef defaults with None.
+
+        Role players are optional at construction time so relations can be
+        built incrementally or hydrated from partial results. Completeness
+        for a non-optional role is enforced where it matters — at insert and
+        match time (see to_ast and the query builders), which raise when a
+        required player is still unset.
+        """
         from type_bridge.fields.role import RoleRef
 
-        for role_name, role in self.__class__._roles.items():
-            value = self.__dict__.get(role_name)
-            if isinstance(value, RoleRef):
-                value = None
+        for role_name in self.__class__._roles:
+            if isinstance(self.__dict__.get(role_name), RoleRef):
                 cast("dict[str, Any]", self.__dict__)[role_name] = None
-            if value is None and not role.is_optional:
-                raise ValueError(f"Role player '{role_name}' is required")
         return self
 
     def to_ast(self, var: str = "$r") -> InsertClause:

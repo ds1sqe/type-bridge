@@ -466,3 +466,61 @@ class RenameAttribute(Operation):
     def to_rollback_typeql(self) -> str | None:
         # Rename operations are not easily reversible
         return None
+
+
+# --- Backfill Operations ---
+
+
+@dataclass
+class CopyAttribute(Operation):
+    """Copy an attribute value from source to destination on all instances of the owner type.
+
+    This is a DML (data manipulation) backfill operation that copies attribute values from
+    one attribute to another for every instance of the owning type. The forward operation
+    uses an insert-if-absent pattern (idempotent — safe to re-run). The reverse deletes all
+    destination attribute values added by this operation.
+
+    No transform function is supported in v1. Use RunTypeQL for value transforms.
+
+    Example:
+        ops.CopyAttribute(
+            owner=Person,
+            source="legacy-name",
+            dest="display-name",
+        )
+        # Backfills: match $x isa person, has legacy-name $v;
+        #            not { $x has display-name $d; };
+        #            insert $x has display-name == $v;
+
+    Note: ``dest`` must already be owned by ``owner`` via a prior schema op.
+    """
+
+    owner: type[Entity | Relation]
+    source: str
+    dest: str
+    filter: str | None = None
+
+    def to_typeql(self) -> str:
+        """Generate insert-if-absent backfill TypeQL.
+
+        Emits a match+insert that copies ``source`` values to ``dest`` for every
+        owner instance that does not already have the destination attribute.
+        """
+        owner_name = self.owner.get_type_name()
+        filter_line = f"\n  {self.filter};" if self.filter else ""
+        # `has <dest> == $v` assigns the *value* of the matched source attribute
+        # to a new destination attribute. Writing `has <dest> $v` instead would
+        # fail TypeDB type inference: `$v` is typed as the source attribute and
+        # cannot simultaneously be a destination-attribute instance.
+        return (
+            f"match\n"
+            f"  $x isa {owner_name}, has {self.source} $v;\n"
+            f"  not {{ $x has {self.dest} $d; }};{filter_line}\n"
+            f"insert\n"
+            f"  $x has {self.dest} == $v;"
+        )
+
+    def to_rollback_typeql(self) -> str | None:
+        """Generate the inverse delete that removes all dest values added by this op."""
+        owner_name = self.owner.get_type_name()
+        return f"match $x isa {owner_name}, has {self.dest} $v;\ndelete $v of $x;"

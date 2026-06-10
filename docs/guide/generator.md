@@ -28,6 +28,8 @@ python -m type_bridge.generator schema.tql \
     --implicit-keys id
 ```
 
+Schemas can also be authored in TOML — see [TOML Schema DSL](toml.md).
+
 ### Programmatic Usage
 
 ```python
@@ -296,7 +298,12 @@ class Employment(Relation):
 class Friendship(SocialRelation):
     flags = TypeFlags(name="friendship")
     # Symmetric role - multiple friends allowed per friendship
-    friend: Role[entities.Person] = Role("friend", entities.Person, cardinality=Card(0, 1000))
+    friend: Role[entities.User] = Role(
+        "friend",
+        entities.User,
+        cardinality=Card(0, 1000),
+        plays_cardinality=Card(0, 100),
+    )
 
 class Parentship(Relation):
     flags = TypeFlags(name="parentship")
@@ -516,14 +523,19 @@ fun karma_sum_and_squares() -> double, double:
 
 ### Function Return Types
 
-| TypeQL          | Parsed `return_type` |
-| --------------- | -------------------- |
-| `-> { type }`   | `"{ type }"`         |
-| `-> { t1, t2 }` | `"{ t1, t2 }"`       |
-| `-> type`       | `"type"`             |
-| `-> t1, t2`     | `"t1, t2"`           |
-| `-> t1, t2?`    | `"t1, t2?"`          |
-| `-> bool`       | `"bool"`             |
+The parser produces a structured `ReturnTypeSpec` — a stream flag plus an
+ordered list of `ReturnTypeItem(name, optional)` — instead of a formatted
+string. A `{ ... }` clause sets `is_stream=True`; a trailing `?` sets
+`optional=True` on that item.
+
+| TypeQL          | `is_stream` | `types` (`name`, `optional`)          |
+| --------------- | ----------- | ------------------------------------- |
+| `-> { type }`   | `True`      | `[("type", False)]`                   |
+| `-> { t1, t2 }` | `True`      | `[("t1", False), ("t2", False)]`      |
+| `-> type`       | `False`     | `[("type", False)]`                   |
+| `-> t1, t2`     | `False`     | `[("t1", False), ("t2", False)]`      |
+| `-> t1, t2?`    | `False`     | `[("t1", False), ("t2", True)]`       |
+| `-> bool`       | `False`     | `[("bool", False)]`                   |
 
 ## API Reference
 
@@ -610,7 +622,20 @@ class FunctionSpec:
     """Function definition extracted from a TypeDB schema."""
     name: str                        # e.g., "calculate-age"
     parameters: list[ParameterSpec]  # Function parameters
-    return_type: str                 # e.g., "{ person }" or "integer, integer"
+    return_type: ReturnTypeSpec      # Structured return type
+    docstring: str | None = None     # Optional docstring
+
+@dataclass
+class ReturnTypeSpec:
+    """Structured function return type (stream flag + ordered items)."""
+    is_stream: bool                  # True for a `{ ... }` stream clause
+    types: list[ReturnTypeItem]      # Ordered return items
+
+@dataclass(frozen=True)
+class ReturnTypeItem:
+    """One return-type entry: a type token plus its optionality."""
+    name: str                        # e.g., "person"
+    optional: bool = False           # True when marked with a trailing `?`
 
 @dataclass
 class ParameterSpec:

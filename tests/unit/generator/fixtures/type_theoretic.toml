@@ -1,0 +1,312 @@
+# Type-theoretic corpus mirror.
+# Covers relation-level plays extensively; generated-model parity is not the
+# oracle for this feature because the Python generator model does not retain
+# relation-as-player plays.
+
+[relations.publication]
+abstract = true
+roles = [
+    { name = "publisher" },
+    { name = "location" },
+]
+owns = [
+    { attribute = "isn", key = true },
+    "title",
+    "genre",
+    "price",
+]
+plays = [
+    { relation = "contribution", role = "work" },
+    { relation = "promotion-inclusion", role = "item" },
+    { relation = "order-line", role = "item" },
+    { relation = "review", role = "reviewed" },
+    { relation = "recommendation", role = "recommended" },
+]
+
+[relations.book]
+abstract = true
+sub = "publication"
+owns = [
+    "isbn-13",
+    { attribute = "isbn-10", unique = true },
+    "year",
+    "page-count",
+]
+
+[relations.hardback]
+sub = "book"
+owns = ["stock"]
+
+[relations.paperback]
+sub = "book"
+owns = ["stock"]
+
+[relations.ebook]
+sub = "book"
+
+[relations.serial]
+abstract = true
+sub = "publication"
+owns = [
+    "issn",
+    "next-issue-number",
+    "next-issue-date",
+]
+
+[relations.newspaper]
+sub = "serial"
+
+[relations.magazine]
+sub = "serial"
+
+[relations.journal]
+sub = "serial"
+
+[relations.music-score]
+sub = "publication"
+owns = [
+    "ismn",
+    "year",
+    "page-count",
+    "stock",
+]
+
+[entities.contributor]
+owns = ["name"]
+plays = [
+    { relation = "contribution", role = "contributor" },
+    { relation = "authoring", role = "author" },
+    { relation = "editing", role = "editor" },
+    { relation = "illustrating", role = "illustrator" },
+]
+
+[entities.company]
+abstract = true
+owns = ["name"]
+
+[entities.publisher]
+sub = "company"
+plays = [{ relation = "publication", role = "publisher" }]
+
+[entities.courier]
+sub = "company"
+plays = [{ relation = "delivery", role = "deliverer" }]
+
+[relations.user]
+roles = [{ name = "location" }]
+owns = [
+    { attribute = "id", key = true },
+    "name",
+    "birth-date",
+]
+plays = [
+    { relation = "user-action", role = "user" },
+    { relation = "recommendation", role = "recipient" },
+]
+
+[relations.user-action]
+abstract = true
+roles = [{ name = "user" }]
+owns = ["timestamp"]
+
+[relations.order]
+sub = "user-action"
+owns = [
+    { attribute = "id", key = true },
+    "status",
+]
+plays = [
+    { relation = "order-line", role = "order" },
+    { relation = "delivery", role = "delivered" },
+]
+
+[relations.review]
+sub = "user-action"
+roles = [{ name = "reviewed" }]
+owns = [
+    { attribute = "id", key = true },
+    "score",
+    "verified",
+]
+
+[relations.login]
+sub = "user-action"
+owns = ["success"]
+
+[entities.promotion]
+owns = [
+    { attribute = "code", key = true },
+    "name",
+    "start-timestamp",
+    "end-timestamp",
+]
+plays = [{ relation = "promotion-inclusion", role = "promotion" }]
+
+[relations.address]
+roles = [{ name = "location" }]
+owns = ["street"]
+plays = [{ relation = "delivery", role = "destination" }]
+
+[relations.place]
+abstract = true
+owns = ["name"]
+
+[relations.city]
+sub = "place"
+roles = [{ name = "location" }]
+plays = [
+    { relation = "publication", role = "location" },
+    { relation = "user", role = "location" },
+    { relation = "address", role = "location" },
+]
+
+[relations.state]
+sub = "place"
+roles = [{ name = "location" }]
+plays = [{ relation = "city", role = "location" }]
+
+[relations.country]
+sub = "place"
+roles = [{ name = "location" }]
+plays = [
+    { relation = "city", role = "location" },
+    { relation = "state", role = "location" },
+]
+
+[entities.world]
+plays = [{ relation = "country", role = "location" }]
+
+[relations.contribution]
+roles = [
+    { name = "contributor" },
+    { name = "work" },
+]
+
+[relations.authoring]
+sub = "contribution"
+roles = [{ name = "author", as = "contributor" }]
+
+[relations.editing]
+sub = "contribution"
+roles = [{ name = "editor", as = "contributor" }]
+
+[relations.illustrating]
+sub = "contribution"
+roles = [{ name = "illustrator", as = "contributor" }]
+
+[relations.promotion-inclusion]
+roles = [
+    { name = "promotion" },
+    { name = "item" },
+]
+owns = ["discount"]
+
+[relations.order-line]
+roles = [
+    { name = "order" },
+    { name = "item" },
+]
+owns = [
+    "quantity",
+    "price",
+]
+
+[relations.delivery]
+roles = [
+    { name = "deliverer" },
+    { name = "delivered" },
+    { name = "destination" },
+]
+
+[relations.recommendation]
+roles = [
+    { name = "recommended" },
+    { name = "recipient" },
+]
+
+[attributes.isn]
+abstract = true
+value = "string"
+
+[attributes.isbn]
+abstract = true
+sub = "isn"
+
+[attributes.isbn-13]
+sub = "isbn"
+
+[attributes.isbn-10]
+sub = "isbn"
+
+[attributes.issn]
+sub = "isn"
+
+[attributes.ismn]
+sub = "isn"
+
+[attributes.title]
+value = "string"
+
+[attributes.page-count]
+value = "integer"
+
+[attributes.next-issue-number]
+value = "integer"
+
+[attributes.next-issue-date]
+value = "datetime"
+
+[attributes.genre]
+value = "string"
+
+[attributes.stock]
+value = "integer"
+
+[attributes.price]
+value = "double"
+
+[attributes.discount]
+value = "double"
+
+[attributes.id]
+value = "string"
+
+[attributes.code]
+value = "string"
+
+[attributes.name]
+value = "string"
+
+[attributes.birth-date]
+value = "datetime"
+
+[attributes.street]
+value = "string"
+
+[attributes.year]
+value = "integer"
+
+[attributes.quantity]
+value = "integer"
+
+[attributes.score]
+value = "integer"
+
+[attributes.verified]
+value = "boolean"
+
+[attributes.timestamp]
+value = "datetime"
+
+[attributes.start-timestamp]
+value = "datetime"
+
+[attributes.end-timestamp]
+value = "datetime"
+
+[attributes.status]
+value = "string"
+regex = "^(paid|dispatched|delivered|returned|canceled)$"
+
+[attributes.success]
+value = "boolean"

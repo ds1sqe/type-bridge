@@ -7,6 +7,9 @@
   "exclude": [
     "tests/unit/type-check-except"
   ],
+  "venvPath": ".",
+  "venv": ".venv",
   "pythonVersion": "3.13",
-  "typeCheckingMode": "standard"
+  "typeCheckingMode": "standard",
+  "reportMissingModuleSource": "none"
 }

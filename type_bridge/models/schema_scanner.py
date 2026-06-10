@@ -160,12 +160,25 @@ class SchemaScanner:
         """Scan class for Role definitions (Relation only)."""
         roles = {}
         annotations = getattr(self.cls, "__annotations__", {})
+        try:
+            all_hints = get_type_hints(self.cls, include_extras=True)
+            hints = {key: all_hints.get(key, hint) for key, hint in annotations.items()}
+        except Exception:
+            hints = annotations
 
-        for key, hint in annotations.items():
+        for key, hint in hints.items():
             if not key.startswith("_") and key != "flags":
                 origin = get_origin(hint)
                 if origin is Role:
                     value = self.cls.__dict__.get(key)
                     if isinstance(value, Role):
+                        if value.attr_name is None:
+                            value.__set_name__(self.cls, key)
                         roles[key] = value
+                elif hint is Role:
+                    value = self.cls.__dict__.get(key)
+                    role = value if isinstance(value, Role) else Role(key)
+                    if role.attr_name is None:
+                        role.__set_name__(self.cls, key)
+                    roles[key] = role
         return roles

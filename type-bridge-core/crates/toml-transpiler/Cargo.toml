@@ -1,0 +1,21 @@
+[package]
+name = "type-bridge-toml-transpiler"
+version = "1.4.5"
+edition = "2024"
+description = "TOML schema DSL transpiler producing TypeQL define blocks for type-bridge"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "type_bridge_toml_transpiler"
+path = "src/lib.rs"
+
+[dependencies]
+indexmap = { version = "2", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2"
+toml = { version = "0.8", features = ["parse"] }
+
+[lints]
+workspace = true

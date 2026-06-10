@@ -71,9 +71,10 @@ impl AttributeValue {
     /// typed attribute values. Returns `None` if the JSON value doesn't
     /// match the expected type.
     pub fn from_json(json: &serde_json::Value, value_type: &str) -> Option<Self> {
+        let json = unwrap_value(json);
         match value_type {
             "string" => json.as_str().map(|s| Self::String(s.to_string())),
-            "long" => json.as_i64().map(Self::Long),
+            "long" | "integer" => json_to_i64(json).map(Self::Long),
             "double" => json.as_f64().map(Self::Double),
             "boolean" => json.as_bool().map(Self::Boolean),
             "date" => json.as_str().map(|s| Self::Date(s.to_string())),
@@ -84,6 +85,46 @@ impl AttributeValue {
             _ => None,
         }
     }
+}
+
+fn unwrap_value(value: &serde_json::Value) -> &serde_json::Value {
+    let Some(obj) = value.as_object() else {
+        return value;
+    };
+    if let Some(inner) = obj.get("value") {
+        return unwrap_value(inner);
+    }
+    for key in [
+        "string",
+        "long",
+        "integer",
+        "double",
+        "boolean",
+        "date",
+        "datetime",
+        "datetime-tz",
+        "decimal",
+        "duration",
+    ] {
+        if let Some(inner) = obj.get(key) {
+            return unwrap_value(inner);
+        }
+    }
+    value
+}
+
+fn json_to_i64(value: &serde_json::Value) -> Option<i64> {
+    if let Some(n) = value.as_i64() {
+        return Some(n);
+    }
+    if let Some(n) = value.as_f64()
+        && n.fract() == 0.0
+        && n >= i64::MIN as f64
+        && n <= i64::MAX as f64
+    {
+        return Some(n as i64);
+    }
+    value.as_str().and_then(|s| s.parse::<i64>().ok())
 }
 
 #[cfg(test)]
@@ -110,6 +151,30 @@ mod tests {
         let json = serde_json::json!(42);
         let parsed = AttributeValue::from_json(&json, "long");
         assert_eq!(parsed, Some(AttributeValue::Long(42)));
+    }
+
+    #[test]
+    fn long_from_document_wrappers() {
+        assert_eq!(
+            AttributeValue::from_json(&serde_json::json!({"value": 42}), "long"),
+            Some(AttributeValue::Long(42))
+        );
+        assert_eq!(
+            AttributeValue::from_json(&serde_json::json!({"value": {"integer": 42}}), "long"),
+            Some(AttributeValue::Long(42))
+        );
+        assert_eq!(
+            AttributeValue::from_json(&serde_json::json!("42"), "long"),
+            Some(AttributeValue::Long(42))
+        );
+        assert_eq!(
+            AttributeValue::from_json(&serde_json::json!(42.0), "long"),
+            Some(AttributeValue::Long(42))
+        );
+        assert_eq!(
+            AttributeValue::from_json(&serde_json::json!(42.5), "long"),
+            None
+        );
     }
 
     #[test]

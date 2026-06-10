@@ -110,6 +110,13 @@ Common modeling patterns and best practices:
 
 **Concepts**: Card API, list[Tag], Flag(Card(1, 5)), replace semantics
 
+#### **patterns/cardinality_02_plays_side.py** - Plays-Side Role Cardinality
+- Relates-side role cardinality (`relates role @card`)
+- Plays-side role cardinality (`plays relation:role @card`)
+- Generating TypeQL without a running database
+
+**Concepts**: Role(..., cardinality=Card(...)), Role(..., plays_cardinality=Card(...))
+
 ### 3. Advanced Examples
 
 Advanced features and techniques:
@@ -214,7 +221,7 @@ Advanced features and techniques:
 | Delete Operations | crud_07_delete, crud_07_chainable_operations |
 | Aggregations | crud_06_aggregate, query_01_expressions |
 | Abstract Types | inheritance_01_abstract |
-| Cardinality | cardinality_01_multi_value |
+| Cardinality | cardinality_01_multi_value, cardinality_02_plays_side |
 | Pydantic Integration | features_01_pydantic |
 | Type Safety | features_02_type_safety |
 | Validation | validation_01_reserved_words, validation_02_edge_cases |

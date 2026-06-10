@@ -210,19 +210,20 @@ class Duration(Attribute):
 
     @classmethod
     def _get_pydantic_return_schema(cls) -> core_schema.CoreSchema:
-        """Return schema for timedelta serialization."""
-        return core_schema.timedelta_schema()
+        """Return schema for ISO 8601 duration serialization."""
+        return core_schema.str_schema()
 
     @classmethod
-    def _pydantic_serialize(cls, value: Any) -> IsodateDuration:
-        """Serialize Duration to raw IsodateDuration value."""
+    def _pydantic_serialize(cls, value: Any) -> str:
+        """Serialize Duration to an ISO 8601 string."""
         if isinstance(value, cls):
-            return value._value if value._value is not None else IsodateDuration()
+            duration = value._value if value._value is not None else IsodateDuration()
+            return isodate.duration_isoformat(duration)
         if isinstance(value, IsodateDuration):
-            return value
+            return isodate.duration_isoformat(value)
         if isinstance(value, timedelta):
-            return _timedelta_to_duration(value)
-        return isodate.parse_duration(str(value))
+            return isodate.duration_isoformat(_timedelta_to_duration(value))
+        return isodate.duration_isoformat(isodate.parse_duration(str(value)))
 
     @classmethod
     def _pydantic_validate(cls, value: Any) -> Self:

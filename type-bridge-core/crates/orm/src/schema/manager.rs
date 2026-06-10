@@ -1,5 +1,7 @@
 //! Schema manager for registering models and syncing schema.
 
+use std::collections::BTreeMap;
+
 use crate::entity::TypeBridgeEntity;
 use crate::error::Result;
 use crate::relation::TypeBridgeRelation;
@@ -47,10 +49,7 @@ impl<'db> SchemaManager<'db> {
                 self.info
                     .attributes
                     .entry(a.attr_name.to_string())
-                    .or_insert(AttributeSchemaEntry {
-                        attr_name: a.attr_name.to_string(),
-                        value_type: a.value_type,
-                    });
+                    .or_insert_with(|| AttributeSchemaEntry::new(a.attr_name, a.value_type));
                 OwnedAttributeEntry {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
@@ -66,6 +65,7 @@ impl<'db> SchemaManager<'db> {
                 is_abstract: E::IS_ABSTRACT,
                 parent_type: E::PARENT_TYPE.map(String::from),
                 owned_attributes: owned_entries,
+                plays_cardinalities: BTreeMap::new(),
             },
         );
     }
@@ -80,10 +80,7 @@ impl<'db> SchemaManager<'db> {
                 self.info
                     .attributes
                     .entry(a.attr_name.to_string())
-                    .or_insert(AttributeSchemaEntry {
-                        attr_name: a.attr_name.to_string(),
-                        value_type: a.value_type,
-                    });
+                    .or_insert_with(|| AttributeSchemaEntry::new(a.attr_name, a.value_type));
                 OwnedAttributeEntry {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
@@ -96,7 +93,8 @@ impl<'db> SchemaManager<'db> {
             .iter()
             .map(|r| RoleEntry {
                 role_name: r.role_name.to_string(),
-                player_type_name: r.player_type_name.to_string(),
+                player_type_names: vec![r.player_type_name.to_string()],
+                cardinality: None,
             })
             .collect();
 
@@ -108,6 +106,7 @@ impl<'db> SchemaManager<'db> {
                 parent_type: R::PARENT_TYPE.map(String::from),
                 owned_attributes: owned_entries,
                 roles,
+                plays_cardinalities: BTreeMap::new(),
             },
         );
     }
@@ -165,6 +164,10 @@ impl<'db> SchemaManager<'db> {
     pub async fn introspect(&self) -> Result<SchemaInfo> {
         use crate::session::backend::QueryResult;
 
+        if let Ok(typeql) = self.db.schema_text().await {
+            return Ok(SchemaInfo::from_typeql(&typeql)?);
+        }
+
         let mut info = SchemaInfo::default();
 
         // ── 1. Query all user-defined attribute types ──────────────
@@ -180,13 +183,8 @@ impl<'db> SchemaManager<'db> {
                         .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str())),
                 ) && let Some(vt) = parse_value_type(vt_str)
                 {
-                    info.attributes.insert(
-                        name.to_string(),
-                        AttributeSchemaEntry {
-                            attr_name: name.to_string(),
-                            value_type: vt,
-                        },
-                    );
+                    info.attributes
+                        .insert(name.to_string(), AttributeSchemaEntry::new(name, vt));
                 }
             }
         }
@@ -211,6 +209,7 @@ impl<'db> SchemaManager<'db> {
                             is_abstract: false,
                             parent_type: None,
                             owned_attributes: owned,
+                            plays_cardinalities: BTreeMap::new(),
                         },
                     );
                 }
@@ -239,6 +238,7 @@ impl<'db> SchemaManager<'db> {
                             parent_type: None,
                             owned_attributes: owned,
                             roles,
+                            plays_cardinalities: BTreeMap::new(),
                         },
                     );
                 }
@@ -296,7 +296,8 @@ impl<'db> SchemaManager<'db> {
                 {
                     entries.push(RoleEntry {
                         role_name: role_name.to_string(),
-                        player_type_name: String::new(),
+                        player_type_names: Vec::new(),
+                        cardinality: None,
                     });
                 }
             }

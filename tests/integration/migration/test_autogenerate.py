@@ -20,6 +20,7 @@ from type_bridge.migration import (
     ModelRegistry,
     SchemaIntrospector,
 )
+from type_bridge.migration.executor import MigrationError
 
 
 # Test fixtures - Version 1: Basic schema
@@ -116,6 +117,48 @@ def test_apply_generated_migration(clean_db, tmp_path: Path):
 
     assert "person" in schema.get_entity_names()
     assert "company" in schema.get_entity_names()
+
+
+@pytest.mark.integration
+@pytest.mark.order(310)
+def test_checksum_drift_fails_before_pending_schema_change(clean_db, tmp_path: Path):
+    """A drifted applied file should stop execution before pending migrations run."""
+    migrations_dir = tmp_path / "migrations"
+    generator = MigrationGenerator(clean_db, migrations_dir)
+    executor = MigrationExecutor(clean_db, migrations_dir)
+
+    initial_path = generator.generate(
+        models=[PersonV1],
+        name="initial",
+    )
+    assert initial_path is not None
+    result = executor.migrate()
+    assert len(result) == 1
+    assert result[0].success
+
+    initial_path.write_text(initial_path.read_text() + "\n# checksum drift\n")
+    (migrations_dir / "0002_drift_probe.py").write_text(
+        f"""
+from typing import ClassVar
+from type_bridge.migration import Migration, operations as ops
+from type_bridge.migration.operations import Operation
+
+
+class DriftProbeMigration(Migration):
+    dependencies: ClassVar[list[tuple[str, str]]] = [
+        ({migrations_dir.name!r}, "0001_initial"),
+    ]
+    operations: ClassVar[list[Operation]] = [
+        ops.RunTypeQL("define attribute drift-probe, value string;")
+    ]
+""".lstrip()
+    )
+
+    with pytest.raises(MigrationError, match="checksum drift"):
+        executor.migrate()
+
+    schema = SchemaIntrospector(clean_db).introspect()
+    assert "drift-probe" not in schema.get_attribute_names()
 
 
 @pytest.mark.integration

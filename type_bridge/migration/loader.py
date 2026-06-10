@@ -6,13 +6,14 @@ Migration files must follow the naming convention: NNNN_name.py (e.g., 0001_init
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import logging
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+from type_bridge import _rust_runtime
 from type_bridge.migration.base import Migration
 
 logger = logging.getLogger(__name__)
@@ -26,11 +27,16 @@ class LoadedMigration:
         migration: The Migration instance
         path: Path to the migration file
         checksum: SHA256 hash of file content (first 16 chars)
+        execution_spec: Optional pre-lowered MigrationSpec dict loaded from
+            the JSON sidecar.  Present only for generated migrations that carry
+            a ``.json`` sibling; ``None`` for legacy/hand-authored files.
+            Keyword-only so existing positional construction sites are unaffected.
     """
 
     migration: Migration
     path: Path
     checksum: str
+    execution_spec: dict[str, Any] | None = field(default=None, kw_only=True)
 
     def __repr__(self) -> str:
         return f"<LoadedMigration {self.migration.app_label}.{self.migration.name}>"
@@ -131,9 +137,8 @@ class MigrationLoader:
         """
         logger.debug(f"Loading migration: {path}")
 
-        # Calculate checksum
         content = path.read_text()
-        checksum = hashlib.sha256(content.encode()).hexdigest()[:16]
+        checksum = _rust_runtime.migration_file_checksum(content)
 
         # Load module dynamically
         module_name = f"migration_{path.stem}"
@@ -162,10 +167,17 @@ class MigrationLoader:
         migration.name = path.stem
         migration.app_label = self.migrations_dir.name
 
+        # Prefer the JSON sidecar as the pre-lowered execution spec when present.
+        # The sidecar is produced at generation time from the same op list the
+        # .py renders, so it is structurally identical to what lowering the .py
+        # would produce.  The .py text remains the sole checksum source (04 gate).
+        execution_spec = _rust_runtime.load_migration_sidecar(str(path))
+
         return LoadedMigration(
             migration=migration,
             path=path,
             checksum=checksum,
+            execution_spec=execution_spec,
         )
 
     def _find_migration_class(self, module: types.ModuleType) -> type[Migration] | None:
@@ -215,18 +227,8 @@ class MigrationLoader:
         Returns:
             List of error messages (empty if valid)
         """
-        migrations = self.discover()
-        errors: list[str] = []
+        from type_bridge.migration._lower import lower_migration_graph
 
-        # Build set of available migrations
-        available = {(m.migration.app_label, m.migration.name) for m in migrations}
-
-        for loaded in migrations:
-            for dep_app, dep_name in loaded.migration.dependencies:
-                if (dep_app, dep_name) not in available:
-                    errors.append(
-                        f"Migration {loaded.migration.name} depends on "
-                        f"{dep_app}.{dep_name} which does not exist"
-                    )
-
-        return errors
+        graph = lower_migration_graph(self.discover())
+        errors = _rust_runtime.validate_migration_graph(graph)
+        return [str(error["message"]) for error in errors]

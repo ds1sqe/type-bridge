@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "../../../tmp/node-unit",
+    "rootDir": ".",
+    "strict": true,
+    "target": "ES2022"
+  },
+  "include": [
+    "typescript/**/*.ts",
+    "tests/unit/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "dist-integration",
+    "../../../tmp/node-unit"
+  ]
+}

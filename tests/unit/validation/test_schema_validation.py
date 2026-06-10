@@ -15,7 +15,7 @@ HAS_RUST_CORE = False
 QueryCompiler: Any = None
 TypeSchema: Any = None
 try:
-    from type_bridge_core import QueryCompiler, TypeSchema  # type: ignore[no-redef]
+    from type_bridge_core import QueryCompiler, TypeSchema
 
     HAS_RUST_CORE = True
 except ImportError:
@@ -127,7 +127,7 @@ class TestValidationEngineMethod:
     """Tests using ValidationEngine.validate_query (explicit engine)."""
 
     def test_validate_query_via_engine(self, schema: Any, compiler: Any) -> None:
-        from type_bridge_core import ValidationEngine  # type: ignore[import-not-found]
+        from type_bridge_core import ValidationEngine
 
         engine = ValidationEngine()
         clauses = compiler.parse('match $p isa person, has name "Alice";')

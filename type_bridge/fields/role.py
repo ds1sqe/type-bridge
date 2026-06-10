@@ -220,15 +220,22 @@ class RoleRef[T: "TypeDBType"]:
         self,
         role_name: str,
         player_types: tuple[type[T], ...],
+        cardinality: Any = None,
+        plays_cardinality: Any = None,
     ):
         """Create a role reference.
 
         Args:
             role_name: Name of the role (e.g., "employee")
             player_types: Tuple of types (Entity or Relation) that can play this role
+            cardinality: Optional relates-side role cardinality metadata.
+            plays_cardinality: Optional plays-side cardinality metadata, carried as the
+                sibling of ``cardinality`` so class-level role access exposes both axes.
         """
         self.role_name = role_name
         self.player_types = player_types
+        self.cardinality = cardinality
+        self.plays_cardinality = plays_cardinality
         # Cache of collected attributes from all player types
         self._player_attrs: dict[str, tuple[type, Any]] | None = None
 

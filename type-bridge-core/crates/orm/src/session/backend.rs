@@ -46,6 +46,12 @@ pub trait TransactionOps: Send {
 
     /// Commit this transaction. Only meaningful for write/schema transactions.
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
+
+    /// Roll back this transaction.
+    fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
+
+    /// Close this transaction without committing.
+    fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
 }
 
 /// Abstraction over a TypeDB driver connection.
@@ -62,4 +68,14 @@ pub trait DriverBackend: Send + Sync {
 
     /// Check if the underlying connection is still alive.
     fn is_open(&self) -> bool;
+
+    /// Export the database schema as TypeQL text, when the backend supports it.
+    fn schema_text(&self, database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            Err(OrmError::Connection(format!(
+                "Schema export is not supported by this backend for database '{database}'"
+            )))
+        })
+    }
 }

@@ -36,44 +36,62 @@ class Role[T: "TypeDBType"]:
     def __init__(
         self,
         role_name: str,
-        player_type: type[T],
+        player_type: type[T] | None = None,
         *additional_player_types: type[T],
         cardinality: Card | None = None,
+        plays_cardinality: Card | None = None,
     ):
         """Initialize a role.
 
         Args:
             role_name: The name of the role in TypeDB
-            player_type: The type (Entity or Relation) that can play this role
+            player_type: The optional type (Entity or Relation) that can play this role
             additional_player_types: Optional additional types allowed to play this role
-            cardinality: Optional cardinality constraint for the role (e.g., Card(2, 2) for exactly 2)
+            cardinality: Optional relates-side cardinality — players allowed per relation
+                (e.g., Card(2, 2) for exactly 2 players)
+            plays_cardinality: Optional plays-side cardinality — relations a single player
+                may play this role in (e.g., Card(0, 1) to enforce "at most one"). Distinct
+                from ``cardinality``; attaches to the player's plays edge, so it requires a
+                player type.
 
         Raises:
             ReservedWordError: If role_name is a TypeQL reserved word
-            TypeError: If player type is a library base class (Entity, Relation, TypeDBType)
+            TypeError: If player type is a library base class (Entity, Relation, TypeDBType),
+                or if plays_cardinality is set on a relates-only role (no player type)
         """
         # Validate role name doesn't conflict with TypeQL reserved words
         validate_reserved_word(role_name, "role")
 
         self.role_name = role_name
         self.cardinality = cardinality
+        self.plays_cardinality = plays_cardinality
         unique_types: list[type[T]] = []
-        for typ in (player_type, *additional_player_types):
-            # Validate that we're not using library base classes directly
-            self._validate_player_type(typ)
-            if typ not in unique_types:
-                unique_types.append(typ)
-
-        if not unique_types:
-            # Should be impossible because player_type is required, but keeps type checkers happy
-            raise ValueError("Role requires at least one player type")
+        if player_type is None:
+            if additional_player_types:
+                raise TypeError(
+                    f"Role '{role_name}' cannot declare additional player types when the "
+                    "first player type is None"
+                )
+        else:
+            for typ in (player_type, *additional_player_types):
+                # Validate that we're not using library base classes directly
+                self._validate_player_type(typ)
+                if typ not in unique_types:
+                    unique_types.append(typ)
 
         self.player_entity_types: tuple[type[T], ...] = tuple(unique_types)
-        first_entity_type = unique_types[0]
-        self.player_entity_type = first_entity_type
+        self.player_entity_type: type[T] | None = unique_types[0] if unique_types else None
         # Get type name from the entity class(es)
         self.player_types = tuple(pt.get_type_name() for pt in self.player_entity_types)
-        self.player_type = first_entity_type.get_type_name()
+        self.player_type = (
+            self.player_entity_type.get_type_name() if self.player_entity_type else None
+        )
+        if plays_cardinality is not None and not self.player_entity_types:
+            raise TypeError(
+                f"Role '{role_name}' sets plays_cardinality but declares no player type. "
+                "Plays-side cardinality constrains a player's plays edge; a relates-only "
+                "role has no plays edge to constrain."
+            )
         self.attr_name: str | None = None
 
     def _validate_player_type(self, typ: type[T]) -> None:
@@ -118,6 +136,8 @@ class Role[T: "TypeDBType"]:
 
         Returns True if cardinality allows more than one player (max > 1 or unbounded).
         """
+        if not self.player_entity_types:
+            return False
         if self.cardinality is None:
             return False  # Default is single player
         return self.cardinality.max is None or self.cardinality.max > 1
@@ -125,7 +145,14 @@ class Role[T: "TypeDBType"]:
     @property
     def is_optional(self) -> bool:
         """Check if this role allows zero players."""
+        if not self.player_entity_types:
+            return False
         return self.cardinality is not None and self.cardinality.min == 0
+
+    @property
+    def is_relates_only(self) -> bool:
+        """Check if this role declares no player type."""
+        return not self.player_entity_types
 
     def __set_name__(self, owner: type, name: str) -> None:
         """Called when role is assigned to a class."""
@@ -141,7 +168,7 @@ class Role[T: "TypeDBType"]:
         """Get role player entity when accessed from instance."""
         ...
 
-    def __get__(self, obj: Any, objtype: type) -> T | RoleRef[T]:
+    def __get__(self, obj: Any, objtype: type) -> T | RoleRef[T] | None:
         """Get role player from instance or RoleRef from class.
 
         When accessed from the class (obj is None), returns RoleRef for
@@ -154,7 +181,11 @@ class Role[T: "TypeDBType"]:
             return RoleRef(
                 role_name=self.role_name,
                 player_types=self.player_entity_types,
+                cardinality=self.cardinality,
+                plays_cardinality=self.plays_cardinality,
             )
+        if self.is_relates_only:
+            return None
         return obj.__dict__.get(self.attr_name)
 
     def __set__(self, obj: Any, value: T | list[T]) -> None:
@@ -163,6 +194,12 @@ class Role[T: "TypeDBType"]:
         For roles with cardinality > 1, accepts a list of entities.
         For single-player roles, accepts a single entity.
         """
+        if self.is_relates_only:
+            raise TypeError(
+                f"Role '{self.role_name}' is relates-only; it declares no player "
+                "to bind on this relation"
+            )
+
         if value is None:
             if not self.is_optional:
                 allowed = ", ".join(pt.__name__ for pt in self.player_entity_types)
@@ -201,6 +238,7 @@ class Role[T: "TypeDBType"]:
         player_type: type[T],
         *additional_player_types: type[T],
         cardinality: Card | None = None,
+        plays_cardinality: Card | None = None,
     ) -> Role[T]:
         """Define a role playable by multiple entity types.
 
@@ -208,11 +246,19 @@ class Role[T: "TypeDBType"]:
             role_name: The name of the role in TypeDB
             player_type: The first entity type that can play this role
             additional_player_types: Additional entity types allowed to play this role
-            cardinality: Optional cardinality constraint for the role
+            cardinality: Optional relates-side cardinality constraint for the role
+            plays_cardinality: Optional plays-side cardinality applied to every player's
+                plays edge for this role
         """
         if len((player_type, *additional_player_types)) < 2:
             raise ValueError("Role.multi requires at least two player types")
-        return cls(role_name, player_type, *additional_player_types, cardinality=cardinality)
+        return cls(
+            role_name,
+            player_type,
+            *additional_player_types,
+            cardinality=cardinality,
+            plays_cardinality=plays_cardinality,
+        )
 
     @classmethod
     def __get_pydantic_core_schema__(

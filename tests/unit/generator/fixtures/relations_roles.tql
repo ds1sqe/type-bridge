@@ -1,0 +1,6 @@
+define
+attribute name, value string;
+attribute score, value double;
+entity person, owns name, plays review:reviewer;
+entity document, owns name, plays review:document;
+relation review, relates document @card(1..1), relates reviewer @card(1..3), owns score;

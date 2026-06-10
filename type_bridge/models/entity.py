@@ -214,7 +214,7 @@ class Entity(TypeDBType):
         """Build AST constraints to identify this entity instance.
 
         Returns constraints for either IID-based or key-based identification.
-        This is a shared helper used by get_match_pattern() and EntityStrategy.identify().
+        This is a shared helper used by get_match_pattern() and AST helpers.
 
         Returns:
             List of Constraint AST nodes (IidConstraint or HasConstraint)

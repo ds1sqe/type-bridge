@@ -97,6 +97,11 @@ impl Database {
         self.backend.is_open()
     }
 
+    /// Export the database schema as TypeQL text.
+    pub async fn schema_text(&self) -> Result<String> {
+        self.backend.schema_text(&self.database_name).await
+    }
+
     /// Wrap this database in an `Arc` for sharing across async tasks.
     pub fn into_shared(self) -> Arc<Self> {
         Arc::new(self)

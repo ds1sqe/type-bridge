@@ -205,6 +205,22 @@ class ParameterSpec:
     type: str
 
 
+@dataclass(frozen=True, slots=True)
+class ReturnTypeItem:
+    """One return-type entry: a type token plus its optionality."""
+
+    name: str
+    optional: bool = False
+
+
+@dataclass(slots=True)
+class ReturnTypeSpec:
+    """Structured function return type (stream flag + ordered items)."""
+
+    is_stream: bool
+    types: list[ReturnTypeItem]
+
+
 @dataclass(slots=True)
 class FunctionSpec:
     """Function definition extracted from a TypeDB schema.
@@ -212,12 +228,12 @@ class FunctionSpec:
     Attributes:
         name: The function name (e.g., "calculate-age")
         parameters: List of parameters
-        return_type: The return type (e.g., "int")
+        return_type: Structured return type (stream flag + ordered items)
     """
 
     name: str
     parameters: list[ParameterSpec]
-    return_type: str
+    return_type: ReturnTypeSpec
     docstring: str | None = None
 
 

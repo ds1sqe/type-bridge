@@ -120,7 +120,9 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use type_bridge_core_lib::ast::{Constraint, LiteralValue, Pattern, RolePlayer, Statement, Value};
+    use type_bridge_core_lib::ast::{
+        Constraint, LiteralValue, Pattern, RolePlayer, Statement, Value,
+    };
 
     use super::*;
     use crate::interceptor::crud_info::{CrudInfo, CrudOperation, TypeKind};
@@ -307,7 +309,10 @@ mod tests {
         let adapter = CrudInterceptorAdapter::new(MinimalCrudInterceptor);
         let mut ctx = make_ctx();
 
-        adapter.on_request(relation_put_clauses(), &mut ctx).await.unwrap();
+        adapter
+            .on_request(relation_put_clauses(), &mut ctx)
+            .await
+            .unwrap();
 
         let info = ctx.crud_info.as_ref().unwrap();
         assert_eq!(info.operation, CrudOperation::Put);

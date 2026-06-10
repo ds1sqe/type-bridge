@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from type_bridge_core import (
-        QueryCompiler as _RustQueryCompiler,  # type: ignore[import-not-found]
+        QueryCompiler as _RustQueryCompiler,
     )
 
     _core_compiler: Any = _RustQueryCompiler()
@@ -325,9 +325,10 @@ class QueryCompiler:
                        if the nodes are just raw patterns/statements.
         """
         # Try Rust compiler if all nodes are Clauses
-        if _core_compiler is not None and all(isinstance(n, Clause) for n in nodes):
+        clauses = [n for n in nodes if isinstance(n, Clause)]
+        if _core_compiler is not None and len(clauses) == len(nodes):
             try:
-                dicts = [_clause_to_dict(n) for n in nodes]  # type: ignore[arg-type]
+                dicts = [_clause_to_dict(c) for c in clauses]
                 result = _core_compiler.compile_dicts(dicts)
                 if operation:
                     return f"{operation}\n{result}"

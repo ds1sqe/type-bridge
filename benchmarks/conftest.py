@@ -48,7 +48,7 @@ from type_bridge.query.compiler import QueryCompiler
 # ---------------------------------------------------------------------------
 
 try:
-    from type_bridge_core import (  # type: ignore[import-not-found]
+    from type_bridge_core import (
         QueryCompiler as RustQueryCompiler,
     )
     from type_bridge_core import (

@@ -1,0 +1,398 @@
+# Bookstore corpus schema.
+# Covers: ~19 attributes (incl. @abstract, sub, @regex), ~19 entities (incl.
+# @abstract, sub, owns @key/@unique/@card, plays), ~12 relations (incl. sub,
+# relates ... as ..., owns), ~6 functions (stream and scalar return types).
+# All plays entries are on entities; relations only use relates/sub/as/owns.
+
+[entities.book]
+abstract = true
+owns = [
+    { attribute = "isbn", card = "0..2" },
+    { attribute = "isbn-13", key = true },
+    { attribute = "isbn-10", unique = true },
+    "title",
+    "page-count",
+    { attribute = "genre", card = "0.." },
+    "price",
+]
+plays = [
+    { relation = "contribution", role = "work" },
+    { relation = "publishing", role = "published" },
+    { relation = "promotion-inclusion", role = "item" },
+    { relation = "order-line", role = "item" },
+    { relation = "rating", role = "rated" },
+    { relation = "recommendation", role = "recommended" },
+]
+
+[entities.hardback]
+sub = "book"
+owns = ["stock"]
+
+[entities.paperback]
+sub = "book"
+owns = ["stock"]
+
+[entities.ebook]
+sub = "book"
+
+[entities.contributor]
+owns = ["name"]
+plays = [
+    { relation = "contribution", role = "contributor" },
+    { relation = "authoring", role = "author" },
+    { relation = "editing", role = "editor" },
+    { relation = "illustrating", role = "illustrator" },
+]
+
+[entities.company]
+abstract = true
+owns = ["name"]
+
+[entities.publisher]
+sub = "company"
+plays = [{ relation = "publishing", role = "publisher" }]
+
+[entities.courier]
+sub = "company"
+plays = [{ relation = "delivery", role = "deliverer" }]
+
+[entities.publication]
+owns = ["year"]
+plays = [
+    { relation = "publishing", role = "publication" },
+    { relation = "locating", role = "located" },
+]
+
+[entities.user]
+owns = [
+    { attribute = "id", key = true },
+    "name",
+    "birth-date",
+]
+plays = [
+    { relation = "action-execution", role = "executor" },
+    { relation = "locating", role = "located" },
+    { relation = "recommendation", role = "recipient" },
+]
+
+[entities.order]
+owns = [
+    { attribute = "id", key = true },
+    "status",
+]
+plays = [
+    { relation = "order-line", role = "order" },
+    { relation = "action-execution", role = "action" },
+    { relation = "delivery", role = "delivered" },
+]
+
+[entities.promotion]
+owns = [
+    { attribute = "code", key = true },
+    "name",
+    "start-timestamp",
+    "end-timestamp",
+]
+plays = [{ relation = "promotion-inclusion", role = "promotion" }]
+
+[entities.review]
+owns = [
+    { attribute = "id", key = true },
+    "score",
+    "verified",
+]
+plays = [
+    { relation = "rating", role = "review" },
+    { relation = "action-execution", role = "action" },
+]
+
+[entities.login]
+owns = ["success"]
+plays = [{ relation = "action-execution", role = "action" }]
+
+[entities.address]
+owns = ["street"]
+plays = [
+    { relation = "delivery", role = "destination" },
+    { relation = "locating", role = "located" },
+]
+
+[entities.place]
+abstract = true
+owns = ["name"]
+plays = [
+    { relation = "locating", role = "located" },
+    { relation = "locating", role = "location" },
+]
+
+[entities.city]
+sub = "place"
+
+[entities.state]
+sub = "place"
+
+[entities.country]
+sub = "place"
+
+[relations.contribution]
+roles = [
+    { name = "contributor" },
+    { name = "work" },
+]
+
+[relations.authoring]
+sub = "contribution"
+roles = [
+    { name = "author", as = "contributor" },
+]
+
+[relations.editing]
+sub = "contribution"
+roles = [
+    { name = "editor", as = "contributor" },
+]
+
+[relations.illustrating]
+sub = "contribution"
+roles = [
+    { name = "illustrator", as = "contributor" },
+]
+
+[relations.publishing]
+roles = [
+    { name = "publisher" },
+    { name = "published" },
+    { name = "publication" },
+]
+
+[relations.promotion-inclusion]
+roles = [
+    { name = "promotion" },
+    { name = "item" },
+]
+owns = ["discount"]
+
+[relations.order-line]
+roles = [
+    { name = "order" },
+    { name = "item" },
+]
+owns = ["quantity", "price"]
+
+[relations.rating]
+roles = [
+    { name = "review" },
+    { name = "rated" },
+]
+
+[relations.action-execution]
+roles = [
+    { name = "action" },
+    { name = "executor" },
+]
+owns = ["timestamp"]
+
+[relations.delivery]
+roles = [
+    { name = "deliverer" },
+    { name = "delivered" },
+    { name = "destination" },
+]
+
+[relations.locating]
+roles = [
+    { name = "located" },
+    { name = "location" },
+]
+
+[relations.recommendation]
+roles = [
+    { name = "recommended" },
+    { name = "recipient" },
+]
+
+[attributes.isbn]
+abstract = true
+value = "string"
+
+[attributes.isbn-13]
+sub = "isbn"
+
+[attributes.isbn-10]
+sub = "isbn"
+
+[attributes.title]
+value = "string"
+
+[attributes.page-count]
+value = "integer"
+
+[attributes.genre]
+value = "string"
+
+[attributes.stock]
+value = "integer"
+
+[attributes.price]
+value = "double"
+
+[attributes.discount]
+value = "double"
+
+[attributes.id]
+value = "string"
+
+[attributes.code]
+value = "string"
+
+[attributes.name]
+value = "string"
+
+[attributes.birth-date]
+value = "datetime"
+
+[attributes.street]
+value = "string"
+
+[attributes.year]
+value = "integer"
+
+[attributes.quantity]
+value = "integer"
+
+[attributes.score]
+value = "integer"
+
+[attributes.verified]
+value = "boolean"
+
+[attributes.timestamp]
+value = "datetime"
+
+[attributes.start-timestamp]
+value = "datetime"
+
+[attributes.end-timestamp]
+value = "datetime"
+
+[attributes.status]
+value = "string"
+regex = "^(paid|dispatched|delivered|returned|canceled)$"
+
+[attributes.success]
+value = "boolean"
+
+[functions.is_review_verified_by_purchase]
+signature = "fun is_review_verified_by_purchase($review: review) -> { order }"
+body = """  match
+    ($review, $product) isa rating;
+    ($order, $product) isa order-line;
+    ($user, $review) isa action-execution, has timestamp $review-time;
+    ($user, $order) isa action-execution, has timestamp $order-time;
+    $review-time > $order-time;
+  return { $order };"""
+
+[functions.book_recommendations_for]
+signature = "fun book_recommendations_for($user: user) -> {book}"
+body = """  match
+    $new-book isa book;
+    {
+        let $new-book in book_recommendations_by_author($user);
+    } or {
+        let $new-book in book_recommendations_by_genre($user);
+    };
+  return { $new-book };"""
+
+[functions.book_recommendations_by_genre]
+signature = "fun book_recommendations_by_genre($user: user) -> { book }"
+body = """match
+    $user isa user;
+    $liked-book isa book;
+    {
+        ($user, $order-for-liked) isa action-execution;
+        ($order-for-liked, $liked-book) isa order-line;
+    } or {
+        ($user, $review-for-liked) isa action-execution;
+        ($review-for-liked, $liked-book) isa rating;
+        $review-for-liked has score >= 7;
+    };
+    $new-book isa book;
+    not { {
+        ($user, $order-for-new) isa action-execution;
+        ($order-for-new, $new-book) isa order-line;
+    } or {
+        ($user, $review-for-new) isa action-execution;
+        ($review-for-new, $new-book) isa rating;
+    }; };
+    $liked-book has genre $shared-genre;
+    $new-book has genre $shared-genre;
+    not { {
+        $shared-genre == "fiction";
+    } or {
+        $shared-genre == "nonfiction";
+    }; };
+  return { $new-book };"""
+
+[functions.book_recommendations_by_author]
+signature = "fun book_recommendations_by_author($user: user) -> { book }"
+body = """  match
+    $user isa user;
+    $liked-book isa book;
+    {
+        ($user, $order-for-liked) isa action-execution;
+        ($order-for-liked, $liked-book) isa order-line;
+    } or {
+        ($user, $review-for-liked) isa action-execution;
+        ($review-for-liked, $liked-book) isa rating;
+        $review-for-liked has score >= 7;
+    };
+    $new-book isa book;
+    not { {
+        ($user, $order-for-new) isa action-execution;
+        ($order-for-new, $new-book) isa order-line;
+    } or {
+        ($user, $review-for-new) isa action-execution;
+        ($review-for-new, $new-book) isa rating;
+    }; };
+    ($liked-book, $shared-author) isa authoring;
+    ($new-book, $shared-author) isa authoring;
+  return { $new-book };"""
+
+[functions.order_line_best_price]
+signature = "fun order_line_best_price($line: order-line) -> { double }"
+body = """  match
+    ($order) isa action-execution, has timestamp $order-time;
+    $line isa order-line, links ($order, $item);
+    $item has price $retail-price;
+    let $time_value = $order-time;
+    let $best-discount = best_discount_for_item($item, $time_value);
+    let $discounted-price = round(100 * $retail-price * (1 - $best-discount)) / 100;
+    $line has quantity $quantity;
+    let $line-total = $quantity * $discounted-price;
+  return { $line-total };"""
+
+[functions.best_discount_for_item]
+signature = "fun best_discount_for_item($item: book, $order-time: datetime) -> double"
+body = """  match
+    {
+        $inclusion isa promotion-inclusion,
+            links ($promotion, $item),
+            has discount $discount-attr;
+        $promotion has start-timestamp <= $order-time,
+            has end-timestamp >= $order-time;
+        let $discount = $discount-attr;
+    } or {
+        let $discount = 0.0;
+    };
+return max($discount);"""
+
+[functions.transitive_places]
+signature = "fun transitive_places($place: place) -> { place }"
+body = """  match
+    {
+      locating (located: $place, location: $parent);
+    } or {
+      locating (located: $place, location: $middle);
+      let $parent in transitive_places($middle);
+    };
+  return { $parent };"""

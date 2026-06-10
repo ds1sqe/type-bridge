@@ -15,11 +15,13 @@ import pytest
 HAS_RUST_CORE = False
 TypeSchema: Any = None
 try:
-    from type_bridge_core import TypeSchema  # type: ignore[no-redef]
+    from type_bridge_core import TypeSchema
 
     HAS_RUST_CORE = True
 except ImportError:
     pass
+
+from type_bridge.generator.parser import parse_tql_schema  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not HAS_RUST_CORE, reason="Rust core not available")
 
@@ -328,6 +330,10 @@ class TestRustSchemaErrors:
         with pytest.raises(ValueError):
             TypeSchema.from_typeql("define\nattribute age, value integer, @range(1, 5);")
 
+    def test_parse_tql_schema_raises_on_malformed(self) -> None:
+        with pytest.raises(ValueError):
+            parse_tql_schema("define entity person, this is not valid tql @@@;")
+
 
 # ---------------------------------------------------------------------------
 # Complex schema (mimics real-world usage)
@@ -390,17 +396,35 @@ class TestRustSchemaComplex:
         assert "person" in schema.entities
         assert "name" in schema.attributes
 
-    def test_function_and_struct_skipped(self) -> None:
+    def test_function_and_struct_parsed(self) -> None:
         tql = "\n".join(
             [
                 "define",
                 "attribute name, value string;",
                 "entity person, owns name;",
                 "fun get_name($p: person) -> name:",
-                "    return $p.name;",
-                "struct result { name: name };",
+                "    match $p isa person;",
+                "    return first $p;",
+                "struct result, value label string?;",
             ]
         )
         schema = TypeSchema.from_typeql(tql)
         assert "person" in schema.entities
         assert "name" in schema.attributes
+
+        # functions getter returns the parsed function
+        funcs = schema.functions
+        assert "get_name" in funcs
+        fn = funcs["get_name"]
+        assert fn["name"] == "get_name"
+        assert fn["parameters"] == [{"name": "p", "type": "person"}]
+        rt = fn["return_type"]
+        assert rt["is_stream"] is False
+        assert rt["types"] == [{"name": "name", "optional": False}]
+
+        # structs getter returns the parsed struct
+        structs = schema.structs
+        assert "result" in structs
+        st = structs["result"]
+        assert st["name"] == "result"
+        assert st["fields"] == [{"name": "label", "value_type": "string", "optional": True}]

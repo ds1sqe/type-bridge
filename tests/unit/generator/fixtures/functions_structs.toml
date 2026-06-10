@@ -1,0 +1,36 @@
+[attributes.name]
+value = "string"
+
+[attributes.score]
+value = "integer"
+
+[entities.player]
+owns = ["name"]
+
+[entities.game]
+owns = ["name", "score"]
+
+[functions.top-scorer]
+signature = "fun top-scorer($g: game) -> { player }"
+body = """  match
+    ($g, $p) isa participation;
+  return { $p };"""
+
+[functions.max-score]
+signature = "fun max-score($g: game) -> double"
+body = """  match
+    $g has score $s;
+  return max($s);"""
+
+[relations.participation]
+roles = [
+    { name = "game" },
+    { name = "participant" },
+]
+
+[structs.player-stats]
+fields = [
+    { name = "wins", type = "integer" },
+    { name = "losses", type = "integer" },
+    { name = "nickname", type = "string", optional = true },
+]

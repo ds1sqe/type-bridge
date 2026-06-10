@@ -1,6 +1,20 @@
-"""Schema comparison and diff classes for TypeDB schema management."""
+"""Schema comparison DTOs for TypeDB schema management.
+
+Rust/Python shape reconciliation:
+- Rust schema diffs serialize added/removed type collections as type-name lists;
+  Python public DTOs keep sets of Entity/Relation/Attribute classes.
+- Rust modified entity/relation maps are keyed by type-name strings; Python DTOs
+  are keyed by the target-side model classes.
+- Rust entity/relation modified_attributes are triples ``[name, old_flags,
+  new_flags]``; Python uses ``AttributeFlagChange`` objects.
+- Rust root modified_attributes are attribute type definition-change maps; Python
+  uses ``AttributeTypeChange`` objects keyed by attribute class where available.
+- Rust role player/cardinality changes serialize as dicts; Python keeps
+  ``RolePlayerChange``/``RoleCardinalityChange`` DTOs.
+"""
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from type_bridge.attribute.base import Attribute
 from type_bridge.models import Entity, Relation
@@ -13,6 +27,14 @@ class AttributeFlagChange:
     name: str
     old_flags: str
     new_flags: str
+
+
+@dataclass
+class AttributeTypeChange:
+    """Represents a change in a standalone attribute type definition."""
+
+    name: str
+    changes: dict[str, Any]
 
 
 @dataclass
@@ -112,10 +134,12 @@ class SchemaDiff:
     # Attribute changes
     added_attributes: set[type[Attribute]] = field(default_factory=set)
     removed_attributes: set[type[Attribute]] = field(default_factory=set)
+    modified_attributes: dict[type[Attribute], AttributeTypeChange] = field(default_factory=dict)
 
     # Detailed changes (entity/relation modifications)
     modified_entities: dict[type[Entity], EntityChanges] = field(default_factory=dict)
     modified_relations: dict[type[Relation], RelationChanges] = field(default_factory=dict)
+    _rust_diff: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
     def has_changes(self) -> bool:
         """Check if there are any schema differences.
@@ -130,6 +154,7 @@ class SchemaDiff:
             or self.removed_relations
             or self.added_attributes
             or self.removed_attributes
+            or self.modified_attributes
             or self.modified_entities
             or self.modified_relations
         )
@@ -177,6 +202,14 @@ class SchemaDiff:
             lines.append(f"\nRemoved Attributes ({len(self.removed_attributes)}):")
             for attr in sorted(self.removed_attributes, key=lambda a: a.get_attribute_name()):
                 lines.append(f"  - {attr.get_attribute_name()}")
+
+        if self.modified_attributes:
+            lines.append(f"\nModified Attributes ({len(self.modified_attributes)}):")
+            for attr, changes in sorted(
+                self.modified_attributes.items(), key=lambda item: item[0].get_attribute_name()
+            ):
+                fields = ", ".join(_attribute_type_changed_fields(changes.changes))
+                lines.append(f"  ~ {attr.get_attribute_name()}: {fields}")
 
         if self.modified_entities:
             lines.append(f"\nModified Entities ({len(self.modified_entities)}):")
@@ -228,3 +261,241 @@ class SchemaDiff:
                         lines.append(f"          new: {attr_change.new_flags}")
 
         return "\n".join(lines)
+
+    def to_rust_dict(self) -> dict[str, Any]:
+        """Serialize this public DTO to the Rust ``SchemaDiff`` dict shape.
+
+        Converts Python class-keyed sets/dicts into the string-keyed lists and
+        nested dicts the PyO3 layer expects, reconciling field shapes as described
+        in the module docstring.
+        """
+        return {
+            "added_entities": sorted(_model_type_name(model) for model in self.added_entities),
+            "removed_entities": sorted(_model_type_name(model) for model in self.removed_entities),
+            "modified_entities": {
+                _model_type_name(model): _entity_changes_to_rust(changes)
+                for model, changes in self.modified_entities.items()
+            },
+            "added_relations": sorted(_model_type_name(model) for model in self.added_relations),
+            "removed_relations": sorted(
+                _model_type_name(model) for model in self.removed_relations
+            ),
+            "modified_relations": {
+                _model_type_name(model): _relation_changes_to_rust(changes)
+                for model, changes in self.modified_relations.items()
+            },
+            "added_attributes": sorted(attr.get_attribute_name() for attr in self.added_attributes),
+            "removed_attributes": sorted(
+                attr.get_attribute_name() for attr in self.removed_attributes
+            ),
+            "modified_attributes": {
+                attr.get_attribute_name(): change.changes
+                for attr, change in self.modified_attributes.items()
+            },
+        }
+
+
+def from_rust_schema_diff(
+    rust_diff: dict[str, Any],
+    *,
+    current_schema: Any | None = None,
+    target_schema: Any | None = None,
+) -> SchemaDiff:
+    """Map the serialized Rust diff into the frozen Python DTO shape."""
+    current_entities = _entities_by_name(current_schema)
+    target_entities = _entities_by_name(target_schema)
+    current_relations = _relations_by_name(current_schema)
+    target_relations = _relations_by_name(target_schema)
+    current_attributes = _attributes_by_name(current_schema)
+    target_attributes = _attributes_by_name(target_schema)
+
+    diff = SchemaDiff(
+        added_entities={
+            target_entities[name]
+            for name in rust_diff.get("added_entities", [])
+            if name in target_entities
+        },
+        removed_entities={
+            current_entities[name]
+            for name in rust_diff.get("removed_entities", [])
+            if name in current_entities
+        },
+        added_relations={
+            target_relations[name]
+            for name in rust_diff.get("added_relations", [])
+            if name in target_relations
+        },
+        removed_relations={
+            current_relations[name]
+            for name in rust_diff.get("removed_relations", [])
+            if name in current_relations
+        },
+        added_attributes={
+            target_attributes[name]
+            for name in rust_diff.get("added_attributes", [])
+            if name in target_attributes
+        },
+        removed_attributes={
+            current_attributes[name]
+            for name in rust_diff.get("removed_attributes", [])
+            if name in current_attributes
+        },
+        _rust_diff=rust_diff,
+    )
+
+    for attr_name, changes in rust_diff.get("modified_attributes", {}).items():
+        attr = target_attributes.get(attr_name) or current_attributes.get(attr_name)
+        if attr is not None:
+            diff.modified_attributes[attr] = AttributeTypeChange(
+                name=attr_name,
+                changes=dict(changes),
+            )
+
+    for type_name, changes in rust_diff.get("modified_entities", {}).items():
+        entity = target_entities.get(type_name) or current_entities.get(type_name)
+        if entity is not None:
+            diff.modified_entities[entity] = _entity_changes_from_rust(changes)
+
+    for type_name, changes in rust_diff.get("modified_relations", {}).items():
+        relation = target_relations.get(type_name) or current_relations.get(type_name)
+        if relation is not None:
+            diff.modified_relations[relation] = _relation_changes_from_rust(changes)
+
+    return diff
+
+
+def _entity_changes_from_rust(changes: dict[str, Any]) -> EntityChanges:
+    return EntityChanges(
+        added_attributes=list(changes.get("added_attributes", [])),
+        removed_attributes=list(changes.get("removed_attributes", [])),
+        modified_attributes=[
+            AttributeFlagChange(name=name, old_flags=old_flags, new_flags=new_flags)
+            for name, old_flags, new_flags in changes.get("modified_attributes", [])
+        ],
+    )
+
+
+def _relation_changes_from_rust(changes: dict[str, Any]) -> RelationChanges:
+    return RelationChanges(
+        added_roles=list(changes.get("added_roles", [])),
+        removed_roles=list(changes.get("removed_roles", [])),
+        modified_role_players=[
+            RolePlayerChange(
+                role_name=change["role_name"],
+                added_player_types=list(change.get("added_player_types", [])),
+                removed_player_types=list(change.get("removed_player_types", [])),
+            )
+            for change in changes.get("modified_role_players", [])
+        ],
+        modified_role_cardinality=[
+            RoleCardinalityChange(
+                role_name=change["role_name"],
+                old_cardinality=_cardinality_from_rust(change.get("old_cardinality")),
+                new_cardinality=_cardinality_from_rust(change.get("new_cardinality")),
+            )
+            for change in changes.get("modified_role_cardinality", [])
+        ],
+        added_attributes=list(changes.get("added_attributes", [])),
+        removed_attributes=list(changes.get("removed_attributes", [])),
+        modified_attributes=[
+            AttributeFlagChange(name=name, old_flags=old_flags, new_flags=new_flags)
+            for name, old_flags, new_flags in changes.get("modified_attributes", [])
+        ],
+    )
+
+
+def _entity_changes_to_rust(changes: EntityChanges) -> dict[str, Any]:
+    return {
+        "added_attributes": changes.added_attributes,
+        "removed_attributes": changes.removed_attributes,
+        "modified_attributes": [
+            [change.name, change.old_flags, change.new_flags]
+            for change in changes.modified_attributes
+        ],
+        "abstract_changed": None,
+        "parent_changed": None,
+    }
+
+
+def _relation_changes_to_rust(changes: RelationChanges) -> dict[str, Any]:
+    return {
+        "added_attributes": changes.added_attributes,
+        "removed_attributes": changes.removed_attributes,
+        "modified_attributes": [
+            [change.name, change.old_flags, change.new_flags]
+            for change in changes.modified_attributes
+        ],
+        "added_roles": changes.added_roles,
+        "removed_roles": changes.removed_roles,
+        "modified_role_players": [
+            {
+                "role_name": change.role_name,
+                "added_player_types": change.added_player_types,
+                "removed_player_types": change.removed_player_types,
+            }
+            for change in changes.modified_role_players
+        ],
+        "modified_role_cardinality": [
+            {
+                "role_name": change.role_name,
+                "old_cardinality": _cardinality_to_rust(change.old_cardinality),
+                "new_cardinality": _cardinality_to_rust(change.new_cardinality),
+            }
+            for change in changes.modified_role_cardinality
+        ],
+        "abstract_changed": None,
+        "parent_changed": None,
+    }
+
+
+def _attribute_type_changed_fields(changes: dict[str, Any]) -> list[str]:
+    names = []
+    for key, label in (
+        ("value_type_changed", "value type"),
+        ("parent_changed", "parent"),
+        ("abstract_changed", "abstract"),
+        ("independent_changed", "independent"),
+        ("regex_changed", "regex"),
+        ("allowed_values_changed", "values"),
+        ("range_changed", "range"),
+    ):
+        if changes.get(key) is not None:
+            names.append(label)
+    return names
+
+
+def _entities_by_name(schema: Any | None) -> dict[str, type[Entity]]:
+    if schema is None:
+        return {}
+    return {entity.get_type_name(): entity for entity in schema.entities}
+
+
+def _relations_by_name(schema: Any | None) -> dict[str, type[Relation]]:
+    if schema is None:
+        return {}
+    return {relation.get_type_name(): relation for relation in schema.relations}
+
+
+def _attributes_by_name(schema: Any | None) -> dict[str, type[Attribute]]:
+    if schema is None:
+        return {}
+    return {attr.get_attribute_name(): attr for attr in schema.attribute_classes}
+
+
+def _model_type_name(model: type[Entity] | type[Relation]) -> str:
+    return model.get_type_name()
+
+
+def _cardinality_from_rust(
+    value: list[Any] | tuple[Any, Any] | None,
+) -> tuple[int | None, int | None]:
+    if value is None:
+        return (None, None)
+    return (value[0], value[1])
+
+
+def _cardinality_to_rust(value: tuple[int | None, int | None]) -> list[int | None] | None:
+    min_value, max_value = value
+    if min_value is None and max_value is None:
+        return None
+    return [0 if min_value is None else min_value, max_value]

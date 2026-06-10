@@ -227,7 +227,7 @@ impl Expr {
     ///
     /// `entity_var` is the variable bound to the entity (e.g. `"$e"`).
     /// `counter` is a mutable counter for generating unique attribute
-    /// variable names (`$_attr0`, `$_attr1`, etc.).
+    /// variable names (`$attr0`, `$attr1`, etc.).
     pub fn to_patterns(&self, entity_var: &str, counter: &mut usize) -> Vec<Pattern> {
         match self {
             Self::Eq { attr, value }
@@ -245,7 +245,7 @@ impl Expr {
                     Self::Neq { .. } => "!=",
                     _ => unreachable!(),
                 };
-                let var_name = format!("$_attr{}", counter);
+                let var_name = format!("$attr{}", counter);
                 *counter += 1;
                 vec![
                     Pattern::Has {
@@ -261,7 +261,7 @@ impl Expr {
                 ]
             }
             Self::Contains { attr, substring } => {
-                let var_name = format!("$_attr{}", counter);
+                let var_name = format!("$attr{}", counter);
                 *counter += 1;
                 vec![
                     Pattern::Has {
@@ -277,7 +277,7 @@ impl Expr {
                 ]
             }
             Self::Like { attr, pattern } => {
-                let var_name = format!("$_attr{}", counter);
+                let var_name = format!("$attr{}", counter);
                 *counter += 1;
                 vec![
                     Pattern::Has {
@@ -391,7 +391,7 @@ impl Agg {
         match self {
             Self::Count => {
                 let assignment = ReduceAssignment {
-                    variable: "$_count".to_string(),
+                    variable: "$count".to_string(),
                     expression: Value::FunctionCall(FunctionCallValue {
                         function: "count".to_string(),
                         args: vec![Value::Variable(entity_var.to_string())],
@@ -401,16 +401,16 @@ impl Agg {
             }
             _ => {
                 let (func_name, attr_name, result_var) = match self {
-                    Self::Sum(a) => ("sum", a.as_str(), "$_sum"),
-                    Self::Min(a) => ("min", a.as_str(), "$_min"),
-                    Self::Max(a) => ("max", a.as_str(), "$_max"),
-                    Self::Mean(a) => ("mean", a.as_str(), "$_mean"),
-                    Self::Median(a) => ("median", a.as_str(), "$_median"),
-                    Self::Std(a) => ("std", a.as_str(), "$_std"),
+                    Self::Sum(a) => ("sum", a.as_str(), "$sum"),
+                    Self::Min(a) => ("min", a.as_str(), "$min"),
+                    Self::Max(a) => ("max", a.as_str(), "$max"),
+                    Self::Mean(a) => ("mean", a.as_str(), "$mean"),
+                    Self::Median(a) => ("median", a.as_str(), "$median"),
+                    Self::Std(a) => ("std", a.as_str(), "$std"),
                     Self::Count => unreachable!(),
                 };
 
-                let attr_var = format!("$_agg{}", counter);
+                let attr_var = format!("$agg{}", counter);
                 *counter += 1;
 
                 let has_pattern = Pattern::Has {
@@ -453,8 +453,15 @@ impl AggResult {
     }
 
     /// Get the count result.
+    ///
+    /// Looks up the `count` reduce variable only. A scan-all fallback would
+    /// be unsound here: an `AggResult` can hold several aggregates at once,
+    /// so "first numeric in the map" could return a sum or average instead.
     pub fn count(&self) -> Option<u64> {
-        self.values.get("$_count").and_then(|v| v.as_u64())
+        self.values
+            .get("$count")
+            .or_else(|| self.values.get("count"))
+            .and_then(parse_u64_json)
     }
 
     /// Get a 64-bit integer result by variable name.
@@ -471,6 +478,17 @@ impl AggResult {
     pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
         self.values.get(key)
     }
+}
+
+fn parse_u64_json(value: &serde_json::Value) -> Option<u64> {
+    if let Some(value) = value.get("value") {
+        return parse_u64_json(value);
+    }
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok()))
+        .or_else(|| value.as_f64().map(|value| value as u64))
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
 }
 
 // ---------------------------------------------------------------------------
@@ -546,13 +564,13 @@ mod tests {
             } => {
                 assert_eq!(thing_var, "$e");
                 assert_eq!(attr_type, "age");
-                assert_eq!(attr_var, "$_attr0");
+                assert_eq!(attr_var, "$attr0");
             }
             _ => panic!("expected Has"),
         }
         match &patterns[1] {
             Pattern::ValueComparison { var, operator, .. } => {
-                assert_eq!(var, "$_attr0");
+                assert_eq!(var, "$attr0");
                 assert_eq!(operator, "==");
             }
             _ => panic!("expected ValueComparison"),
@@ -691,7 +709,7 @@ mod tests {
     fn test_agg_count() {
         let mut counter = 0;
         let (assign, pattern) = Agg::Count.to_reduce_assignment("$e", &mut counter);
-        assert_eq!(assign.variable, "$_count");
+        assert_eq!(assign.variable, "$count");
         assert!(pattern.is_none());
         assert_eq!(counter, 0); // Count doesn't use counter
     }
@@ -700,7 +718,7 @@ mod tests {
     fn test_agg_sum() {
         let mut counter = 0;
         let (assign, pattern) = Agg::Sum("salary".into()).to_reduce_assignment("$e", &mut counter);
-        assert_eq!(assign.variable, "$_sum");
+        assert_eq!(assign.variable, "$sum");
         assert!(pattern.is_some());
         match pattern.unwrap() {
             Pattern::Has {
@@ -709,7 +727,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(attr_type, "salary");
-                assert_eq!(attr_var, "$_agg0");
+                assert_eq!(attr_var, "$agg0");
             }
             _ => panic!("expected Has"),
         }
@@ -719,32 +737,40 @@ mod tests {
     #[test]
     fn test_agg_result_count() {
         let mut values = HashMap::new();
-        values.insert("$_count".into(), json!(42));
+        values.insert("$count".into(), json!(42));
         let result = AggResult::new(values);
         assert_eq!(result.count(), Some(42));
     }
 
     #[test]
+    fn test_agg_result_count_ignores_other_aggregates() {
+        let mut values = HashMap::new();
+        values.insert("$sum".into(), json!(99));
+        let result = AggResult::new(values);
+        assert_eq!(result.count(), None);
+    }
+
+    #[test]
     fn test_agg_result_get_f64() {
         let mut values = HashMap::new();
-        values.insert("$_mean".into(), json!(2.78));
+        values.insert("$mean".into(), json!(2.78));
         let result = AggResult::new(values);
-        assert_eq!(result.get_f64("$_mean"), Some(2.78));
+        assert_eq!(result.get_f64("$mean"), Some(2.78));
     }
 
     #[test]
     fn test_agg_result_get_i64() {
         let mut values = HashMap::new();
-        values.insert("$_sum".into(), json!(100));
+        values.insert("$sum".into(), json!(100));
         let result = AggResult::new(values);
-        assert_eq!(result.get_i64("$_sum"), Some(100));
+        assert_eq!(result.get_i64("$sum"), Some(100));
     }
 
     #[test]
     fn test_agg_result_missing_key() {
         let result = AggResult::new(HashMap::new());
         assert_eq!(result.count(), None);
-        assert_eq!(result.get_f64("$_sum"), None);
+        assert_eq!(result.get_f64("$sum"), None);
     }
 
     #[test]
@@ -834,9 +860,9 @@ mod tests {
     #[test]
     fn test_group_by_result() {
         let mut values1 = HashMap::new();
-        values1.insert("$_mean".into(), json!(35.5));
+        values1.insert("$mean".into(), json!(35.5));
         let mut values2 = HashMap::new();
-        values2.insert("$_mean".into(), json!(28.3));
+        values2.insert("$mean".into(), json!(28.3));
 
         let result = GroupByResult::new(vec![
             (json!("Engineering"), AggResult::new(values1)),
@@ -846,11 +872,11 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert!(!result.is_empty());
         assert_eq!(
-            result.get_by_str("Engineering").unwrap().get_f64("$_mean"),
+            result.get_by_str("Engineering").unwrap().get_f64("$mean"),
             Some(35.5)
         );
         assert_eq!(
-            result.get_by_str("Sales").unwrap().get_f64("$_mean"),
+            result.get_by_str("Sales").unwrap().get_f64("$mean"),
             Some(28.3)
         );
         assert!(result.get_by_str("HR").is_none());

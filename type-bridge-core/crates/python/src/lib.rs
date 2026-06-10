@@ -14,7 +14,11 @@
 #![warn(missing_docs)]
 
 pub mod ast;
+pub mod migration_runtime;
 pub mod orm;
+pub mod orm_runtime;
+pub mod schema;
+pub mod transpiler;
 
 use type_bridge_core_lib as core;
 
@@ -307,6 +311,22 @@ impl TypeSchema {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
+    /// Get the functions map as a Python dict.
+    #[getter]
+    fn functions(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pythonize(py, &self.inner.functions)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Get the structs map as a Python dict.
+    #[getter]
+    fn structs(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pythonize(py, &self.inner.structs)
+            .map(|obj| obj.unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
     /// Validate a query (as list of clause dicts) against this schema.
     ///
     /// Convenience method equivalent to `ValidationEngine().validate_query(clauses, schema)`.
@@ -559,6 +579,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_typeql_query, m)?)?;
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
+    m.add_function(wrap_pyfunction!(transpiler::toml_to_typeql, m)?)?;
 
     // Values
     m.add_class::<ast::LiteralValue>()?;
@@ -614,6 +635,9 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // ORM CRUD query builder
     m.add_class::<orm::CrudQueryBuilder>()?;
+    orm_runtime::register(m)?;
+    migration_runtime::register(m)?;
+    schema::register(m)?;
 
     Ok(())
 }

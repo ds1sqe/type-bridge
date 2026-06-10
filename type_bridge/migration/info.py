@@ -1,13 +1,7 @@
 """Schema information container for TypeDB schema management."""
 
 from type_bridge.attribute.base import Attribute
-from type_bridge.migration.diff import (
-    AttributeFlagChange,
-    EntityChanges,
-    RelationChanges,
-    RolePlayerChange,
-    SchemaDiff,
-)
+from type_bridge.migration.diff import SchemaDiff, from_rust_schema_diff
 from type_bridge.models import Entity, Relation
 
 
@@ -181,44 +175,10 @@ class SchemaInfo:
         Raises:
             SchemaValidationError: If schema validation fails
         """
-        # Validate schema before generation
         self.validate()
+        from type_bridge._rust_runtime import generate_define_block
 
-        lines = []
-
-        # Define attributes first
-        lines.append("define")
-        lines.append("")
-
-        # Sort attributes by name for consistent output
-        sorted_attrs = sorted(self.attribute_classes, key=lambda x: x.get_attribute_name())
-        for attr_class in sorted_attrs:
-            lines.append(attr_class.to_schema_definition())
-
-        lines.append("")
-
-        # Define entities (skip base classes)
-        for entity_model in self.entities:
-            schema_def = entity_model.to_schema_definition()
-            if schema_def is not None:  # Skip base classes
-                lines.append(schema_def)
-                lines.append("")
-
-        # Define relations (skip base classes)
-        for relation_model in self.relations:
-            schema_def = relation_model.to_schema_definition()
-            if schema_def is not None:  # Skip base classes
-                lines.append(schema_def)
-
-                # Add role player definitions
-                for role_name, role in relation_model._roles.items():
-                    for player_type in role.player_types:
-                        lines.append(
-                            f"{player_type} plays {relation_model.get_type_name()}:{role.role_name};"
-                        )
-                lines.append("")
-
-        return "\n".join(lines)
+        return generate_define_block(self.to_rust_schema_info())
 
     def compare(self, other: "SchemaInfo") -> SchemaDiff:
         """Compare this schema with another schema.
@@ -229,176 +189,115 @@ class SchemaInfo:
         Returns:
             SchemaDiff containing all differences between the schemas
         """
-        diff = SchemaDiff()
+        from type_bridge._rust_runtime import compute_schema_diff
 
-        # Compare entities by type name (not Python object identity)
-        self_entity_by_name = {e.get_type_name(): e for e in self.entities}
-        other_entity_by_name = {e.get_type_name(): e for e in other.entities}
+        rust_diff = compute_schema_diff(self.to_rust_schema_info(), other.to_rust_schema_info())
+        return from_rust_schema_diff(rust_diff, current_schema=self, target_schema=other)
 
-        self_ent_names = set(self_entity_by_name.keys())
-        other_ent_names = set(other_entity_by_name.keys())
+    def to_rust_schema_info(self) -> dict:
+        """Serialize this Python model schema to the Rust ``SchemaInfo`` dict shape."""
+        from type_bridge._rust_runtime import (
+            attribute_schema_entry,
+            cardinality_tuple,
+            descriptor_for_model,
+        )
 
-        diff.added_entities = {other_entity_by_name[n] for n in other_ent_names - self_ent_names}
-        diff.removed_entities = {self_entity_by_name[n] for n in self_ent_names - other_ent_names}
-
-        # Compare entities that exist in both (by type name)
-        for type_name in self_ent_names & other_ent_names:
-            self_ent = self_entity_by_name[type_name]
-            other_ent = other_entity_by_name[type_name]
-            entity_changes = self._compare_entity(self_ent, other_ent)
-            if entity_changes:
-                diff.modified_entities[other_ent] = entity_changes
-
-        # Compare relations by type name (not Python object identity)
-        self_relation_by_name = {r.get_type_name(): r for r in self.relations}
-        other_relation_by_name = {r.get_type_name(): r for r in other.relations}
-
-        self_rel_names = set(self_relation_by_name.keys())
-        other_rel_names = set(other_relation_by_name.keys())
-
-        diff.added_relations = {other_relation_by_name[n] for n in other_rel_names - self_rel_names}
-        diff.removed_relations = {
-            self_relation_by_name[n] for n in self_rel_names - other_rel_names
+        info: dict = {"entities": {}, "relations": {}, "attributes": {}}
+        entity_names = {
+            entity.get_type_name() for entity in self.entities if not _is_base_model(entity)
+        }
+        relation_names = {
+            relation.get_type_name() for relation in self.relations if not _is_base_model(relation)
         }
 
-        # Compare relations that exist in both (by type name)
-        for type_name in self_rel_names & other_rel_names:
-            self_rel = self_relation_by_name[type_name]
-            other_rel = other_relation_by_name[type_name]
-            relation_changes = self._compare_relation(self_rel, other_rel)
-            if relation_changes:
-                diff.modified_relations[other_rel] = relation_changes
+        for entity in self.entities:
+            if _is_base_model(entity):
+                continue
+            descriptor = descriptor_for_model(entity)
+            entry = _schema_entry_from_descriptor(descriptor)
+            if entry["parent_type"] not in entity_names:
+                entry["parent_type"] = None
+            info["entities"][entry["type_name"]] = entry
+            _register_attributes(info, entry["owned_attributes"])
+            for attr_info in entity.get_all_attributes().values():
+                entry = attribute_schema_entry(attr_info.typ)
+                info["attributes"][entry["attr_name"]] = entry
 
-        # Compare attributes
-        diff.added_attributes = other.attribute_classes - self.attribute_classes
-        diff.removed_attributes = self.attribute_classes - other.attribute_classes
+        for relation in self.relations:
+            if _is_base_model(relation):
+                continue
+            descriptor = descriptor_for_model(relation)
+            entry = _schema_entry_from_descriptor(descriptor)
+            if entry["parent_type"] not in relation_names:
+                entry["parent_type"] = None
+            entry["roles"] = [
+                {
+                    "role_name": role["role_name"],
+                    "player_type_names": role["player_type_names"],
+                    "cardinality": role["cardinality"],
+                }
+                for role in descriptor["roles"]
+            ]
+            info["relations"][entry["type_name"]] = entry
+            _register_attributes(info, entry["owned_attributes"])
+            for attr_info in relation.get_all_attributes().values():
+                entry = attribute_schema_entry(attr_info.typ)
+                info["attributes"][entry["attr_name"]] = entry
 
-        return diff
+        for attr_cls in self.attribute_classes:
+            entry = attribute_schema_entry(attr_cls)
+            info["attributes"][entry["attr_name"]] = entry
 
-    def _compare_entity(
-        self, self_entity: type[Entity], other_entity: type[Entity]
-    ) -> EntityChanges | None:
-        """Compare two entity types for differences.
+        # Resolve relation-side plays_cardinality authoring into the entity-side IR overlay.
+        # Plays-card is semantically per-player (relations-per-player), but Python declares
+        # it on the relation's Role; here it lands on each player's entry keyed
+        # "{relation}:{role}", which generate_define_block reads to emit @card on the plays
+        # line. A relates-only role (no players) carries no overlay.
+        for relation in self.relations:
+            if _is_base_model(relation):
+                continue
+            relation_name = relation.get_type_name()
+            for role in relation.get_roles().values():
+                if role.plays_cardinality is None:
+                    continue
+                card = cardinality_tuple(role.plays_cardinality)
+                key = f"{relation_name}:{role.role_name}"
+                for player_name in role.player_types:
+                    if player_name in info["entities"]:
+                        info["entities"][player_name]["plays_cardinalities"][key] = card
+                    elif player_name in info["relations"]:
+                        info["relations"][player_name]["plays_cardinalities"][key] = card
 
-        Args:
-            self_entity: Entity from this schema
-            other_entity: Entity from other schema
+        return info
 
-        Returns:
-            EntityChanges with differences, or None if no changes
-        """
-        # Compare owned attributes
-        self_attrs = self_entity.get_owned_attributes()
-        other_attrs = other_entity.get_owned_attributes()
 
-        added_attrs = list(set(other_attrs.keys()) - set(self_attrs.keys()))
-        removed_attrs = list(set(self_attrs.keys()) - set(other_attrs.keys()))
+def _schema_entry_from_descriptor(descriptor: dict) -> dict:
+    return {
+        "type_name": descriptor["type_name"],
+        "is_abstract": descriptor["is_abstract"],
+        "parent_type": descriptor["parent_type"],
+        "owned_attributes": [
+            {
+                "attr_name": attr["attr_name"],
+                "value_type": attr["value_type"],
+                "annotations": attr["annotations"],
+            }
+            for attr in descriptor["owned_attributes"]
+        ],
+        # Entity-side plays-card overlay, keyed "{relation}:{role}". Populated by the
+        # overlay pass in to_rust_schema_info from each relation's player-side authoring;
+        # empty here so the no-plays-card path emits a bare plays line unchanged.
+        "plays_cardinalities": {},
+    }
 
-        # Compare attribute flags for common attributes
-        common_attrs = set(self_attrs.keys()) & set(other_attrs.keys())
-        modified_attrs = []
-        for attr_name in common_attrs:
-            self_info = self_attrs[attr_name]
-            other_info = other_attrs[attr_name]
 
-            # Compare flags
-            if self_info.flags != other_info.flags:
-                modified_attrs.append(
-                    AttributeFlagChange(
-                        name=attr_name,
-                        old_flags=str(self_info.flags.to_typeql_annotations()),
-                        new_flags=str(other_info.flags.to_typeql_annotations()),
-                    )
-                )
-
-        changes = EntityChanges(
-            added_attributes=added_attrs,
-            removed_attributes=removed_attrs,
-            modified_attributes=modified_attrs,
+def _register_attributes(info: dict, attrs: list[dict]) -> None:
+    for attr in attrs:
+        info["attributes"].setdefault(
+            attr["attr_name"],
+            {"attr_name": attr["attr_name"], "value_type": attr["value_type"]},
         )
 
-        return changes if changes.has_changes() else None
 
-    def _compare_relation(
-        self, self_relation: type[Relation], other_relation: type[Relation]
-    ) -> RelationChanges | None:
-        """Compare two relation types for differences.
-
-        Detects:
-        - Added/removed roles
-        - Role player type changes (which entities can play each role)
-        - Added/removed/modified attributes
-
-        Args:
-            self_relation: Relation from this schema
-            other_relation: Relation from other schema
-
-        Returns:
-            RelationChanges with differences, or None if no changes
-        """
-        # Compare roles
-        self_roles = set(self_relation._roles.keys())
-        other_roles = set(other_relation._roles.keys())
-
-        added_roles = list(other_roles - self_roles)
-        removed_roles = list(self_roles - other_roles)
-
-        # Compare role player types for common roles
-        common_roles = self_roles & other_roles
-        modified_role_players: list[RolePlayerChange] = []
-
-        for role_name in common_roles:
-            self_role = self_relation._roles[role_name]
-            other_role = other_relation._roles[role_name]
-
-            # Get player types as sets for comparison
-            self_player_types = set(self_role.player_types)
-            other_player_types = set(other_role.player_types)
-
-            if self_player_types != other_player_types:
-                added_player_types = list(other_player_types - self_player_types)
-                removed_player_types = list(self_player_types - other_player_types)
-
-                modified_role_players.append(
-                    RolePlayerChange(
-                        role_name=role_name,
-                        added_player_types=added_player_types,
-                        removed_player_types=removed_player_types,
-                    )
-                )
-
-        # Compare owned attributes
-        self_attrs = self_relation.get_owned_attributes()
-        other_attrs = other_relation.get_owned_attributes()
-
-        added_attrs = list(set(other_attrs.keys()) - set(self_attrs.keys()))
-        removed_attrs = list(set(self_attrs.keys()) - set(other_attrs.keys()))
-
-        # Compare attribute flags for common attributes
-        common_attrs = set(self_attrs.keys()) & set(other_attrs.keys())
-        modified_attrs: list[AttributeFlagChange] = []
-
-        for attr_name in common_attrs:
-            self_info = self_attrs[attr_name]
-            other_info = other_attrs[attr_name]
-
-            # Compare flags
-            if self_info.flags != other_info.flags:
-                modified_attrs.append(
-                    AttributeFlagChange(
-                        name=attr_name,
-                        old_flags=str(self_info.flags.to_typeql_annotations()),
-                        new_flags=str(other_info.flags.to_typeql_annotations()),
-                    )
-                )
-
-        changes = RelationChanges(
-            added_roles=added_roles,
-            removed_roles=removed_roles,
-            modified_role_players=modified_role_players,
-            added_attributes=added_attrs,
-            removed_attributes=removed_attrs,
-            modified_attributes=modified_attrs,
-        )
-
-        return changes if changes.has_changes() else None
+def _is_base_model(model: type[Entity | Relation]) -> bool:
+    return bool(getattr(model, "is_base", lambda: False)())

@@ -4,10 +4,12 @@
 //! operations. Query building and result hydration are handled by
 //! internal helpers.
 
+pub mod dynamic;
 pub mod entity_manager;
 pub mod hydration;
 pub mod query_builder;
 pub mod relation_manager;
 
+pub use dynamic::{DynamicEntityManager, DynamicRelationManager};
 pub use entity_manager::EntityManager;
 pub use relation_manager::RelationManager;

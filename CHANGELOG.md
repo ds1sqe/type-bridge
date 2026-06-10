@@ -4,6 +4,101 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Changes
+
+#### Cross-language CI and release coverage (#110)
+
+- **Node binding built, tested, and released** — the `@type-bridge/node` binding is
+  now built and gated in CI (native module, TypeScript surface, unit, `.d.ts`
+  baseline, and package smoke), runnable locally via `scripts/check.sh node`, and
+  packaged as a tarball attached to each GitHub release (registry publish staged
+  behind an `NPM_TOKEN`).
+- **Cross-language parity enforced** — the Python/Node parity suite runs against live
+  TypeDB in CI under a strict mode that fails (rather than silently skips) when the
+  binding is unbuilt, so a semantic divergence between the two bindings reds CI; the
+  `migration` integration group is also covered.
+- **Release hardening** — third-party GitHub Actions are pinned to commit SHAs, and a
+  crates.io publish that fails for any reason other than an already-published version
+  now fails the release instead of being swallowed.
+- **Node binding integration gated in CI** — a `node-integration` job runs the binding's
+  own live-TypeDB suites (`test:integration`, which chains `test:typed-integration`)
+  against a TypeDB service, mirroring the Python integration job. Previously only the
+  offline Node gates and the Python-side parity suite ran; the binding's own integration
+  assertions now red CI on a regression.
+- **Consolidated test/check scripts** — `test.sh` is now the single full-test entrypoint
+  (Rust + Python + Node, unit + integration) with `--no-integration`, `--proxy`, and
+  `--no-isolated` flags; it manages a TypeDB by default. The `test-integration.sh`,
+  `test-integration-dind.sh`, and `test-proxy-integration.sh` scripts (and the
+  Docker-in-Docker image stack) are retired into those flags, and `scripts/check.sh`
+  is the single canonical check (the redundant root `check.sh` is removed).
+
+#### Generator parsing routed through the Rust core (#125)
+
+- **`lark` removed** — the generator no longer depends on `lark`. TQL schema
+  parsing runs entirely through the Rust `type_bridge_core` core, which is the
+  single source of the parsed schema. The `typeql.lark` grammar and the
+  lark-vs-Rust differential test have been deleted, and `lark` is dropped from
+  the runtime dependencies.
+- **Structured function return types** — `FunctionSpec.return_type` is now a
+  structured `ReturnTypeSpec` (a `is_stream` flag plus an ordered list of
+  `ReturnTypeItem(name, optional)`) instead of a formatted string. Optionality
+  is carried as a boolean, so the intermediate representation is
+  language-neutral and additive for future bindings. Generated output is
+  unchanged — the renderer reconstructs any `?` tokens at its own emit site.
+
+### New Features
+
+#### Plays-side role cardinality (#130)
+
+- **Cross-language plays-cardinality authoring** — Rust `SchemaInfo`, Python
+  `Role(..., plays_cardinality=Card(...))`, TypeScript
+  `role(..., { playsCardinality: Card(...) })`, and TOML `plays = [{ card =
+  "..." }]` now emit `plays relation:role @card(...)` through the shared Rust
+  schema emitter/parser path.
+- **Relates/plays separation** — relates-side `cardinality` still constrains
+  players per relation instance, while plays-side cardinality constrains how
+  many relation instances a single player may participate in for that role. The
+  two constraints may coexist on the same role.
+- **Generated surface round-trip** — parsed TypeQL with plays-side `@card`
+  renders back to Python and TypeScript role declarations, preserving
+  authoring/render parity.
+
+#### TOML schema DSL (#138)
+
+- **TOML schema authoring** — schemas may now be authored in TOML as an
+  additive alternative to TypeQL. A new Rust/PyO3 `toml_to_typeql` transpiles a
+  TOML document to canonical TypeQL, which feeds the single existing parse path,
+  so the intermediate representation, renderers, and generated packages are
+  unchanged. Equivalent TOML and `.tql` schemas produce byte-for-byte identical
+  packages. `.tql` authoring remains fully supported.
+- **Full schema surface** — the DSL covers attributes (value types, `sub`,
+  `abstract`, `@regex`/`@values`/`@range`), entities (`owns` with
+  `@key`/`@unique`/`@card`, `plays` with optional per-plays `@card`, `sub`,
+  `abstract`), relations (`roles` with per-role `@card` and `as` super-role
+  overrides, `owns`, relation-level `plays`, `sub`, `abstract`), functions
+  (signature plus verbatim body), and structs.
+- **Generator routing** — `generate_models` transpiles a `.toml` source by file
+  suffix, or for raw text via an explicit `format="toml"` argument.
+- **Field-level diagnostics** — a semantic validation pass rejects malformed TOML
+  with a clear `ValueError` naming the offending field or type (unknown value
+  type, `value`/`sub` conflict, dangling `sub` parent, missing role player, empty
+  struct, malformed function body) before any TypeQL is emitted.
+
+#### Node.js typed model layer (#124)
+
+- **Branded attributes** — `class Name extends attr.String("name") {}` defines a
+  hard-typed attribute whose class is nominally distinct from other attributes
+  (`Name` is not interchangeable with `Email` or raw `string`). One factory per
+  TypeDB value type; the mandatory name is both the schema attribute name and the
+  compile-time brand.
+- **Typed `Entity` / `Relation` classes** — `class Person extends Entity("person",
+  { name: field(Name, Key), age: field(Age).optional() }) {}` yields typed
+  construction and field reads, mirroring the Python class surface. Relations
+  support multi-player `role(...)` declarations.
+- **Descriptor emission** — typed models emit registration descriptors
+  byte-identical to the Python facade (verified against the shared parity
+  fixture), so the same model definition drives the existing dynamic managers.
+
 ## [1.4.5] - 2026-05-21
 
 ### Bug Fixes

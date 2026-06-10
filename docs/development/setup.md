@@ -25,12 +25,15 @@ uv pip install -e ".[dev]"
 ### Project Dependencies
 
 The project requires:
-- `typedb-driver==3.10.0`: Official Python driver for TypeDB connectivity
+- `type-bridge-core>=1.4.5`: Rust runtime for ORM connectivity and query execution
 - `pydantic>=2.12.4`: For validation and type coercion
 - `isodate==0.7.2`: For Duration type support (ISO 8601)
-- `lark>=1.1.9`: Parser toolkit for TypeQL schema parsing
 - `jinja2>=3.1.0`: Template engine for code generation
 - `typer>=0.15.0`: CLI framework for generator and migration tools
+
+`typedb-driver==3.10.0` is no longer a default runtime dependency. It remains
+available through the `dev` and `typedb-driver` extras for integration tests
+and direct driver calls.
 
 Development dependencies include:
 - `pytest`: Testing framework
@@ -48,14 +51,12 @@ Integration tests are validated against TypeDB 3.10.4. The project includes Dock
 - Docker or Podman with Compose support installed
 - Port 1729 available (TypeDB server)
 
-**Docker is managed automatically** by the test fixtures. Simply run:
+**`./test.sh` manages the TypeDB container automatically** (isolated by default). Simply run:
 
 ```bash
-./test-integration.sh          # Starts Docker, runs tests, stops Docker
-./test-integration.sh -v       # With verbose output
-
-# Fully pinned runner using Docker-in-Docker
-./test-integration-dind.sh     # Python 3.13.5 + TypeDB 3.10.4
+./test.sh                      # Full suite, isolated: starts TypeDB, runs tests, tears down
+./test.sh --no-integration     # Offline tiers only (no container)
+./test.sh -- -v                # Forward extra args (e.g. -v) to pytest
 ```
 
 ### Manual Docker Control
@@ -172,13 +173,14 @@ All tests must pass:
 # Unit tests (default)
 uv run pytest                              # All 425 unit tests
 
-# Integration tests
-./test-integration.sh                     # All 278 integration tests with Docker
+# Integration tests (./test.sh manages a TypeDB by default)
+./test.sh --no-isolated                   # Python+Node integration against a running TypeDB
+USE_DOCKER=false uv run pytest -m integration  # Python integration only
 
 # All tests
-uv run pytest -m ""                       # All 703 tests
-./test.sh                                 # Full test suite with detailed output
-./check.sh                                # Linting and type checking
+uv run pytest -m ""                       # All Python tests
+./test.sh                                 # Full suite (Rust + Python + Node), isolated
+./scripts/check.sh                        # CI-shaped checks (rust|python|node|all)
 ```
 
 When adding new features:
@@ -201,7 +203,7 @@ Before committing changes, ensure:
 Quick command to run all checks:
 
 ```bash
-./check.sh  # Runs linting and type checking
+./scripts/check.sh  # Runs the CI-shaped checks (rust|python|node|all)
 ```
 
 ## Temporary Files Policy
@@ -243,16 +245,13 @@ debug_report.md         # Don't put in root
    # Quick: unit tests only
    uv run pytest
 
-   # Full: with integration tests
-   ./test-integration.sh
-
-   # Reproducible containerized integration environment
-   ./test-integration-dind.sh
+   # Full: Rust + Python + Node, unit + integration (isolated TypeDB)
+   ./test.sh
    ```
 
 4. **Check code quality**:
    ```bash
-   ./check.sh
+   ./scripts/check.sh
    ```
 
 5. **Run examples to verify**:

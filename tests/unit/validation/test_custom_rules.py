@@ -12,7 +12,7 @@ from type_bridge.rules import RuleBuilder
 HAS_RUST_CORE = False
 ValidationEngine: Any = None
 try:
-    from type_bridge_core import ValidationEngine  # type: ignore[no-redef]
+    from type_bridge_core import ValidationEngine
 
     HAS_RUST_CORE = True
 except ImportError:

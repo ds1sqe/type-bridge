@@ -100,17 +100,17 @@ fn parse_group_by_result<T: 'static>(result: QueryResult) -> Result<GroupByResul
     let type_name = std::any::type_name::<T>();
     match result {
         QueryResult::Rows(rows) => {
-            let group_var = "$_group0";
             let mut groups = Vec::new();
             for row in &rows {
                 if let Some(obj) = row.as_object() {
                     let group_key = obj
-                        .get(group_var)
+                        .get("$group0")
+                        .or_else(|| obj.get("$_group0"))
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
                     let mut agg_map = HashMap::new();
                     for (k, v) in obj {
-                        if k != group_var {
+                        if k != "$group0" && k != "$_group0" {
                             agg_map.insert(k.clone(), v.clone());
                         }
                     }

@@ -104,6 +104,7 @@ fn make_small_schema_info() -> SchemaInfo {
                         annotations: vec![],
                     },
                 ],
+                plays_cardinalities: std::collections::BTreeMap::new(),
             },
         );
     }
@@ -118,8 +119,10 @@ fn make_small_schema_info() -> SchemaInfo {
                 owned_attributes: vec![],
                 roles: vec![RoleEntry {
                     role_name: "player".to_string(),
-                    player_type_name: "entity_0".to_string(),
+                    player_type_names: vec!["entity_0".to_string()],
+                    cardinality: None,
                 }],
+                plays_cardinalities: std::collections::BTreeMap::new(),
             },
         );
     }
@@ -152,6 +155,7 @@ fn make_large_schema_info() -> SchemaInfo {
                     None
                 },
                 owned_attributes: attrs,
+                plays_cardinalities: std::collections::BTreeMap::new(),
             },
         );
     }
@@ -167,13 +171,16 @@ fn make_large_schema_info() -> SchemaInfo {
                 roles: vec![
                     RoleEntry {
                         role_name: "player_a".to_string(),
-                        player_type_name: "entity_0".to_string(),
+                        player_type_names: vec!["entity_0".to_string()],
+                        cardinality: None,
                     },
                     RoleEntry {
                         role_name: "player_b".to_string(),
-                        player_type_name: "entity_1".to_string(),
+                        player_type_names: vec!["entity_1".to_string()],
+                        cardinality: None,
                     },
                 ],
+                plays_cardinalities: std::collections::BTreeMap::new(),
             },
         );
     }

@@ -24,7 +24,9 @@ jobs:
           python-version: "3.13.5"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -59,12 +61,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
+          toolchain: nightly
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        with:
+          tool: cargo-llvm-cov
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -81,7 +86,7 @@ jobs:
         run: ./scripts/coverage.sh branch --lcov
 
       - name: Upload Rust coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: type-bridge-core/target/llvm-cov/lcov.branch.info
@@ -93,6 +98,7 @@ jobs:
     name: Build wheel (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -116,7 +122,7 @@ jobs:
 
       - name: Set up QEMU (Linux aarch64 cross-compilation)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           platforms: arm64
 
@@ -127,7 +133,13 @@ jobs:
           python-version: "3.13.5"
 
       - name: Build wheel
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        env:
+          # The manylinux aarch64 cross-compiler does not define the ARM ACLE
+          # macro __ARM_ARCH that ring's pregenerated assembly requires. The
+          # variable name is target-suffixed, so it only affects the aarch64
+          # Linux wheel even though it is declared on every matrix leg.
+          CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '-D__ARM_ARCH=8' || '' }}
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -i python3.13
@@ -139,6 +151,64 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: type-bridge-core/dist/*.whl
+
+  # Node binding is a required CI gate: the #124 NAPI pillar was previously untested
+  # in CI, so its native + TypeScript surface and database-free gates run here to keep
+  # the #110 single-core / thin-bindings invariant from silently regressing.
+  node-check:
+    name: Node binding
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-node-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-node-
+            ${{ runner.os }}-cargo-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build native module and TypeScript surface
+        run: npm run build
+
+      - name: Verify native module built
+        run: ls type_bridge_node.*.node
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: DTS baseline parity
+        run: npm run test:dts
+
+      - name: Package smoke
+        run: npm run smoke:package
 
   # Code quality: linting and formatting (parallel)
   lint:
@@ -157,10 +227,12 @@ jobs:
           python-version: "3.13.5"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
@@ -192,10 +264,12 @@ jobs:
           python-version: "3.13.5"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
@@ -225,10 +299,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
@@ -246,7 +322,7 @@ jobs:
             --cov-report=term-missing
 
       - name: Upload Python coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         if: always()
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -260,7 +336,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        test-group: [crud, queries, schema, expressions]
+        test-group: [crud, queries, schema, expressions, migration]
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
@@ -279,10 +355,12 @@ jobs:
           python-version: "3.13.5"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
@@ -323,3 +401,211 @@ jobs:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
         run: uv run pytest tests/integration/${{ matrix.test-group }} -m integration -v --tb=short
+
+  # Cross-language parity gate: the #110 single-core / thin-bindings invariant only
+  # holds if a semantic divergence between the Python and Node sides reds CI. These
+  # tests shell out to the Node binding, so this job builds the Node prerequisites
+  # first, then runs them against live TypeDB under TYPE_BRIDGE_PARITY_STRICT so a
+  # "Node not built" skip fails the job instead of passing it silently (false green).
+  cross-language-parity:
+    name: Cross-language parity
+    runs-on: ubuntu-latest
+
+    services:
+      typedb:
+        image: typedb/typedb:3.10.4
+        ports:
+          - 1729:1729
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-parity-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-parity-
+            ${{ runner.os }}-cargo-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: type-bridge-core/crates/node
+        run: npm ci
+
+      # build:types is required too: the dynamic parity readers require() the package
+      # root, which resolves to dist/index.js — build:native only produces the cdylib.
+      - name: Build Node parity prerequisites
+        working-directory: type-bridge-core/crates/node
+        run: |
+          npm run build:native
+          npm run build:types
+          npm run build:typed-integration
+          npm run build:parity-reader
+          npm run build:generator-parity
+
+      - name: Export native artifact path
+        working-directory: type-bridge-core/crates/node
+        run: echo "TYPE_BRIDGE_NODE_NATIVE_PATH=$(ls "$PWD"/type_bridge_node.*.node | head -1)" >> "$GITHUB_ENV"
+
+      - name: Wait for TypeDB server to be ready
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost 1729 2>/dev/null; then
+              echo "TypeDB server is ready on port 1729"
+              break
+            fi
+            echo "Waiting for port 1729... ($i/30)"
+            sleep 2
+          done
+          if ! nc -z localhost 1729 2>/dev/null; then
+            echo "ERROR: TypeDB server did not start within 60 seconds"
+            docker logs ${{ job.services.typedb.id }} 2>&1 || true
+            exit 1
+          fi
+
+      - name: Run cross-language parity (strict — skips for an unbuilt Node binding fail)
+        env:
+          USE_DOCKER: false
+          TYPEDB_ADDRESS: localhost:1729
+          TYPE_BRIDGE_PARITY_STRICT: "1"
+        # The `integration or not integration` marker overrides pyproject's default
+        # `-m 'not integration'` filter so this gate runs BOTH the live-TypeDB parity
+        # tests and the offline cross-language ones (descriptor snapshots, generator
+        # parity, fixture contract) — the latter otherwise run in no CI job.
+        run: |
+          uv run pytest tests/integration/parity -m "integration or not integration" \
+            -ra --tb=short --junitxml=parity-results.xml
+
+      - name: Assert parity tests actually ran (guard against zero-collected)
+        if: always()
+        run: |
+          uv run python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("parity-results.xml")
+          root = tree.getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests = int(suite.get("tests", "0"))
+          skipped = int(suite.get("skipped", "0"))
+          ran = tests - skipped
+          print(f"parity: tests={tests} skipped={skipped} ran={ran}")
+          if ran <= 0:
+              print("ERROR: no parity test executed — gate would be a no-op")
+              sys.exit(1)
+          PY
+
+  # Node binding live-TypeDB integration. `node-check` covers the offline Node gates and
+  # `cross-language-parity` runs the Python parity suite against the binding — but neither
+  # runs the binding's OWN integration suites. This job mirrors the Python `test-integration`
+  # job for Node: a TypeDB service container plus the native build, then the binding's
+  # `test:integration` suite (which itself chains `test:typed-integration`).
+  node-integration:
+    name: Node integration
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+
+    services:
+      typedb:
+        image: typedb/typedb:3.10.4
+        ports:
+          - 1729:1729
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-node-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-node-
+            ${{ runner.os }}-cargo-
+
+      # Node >= 22 is required here (unlike the other Node jobs): run-integration.js
+      # executes the .test.ts files directly via node --test, relying on Node's
+      # built-in type stripping, which Node 20 does not have.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      # Full build (native cdylib + tsc dist/): the integration tests require() the
+      # package root, which resolves to dist/index.js, so build:native alone is not enough.
+      - name: Build package
+        run: npm run build
+
+      - name: Export native artifact path
+        run: echo "TYPE_BRIDGE_NODE_NATIVE_PATH=$(ls "$PWD"/type_bridge_node.*.node | head -1)" >> "$GITHUB_ENV"
+
+      - name: Wait for TypeDB server to be ready
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost 1729 2>/dev/null; then
+              echo "TypeDB server is ready on port 1729"
+              break
+            fi
+            echo "Waiting for port 1729... ($i/30)"
+            sleep 2
+          done
+          if ! nc -z localhost 1729 2>/dev/null; then
+            echo "ERROR: TypeDB server did not start within 60 seconds"
+            docker logs ${{ job.services.typedb.id }} 2>&1 || true
+            exit 1
+          fi
+
+      # The Node suites default TYPEDB_ADDRESS to :1730; the service is on :1729, so set it
+      # explicitly. test:integration runs the plain integration suite then chains
+      # test:typed-integration, so one command covers the binding's full live-DB surface.
+      - name: Run Node integration suite
+        env:
+          USE_DOCKER: false
+          TYPEDB_ADDRESS: localhost:1729
+        run: npm run test:integration

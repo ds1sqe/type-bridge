@@ -69,6 +69,101 @@ def _import_generated_package(package_path: Path) -> dict[str, ModuleType]:
             sys.path.remove(parent)
 
 
+def _exec_generated_module(package_path: Path, module_name: str) -> ModuleType:
+    """Execute a single generated submodule (e.g. ``functions``/``structs``).
+
+    Unlike :func:`_import_generated_package`, this exec's the rendered module
+    so a runtime error in the generated source surfaces — ``compile()`` alone
+    would not catch it.
+    """
+    parent = str(package_path.parent)
+    package_name = package_path.name
+
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+
+    try:
+        mod_path = package_path / f"{module_name}.py"
+        mod_name = f"{package_name}.{module_name}"
+        spec = importlib.util.spec_from_file_location(mod_name, mod_path)
+        if not (spec and spec.loader):
+            raise RuntimeError(f"Failed to load spec for {mod_name}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        keys_to_remove = [k for k in sys.modules if k.startswith(package_name)]
+        for key in keys_to_remove:
+            del sys.modules[key]
+        if parent in sys.path:
+            sys.path.remove(parent)
+
+
+class TestGeneratedFunctionsModule:
+    """The generated ``functions.py`` imports and exposes its wrappers.
+
+    The bookstore schema defines several ``fun`` definitions, so generating it
+    produces a ``functions.py``. Exec'ing that module proves the Rust-parsed
+    function IR renders into runnable Python — not merely compilable source.
+    """
+
+    SCHEMA_PATH = FIXTURES_DIR / "bookstore.tql"
+
+    def test_functions_module_generated(self, tmp_path: Path) -> None:
+        """A functions.py file is emitted for a schema containing functions."""
+        output = tmp_path / "bookstore_fns"
+        generate_models(self.SCHEMA_PATH, output)
+        assert (output / "functions.py").exists()
+
+    def test_functions_module_execs(self, tmp_path: Path) -> None:
+        """The rendered functions module exec's and exposes its wrappers."""
+        output = tmp_path / "bookstore_fns"
+        generate_models(self.SCHEMA_PATH, output)
+
+        functions = _exec_generated_module(output, "functions")
+
+        # Stream return (`-> { book }`) and scalar return (`-> double`) both render.
+        assert hasattr(functions, "book_recommendations_for")
+        assert hasattr(functions, "best_discount_for_item")
+        assert callable(functions.book_recommendations_for)
+        assert "book_recommendations_for" in functions.__all__
+
+
+class TestGeneratedStructsModule:
+    """The generated ``structs.py`` imports and exposes its struct class.
+
+    No bundled fixture defines a ``struct``, so this uses an inline schema to
+    exercise the struct generate → exec path end to end, including an optional
+    (``?``) field.
+    """
+
+    SCHEMA = """
+        define
+        entity placeholder;
+        struct full-name,
+            value first string,
+            value last string,
+            value middle string?;
+    """
+
+    def test_structs_module_generated(self, tmp_path: Path) -> None:
+        """A structs.py file is emitted for a schema containing a struct."""
+        output = tmp_path / "struct_pkg"
+        generate_models(self.SCHEMA, output)
+        assert (output / "structs.py").exists()
+
+    def test_structs_module_execs(self, tmp_path: Path) -> None:
+        """The rendered structs module exec's and exposes its struct class."""
+        output = tmp_path / "struct_pkg"
+        generate_models(self.SCHEMA, output)
+
+        structs = _exec_generated_module(output, "structs")
+
+        assert hasattr(structs, "FullName")
+        assert "FullName" in structs.__all__
+
+
 class TestBookstoreSchema:
     """Integration tests for the bookstore schema."""
 
@@ -496,6 +591,67 @@ class TestRoleCardinalitySchema:
 
         assert membership.group == group
         assert len(membership.member) == 3
+
+
+class TestPlaysCardinalitySchema:
+    """Plays-side cardinality survives the full generate → import → re-emit round-trip.
+
+    A ``plays r:role @card(0..1)`` in the source schema must render onto the generated
+    relation's ``Role(..., plays_cardinality=Card(0, 1))`` and re-emit the identical
+    ``@card`` clause through ``to_typeql()`` (#130).
+    """
+
+    SCHEMA = """
+        define
+        entity company,
+            plays employment:employer @card(0..1);
+        entity person,
+            plays employment:employee;
+
+        define
+        relation employment,
+            relates employer,
+            relates employee;
+    """
+
+    @pytest.fixture
+    def generated_package(self, tmp_path: Path) -> dict[str, ModuleType]:
+        output = tmp_path / "plays_card"
+        generate_models(self.SCHEMA, output)
+        return _import_generated_package(output)
+
+    def test_generated_role_carries_plays_cardinality(
+        self, generated_package: dict[str, ModuleType]
+    ) -> None:
+        relations = generated_package["relations"]
+        roles = relations.Employment.get_roles()
+
+        employer = roles["employer"]
+        assert employer.plays_cardinality is not None
+        assert (employer.plays_cardinality.min, employer.plays_cardinality.max) == (0, 1)
+        # The other role's player has no plays-card, so it stays unset.
+        assert roles["employee"].plays_cardinality is None
+
+    def test_plays_cardinality_round_trips_through_to_typeql(
+        self, generated_package: dict[str, ModuleType]
+    ) -> None:
+        core = pytest.importorskip("type_bridge_core")
+        if not hasattr(core, "generate_define_block"):
+            pytest.skip("type_bridge_core extension does not expose generate_define_block")
+        from type_bridge.migration.info import SchemaInfo
+
+        entities = generated_package["entities"]
+        relations = generated_package["relations"]
+
+        schema = SchemaInfo()
+        schema.entities.append(entities.Company)
+        schema.entities.append(entities.Person)
+        schema.relations.append(relations.Employment)
+
+        typeql = schema.to_typeql()
+
+        assert "company plays employment:employer @card(0..1);" in typeql
+        assert "person plays employment:employee;" in typeql
 
 
 class TestApiDtoGeneration:

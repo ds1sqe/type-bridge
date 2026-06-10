@@ -38,10 +38,28 @@ impl TransactionContext {
     /// Commit the shared transaction.
     pub async fn commit(&self) -> Result<()> {
         let mut guard = self.inner.lock().await;
-        let tx = guard
-            .as_mut()
+        let mut tx = guard
+            .take()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
         tx.commit().await
+    }
+
+    /// Roll back the shared transaction.
+    pub async fn rollback(&self) -> Result<()> {
+        let mut guard = self.inner.lock().await;
+        let mut tx = guard
+            .take()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.rollback().await
+    }
+
+    /// Close the shared transaction without committing.
+    pub async fn close(&self) -> Result<()> {
+        let mut guard = self.inner.lock().await;
+        let Some(mut tx) = guard.take() else {
+            return Ok(());
+        };
+        tx.close().await
     }
 
     /// The transaction type.

@@ -4,11 +4,15 @@ Complete reference for cardinality constraints and the Flag system in TypeBridge
 
 ## Overview
 
-**Cardinality** defines how many values an attribute can have on an entity or relation. TypeBridge provides the `Card` API and `Flag` system for declaring cardinality constraints that map directly to TypeDB's `@card` annotations.
+**Cardinality** defines how many values, role players, or played relations are
+allowed at a TypeDB schema edge. TypeBridge provides the `Card` API and `Flag`
+system for declaring constraints that map directly to TypeDB's `@card`
+annotations.
 
 ## Card API
 
-The `Card` class specifies minimum and maximum cardinality for attributes:
+The `Card` class specifies minimum and maximum counts wherever TypeDB accepts
+`@card`: owned attributes, relation roles, and player `plays` edges.
 
 ```python
 from type_bridge import Card
@@ -43,6 +47,47 @@ Card(max=10)        # At most 10 → @card(0..10)
 Card(1, 5)          # 1 to 5 → @card(1..5)
 Card(2, 10)         # 2 to 10 → @card(2..10)
 Card(min=2, max=8)  # 2 to 8 → @card(2..8)
+```
+
+## Cardinality Surfaces
+
+TypeDB has three distinct `@card` surfaces. They look similar but constrain
+different things:
+
+| Surface | TypeQL form | Meaning |
+|---------|-------------|---------|
+| Owned attribute | `owns email @card(0..1)` | Attribute values per owner |
+| Relates-side role | `relates employer @card(1..1)` | Players of that role per relation instance |
+| Plays-side role | `company plays employment:employer @card(0..1)` | Relation instances a single player may play in that role |
+
+Relates-side and plays-side cardinality are independent. A role can require one
+employer per employment while also limiting each company to at most one
+employment:
+
+```python
+from type_bridge import Card, Relation, Role, TypeFlags
+
+class Employment(Relation):
+    flags = TypeFlags(name="employment")
+
+    employee: Role[Person] = Role("employee", Person)
+    employer: Role[Company] = Role(
+        "employer",
+        Company,
+        cardinality=Card(1, 1),        # one employer per employment
+        plays_cardinality=Card(0, 1),  # one employment per company
+    )
+```
+
+**Generated TypeQL**:
+
+```typeql
+relation employment,
+    relates employee,
+    relates employer @card(1..1);
+
+person plays employment:employee;
+company plays employment:employer @card(0..1);
 ```
 
 ## Flag System
@@ -352,7 +397,7 @@ class Friendship(Relation):
     flags = TypeFlags(name="friendship")
 
     # Exactly 2 friends (symmetric relation)
-    friend: Role[Person] = Role("friend", Person, Card(2, 2))
+    friend: Role[Person] = Role("friend", Person, cardinality=Card(2, 2))
 
     # Optional attributes
     since: StartDate | None = None
@@ -370,6 +415,8 @@ relation friendship,
     owns since @card(0..1),
     owns is_active @card(0..1),
     owns shared_interests @card(0..);
+
+person plays friendship:friend;
 ```
 
 ### Complex Cardinality Example
@@ -432,6 +479,8 @@ TypeBridge follows these cardinality semantics:
 | `list[Type] = Flag(Card(min=N))` | `@card(N..)` | At least N, unbounded |
 | `list[Type] = Flag(Card(max=N))` | `@card(0..N)` | Zero to N |
 | `list[Type] = Flag(Card(min, max))` | `@card(min..max)` | Min to max |
+| `Role(..., cardinality=Card(min, max))` | `relates role @card(min..max)` | Role players per relation instance |
+| `Role(..., plays_cardinality=Card(min, max))` | `plays relation:role @card(min..max)` | Relation instances per player |
 
 ## Best Practices
 

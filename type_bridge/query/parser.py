@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from type_bridge_core import (
-        parse_typeql_query as _rust_parse_typeql_query,  # type: ignore[import-not-found]
+        parse_typeql_query as _rust_parse_typeql_query,
     )
 
     RUST_AVAILABLE = True

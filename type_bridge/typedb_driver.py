@@ -1,4 +1,4 @@
-"""TypeDB driver re-exports for convenience.
+"""TypeDB driver compatibility helpers.
 
 This module re-exports the TypeDB driver components so users can import everything
 from type_bridge instead of mixing imports from typedb.driver.
@@ -11,7 +11,53 @@ Example:
     # from type_bridge import Database
 """
 
-from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
+from __future__ import annotations
+
+from enum import Enum
+from typing import TYPE_CHECKING, Any
+
+_MISSING_DRIVER_MESSAGE = (
+    "The Python TypeDB driver is required for this operation. Install "
+    "type-bridge with the 'typedb-driver' extra to use direct typedb.driver "
+    "APIs."
+)
+
+if TYPE_CHECKING:
+    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
+else:
+    try:
+        from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
+    except ModuleNotFoundError:
+
+        class TransactionType(Enum):
+            """Rust-safe fallback transaction type for the default backend."""
+
+            READ = "read"
+            WRITE = "write"
+            SCHEMA = "schema"
+
+        class _UnavailableDriverClass:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+                raise_missing_typedb_driver()
+
+            def __getattr__(self, name: str) -> Any:
+                del name
+                raise_missing_typedb_driver()
+
+        class _UnavailableTypeDB:
+            def __getattr__(self, name: str) -> Any:
+                del name
+                raise_missing_typedb_driver()
+
+        Credentials = _UnavailableDriverClass
+        DriverOptions = _UnavailableDriverClass
+        TypeDB = _UnavailableTypeDB()
+
+
+def raise_missing_typedb_driver() -> None:
+    """Raise the optional-driver error for direct Python driver use."""
+    raise ImportError(_MISSING_DRIVER_MESSAGE)
 
 
 def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:

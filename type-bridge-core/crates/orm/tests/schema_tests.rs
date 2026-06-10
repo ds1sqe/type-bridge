@@ -1,5 +1,6 @@
 //! Integration tests for the schema management module.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use type_bridge_orm::schema::info::*;
@@ -241,6 +242,14 @@ impl TransactionOps for MockTransaction {
     fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
         Box::pin(async { Ok(()) })
     }
+
+    fn rollback(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn close(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 // ── SchemaManager registration tests ────────────────────────────────
@@ -285,9 +294,9 @@ fn register_relation_populates_roles() {
     assert_eq!(relation.type_name, "employment");
     assert_eq!(relation.roles.len(), 2);
     assert_eq!(relation.roles[0].role_name, "employee");
-    assert_eq!(relation.roles[0].player_type_name, "person");
+    assert_eq!(relation.roles[0].player_type_names, vec!["person"]);
     assert_eq!(relation.roles[1].role_name, "employer");
-    assert_eq!(relation.roles[1].player_type_name, "company");
+    assert_eq!(relation.roles[1].player_type_names, vec!["company"]);
 
     // Owned attributes
     assert_eq!(relation.owned_attributes.len(), 1);
@@ -312,7 +321,7 @@ fn generate_schema_produces_valid_typeql() {
     let typeql = schema.generate_schema().unwrap();
     assert!(typeql.starts_with("define"));
     assert!(typeql.contains("attribute name, value string;"));
-    assert!(typeql.contains("attribute age, value long;"));
+    assert!(typeql.contains("attribute age, value integer;"));
     assert!(typeql.contains("attribute position, value string;"));
     assert!(typeql.contains("entity person,"));
     assert!(typeql.contains("entity company,"));
@@ -358,10 +367,7 @@ fn generate_schema_with_cardinality() {
     let mut info = SchemaInfo::default();
     info.attributes.insert(
         "tag".into(),
-        AttributeSchemaEntry {
-            attr_name: "tag".into(),
-            value_type: ValueType::String,
-        },
+        AttributeSchemaEntry::new("tag", ValueType::String),
     );
     info.entities.insert(
         "item".into(),
@@ -374,6 +380,7 @@ fn generate_schema_with_cardinality() {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Card(2, Some(5))],
             }],
+            plays_cardinalities: BTreeMap::new(),
         },
     );
 
@@ -488,6 +495,7 @@ fn schema_diff_detects_removed_attribute() {
                     annotations: vec![],
                 },
             ],
+            plays_cardinalities: BTreeMap::new(),
         },
     );
 
@@ -504,6 +512,7 @@ fn schema_diff_detects_removed_attribute() {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Key],
             }],
+            plays_cardinalities: BTreeMap::new(),
         },
     );
 
@@ -652,6 +661,46 @@ async fn introspect_builds_schema_info() {
     assert_eq!(employment.roles.len(), 2);
     assert_eq!(employment.roles[0].role_name, "employee");
     assert_eq!(employment.roles[1].role_name, "employer");
+}
+
+#[test]
+fn schema_info_from_typeql_export_preserves_annotations_roles_and_players() {
+    let typeql = r#"define
+
+attribute name,
+ value string;
+attribute age,
+ value integer;
+entity person,
+  owns age @card(0..1),
+  owns name @key,
+  plays employment:employee;
+relation employment,
+  relates employee @card(1..1);
+"#;
+
+    let info = SchemaInfo::from_typeql(typeql).unwrap();
+
+    assert_eq!(info.attributes["age"].value_type, ValueType::Long);
+    let person = &info.entities["person"];
+    let name = person
+        .owned_attributes
+        .iter()
+        .find(|attr| attr.attr_name == "name")
+        .unwrap();
+    assert_eq!(name.annotations, vec![Annotation::Key]);
+    let age = person
+        .owned_attributes
+        .iter()
+        .find(|attr| attr.attr_name == "age")
+        .unwrap();
+    assert_eq!(age.annotations, vec![Annotation::Card(0, Some(1))]);
+
+    let employment = &info.relations["employment"];
+    assert_eq!(employment.roles.len(), 1);
+    assert_eq!(employment.roles[0].role_name, "employee");
+    assert_eq!(employment.roles[0].player_type_names, vec!["person"]);
+    assert_eq!(employment.roles[0].cardinality, Some((1, Some(1))));
 }
 
 #[tokio::test]
