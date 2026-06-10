@@ -6,6 +6,21 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changes
 
+#### Cross-language CI and release coverage (#110)
+
+- **Node binding built, tested, and released** — the `@type-bridge/node` binding is
+  now built and gated in CI (native module, TypeScript surface, unit, `.d.ts`
+  baseline, and package smoke), runnable locally via `scripts/check.sh node`, and
+  packaged as a tarball attached to each GitHub release (registry publish staged
+  behind an `NPM_TOKEN`).
+- **Cross-language parity enforced** — the Python/Node parity suite runs against live
+  TypeDB in CI under a strict mode that fails (rather than silently skips) when the
+  binding is unbuilt, so a semantic divergence between the two bindings reds CI; the
+  `migration` integration group is also covered.
+- **Release hardening** — third-party GitHub Actions are pinned to commit SHAs, and a
+  crates.io publish that fails for any reason other than an already-published version
+  now fails the release instead of being swallowed.
+
 #### Generator parsing routed through the Rust core (#125)
 
 - **`lark` removed** — the generator no longer depends on `lark`. TQL schema
