@@ -20,6 +20,17 @@ All notable changes to TypeBridge will be documented in this file.
 - **Release hardening** — third-party GitHub Actions are pinned to commit SHAs, and a
   crates.io publish that fails for any reason other than an already-published version
   now fails the release instead of being swallowed.
+- **Node binding integration gated in CI** — a `node-integration` job runs the binding's
+  own live-TypeDB suites (`test:integration`, which chains `test:typed-integration`)
+  against a TypeDB service, mirroring the Python integration job. Previously only the
+  offline Node gates and the Python-side parity suite ran; the binding's own integration
+  assertions now red CI on a regression.
+- **Consolidated test/check scripts** — `test.sh` is now the single full-test entrypoint
+  (Rust + Python + Node, unit + integration) with `--no-integration`, `--proxy`, and
+  `--no-isolated` flags; it manages a TypeDB by default. The `test-integration.sh`,
+  `test-integration-dind.sh`, and `test-proxy-integration.sh` scripts (and the
+  Docker-in-Docker image stack) are retired into those flags, and `scripts/check.sh`
+  is the single canonical check (the redundant root `check.sh` is removed).
 
 #### Generator parsing routed through the Rust core (#125)
 

@@ -331,15 +331,13 @@ uv run pytest tests/unit/core/ -v         # Test core functionality
 uv run pytest tests/unit/flags/ -v        # Test flag system
 uv run pytest tests/unit/expressions/ -v  # Test query expressions
 
-# Integration tests (requires running TypeDB server)
-# Option 1: Use Docker (recommended)
-./test-integration.sh                     # Starts Docker, runs tests, stops Docker
+# Integration tests (requires TypeDB; ./test.sh manages one by default)
+# Option 1: Isolated (recommended) — test.sh brings up TypeDB and tears it down
+./test.sh                                 # Full suite (Rust + Python + Node), isolated
 
-# Option 2: Use a pinned Docker-in-Docker runner
-./test-integration-dind.sh                # Python 3.13.5 + TypeDB 3.10.4
-
-# Option 3: Use existing TypeDB server
-USE_DOCKER=false uv run pytest -m integration -v  # Run integration tests (~60s)
+# Option 2: Use an existing TypeDB server
+./test.sh --no-isolated                   # Full suite against a running TypeDB
+USE_DOCKER=false uv run pytest -m integration -v  # Python integration only (~60s)
 
 # Run specific integration test categories
 uv run pytest tests/integration/crud/entities/ -v      # Entity CRUD tests
@@ -348,9 +346,9 @@ uv run pytest tests/integration/queries/ -v           # Query expression tests
 uv run pytest tests/integration/schema/ -v            # Schema operation tests
 
 # All tests
-uv run pytest -m "" -v                    # Run all tests
-./test.sh                                 # Run full test suite with detailed output
-./check.sh                                # Run linting and type checking
+uv run pytest -m "" -v                    # Run all Python tests
+./test.sh                                 # Full suite (Rust + Python + Node), detailed
+./scripts/check.sh                        # CI-shaped checks (rust|python|node|all)
 ```
 
 ## Rust Core

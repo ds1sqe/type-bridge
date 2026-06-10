@@ -20,8 +20,10 @@ uv sync --extra dev
 # Run the default test set; pyproject excludes integration/proxy/benchmark tests
 uv run pytest
 
-# Run integration tests; fixtures manage TypeDB through Docker or Podman
-./test-integration.sh
+# Run the full test suite (Rust + Python + Node, unit + integration).
+# Isolated by default: brings up its own TypeDB and tears it down. Flags:
+#   --no-integration (offline tiers only) | --proxy | --no-isolated (use a running TypeDB)
+./test.sh
 
 # Code quality
 uv run ruff check .
@@ -29,12 +31,12 @@ uv run ruff format --check .
 uv run pyright type_bridge/
 uv run pyright tests/
 
-# CI-shaped Python check
+# CI-shaped check (rust|python|node|all) — offline gates, mirrors ci.yml
 ./scripts/check.sh python
 ```
 
-For Podman, run integration tests with `CONTAINER_TOOL=podman
-./test-integration.sh`. Use `CONTAINER_TOOL=docker` to force Docker.
+For Podman, run the suite with `CONTAINER_TOOL=podman ./test.sh`. Use
+`CONTAINER_TOOL=docker` to force Docker.
 
 ## Documentation
 

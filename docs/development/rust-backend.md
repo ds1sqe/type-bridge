@@ -28,7 +28,7 @@ Current Rust backend scope:
 Phase 4 status as of 2026-06-04:
 
 - full Rust backend integration wrapper passes:
-  `TYPE_BRIDGE_BACKEND=rust UV_CACHE_DIR=/tmp/uv-cache ./test-integration.sh`;
+  `TYPE_BRIDGE_BACKEND=rust UV_CACHE_DIR=/tmp/uv-cache ./test.sh --no-isolated`;
 - unit suite passes with the Rust backend as the selector default;
 - `typedb-driver` is no longer a default dependency. It remains in the
   `dev` and `typedb-driver` extras for tests and direct Python driver APIs.
@@ -41,7 +41,7 @@ Rust backend validation should reuse the existing integration tests. The wrapper
 defaults to Rust:
 
 ```bash
-./test-integration.sh
+./test.sh --no-isolated
 ```
 
 Python `TransactionContext` instances select a Rust-owned transaction adapter

@@ -229,33 +229,26 @@ tests/integration/
 
 Integration tests require a running TypeDB 3.x server.
 
-**Option 1: Use Docker (Recommended - Automatic)**
+**Option 1: Isolated (Recommended - Automatic)**
 
 ```bash
-# Run integration tests with Docker (automatic setup)
-./test-integration.sh                     # All 349 integration tests
-./test-integration.sh -v                  # With verbose output
-
-# Docker is automatically:
-# - Started before tests
-# - Stopped after tests (even on failure)
-```
-
-**Option 1b: Use Docker-in-Docker (Pinned Environment)**
-
-```bash
-# Runs tests in Python 3.13.5 with Docker 28.1.1 and TypeDB 3.10.4
-./test-integration-dind.sh
-./test-integration-dind.sh tests/integration/crud/relations/test_fetch.py -v
+# ./test.sh manages a TypeDB container automatically:
+# - Started before the integration tiers
+# - Torn down on exit (even on failure)
+./test.sh                                 # Full suite (Rust + Python + Node), isolated
+./test.sh -- -v                           # Forward -v to the pytest tiers
 ```
 
 **Option 2: Use Existing TypeDB Server**
 
 ```bash
-# 1. Start TypeDB 3.x server manually
+# 1. Start TypeDB 3.x server manually (local convention: port 1730)
 typedb server
 
-# 2. Run integration tests (skip Docker)
+# 2a. Full suite against the running server (no container management)
+./test.sh --no-isolated
+
+# 2b. Python integration only (skip Docker)
 USE_DOCKER=false uv run pytest -m integration
 USE_DOCKER=false uv run pytest -m integration -v  # Verbose
 ```
@@ -361,14 +354,14 @@ docker compose down -v
 
 ```bash
 # Unit tests only (default, fast)
-uv run pytest                              # All 768 unit tests
+uv run pytest                              # Python unit tests
 
-# Integration tests only (requires TypeDB)
-./test-integration.sh                     # All 349 integration tests with Docker
+# Python integration only (requires TypeDB)
+USE_DOCKER=false uv run pytest -m integration   # against a running TypeDB
+./test.sh --no-isolated -- -m integration       # or via test.sh
 
-# All tests (unit + integration)
-uv run pytest -m ""                       # All 1117 tests
-./test.sh                                 # Full test suite with detailed output
+# All tests (Rust + Python + Node, unit + integration)
+./test.sh                                  # Full suite, isolated (manages TypeDB)
 ```
 
 ### Selective Test Execution

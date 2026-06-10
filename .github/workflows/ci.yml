@@ -521,3 +521,83 @@ jobs:
               print("ERROR: no parity test executed — gate would be a no-op")
               sys.exit(1)
           PY
+
+  # Node binding live-TypeDB integration. `node-check` covers the offline Node gates and
+  # `cross-language-parity` runs the Python parity suite against the binding — but neither
+  # runs the binding's OWN integration suites. This job mirrors the Python `test-integration`
+  # job for Node: a TypeDB service container plus the native build, then the binding's
+  # `test:integration` suite (which itself chains `test:typed-integration`).
+  node-integration:
+    name: Node integration
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+
+    services:
+      typedb:
+        image: typedb/typedb:3.10.4
+        ports:
+          - 1729:1729
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-node-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-node-
+            ${{ runner.os }}-cargo-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build native module
+        run: npm run build:native
+
+      - name: Export native artifact path
+        run: echo "TYPE_BRIDGE_NODE_NATIVE_PATH=$(ls "$PWD"/type_bridge_node.*.node | head -1)" >> "$GITHUB_ENV"
+
+      - name: Wait for TypeDB server to be ready
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost 1729 2>/dev/null; then
+              echo "TypeDB server is ready on port 1729"
+              break
+            fi
+            echo "Waiting for port 1729... ($i/30)"
+            sleep 2
+          done
+          if ! nc -z localhost 1729 2>/dev/null; then
+            echo "ERROR: TypeDB server did not start within 60 seconds"
+            docker logs ${{ job.services.typedb.id }} 2>&1 || true
+            exit 1
+          fi
+
+      # The Node suites default TYPEDB_ADDRESS to :1730; the service is on :1729, so set it
+      # explicitly. test:integration runs the plain integration suite then chains
+      # test:typed-integration, so one command covers the binding's full live-DB surface.
+      - name: Run Node integration suite
+        env:
+          USE_DOCKER: false
+          TYPEDB_ADDRESS: localhost:1729
+        run: npm run test:integration
