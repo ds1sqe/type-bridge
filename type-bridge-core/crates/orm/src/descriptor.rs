@@ -98,6 +98,14 @@ pub struct RoleDescriptor {
     /// Valid only when `ordered` is `true`.
     #[serde(default)]
     pub distinct: bool,
+    /// Relation-side authoring of the player's `plays` cardinality for this role.
+    ///
+    /// Consumed by `SchemaInfo::from_descriptors` to build the per-player
+    /// `plays_cardinalities` overlay (keyed `"{relation_type_name}:{role_name}"`).
+    /// Distinct from `cardinality`, which is the relates-side cardinality
+    /// constraining how many players may fill the role per relation instance.
+    #[serde(default)]
+    pub plays_cardinality: Option<(u32, Option<u32>)>,
 }
 
 /// Runtime descriptor for an entity type.

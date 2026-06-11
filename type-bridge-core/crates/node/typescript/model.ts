@@ -41,9 +41,6 @@ type ModelClassLike = (new (values: never) => object) & {
 };
 type ModelToken = string | ModelClassLike;
 const ATTRIBUTE_SCHEMA_METADATA = Symbol.for("@type-bridge/node.attributeSchemaMetadata");
-const ROLE_PLAYS_CARDINALITY_METADATA = Symbol.for(
-  "@type-bridge/node.rolePlaysCardinalityMetadata",
-);
 
 /**
  * A model class that also exposes its schema, used as a parent reference.
@@ -638,11 +635,6 @@ function createModelClass(
         roles: roleDescriptors(parentEffectiveRoles, schema),
       };
       attachAttributeSchemaMetadata(relationDescriptor, parentSchema, schema);
-      attachRolePlaysCardinalityMetadata(
-        relationDescriptor,
-        mergedSchema,
-        new Set(relationDescriptor.roles.map((role) => role.role_name)),
-      );
       return relationDescriptor;
     }
 
@@ -755,23 +747,6 @@ function attachAttributeSchemaMetadata(
   });
 }
 
-function attachRolePlaysCardinalityMetadata(
-  descriptor: RelationDescriptor,
-  schema: Record<string, SchemaSpec>,
-  effectiveRoleNames: Set<string>,
-): void {
-  const metadata = rolePlaysCardinalityMetadata(schema, effectiveRoleNames);
-  if (Object.keys(metadata).length === 0) {
-    return;
-  }
-  Object.defineProperty(descriptor, ROLE_PLAYS_CARDINALITY_METADATA, {
-    value: metadata,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
-}
-
 function attributeSchemaMetadata(
   parentSchema: Record<string, SchemaSpec>,
   childSchema: Record<string, SchemaSpec>,
@@ -782,25 +757,6 @@ function attributeSchemaMetadata(
       for (const entry of spec.attrType.attributeSchemaEntries) {
         metadata[entry.attr_name] = copyAttributeSchemaEntry(entry);
       }
-    }
-  }
-  return metadata;
-}
-
-// Restricted to the descriptor's effective role set: a parent role overridden
-// by a specialization is unplayable on this relation, so its plays edge must
-// not surface here.
-function rolePlaysCardinalityMetadata(
-  schema: Record<string, SchemaSpec>,
-  effectiveRoleNames: Set<string>,
-): Record<string, [number, number | null]> {
-  const metadata: Record<string, [number, number | null]> = {};
-  for (const [roleName, spec] of Object.entries(schema)) {
-    if (!effectiveRoleNames.has(roleName)) {
-      continue;
-    }
-    if (spec instanceof RoleSpec && spec.playsCardinality !== null) {
-      metadata[roleName] = [spec.playsCardinality[0], spec.playsCardinality[1]];
     }
   }
   return metadata;
@@ -857,6 +813,7 @@ function roleDescriptors(
       role_name: roleName,
       player_type_names: spec.players.map(typeNameFor),
       cardinality: spec.cardinality,
+      plays_cardinality: spec.playsCardinality,
       overrides: spec.overrides ?? null,
       is_abstract: spec.isAbstract,
       ordered: spec.ordered,

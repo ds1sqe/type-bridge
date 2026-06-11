@@ -293,6 +293,13 @@ def _operation_spec(operation: ops.Operation) -> dict[str, Any]:
 
 
 def _schema_info_for_models(models: Sequence[type[Any]]) -> dict[str, Any]:
+    """Lower a model list to a Rust SchemaInfo dict via the registry path.
+
+    Rust ``SchemaInfo::from_descriptors`` handles plays_cardinalities overlays
+    (from each role's ``plays_cardinality`` field) and foreign parent_type nulling.
+    The attributes section is merged on the Python side to preserve full attribute-class
+    metadata (regex, range, allowed_values, etc.) not represented in the descriptor layer.
+    """
     from type_bridge.models import Relation
 
     registry = _rust_runtime.rust_core().PyDescriptorRegistry()

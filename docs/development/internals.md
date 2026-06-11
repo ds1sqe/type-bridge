@@ -628,6 +628,40 @@ Two consequences:
   accepts either annotation order, so round-trip stability comes from the
   emitter's fixed canon.
 
+### plays_cardinality: authoring datum and ONE-LOWERING rule
+
+`RoleDescriptor.plays_cardinality` (`Option<(u32, Option<u32>)>` in Rust,
+`[number, number | null] | null` in TypeScript, `cardinality_tuple()` result
+in Python) is an authoring datum on each role: it declares what cardinality
+the player's `plays` edge should carry in the generated schema.
+
+**Lifecycle:**
+
+1. **Authoring.** Each binding language writes `plays_cardinality` directly
+   into the role entry in the descriptor dict. Python `_rust_runtime.relation_descriptor`
+   calls `cardinality_tuple(role.plays_cardinality)` and places it after
+   `"cardinality"` in the role dict. TypeScript `roleDescriptors()` copies
+   `spec.playsCardinality` as `plays_cardinality` in the emitted role object.
+   Both are serialized as `null` when absent.
+
+2. **Overlay construction.** `SchemaInfo::from_descriptors` (Rust) processes
+   `plays_cardinality` on each registered role and fans the value out to the
+   `plays_cardinalities` map on each named player's entity/relation schema
+   entry, keyed `"{relation_type_name}:{role_name}"`. Foreign-parent nulling
+   (types whose parent is absent from the registered set) is also handled here.
+
+3. **Emission.** `generate_define_block` reads each player entry's
+   `plays_cardinalities` map to emit `@card(min..max)` on the `plays` line.
+
+**ONE-LOWERING rule.** Bindings never hand-project descriptor fields into
+`SchemaInfo` dicts. The registry path (`PyDescriptorRegistry` → `schema_info()`)
+is the single lowering path; the Rust `from_descriptors` is the single point
+where authoring data becomes IR. The Python attributes-section merge (per-model
+`attribute_schema_entry` loop + `attribute_classes` loop) is the one documented
+exception because attribute-class metadata (regex, range, allowed_values, etc.)
+is not represented in the descriptor layer and must be merged from the Python
+attribute class after `schema_info()` returns.
+
 ### List interfaces (engine evidence)
 
 Decided for #140-B against TypeDB 3.11.5 (probe shapes: `owns nickname[]`,

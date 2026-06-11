@@ -16,6 +16,7 @@ function role(roleName, playerTypeNames, cardinality, { overrides = null, isAbst
     role_name: roleName,
     player_type_names: playerTypeNames,
     cardinality,
+    plays_cardinality: null,
     overrides,
     is_abstract: isAbstract,
     ordered: false,

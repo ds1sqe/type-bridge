@@ -20,6 +20,7 @@ class _RoleMetadata:
     role_name: str
     player_types: tuple[type[Any], ...]
     cardinality: Any
+    plays_cardinality: Any = None
     overrides: str | None = None
     is_abstract: bool = False
     ordered: bool = False
@@ -224,6 +225,7 @@ def relation_descriptor(model_cls: type[Relation]) -> dict[str, Any]:
                 "role_name": role.role_name,
                 "player_type_names": [typ.get_type_name() for typ in role.player_types],
                 "cardinality": cardinality_tuple(role.cardinality),
+                "plays_cardinality": cardinality_tuple(role.plays_cardinality),
                 "overrides": role.overrides,
                 "is_abstract": role.is_abstract,
                 "ordered": role.ordered,
@@ -250,6 +252,7 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
                 role_name=role.role_name,
                 player_types=role.player_entity_types,
                 cardinality=role.cardinality,
+                plays_cardinality=role.plays_cardinality,
                 overrides=role.overrides,
                 is_abstract=role.is_abstract,
                 ordered=role.ordered,
@@ -267,6 +270,7 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
         role_name = getattr(default, "role_name", None)
         player_types = getattr(default, "player_types", None)
         cardinality = getattr(default, "cardinality", None)
+        plays_cardinality = getattr(default, "plays_cardinality", None)
         overrides = getattr(default, "overrides", None)
         is_abstract = getattr(default, "is_abstract", False)
         if role_name is None or player_types is None:
@@ -276,6 +280,7 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
                 role_name=role_name,
                 player_types=player_types,
                 cardinality=cardinality,
+                plays_cardinality=plays_cardinality,
                 overrides=overrides,
                 is_abstract=is_abstract,
                 ordered=getattr(default, "ordered", False),

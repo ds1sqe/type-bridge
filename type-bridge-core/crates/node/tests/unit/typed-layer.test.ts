@@ -318,6 +318,7 @@ describe("typed Entity and Relation factories", () => {
         role_name: "member",
         player_type_names: ["parity-person"],
         cardinality: [1, 1],
+        plays_cardinality: null,
         overrides: null,
         is_abstract: false,
         ordered: false,
@@ -327,6 +328,7 @@ describe("typed Entity and Relation factories", () => {
         role_name: "organization",
         player_type_names: ["parity-company"],
         cardinality: [1, 1],
+        plays_cardinality: null,
         overrides: null,
         is_abstract: false,
         ordered: false,
@@ -336,6 +338,7 @@ describe("typed Entity and Relation factories", () => {
         role_name: "evidence",
         player_type_names: ["parity-person", "parity-email-message"],
         cardinality: [0, 5],
+        plays_cardinality: null,
         overrides: null,
         is_abstract: false,
         ordered: false,
@@ -350,6 +353,7 @@ describe("typed Entity and Relation factories", () => {
         role_name: "definition",
         player_type_names: [],
         cardinality: null,
+        plays_cardinality: null,
         overrides: null,
         is_abstract: false,
         ordered: false,
@@ -359,6 +363,7 @@ describe("typed Entity and Relation factories", () => {
         role_name: "actor",
         player_type_names: ["parity-company"],
         cardinality: null,
+        plays_cardinality: null,
         overrides: null,
         is_abstract: false,
         ordered: false,
@@ -367,7 +372,7 @@ describe("typed Entity and Relation factories", () => {
     ]);
   });
 
-  test("playsCardinality stays out of descriptor JSON and rejects relates-only roles", () => {
+  test("playsCardinality is emitted into role descriptor and rejects relates-only roles", () => {
     const spec = role(ParityCompany, { playsCardinality: Card(0, 1) });
     assert.deepEqual(spec.playsCardinality, [0, 1]);
 
@@ -377,6 +382,7 @@ describe("typed Entity and Relation factories", () => {
         role_name: "employee",
         player_type_names: ["parity-person"],
         cardinality: null,
+        plays_cardinality: null,
         overrides: null,
         is_abstract: false,
         ordered: false,
@@ -386,6 +392,7 @@ describe("typed Entity and Relation factories", () => {
         role_name: "employer",
         player_type_names: ["parity-company"],
         cardinality: [1, 1],
+        plays_cardinality: [0, 1],
         overrides: null,
         is_abstract: false,
         ordered: false,
@@ -400,48 +407,28 @@ describe("typed Entity and Relation factories", () => {
     );
   });
 
-  test("schemaInfo overlays playsCardinality onto registered entity and relation players", () => {
-    const registry = new DescriptorRegistry(fakeNativeRegistry());
-    registry.registerEntity(ParityPerson.descriptor());
-    registry.registerEntity(ParityCompany.descriptor());
-    registry.registerRelation(PlaysCardEmployment.descriptor());
-    registry.registerRelation(PlaysCardMulti.descriptor());
-    registry.registerRelation(PlaysCardContract.descriptor());
-    registry.registerRelation(PlaysCardDispute.descriptor());
-    registry.registerRelation(RelatesOnlyRel.descriptor());
+  test("plays_cardinality is emitted on role descriptors for Rust from_descriptors to consume", () => {
+    // The plays_cardinalities overlay is built by Rust SchemaInfo::from_descriptors using the
+    // plays_cardinality field on each role descriptor. Verify the authoring datum is present
+    // on the descriptor so the Rust layer can build the overlay.
+    const employerRole = PlaysCardEmployment.descriptor().roles.find(
+      (r) => r.role_name === "employer",
+    );
+    assert.deepEqual(employerRole?.plays_cardinality, [0, 1]);
 
-    const info = registry.schemaInfo();
-    assert.deepEqual(
-      info.entities["parity-company"].plays_cardinalities?.[
-        "typed-plays-card-employment:employer"
-      ],
-      [0, 1],
+    const employeeRole = PlaysCardEmployment.descriptor().roles.find(
+      (r) => r.role_name === "employee",
     );
-    assert.deepEqual(
-      info.entities["parity-person"].plays_cardinalities?.[
-        "typed-plays-card-multi:participant"
-      ],
-      [0, 5],
+    assert.deepEqual(employeeRole?.plays_cardinality, null);
+
+    const relatesOnlyRole = RelatesOnlyRel.descriptor().roles.find(
+      (r) => r.role_name === "definition",
     );
-    assert.deepEqual(
-      info.entities["parity-company"].plays_cardinalities?.[
-        "typed-plays-card-multi:participant"
-      ],
-      [0, 5],
-    );
-    assert.deepEqual(
-      info.relations["typed-plays-card-contract"].plays_cardinalities?.[
-        "typed-plays-card-dispute:subject"
-      ],
-      [0, 1],
-    );
-    assert.deepEqual(
-      info.entities["parity-person"].plays_cardinalities?.[
-        "typed-relates-only-rel:definition"
-      ],
-      undefined,
-    );
-    assert.deepEqual(info.relations["typed-relates-only-rel"].plays_cardinalities, {});
+    assert.deepEqual(relatesOnlyRole?.plays_cardinality, null);
+
+    // Verify the descriptor round-trips through JSON (plays_cardinality must be enumerable).
+    const descriptor = PlaysCardEmployment.descriptor();
+    assert.deepEqual(JSON.parse(JSON.stringify(descriptor)), descriptor);
   });
 });
 
@@ -603,7 +590,7 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
 
     // Roles: just `anchor` from the base schema.
     assert.deepEqual(d.roles, [
-      { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1], overrides: null, is_abstract: false, ordered: false, distinct: false },
+      { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
     ]);
   });
 
@@ -632,6 +619,7 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
       role_name: "anchor",
       player_type_names: ["parity-company"],
       cardinality: [1, 1],
+      plays_cardinality: null,
       overrides: null,
       is_abstract: false,
       ordered: false,
@@ -643,6 +631,7 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
       role_name: "extra",
       player_type_names: ["parity-person"],
       cardinality: [0, 5],
+      plays_cardinality: null,
       overrides: null,
       is_abstract: false,
       ordered: false,
@@ -669,9 +658,9 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
           ],
           roles: [
             // parent role re-listed
-            { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
+            { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] as [number, number | null], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
             // child-local role
-            { role_name: "extra", player_type_names: ["parity-person"], cardinality: [0, 5] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
+            { role_name: "extra", player_type_names: ["parity-person"], cardinality: [0, 5] as [number, number | null], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
           ],
         },
       ],
@@ -713,6 +702,7 @@ type RoleDescriptor = {
   role_name: string;
   player_type_names: string[];
   cardinality: [number, number | null] | null;
+  plays_cardinality: [number, number | null] | null;
   overrides: string | null;
   is_abstract: boolean;
   ordered: boolean;
