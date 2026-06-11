@@ -36,8 +36,7 @@ class {{ relation.class_name }}({{ relation.base_class }}):
 {% endfor %}
 {% endif %}
 {% if relation.distinct_roles %}
-    # TODO: @distinct annotation (coming soon in TypeDB)
-    # distinct_roles: {{ relation.distinct_roles }}
+    # Roles declared @distinct in the source schema (ordered roles): {{ relation.distinct_roles }}
 {% endif %}
 {% if relation.annotations %}
     # Custom annotations from schema:

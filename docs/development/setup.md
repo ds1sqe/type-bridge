@@ -31,9 +31,11 @@ The project requires:
 - `jinja2>=3.1.0`: Template engine for code generation
 - `typer>=0.15.0`: CLI framework for generator and migration tools
 
-`typedb-driver==3.10.0` is no longer a default runtime dependency. It remains
-available through the `dev` and `typedb-driver` extras for integration tests
-and direct driver calls.
+`typedb-driver` is not a default runtime dependency. It is available through
+the `dev` extra (pinned to `~=3.11.5`) and the `typedb-driver` extra for
+integration tests and direct driver calls. See the
+[compatibility table](typedb.md#server-and-driver-compatibility) for the
+supported band and version range.
 
 Development dependencies include:
 - `pytest`: Testing framework
@@ -45,7 +47,7 @@ Development dependencies include:
 
 ### Integration Tests with TypeDB
 
-Integration tests are validated against TypeDB 3.10.4. The project includes Docker/Podman configuration for automated setup.
+Integration tests run against a TypeDB server in the supported window (see [compatibility table](typedb.md#server-and-driver-compatibility)). The project includes Docker/Podman configuration for automated setup.
 
 **Requirements:**
 - Docker or Podman with Compose support installed

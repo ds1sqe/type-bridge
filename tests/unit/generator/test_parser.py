@@ -870,14 +870,18 @@ class TestParseSubkeyAnnotation:
 
 
 class TestParseDistinctAnnotation:
-    """Tests for @distinct annotation on roles."""
+    """Tests for @distinct annotation on roles.
+
+    TypeDB requires @distinct only on ordered (list) roles — the ``[]`` suffix.
+    Bare ``relates name @distinct`` is rejected at schema validation.
+    """
 
     def test_relates_distinct(self) -> None:
-        """Parse relation with @distinct on role."""
+        """Parse relation with @distinct on an ordered role."""
         schema = parse_tql_schema("""
             define
             relation friendship,
-                relates friend @distinct;
+                relates friend[] @distinct;
         """)
         rel = schema.relations["friendship"]
         assert len(rel.roles) == 1
@@ -885,11 +889,11 @@ class TestParseDistinctAnnotation:
         assert rel.roles[0].distinct is True
 
     def test_distinct_with_card(self) -> None:
-        """Parse @distinct alongside @card."""
+        """Parse @distinct alongside @card on an ordered role."""
         schema = parse_tql_schema("""
             define
             relation team-membership,
-                relates member @distinct @card(2..5);
+                relates member[] @distinct @card(2..5);
         """)
         rel = schema.relations["team-membership"]
         assert rel.roles[0].distinct is True
@@ -898,18 +902,27 @@ class TestParseDistinctAnnotation:
         assert rel.roles[0].cardinality.max == 5
 
     def test_mixed_distinct_roles(self) -> None:
-        """Parse relation with some distinct and some non-distinct roles."""
+        """Parse relation with some ordered+distinct and some plain roles."""
         schema = parse_tql_schema("""
             define
             relation hierarchy,
                 relates parent,
-                relates child @distinct;
+                relates child[] @distinct;
         """)
         rel = schema.relations["hierarchy"]
         parent_role = next(r for r in rel.roles if r.name == "parent")
         child_role = next(r for r in rel.roles if r.name == "child")
         assert parent_role.distinct is False
         assert child_role.distinct is True
+
+    def test_bare_distinct_raises(self) -> None:
+        """Bare ``relates name @distinct`` (no [] suffix) is rejected by Rust validation."""
+        with pytest.raises((ValueError, Exception)):
+            parse_tql_schema("""
+                define
+                relation friendship,
+                    relates friend @distinct;
+            """)
 
 
 class TestCardValidation:

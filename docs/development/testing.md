@@ -322,12 +322,13 @@ uv run pytest tests/integration/crud/relations/test_multi_role.py -v
 
 **Configuration:**
 
-The project includes `docker-compose.yml` for TypeDB 3.10.4:
+The project includes `docker-compose.yml` configured for the supported TypeDB version
+(see [compatibility table](typedb.md#server-and-driver-compatibility)):
 
 ```yaml
 services:
   typedb:
-    image: ${TYPEDB_IMAGE:-typedb/typedb:3.10.4}
+    image: ${TYPEDB_IMAGE:-typedb/typedb:3.11.5}
     ports:
       - "${TYPEDB_PORT:-1730}:1729"
 ```

@@ -118,8 +118,10 @@ def db(docker_typedb):
     from tests.integration.conftest import TEST_DB_ADDRESS
     from type_bridge import Credentials, TypeDB, create_driver_options
 
+    # Address passed positionally: the band-8 driver renamed the keyword
+    # (address -> addresses); the positional form works on every band.
     driver = TypeDB.driver(
-        address=TEST_DB_ADDRESS,
+        TEST_DB_ADDRESS,
         credentials=Credentials(username="admin", password="password"),
         driver_options=create_driver_options(is_tls_enabled=False),
     )

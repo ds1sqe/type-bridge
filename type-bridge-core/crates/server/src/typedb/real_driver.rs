@@ -2,13 +2,25 @@ use std::future::Future;
 use std::pin::Pin;
 
 use futures::TryStreamExt;
+use type_bridge_core_lib::version;
 use typedb_driver::answer::QueryAnswer;
-use typedb_driver::{Credentials, DriverOptions, Transaction, TransactionType, TypeDBDriver};
+use typedb_driver::{
+    Addresses, Credentials, DriverOptions, DriverTlsConfig, Transaction, TransactionType,
+    TypeDBDriver,
+};
 
 use super::backend::{DriverBackend, QueryResultKind, TransactionOps};
 use super::client::concept_to_json;
 use crate::config::TypeDBSection;
 use crate::error::PipelineError;
+
+// Compile-time-pinned typedb-driver version consumed by this crate.
+// Cargo.lock resolves "typedb-driver = { version = "3", ... }" to this exact
+// release; update when the lock pin changes.  The orm crate carries an
+// equivalent const; we declare independently here so server never grows an
+// orm dependency, and the `tests::cargo_lock_pin` below keeps this copy
+// honest against the lock.
+const PINNED_DRIVER_VERSION: &str = "3.11.5";
 
 /// Real TypeDB driver backend wrapping `TypeDBDriver`.
 pub(crate) struct RealTypeDBBackend {
@@ -17,13 +29,42 @@ pub(crate) struct RealTypeDBBackend {
 
 impl RealTypeDBBackend {
     /// Connect to a TypeDB server using the provided configuration.
+    ///
+    /// Before constructing the driver the version gate runs:
+    /// 1. Parse the compile-pinned driver version.
+    /// 2. Probe the server's HTTP `/v1/version` endpoint (blocking, off-thread).
+    /// 3. Call `core::check_supported` — fail fast if out-of-window or
+    ///    cross-band.  No transaction is opened on an incompatible server.
     pub async fn connect(config: &TypeDBSection) -> Result<Self, PipelineError> {
+        // --- version gate (fail-fast before driver construction) ---
+        // The literal is controlled by this crate; a parse failure is a
+        // programming error, not a runtime one (mirrors the orm crate).
+        let driver_ver: version::Version = PINNED_DRIVER_VERSION
+            .parse()
+            .expect("PINNED_DRIVER_VERSION is not a valid version string — update the constant");
+
+        let address = config.address.clone();
+        let http_port = config.http_port;
+        let server_ver = tokio::task::spawn_blocking(move || {
+            version::server_version(&address, http_port, false)
+        })
+        .await
+        .map_err(|e| PipelineError::Connection(format!("version probe task panicked: {e}")))?
+        .map_err(PipelineError::UnsupportedVersion)?;
+
+        version::check_supported(&driver_ver, &server_ver)
+            .map_err(PipelineError::UnsupportedVersion)?;
+
+        // --- driver construction (only reached when versions are compatible) ---
+        // TLS is not plumbed in this crate today; the band-8 driver's
+        // `DriverTlsConfig::default()` would ENABLE it, so disable explicitly.
+        let addresses = Addresses::try_from_address_str(&config.address).map_err(|e| {
+            PipelineError::Connection(format!("Invalid TypeDB address {}: {e}", config.address))
+        })?;
         let driver = TypeDBDriver::new(
-            &config.address,
+            addresses,
             Credentials::new(&config.username, &config.password),
-            DriverOptions::new(false, None).map_err(|e| {
-                PipelineError::Connection(format!("Failed to create driver options: {e}"))
-            })?,
+            DriverOptions::new(DriverTlsConfig::disabled()),
         )
         .await
         .map_err(|e| {
@@ -136,5 +177,51 @@ impl TransactionOps for RealTransaction {
                 PipelineError::QueryExecution(format!("Failed to commit transaction: {e}"))
             })
         })
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::PINNED_DRIVER_VERSION;
+    use type_bridge_core_lib::version as core_version;
+
+    /// Assert that this crate's `PINNED_DRIVER_VERSION` matches the
+    /// `typedb-driver` entry in `Cargo.lock`, and stays in the expected
+    /// protocol band.
+    ///
+    /// The constant is deliberately declared locally (no orm dependency), so
+    /// it needs its own lock assertion — without it, a dependency bump could
+    /// silently desynchronize the two crates' pinned facts.
+    #[test]
+    fn cargo_lock_pin() {
+        let lock_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock");
+        let lock_contents = std::fs::read_to_string(lock_path)
+            .expect("Cargo.lock not found relative to crate root");
+
+        let lock_version = lock_contents
+            .split("[[package]]")
+            .find(|block| block.contains("name = \"typedb-driver\""))
+            .and_then(|block| {
+                block
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix("version = \""))
+                    .map(|rest| rest.trim_end_matches('"').to_string())
+            })
+            .expect("typedb-driver entry not found in Cargo.lock");
+
+        assert_eq!(
+            lock_version, PINNED_DRIVER_VERSION,
+            "Cargo.lock resolves typedb-driver {lock_version} but PINNED_DRIVER_VERSION \
+             is {PINNED_DRIVER_VERSION}; update the constant in crates/server/src/typedb/real_driver.rs"
+        );
+
+        let pinned: core_version::Version = PINNED_DRIVER_VERSION.parse().unwrap();
+        assert_eq!(
+            core_version::band(&pinned),
+            Some(8),
+            "pinned driver version {PINNED_DRIVER_VERSION} left protocol band 8; \
+             review the gate expectations before accepting the bump"
+        );
     }
 }

@@ -288,7 +288,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.13.5"]
+        python-version: ["3.12", "3.13.5"]
+    env:
+      # The repo's .python-version pins 3.13 for local dev; without these,
+      # uv ignores the matrix interpreter and downloads a managed build
+      # whose missing shared libpython breaks the typedb native driver.
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_PREFERENCE: only-system
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -337,13 +343,18 @@ jobs:
     strategy:
       matrix:
         test-group: [crud, queries, schema, expressions, migration]
+        # Default-band server (the wheel-band positive cell). Keep in sync
+        # with the compose default and the version SSOT in crates/core.
+        typedb-server: ["typedb/typedb:3.11.5"]
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
       typedb:
-        image: typedb/typedb:3.10.4
+        image: ${{ matrix.typedb-server }}
         ports:
           - 1729:1729
+          # TypeDB HTTP API; the connect-time version gate probes /v1/version.
+          - 8000:8000
 
     steps:
       - name: Checkout code
@@ -410,12 +421,18 @@ jobs:
   cross-language-parity:
     name: Cross-language parity
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Default-band server. Keep in sync with compose + the version SSOT.
+        typedb-server: ["typedb/typedb:3.11.5"]
 
     services:
       typedb:
-        image: typedb/typedb:3.10.4
+        image: ${{ matrix.typedb-server }}
         ports:
           - 1729:1729
+          # TypeDB HTTP API; the connect-time version gate probes /v1/version.
+          - 8000:8000
 
     steps:
       - name: Checkout code
@@ -536,12 +553,18 @@ jobs:
     defaults:
       run:
         working-directory: type-bridge-core/crates/node
+    strategy:
+      matrix:
+        # Default-band server. Keep in sync with compose + the version SSOT.
+        typedb-server: ["typedb/typedb:3.11.5"]
 
     services:
       typedb:
-        image: typedb/typedb:3.10.4
+        image: ${{ matrix.typedb-server }}
         ports:
           - 1729:1729
+          # TypeDB HTTP API; the connect-time version gate probes /v1/version.
+          - 8000:8000
 
     steps:
       - name: Checkout code
@@ -609,3 +632,90 @@ jobs:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
         run: npm run test:integration
+
+  # Version-gate rejection cells: the update-safety contract, CI-proven.
+  # Each cell boots a server the release wheel must REJECT at connect — green
+  # means "gate fired with the right error class", not "suite passed". The
+  # SAFE cells install the band-7 Python driver so the installed pair passes
+  # and the embedded-driver check is provably reached; NEG-driver pins the
+  # check order from the other side (installed fires first). Cell versions
+  # mirror the version SSOT in crates/core and the compatibility table.
+  version-gate-cells:
+    name: Version gate (${{ matrix.cell }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: SAFE-floor
+            typedb-server: "typedb/typedb:3.8.3"
+            python-driver: "3.10.0"
+            expect-class: embedded
+          - cell: SAFE-line
+            typedb-server: "typedb/typedb:3.10.4"
+            python-driver: "3.10.0"
+            expect-class: embedded
+          - cell: NEG-window
+            typedb-server: "typedb/typedb:3.7.3"
+            python-driver: "3.11.5"
+            expect-class: window
+          - cell: NEG-driver
+            typedb-server: "typedb/typedb:3.11.5"
+            python-driver: "3.10.0"
+            expect-class: installed
+
+    services:
+      typedb:
+        image: ${{ matrix.typedb-server }}
+        ports:
+          - 1729:1729
+          # TypeDB HTTP API; the connect-time version gate probes /v1/version.
+          - 8000:8000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-gate-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Install the cell's Python driver
+        run: uv pip install "typedb-driver==${{ matrix.python-driver }}"
+
+      - name: Wait for TypeDB server to be ready
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost 1729 2>/dev/null; then
+              echo "TypeDB ready on 1729"
+              break
+            fi
+            sleep 2
+          done
+          nc -z localhost 1729
+
+      - name: Assert connect-time rejection
+        run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --expect-class ${{ matrix.expect-class }}

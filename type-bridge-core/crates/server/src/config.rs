@@ -28,6 +28,10 @@ pub struct TypeDBSection {
     pub username: String,
     #[serde(default = "default_password")]
     pub password: String,
+    /// Port of the TypeDB HTTP API on the same host as `address`; the
+    /// connect-time version gate probes `/v1/version` here.
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -75,6 +79,10 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     8080
+}
+
+fn default_http_port() -> u16 {
+    8000
 }
 
 fn default_username() -> String {

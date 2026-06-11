@@ -1,9 +1,11 @@
 services:
   typedb:
-    image: ${TYPEDB_IMAGE:-typedb/typedb:3.10.4}
+    image: ${TYPEDB_IMAGE:-typedb/typedb:3.11.5}
     container_name: typedb_test
     ports:
       - "${TYPEDB_PORT:-1730}:1729"
+      # TypeDB HTTP API; the ORM's connect-time version gate probes /v1/version here.
+      - "${TYPEDB_HTTP_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/1729' || exit 1"]
       interval: 5s

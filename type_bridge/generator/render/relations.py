@@ -28,10 +28,12 @@ class RelationContext:
     flags_args: list[str]
     attr_fields: list[str] = field(default_factory=list)
     role_fields: list[str] = field(default_factory=list)
-    # Coming-soon annotations (parsed but not yet available in TypeDB 3.x)
-    # These will render as TODO comments in generated code
+    # Coming-soon annotations (parsed but not yet available in TypeDB 3.x);
+    # these render as TODO comments in generated code
     cascade_attrs: list[str] = field(default_factory=list)
     subkey_groups: dict[str, list[str]] = field(default_factory=dict)
+    # Roles annotated @distinct in the source schema (live on all supported
+    # servers; requires the ordered role form `relates name[] @distinct`)
     distinct_roles: list[str] = field(default_factory=list)
     # Custom annotations from TQL comments (e.g., # @api(public))
     annotations: dict[str, AnnotationValue] = field(default_factory=dict)

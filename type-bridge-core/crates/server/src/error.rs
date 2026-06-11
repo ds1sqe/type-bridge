@@ -4,6 +4,8 @@ pub enum PipelineError {
     Config(String),
     #[error("TypeDB connection error: {0}")]
     Connection(String),
+    #[error("Unsupported version: {0}")]
+    UnsupportedVersion(#[from] type_bridge_core_lib::version::VersionError),
     #[error("Query execution error: {0}")]
     QueryExecution(String),
     #[error("Validation error: {0}")]
@@ -76,5 +78,18 @@ mod tests {
         let e = PipelineError::Config("test".into());
         let debug = format!("{:?}", e);
         assert!(debug.contains("Config"));
+    }
+
+    #[test]
+    fn display_unsupported_version_error() {
+        use type_bridge_core_lib::version::{Version, VersionError};
+        let inner = VersionError::Unsupported {
+            component: "server",
+            found: Version::new(2, 28, 0),
+        };
+        let e = PipelineError::UnsupportedVersion(inner);
+        let msg = e.to_string();
+        assert!(msg.contains("Unsupported version"), "missing prefix: {msg}");
+        assert!(msg.contains("2.28.0"), "missing detected version: {msg}");
     }
 }

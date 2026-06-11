@@ -15,6 +15,7 @@
 //! | [`value_coercion`] | Coerces raw values into TypeDB value-types and formats TypeQL literals |
 //! | [`reserved_words`] | TypeQL reserved-word detection |
 //! | [`parser`] | Low-level PEG grammar consumed by [`query_parser`] |
+//! | [`version`] | TypeDB compatibility window, protocol-band map, and version gate (SSOT) |
 
 #![warn(missing_docs)]
 
@@ -34,3 +35,5 @@ pub mod schema;
 pub mod validation;
 /// Coerces raw values into TypeDB value-types and formats TypeQL literals.
 pub mod value_coercion;
+/// TypeDB compatibility window, protocol-band map, and connect-time version gate.
+pub mod version;

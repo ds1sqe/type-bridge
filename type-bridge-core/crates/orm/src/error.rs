@@ -5,6 +5,15 @@ use thiserror::Error;
 /// Unified error type for the ORM crate.
 #[derive(Debug, Error)]
 pub enum OrmError {
+    /// The detected TypeDB driver or server version lies outside the supported
+    /// window, or the driver and server speak different protocol bands.
+    ///
+    /// The inner [`type_bridge_core_lib::version::VersionError`] message is
+    /// preserved verbatim — including version numbers and remediation text —
+    /// so no information is lost at the ORM boundary.
+    #[error("Unsupported version: {0}")]
+    UnsupportedVersion(#[from] type_bridge_core_lib::version::VersionError),
+
     /// Connection to TypeDB failed.
     #[error("Connection error: {0}")]
     Connection(String),

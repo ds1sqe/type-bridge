@@ -69,4 +69,51 @@ def coerce_value(value: Any, target_type: str) -> Any: ...
 def format_value(value: Any) -> str: ...
 def parse_typeql_query(input: str) -> Any: ...
 def toml_to_typeql(toml_text: str) -> str: ...
+
+# Version gate — SSOT in crates/core/src/version.rs, re-exported here.
+class VersionError(Exception):
+    """Raised for TypeDB version window violations, band mismatches, probe failures, or parse errors."""
+
+    ...
+
+def min_supported_version() -> str:
+    """Return the minimum supported TypeDB version as ``"3.8.0"``."""
+    ...
+
+def max_supported_line() -> str:
+    """Return the maximum supported TypeDB line as ``"major.minor"`` (e.g. ``"3.11"``)."""
+    ...
+
+def band(version: str) -> int | None:
+    """Return the protocol band for a TypeDB version string, or ``None`` if unmapped.
+
+    Raises ``VersionError`` when the version string cannot be parsed.
+    """
+    ...
+
+def check_supported(driver: str, server: str) -> None:
+    """Assert that driver and server versions are compatible (window + band).
+
+    Raises ``VersionError`` on window violations or band mismatches.
+    """
+    ...
+
+def embedded_driver_version() -> str:
+    """Return the typedb-driver version compiled into the Rust runtime.
+
+    Every TypeBridge transaction executes through the embedded Rust driver,
+    so its protocol band must match the server alongside the installed
+    Python driver's.
+    """
+    ...
+
+def server_version(address: str, http_port: int = 8000, tls: bool = False) -> str:
+    """Query the TypeDB HTTP API for the server version.
+
+    Returns the detected version as a string (e.g. ``"3.10.4"``).
+    Raises ``VersionError`` when the endpoint is unreachable or the response
+    cannot be parsed.
+    """
+    ...
+
 def __getattr__(name: str) -> Any: ...

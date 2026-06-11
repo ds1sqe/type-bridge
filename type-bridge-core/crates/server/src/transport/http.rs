@@ -33,6 +33,9 @@ impl IntoResponse for PipelineError {
         let (status, code) = match &self {
             PipelineError::Config(_) => (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR"),
             PipelineError::Connection(_) => (StatusCode::SERVICE_UNAVAILABLE, "CONNECTION_ERROR"),
+            PipelineError::UnsupportedVersion(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "UNSUPPORTED_VERSION")
+            }
             PipelineError::QueryExecution(_) => (StatusCode::BAD_REQUEST, "QUERY_EXECUTION_ERROR"),
             PipelineError::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_FAILED"),
             PipelineError::Parse(_) => (StatusCode::BAD_REQUEST, "PARSE_ERROR"),

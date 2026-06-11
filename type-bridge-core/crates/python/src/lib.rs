@@ -19,6 +19,7 @@ pub mod orm;
 pub mod orm_runtime;
 pub mod schema;
 pub mod transpiler;
+pub mod version;
 
 use type_bridge_core_lib as core;
 
@@ -638,6 +639,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     orm_runtime::register(m)?;
     migration_runtime::register(m)?;
     schema::register(m)?;
+    version::register(m)?;
 
     Ok(())
 }

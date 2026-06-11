@@ -838,6 +838,7 @@ mod tests {
             database: "test".to_string(),
             username: "admin".to_string(),
             password: "password".to_string(),
+            http_port: 8000,
         };
         let result = TypeDBClient::connect(&config).await;
         assert!(result.is_err());
@@ -852,6 +853,7 @@ mod tests {
             database: "test".to_string(),
             username: "admin".to_string(),
             password: "password".to_string(),
+            http_port: 8000,
         };
         let result = TypeDBClient::connect(&config).await;
         assert!(result.is_ok());
