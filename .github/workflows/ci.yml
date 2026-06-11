@@ -51,6 +51,44 @@ jobs:
         working-directory: type-bridge-core
         run: cargo clippy --all-targets -- -D warnings
 
+  # I6 single-feature offline legs: verify neither single-band feature combination rots.
+  # These are compile-only checks (no live server, no tests) — cargo check only.
+  band-feature-check:
+    name: Band feature check (${{ matrix.band }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - band: band7
+            features: band7,axum-transport
+          - band: band8
+            features: band8,axum-transport
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-band-${{ matrix.band }}-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-band-${{ matrix.band }}-
+            ${{ runner.os }}-cargo-
+
+      - name: cargo check (${{ matrix.band }})
+        working-directory: type-bridge-core
+        run: cargo check -p type-bridge-orm -p type-bridge-server --no-default-features --features ${{ matrix.features }}
+
   # Rust code coverage (informational, does not block CI)
   rust-coverage:
     name: Rust Coverage
@@ -338,14 +376,26 @@ jobs:
 
   # Integration tests (require TypeDB server, parallel by test category)
   test-integration:
-    name: Python Integration (${{ matrix.test-group }})
+    name: Python Integration (${{ matrix.test-group }}, ${{ matrix.typedb-server }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
         test-group: [crud, queries, schema, expressions, migration]
-        # Default-band server (the wheel-band positive cell). Keep in sync
-        # with the compose default and the version SSOT in crates/core.
-        typedb-server: ["typedb/typedb:3.11.5"]
+        # Fan across all three server lines: band-7 (3.8.3, 3.10.4) and band-8
+        # (3.11.5). Keep in sync with compose default and version SSOT in crates/core.
+        typedb-server:
+          - "typedb/typedb:3.8.3"
+          - "typedb/typedb:3.10.4"
+          - "typedb/typedb:3.11.5"
+        include:
+          # Band-7 legs pair the band-7 installed Python driver — a band-7 user
+          # has this driver installed, and the gate must not spuriously fire.
+          - typedb-server: "typedb/typedb:3.8.3"
+            python-driver: "3.10.0"
+          - typedb-server: "typedb/typedb:3.10.4"
+            python-driver: "3.10.0"
+          - typedb-server: "typedb/typedb:3.11.5"
+            python-driver: "3.11.5"
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
@@ -377,6 +427,9 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra dev
+
+      - name: Install the band's Python driver
+        run: uv pip install "typedb-driver==${{ matrix.python-driver }}"
 
       - name: Wait for TypeDB server to be ready
         run: |
@@ -419,12 +472,22 @@ jobs:
   # first, then runs them against live TypeDB under TYPE_BRIDGE_PARITY_STRICT so a
   # "Node not built" skip fails the job instead of passing it silently (false green).
   cross-language-parity:
-    name: Cross-language parity
+    name: Cross-language parity (${{ matrix.typedb-server }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Default-band server. Keep in sync with compose + the version SSOT.
-        typedb-server: ["typedb/typedb:3.11.5"]
+        # Fan across band-7 (3.8.3) and band-8 (3.11.5) — two representative
+        # lines, per I5. 3.10.4 is redundant for a parity proof.
+        # Keep in sync with compose + the version SSOT.
+        typedb-server:
+          - "typedb/typedb:3.8.3"
+          - "typedb/typedb:3.11.5"
+        include:
+          # Band-7 leg pairs the band-7 installed Python driver.
+          - typedb-server: "typedb/typedb:3.8.3"
+            python-driver: "3.10.0"
+          - typedb-server: "typedb/typedb:3.11.5"
+            python-driver: "3.11.5"
 
     services:
       typedb:
@@ -467,6 +530,9 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra dev
+
+      - name: Install the band's Python driver
+        run: uv pip install "typedb-driver==${{ matrix.python-driver }}"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -548,15 +614,20 @@ jobs:
   # job for Node: a TypeDB service container plus the native build, then the binding's
   # `test:integration` suite (which itself chains `test:typed-integration`).
   node-integration:
-    name: Node integration
+    name: Node integration (${{ matrix.typedb-server }})
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: type-bridge-core/crates/node
     strategy:
       matrix:
-        # Default-band server. Keep in sync with compose + the version SSOT.
-        typedb-server: ["typedb/typedb:3.11.5"]
+        # Fan across all three server lines: band-7 (3.8.3, 3.10.4) and band-8
+        # (3.11.5). No python-driver pairing needed — Node reaches TypeDB only
+        # through the embedded Rust orm seam.
+        typedb-server:
+          - "typedb/typedb:3.8.3"
+          - "typedb/typedb:3.10.4"
+          - "typedb/typedb:3.11.5"
 
     services:
       typedb:
@@ -635,11 +706,17 @@ jobs:
 
   # Version-gate rejection cells: the update-safety contract, CI-proven.
   # Each cell boots a server the release wheel must REJECT at connect — green
-  # means "gate fired with the right error class", not "suite passed". The
-  # SAFE cells install the band-7 Python driver so the installed pair passes
-  # and the embedded-driver check is provably reached; NEG-driver pins the
-  # check order from the other side (installed fires first). Cell versions
-  # mirror the version SSOT in crates/core and the compatibility table.
+  # means "gate fired with the right error class", not "suite passed".
+  # The two cells here prove the two true rejection paths:
+  #   NEG-window: a server outside the supported window (3.7.3) triggers the
+  #     window class, regardless of the installed driver.
+  #   NEG-driver: a band-8 server (3.11.5) paired with the band-7 installed
+  #     driver (3.10.0) triggers the installed class — installed check fires
+  #     before the embedded check, proving check order.
+  # The band-7 servers (3.8.3, 3.10.4) are now SERVED: they are proven green
+  # by the positive test-integration and node-integration legs and no longer
+  # need a separate rejection cell. Cell versions mirror the version SSOT in
+  # crates/core and the compatibility table.
   version-gate-cells:
     name: Version gate (${{ matrix.cell }})
     runs-on: ubuntu-latest
@@ -647,14 +724,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - cell: SAFE-floor
-            typedb-server: "typedb/typedb:3.8.3"
-            python-driver: "3.10.0"
-            expect-class: embedded
-          - cell: SAFE-line
-            typedb-server: "typedb/typedb:3.10.4"
-            python-driver: "3.10.0"
-            expect-class: embedded
           - cell: NEG-window
             typedb-server: "typedb/typedb:3.7.3"
             python-driver: "3.11.5"

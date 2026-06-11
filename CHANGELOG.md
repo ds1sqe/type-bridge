@@ -6,6 +6,24 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changes
 
+#### Dual-band TypeDB driver support: servers 3.8–3.11 served by one artifact (#145)
+
+- **Both TypeDB Rust driver lines now embedded** — the wheel ships a vendored band-7 fork
+  (3.8.1) alongside the upstream band-8 driver (3.11.5). The runtime dispatches to the
+  correct driver at `Database.connect()` time based on the server's protocol band; no
+  user-side configuration is required.
+- **TypeDB 3.11 newly supported** — band-8 (3.11.x) servers are now served in addition
+  to the existing band-7 window.
+- **Existing 3.8/3.10 deployments keep working without change** — the band-7 embedded
+  driver is a drop-in for the previous release line; upgrading type-bridge does not require
+  a server upgrade.
+- **One release artifact covers TypeDB 3.8.0 through 3.11.x** — the per-band install
+  guidance is retired. Install `type-bridge` and connect to any server in the supported
+  window.
+- **CI proven on all three server lines** — `test-integration`, `node-integration`, and
+  `cross-language-parity` now fan across 3.8.3, 3.10.4, and 3.11.5 (parity ×2). The
+  `version-gate-cells` job retains only the true rejection cells (NEG-window, NEG-driver).
+
 #### Cross-language CI and release coverage (#110)
 
 - **Node binding built, tested, and released** — the `@type-bridge/node` binding is
