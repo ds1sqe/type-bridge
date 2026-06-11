@@ -233,16 +233,36 @@ Integration tests require a running TypeDB 3.x server.
 
 ```bash
 # ./test.sh manages a TypeDB container automatically:
-# - Started before the integration tiers
+# - Started before the integration tiers with an engine-assigned host port
+# - Each worktree gets its own compose project (tb-<worktree-basename>)
 # - Torn down on exit (even on failure)
 ./test.sh                                 # Full suite (Rust + Python + Node), isolated
 ./test.sh -- -v                           # Forward -v to the pytest tiers
 ```
 
+By default isolated mode uses engine-assigned ports, so two worktrees can run
+their suites concurrently without colliding.  To pin a fixed port (useful for
+debugging or connecting an external tool):
+
+```bash
+TYPEDB_PORT=1730 ./test.sh
+TYPEDB_PORT=1730 TYPEDB_HTTP_PORT=8000 ./test.sh
+```
+
+To inspect a running isolated stack:
+
+```bash
+# Find the project name for the current worktree
+./test.sh --print-project   # e.g. tb-v1-5-0
+
+# List containers for that project
+docker compose -p tb-v1-5-0 ps
+```
+
 **Option 2: Use Existing TypeDB Server**
 
 ```bash
-# 1. Start TypeDB 3.x server manually (local convention: port 1730)
+# 1. Start TypeDB 3.x server manually
 typedb server
 
 # 2a. Full suite against the running server (no container management)
@@ -318,35 +338,42 @@ uv run pytest tests/integration/crud/relations/test_multi_role.py -v
 
 **Requirements:**
 - Docker or Podman with Compose installed
-- Port 1729 available (TypeDB server)
+- A free host port (engine-assigned by default; set `TYPEDB_PORT` to pin one)
 
 **Configuration:**
 
 The project includes `docker-compose.yml` configured for the supported TypeDB version
-(see [compatibility table](typedb.md#server-and-driver-compatibility)):
+(see [compatibility table](typedb.md#server-and-driver-compatibility)).
+By default the host port is engine-assigned (0), so two worktrees can run
+isolated stacks concurrently.  The compose project name is derived from the
+worktree directory (`tb-<worktree-basename>`):
 
 ```yaml
 services:
   typedb:
     image: ${TYPEDB_IMAGE:-typedb/typedb:3.11.5}
     ports:
-      - "${TYPEDB_PORT:-1730}:1729"
+      - "${TYPEDB_PORT:-0}:1729"
+      - "${TYPEDB_HTTP_PORT:-0}:8000"
 ```
 
 **Manual Docker control:**
 
 ```bash
-# Start TypeDB container
-docker compose up -d
+# Start TypeDB container (engine assigns a free host port)
+docker compose -p tb-v1-5-0 up -d
+
+# Find the assigned host port
+docker compose -p tb-v1-5-0 port typedb 1729
 
 # View TypeDB logs
-docker compose logs typedb
+docker compose -p tb-v1-5-0 logs typedb
 
 # Stop TypeDB container
-docker compose down
+docker compose -p tb-v1-5-0 down
 
 # Remove volumes (clean slate)
-docker compose down -v
+docker compose -p tb-v1-5-0 down -v
 ```
 
 ## Test Execution Patterns

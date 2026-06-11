@@ -1,35 +1,23 @@
 """Proxy server lifecycle management for integration tests."""
 
 import os
-import shutil
 import subprocess
 import time
+from pathlib import Path
 
+from tests.utils.typedb_lifecycle import (
+    CONTAINER_TOOL,
+    _compose_base,
+    compose_project,
+    discover_port,
+)
 
-def _detect_container_tool() -> str:
-    """Auto-detect available container tool (podman or docker)."""
-    env_tool = os.getenv("CONTAINER_TOOL")
-    if env_tool:
-        return env_tool
-    for tool in ("podman", "docker"):
-        if shutil.which(tool):
-            return tool
-    return "docker"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
-
-CONTAINER_TOOL = _detect_container_tool()
-
-# Proxy test configuration
+# Proxy test configuration — resolved after discovery (or explicit env override)
 PROXY_PORT = os.getenv("PROXY_PORT", "8081")
 PROXY_ADDRESS = os.getenv("PROXY_ADDRESS", f"http://localhost:{PROXY_PORT}")
 PROXY_DB_NAME = "type_bridge_proxy_test"
-
-
-def _compose_base() -> list[str]:
-    """Build compose command base."""
-    if CONTAINER_TOOL in ("docker-compose", "podman-compose"):
-        return [CONTAINER_TOOL]
-    return [CONTAINER_TOOL, "compose"]
 
 
 def start_proxy_containers() -> bool:
@@ -42,40 +30,51 @@ def start_proxy_containers() -> bool:
     if not use_docker:
         return False
 
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    compose_file = os.path.join(project_root, "docker-compose.proxy.yml")
-    compose_base = [*_compose_base(), "-f", compose_file]
+    project = compose_project(_REPO_ROOT)
+    compose_file = str(_REPO_ROOT / "docker-compose.proxy.yml")
+    compose_with_proj = [*_compose_base(), "-p", project, "-f", compose_file]
 
-    # Stop any existing containers
+    # Stop any existing containers for this project
     subprocess.run(
-        [*compose_base, "down"],
-        cwd=project_root,
+        [*compose_with_proj, "down"],
+        cwd=str(_REPO_ROOT),
         capture_output=True,
     )
 
     # Build and start containers
     subprocess.run(
-        [*compose_base, "up", "-d", "--build"],
-        cwd=project_root,
+        [*compose_with_proj, "up", "-d", "--build"],
+        cwd=str(_REPO_ROOT),
         check=True,
         capture_output=True,
     )
 
-    # Wait for proxy to be healthy
+    # Wait for the proxy to become healthy, resolving its container ID via
+    # 'compose ps -q' so we never depend on a hardcoded container name.
     max_retries = 60  # longer timeout for build + startup
     for _ in range(max_retries):
-        result = subprocess.run(
-            [
-                CONTAINER_TOOL,
-                "inspect",
-                "--format={{.State.Health.Status}}",
-                "type_bridge_proxy_test",
-            ],
+        id_result = subprocess.run(
+            [*compose_with_proj, "ps", "-q", "proxy"],
+            cwd=str(_REPO_ROOT),
             capture_output=True,
             text=True,
         )
-        if result.stdout.strip() == "healthy":
-            return True
+        container_id = id_result.stdout.strip()
+        if container_id:
+            result = subprocess.run(
+                [CONTAINER_TOOL, "inspect", "--format={{.State.Health.Status}}", container_id],
+                capture_output=True,
+                text=True,
+            )
+            if result.stdout.strip() == "healthy":
+                # Discover ports only when the caller did not set them explicitly.
+                global PROXY_PORT, PROXY_ADDRESS
+                if not os.getenv("PROXY_PORT"):
+                    proxy_port = discover_port(project, "proxy", 8080)
+                    PROXY_PORT = str(proxy_port)
+                    if not os.getenv("PROXY_ADDRESS"):
+                        PROXY_ADDRESS = f"http://localhost:{PROXY_PORT}"
+                return True
         time.sleep(1)
 
     raise RuntimeError("Proxy container failed to become healthy")
@@ -83,12 +82,12 @@ def start_proxy_containers() -> bool:
 
 def stop_proxy_containers() -> None:
     """Stop TypeDB + proxy Docker containers."""
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    compose_file = os.path.join(project_root, "docker-compose.proxy.yml")
-    compose_base = [*_compose_base(), "-f", compose_file]
+    project = compose_project(_REPO_ROOT)
+    compose_file = str(_REPO_ROOT / "docker-compose.proxy.yml")
+    compose_with_proj = [*_compose_base(), "-p", project, "-f", compose_file]
 
     subprocess.run(
-        [*compose_base, "down"],
-        cwd=project_root,
+        [*compose_with_proj, "down"],
+        cwd=str(_REPO_ROOT),
         capture_output=True,
     )
