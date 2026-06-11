@@ -210,18 +210,17 @@ class Database:
             is_tls_enabled = self.address.startswith("https://")
             logger.debug(f"TLS enabled: {is_tls_enabled}")
 
-            # Version gate — probe versions and fail before any driver construction
-            # when either driver/server pair is out-of-window or cross-band.
-            # Transactions execute through the embedded Rust runtime driver, so
-            # the server must match BOTH the installed Python driver and the
-            # embedded one. UnsupportedVersionError (and core VersionError from
-            # an unreachable probe) propagate uncaught — fail-closed.
+            # Version gate — probe versions and fail before any driver construction.
+            # Two checks: the installed Python driver must match the server's
+            # protocol band, and the server must fall within the window the
+            # embedded Rust runtime serves (band-set membership — the default
+            # build embeds drivers for the whole window). UnsupportedVersionError
+            # (and core VersionError from an unreachable probe) propagate
+            # uncaught — fail-closed.
             detected_driver = typedb_driver.driver_version()
             detected_server = typedb_driver.server_version(self.address, tls=is_tls_enabled)
             version.ensure_supported(detected_driver, detected_server)
-            version.ensure_runtime_supported(
-                typedb_driver.embedded_driver_version(), detected_server
-            )
+            version.ensure_runtime_supported(detected_server)
             logger.debug(f"Version gate passed: driver={detected_driver}, server={detected_server}")
 
             # Create driver options (band-keyed dispatch on the installed driver)

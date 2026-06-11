@@ -105,6 +105,8 @@ pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 #[cfg(feature = "typedb")]
 pub use session::ensure_database_exists;
+#[cfg(feature = "typedb")]
+pub use session::embedded_driver_versions;
 pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use value::AttributeValue;
 

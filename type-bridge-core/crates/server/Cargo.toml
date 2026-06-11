@@ -17,8 +17,10 @@ path = "src/main.rs"
 required-features = ["typedb", "axum-transport"]
 
 [features]
-default = ["typedb", "axum-transport"]
-typedb = ["dep:typedb-driver", "dep:futures"]
+default = ["band7", "band8", "axum-transport"]
+typedb = ["dep:futures"]
+band7 = ["typedb", "dep:type-bridge-typedb-driver-b7"]
+band8 = ["typedb", "dep:typedb-driver"]
 axum-transport = ["dep:axum", "dep:tower-http"]
 test-helpers = []
 
@@ -36,6 +38,7 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 # Optional: TypeDB backend
 typedb-driver = { version = "3", optional = true }
+type-bridge-typedb-driver-b7 = { path = "../../vendor/typedb-driver-b7", version = "=3.8.1", optional = true }
 futures = { version = "0.3", optional = true }
 
 # Optional: Axum HTTP transport

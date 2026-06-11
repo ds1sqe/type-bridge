@@ -2629,6 +2629,7 @@ dependencies = [
  "tracing-subscriber",
  "type-bridge-core-lib",
  "type-bridge-server",
+ "type-bridge-typedb-driver-b7",
  "typedb-driver",
  "uuid",
 ]

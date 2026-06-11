@@ -17,6 +17,7 @@ import type_bridge_core
 # documented gate entry point (callers wanting the untranslated form can
 # import type_bridge_core directly).
 from type_bridge_core import band as band
+from type_bridge_core import check_server_supported as _check_server_supported
 from type_bridge_core import check_supported as _check_supported
 from type_bridge_core import max_supported_line as max_supported_line
 from type_bridge_core import min_supported_version as min_supported_version
@@ -59,34 +60,36 @@ def ensure_supported(driver: str, server: str) -> None:
         raise UnsupportedVersionError(str(exc)) from exc
 
 
-def ensure_runtime_supported(embedded_driver: str, server: str) -> None:
-    """Assert the embedded Rust runtime driver is compatible with the server.
+def ensure_runtime_supported(server: str) -> None:
+    """Assert the embedded Rust runtime can serve the detected server.
 
     Every TypeBridge transaction executes through the Rust runtime's own
-    typedb-driver, so its protocol band must match the server independently of
-    the installed Python driver.  Core makes the decision; this wrapper only
-    reframes the failure — the usual "install a different typedb-driver"
-    remediation does not apply to a driver compiled into the wheel.
+    typedb-driver, and the default build embeds drivers for the full supported
+    window (3.8–3.11).  Core makes the decision using band-set membership —
+    the band set is derived from the compiled features in the Rust runtime
+    (``check_server_supported`` reads them directly), so any in-window server
+    is accepted by the default build.  This wrapper only reframes the failure
+    — the "install a different typedb-driver" remediation does not apply to a
+    driver compiled into the wheel.
 
     Args:
-        embedded_driver: Version compiled into the Rust runtime
-            (``typedb_driver.embedded_driver_version()``).
         server: Detected server version string.
 
     Raises:
-        UnsupportedVersionError: When the embedded driver and server violate
-            the window or cross protocol bands.  The message names the
-            embedded driver explicitly and gives wheel-appropriate remediation.
+        UnsupportedVersionError: When the server is outside the supported window
+            or (in a non-default single-band build) its band is not compiled in.
+            The message names the supported window and gives wheel-appropriate
+            remediation.
     """
     try:
-        _check_supported(embedded_driver, server)
+        _check_server_supported(server)
     except type_bridge_core.VersionError as exc:
+        min_v = min_supported_version()
+        max_l = max_supported_line()
         raise UnsupportedVersionError(
-            f"TypeBridge's embedded runtime driver {embedded_driver} is not "
-            f"compatible with server {server}: {exc} "
-            f"(the runtime driver is compiled into type-bridge — use a "
-            f"type-bridge release matching your server line, or a server "
-            f"matching this release)"
+            f"TypeBridge's embedded runtime does not support server {server}: {exc} "
+            f"(use a TypeDB server in the supported window {min_v}–{max_l}.x, "
+            f"or upgrade to a type-bridge release that covers this server line)"
         ) from exc
 
 

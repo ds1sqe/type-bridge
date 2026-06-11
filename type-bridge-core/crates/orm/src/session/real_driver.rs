@@ -50,6 +50,40 @@ pub const PINNED_DRIVER_VERSION: &str = "3.11.5";
 /// catch any divergence.
 pub const PINNED_DRIVER_VERSION_B7: &str = "3.8.1";
 
+/// Protocol bands this build embeds a driver for, derived from the compiled-in
+/// band features.  This is the `embedded_bands` argument to
+/// [`core_version::check_server_supported`] — the embedded-runtime gate accepts
+/// any in-window server whose band is in this set.
+///
+/// Each element is individually cfg-gated so the set reflects exactly the bands
+/// the build can construct; there is no hardcoded band-set literal (master-plan
+/// I6).  The default build compiles both, so the set is `{7, 8}`.
+const EMBEDDED_BANDS: &[u8] = &[
+    #[cfg(feature = "band7")]
+    7,
+    #[cfg(feature = "band8")]
+    8,
+];
+
+/// Return the driver versions compiled into this build, keyed by protocol band.
+///
+/// Each entry is `(band, version_string)` and is individually cfg-gated so only
+/// compiled-in bands appear in the slice (master-plan I6 — no hardcoded
+/// band-set literal).  The default build embeds both bands and returns
+/// `[(7, "3.8.1"), (8, "3.11.5")]`.
+///
+/// This is the Rust-side source of truth for the Python `embedded_driver_versions()`
+/// binding — `crates/python/src/version.rs` wraps this function and exposes it
+/// as a Python dict `{int: str}`.
+pub fn embedded_driver_versions() -> &'static [(u8, &'static str)] {
+    &[
+        #[cfg(feature = "band7")]
+        (7, PINNED_DRIVER_VERSION_B7),
+        #[cfg(feature = "band8")]
+        (8, PINNED_DRIVER_VERSION),
+    ]
+}
+
 /// Band-tagged driver handle.  Private to this module; no driver type escapes.
 enum DriverHandle {
     #[cfg(feature = "band7")]
@@ -69,9 +103,11 @@ pub struct RealBackend {
 ///
 /// 1. Probes the TypeDB HTTP version endpoint (port 8000, plain HTTP — TLS is
 ///    not plumbed in this crate today).
-/// 2. Selects the embedded pin by the server's band, then runs
-///    [`core_version::check_supported`] using that band's pin.
-/// 3. Only on success, constructs and returns a live [`DriverHandle`].
+/// 2. Runs the embedded-runtime gate [`core_version::check_server_supported`]
+///    against [`EMBEDDED_BANDS`] — the server is served when it is in-window
+///    and its band is one this build embedded.
+/// 3. Only on success, constructs and returns a live [`DriverHandle`] for the
+///    server's band.
 ///
 /// Any version incompatibility surfaces as [`OrmError::UnsupportedVersion`]
 /// **before** the gRPC handshake — fail fast, never silently.
@@ -90,29 +126,25 @@ async fn gated_driver(
     .map_err(|e| OrmError::Connection(format!("Version probe task panicked: {e}")))?
     .map_err(OrmError::UnsupportedVersion)?;
 
-    // Select the embedded pin by the server's band before running the gate
-    // check.  check_supported enforces band equality; using the wrong pin
-    // would reject every band-7 server as BandMismatch even when supported.
-    // Unmapped bands or bands whose feature is compiled out fall through to
-    // the band-8 pin so today's typed rejection (window / BandMismatch) and
-    // messages are preserved verbatim.
+    // Embedded-runtime gate: accept the server when it is in-window and its
+    // band is one this build embedded.  Unlike the installed-driver gate
+    // (check_supported, band equality), the embedded runtime carries every
+    // compiled-in band, so a band-7 server is now served, not rejected.  After
+    // this passes, band(&server_version) is guaranteed ∈ EMBEDDED_BANDS.
+    core_version::check_server_supported(&server_version, EMBEDDED_BANDS)
+        .map_err(OrmError::UnsupportedVersion)?;
+
     let band = core_version::band(&server_version);
+
+    tracing::debug!(
+        address,
+        band = ?band,
+        server_version = %server_version,
+        "Embedded version gate passed"
+    );
 
     #[cfg(feature = "band7")]
     if band == Some(7) {
-        let driver_version: core_version::Version = PINNED_DRIVER_VERSION_B7
-            .parse()
-            .expect("PINNED_DRIVER_VERSION_B7 is not a valid version string — update the constant");
-        core_version::check_supported(&driver_version, &server_version)
-            .map_err(OrmError::UnsupportedVersion)?;
-
-        tracing::debug!(
-            address,
-            driver_version = %driver_version,
-            server_version = %server_version,
-            "Version gate passed"
-        );
-
         // Band-7 driver takes a raw address string and a two-argument
         // DriverOptions::new(tls_enabled, ca_path).  TLS is disabled.
         let opts = B7DriverOptions::new(false, None)
@@ -123,22 +155,9 @@ async fn gated_driver(
         return Ok(DriverHandle::B7(driver));
     }
 
-    // For band-8 (or any unmapped/compiled-out band) use the band-8 pin.
-    // This preserves all existing rejection messages unchanged.
-    let driver_version: core_version::Version = PINNED_DRIVER_VERSION
-        .parse()
-        .expect("PINNED_DRIVER_VERSION is not a valid version string — update the constant");
-    core_version::check_supported(&driver_version, &server_version)
-        .map_err(OrmError::UnsupportedVersion)?;
-
-    tracing::debug!(
-        address,
-        band = ?band,
-        driver_version = %driver_version,
-        server_version = %server_version,
-        "Version gate passed"
-    );
-
+    // Every band that is not 7 is band 8 here: the gate already rejected any
+    // band outside EMBEDDED_BANDS, so a non-band-7 server is necessarily a
+    // band-8 server this build embedded.
     #[cfg(feature = "band8")]
     {
         // TLS is not plumbed in this crate today; the band-8 driver's
@@ -156,9 +175,10 @@ async fn gated_driver(
         Ok(DriverHandle::B8(driver))
     }
 
-    // Without the band-8 driver compiled in, an in-window band-8 server
-    // passes the pin check above (band-equal) but has no construction arm;
-    // reject with a typed error rather than panic.
+    // Unreachable by invariant: with band8 compiled out, EMBEDDED_BANDS cannot
+    // contain 8, so check_server_supported already rejected every non-band-7
+    // server above.  The arm exists only to keep the cfg-complementary tail
+    // total; it is never entered.
     #[cfg(not(feature = "band8"))]
     Err(OrmError::Connection(format!(
         "No compiled driver band supports the detected server band ({band:?})"

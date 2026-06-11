@@ -1,7 +1,4 @@
-use typedb_driver::TransactionType;
-use typedb_driver::concept::Concept;
-
-use super::backend::{DriverBackend, QueryResultKind};
+use super::backend::{DriverBackend, QueryResultKind, TransactionType};
 use super::real_driver::RealTypeDBBackend;
 use crate::config::TypeDBSection;
 use crate::error::PipelineError;
@@ -112,10 +109,14 @@ pub(crate) fn parse_transaction_type(tx_type: &str) -> Result<TransactionType, P
     }
 }
 
-/// Convert a TypeDB Concept to a serde_json::Value.
-pub(crate) fn concept_to_json(concept: &Concept) -> serde_json::Value {
+/// Convert a band-7 TypeDB concept to a JSON value.
+///
+/// Output shape is identical to [`concept_to_json_b8`] for all common concepts.
+#[cfg(feature = "band7")]
+pub(crate) fn concept_to_json_b7(
+    concept: &type_bridge_typedb_driver_b7::concept::Concept,
+) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
-
     obj.insert(
         "category".to_string(),
         serde_json::Value::String(concept.get_category().name().to_string()),
@@ -124,31 +125,88 @@ pub(crate) fn concept_to_json(concept: &Concept) -> serde_json::Value {
         "label".to_string(),
         serde_json::Value::String(concept.get_label().to_string()),
     );
-
     if let Some(iid) = concept.try_get_iid() {
-        obj.insert(
-            "iid".to_string(),
-            serde_json::Value::String(iid.to_string()),
-        );
+        obj.insert("iid".to_string(), serde_json::Value::String(iid.to_string()));
     }
-
     if let Some(value) = concept.try_get_value() {
-        obj.insert("value".to_string(), value_to_json(value));
+        obj.insert("value".to_string(), value_to_json_b7(value));
     }
-
     if let Some(value_type) = concept.try_get_value_type() {
         obj.insert(
             "value_type".to_string(),
             serde_json::Value::String(value_type.name().to_string()),
         );
     }
-
     serde_json::Value::Object(obj)
 }
 
-/// Convert a TypeDB Value to a serde_json::Value.
+/// Convert a band-7 TypeDB value to a JSON value.
+#[cfg(feature = "band7")]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub(crate) fn value_to_json(value: &typedb_driver::concept::Value) -> serde_json::Value {
+fn value_to_json_b7(value: &type_bridge_typedb_driver_b7::concept::Value) -> serde_json::Value {
+    if let Some(b) = value.get_boolean() {
+        return serde_json::Value::Bool(b);
+    }
+    if let Some(i) = value.get_integer() {
+        return serde_json::json!(i);
+    }
+    if let Some(d) = value.get_double() {
+        return serde_json::json!(d);
+    }
+    if let Some(s) = value.get_string() {
+        return serde_json::Value::String(s.to_string());
+    }
+    if let Some(date) = value.get_date() {
+        return serde_json::Value::String(date.to_string());
+    }
+    if let Some(dt) = value.get_datetime() {
+        return serde_json::Value::String(dt.to_string());
+    }
+    if let Some(dt_tz) = value.get_datetime_tz() {
+        return serde_json::Value::String(dt_tz.to_string());
+    }
+    if let Some(dec) = value.get_decimal() {
+        return serde_json::Value::String(dec.to_string());
+    }
+    if let Some(dur) = value.get_duration() {
+        return serde_json::Value::String(dur.to_string());
+    }
+    serde_json::Value::String(value.to_string())
+}
+
+/// Convert a band-8 TypeDB concept to a JSON value.
+///
+/// Output shape is identical to [`concept_to_json_b7`] for all common concepts.
+#[cfg(feature = "band8")]
+pub(crate) fn concept_to_json_b8(concept: &typedb_driver::concept::Concept) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "category".to_string(),
+        serde_json::Value::String(concept.get_category().name().to_string()),
+    );
+    obj.insert(
+        "label".to_string(),
+        serde_json::Value::String(concept.get_label().to_string()),
+    );
+    if let Some(iid) = concept.try_get_iid() {
+        obj.insert("iid".to_string(), serde_json::Value::String(iid.to_string()));
+    }
+    if let Some(value) = concept.try_get_value() {
+        obj.insert("value".to_string(), value_to_json_b8(value));
+    }
+    if let Some(value_type) = concept.try_get_value_type() {
+        obj.insert(
+            "value_type".to_string(),
+            serde_json::Value::String(value_type.name().to_string()),
+        );
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// Convert a band-8 TypeDB value to a JSON value.
+#[cfg(feature = "band8")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn value_to_json_b8(value: &typedb_driver::concept::Value) -> serde_json::Value {
     if let Some(b) = value.get_boolean() {
         return serde_json::Value::Bool(b);
     }
@@ -177,15 +235,11 @@ pub(crate) fn value_to_json(value: &typedb_driver::concept::Value) -> serde_json
         return serde_json::Value::String(dur.to_string());
     }
     // Fallback: use Display representation
-    value_to_json_fallback(value)
-}
-
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn value_to_json_fallback(value: &typedb_driver::concept::Value) -> serde_json::Value {
     serde_json::Value::String(value.to_string())
 }
 
 #[cfg(test)]
+#[cfg(feature = "band8")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::future::Future;
@@ -194,7 +248,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use typedb_driver::IID;
-    use typedb_driver::TransactionType;
     use typedb_driver::concept::value::{Decimal, Duration, TimeZone};
     use typedb_driver::concept::{
         Attribute, AttributeType, Concept, Entity, EntityType, Value, ValueType,
@@ -601,49 +654,49 @@ mod tests {
     #[test]
     fn value_to_json_boolean_true() {
         let value = Value::Boolean(true);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert_eq!(json, serde_json::Value::Bool(true));
     }
 
     #[test]
     fn value_to_json_boolean_false() {
         let value = Value::Boolean(false);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert_eq!(json, serde_json::Value::Bool(false));
     }
 
     #[test]
     fn value_to_json_integer() {
         let value = Value::Integer(42);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert_eq!(json, serde_json::json!(42));
     }
 
     #[test]
     fn value_to_json_integer_negative() {
         let value = Value::Integer(-100);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert_eq!(json, serde_json::json!(-100));
     }
 
     #[test]
     fn value_to_json_double() {
         let value = Value::Double(3.15);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert_eq!(json, serde_json::json!(3.15));
     }
 
     #[test]
     fn value_to_json_string() {
         let value = Value::String("hello".to_string());
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert_eq!(json, serde_json::Value::String("hello".to_string()));
     }
 
     #[test]
     fn value_to_json_string_empty() {
         let value = Value::String(String::new());
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert_eq!(json, serde_json::Value::String(String::new()));
     }
 
@@ -651,7 +704,7 @@ mod tests {
     fn value_to_json_date() {
         let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
         let value = Value::Date(date);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert_eq!(json, serde_json::Value::String("2024-01-15".to_string()));
     }
 
@@ -662,7 +715,7 @@ mod tests {
             .and_hms_opt(10, 30, 0)
             .unwrap();
         let value = Value::Datetime(dt);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         let s = json.as_str().unwrap();
         assert!(s.contains("2024-01-15"));
     }
@@ -671,7 +724,7 @@ mod tests {
     fn value_to_json_decimal() {
         let dec = Decimal::new(42, 0);
         let value = Value::Decimal(dec);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert!(json.is_string());
     }
 
@@ -679,7 +732,7 @@ mod tests {
     fn value_to_json_duration() {
         let dur = Duration::new(1, 2, 3_000_000_000);
         let value = Value::Duration(dur);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         assert!(json.is_string());
     }
 
@@ -689,7 +742,7 @@ mod tests {
         let tz = TimeZone::Fixed(chrono::FixedOffset::east_opt(3600).unwrap());
         let dt = tz.with_ymd_and_hms(2024, 6, 15, 12, 30, 0).unwrap();
         let value = Value::DatetimeTZ(dt);
-        let json = value_to_json(&value);
+        let json = value_to_json_b8(&value);
         let s = json.as_str().unwrap();
         assert!(s.contains("2024"));
     }
@@ -703,7 +756,7 @@ mod tests {
         let concept = Concept::EntityType(EntityType {
             label: "person".to_string(),
         });
-        let json = concept_to_json(&concept);
+        let json = concept_to_json_b8(&concept);
         assert_eq!(json["category"], "EntityType");
         assert_eq!(json["label"], "person");
         assert!(json.get("iid").is_none());
@@ -716,7 +769,7 @@ mod tests {
             label: "name".to_string(),
             value_type: Some(ValueType::String),
         });
-        let json = concept_to_json(&concept);
+        let json = concept_to_json_b8(&concept);
         assert_eq!(json["category"], "AttributeType");
         assert_eq!(json["label"], "name");
         assert_eq!(json["value_type"], "string");
@@ -725,7 +778,7 @@ mod tests {
     #[test]
     fn concept_to_json_value_boolean() {
         let concept = Concept::Value(Value::Boolean(true));
-        let json = concept_to_json(&concept);
+        let json = concept_to_json_b8(&concept);
         assert_eq!(json["category"], "Value");
         assert_eq!(json["value"], true);
     }
@@ -733,14 +786,14 @@ mod tests {
     #[test]
     fn concept_to_json_value_integer() {
         let concept = Concept::Value(Value::Integer(42));
-        let json = concept_to_json(&concept);
+        let json = concept_to_json_b8(&concept);
         assert_eq!(json["value"], 42);
     }
 
     #[test]
     fn concept_to_json_value_string() {
         let concept = Concept::Value(Value::String("hello".to_string()));
-        let json = concept_to_json(&concept);
+        let json = concept_to_json_b8(&concept);
         assert_eq!(json["value"], "hello");
     }
 
@@ -753,7 +806,7 @@ mod tests {
                 label: "person".to_string(),
             }),
         });
-        let json = concept_to_json(&concept);
+        let json = concept_to_json_b8(&concept);
         assert_eq!(json["category"], "Entity");
         assert_eq!(json["label"], "person");
         // IID should be present
@@ -772,7 +825,7 @@ mod tests {
                 value_type: Some(ValueType::String),
             }),
         });
-        let json = concept_to_json(&concept);
+        let json = concept_to_json_b8(&concept);
         assert_eq!(json["category"], "Attribute");
         assert_eq!(json["label"], "name");
         // Attribute IID is not exposed via try_get_iid()
@@ -787,7 +840,7 @@ mod tests {
             label: "abstract_attr".to_string(),
             value_type: None,
         });
-        let json = concept_to_json(&concept);
+        let json = concept_to_json_b8(&concept);
         assert_eq!(json["label"], "abstract_attr");
         assert!(json.get("value_type").is_none());
     }
@@ -844,19 +897,53 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Live-test target resolved from the environment so the suite can point
+    /// at any disposable TypeDB container instead of a fixed local install.
+    fn live_config() -> TypeDBSection {
+        TypeDBSection {
+            address: std::env::var("TYPEDB_ADDRESS")
+                .unwrap_or_else(|_| "localhost:1729".to_string()),
+            database: std::env::var("TYPEDB_DATABASE").unwrap_or_else(|_| "test".to_string()),
+            username: "admin".to_string(),
+            password: "password".to_string(),
+            http_port: std::env::var("TYPEDB_HTTP_PORT")
+                .ok()
+                .and_then(|port| port.parse().ok())
+                .unwrap_or(8000),
+        }
+    }
+
     #[tokio::test]
     #[ignore = "requires running TypeDB server"]
     #[cfg_attr(coverage_nightly, coverage(off))]
     async fn integration_connect_success() {
-        let config = TypeDBSection {
-            address: "localhost:1729".to_string(),
-            database: "test".to_string(),
-            username: "admin".to_string(),
-            password: "password".to_string(),
-            http_port: 8000,
-        };
-        let result = TypeDBClient::connect(&config).await;
+        let result = TypeDBClient::connect(&live_config()).await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_connected());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running TypeDB server"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    async fn integration_execute_roundtrip() {
+        let config = live_config();
+        let client = TypeDBClient::connect(&config)
+            .await
+            .expect("connect failed");
+
+        client
+            .execute(&config.database, "define entity smoke_marker;", "schema")
+            .await
+            .expect("schema define failed");
+
+        let rows = client
+            .execute(&config.database, "match entity $t;", "read")
+            .await
+            .expect("read query failed");
+        let rows = rows.as_array().expect("read result must be a JSON array");
+        assert!(
+            !rows.is_empty(),
+            "expected at least the smoke_marker entity type"
+        );
     }
 }

@@ -1,12 +1,25 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use typedb_driver::TransactionType;
-
 use crate::error::PipelineError;
 
 /// Boxed future returned by async trait methods.
 pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Transaction type for TypeDB operations.
+///
+/// This is a crate-owned mirror of the driver's transaction-type concept.
+/// The mapping to the underlying driver type lives exclusively in
+/// `real_driver.rs` at the band-8 call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransactionType {
+    /// Read-only transaction (no commit needed).
+    Read,
+    /// Read-write transaction.
+    Write,
+    /// Schema-modification transaction.
+    Schema,
+}
 
 /// Result of a query, already processed from TypeDB stream types to JSON.
 #[derive(Debug, Clone)]

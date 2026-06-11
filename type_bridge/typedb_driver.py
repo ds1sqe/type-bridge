@@ -134,8 +134,21 @@ def embedded_driver_version() -> str:
     (the Python ORM backend was retired), so the server must be
     protocol-compatible with this version as well as with the installed
     Python driver.  Delegates to ``type_bridge_core.embedded_driver_version``.
+
+    Returns the band-8 (3.11.x) pin for back-compat.  Use
+    :func:`embedded_driver_versions` to get all compiled-in bands.
     """
     return _core.embedded_driver_version()
+
+
+def embedded_driver_versions() -> dict[int, str]:
+    """Return all driver versions compiled into the Rust runtime, keyed by band.
+
+    Delegates to ``type_bridge_core.embedded_driver_versions``.  The default
+    build returns ``{7: "3.8.1", 8: "3.11.5"}``; a single-band build returns
+    only the one entry for its compiled band.
+    """
+    return _core.embedded_driver_versions()
 
 
 def server_version(address: str, *, http_port: int = 8000, tls: bool = False) -> str:
@@ -168,5 +181,6 @@ __all__ = [
     "create_driver_options",
     "driver_version",
     "embedded_driver_version",
+    "embedded_driver_versions",
     "server_version",
 ]
