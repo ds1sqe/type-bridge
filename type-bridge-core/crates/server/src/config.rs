@@ -107,14 +107,17 @@ fn default_audit_output() -> String {
 
 impl ServerConfig {
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = std::fs::read_to_string(path)?;
-        let mut config: ServerConfig = toml::from_str(&content)?;
-        config.apply_env_overrides();
-        Ok(config)
+        Self::from_file_with_env(path, |name| std::env::var(name).ok())
     }
 
-    fn apply_env_overrides(&mut self) {
-        self.apply_env_overrides_from(|name| std::env::var(name).ok());
+    fn from_file_with_env<F>(path: &str, get_env: F) -> Result<Self, Box<dyn std::error::Error>>
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        let content = std::fs::read_to_string(path)?;
+        let mut config: ServerConfig = toml::from_str(&content)?;
+        config.apply_env_overrides_from(get_env);
+        Ok(config)
     }
 
     fn apply_env_overrides_from<F>(&mut self, mut get_env: F)
@@ -183,7 +186,7 @@ database = "mydb"
         let path = dir.path().join("server.toml");
         std::fs::write(&path, FULL_CONFIG).unwrap();
 
-        let config = ServerConfig::from_file(path.to_str().unwrap()).unwrap();
+        let config = ServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 9090);
         assert_eq!(config.typedb.address, "localhost:1729");
@@ -222,7 +225,7 @@ database = "mydb"
         let path = dir.path().join("server.toml");
         std::fs::write(&path, MINIMAL_CONFIG).unwrap();
 
-        let config = ServerConfig::from_file(path.to_str().unwrap()).unwrap();
+        let config = ServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
         // Defaults should kick in
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.server.port, 8080);

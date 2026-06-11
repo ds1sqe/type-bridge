@@ -180,6 +180,14 @@ impl QueryCompiler {
                     .join("; ");
                 format!("not {{ {}; }}", inner)
             }
+            Pattern::Try(patterns) => {
+                let inner = patterns
+                    .iter()
+                    .map(|p| self.compile_pattern(p))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("try {{ {}; }}", inner)
+            }
             Pattern::Or(alternatives) => alternatives
                 .iter()
                 .map(|alt| {

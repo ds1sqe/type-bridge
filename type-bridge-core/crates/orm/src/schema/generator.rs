@@ -156,20 +156,17 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
 
         let mut parts = Vec::new();
 
-        // Deduplicate roles by name, skip inherited roles
+        // Deduplicate roles by name, skip inherited roles.
+        // Inherited roles are present in the child descriptor (effective-set
+        // contract) but belong to the parent type in TypeDB's schema — emitting
+        // `relates` or `plays` for them on the child would create phantom role
+        // references that the engine rejects.  The parent's own descriptor
+        // already emitted the correct `plays` clauses.
         let mut seen_roles = BTreeSet::new();
         for role in &relation.roles {
             if parent_role_names.contains(role.role_name.as_str()) {
-                // Still collect plays clause for inherited roles
-                for player_type_name in &role.player_type_names {
-                    let role_ref = format!("{}:{}", relation.type_name, role.role_name);
-                    let cardinality = plays_card_for(info, player_type_name, &role_ref);
-                    plays_clauses.push(PlaysClause {
-                        player: player_type_name.clone(),
-                        role_ref,
-                        cardinality,
-                    });
-                }
+                // Inherited role: skip both the `relates` emission and the `plays`
+                // clause — the declaring parent's descriptor handles both.
                 continue;
             }
             if seen_roles.insert(&role.role_name) {

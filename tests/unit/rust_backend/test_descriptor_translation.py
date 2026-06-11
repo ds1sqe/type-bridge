@@ -68,6 +68,10 @@ class RustSpan(Duration):
     pass
 
 
+class RustSeniority(String):
+    pass
+
+
 class RustPerson(Entity):
     flags = TypeFlags(name="rust-person")
 
@@ -158,20 +162,26 @@ def test_relation_descriptor_translates_roles() -> None:
     ]
 
 
-def test_subtype_relation_descriptor_excludes_inherited_roles() -> None:
-    """A subtype relation with no own roles must not carry inherited roles.
+def test_subtype_relation_descriptor_flattens_inherited_roles() -> None:
+    """A subtype relation flattens plain-inherited roles into its own descriptor.
 
-    An inherited role belongs to the declaring relation; stamping it onto the
-    subtype descriptor would scope a player's ``plays`` edge to the subtype
-    (``plays rust-collaboration:participant``), which TypeDB rejects.
+    Plain-inherited roles are in the effective set — they are playable on subtype
+    instances.  The parent relation is unchanged.
     """
     descriptor = descriptor_for_model(RustCollaboration)
 
     assert descriptor["type_name"] == "rust-collaboration"
     assert descriptor["parent_type"] == "rust-interaction"
-    assert descriptor["roles"] == []
+    # Inherited role is flattened into the child's effective set.
+    assert descriptor["roles"] == [
+        {
+            "role_name": "participant",
+            "player_type_names": ["rust-person"],
+            "cardinality": None,
+        }
+    ]
 
-    # The declaring relation still carries the role.
+    # The parent's own descriptor is unchanged.
     parent = descriptor_for_model(RustInteraction)
     assert parent["roles"] == [
         {
@@ -220,3 +230,113 @@ def test_register_model_descriptor_allows_same_label_projection() -> None:
 
     assert projected["type_name"] == "rust-person"
     assert [attr["field_name"] for attr in projected["owned_attributes"]] == ["name"]
+
+
+# ---------------------------------------------------------------------------
+# Effective-set role descriptor tests (contribution / authoring pair)
+# ---------------------------------------------------------------------------
+
+
+class RustWork(Entity):
+    flags = TypeFlags(name="rust-work")
+
+    name: RustName = Flag(Key)
+
+
+class RustAuthor(Entity):
+    flags = TypeFlags(name="rust-author")
+
+    name: RustName = Flag(Key)
+
+
+class RustContribution(Relation):
+    """Root relation: two plain roles, no specialization."""
+
+    flags = TypeFlags(name="rust-contribution")
+
+    contributor: Role[RustPerson] = Role("contributor", RustPerson)
+    work: Role[RustWork] = Role("work", RustWork)
+
+
+class RustAuthoring(RustContribution):
+    """Subtype: specializes 'contributor' as 'author'; 'work' is plain-inherited."""
+
+    flags = TypeFlags(name="rust-authoring")
+
+    author: Role[RustAuthor] = Role("author", RustAuthor, overrides="contributor")
+
+
+def test_relation_subtype_effective_roles_ordered() -> None:
+    """Relation subtype descriptor emits the canonical effective role set.
+
+    Expected: plain-inherited parent roles first (in parent order, excluding
+    overridden ones), then child specializing roles.  For the contribution/authoring
+    pair this is [work, author]: 'contributor' is excluded because 'author' overrides
+    it, and 'work' is plain-inherited.
+    """
+    descriptor = descriptor_for_model(RustAuthoring)
+
+    assert descriptor["type_name"] == "rust-authoring"
+    assert descriptor["parent_type"] == "rust-contribution"
+    role_names = [r["role_name"] for r in descriptor["roles"]]
+    assert role_names == ["work", "author"], f"unexpected role order: {role_names}"
+
+    # 'work' is the plain-inherited role, 'author' is the specializing role.
+    work_role = next(r for r in descriptor["roles"] if r["role_name"] == "work")
+    assert work_role["player_type_names"] == ["rust-work"]
+    assert work_role["cardinality"] is None
+
+    author_role = next(r for r in descriptor["roles"] if r["role_name"] == "author")
+    assert author_role["player_type_names"] == ["rust-author"]
+    assert author_role["cardinality"] is None
+
+
+def test_unset_inherited_role_reads_none_and_stays_out_of_inputs() -> None:
+    """An unset inherited role must read as None, not the class-level RoleRef.
+
+    Subclass model building captures the parent descriptor's class-level access
+    (a RoleRef) as the field default; validation must normalize it away so the
+    role-player input builder skips the role instead of treating the sentinel
+    as a player.
+    """
+    from type_bridge._rust_runtime import role_player_inputs
+
+    authoring = RustAuthoring(author=RustAuthor(name=RustName("a")))
+    assert authoring.work is None
+
+    role_names = [item["role_name"] for item in role_player_inputs(authoring)]
+    assert role_names == ["author"]
+
+    both = RustAuthoring(
+        author=RustAuthor(name=RustName("a")),
+        work=RustWork(name=RustName("w")),
+    )
+    role_names = [item["role_name"] for item in role_player_inputs(both)]
+    assert role_names == ["work", "author"]
+
+
+def test_parent_relation_descriptor_unchanged() -> None:
+    """The parent relation's own descriptor is not affected by subtype specialization."""
+    descriptor = descriptor_for_model(RustContribution)
+
+    assert descriptor["type_name"] == "rust-contribution"
+    assert descriptor["parent_type"] is None
+    role_names = [r["role_name"] for r in descriptor["roles"]]
+    assert role_names == ["contributor", "work"]
+
+
+def test_entity_subtype_owned_attributes_regression() -> None:
+    """Entity subtypes still flatten owned_attributes; relation changes must not regress this."""
+
+    class RustEmployee(RustPerson):
+        flags = TypeFlags(name="rust-employee")
+        seniority: RustSeniority | None = None
+
+    descriptor = descriptor_for_model(RustEmployee)
+    field_names = [a["field_name"] for a in descriptor["owned_attributes"]]
+    # Inherited attrs from RustPerson are re-listed in the child descriptor,
+    # followed by the child-local attr.
+    assert "name" in field_names
+    assert "score" in field_names
+    assert "seniority" in field_names
+    assert field_names.index("name") < field_names.index("seniority")

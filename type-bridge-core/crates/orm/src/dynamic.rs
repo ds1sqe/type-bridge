@@ -895,8 +895,32 @@ pub(crate) fn relation_expr_fetch_clauses(
         }
     }
 
-    let mut included_roles = dynamic_relation_role_bindings(descriptor, &role_names);
-    let role_players = included_roles
+    // Same role partition as `relation_fetch_with_role_filters`: a role is
+    // required when declared with minimum cardinality one or referenced by an
+    // expression/sort (dereferencing a player implies its presence); every
+    // other role is matched optionally so an unfilled role does not exclude
+    // the relation, while a filled one still hydrates.
+    let mut required_bindings: Vec<DynamicRoleBinding> = Vec::new();
+    let mut optional_bindings: Vec<DynamicRoleBinding> = Vec::new();
+    for (index, role) in descriptor.roles.iter().enumerate() {
+        let referenced = role_names.contains(&role.role_name);
+        let binding = DynamicRoleBinding {
+            index,
+            role_name: role.role_name.clone(),
+            var_name: if referenced {
+                role_player_expr_var(&role.role_name)
+            } else {
+                role_player_var(index)
+            },
+        };
+        if referenced || is_required_role(role.cardinality) {
+            required_bindings.push(binding);
+        } else {
+            optional_bindings.push(binding);
+        }
+    }
+
+    let role_players = required_bindings
         .iter()
         .map(|binding| RolePlayer {
             role: binding.role_name.clone(),
@@ -920,7 +944,7 @@ pub(crate) fn relation_expr_fetch_clauses(
     for expression in expressions {
         match_patterns.extend(expression.to_patterns(var, &mut counter)?);
     }
-    for binding in &included_roles {
+    for binding in &required_bindings {
         match_patterns.push(Pattern::Entity {
             variable: binding.var_name.clone(),
             type_name: format!("{}_type", binding.var_name),
@@ -928,7 +952,29 @@ pub(crate) fn relation_expr_fetch_clauses(
             is_strict: true,
         });
     }
+    for binding in &optional_bindings {
+        match_patterns.push(Pattern::Try(vec![
+            Pattern::Relation {
+                variable: var.to_string(),
+                type_name: "$t".to_string(),
+                role_players: vec![RolePlayer {
+                    role: binding.role_name.clone(),
+                    player_var: binding.var_name.clone(),
+                }],
+                constraints: vec![],
+            },
+            Pattern::Entity {
+                variable: binding.var_name.clone(),
+                type_name: format!("{}_type", binding.var_name),
+                constraints: vec![],
+                is_strict: true,
+            },
+        ]));
+    }
     let sort_fields = dynamic_sort_patterns(var, sorts, &mut match_patterns)?;
+
+    let mut included_roles = required_bindings;
+    included_roles.extend(optional_bindings);
     included_roles.sort_by_key(|binding| binding.index);
 
     let mut clauses = vec![Clause::Match(match_patterns)];
@@ -974,22 +1020,19 @@ fn relation_fetch_with_role_filters(
     role_filters: &[DynamicRolePlayerInput],
     var: &str,
 ) -> Vec<Clause> {
-    let mut included_role_indices: Vec<usize> = Vec::new();
-    let role_players: Vec<_> = descriptor
+    // A role is matched in the main (mandatory) `links` pattern when it is
+    // either declared with a minimum cardinality of one, or named by a role
+    // filter (filtering on a player implies its presence). Every other role is
+    // optional: the relation must still match when the role is unfilled, but a
+    // filled role's player is fetched and hydrated like a required one.
+    let mut required_role_indices: Vec<usize> = descriptor
         .roles
         .iter()
         .enumerate()
-        .filter(|(_, role)| !is_optional_role(role.cardinality))
-        .map(|(index, role)| {
-            included_role_indices.push(index);
-            RolePlayer {
-                role: role.role_name.clone(),
-                player_var: role_player_var(index),
-            }
-        })
+        .filter(|(_, role)| is_required_role(role.cardinality))
+        .map(|(index, _)| index)
         .collect();
 
-    let mut role_players = role_players;
     let mut role_filter_patterns = Vec::new();
     for (filter_index, role_filter) in role_filters.iter().enumerate() {
         let filter_var = descriptor
@@ -997,32 +1040,36 @@ fn relation_fetch_with_role_filters(
             .iter()
             .enumerate()
             .find(|(_, role)| role.role_name == role_filter.role_name)
-            .map(|(index, role)| {
-                if !included_role_indices.contains(&index) {
-                    included_role_indices.push(index);
-                    role_players.push(RolePlayer {
-                        role: role.role_name.clone(),
-                        player_var: role_player_var(index),
-                    });
+            .map(|(index, _)| {
+                if !required_role_indices.contains(&index) {
+                    required_role_indices.push(index);
                 }
                 role_player_var(index)
             })
             .unwrap_or_else(|| {
-                let var = format!("$rpf{filter_index}");
-                role_players.push(RolePlayer {
-                    role: role_filter.role_name.clone(),
-                    player_var: var.clone(),
-                });
-                var
+                // A filter naming a role that is not in the descriptor's role
+                // set still constrains the relation; bind it to a private var.
+                format!("$rpf{filter_index}")
             });
         role_filter_patterns.push(role_player_match_pattern(role_filter, &filter_var));
     }
+
+    let required_role_players: Vec<RolePlayer> = descriptor
+        .roles
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| required_role_indices.contains(index))
+        .map(|(index, role)| RolePlayer {
+            role: role.role_name.clone(),
+            player_var: role_player_var(index),
+        })
+        .collect();
 
     let mut match_patterns = vec![
         Pattern::Relation {
             variable: var.to_string(),
             type_name: "$t".to_string(),
-            role_players,
+            role_players: required_role_players,
             constraints,
         },
         Pattern::SubType {
@@ -1033,17 +1080,41 @@ fn relation_fetch_with_role_filters(
     match_patterns.extend(extra_patterns);
     match_patterns.extend(role_filter_patterns);
 
-    for (index, _role) in descriptor.roles.iter().enumerate() {
-        if !included_role_indices.contains(&index) {
-            continue;
+    // Required roles bind their player type in the main match; optional roles
+    // bind theirs inside a `try` block so an unfilled role does not exclude the
+    // relation, while a filled one still yields the player's iid/type/attributes.
+    for (index, role) in descriptor.roles.iter().enumerate() {
+        if required_role_indices.contains(&index) {
+            match_patterns.push(Pattern::Entity {
+                variable: role_player_var(index),
+                type_name: role_player_type_var(index),
+                constraints: vec![],
+                is_strict: true,
+            });
+        } else {
+            match_patterns.push(Pattern::Try(vec![
+                Pattern::Relation {
+                    variable: var.to_string(),
+                    type_name: "$t".to_string(),
+                    role_players: vec![RolePlayer {
+                        role: role.role_name.clone(),
+                        player_var: role_player_var(index),
+                    }],
+                    constraints: vec![],
+                },
+                Pattern::Entity {
+                    variable: role_player_var(index),
+                    type_name: role_player_type_var(index),
+                    constraints: vec![],
+                    is_strict: true,
+                },
+            ]));
         }
-        match_patterns.push(Pattern::Entity {
-            variable: role_player_var(index),
-            type_name: role_player_type_var(index),
-            constraints: vec![],
-            is_strict: true,
-        });
     }
+
+    // Every role contributes fetch items; absent optional-role keys are
+    // tolerated by hydration, which skips a role whose iid key is missing.
+    let included_role_indices: Vec<usize> = (0..descriptor.roles.len()).collect();
 
     vec![
         Clause::Match(match_patterns),
@@ -1690,17 +1761,23 @@ struct DynamicRoleBinding {
     var_name: String,
 }
 
+// Binds only the roles a count/aggregate query genuinely constrains: roles
+// referenced by an expression, plus explicit min>=1 roles (whose presence the
+// engine already guarantees). A role with no explicit minimum must NOT be
+// bound here — requiring it would silently drop relations that leave the role
+// unfilled.
 fn dynamic_relation_role_bindings(
     descriptor: &RelationDescriptor,
     role_names: &HashSet<String>,
 ) -> Vec<DynamicRoleBinding> {
     let mut bindings = Vec::new();
     for (index, role) in descriptor.roles.iter().enumerate() {
-        if !is_optional_role(role.cardinality) || role_names.contains(&role.role_name) {
+        let referenced = role_names.contains(&role.role_name);
+        if referenced || is_required_role(role.cardinality) {
             bindings.push(DynamicRoleBinding {
                 index,
                 role_name: role.role_name.clone(),
-                var_name: if role_names.contains(&role.role_name) {
+                var_name: if referenced {
                     role_player_expr_var(&role.role_name)
                 } else {
                     role_player_var(index)
@@ -1808,8 +1885,12 @@ fn next_dynamic_var(prefix: &str, counter: &mut usize) -> String {
     var
 }
 
-fn is_optional_role(cardinality: Option<(u32, Option<u32>)>) -> bool {
-    matches!(cardinality, Some((0, _)))
+/// A role is *required* for matching only when it carries an explicit
+/// cardinality whose minimum is at least one. A `None` cardinality inherits
+/// TypeDB's default `relates`, which permits zero players, so it is optional;
+/// an explicit `(0, _)` is optional by definition.
+fn is_required_role(cardinality: Option<(u32, Option<u32>)>) -> bool {
+    matches!(cardinality, Some((min, _)) if min >= 1)
 }
 
 fn count_clause(var: &str) -> Clause {
@@ -1854,3 +1935,158 @@ fn role_player_bindings(role_players: &[DynamicRolePlayerInput]) -> Vec<RolePlay
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::descriptor::RoleDescriptor;
+    use type_bridge_core_lib::compiler::QueryCompiler;
+
+    fn role(name: &str, cardinality: Option<(u32, Option<u32>)>) -> RoleDescriptor {
+        RoleDescriptor {
+            role_name: name.to_string(),
+            player_type_names: vec!["account".to_string()],
+            cardinality,
+        }
+    }
+
+    /// Build a relation descriptor whose role set exercises every fetch
+    /// partition: a required role (explicit min one), an unbounded-required
+    /// role, a `None`-cardinality role, and an explicit `(0, n)` role.
+    fn descriptor() -> RelationDescriptor {
+        RelationDescriptor {
+            type_name: "interaction".to_string(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![],
+            roles: vec![
+                role("sender", Some((1, Some(1)))),
+                role("receiver", Some((1, None))),
+                role("participant", None),
+                role("observer", Some((0, Some(5)))),
+            ],
+        }
+    }
+
+    fn compile(clauses: &[Clause]) -> String {
+        QueryCompiler::new().compile(clauses)
+    }
+
+    #[test]
+    fn required_roles_stay_in_main_links_pattern() {
+        let clauses = relation_fetch_by_iid_clauses(&descriptor(), "0xabc", "$r");
+        let query = compile(&clauses);
+
+        // Both min>=1 roles bind in the mandatory relation pattern, outside any
+        // `try` block.
+        let main_pattern = query
+            .lines()
+            .find(|line| line.contains("isa $t (") && line.contains("sender"))
+            .expect("main relation pattern present");
+        assert!(main_pattern.contains("sender: $rp0"));
+        assert!(main_pattern.contains("receiver: $rp1"));
+        assert!(!main_pattern.contains("participant"));
+        assert!(!main_pattern.contains("observer"));
+    }
+
+    #[test]
+    fn none_cardinality_role_renders_optional() {
+        let clauses = relation_fetch_by_iid_clauses(&descriptor(), "0xabc", "$r");
+        let query = compile(&clauses);
+
+        // `participant` (None cardinality) must be matched inside a `try` block,
+        // not in the mandatory pattern.
+        assert!(query.contains("try { $r isa $t (participant: $rp2)"));
+        assert!(query.contains("$rp2 isa! $rp2_type"));
+    }
+
+    #[test]
+    fn explicit_zero_min_role_is_fetched_optionally() {
+        let clauses = relation_fetch_by_iid_clauses(&descriptor(), "0xabc", "$r");
+        let query = compile(&clauses);
+
+        // The explicit `(0, 5)` role is no longer dropped: it is matched
+        // optionally and its player iid/type/attributes are fetched.
+        assert!(query.contains("try { $r isa $t (observer: $rp3)"));
+        assert!(query.contains("\"_role_3_iid\""));
+        assert!(query.contains("\"_role_3_type\""));
+        assert!(query.contains("\"_role_3_attributes\""));
+    }
+
+    #[test]
+    fn all_roles_emit_fetch_items() {
+        let clauses = relation_fetch_by_iid_clauses(&descriptor(), "0xabc", "$r");
+        let query = compile(&clauses);
+
+        // Every role, required or optional, contributes its fetch keys.
+        for index in 0..4 {
+            assert!(query.contains(&format!("\"_role_{index}_iid\"")));
+            assert!(query.contains(&format!("\"_role_{index}_attributes\"")));
+        }
+    }
+
+    #[test]
+    fn role_filter_forces_optional_role_required() {
+        let role_filters = vec![DynamicRolePlayerInput {
+            role_name: "participant".to_string(),
+            player_type_name: "account".to_string(),
+            iid: Some("0xdef".to_string()),
+            key: None,
+        }];
+        let clauses = relation_fetch_with_role_filters(
+            &descriptor(),
+            vec![],
+            vec![],
+            &role_filters,
+            "$r",
+        );
+        let query = compile(&clauses);
+
+        // Filtering on `participant` (otherwise optional) pulls it into the
+        // mandatory pattern; it must not appear inside a `try` block.
+        let main_pattern = query
+            .lines()
+            .find(|line| line.contains("isa $t (") && line.contains("participant"))
+            .expect("main relation pattern binds the filtered role");
+        assert!(main_pattern.contains("participant: $rp2"));
+        assert!(!query.contains("try { $r isa $t (participant"));
+        // The filter constraint on the player is still emitted.
+        assert!(query.contains("iid 0xdef"));
+    }
+
+    #[test]
+    fn expr_fetch_partitions_roles_like_plain_fetch() {
+        let clauses =
+            relation_expr_fetch_clauses(&descriptor(), &[], &[], None, None, "$r").unwrap();
+        let query = compile(&clauses);
+
+        // min>=1 roles stay in the mandatory relation pattern.
+        let main_pattern = query
+            .lines()
+            .find(|l| l.contains("$r isa $t (") && !l.trim_start().starts_with("try"))
+            .expect("main relation pattern present");
+        assert!(main_pattern.contains("sender: $rp0"));
+        assert!(main_pattern.contains("receiver: $rp1"));
+
+        // None-card and explicit (0,n) roles are matched optionally and
+        // still contribute fetch items.
+        assert!(query.contains("try { $r isa $t (participant: $rp2)"));
+        assert!(query.contains("try { $r isa $t (observer: $rp3)"));
+        assert!(query.contains("\"_role_2_iid\""));
+        assert!(query.contains("\"_role_3_iid\""));
+    }
+
+    #[test]
+    fn expr_count_does_not_require_unreferenced_optional_roles() {
+        let clauses = relation_expr_count_clauses(&descriptor(), &[], "$r").unwrap();
+        let query = compile(&clauses);
+
+        // Counting must not demand players for roles the engine allows to be
+        // unfilled; only explicit min>=1 roles stay in the pattern.
+        assert!(query.contains("sender: $rp0"));
+        assert!(query.contains("receiver: $rp1"));
+        assert!(!query.contains("participant"));
+        assert!(!query.contains("observer"));
+    }
+}
+

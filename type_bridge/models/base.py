@@ -265,6 +265,7 @@ class TypeDBType(BaseModel, ABC):
         (when revalidating). We convert to dict and wrap raw values.
         """
         from type_bridge.fields.base import FieldRef
+        from type_bridge.fields.role import RoleRef
 
         # Convert instance to dict if needed
         if isinstance(values, cls):
@@ -281,6 +282,16 @@ class TypeDBType(BaseModel, ABC):
         else:
             # Let Pydantic handle other types (will likely fail validation)
             return values
+
+        # Role fields mirror the FieldRef rule below: when a subclass's model
+        # build captured the parent descriptor's class-level access (a RoleRef)
+        # as the field default, an unset role must validate as None — otherwise
+        # the RoleRef sentinel leaks into the instance as a phantom player.
+        for field_name, field_info in cls.model_fields.items():
+            if isinstance(data.get(field_name), RoleRef):
+                data[field_name] = None
+            elif field_name not in data and isinstance(field_info.default, RoleRef):
+                data[field_name] = None
 
         # Wrap raw values in Attribute instances
         all_attrs = cls.get_all_attributes()

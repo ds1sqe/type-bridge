@@ -88,13 +88,26 @@ class ParityTokenOrigin extends Relation("parity-token-origin", {
   kind: field(ParityKind),
 }) {}
 
+class ParityContribution extends Relation("parity-contribution", {
+  contributor: role("parity-person"),
+  work: role(ParityEmailMessage),
+}) {}
+
+class ParityAuthoring extends Relation(
+  "parity-authoring",
+  {
+    author: role("parity-person", { overrides: "contributor" }),
+  },
+  { parent: ParityContribution },
+) {}
+
 // ---------------------------------------------------------------------------
-// Synthetic inherited-relation pair (Phase 3).
+// Synthetic inherited-relation pair.
 //
-// No relation in descriptors.json carries a parent_type, so coverage for
-// relation inheritance is provided by an inline synthetic pair. These are NOT
-// in the fixture; their expected descriptors are hand-written to match what the
-// typed factory must emit for the `parent_type` + flattened-roles/attrs case.
+// The fixture's parity-contribution/parity-authoring pair covers role
+// specialization against descriptors.json; this inline pair covers the
+// plain-inheritance case (no `as` override, inherited role flattened into the
+// child) with hand-written expected descriptors, independent of the fixture.
 //
 // synthetic-base-rel  — abstract parent relation (no parent_type).
 // synthetic-child-rel — concrete child relation that inherits from base.
@@ -409,7 +422,12 @@ describe("descriptor emission parity", () => {
         ParityCompany.descriptor(),
         ParityEmailMessage.descriptor(),
       ],
-      relations: [ParityMembership.descriptor(), ParityTokenOrigin.descriptor()],
+      relations: [
+        ParityMembership.descriptor(),
+        ParityTokenOrigin.descriptor(),
+        ParityContribution.descriptor(),
+        ParityAuthoring.descriptor(),
+      ],
     });
     const expected = normalizeDescriptorSnapshot({
       version: fixture.version,
@@ -487,7 +505,12 @@ describe("Phase 3 full-corpus parity gate (all types in descriptors.json)", () =
         ParityCompany.descriptor(),
         ParityEmailMessage.descriptor(),
       ],
-      relations: [ParityMembership.descriptor(), ParityTokenOrigin.descriptor()],
+      relations: [
+        ParityMembership.descriptor(),
+        ParityTokenOrigin.descriptor(),
+        ParityContribution.descriptor(),
+        ParityAuthoring.descriptor(),
+      ],
     });
 
     const expected = normalizeDescriptorSnapshot({

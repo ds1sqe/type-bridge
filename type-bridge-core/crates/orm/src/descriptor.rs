@@ -101,7 +101,17 @@ pub struct RelationDescriptor {
     pub parent_type: Option<String>,
     /// Attributes owned by this relation.
     pub owned_attributes: Vec<OwnedAttributeDescriptor>,
-    /// Roles declared by this relation.
+    /// The relation's *effective* role set: plain-inherited parent roles
+    /// (parent declaration order first), then own and specializing roles —
+    /// excluding any parent role overridden via `relates child as parent`.
+    ///
+    /// The registry stores descriptors as-is and never resolves inheritance,
+    /// so runtime consumers (query building, hydration) see exactly this
+    /// list; it must therefore be the set of roles the engine accepts on
+    /// instances of this relation type. TypeDB rejects a player for an
+    /// overridden parent role on a subtype instance, which is why overridden
+    /// roles are excluded while plain-inherited ones are flattened in —
+    /// mirroring how `owned_attributes` flattens inherited attributes.
     pub roles: Vec<RoleDescriptor>,
 }
 

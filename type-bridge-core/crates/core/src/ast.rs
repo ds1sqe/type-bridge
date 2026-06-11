@@ -164,6 +164,10 @@ pub enum Pattern {
     },
     /// A negation pattern — none of the inner patterns may match.
     Not(Vec<Pattern>),
+    /// An optional pattern — the inner patterns are matched when present but
+    /// do not exclude a row when absent. Variables bound only inside are
+    /// absent (not present in the row) when the block does not match.
+    Try(Vec<Pattern>),
     /// A disjunction pattern — at least one branch of patterns must match.
     /// Each inner `Vec<Pattern>` represents one branch of the `or`.
     Or(Vec<Vec<Pattern>>),

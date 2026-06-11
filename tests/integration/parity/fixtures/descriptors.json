@@ -224,6 +224,42 @@
           "cardinality": [1, 1]
         }
       ]
+    },
+    {
+      "type_name": "parity-contribution",
+      "is_abstract": false,
+      "parent_type": null,
+      "owned_attributes": [],
+      "roles": [
+        {
+          "role_name": "contributor",
+          "player_type_names": ["parity-person"],
+          "cardinality": null
+        },
+        {
+          "role_name": "work",
+          "player_type_names": ["parity-email-message"],
+          "cardinality": null
+        }
+      ]
+    },
+    {
+      "type_name": "parity-authoring",
+      "is_abstract": false,
+      "parent_type": "parity-contribution",
+      "owned_attributes": [],
+      "roles": [
+        {
+          "role_name": "work",
+          "player_type_names": ["parity-email-message"],
+          "cardinality": null
+        },
+        {
+          "role_name": "author",
+          "player_type_names": ["parity-person"],
+          "cardinality": null
+        }
+      ]
     }
   ]
 }

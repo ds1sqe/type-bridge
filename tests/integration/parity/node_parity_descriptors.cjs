@@ -105,6 +105,28 @@ function registerParityDescriptors(typeBridge) {
     ],
   });
 
+  descriptors.relations.parityContribution = registry.registerRelation({
+    type_name: "parity-contribution",
+    is_abstract: false,
+    parent_type: null,
+    owned_attributes: [],
+    roles: [
+      role("contributor", ["parity-person"], null),
+      role("work", ["parity-email-message"], null),
+    ],
+  });
+
+  descriptors.relations.parityAuthoring = registry.registerRelation({
+    type_name: "parity-authoring",
+    is_abstract: false,
+    parent_type: "parity-contribution",
+    owned_attributes: [],
+    roles: [
+      role("work", ["parity-email-message"], null),
+      role("author", ["parity-person"], null),
+    ],
+  });
+
   return { registry, descriptors };
 }
 

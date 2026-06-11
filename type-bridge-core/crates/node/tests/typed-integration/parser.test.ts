@@ -40,6 +40,8 @@ describe("parseSchema (Rust parser -> NAPI -> TS)", () => {
       "parity-person",
     ]);
     assert.deepEqual(Object.keys(schema.relations).sort(), [
+      "parity-authoring",
+      "parity-contribution",
       "parity-membership",
       "parity-token-origin",
     ]);
@@ -70,5 +72,13 @@ describe("parseSchema (Rust parser -> NAPI -> TS)", () => {
       membership.roles.map((role) => role.name).sort(),
       ["evidence", "member", "organization"],
     );
+  });
+
+  test("role specialization survives marshalling", () => {
+    const authoring = schema.relations["parity-authoring"];
+    assert.ok(authoring);
+    assert.equal(authoring.parent, "parity-contribution");
+    const author = authoring.roles.find((role) => role.name === "author");
+    assert.equal(author?.overrides, "contributor");
   });
 });

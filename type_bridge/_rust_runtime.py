@@ -20,6 +20,7 @@ class _RoleMetadata:
     role_name: str
     player_types: tuple[type[Any], ...]
     cardinality: Any
+    overrides: str | None = None
 
 
 PYTHON_TO_RUST_VALUE_TYPE = {
@@ -214,7 +215,7 @@ def entity_descriptor(model_cls: type[TypeDBType]) -> dict[str, Any]:
 def relation_descriptor(model_cls: type[Relation]) -> dict[str, Any]:
     """Build a relation descriptor dict from Python class metadata."""
     roles = []
-    for role in _relation_roles(model_cls):
+    for role in _effective_roles(model_cls):
         roles.append(
             {
                 "role_name": role.role_name,
@@ -228,37 +229,82 @@ def relation_descriptor(model_cls: type[Relation]) -> dict[str, Any]:
     return descriptor
 
 
-def _relation_roles(model_cls: type[Relation]) -> list[Any]:
-    roles = list(model_cls.get_roles().values())
-    if roles:
+def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
+    """Return the own-declared roles of a single relation class, without inheritance.
+
+    Uses ``cls._roles`` (populated by SchemaScanner from own annotations only)
+    when available; falls back to scanning ``model_fields`` restricted to own
+    ``__annotations__`` for classes that skip the metaclass hook.
+    """
+    own_role_map: dict[str, Any] = cls.__dict__.get("_roles", {})
+    if own_role_map:
         return [
             _RoleMetadata(
                 role_name=role.role_name,
                 player_types=role.player_entity_types,
                 cardinality=role.cardinality,
+                overrides=role.overrides,
             )
-            for role in roles
+            for role in own_role_map.values()
         ]
 
-    # Only own-declared fields contribute roles. A subtype relation inherits its
-    # parent's role fields through ``model_fields``, but those roles belong to the
-    # declaring relation; emitting them here would scope a player's ``plays`` edge
-    # to the subtype (e.g. ``plays collaboration:participant``) which TypeDB rejects.
-    own_fields = model_cls.__dict__.get("__annotations__", {})
-    fallback_roles = []
-    for field_name, field in getattr(model_cls, "model_fields", {}).items():
-        if field_name not in own_fields:
+    own_annotations = cls.__dict__.get("__annotations__", {})
+    fallback: list[_RoleMetadata] = []
+    for field_name, field in getattr(cls, "model_fields", {}).items():
+        if field_name not in own_annotations:
             continue
         default = getattr(field, "default", None)
         role_name = getattr(default, "role_name", None)
         player_types = getattr(default, "player_types", None)
         cardinality = getattr(default, "cardinality", None)
+        overrides = getattr(default, "overrides", None)
         if role_name is None or player_types is None:
             continue
-        fallback_roles.append(
-            _RoleMetadata(role_name=role_name, player_types=player_types, cardinality=cardinality)
+        fallback.append(
+            _RoleMetadata(
+                role_name=role_name,
+                player_types=player_types,
+                cardinality=cardinality,
+                overrides=overrides,
+            )
         )
-    return fallback_roles
+    return fallback
+
+
+def _effective_roles(model_cls: type[Relation]) -> list[_RoleMetadata]:
+    """Return the canonical effective role set for a relation descriptor.
+
+    Walk the Relation subclass MRO from the root parent down to ``model_cls``,
+    collecting each level's own-declared roles.  At each step, specializing roles
+    (those with an ``overrides`` marker) replace the named parent role; plain-
+    inherited roles remain in place.  The result is parent roles first (in parent
+    effective order, recursively), then own roles, with overridden parent roles
+    absent — exactly the set the engine accepts on instances of ``model_cls``.
+    """
+    from type_bridge.models.relation import Relation as RelationBase
+
+    # Build the ancestry chain from model_cls up to (but not including) Relation base.
+    # Reverse it so we process root → leaf.
+    chain: list[type[Relation]] = []
+    for base in model_cls.__mro__:
+        if base is RelationBase or not (
+            isinstance(base, type) and issubclass(base, RelationBase) and base is not RelationBase
+        ):
+            continue
+        chain.append(base)  # type: ignore[arg-type]
+    chain.reverse()  # root ancestor first
+
+    # Accumulate the effective role list from root down.
+    effective: list[_RoleMetadata] = []
+    for cls in chain:
+        own = _own_roles_for_class(cls)  # type: ignore[arg-type]
+        overridden_names = {r.overrides for r in own if r.overrides is not None}
+        # Remove parent roles that are overridden at this level.
+        effective = [r for r in effective if r.role_name not in overridden_names]
+        # Append own roles (specializing roles join at their declared position).
+        effective.extend(own)
+
+    return effective
 
 
 def attribute_descriptors(model_cls: type[TypeDBType]) -> list[dict[str, Any]]:
@@ -447,7 +493,7 @@ def rust_manager_for_relation(connection: Any, descriptor: dict[str, Any]) -> An
 def role_player_inputs(instance: Any) -> list[dict[str, Any]]:
     """Build Rust dynamic relation role-player inputs from a Python relation."""
     inputs: list[dict[str, Any]] = []
-    for field_name, role in _relation_role_fields(instance.__class__):
+    for field_name, role in relation_role_fields(instance.__class__):
         value = getattr(instance, field_name, None)
         if value is None:
             continue
@@ -472,43 +518,37 @@ def role_player_inputs(instance: Any) -> list[dict[str, Any]]:
     return inputs
 
 
-def _relation_role_fields(model_cls: type[Any]) -> list[tuple[str, _RoleMetadata]]:
-    roles = model_cls.get_roles()
-    if roles:
-        return [
-            (
-                field_name,
-                _RoleMetadata(
-                    role_name=role.role_name,
-                    player_types=role.player_entity_types,
-                    cardinality=role.cardinality,
-                ),
-            )
-            for field_name, role in roles.items()
-        ]
+def _field_name_for_role(model_cls: type[Any], role_name: str) -> str | None:
+    """Find the Python field name for a TypeDB role name, searching the MRO."""
+    from type_bridge.models.relation import Relation as RelationBase
 
-    fields = []
-    for field_name, field in getattr(model_cls, "model_fields", {}).items():
-        default = getattr(field, "default", None)
-        role_name = getattr(default, "role_name", None)
-        player_types = getattr(default, "player_types", None)
-        cardinality = getattr(default, "cardinality", None)
-        if role_name is None or player_types is None:
+    for base in model_cls.__mro__:
+        if not (isinstance(base, type) and issubclass(base, RelationBase)):
             continue
-        fields.append(
-            (
-                field_name,
-                _RoleMetadata(
-                    role_name=role_name, player_types=player_types, cardinality=cardinality
-                ),
-            )
-        )
-    return fields
+        own_roles: dict[str, Any] = base.__dict__.get("_roles", {})
+        for field_name, role in own_roles.items():
+            if getattr(role, "role_name", None) == role_name:
+                return field_name
+        # Fallback: scan model_fields restricted to own annotations.
+        own_annotations = base.__dict__.get("__annotations__", {})
+        for fname, field in getattr(base, "model_fields", {}).items():
+            if fname not in own_annotations:
+                continue
+            default = getattr(field, "default", None)
+            if getattr(default, "role_name", None) == role_name:
+                return fname
+    return None
 
 
 def relation_role_fields(model_cls: type[Any]) -> list[tuple[str, _RoleMetadata]]:
     """Return Python relation field names with Rust backend role metadata."""
-    return _relation_role_fields(model_cls)
+    result: list[tuple[str, _RoleMetadata]] = []
+    for meta in _effective_roles(model_cls):
+        field_name = _field_name_for_role(model_cls, meta.role_name)
+        if field_name is None:
+            continue
+        result.append((field_name, meta))
+    return result
 
 
 def key_filter_for_entity(instance: Any) -> dict[str, Any] | None:
