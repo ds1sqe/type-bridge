@@ -135,6 +135,9 @@ pub struct TomlRelation {
 /// - `overrides` (TOML key `as`) is the optional parent-role override target;
 ///   emitted as `relates <name> as <overrides>`.  The field is renamed in
 ///   TOML because `as` is a Rust keyword.
+/// - `abstract` marks the role abstract at the TypeDB schema level, emitted as
+///   `@abstract` on the `relates` clause.  The field is renamed via serde
+///   because `abstract` is a reserved word in Rust.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlRole {
@@ -146,6 +149,9 @@ pub struct TomlRole {
     /// Optional parent-role override (TOML key `as`).
     #[serde(default, rename = "as")]
     pub overrides: Option<String>,
+    /// Whether this role is abstract (TOML key `abstract`).
+    #[serde(default, rename = "abstract")]
+    pub is_abstract: bool,
 }
 
 /// An `owns` entry on an entity or relation.

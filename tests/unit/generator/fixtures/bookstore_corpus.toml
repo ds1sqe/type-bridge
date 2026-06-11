@@ -136,7 +136,7 @@ sub = "place"
 
 [relations.contribution]
 roles = [
-    { name = "contributor" },
+    { name = "contributor", abstract = true },
     { name = "work" },
 ]
 

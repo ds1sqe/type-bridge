@@ -47,6 +47,7 @@ function renderRoleCall(
   card: Cardinality | null,
   playsCardinality: Cardinality | null,
   overrides: string | null = null,
+  isAbstract = false,
 ): string {
   const cardArg = renderCardArg(card);
   const playsCardArg = renderCardArg(playsCardinality, false);
@@ -54,6 +55,7 @@ function renderRoleCall(
   if (cardArg) options.push(`cardinality: ${cardArg}`);
   if (playsCardArg) options.push(`playsCardinality: ${playsCardArg}`);
   if (overrides != null) options.push(`overrides: "${overrides}"`);
+  if (isAbstract) options.push(`abstract: true`);
   const cardOptions = options.length > 0 ? `{ ${options.join(", ")} }` : null;
 
   if (players.length === 1) {
@@ -397,6 +399,7 @@ export function renderRelations(schema: TypeSchema, options?: NamingOptions): st
         roleSpec.cardinality,
         playsCardinality,
         roleSpec.overrides,
+        roleSpec.is_abstract,
       );
       fieldEntries.push(`  ${roleKey}: ${roleCall},`);
     }

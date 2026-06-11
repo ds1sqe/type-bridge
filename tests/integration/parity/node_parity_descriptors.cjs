@@ -10,11 +10,13 @@ function attr(fieldName, attrName, valueType, annotations = [], isOptional = fal
   };
 }
 
-function role(roleName, playerTypeNames, cardinality) {
+function role(roleName, playerTypeNames, cardinality, { overrides = null, isAbstract = false } = {}) {
   return {
     role_name: roleName,
     player_type_names: playerTypeNames,
     cardinality,
+    overrides,
+    is_abstract: isAbstract,
   };
 }
 
@@ -111,7 +113,7 @@ function registerParityDescriptors(typeBridge) {
     parent_type: null,
     owned_attributes: [],
     roles: [
-      role("contributor", ["parity-person"], null),
+      role("contributor", ["parity-person"], null, { isAbstract: true }),
       role("work", ["parity-email-message"], null),
     ],
   });
@@ -123,7 +125,7 @@ function registerParityDescriptors(typeBridge) {
     owned_attributes: [],
     roles: [
       role("work", ["parity-email-message"], null),
-      role("author", ["parity-person"], null),
+      role("author", ["parity-person"], null, { overrides: "contributor" }),
     ],
   });
 

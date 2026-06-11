@@ -182,6 +182,7 @@ def _rust_schema_to_parsed(
                 overrides=role_dict.get("overrides"),
                 cardinality=_convert_cardinality(role_dict.get("cardinality")),
                 distinct=role_dict.get("distinct", False),
+                is_abstract=role_dict.get("is_abstract", False),
             )
             roles.append(role)
 

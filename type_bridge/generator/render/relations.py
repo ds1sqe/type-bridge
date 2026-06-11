@@ -71,6 +71,7 @@ def _render_role_field(
     cardinality: Cardinality | None = None,
     plays_cardinality: Cardinality | None = None,
     overrides: str | None = None,
+    is_abstract: bool = False,
 ) -> str | None:
     """Render a single role field declaration."""
     if not player_classes:
@@ -80,12 +81,13 @@ def _render_role_field(
     card_arg = _render_card_arg(cardinality)
     plays_card_arg = _render_plays_card_arg(plays_cardinality)
     overrides_arg = f', overrides="{overrides}"' if overrides is not None else ""
+    abstract_arg = ", abstract=True" if is_abstract else ""
 
     if len(player_classes) == 1:
         player = player_classes[0]
         return (
             f"{py_name}: Role[entities.{player}] = "
-            f'Role("{role_name}", entities.{player}{card_arg}{plays_card_arg}{overrides_arg})'
+            f'Role("{role_name}", entities.{player}{card_arg}{plays_card_arg}{overrides_arg}{abstract_arg})'
         )
 
     primary, *rest = player_classes
@@ -94,7 +96,7 @@ def _render_role_field(
 
     return (
         f"{py_name}: Role[{union_type}] = "
-        f'_multi(Role.multi("{role_name}", entities.{primary}, {extras}{card_arg}{plays_card_arg}{overrides_arg}))'
+        f'_multi(Role.multi("{role_name}", entities.{primary}, {extras}{card_arg}{plays_card_arg}{overrides_arg}{abstract_arg}))'
     )
 
 
@@ -176,7 +178,12 @@ def _build_relation_context(
                 break
 
         role_line = _render_role_field(
-            role.name, player_classes, role.cardinality, plays_card, role.overrides
+            role.name,
+            player_classes,
+            role.cardinality,
+            plays_card,
+            role.overrides,
+            role.is_abstract,
         )
         if role_line:
             role_fields.append(role_line)

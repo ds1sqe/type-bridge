@@ -41,6 +41,7 @@ class Role[T: "TypeDBType"]:
         cardinality: Card | None = None,
         plays_cardinality: Card | None = None,
         overrides: str | None = None,
+        abstract: bool = False,
     ):
         """Initialize a role.
 
@@ -58,6 +59,10 @@ class Role[T: "TypeDBType"]:
                 ``relates child as parent`` syntax. Used only for descriptor computation
                 (effective-set role exclusion); specialization semantics are resolved at
                 schema-define time.
+            abstract: When ``True``, marks this role as abstract at the TypeDB schema level
+                (emitted as ``@abstract`` on the ``relates`` clause). The engine rejects
+                direct players at the declaring relation's own scope; subtypes that
+                plain-inherit or override the role are unaffected.
 
         Raises:
             ReservedWordError: If role_name is a TypeQL reserved word
@@ -71,6 +76,7 @@ class Role[T: "TypeDBType"]:
         self.cardinality = cardinality
         self.plays_cardinality = plays_cardinality
         self.overrides = overrides
+        self.is_abstract = abstract
         unique_types: list[type[T]] = []
         if player_type is None:
             if additional_player_types:
@@ -246,6 +252,7 @@ class Role[T: "TypeDBType"]:
         cardinality: Card | None = None,
         plays_cardinality: Card | None = None,
         overrides: str | None = None,
+        abstract: bool = False,
     ) -> Role[T]:
         """Define a role playable by multiple entity types.
 
@@ -257,6 +264,7 @@ class Role[T: "TypeDBType"]:
             plays_cardinality: Optional plays-side cardinality applied to every player's
                 plays edge for this role
             overrides: Parent role name this role specializes (see ``Role.__init__``).
+            abstract: When ``True``, marks this role as abstract (see ``Role.__init__``).
         """
         if len((player_type, *additional_player_types)) < 2:
             raise ValueError("Role.multi requires at least two player types")
@@ -267,6 +275,7 @@ class Role[T: "TypeDBType"]:
             cardinality=cardinality,
             plays_cardinality=plays_cardinality,
             overrides=overrides,
+            abstract=abstract,
         )
 
     @classmethod

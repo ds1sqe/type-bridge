@@ -907,6 +907,7 @@ mod tests {
                     role_name: r.into(),
                     player_type_names: players.into_iter().map(str::to_string).collect(),
                     cardinality,
+                    ..Default::default()
                 })
                 .collect(),
             plays_cardinalities: BTreeMap::new(),
@@ -1257,7 +1258,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "employee".into(),
                     player_type_names: vec!["person".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },

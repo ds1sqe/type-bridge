@@ -114,11 +114,15 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
             "role_name": "employee",
             "player_type_names": ["lower-person"],
             "cardinality": None,
+            "overrides": None,
+            "is_abstract": False,
         },
         {
             "role_name": "employer",
             "player_type_names": ["lower-company"],
             "cardinality": None,
+            "overrides": None,
+            "is_abstract": False,
         },
     ]
     assert attribute["attribute"] == {

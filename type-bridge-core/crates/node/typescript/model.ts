@@ -152,12 +152,18 @@ export class RoleSpec<Players extends readonly ModelToken[]> {
    * Used only for descriptor computation (effective-set role exclusion); specialization
    * semantics are resolved at schema-define time. */
   readonly overrides: string | undefined;
+  /** When ``true``, this role is abstract at the TypeDB schema level (``@abstract`` on
+   * the ``relates`` clause). The engine rejects direct players at the declaring
+   * relation's own scope; subtypes that plain-inherit or override the role are
+   * unaffected. */
+  readonly isAbstract: boolean;
 
   constructor(
     readonly players: Players,
     cardinality?: CardSpec | null,
     playsCardinality?: CardSpec | null,
     overrides?: string,
+    isAbstract?: boolean,
   ) {
     if (playsCardinality != null && players.length === 0) {
       throw new TypeError("playsCardinality requires at least one role player");
@@ -166,6 +172,7 @@ export class RoleSpec<Players extends readonly ModelToken[]> {
     this.playsCardinality =
       playsCardinality == null ? null : [playsCardinality.min, playsCardinality.max];
     this.overrides = overrides;
+    this.isAbstract = isAbstract ?? false;
   }
 }
 
@@ -356,8 +363,8 @@ export function role<const Players extends readonly [ModelToken, ...ModelToken[]
 export function role<const Players extends readonly ModelToken[]>(
   ...playersAndOptions: RoleArguments<Players>
 ): RoleSpec<Players> {
-  const { players, cardinality, playsCardinality, overrides } = splitRoleArguments(playersAndOptions);
-  return new RoleSpec(players as Players, cardinality, playsCardinality, overrides);
+  const { players, cardinality, playsCardinality, overrides, isAbstract } = splitRoleArguments(playersAndOptions);
+  return new RoleSpec(players as Players, cardinality, playsCardinality, overrides, isAbstract);
 }
 
 /**
@@ -432,11 +439,13 @@ type RelatesOnlyRoleOptions = {
   readonly cardinality?: CardSpec | null;
   readonly playsCardinality?: never;
   readonly overrides?: string;
+  readonly abstract?: boolean;
 };
 type RoleOptions = {
   readonly cardinality?: CardSpec | null;
   readonly playsCardinality?: CardSpec | null;
   readonly overrides?: string;
+  readonly abstract?: boolean;
 };
 type RoleArguments<Players extends readonly ModelToken[]> =
   | [...Players]
@@ -797,6 +806,8 @@ function roleDescriptors(
   const descriptors: RoleDescriptor[] = [];
 
   // Parent effective roles first — skip those overridden at this level.
+  // Inherited-role entries keep the parent role's markers (overrides, is_abstract)
+  // because they were set at declaration time and travel with the descriptor.
   for (const parentRole of parentEffectiveRoles) {
     if (overriddenRoleNames.has(parentRole.role_name)) continue;
     descriptors.push({ ...parentRole });
@@ -809,6 +820,8 @@ function roleDescriptors(
       role_name: roleName,
       player_type_names: spec.players.map(typeNameFor),
       cardinality: spec.cardinality,
+      overrides: spec.overrides ?? null,
+      is_abstract: spec.isAbstract,
     });
   }
 
@@ -831,9 +844,10 @@ function splitRoleArguments(args: readonly unknown[]): {
   cardinality: CardSpec | null;
   playsCardinality: CardSpec | null;
   overrides: string | undefined;
+  isAbstract: boolean;
 } {
   if (args.length === 0) {
-    return { players: [], cardinality: null, playsCardinality: null, overrides: undefined };
+    return { players: [], cardinality: null, playsCardinality: null, overrides: undefined, isAbstract: false };
   }
 
   const maybeOptions = args[args.length - 1];
@@ -843,6 +857,7 @@ function splitRoleArguments(args: readonly unknown[]): {
       cardinality: maybeOptions.cardinality ?? null,
       playsCardinality: maybeOptions.playsCardinality ?? null,
       overrides: maybeOptions.overrides,
+      isAbstract: maybeOptions.abstract ?? false,
     };
   }
 
@@ -851,6 +866,7 @@ function splitRoleArguments(args: readonly unknown[]): {
     cardinality: null,
     playsCardinality: null,
     overrides: undefined,
+    isAbstract: false,
   };
 }
 
@@ -862,7 +878,7 @@ function isRoleOptions(value: unknown): value is RoleOptions {
   return (
     typeof value === "object" &&
     value !== null &&
-    ("cardinality" in value || "playsCardinality" in value || "overrides" in value) &&
+    ("cardinality" in value || "playsCardinality" in value || "overrides" in value || "abstract" in value) &&
     !(value instanceof FieldSpec) &&
     !(value instanceof RoleSpec)
   );

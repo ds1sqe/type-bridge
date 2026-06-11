@@ -151,6 +151,16 @@ if [[ "$integration" == 1 ]]; then
         env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
 
+    # The parity suite mixes live-TypeDB tests with deliberately unmarked
+    # offline ones (descriptor snapshots, generator parity); the marker
+    # override mirrors CI's cross-language-parity job so the offline tests
+    # don't fall through both the unit and `-m integration` selections.
+    printf "${BOLD}━━━ Python (cross-language parity) ━━━${RESET}\n\n"
+    run_step "pytest tests/integration/parity" \
+        env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" \
+        uv run pytest tests/integration/parity -m "integration or not integration" \
+        --tb=short "${pytest_args[@]}"
+
     printf "${BOLD}━━━ Node (integration) ━━━${RESET}\n\n"
     # The Node suites default TYPEDB_ADDRESS to :1730; we pass it explicitly. test:integration
     # chains test:typed-integration, so this one command covers both Node integration suites.

@@ -38,6 +38,8 @@ export interface RoleDescriptor {
   role_name: string;
   player_type_names: string[];
   cardinality: [number, number | null] | null;
+  overrides: string | null;
+  is_abstract: boolean;
 }
 
 export interface RelationDescriptor {
@@ -62,6 +64,8 @@ export interface RoleEntry {
   role_name: string;
   player_type_names: string[];
   cardinality: [number, number | null] | null;
+  overrides: string | null;
+  is_abstract: boolean;
 }
 
 export interface EntitySchemaEntry {

@@ -1947,6 +1947,7 @@ mod tests {
             role_name: name.to_string(),
             player_type_names: vec!["account".to_string()],
             cardinality,
+            ..Default::default()
         }
     }
 

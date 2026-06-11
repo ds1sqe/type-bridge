@@ -49,12 +49,12 @@ fn employment_descriptor() -> RelationDescriptor {
             RoleDescriptor {
                 role_name: "employee".into(),
                 player_type_names: vec!["person".into()],
-                cardinality: None,
+                ..Default::default()
             },
             RoleDescriptor {
                 role_name: "employer".into(),
                 player_type_names: vec!["company".into()],
-                cardinality: None,
+                ..Default::default()
             },
         ],
     }

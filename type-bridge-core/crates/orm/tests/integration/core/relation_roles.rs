@@ -79,6 +79,7 @@ relation {trace_type}, relates origin @card(0..2), owns {label_attr};
                 role_name: "origin".into(),
                 player_type_names: vec![self.document_type.clone(), self.email_type.clone()],
                 cardinality: Some((1, Some(2))),
+                ..Default::default()
             }],
         })
     }
@@ -184,11 +185,13 @@ relation {origin_type}, relates token, relates issue, owns {confidence_attr} @ca
                     role_name: "token".into(),
                     player_type_names: vec![self.token_type.clone()],
                     cardinality: Some((1, Some(1))),
+                    ..Default::default()
                 },
                 RoleDescriptor {
                     role_name: "issue".into(),
                     player_type_names: vec![self.issue_type.clone()],
                     cardinality: Some((1, Some(1))),
+                    ..Default::default()
                 },
             ],
         })

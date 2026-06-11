@@ -53,7 +53,7 @@ impl OwnedAttributeEntry {
 }
 
 /// Metadata for one role in a relation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleEntry {
     /// Role name (e.g. `"employee"`).
     pub role_name: String,
@@ -61,6 +61,12 @@ pub struct RoleEntry {
     pub player_type_names: Vec<String>,
     /// Optional role cardinality, where `None` max means unbounded.
     pub cardinality: Option<(u32, Option<u32>)>,
+    /// Parent role name this role specializes, or `None` for plain roles.
+    #[serde(default)]
+    pub overrides: Option<String>,
+    /// Whether this role carries a schema-level `@abstract` annotation.
+    #[serde(default)]
+    pub is_abstract: bool,
 }
 
 /// Schema entry for an entity type.
@@ -240,6 +246,8 @@ impl SchemaInfo {
                         role_name: role.name.clone(),
                         player_type_names,
                         cardinality: role.cardinality.as_ref().map(cardinality_tuple),
+                        overrides: role.overrides.clone(),
+                        is_abstract: role.is_abstract,
                     }
                 })
                 .collect();
@@ -299,6 +307,8 @@ impl SchemaInfo {
                             role_name: role.role_name.clone(),
                             player_type_names: role.player_type_names.clone(),
                             cardinality: role.cardinality,
+                            overrides: role.overrides.clone(),
+                            is_abstract: role.is_abstract,
                         })
                         .collect();
 
@@ -622,6 +632,8 @@ mod tests {
                     role_name: "employee".into(),
                     player_type_names: vec!["person".into()],
                     cardinality: None,
+                    overrides: None,
+                    is_abstract: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -672,6 +684,8 @@ mod tests {
                     role_name: "participant".into(),
                     player_type_names: vec!["person".into(), "company".into()],
                     cardinality: Some((1, Some(2))),
+                    overrides: None,
+                    is_abstract: false,
                 }],
             }),
         ];
@@ -707,6 +721,8 @@ mod tests {
                     role_name: "participant".into(),
                     player_type_names: vec!["person".into(), "company".into()],
                     cardinality: Some((1, Some(2))),
+                    overrides: None,
+                    is_abstract: false,
                 },],
                 plays_cardinalities: BTreeMap::new(),
             })

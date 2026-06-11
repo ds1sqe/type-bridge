@@ -157,7 +157,7 @@ class ParityTokenOrigin(Relation):
 class ParityContribution(Relation):
     flags = TypeFlags(name="parity-contribution")
 
-    contributor: Role[ParityPerson] = Role("contributor", ParityPerson)
+    contributor: Role[ParityPerson] = Role("contributor", ParityPerson, abstract=True)
     work: Role[ParityEmailMessage] = Role("work", ParityEmailMessage)
 
 

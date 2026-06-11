@@ -153,11 +153,15 @@ def test_relation_descriptor_translates_roles() -> None:
             "role_name": "employee",
             "player_type_names": ["rust-person"],
             "cardinality": None,
+            "overrides": None,
+            "is_abstract": False,
         },
         {
             "role_name": "employer",
             "player_type_names": ["rust-company"],
             "cardinality": [1, 1],
+            "overrides": None,
+            "is_abstract": False,
         },
     ]
 
@@ -178,6 +182,8 @@ def test_subtype_relation_descriptor_flattens_inherited_roles() -> None:
             "role_name": "participant",
             "player_type_names": ["rust-person"],
             "cardinality": None,
+            "overrides": None,
+            "is_abstract": False,
         }
     ]
 
@@ -188,6 +194,8 @@ def test_subtype_relation_descriptor_flattens_inherited_roles() -> None:
             "role_name": "participant",
             "player_type_names": ["rust-person"],
             "cardinality": None,
+            "overrides": None,
+            "is_abstract": False,
         }
     ]
 
@@ -281,14 +289,19 @@ def test_relation_subtype_effective_roles_ordered() -> None:
     role_names = [r["role_name"] for r in descriptor["roles"]]
     assert role_names == ["work", "author"], f"unexpected role order: {role_names}"
 
-    # 'work' is the plain-inherited role, 'author' is the specializing role.
+    # 'work' is the plain-inherited role; it carries no overrides marker.
     work_role = next(r for r in descriptor["roles"] if r["role_name"] == "work")
     assert work_role["player_type_names"] == ["rust-work"]
     assert work_role["cardinality"] is None
+    assert work_role["overrides"] is None
+    assert work_role["is_abstract"] is False
 
+    # 'author' is the specializing role; it records which parent role it overrides.
     author_role = next(r for r in descriptor["roles"] if r["role_name"] == "author")
     assert author_role["player_type_names"] == ["rust-author"]
     assert author_role["cardinality"] is None
+    assert author_role["overrides"] == "contributor"
+    assert author_role["is_abstract"] is False
 
 
 def test_unset_inherited_role_reads_none_and_stays_out_of_inputs() -> None:
@@ -324,6 +337,11 @@ def test_parent_relation_descriptor_unchanged() -> None:
     role_names = [r["role_name"] for r in descriptor["roles"]]
     assert role_names == ["contributor", "work"]
 
+    # Plain roles on the root relation carry no overrides / abstract markers.
+    for role in descriptor["roles"]:
+        assert role["overrides"] is None, f"{role['role_name']} should not override anything"
+        assert role["is_abstract"] is False, f"{role['role_name']} should not be abstract"
+
 
 def test_entity_subtype_owned_attributes_regression() -> None:
     """Entity subtypes still flatten owned_attributes; relation changes must not regress this."""
@@ -340,3 +358,98 @@ def test_entity_subtype_owned_attributes_regression() -> None:
     assert "score" in field_names
     assert "seniority" in field_names
     assert field_names.index("name") < field_names.index("seniority")
+
+
+# ---------------------------------------------------------------------------
+# Abstract-role descriptor tests (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class RustAbstractRoleBase(Relation):
+    """Relation with an abstract role at its declaring scope."""
+
+    flags = TypeFlags(name="rust-abstract-role-base")
+
+    participant: Role[RustPerson] = Role("participant", RustPerson, abstract=True)
+
+
+class RustAbstractRoleChild(RustAbstractRoleBase):
+    """Child that plain-inherits the abstract parent role."""
+
+    flags = TypeFlags(name="rust-abstract-role-child")
+
+
+class RustAbstractRoleOverride(RustAbstractRoleBase):
+    """Child that overrides the abstract parent role with a specializing role."""
+
+    flags = TypeFlags(name="rust-abstract-role-override")
+
+    actor: Role[RustPerson] = Role("actor", RustPerson, overrides="participant")
+
+
+def test_abstract_role_descriptor_is_abstract_true() -> None:
+    """A Role declared with abstract=True must carry is_abstract=True in the descriptor."""
+    descriptor = descriptor_for_model(RustAbstractRoleBase)
+
+    assert descriptor["type_name"] == "rust-abstract-role-base"
+    assert len(descriptor["roles"]) == 1
+    participant = descriptor["roles"][0]
+    assert participant["role_name"] == "participant"
+    assert participant["is_abstract"] is True
+
+
+def test_abstract_role_plain_inherited_carries_flag() -> None:
+    """A plain-inherited abstract role keeps is_abstract=True in the child descriptor."""
+    descriptor = descriptor_for_model(RustAbstractRoleChild)
+
+    participant = next(r for r in descriptor["roles"] if r["role_name"] == "participant")
+    assert participant["is_abstract"] is True
+
+
+def test_abstract_role_inputs_raises_at_declaring_scope() -> None:
+    """Building role-player inputs for an abstract role at its declaring scope raises ValueError.
+
+    The engine rejects direct players for an abstract role on the declaring
+    relation; the Python layer mirrors this at input-build time.
+    """
+    from type_bridge._rust_runtime import role_player_inputs
+
+    instance = RustAbstractRoleBase(
+        participant=RustPerson(
+            name=RustName("X"),
+            score=RustScore(1.0),
+            active=RustActive(True),
+            birth_date=RustBirthDate(date(2000, 1, 1)),
+            created_at=RustCreatedAt(datetime(2000, 1, 1)),
+            seen_at=RustSeenAt(datetime(2000, 1, 1, tzinfo=UTC)),
+            balance=RustBalance(DecimalType("1.0")),
+        )
+    )
+    with pytest.raises(ValueError, match="abstract"):
+        role_player_inputs(instance)
+
+
+def test_abstract_role_inputs_ok_on_plain_inherited_child() -> None:
+    """Building role-player inputs for a plain-inherited abstract role on a child does NOT raise.
+
+    The engine accepts players for an abstract role that is plain-inherited on a
+    sub-relation — only the declaring scope is blocked.
+    """
+    from type_bridge._rust_runtime import role_player_inputs
+
+    person = RustPerson(
+        name=RustName("Y"),
+        score=RustScore(1.0),
+        active=RustActive(True),
+        birth_date=RustBirthDate(date(2000, 1, 1)),
+        created_at=RustCreatedAt(datetime(2000, 1, 1)),
+        seen_at=RustSeenAt(datetime(2000, 1, 1, tzinfo=UTC)),
+        balance=RustBalance(DecimalType("1.0")),
+    )
+    person._iid = "0x123"  # Provide a fake IID so key lookup is skipped.
+
+    instance = RustAbstractRoleChild(participant=person)
+    # Must NOT raise — plain-inherited abstract role on a subtype is playable.
+    inputs = role_player_inputs(instance)
+    assert len(inputs) == 1
+    assert inputs[0]["role_name"] == "participant"

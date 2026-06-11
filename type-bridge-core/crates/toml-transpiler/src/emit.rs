@@ -151,6 +151,9 @@ pub fn emit(schema: &TomlSchema) -> String {
             if let Some(ref ov) = role.overrides {
                 clause.push_str(&format!(" as {}", ov));
             }
+            if role.is_abstract {
+                clause.push_str(" @abstract");
+            }
             if let Some(ref card) = role.card {
                 clause.push_str(&format!(" @card({})", card));
             }

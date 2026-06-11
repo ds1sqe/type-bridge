@@ -185,17 +185,23 @@
         {
           "role_name": "member",
           "player_type_names": ["parity-person"],
-          "cardinality": [1, 1]
+          "cardinality": [1, 1],
+          "overrides": null,
+          "is_abstract": false
         },
         {
           "role_name": "organization",
           "player_type_names": ["parity-company"],
-          "cardinality": [1, 1]
+          "cardinality": [1, 1],
+          "overrides": null,
+          "is_abstract": false
         },
         {
           "role_name": "evidence",
           "player_type_names": ["parity-person", "parity-email-message"],
-          "cardinality": [0, 5]
+          "cardinality": [0, 5],
+          "overrides": null,
+          "is_abstract": false
         }
       ]
     },
@@ -216,12 +222,16 @@
         {
           "role_name": "token",
           "player_type_names": ["parity-party", "parity-person"],
-          "cardinality": [1, 1]
+          "cardinality": [1, 1],
+          "overrides": null,
+          "is_abstract": false
         },
         {
           "role_name": "issue",
           "player_type_names": ["parity-company"],
-          "cardinality": [1, 1]
+          "cardinality": [1, 1],
+          "overrides": null,
+          "is_abstract": false
         }
       ]
     },
@@ -234,12 +244,16 @@
         {
           "role_name": "contributor",
           "player_type_names": ["parity-person"],
-          "cardinality": null
+          "cardinality": null,
+          "overrides": null,
+          "is_abstract": true
         },
         {
           "role_name": "work",
           "player_type_names": ["parity-email-message"],
-          "cardinality": null
+          "cardinality": null,
+          "overrides": null,
+          "is_abstract": false
         }
       ]
     },
@@ -252,12 +266,16 @@
         {
           "role_name": "work",
           "player_type_names": ["parity-email-message"],
-          "cardinality": null
+          "cardinality": null,
+          "overrides": null,
+          "is_abstract": false
         },
         {
           "role_name": "author",
           "player_type_names": ["parity-person"],
-          "cardinality": null
+          "cardinality": null,
+          "overrides": "contributor",
+          "is_abstract": false
         }
       ]
     }

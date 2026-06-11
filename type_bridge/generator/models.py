@@ -141,6 +141,7 @@ class RoleSpec:
         overrides: Parent role this overrides (from "as" syntax)
         cardinality: Optional cardinality constraint on the role
         distinct: Whether this role has @distinct annotation
+        is_abstract: Whether this role carries the @abstract annotation
         annotations: Custom annotations from TQL comments
     """
 
@@ -148,6 +149,7 @@ class RoleSpec:
     overrides: str | None = None  # For "relates author as contributor"
     cardinality: Cardinality | None = None
     distinct: bool = False
+    is_abstract: bool = False
     annotations: dict[str, AnnotationValue] = field(default_factory=dict)
 
 

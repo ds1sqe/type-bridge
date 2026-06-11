@@ -62,7 +62,7 @@ relation parity-token-origin,
   owns parity-kind;
 
 relation parity-contribution,
-  relates contributor,
+  relates contributor @abstract,
   relates work;
 
 relation parity-authoring sub parity-contribution,

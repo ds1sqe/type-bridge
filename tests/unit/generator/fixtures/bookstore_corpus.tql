@@ -41,7 +41,7 @@ entity place @abstract, owns name, plays locating:located, plays locating:locati
 entity city sub place;
 entity state sub place;
 entity country sub place;
-relation contribution, relates contributor, relates work;
+relation contribution, relates contributor @abstract, relates work;
 relation authoring sub contribution, relates author as contributor;
 relation editing sub contribution, relates editor as contributor;
 relation illustrating sub contribution, relates illustrator as contributor;

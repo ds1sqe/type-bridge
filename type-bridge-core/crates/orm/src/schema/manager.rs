@@ -94,7 +94,7 @@ impl<'db> SchemaManager<'db> {
             .map(|r| RoleEntry {
                 role_name: r.role_name.to_string(),
                 player_type_names: vec![r.player_type_name.to_string()],
-                cardinality: None,
+                ..Default::default()
             })
             .collect();
 
@@ -296,8 +296,7 @@ impl<'db> SchemaManager<'db> {
                 {
                     entries.push(RoleEntry {
                         role_name: role_name.to_string(),
-                        player_type_names: Vec::new(),
-                        cardinality: None,
+                        ..Default::default()
                     });
                 }
             }

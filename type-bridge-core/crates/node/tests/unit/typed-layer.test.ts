@@ -89,7 +89,7 @@ class ParityTokenOrigin extends Relation("parity-token-origin", {
 }) {}
 
 class ParityContribution extends Relation("parity-contribution", {
-  contributor: role("parity-person"),
+  contributor: role("parity-person", { abstract: true }),
   work: role(ParityEmailMessage),
 }) {}
 
@@ -307,16 +307,22 @@ describe("typed Entity and Relation factories", () => {
         role_name: "member",
         player_type_names: ["parity-person"],
         cardinality: [1, 1],
+        overrides: null,
+        is_abstract: false,
       },
       {
         role_name: "organization",
         player_type_names: ["parity-company"],
         cardinality: [1, 1],
+        overrides: null,
+        is_abstract: false,
       },
       {
         role_name: "evidence",
         player_type_names: ["parity-person", "parity-email-message"],
         cardinality: [0, 5],
+        overrides: null,
+        is_abstract: false,
       },
     ]);
   });
@@ -327,11 +333,15 @@ describe("typed Entity and Relation factories", () => {
         role_name: "definition",
         player_type_names: [],
         cardinality: null,
+        overrides: null,
+        is_abstract: false,
       },
       {
         role_name: "actor",
         player_type_names: ["parity-company"],
         cardinality: null,
+        overrides: null,
+        is_abstract: false,
       },
     ]);
   });
@@ -346,11 +356,15 @@ describe("typed Entity and Relation factories", () => {
         role_name: "employee",
         player_type_names: ["parity-person"],
         cardinality: null,
+        overrides: null,
+        is_abstract: false,
       },
       {
         role_name: "employer",
         player_type_names: ["parity-company"],
         cardinality: [1, 1],
+        overrides: null,
+        is_abstract: false,
       },
     ]);
     assert.deepEqual(JSON.parse(JSON.stringify(descriptor)), descriptor);
@@ -564,7 +578,7 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
 
     // Roles: just `anchor` from the base schema.
     assert.deepEqual(d.roles, [
-      { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] },
+      { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1], overrides: null, is_abstract: false },
     ]);
   });
 
@@ -593,6 +607,8 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
       role_name: "anchor",
       player_type_names: ["parity-company"],
       cardinality: [1, 1],
+      overrides: null,
+      is_abstract: false,
     });
 
     const extraRole = d.roles.find((r) => r.role_name === "extra");
@@ -600,6 +616,8 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
       role_name: "extra",
       player_type_names: ["parity-person"],
       cardinality: [0, 5],
+      overrides: null,
+      is_abstract: false,
     });
   });
 
@@ -622,9 +640,9 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
           ],
           roles: [
             // parent role re-listed
-            { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] as [number, number | null] },
+            { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false },
             // child-local role
-            { role_name: "extra", player_type_names: ["parity-person"], cardinality: [0, 5] as [number, number | null] },
+            { role_name: "extra", player_type_names: ["parity-person"], cardinality: [0, 5] as [number, number | null], overrides: null, is_abstract: false },
           ],
         },
       ],
@@ -665,6 +683,8 @@ type RoleDescriptor = {
   role_name: string;
   player_type_names: string[];
   cardinality: [number, number | null] | null;
+  overrides: string | null;
+  is_abstract: boolean;
 };
 type SchemaValueType = SchemaInfo["attributes"][string]["value_type"];
 

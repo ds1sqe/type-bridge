@@ -779,6 +779,59 @@ salary: Salary | None = None
 salary: Salary | None
 ```
 
+## Abstract roles and role specialization
+
+A role can be marked abstract using `Role(..., abstract=True)`. The schema
+generator emits `@abstract` on the `relates` clause, and the engine enforces
+the following semantics:
+
+- **Declaring scope**: the engine rejects direct players supplied for an abstract
+  role on the relation that declares it. TypeBridge mirrors this at input-build
+  time and raises `ValueError` before reaching the engine.
+- **Plain-inherited subtypes**: a concrete sub-relation that plain-inherits an
+  abstract role CAN have players. The engine accepts those.
+- **Overriding subtypes**: a sub-relation that specializes an abstract parent role
+  via `overrides=` excludes the abstract parent from its effective role set and
+  uses the concrete specializing role instead.
+
+```python
+from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
+
+class ContributorName(String):
+    pass
+
+class Contributor(Entity):
+    flags = TypeFlags(name="contributor")
+    name: ContributorName = Flag(Key)
+
+# Abstract parent role: no direct players allowed on Contribution instances.
+class Contribution(Relation):
+    flags = TypeFlags(name="contribution")
+    contributor: Role[Contributor] = Role("contributor", Contributor, abstract=True)
+
+# Subtype that specializes the abstract role — players go through 'author'.
+class Authoring(Contribution):
+    flags = TypeFlags(name="authoring")
+    author: Role[Contributor] = Role("author", Contributor, overrides="contributor")
+
+# Subtype that plain-inherits the abstract role — players are accepted by the engine.
+class Editing(Contribution):
+    flags = TypeFlags(name="editing")
+```
+
+**Generated TypeQL**:
+
+```typeql
+relation contribution, relates contributor @abstract;
+relation authoring sub contribution, relates author as contributor;
+relation editing sub contribution;
+```
+
+`Contribution` instances cannot be created with a `contributor` player directly.
+`Authoring` instances use `author=` (the specializing role). `Editing` instances
+can use `contributor=` because the plain-inherited abstract role is accepted at
+the subtype scope.
+
 ## See Also
 
 - [Entities](entities.md) - How to define entities that play roles

@@ -52,7 +52,7 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
                     RoleEntry {
                         role_name: "player-a".to_string(),
                         player_type_names: vec!["entity-0".to_string()],
-                        cardinality: None,
+                        ..Default::default()
                     },
                     RoleEntry {
                         role_name: "player-b".to_string(),
@@ -61,7 +61,7 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
                         } else {
                             "entity-0".to_string()
                         }],
-                        cardinality: None,
+                        ..Default::default()
                     },
                 ],
                 plays_cardinalities: std::collections::BTreeMap::new(),

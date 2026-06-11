@@ -21,6 +21,7 @@ class _RoleMetadata:
     player_types: tuple[type[Any], ...]
     cardinality: Any
     overrides: str | None = None
+    is_abstract: bool = False
 
 
 PYTHON_TO_RUST_VALUE_TYPE = {
@@ -221,6 +222,8 @@ def relation_descriptor(model_cls: type[Relation]) -> dict[str, Any]:
                 "role_name": role.role_name,
                 "player_type_names": [typ.get_type_name() for typ in role.player_types],
                 "cardinality": cardinality_tuple(role.cardinality),
+                "overrides": role.overrides,
+                "is_abstract": role.is_abstract,
             }
         )
 
@@ -244,6 +247,7 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
                 player_types=role.player_entity_types,
                 cardinality=role.cardinality,
                 overrides=role.overrides,
+                is_abstract=role.is_abstract,
             )
             for role in own_role_map.values()
         ]
@@ -258,6 +262,7 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
         player_types = getattr(default, "player_types", None)
         cardinality = getattr(default, "cardinality", None)
         overrides = getattr(default, "overrides", None)
+        is_abstract = getattr(default, "is_abstract", False)
         if role_name is None or player_types is None:
             continue
         fallback.append(
@@ -266,6 +271,7 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
                 player_types=player_types,
                 cardinality=cardinality,
                 overrides=overrides,
+                is_abstract=is_abstract,
             )
         )
     return fallback
@@ -492,11 +498,24 @@ def rust_manager_for_relation(connection: Any, descriptor: dict[str, Any]) -> An
 
 def role_player_inputs(instance: Any) -> list[dict[str, Any]]:
     """Build Rust dynamic relation role-player inputs from a Python relation."""
+    # Collect own-declared roles for the declaring-scope abstract-role guard below.
+    own_roles_by_name = {r.role_name for r in _own_roles_for_class(instance.__class__)}
+
     inputs: list[dict[str, Any]] = []
     for field_name, role in relation_role_fields(instance.__class__):
         value = getattr(instance, field_name, None)
         if value is None:
             continue
+        # The engine rejects players supplied for a role that is both abstract AND
+        # declared at this relation's own scope.  Plain-inherited abstract roles on
+        # subtypes are fine — the engine accepts those.
+        if role.is_abstract and role.role_name in own_roles_by_name:
+            raise ValueError(
+                f"Role '{role.role_name}' is abstract at its declaring relation "
+                f"'{instance.__class__.__name__}': the engine rejects direct players "
+                "for an abstract role at the declaring scope. "
+                "Use a specializing (overrides) role on a sub-relation instead."
+            )
         players = value if isinstance(value, list) else [value]
         for player in players:
             player_type = player.__class__

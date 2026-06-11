@@ -159,6 +159,13 @@ pub struct RoleSpec {
     /// `@distinct` is only valid when this field is `true`.
     #[serde(default)]
     pub ordered: bool,
+    /// Whether this role is annotated with `@abstract` (`relates <role> @abstract`).
+    ///
+    /// TypeDB rejects direct plays of an abstract role by instances of the declaring
+    /// relation type; concrete sub-relation types that specialise the role via `as`
+    /// can make it playable.
+    #[serde(default)]
+    pub is_abstract: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,6 +1028,7 @@ mod tests {
                         cardinality: None,
                         distinct: false,
                         ordered: false,
+                        is_abstract: false,
                     },
                     RoleSpec {
                         name: "work".to_string(),
@@ -1028,6 +1036,7 @@ mod tests {
                         cardinality: None,
                         distinct: false,
                         ordered: false,
+                        is_abstract: false,
                     },
                 ],
                 owns: vec![],
@@ -1047,6 +1056,7 @@ mod tests {
                     cardinality: None,
                     distinct: false,
                     ordered: false,
+                    is_abstract: false,
                 }],
                 owns: vec![],
                 owns_order: vec![],

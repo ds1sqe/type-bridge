@@ -596,6 +596,38 @@ role carries `overrides: <parent role>`, from which the full schema picture
 (including the replaced parent role) is reconstructable without re-listing
 unplayable roles.
 
+### Abstract roles (engine evidence)
+
+Decided for #140-A against TypeDB 3.11.5 (probe shapes:
+`interaction @abstract, relates participant @abstract` with
+`collaboration sub interaction, relates collaborator as participant` and a
+plain subtype `chat sub interaction`; plus a concrete relation
+`meeting, relates attendee @abstract, relates room`):
+
+| Probe | Engine verdict |
+| --- | --- |
+| `relates r @abstract` on an abstract relation | define ACCEPT |
+| `relates r @abstract` on a concrete relation | define ACCEPT |
+| Concrete relation instance links its own abstract role directly | REJECT (`INF11`) |
+| Subtype that overrides the abstract role links it directly | REJECT (`INF11`, same as non-abstract override) |
+| Subtype links the specializing role | ACCEPT |
+| Plain-inheriting concrete subtype links the inherited abstract role | ACCEPT |
+| `relates y as x @card(0..1)` (`as` before annotations) | define ACCEPT |
+| `@abstract @card(...)` and `@card(...) @abstract` orders | both define ACCEPT |
+
+Two consequences:
+
+- **Abstractness gates direct play only at the declaring type's own scope.**
+  A concrete subtype that plain-inherits an abstract role can play it, so
+  inherited abstract roles **stay in the subtype's effective role set**. On
+  the declaring relation itself the role is schema-present but unplayable on
+  direct instances — the optional-role fetch partition already tolerates a
+  permanently empty role.
+- **Emission canon is free to pick one annotation order.** The generator
+  emits `relates <name>[ as <parent>][ @abstract][ @card(...)]`; the parser
+  accepts either annotation order, so round-trip stability comes from the
+  emitter's fixed canon.
+
 ## Deprecated APIs
 
 The following APIs are deprecated and should NOT be used:

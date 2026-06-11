@@ -1973,6 +1973,7 @@ mod schema_validation_tests {
                         cardinality: None,
                         distinct: false,
                         ordered: false,
+                        is_abstract: false,
                     },
                     RoleSpec {
                         name: "employer".into(),
@@ -1980,6 +1981,7 @@ mod schema_validation_tests {
                         cardinality: None,
                         distinct: false,
                         ordered: false,
+                        is_abstract: false,
                     },
                 ],
                 owns: vec![],
@@ -1999,6 +2001,7 @@ mod schema_validation_tests {
                     cardinality: None,
                     distinct: false,
                     ordered: false,
+                    is_abstract: false,
                 }],
                 owns: vec![],
                 owns_order: vec![],

@@ -119,6 +119,7 @@ def _assert_relation_equivalent(name: str, a: RelationSpec, b: RelationSpec) -> 
         assert ra.overrides == rb.overrides, f"[{name}] roles[{i}].overrides mismatch"
         assert ra.cardinality == rb.cardinality, f"[{name}] roles[{i}].cardinality mismatch"
         assert ra.distinct == rb.distinct, f"[{name}] roles[{i}].distinct mismatch"
+        assert ra.is_abstract == rb.is_abstract, f"[{name}] roles[{i}].is_abstract mismatch"
     # owns/keys/uniques/cascades: UNORDERED sets
     assert set(a.owns) == set(b.owns), f"[{name}] owns (as set) mismatch"
     assert set(a.keys) == set(b.keys), f"[{name}] keys (as set) mismatch"
@@ -996,6 +997,25 @@ class TestBookstoreRoundtrip:
             FIXTURES_DIR / "bookstore_corpus.toml",
             FIXTURES_DIR / "bookstore_corpus.tql",
         )
+
+    def test_contribution_contributor_role_is_abstract(self) -> None:
+        """bookstore_corpus must round-trip with contributor role marked abstract.
+
+        The `contribution` relation declares `relates contributor @abstract`; the
+        child relations (`authoring`, `editing`, `illustrating`) override it via
+        `relates X as contributor`.  The abstract flag must survive the TOML →
+        TypeQL → ParsedSchema round-trip.
+        """
+        toml_text = (FIXTURES_DIR / "bookstore_corpus.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "contribution" in schema.relations, "expected 'contribution' relation"
+        role_map = {r.name: r for r in schema.relations["contribution"].roles}
+        assert "contributor" in role_map, "expected 'contributor' role in contribution"
+        assert role_map["contributor"].is_abstract is True, (
+            f"expected contributor.is_abstract=True, got {role_map['contributor'].is_abstract!r}"
+        )
+        assert role_map["work"].is_abstract is False, "work role must NOT be abstract"
 
     def test_stream_and_scalar_functions_parsed(self) -> None:
         """Parsed TOML must yield at least one stream-return and one scalar-return function.

@@ -80,5 +80,38 @@ describe("parseSchema (Rust parser -> NAPI -> TS)", () => {
     assert.equal(authoring.parent, "parity-contribution");
     const author = authoring.roles.find((role) => role.name === "author");
     assert.equal(author?.overrides, "contributor");
+
+    const contribution = schema.relations["parity-contribution"];
+    const contributor = contribution?.roles.find((role) => role.name === "contributor");
+    assert.equal(contributor?.is_abstract, true);
+  });
+
+  test("plain corpus roles are not abstract", () => {
+    // parity-membership roles carry no @abstract annotation; verify the
+    // field is marshalled and defaults to false rather than being omitted.
+    const membership = schema.relations["parity-membership"];
+    assert.ok(membership);
+    for (const role of membership.roles) {
+      assert.equal(role.is_abstract, false, `role ${role.name} should not be abstract`);
+    }
+  });
+});
+
+describe("parseSchema abstract roles (inline schema)", () => {
+  // Inline schema so the test does not depend on the fixture file evolving.
+  const inlineTql = `define
+entity person, owns name, plays interaction:participant;
+attribute name, value string;
+relation interaction @abstract, relates participant @abstract;`;
+
+  const inlineSchema = parseSchema(inlineTql, native);
+
+  test("abstract roles survive marshalling", () => {
+    const interaction = inlineSchema.relations["interaction"];
+    assert.ok(interaction, "relation interaction should be present");
+    assert.equal(interaction.is_abstract, true, "relation should be abstract");
+    const participant = interaction.roles.find((r) => r.name === "participant");
+    assert.ok(participant, "role participant should be present");
+    assert.equal(participant.is_abstract, true, "participant role should be abstract");
   });
 });

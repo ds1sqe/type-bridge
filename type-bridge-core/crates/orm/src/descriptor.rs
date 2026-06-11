@@ -53,7 +53,18 @@ impl OwnedAttributeDescriptor {
 }
 
 /// Owned metadata about one role in a relation type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The `overrides` field is present when this role specializes a parent
+/// relation's role via TypeDB's `relates child as parent` syntax.  Own
+/// specializing roles carry `overrides: Some(<parent role name>)`; plain-
+/// inherited role entries copied into a subtype's effective set keep the
+/// parent role's markers, including any `overrides` the parent itself carried.
+///
+/// `is_abstract` mirrors the role definition's schema-level `@abstract` marker.
+/// Abstractness gates direct play only at the declaring relation's own scope:
+/// the engine rejects players for the role on instances of the declaring type,
+/// while a concrete sub-relation that plain-inherits the role can play it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleDescriptor {
     /// Role name within the relation.
     pub role_name: String,
@@ -61,6 +72,11 @@ pub struct RoleDescriptor {
     pub player_type_names: Vec<String>,
     /// Optional role cardinality, where `None` max means unbounded.
     pub cardinality: Option<(u32, Option<u32>)>,
+    /// Parent role name this role specializes, or `null` for plain roles.
+    pub overrides: Option<String>,
+    /// Whether this role carries a schema-level `@abstract` annotation.
+    #[serde(default)]
+    pub is_abstract: bool,
 }
 
 /// Runtime descriptor for an entity type.

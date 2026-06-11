@@ -123,3 +123,89 @@ class TestRelationSubtypeRoles:
 
         results = Contribution.manager(db).all()
         assert len(results) >= 1
+
+
+@pytest.mark.integration
+class TestAbstractParentRole:
+    """Live-DB CRUD exercising an abstract parent role and its specializations.
+
+    The 'participant' role on BaseEvent is abstract; ConcreteEvent overrides it
+    with 'actor'.  A plain child relation (PlainEvent) plain-inherits the abstract
+    role — the engine accepts players on a plain-inherited abstract role on a
+    subtype relation.
+    """
+
+    @pytest.fixture
+    def abstract_role_schema(self, clean_db: Database):
+        """Define base/concrete/plain event models, sync schema, return context."""
+
+        class EventId(String):
+            pass
+
+        class ActorName(String):
+            pass
+
+        class EventActor(Entity):
+            flags = TypeFlags(name="ar_actor")
+            name: ActorName = Flag(Key)
+
+        class BaseEvent(Relation):
+            flags = TypeFlags(name="ar_base_event")
+            participant: Role[EventActor] = Role("participant", EventActor, abstract=True)
+
+        class ConcreteEvent(BaseEvent):
+            """Child that overrides the abstract parent role with a specialization."""
+
+            flags = TypeFlags(name="ar_concrete_event")
+            actor: Role[EventActor] = Role("actor", EventActor, overrides="participant")
+
+        class PlainEvent(BaseEvent):
+            """Child that plain-inherits the abstract parent role (engine accepts this)."""
+
+            flags = TypeFlags(name="ar_plain_event")
+
+        schema_manager = SchemaManager(clean_db)
+        schema_manager.register(EventActor, BaseEvent, ConcreteEvent, PlainEvent)
+        schema_manager.sync_schema(force=True)
+
+        return clean_db, EventActor, BaseEvent, ConcreteEvent, PlainEvent, ActorName
+
+    def test_sync_schema_succeeds(self, abstract_role_schema):
+        """Schema sync with an abstract parent role must complete without error."""
+        # If we reach this point, sync_schema() raised no exception.
+        _, _, _, _, _, _ = abstract_role_schema
+
+    def test_insert_through_specializing_role_works(self, abstract_role_schema):
+        """Insert via ConcreteEvent (overrides participant with actor) and fetch back."""
+        db, EventActor, _, ConcreteEvent, _, ActorName = abstract_role_schema
+
+        actor = EventActor(name=ActorName("alice"))
+        EventActor.manager(db).insert(actor)
+
+        event = ConcreteEvent(actor=actor)
+        ConcreteEvent.manager(db).insert(event)
+
+        results = ConcreteEvent.manager(db).all()
+        assert len(results) == 1
+        assert results[0].actor is not None
+        assert results[0].actor.name.value == "alice"
+
+    def test_insert_through_inherited_abstract_role_works(self, abstract_role_schema):
+        """Insert via PlainEvent's plain-inherited abstract role.
+
+        The engine evidence confirms: a concrete subtype that plain-inherits an
+        abstract role CAN have players supplied for it — only direct play at the
+        DECLARING relation's own scope is rejected by the engine.
+        """
+        db, EventActor, _, _, PlainEvent, ActorName = abstract_role_schema
+
+        actor = EventActor(name=ActorName("bob"))
+        EventActor.manager(db).insert(actor)
+
+        event = PlainEvent(participant=actor)
+        PlainEvent.manager(db).insert(event)
+
+        results = PlainEvent.manager(db).all()
+        assert len(results) == 1
+        assert results[0].participant is not None
+        assert results[0].participant.name.value == "bob"

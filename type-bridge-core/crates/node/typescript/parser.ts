@@ -31,6 +31,7 @@ export interface RoleSpec {
   cardinality: Cardinality | null;
   distinct: boolean;
   ordered: boolean;
+  is_abstract: boolean;
 }
 
 export interface EntityType {

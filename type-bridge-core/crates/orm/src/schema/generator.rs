@@ -170,15 +170,19 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
                 continue;
             }
             if seen_roles.insert(&role.role_name) {
-                if let Some((min, max)) = role.cardinality {
-                    parts.push(format!(
-                        "    relates {} {}",
-                        role.role_name,
-                        card_annotation(min, max)
-                    ));
-                } else {
-                    parts.push(format!("    relates {}", role.role_name));
+                // Emit per canon: relates <name>[ as <parent>][ @abstract][ @card(...)].
+                let mut clause = format!("    relates {}", role.role_name);
+                if let Some(ref parent_role) = role.overrides {
+                    clause.push_str(&format!(" as {parent_role}"));
                 }
+                if role.is_abstract {
+                    clause.push_str(" @abstract");
+                }
+                if let Some((min, max)) = role.cardinality {
+                    clause.push(' ');
+                    clause.push_str(&card_annotation(min, max));
+                }
+                parts.push(clause);
             }
             for player_type_name in &role.player_type_names {
                 let role_ref = format!("{}:{}", relation.type_name, role.role_name);
@@ -530,11 +534,13 @@ mod tests {
                         role_name: "employee".into(),
                         player_type_names: vec!["person".into()],
                         cardinality: None,
+                        ..Default::default()
                     },
                     RoleEntry {
                         role_name: "employer".into(),
                         player_type_names: vec!["company".into()],
                         cardinality: None,
+                        ..Default::default()
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
@@ -801,7 +807,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "source".into(),
                     player_type_names: vec!["node".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -838,7 +844,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "employee".into(),
                     player_type_names: vec!["person".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -897,12 +903,12 @@ mod tests {
                     RoleEntry {
                         role_name: "friend".into(),
                         player_type_names: vec!["person".into()],
-                        cardinality: None,
+                        ..Default::default()
                     },
                     RoleEntry {
                         role_name: "friend".into(),
                         player_type_names: vec!["person".into()],
-                        cardinality: None,
+                        ..Default::default()
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
@@ -934,11 +940,13 @@ mod tests {
                         role_name: "definition".into(),
                         player_type_names: vec![],
                         cardinality: None,
+                        ..Default::default()
                     },
                     RoleDescriptor {
                         role_name: "actor".into(),
                         player_type_names: vec!["player".into()],
                         cardinality: None,
+                        ..Default::default()
                     },
                 ],
             }),
@@ -972,11 +980,13 @@ mod tests {
                         role_name: "definition".into(),
                         player_type_names: vec![],
                         cardinality: None,
+                        ..Default::default()
                     },
                     RoleDescriptor {
                         role_name: "actor".into(),
                         player_type_names: vec!["player".into()],
                         cardinality: None,
+                        ..Default::default()
                     },
                 ],
             }),
@@ -1020,7 +1030,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "role".into(),
                     player_type_names: vec!["player".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1058,7 +1068,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "employee".into(),
                     player_type_names: vec!["person".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1102,6 +1112,7 @@ mod tests {
                     role_name: "employee".into(),
                     player_type_names: vec!["person".into()],
                     cardinality: Some((1, Some(1))),
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1135,7 +1146,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "role".into(),
                     player_type_names: vec!["b".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1186,7 +1197,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "slot".into(),
                     player_type_names: vec!["thing".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1228,12 +1239,12 @@ mod tests {
                     RoleEntry {
                         role_name: "friend".into(),
                         player_type_names: vec!["person".into()],
-                        cardinality: None,
+                        ..Default::default()
                     },
                     RoleEntry {
                         role_name: "friend".into(),
                         player_type_names: vec!["person".into()],
-                        cardinality: None,
+                        ..Default::default()
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
@@ -1247,6 +1258,253 @@ mod tests {
         assert_eq!(
             count, 1,
             "annotated plays line must dedupe to one:\n{result}"
+        );
+    }
+
+    /// Serde backward-compatibility: a role entry without the new keys
+    /// deserializes correctly (defaults take over), and the round-tripped
+    /// serialized form includes both `overrides` and `is_abstract`.
+    #[test]
+    fn role_descriptor_serde_defaults_on_missing_keys() {
+        // Old-format role JSON without `overrides` or `is_abstract`.
+        let json = r#"{
+            "role_name": "participant",
+            "player_type_names": ["person"],
+            "cardinality": null
+        }"#;
+        let role: RoleDescriptor = serde_json::from_str(json).expect("deserialize failed");
+        assert_eq!(role.role_name, "participant");
+        assert!(role.overrides.is_none());
+        assert!(!role.is_abstract);
+
+        // Serialized form must include the new keys.
+        let serialized = serde_json::to_string(&role).expect("serialize failed");
+        assert!(
+            serialized.contains("\"overrides\":null"),
+            "serialized role must include overrides: {serialized}"
+        );
+        assert!(
+            serialized.contains("\"is_abstract\":false"),
+            "serialized role must include is_abstract: {serialized}"
+        );
+    }
+
+    /// Specializing role emits `relates author as contributor`.
+    #[test]
+    fn specializing_role_emits_as_clause() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "contribution".into(),
+            RelationSchemaEntry {
+                type_name: "contribution".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "contributor".into(),
+                    player_type_names: vec!["person".into()],
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        info.relations.insert(
+            "authoring".into(),
+            RelationSchemaEntry {
+                type_name: "authoring".into(),
+                is_abstract: false,
+                parent_type: Some("contribution".into()),
+                owned_attributes: vec![],
+                roles: vec![
+                    // Inherited role (will be skipped by the generator)
+                    RoleEntry {
+                        role_name: "contributor".into(),
+                        player_type_names: vec!["person".into()],
+                        ..Default::default()
+                    },
+                    // Own specializing role
+                    RoleEntry {
+                        role_name: "author".into(),
+                        player_type_names: vec!["author-entity".into()],
+                        overrides: Some("contributor".into()),
+                        ..Default::default()
+                    },
+                ],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("relates author as contributor"),
+            "specializing role must emit 'as contributor': {result}"
+        );
+        // Inherited role must not be re-emitted on the child.
+        let authoring_section = result
+            .lines()
+            .skip_while(|l| !l.contains("relation authoring"))
+            .take_while(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !authoring_section.contains("relates contributor"),
+            "inherited role must not be re-emitted: {authoring_section}"
+        );
+    }
+
+    /// Abstract own role emits `relates participant @abstract`.
+    #[test]
+    fn abstract_role_emits_abstract_annotation() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "presence".into(),
+            RelationSchemaEntry {
+                type_name: "presence".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "participant".into(),
+                    player_type_names: vec![],
+                    is_abstract: true,
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("relates participant @abstract"),
+            "abstract role must include @abstract annotation: {result}"
+        );
+    }
+
+    /// Combined: `relates worker as assignee @abstract @card(0..1)` matches canon exactly.
+    #[test]
+    fn combined_overrides_abstract_card_role_matches_canon() {
+        let mut info = SchemaInfo::default();
+        // Parent relation declaring the base role.
+        info.relations.insert(
+            "task".into(),
+            RelationSchemaEntry {
+                type_name: "task".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "assignee".into(),
+                    player_type_names: vec![],
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        // Child relation specializing the role.
+        info.relations.insert(
+            "restricted-task".into(),
+            RelationSchemaEntry {
+                type_name: "restricted-task".into(),
+                is_abstract: false,
+                parent_type: Some("task".into()),
+                owned_attributes: vec![],
+                roles: vec![
+                    // Inherited (will be skipped)
+                    RoleEntry {
+                        role_name: "assignee".into(),
+                        player_type_names: vec![],
+                        ..Default::default()
+                    },
+                    // Own specializing + abstract + card
+                    RoleEntry {
+                        role_name: "worker".into(),
+                        player_type_names: vec![],
+                        overrides: Some("assignee".into()),
+                        is_abstract: true,
+                        cardinality: Some((0, Some(1))),
+                    },
+                ],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("relates worker as assignee @abstract @card(0..1)"),
+            "combined role must match canon exactly: {result}"
+        );
+    }
+
+    /// Emit→parse round trip: `generate_define_block` output feeds back through the
+    /// core parser and produces the same `overrides`/`is_abstract`/cardinality values.
+    #[test]
+    fn specializing_role_emit_parse_roundtrip() {
+        use crate::schema::info::SchemaInfo;
+
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "base-rel".into(),
+            RelationSchemaEntry {
+                type_name: "base-rel".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "contributor".into(),
+                    player_type_names: vec![],
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        info.relations.insert(
+            "derived-rel".into(),
+            RelationSchemaEntry {
+                type_name: "derived-rel".into(),
+                is_abstract: false,
+                parent_type: Some("base-rel".into()),
+                owned_attributes: vec![],
+                roles: vec![
+                    RoleEntry {
+                        role_name: "contributor".into(),
+                        player_type_names: vec![],
+                        ..Default::default()
+                    },
+                    RoleEntry {
+                        role_name: "author".into(),
+                        player_type_names: vec![],
+                        overrides: Some("contributor".into()),
+                        cardinality: Some((1, Some(1))),
+                        ..Default::default()
+                    },
+                ],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let emitted = generate_define_block(&info);
+        // Parse the emitted block back through the core schema parser.
+        let parsed = SchemaInfo::from_typeql(&emitted).expect("round-trip parse failed");
+
+        let derived = parsed
+            .relations
+            .get("derived-rel")
+            .expect("derived-rel must be present");
+        let author_role = derived
+            .roles
+            .iter()
+            .find(|r| r.role_name == "author")
+            .expect("author role must survive round-trip");
+
+        assert_eq!(
+            author_role.overrides.as_deref(),
+            Some("contributor"),
+            "overrides must survive emit→parse"
+        );
+        assert_eq!(
+            author_role.cardinality,
+            Some((1, Some(1))),
+            "cardinality must survive emit→parse"
         );
     }
 }

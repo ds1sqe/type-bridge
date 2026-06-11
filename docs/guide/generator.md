@@ -143,6 +143,8 @@ The generator supports the full TypeDB 3.0 schema syntax:
 | `@subkey` on owns           | ✓      |
 | `@distinct` on relates      | ✓      |
 | Role overrides (`as`)       | ✓      |
+| `relates ... as ...`        | ✓      |
+| `@abstract` on relates      | ✓      |
 | Functions (`fun`)           | ✓      |
 | Structs (`struct`)          | ✓      |
 | `#` and `//` comments       | ✓      |

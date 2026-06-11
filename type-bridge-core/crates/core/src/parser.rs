@@ -489,6 +489,7 @@ fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
         cardinality: None,
         distinct: false,
         ordered,
+        is_abstract: false,
     };
 
     // Parse optional "as <parent_role>" — the override comes after the `[]` marker.
@@ -499,10 +500,15 @@ fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
         role.overrides = Some(parent_role.to_string());
     }
 
-    // Parse optional annotations
+    // Parse optional annotations: @abstract, @card(...), @distinct in any order.
     loop {
         ws_comments(input);
         let parsed = opt(alt((
+            |i: &mut &str| {
+                literal("@abstract").parse_next(i)?;
+                role.is_abstract = true;
+                Ok(())
+            },
             |i: &mut &str| {
                 literal("@distinct").parse_next(i)?;
                 role.distinct = true;
@@ -1267,6 +1273,71 @@ mod tests {
                 max: Some(2)
             })
         );
+    }
+
+    // --- @abstract role annotation tests ---
+
+    // `relates participant @abstract` on an @abstract relation.
+    #[test]
+    fn test_parse_role_abstract_on_abstract_relation() {
+        let schema = parse_typeql(
+            "define\nrelation interaction @abstract, relates participant @abstract;",
+        )
+        .unwrap();
+        let role = &schema.relations.get("interaction").unwrap().roles[0];
+        assert!(role.is_abstract, "role should be abstract");
+        assert_eq!(role.name, "participant");
+    }
+
+    // Override + @abstract + @card in any order.
+    #[test]
+    fn test_parse_role_abstract_with_override_and_card() {
+        let schema = parse_typeql(
+            "define\nrelation task sub work, relates worker as assignee @abstract @card(0..1);",
+        )
+        .unwrap();
+        let role = &schema.relations.get("task").unwrap().roles[0];
+        assert_eq!(role.overrides.as_deref(), Some("assignee"));
+        assert!(role.is_abstract, "role should be abstract");
+        assert_eq!(
+            role.cardinality,
+            Some(Cardinality { min: 0, max: Some(1) })
+        );
+    }
+
+    // @card before @abstract — order must not matter.
+    #[test]
+    fn test_parse_role_abstract_card_then_abstract() {
+        let schema =
+            parse_typeql("define\nrelation work, relates assignee @card(0..2) @abstract;").unwrap();
+        let role = &schema.relations.get("work").unwrap().roles[0];
+        assert!(role.is_abstract, "role should be abstract");
+        assert_eq!(
+            role.cardinality,
+            Some(Cardinality { min: 0, max: Some(2) })
+        );
+    }
+
+    // Plain role without @abstract — is_abstract defaults to false.
+    #[test]
+    fn test_parse_role_not_abstract_by_default() {
+        let schema = parse_typeql("define\nrelation friendship, relates plain;").unwrap();
+        let role = &schema.relations.get("friendship").unwrap().roles[0];
+        assert!(!role.is_abstract, "plain role should not be abstract");
+    }
+
+    // Serde round-trip: JSON without the `is_abstract` field deserializes with false.
+    #[test]
+    fn test_role_spec_serde_default_is_abstract() {
+        let json = r#"{
+            "name": "participant",
+            "overrides": null,
+            "cardinality": null,
+            "distinct": false,
+            "ordered": false
+        }"#;
+        let role: RoleSpec = serde_json::from_str(json).unwrap();
+        assert!(!role.is_abstract, "missing is_abstract field should default to false");
     }
 
     #[test]
