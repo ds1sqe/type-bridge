@@ -2643,6 +2643,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "type-bridge-typedb-driver-b7"
+version = "3.8.1"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "crossbeam",
+ "futures",
+ "http",
+ "itertools 0.10.5",
+ "maybe-async",
+ "prost",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-types",
+ "tracing",
+ "tracing-subscriber",
+ "type-bridge-typedb-protocol-b7",
+ "uuid",
+]
+
+[[package]]
+name = "type-bridge-typedb-protocol-b7"
+version = "3.7.0"
+dependencies = [
+ "prost",
+ "tonic",
+]
+
+[[package]]
 name = "typedb-driver"
 version = "3.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
