@@ -655,6 +655,79 @@ schema_manager.register(Person)  # Person owns Age with range_constraint
 schema_manager.sync_schema()     # @range is included in TypeDB schema
 ```
 
+## List Attributes
+
+TypeDB supports *list-ordered* attribute ownership via `owns attr[]`.  An entity or
+relation may declare that it holds an **ordered, possibly-distinct** list of attribute
+values rather than an unordered set.
+
+### Declaring a list attribute
+
+Use `Flag(Ordered)` (ordered list, duplicates allowed) or `Flag(Ordered, Distinct)`
+(ordered list, all values unique):
+
+```python
+from type_bridge import Entity, Flag, Key, Ordered, Distinct, String, TypeFlags
+
+class Tag(String):
+    pass
+
+class Title(String):
+    pass
+
+class Article(Entity):
+    flags = TypeFlags(name="article")
+    title: Title = Flag(Key)
+    # ordered list of tags, no duplicates
+    tag: list[Tag] = Flag(Ordered, Distinct)
+```
+
+Generated TypeQL:
+
+```typeql
+entity article, owns title @key, owns tag[] @distinct;
+```
+
+Using `Flag(Ordered)` alone (without `Distinct`) omits the `@distinct` annotation:
+
+```python
+class Playlist(Entity):
+    flags = TypeFlags(name="playlist")
+    entries: list[Tag] = Flag(Ordered)  # duplicates allowed
+```
+
+Generated TypeQL:
+
+```typeql
+entity playlist, owns tag[];
+```
+
+### Validation
+
+`Flag(Distinct)` without `Flag(Ordered)` raises `ValueError` immediately — `@distinct`
+is only valid on a list attribute in TypeDB:
+
+```python
+# This raises ValueError at class definition time:
+class Bad(Entity):
+    flags = TypeFlags(name="bad")
+    tag: Tag = Flag(Distinct)   # ValueError: requires Ordered
+```
+
+### Engine caveat — REP256
+
+As of TypeDB 3.x, instance-level list operations (inserting or reading list attribute
+values) are **not yet implemented** in the engine (tracked as REP256).  Schema-side
+declarations (`sync_schema()`) are accepted; any attempt to insert a list attribute value is
+rejected with an engine error.
+
+This means:
+
+- You **can** define models with `Flag(Ordered, Distinct)` and call `sync_schema()`.
+- You **cannot** yet insert, read, or filter by list attribute values at runtime.
+
+Update this section when a TypeDB release implements list instances (the pinned integration test will fail and point here).
+
 ## Best Practices
 
 ### 1. Create Distinct Attribute Types

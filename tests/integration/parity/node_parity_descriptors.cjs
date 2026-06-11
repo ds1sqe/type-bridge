@@ -7,6 +7,7 @@ function attr(fieldName, attrName, valueType, annotations = [], isOptional = fal
     value_type: valueType,
     annotations,
     is_optional: isOptional,
+    is_ordered: false,
   };
 }
 
@@ -17,6 +18,8 @@ function role(roleName, playerTypeNames, cardinality, { overrides = null, isAbst
     cardinality,
     overrides,
     is_abstract: isAbstract,
+    ordered: false,
+    distinct: false,
   };
 }
 

@@ -72,6 +72,8 @@ def _render_role_field(
     plays_cardinality: Cardinality | None = None,
     overrides: str | None = None,
     is_abstract: bool = False,
+    ordered: bool = False,
+    distinct: bool = False,
 ) -> str | None:
     """Render a single role field declaration."""
     if not player_classes:
@@ -82,12 +84,14 @@ def _render_role_field(
     plays_card_arg = _render_plays_card_arg(plays_cardinality)
     overrides_arg = f', overrides="{overrides}"' if overrides is not None else ""
     abstract_arg = ", abstract=True" if is_abstract else ""
+    ordered_arg = ", ordered=True" if ordered else ""
+    distinct_arg = ", distinct=True" if distinct else ""
 
     if len(player_classes) == 1:
         player = player_classes[0]
         return (
             f"{py_name}: Role[entities.{player}] = "
-            f'Role("{role_name}", entities.{player}{card_arg}{plays_card_arg}{overrides_arg}{abstract_arg})'
+            f'Role("{role_name}", entities.{player}{card_arg}{plays_card_arg}{overrides_arg}{abstract_arg}{ordered_arg}{distinct_arg})'
         )
 
     primary, *rest = player_classes
@@ -96,7 +100,7 @@ def _render_role_field(
 
     return (
         f"{py_name}: Role[{union_type}] = "
-        f'_multi(Role.multi("{role_name}", entities.{primary}, {extras}{card_arg}{plays_card_arg}{overrides_arg}{abstract_arg}))'
+        f'_multi(Role.multi("{role_name}", entities.{primary}, {extras}{card_arg}{plays_card_arg}{overrides_arg}{abstract_arg}{ordered_arg}{distinct_arg}))'
     )
 
 
@@ -151,6 +155,8 @@ def _build_relation_context(
                 is_key=attr in key_attrs,
                 is_unique=attr in unique_attrs,
                 cardinality=cardinality,
+                is_ordered=attr in relation.ordered_owns,
+                is_distinct=attr in relation.distinct_owns,
             )
         )
 
@@ -184,6 +190,8 @@ def _build_relation_context(
             plays_card,
             role.overrides,
             role.is_abstract,
+            role.ordered,
+            role.distinct,
         )
         if role_line:
             role_fields.append(role_line)
@@ -196,8 +204,8 @@ def _build_relation_context(
         subkey_groups.setdefault(group, []).append(attr)
     for group in subkey_groups:
         subkey_groups[group] = sorted(subkey_groups[group])
-    # Collect roles with @distinct annotation
-    distinct_roles = [r.name for r in relation.roles if r.distinct]
+    # Roles that are both ordered and distinct — retained for informational comment.
+    distinct_roles = [r.name for r in relation.roles if r.ordered and r.distinct]
 
     # Collect custom annotations (excluding internal ones like _docstring)
     annotations = {k: v for k, v in relation.annotations.items() if not k.startswith("_")}
@@ -283,11 +291,14 @@ def render_relations(
 
     # Build imports list
     imports = ["Relation", "Role", "TypeFlags"]
-    # Flag is needed for @key, @unique, or multi-value attributes (Card used with Flag)
+    # Flag is needed for @key, @unique, or multi-value/ordered attributes
+    needs_ordered = any(r.ordered_owns for r in schema.relations.values())
+    needs_distinct = any(r.distinct_owns for r in schema.relations.values())
     needs_flag = (
         _needs_key_import(schema)
         or _needs_unique_import(schema)
         or _needs_card_for_attributes(schema)
+        or needs_ordered
     )
     if _needs_card_import(schema):
         imports.insert(0, "Card")
@@ -297,6 +308,10 @@ def render_relations(
         imports.append("Key")
     if _needs_unique_import(schema):
         imports.append("Unique")
+    if needs_distinct:
+        imports.append("Distinct")
+    if needs_ordered:
+        imports.append("Ordered")
 
     relations = []
     all_names = []

@@ -102,7 +102,9 @@ pub struct Cardinality {
 /// An attribute ownership declaration on an entity or relation type.
 ///
 /// Corresponds to a TypeQL `owns <attribute>` clause, optionally annotated
-/// with `@key`, `@unique`, `@cascade`, `@subkey`, or `@card`.
+/// with `@key`, `@unique`, `@cascade`, `@subkey`, `@card`, or `@distinct`.
+/// The `@distinct` annotation is valid only on ordered ownerships (declared
+/// with `[]`, e.g. `owns nickname[] @distinct`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnedAttribute {
     /// The name of the owned attribute type (must exist in the schema's attributes map).
@@ -117,6 +119,14 @@ pub struct OwnedAttribute {
     pub subkey_group: Option<String>,
     /// Optional `@card(min..max)` cardinality constraint on the ownership.
     pub cardinality: Option<Cardinality>,
+    /// Whether the ownership is declared as an ordered list (`owns name[]`).
+    ///
+    /// `@distinct` is only valid when this field is `true`.
+    #[serde(default)]
+    pub ordered: bool,
+    /// Whether this ownership is annotated with `@distinct`, requiring unique attribute values.
+    #[serde(default)]
+    pub distinct: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +487,7 @@ impl TypeSchema {
         self.validate_values()?;
         self.validate_subkeys()?;
         self.validate_role_annotations()?;
+        self.validate_owns_annotations()?;
         Ok(())
     }
 
@@ -625,6 +636,41 @@ impl TypeSchema {
                             "@distinct requires an ordered role in relation '{}': \
                              use `relates {}[] @distinct` instead of `relates {} @distinct`.",
                             rel_name, role.name, role.name
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Enforce that `@distinct` is only used on ordered ownerships (`owns name[]`).
+    ///
+    /// TypeDB servers reject `owns attr @distinct` when no `[]` ordering marker is
+    /// present (mirrors the SVL21 rule enforced for roles).  The correct form is
+    /// `owns attr[] @distinct`.
+    fn validate_owns_annotations(&self) -> Result<(), SchemaError> {
+        for (entity_name, entity) in &self.entities {
+            for own in &entity.owns {
+                if own.distinct && !own.ordered {
+                    return Err(SchemaError::ValidationError {
+                        message: format!(
+                            "@distinct requires an ordered ownership in entity '{}': \
+                             use `owns {}[] @distinct` instead of `owns {} @distinct`.",
+                            entity_name, own.name, own.name
+                        ),
+                    });
+                }
+            }
+        }
+        for (rel_name, relation) in &self.relations {
+            for own in &relation.owns {
+                if own.distinct && !own.ordered {
+                    return Err(SchemaError::ValidationError {
+                        message: format!(
+                            "@distinct requires an ordered ownership in relation '{}': \
+                             use `owns {}[] @distinct` instead of `owns {} @distinct`.",
+                            rel_name, own.name, own.name
                         ),
                     });
                 }
@@ -886,6 +932,8 @@ mod tests {
                     is_cascade: false,
                     subkey_group: None,
                     cardinality: None,
+                    ordered: false,
+                    distinct: false,
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![],
@@ -939,6 +987,8 @@ mod tests {
             is_cascade: false,
             subkey_group: None,
             cardinality: None,
+            ordered: false,
+            distinct: false,
         };
         schema.entities.insert(
             "person".to_string(),
@@ -977,6 +1027,8 @@ mod tests {
                     is_cascade: false,
                     subkey_group: None,
                     cardinality: None,
+                    ordered: false,
+                    distinct: false,
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![PlayedRole {
@@ -998,6 +1050,8 @@ mod tests {
                     is_cascade: false,
                     subkey_group: None,
                     cardinality: None,
+                    ordered: false,
+                    distinct: false,
                 }],
                 owns_order: vec!["employee-id".to_string()],
                 plays: vec![],
@@ -1194,6 +1248,8 @@ mod tests {
                     is_cascade: false,
                     subkey_group: Some("123abc".to_string()),
                     cardinality: None,
+                    ordered: false,
+                    distinct: false,
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![],
@@ -1225,6 +1281,8 @@ mod tests {
                     is_cascade: false,
                     subkey_group: Some("invalid@char".to_string()),
                     cardinality: None,
+                    ordered: false,
+                    distinct: false,
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![],
@@ -1256,6 +1314,8 @@ mod tests {
                     is_cascade: false,
                     subkey_group: Some("user-id".to_string()),
                     cardinality: None,
+                    ordered: false,
+                    distinct: false,
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![],

@@ -26,18 +26,25 @@ pub struct OwnedAttributeEntry {
     pub value_type: ValueType,
     /// Ownership annotations.
     pub annotations: Vec<Annotation>,
+    /// Whether this ownership is declared as an ordered list (`owns name[]`).
+    ///
+    /// Instance-level list semantics are engine-unimplemented (REP256); this field
+    /// is a schema-emission marker only.
+    #[serde(default)]
+    pub is_ordered: bool,
 }
 
 impl OwnedAttributeEntry {
     /// Format the annotation flags as a TypeQL annotation string.
     ///
-    /// Returns strings like `"@key"`, `"@unique"`, `"@card(2..5)"`.
+    /// Returns strings like `"@key"`, `"@unique"`, `"@distinct"`, `"@card(2..5)"`.
     pub fn flags_string(&self) -> String {
         let mut parts = Vec::new();
         for ann in &self.annotations {
             match ann {
                 Annotation::Key => parts.push("@key".to_string()),
                 Annotation::Unique => parts.push("@unique".to_string()),
+                Annotation::Distinct => parts.push("@distinct".to_string()),
                 Annotation::Card(min, max) => {
                     // TypeDB 3.x spells an unbounded upper bound as `@card(min..)`.
                     let max_str = match max {
@@ -67,6 +74,17 @@ pub struct RoleEntry {
     /// Whether this role carries a schema-level `@abstract` annotation.
     #[serde(default)]
     pub is_abstract: bool,
+    /// Whether this role is declared as an ordered list (`relates name[]`).
+    ///
+    /// Instance-level list semantics are engine-unimplemented (REP256); this field
+    /// is a schema-emission marker only.
+    #[serde(default)]
+    pub ordered: bool,
+    /// Whether this role carries a schema-level `@distinct` annotation.
+    ///
+    /// Valid only when `ordered` is `true`.
+    #[serde(default)]
+    pub distinct: bool,
 }
 
 /// Schema entry for an entity type.
@@ -248,6 +266,8 @@ impl SchemaInfo {
                         cardinality: role.cardinality.as_ref().map(cardinality_tuple),
                         overrides: role.overrides.clone(),
                         is_abstract: role.is_abstract,
+                        ordered: role.ordered,
+                        distinct: role.distinct,
                     }
                 })
                 .collect();
@@ -309,6 +329,8 @@ impl SchemaInfo {
                             cardinality: role.cardinality,
                             overrides: role.overrides.clone(),
                             is_abstract: role.is_abstract,
+                            ordered: role.ordered,
+                            distinct: role.distinct,
                         })
                         .collect();
 
@@ -388,6 +410,7 @@ fn owned_attribute_entries_from_typeql(
                 .map(|entry| entry.value_type)
                 .unwrap_or(ValueType::String),
             annotations: annotations_from_typeql(attr),
+            is_ordered: attr.ordered,
         })
         .collect()
 }
@@ -399,6 +422,9 @@ fn annotations_from_typeql(attr: &core_schema::OwnedAttribute) -> Vec<Annotation
     }
     if attr.is_unique {
         annotations.push(Annotation::Unique);
+    }
+    if attr.distinct {
+        annotations.push(Annotation::Distinct);
     }
     if let Some(cardinality) = &attr.cardinality {
         annotations.push(Annotation::Card(cardinality.min, cardinality.max));
@@ -488,6 +514,7 @@ fn owned_attribute_entries(attributes: &[OwnedAttributeDescriptor]) -> Vec<Owned
                 attr_name: attr.attr_name.clone(),
                 value_type: attr.value_type,
                 annotations: attr.annotations.clone(),
+                is_ordered: attr.is_ordered,
             }
         })
         .collect()
@@ -570,6 +597,7 @@ mod tests {
             attr_name: "name".into(),
             value_type: ValueType::String,
             annotations: vec![Annotation::Key],
+            is_ordered: false,
         };
         assert_eq!(entry.flags_string(), "@key");
     }
@@ -580,6 +608,7 @@ mod tests {
             attr_name: "tag".into(),
             value_type: ValueType::String,
             annotations: vec![Annotation::Card(2, Some(5))],
+            is_ordered: false,
         };
         assert_eq!(entry.flags_string(), "@card(2..5)");
     }
@@ -590,6 +619,7 @@ mod tests {
             attr_name: "phone".into(),
             value_type: ValueType::String,
             annotations: vec![Annotation::Card(0, None)],
+            is_ordered: false,
         };
         assert_eq!(entry.flags_string(), "@card(0..)");
     }
@@ -600,6 +630,7 @@ mod tests {
             attr_name: "email".into(),
             value_type: ValueType::String,
             annotations: vec![Annotation::Unique, Annotation::Card(1, Some(3))],
+            is_ordered: false,
         };
         assert_eq!(entry.flags_string(), "@unique @card(1..3)");
     }
@@ -617,6 +648,7 @@ mod tests {
                     attr_name: "name".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -634,6 +666,7 @@ mod tests {
                     cardinality: None,
                     overrides: None,
                     is_abstract: false,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -667,6 +700,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_optional: false,
+                    is_ordered: false,
                 }],
             }),
             TypeDescriptor::Relation(RelationDescriptor {
@@ -679,6 +713,7 @@ mod tests {
                     value_type: ValueType::Date,
                     annotations: vec![],
                     is_optional: false,
+                    is_ordered: false,
                 }],
                 roles: vec![RoleDescriptor {
                     role_name: "participant".into(),
@@ -686,6 +721,8 @@ mod tests {
                     cardinality: Some((1, Some(2))),
                     overrides: None,
                     is_abstract: false,
+                    ordered: false,
+                    distinct: false,
                 }],
             }),
         ];
@@ -702,6 +739,7 @@ mod tests {
                     attr_name: "name".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             })
@@ -716,6 +754,7 @@ mod tests {
                     attr_name: "since".into(),
                     value_type: ValueType::Date,
                     annotations: vec![],
+                    is_ordered: false,
                 }],
                 roles: vec![RoleEntry {
                     role_name: "participant".into(),
@@ -723,6 +762,8 @@ mod tests {
                     cardinality: Some((1, Some(2))),
                     overrides: None,
                     is_abstract: false,
+                    ordered: false,
+                    distinct: false,
                 },],
                 plays_cardinalities: BTreeMap::new(),
             })
@@ -749,6 +790,7 @@ mod tests {
                 value_type: ValueType::Long,
                 annotations: vec![Annotation::Card(0, Some(1))],
                 is_optional: true,
+                is_ordered: false,
             }],
         })];
 

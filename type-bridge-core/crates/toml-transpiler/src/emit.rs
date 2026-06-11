@@ -5,11 +5,18 @@
 
 use crate::model::{TomlOwns, TomlPlays, TomlSchema};
 
-/// Normalise a `TomlOwns` entry into `(name, key, unique, card)`.
-fn owns_parts(entry: &TomlOwns) -> (&str, bool, bool, Option<&str>) {
+/// Normalise a `TomlOwns` entry into `(name, key, unique, ordered, distinct, card)`.
+fn owns_parts(entry: &TomlOwns) -> (&str, bool, bool, bool, bool, Option<&str>) {
     match entry {
-        TomlOwns::Name(n) => (n.as_str(), false, false, None),
-        TomlOwns::Annotated(a) => (a.attribute.as_str(), a.key, a.unique, a.card.as_deref()),
+        TomlOwns::Name(n) => (n.as_str(), false, false, false, false, None),
+        TomlOwns::Annotated(a) => (
+            a.attribute.as_str(),
+            a.key,
+            a.unique,
+            a.ordered,
+            a.distinct,
+            a.card.as_deref(),
+        ),
     }
 }
 
@@ -111,13 +118,19 @@ pub fn emit(schema: &TomlSchema) -> String {
 
         let mut clauses: Vec<String> = Vec::new();
         for entry in &entity.owns {
-            let (attr_name, key, unique, card) = owns_parts(entry);
+            let (attr_name, key, unique, ordered, distinct, card) = owns_parts(entry);
             let mut clause = format!("owns {}", attr_name);
+            if ordered {
+                clause.push_str("[]");
+            }
             if key {
                 clause.push_str(" @key");
             }
             if unique {
                 clause.push_str(" @unique");
+            }
+            if distinct {
+                clause.push_str(" @distinct");
             }
             if let Some(c) = card {
                 clause.push_str(&format!(" @card({})", c));
@@ -148,11 +161,17 @@ pub fn emit(schema: &TomlSchema) -> String {
         let mut clauses: Vec<String> = Vec::new();
         for role in &relation.roles {
             let mut clause = format!("relates {}", role.name);
+            if role.ordered {
+                clause.push_str("[]");
+            }
             if let Some(ref ov) = role.overrides {
                 clause.push_str(&format!(" as {}", ov));
             }
             if role.is_abstract {
                 clause.push_str(" @abstract");
+            }
+            if role.distinct {
+                clause.push_str(" @distinct");
             }
             if let Some(ref card) = role.card {
                 clause.push_str(&format!(" @card({})", card));
@@ -160,13 +179,19 @@ pub fn emit(schema: &TomlSchema) -> String {
             clauses.push(clause);
         }
         for entry in &relation.owns {
-            let (attr_name, key, unique, card) = owns_parts(entry);
+            let (attr_name, key, unique, ordered, distinct, card) = owns_parts(entry);
             let mut clause = format!("owns {}", attr_name);
+            if ordered {
+                clause.push_str("[]");
+            }
             if key {
                 clause.push_str(" @key");
             }
             if unique {
                 clause.push_str(" @unique");
+            }
+            if distinct {
+                clause.push_str(" @distinct");
             }
             if let Some(c) = card {
                 clause.push_str(&format!(" @card({})", c));

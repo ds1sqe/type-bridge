@@ -107,6 +107,7 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
             "attr_name": "lower-name",
             "value_type": "string",
             "annotations": ["Key"],
+            "is_ordered": False,
         }
     ]
     assert relation["relation"]["roles"] == [
@@ -116,6 +117,8 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
             "cardinality": None,
             "overrides": None,
             "is_abstract": False,
+            "ordered": False,
+            "distinct": False,
         },
         {
             "role_name": "employer",
@@ -123,6 +126,8 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
             "cardinality": None,
             "overrides": None,
             "is_abstract": False,
+            "ordered": False,
+            "distinct": False,
         },
     ]
     assert attribute["attribute"] == {
@@ -133,6 +138,7 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
         "attr_name": "lower-age",
         "value_type": "long",
         "annotations": [{"Card": (0, 1)}],
+        "is_ordered": False,
     }
 
 

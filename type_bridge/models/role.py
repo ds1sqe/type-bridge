@@ -42,6 +42,8 @@ class Role[T: "TypeDBType"]:
         plays_cardinality: Card | None = None,
         overrides: str | None = None,
         abstract: bool = False,
+        ordered: bool = False,
+        distinct: bool = False,
     ):
         """Initialize a role.
 
@@ -63,20 +65,34 @@ class Role[T: "TypeDBType"]:
                 (emitted as ``@abstract`` on the ``relates`` clause). The engine rejects
                 direct players at the declaring relation's own scope; subtypes that
                 plain-inherit or override the role are unaffected.
+            ordered: When ``True``, declares this role as a list role (``relates name[]``
+                in TypeQL). Schema-only; instance-level list writes are not yet supported
+                by the engine.
+            distinct: When ``True``, emits ``@distinct`` on the relates clause. Requires
+                ``ordered=True``; raises ``ValueError`` otherwise.
 
         Raises:
             ReservedWordError: If role_name is a TypeQL reserved word
             TypeError: If player type is a library base class (Entity, Relation, TypeDBType),
                 or if plays_cardinality is set on a relates-only role (no player type)
+            ValueError: If distinct=True without ordered=True
         """
         # Validate role name doesn't conflict with TypeQL reserved words
         validate_reserved_word(role_name, "role")
+
+        if distinct and not ordered:
+            raise ValueError(
+                f"Role '{role_name}': distinct=True requires ordered=True. "
+                "@distinct is only valid on a list role (`relates name[]`)."
+            )
 
         self.role_name = role_name
         self.cardinality = cardinality
         self.plays_cardinality = plays_cardinality
         self.overrides = overrides
         self.is_abstract = abstract
+        self.ordered = ordered
+        self.distinct = distinct
         unique_types: list[type[T]] = []
         if player_type is None:
             if additional_player_types:
@@ -253,6 +269,8 @@ class Role[T: "TypeDBType"]:
         plays_cardinality: Card | None = None,
         overrides: str | None = None,
         abstract: bool = False,
+        ordered: bool = False,
+        distinct: bool = False,
     ) -> Role[T]:
         """Define a role playable by multiple entity types.
 
@@ -265,6 +283,8 @@ class Role[T: "TypeDBType"]:
                 plays edge for this role
             overrides: Parent role name this role specializes (see ``Role.__init__``).
             abstract: When ``True``, marks this role as abstract (see ``Role.__init__``).
+            ordered: When ``True``, declares this role as a list role (``relates name[]``).
+            distinct: When ``True``, emits ``@distinct``; requires ``ordered=True``.
         """
         if len((player_type, *additional_player_types)) < 2:
             raise ValueError("Role.multi requires at least two player types")
@@ -276,6 +296,8 @@ class Role[T: "TypeDBType"]:
             plays_cardinality=plays_cardinality,
             overrides=overrides,
             abstract=abstract,
+            ordered=ordered,
+            distinct=distinct,
         )
 
     @classmethod

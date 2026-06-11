@@ -11,14 +11,16 @@
           "attr_name": "parity-id",
           "value_type": "string",
           "annotations": ["Key"],
-          "is_optional": false
+          "is_optional": false,
+          "is_ordered": false
         },
         {
           "field_name": "name",
           "attr_name": "parity-name",
           "value_type": "string",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         }
       ]
     },
@@ -32,77 +34,88 @@
           "attr_name": "parity-id",
           "value_type": "string",
           "annotations": ["Key"],
-          "is_optional": false
+          "is_optional": false,
+          "is_ordered": false
         },
         {
           "field_name": "name",
           "attr_name": "parity-name",
           "value_type": "string",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         },
         {
           "field_name": "email",
           "attr_name": "parity-email",
           "value_type": "string",
           "annotations": ["Unique"],
-          "is_optional": false
+          "is_optional": false,
+          "is_ordered": false
         },
         {
           "field_name": "age",
           "attr_name": "parity-age",
           "value_type": "long",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         },
         {
           "field_name": "score",
           "attr_name": "parity-score",
           "value_type": "double",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         },
         {
           "field_name": "active",
           "attr_name": "parity-active",
           "value_type": "boolean",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         },
         {
           "field_name": "birth_date",
           "attr_name": "parity-birth-date",
           "value_type": "date",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         },
         {
           "field_name": "login_at",
           "attr_name": "parity-login-at",
           "value_type": "datetime",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         },
         {
           "field_name": "seen_at",
           "attr_name": "parity-seen-at",
           "value_type": "datetime-tz",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         },
         {
           "field_name": "balance",
           "attr_name": "parity-balance",
           "value_type": "decimal",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         },
         {
           "field_name": "session_length",
           "attr_name": "parity-session-length",
           "value_type": "duration",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         },
         {
           "field_name": "tags",
@@ -113,7 +126,8 @@
               "Card": [0, 5]
             }
           ],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         }
       ]
     },
@@ -127,14 +141,16 @@
           "attr_name": "parity-id",
           "value_type": "string",
           "annotations": ["Key"],
-          "is_optional": false
+          "is_optional": false,
+          "is_ordered": false
         },
         {
           "field_name": "name",
           "attr_name": "parity-name",
           "value_type": "string",
           "annotations": [],
-          "is_optional": false
+          "is_optional": false,
+          "is_ordered": false
         }
       ]
     },
@@ -148,14 +164,16 @@
           "attr_name": "parity-id",
           "value_type": "string",
           "annotations": ["Key"],
-          "is_optional": false
+          "is_optional": false,
+          "is_ordered": false
         },
         {
           "field_name": "note",
           "attr_name": "parity-note",
           "value_type": "string",
           "annotations": [],
-          "is_optional": false
+          "is_optional": false,
+          "is_ordered": false
         }
       ]
     }
@@ -171,14 +189,16 @@
           "attr_name": "parity-since",
           "value_type": "date",
           "annotations": [],
-          "is_optional": false
+          "is_optional": false,
+          "is_ordered": false
         },
         {
           "field_name": "confidence",
           "attr_name": "parity-confidence",
           "value_type": "long",
           "annotations": [],
-          "is_optional": true
+          "is_optional": true,
+          "is_ordered": false
         }
       ],
       "roles": [
@@ -187,21 +207,27 @@
           "player_type_names": ["parity-person"],
           "cardinality": [1, 1],
           "overrides": null,
-          "is_abstract": false
+          "is_abstract": false,
+          "ordered": false,
+          "distinct": false
         },
         {
           "role_name": "organization",
           "player_type_names": ["parity-company"],
           "cardinality": [1, 1],
           "overrides": null,
-          "is_abstract": false
+          "is_abstract": false,
+          "ordered": false,
+          "distinct": false
         },
         {
           "role_name": "evidence",
           "player_type_names": ["parity-person", "parity-email-message"],
           "cardinality": [0, 5],
           "overrides": null,
-          "is_abstract": false
+          "is_abstract": false,
+          "ordered": false,
+          "distinct": false
         }
       ]
     },
@@ -215,7 +241,8 @@
           "attr_name": "parity-kind",
           "value_type": "string",
           "annotations": [],
-          "is_optional": false
+          "is_optional": false,
+          "is_ordered": false
         }
       ],
       "roles": [
@@ -224,14 +251,18 @@
           "player_type_names": ["parity-party", "parity-person"],
           "cardinality": [1, 1],
           "overrides": null,
-          "is_abstract": false
+          "is_abstract": false,
+          "ordered": false,
+          "distinct": false
         },
         {
           "role_name": "issue",
           "player_type_names": ["parity-company"],
           "cardinality": [1, 1],
           "overrides": null,
-          "is_abstract": false
+          "is_abstract": false,
+          "ordered": false,
+          "distinct": false
         }
       ]
     },
@@ -246,14 +277,18 @@
           "player_type_names": ["parity-person"],
           "cardinality": null,
           "overrides": null,
-          "is_abstract": true
+          "is_abstract": true,
+          "ordered": false,
+          "distinct": false
         },
         {
           "role_name": "work",
           "player_type_names": ["parity-email-message"],
           "cardinality": null,
           "overrides": null,
-          "is_abstract": false
+          "is_abstract": false,
+          "ordered": false,
+          "distinct": false
         }
       ]
     },
@@ -268,14 +303,18 @@
           "player_type_names": ["parity-email-message"],
           "cardinality": null,
           "overrides": null,
-          "is_abstract": false
+          "is_abstract": false,
+          "ordered": false,
+          "distinct": false
         },
         {
           "role_name": "author",
           "player_type_names": ["parity-person"],
           "cardinality": null,
           "overrides": "contributor",
-          "is_abstract": false
+          "is_abstract": false,
+          "ordered": false,
+          "distinct": false
         }
       ]
     }

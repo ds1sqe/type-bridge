@@ -138,6 +138,9 @@ pub struct TomlRelation {
 /// - `abstract` marks the role abstract at the TypeDB schema level, emitted as
 ///   `@abstract` on the `relates` clause.  The field is renamed via serde
 ///   because `abstract` is a reserved word in Rust.
+/// - `ordered` declares this as a list role (`relates name[]`).  Schema-only;
+///   instance-level list writes are not yet supported by the engine.
+/// - `distinct` emits `@distinct` on the relates clause; requires `ordered`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlRole {
@@ -152,6 +155,12 @@ pub struct TomlRole {
     /// Whether this role is abstract (TOML key `abstract`).
     #[serde(default, rename = "abstract")]
     pub is_abstract: bool,
+    /// Whether this role is a list role (`relates name[]`).
+    #[serde(default)]
+    pub ordered: bool,
+    /// Whether to emit `@distinct`; requires `ordered = true`.
+    #[serde(default)]
+    pub distinct: bool,
 }
 
 /// An `owns` entry on an entity or relation.
@@ -174,7 +183,7 @@ pub enum TomlOwns {
     Annotated(TomlOwnsAnnotated),
 }
 
-/// Annotated owns entry: `{ attribute = "...", key?, unique?, card? }`.
+/// Annotated owns entry: `{ attribute = "...", key?, unique?, ordered?, distinct?, card? }`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlOwnsAnnotated {
@@ -186,6 +195,12 @@ pub struct TomlOwnsAnnotated {
     /// Emit `@unique` on this owns clause.
     #[serde(default)]
     pub unique: bool,
+    /// Declare this as a list attribute (`owns attr[]`).  Schema-only.
+    #[serde(default)]
+    pub ordered: bool,
+    /// Emit `@distinct` on this owns clause; requires `ordered = true`.
+    #[serde(default)]
+    pub distinct: bool,
     /// Optional verbatim cardinality string (`"m..n"` / `"m.."`) → `@card(...)`.
     #[serde(default)]
     pub card: Option<String>,

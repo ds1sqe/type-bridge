@@ -17,6 +17,7 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
                     _ => ValueType::Boolean,
                 },
                 annotations: vec![],
+                is_ordered: false,
             })
             .collect();
 

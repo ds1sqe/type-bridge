@@ -11,6 +11,7 @@ fn attr(name: &str, value_type: ValueType) -> OwnedAttributeDescriptor {
         value_type,
         annotations: vec![],
         is_optional: false,
+        is_ordered: false,
     }
 }
 
@@ -26,6 +27,7 @@ fn person_descriptor() -> EntityDescriptor {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Key],
                 is_optional: false,
+                is_ordered: false,
             },
             OwnedAttributeDescriptor {
                 field_name: "email".into(),
@@ -33,6 +35,7 @@ fn person_descriptor() -> EntityDescriptor {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Unique, Annotation::Card(0, Some(1))],
                 is_optional: true,
+                is_ordered: false,
             },
         ],
     }
@@ -49,6 +52,7 @@ fn employment_descriptor() -> RelationDescriptor {
             value_type: ValueType::String,
             annotations: vec![],
             is_optional: true,
+            is_ordered: false,
         }],
         roles: vec![
             RoleDescriptor {
@@ -162,6 +166,7 @@ fn registry_rejects_duplicate_attributes_and_roles() {
         value_type: ValueType::String,
         annotations: vec![],
         is_optional: false,
+        is_ordered: false,
     });
     assert!(matches!(
         registry.register_entity(entity).unwrap_err(),

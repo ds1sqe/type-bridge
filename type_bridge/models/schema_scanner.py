@@ -87,7 +87,7 @@ class SchemaScanner:
                 if is_list_type and not isinstance(default_value, AttributeFlags):
                     raise TypeError(
                         f"Field '{field_name}' in {self.cls.__name__}: "
-                        f"list[Type] annotations must use Flag(Card(...))."
+                        f"list[Type] annotations must use Flag(Card(...)) or Flag(Ordered)."
                     )
 
                 if isinstance(default_value, AttributeFlags):
@@ -97,10 +97,16 @@ class SchemaScanner:
                             f"Field '{field_name}' in {self.cls.__name__}: "
                             f"Flag(Card(...)) can only be used with list[Type]."
                         )
-                    if is_list_type and not flags.has_explicit_card:
+                    if flags.is_ordered and not is_list_type:
                         raise TypeError(
                             f"Field '{field_name}' in {self.cls.__name__}: "
-                            f"list[Type] annotations must use Flag(Card(...))."
+                            f"Flag(Ordered) declares a list attribute and requires a "
+                            f"list[Type] annotation."
+                        )
+                    if is_list_type and not (flags.has_explicit_card or flags.is_ordered):
+                        raise TypeError(
+                            f"Field '{field_name}' in {self.cls.__name__}: "
+                            f"list[Type] annotations must use Flag(Card(...)) or Flag(Ordered)."
                         )
 
                     if flags.card_min is None and flags.card_max is None:

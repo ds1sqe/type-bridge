@@ -20,10 +20,20 @@ pub struct OwnedAttributeDescriptor {
     pub attr_name: String,
     /// TypeDB value type.
     pub value_type: ValueType,
-    /// Ownership annotations such as `@key`, `@unique`, or `@card`.
+    /// Ownership annotations such as `@key`, `@unique`, `@card`, or `@distinct`.
+    ///
+    /// `@distinct` appears here as `Annotation::Distinct` when the ownership is
+    /// declared as an ordered list with the distinct constraint.
     pub annotations: Vec<Annotation>,
     /// Whether the field may be omitted from dynamic input and hydration.
     pub is_optional: bool,
+    /// Whether this ownership is declared as an ordered list (`owns name[]`).
+    ///
+    /// Instance-level list semantics are engine-unimplemented (REP256); this field
+    /// is a schema-emission marker only. The `@distinct` annotation is valid only
+    /// when this is `true`.
+    #[serde(default)]
+    pub is_ordered: bool,
 }
 
 impl OwnedAttributeDescriptor {
@@ -77,6 +87,17 @@ pub struct RoleDescriptor {
     /// Whether this role carries a schema-level `@abstract` annotation.
     #[serde(default)]
     pub is_abstract: bool,
+    /// Whether this role is declared as an ordered list (`relates name[]`).
+    ///
+    /// Instance-level list semantics are engine-unimplemented (REP256); this field
+    /// is a schema-emission marker only.
+    #[serde(default)]
+    pub ordered: bool,
+    /// Whether this role carries a schema-level `@distinct` annotation.
+    ///
+    /// Valid only when `ordered` is `true`.
+    #[serde(default)]
+    pub distinct: bool,
 }
 
 /// Runtime descriptor for an entity type.

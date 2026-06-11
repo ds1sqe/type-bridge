@@ -18,6 +18,8 @@ export interface OwnedAttribute {
   is_cascade: boolean;
   subkey_group: string | null;
   cardinality: Cardinality | null;
+  ordered: boolean;
+  distinct: boolean;
 }
 
 export interface PlayedRole {

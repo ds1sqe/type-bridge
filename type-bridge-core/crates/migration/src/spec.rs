@@ -202,6 +202,7 @@ mod tests {
                     attr_name: "name".to_string(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -228,6 +229,7 @@ mod tests {
                 attr_name: "name".to_string(),
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Key],
+                is_ordered: false,
             },
         };
 

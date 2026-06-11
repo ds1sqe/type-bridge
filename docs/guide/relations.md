@@ -405,6 +405,60 @@ company plays employment:employer @card(0..1);
 For multi-player roles declared with `Role.multi(...)`, the same
 `plays_cardinality` applies to each declared player type.
 
+## List Roles
+
+TypeDB supports *list-ordered* role participation via `relates role[]`.  An ordered
+role allows the same player type to appear in an ordered list of slots (rather than an
+unordered set), and optionally enforces that all players in the list are distinct.
+
+### Declaring a list role
+
+Pass `ordered=True` (or `ordered=True, distinct=True`) to `Role(...)`:
+
+```python
+from type_bridge import Entity, Relation, Role, TypeFlags
+
+class Book(Entity):
+    flags = TypeFlags(name="book")
+
+class Reviewer(Entity):
+    flags = TypeFlags(name="reviewer")
+
+class Rating(Relation):
+    flags = TypeFlags(name="rating")
+    rated: Role[Book] = Role("rated", Book)
+    # ordered list of reviewers, no duplicates
+    reviewer: Role[Reviewer] = Role("reviewer", Reviewer, ordered=True, distinct=True)
+```
+
+Generated TypeQL:
+
+```typeql
+relation rating, relates rated, relates reviewer[] @distinct;
+```
+
+Using `ordered=True` alone (without `distinct=True`) omits `@distinct`:
+
+```python
+reviewer: Role[Reviewer] = Role("reviewer", Reviewer, ordered=True)
+# → relates reviewer[]
+```
+
+### Validation
+
+`Role(distinct=True)` without `ordered=True` raises `ValueError` immediately:
+
+```python
+# This raises ValueError at class definition time:
+Role("bad", Reviewer, distinct=True)  # ValueError: distinct requires ordered
+```
+
+### Engine caveat — REP256
+
+Schema-side list role declarations are accepted by TypeDB 3.x.  Instance-level
+operations on list roles are **not yet implemented** (tracked as REP256).  Update
+this section when the engine ships support.
+
 ## Python Inheritance for Relations
 
 Relations support inheritance just like entities:

@@ -119,3 +119,97 @@ def test_schema_relation_subtype_with_specializing_role(clean_db):
 
     # Second sync — must be idempotent (no schema drift detected).
     schema_manager.sync_schema(force=True)
+
+
+@pytest.mark.integration
+@pytest.mark.order(4)
+def test_schema_list_interfaces_sync_idempotent(clean_db):
+    """Ordered list interface flags (``[]`` marker, ``@distinct``) survive a
+    generate→define→parse round trip without triggering spurious schema drift.
+
+    The test drives the raw generate→execute path:
+    1. Build a ``SchemaInfo`` IR dict with ``is_ordered``/``ordered``/``distinct`` flags.
+    2. Generate TypeQL with ``generate_define_block``.
+    3. Execute the TypeQL against the live database via ``execute_query("schema")``.
+    4. Fetch the live schema text back and confirm the ``[]`` marker is preserved in
+       the round-tripped text — same as the unit emit→parse round trip but exercised
+       end-to-end against a real TypeDB instance.
+
+    REP256: instance-level list semantics are engine-unimplemented; this test
+    only validates schema-level emission and parsing correctness.
+    """
+    pytest.importorskip("type_bridge_core")
+
+    from type_bridge._rust_runtime import generate_define_block
+
+    # Build a minimal SchemaInfo IR dict with ordered and distinct markers.
+    schema_ir: dict = {
+        "entities": {
+            "li-person": {
+                "type_name": "li-person",
+                "is_abstract": False,
+                "parent_type": None,
+                "owned_attributes": [
+                    {
+                        "attr_name": "li-plain",
+                        "value_type": "string",
+                        "annotations": ["Key"],
+                        "is_ordered": False,
+                    },
+                    {
+                        "attr_name": "li-tag",
+                        "value_type": "string",
+                        "annotations": ["Distinct", {"Card": [0, 3]}],
+                        "is_ordered": True,
+                    },
+                ],
+                "plays_cardinalities": {},
+            }
+        },
+        "relations": {
+            "li-feed": {
+                "type_name": "li-feed",
+                "is_abstract": False,
+                "parent_type": None,
+                "owned_attributes": [],
+                "roles": [
+                    {
+                        "role_name": "li-member",
+                        "player_type_names": [],
+                        "cardinality": None,
+                        "overrides": None,
+                        "is_abstract": False,
+                        "ordered": True,
+                        "distinct": False,
+                    }
+                ],
+                "plays_cardinalities": {},
+            }
+        },
+        "attributes": {
+            "li-plain": {"attr_name": "li-plain", "value_type": "string"},
+            "li-tag": {"attr_name": "li-tag", "value_type": "string"},
+        },
+    }
+
+    # Generate TypeQL from the IR.
+    typeql = generate_define_block(schema_ir)
+
+    # The emitted TypeQL must contain the list-interface markers.
+    assert "li-tag[]" in typeql, f"[] marker missing from generated TypeQL:\n{typeql}"
+    assert "li-member[]" in typeql, f"[] marker missing from generated TypeQL:\n{typeql}"
+    assert "@distinct" in typeql, f"@distinct missing from generated TypeQL:\n{typeql}"
+
+    # Execute the define against the live database.
+    clean_db.execute_query(typeql, transaction_type="schema")
+
+    # Fetch the schema back from the live database.
+    live_schema = clean_db.get_schema()
+
+    # The live schema must still contain the ordered list markers.
+    assert "li-tag[]" in live_schema, (
+        f"[] marker on li-tag missing from live schema after round-trip:\n{live_schema}"
+    )
+    assert "li-member[]" in live_schema, (
+        f"[] marker on li-member missing from live schema after round-trip:\n{live_schema}"
+    )

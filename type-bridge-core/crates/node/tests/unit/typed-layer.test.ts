@@ -178,21 +178,29 @@ describe("typed attribute and flag layer", () => {
       kind: "flag",
       annotations: ["Key"],
       cardinality: [1, 1],
+      isOrdered: false,
+      isDistinct: false,
     });
     assert.deepEqual(resolveFlags([Flag(Card(1, 5))]), {
       kind: "flag",
       annotations: [{ Card: [1, 5] }],
       cardinality: [1, 5],
+      isOrdered: false,
+      isDistinct: false,
     });
     assert.deepEqual(resolveFlags([Flag(Card(0))]), {
       kind: "flag",
       annotations: [{ Card: [0, null] }],
       cardinality: [0, null],
+      isOrdered: false,
+      isDistinct: false,
     });
     assert.deepEqual(resolveFlags([Unique]), {
       kind: "flag",
       annotations: ["Unique"],
       cardinality: null,
+      isOrdered: false,
+      isDistinct: false,
     });
   });
 
@@ -221,6 +229,7 @@ describe("typed attribute and flag layer", () => {
         value_type: "string",
         annotations: [],
         is_optional: false,
+        is_ordered: false,
       },
       {
         field_name: "state",
@@ -228,6 +237,7 @@ describe("typed attribute and flag layer", () => {
         value_type: "string",
         annotations: [],
         is_optional: false,
+        is_ordered: false,
       },
       {
         field_name: "score",
@@ -235,6 +245,7 @@ describe("typed attribute and flag layer", () => {
         value_type: "long",
         annotations: [],
         is_optional: false,
+        is_ordered: false,
       },
     ]);
 
@@ -309,6 +320,8 @@ describe("typed Entity and Relation factories", () => {
         cardinality: [1, 1],
         overrides: null,
         is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
       {
         role_name: "organization",
@@ -316,6 +329,8 @@ describe("typed Entity and Relation factories", () => {
         cardinality: [1, 1],
         overrides: null,
         is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
       {
         role_name: "evidence",
@@ -323,6 +338,8 @@ describe("typed Entity and Relation factories", () => {
         cardinality: [0, 5],
         overrides: null,
         is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
     ]);
   });
@@ -335,6 +352,8 @@ describe("typed Entity and Relation factories", () => {
         cardinality: null,
         overrides: null,
         is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
       {
         role_name: "actor",
@@ -342,6 +361,8 @@ describe("typed Entity and Relation factories", () => {
         cardinality: null,
         overrides: null,
         is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
     ]);
   });
@@ -358,6 +379,8 @@ describe("typed Entity and Relation factories", () => {
         cardinality: null,
         overrides: null,
         is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
       {
         role_name: "employer",
@@ -365,6 +388,8 @@ describe("typed Entity and Relation factories", () => {
         cardinality: [1, 1],
         overrides: null,
         is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
     ]);
     assert.deepEqual(JSON.parse(JSON.stringify(descriptor)), descriptor);
@@ -578,7 +603,7 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
 
     // Roles: just `anchor` from the base schema.
     assert.deepEqual(d.roles, [
-      { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1], overrides: null, is_abstract: false },
+      { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1], overrides: null, is_abstract: false, ordered: false, distinct: false },
     ]);
   });
 
@@ -609,6 +634,8 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
       cardinality: [1, 1],
       overrides: null,
       is_abstract: false,
+      ordered: false,
+      distinct: false,
     });
 
     const extraRole = d.roles.find((r) => r.role_name === "extra");
@@ -618,6 +645,8 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
       cardinality: [0, 5],
       overrides: null,
       is_abstract: false,
+      ordered: false,
+      distinct: false,
     });
   });
 
@@ -640,9 +669,9 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
           ],
           roles: [
             // parent role re-listed
-            { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false },
+            { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
             // child-local role
-            { role_name: "extra", player_type_names: ["parity-person"], cardinality: [0, 5] as [number, number | null], overrides: null, is_abstract: false },
+            { role_name: "extra", player_type_names: ["parity-person"], cardinality: [0, 5] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
           ],
         },
       ],
@@ -664,7 +693,7 @@ type DescriptorSnapshot = {
   relations: RelationDescriptor[];
 };
 
-type Annotation = "Key" | "Unique" | { Card: [number, number | null] };
+type Annotation = "Key" | "Unique" | "Distinct" | { Card: [number, number | null] };
 type EntityDescriptor = {
   type_name: string;
   is_abstract: boolean;
@@ -678,6 +707,7 @@ type OwnedAttributeDescriptor = {
   value_type: string;
   annotations: Annotation[];
   is_optional: boolean;
+  is_ordered: boolean;
 };
 type RoleDescriptor = {
   role_name: string;
@@ -685,6 +715,8 @@ type RoleDescriptor = {
   cardinality: [number, number | null] | null;
   overrides: string | null;
   is_abstract: boolean;
+  ordered: boolean;
+  distinct: boolean;
 };
 type SchemaValueType = SchemaInfo["attributes"][string]["value_type"];
 
@@ -694,6 +726,7 @@ function attrDescriptor(
   valueType: string,
   annotations: Annotation[],
   isOptional: boolean,
+  isOrdered = false,
 ): OwnedAttributeDescriptor {
   return {
     field_name: fieldName,
@@ -701,6 +734,7 @@ function attrDescriptor(
     value_type: valueType,
     annotations,
     is_optional: isOptional,
+    is_ordered: isOrdered,
   };
 }
 
@@ -784,6 +818,7 @@ function schemaOwnedAttributes(
     attr_name: attribute.attr_name,
     value_type: attribute.value_type as SchemaValueType,
     annotations: attribute.annotations,
+    is_ordered: attribute.is_ordered,
   }));
 }
 

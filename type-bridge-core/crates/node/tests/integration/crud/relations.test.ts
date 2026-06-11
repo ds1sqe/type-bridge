@@ -157,6 +157,7 @@ function documentDescriptor(m: MultiRoleSchema): EntityDescriptor {
         value_type: "string",
         annotations: ["Key"],
         is_optional: false,
+        is_ordered: false,
       },
     ],
   };
@@ -174,6 +175,7 @@ function emailDescriptor(m: MultiRoleSchema): EntityDescriptor {
         value_type: "string",
         annotations: ["Key"],
         is_optional: false,
+        is_ordered: false,
       },
     ],
   };
@@ -191,6 +193,7 @@ function traceDescriptor(m: MultiRoleSchema): RelationDescriptor {
         value_type: "string",
         annotations: [],
         is_optional: true,
+        is_ordered: false,
       },
     ],
     roles: [
@@ -198,6 +201,10 @@ function traceDescriptor(m: MultiRoleSchema): RelationDescriptor {
         role_name: "origin",
         player_type_names: [m.documentType, m.emailType],
         cardinality: [1, 1] as [number, number | null],
+        overrides: null,
+        is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
     ],
   };
@@ -315,6 +322,7 @@ function entityDesc(
         value_type: "string",
         annotations: ["Key"],
         is_optional: false,
+        is_ordered: false,
       },
     ],
   };
@@ -348,11 +356,12 @@ describe("abstract-role resolves concrete subtypes", () => {
         value_type: "long",
         annotations: [{ Card: [0, 5] as [number, number | null] }],
         is_optional: true,
+        is_ordered: false,
       },
     ],
     roles: [
-      { role_name: "token", player_type_names: [a.tokenType], cardinality: [1, 1] as [number, number | null] },
-      { role_name: "issue", player_type_names: [a.issueType], cardinality: [1, 1] as [number, number | null] },
+      { role_name: "token", player_type_names: [a.tokenType], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
+      { role_name: "issue", player_type_names: [a.issueType], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
     ],
   });
 

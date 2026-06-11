@@ -115,6 +115,18 @@ pub enum TranspileError {
          a function body must reach `return ...;`"
     )]
     MalformedFunctionBody { function: String },
+
+    /// A role or owns clause has `distinct = true` but `ordered = false`.
+    /// `@distinct` is only valid on a list form (`relates name[]` / `owns attr[]`).
+    #[error(
+        "{kind} `{type_name}` has `distinct = true` on `{item}` without `ordered = true`; \
+         @distinct requires the list form"
+    )]
+    DistinctWithoutOrdered {
+        kind: TypeKind,
+        type_name: String,
+        item: String,
+    },
 }
 
 /// Parse `toml_text` as a type-bridge schema document and emit a canonical

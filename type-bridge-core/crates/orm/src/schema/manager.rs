@@ -54,6 +54,7 @@ impl<'db> SchemaManager<'db> {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
                     annotations: a.annotations.to_vec(),
+                    is_ordered: false,
                 }
             })
             .collect();
@@ -85,6 +86,7 @@ impl<'db> SchemaManager<'db> {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
                     annotations: a.annotations.to_vec(),
+                    is_ordered: false,
                 }
             })
             .collect();
@@ -273,6 +275,7 @@ impl<'db> SchemaManager<'db> {
                         attr_name: attr_name.to_string(),
                         value_type,
                         annotations: vec![],
+                        is_ordered: false,
                     });
                 }
             }

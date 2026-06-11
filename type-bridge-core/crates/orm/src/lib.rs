@@ -56,6 +56,7 @@
 //!         value_type: ValueType::String,
 //!         annotations: vec![],
 //!         is_optional: false,
+//!         is_ordered: false,
 //!     }],
 //! })?;
 //!

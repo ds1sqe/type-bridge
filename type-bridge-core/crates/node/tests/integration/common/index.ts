@@ -212,6 +212,7 @@ function keyAttr(
     value_type: valueType,
     annotations: ["Key"],
     is_optional: false,
+    is_ordered: false,
   };
 }
 
@@ -226,6 +227,7 @@ function cardAttr(
     value_type: valueType,
     annotations: [{ Card: [0, 5] as [number, number] }],
     is_optional: true,
+    is_ordered: false,
   };
 }
 
@@ -264,8 +266,8 @@ export function employmentDescriptor(s: CrudSchema): RelationDescriptor {
     parent_type: null,
     owned_attributes: [cardAttr("since", s.sinceAttr, "date")],
     roles: [
-      { role_name: "employee", player_type_names: [s.personType], cardinality: [1, 1] as [number, number | null] },
-      { role_name: "employer", player_type_names: [s.companyType], cardinality: [1, 1] as [number, number | null] },
+      { role_name: "employee", player_type_names: [s.personType], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
+      { role_name: "employer", player_type_names: [s.companyType], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
     ],
   };
 }

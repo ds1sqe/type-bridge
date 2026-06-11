@@ -628,6 +628,33 @@ Two consequences:
   accepts either annotation order, so round-trip stability comes from the
   emitter's fixed canon.
 
+### List interfaces (engine evidence)
+
+Decided for #140-B against TypeDB 3.11.5 (probe shapes: `owns nickname[]`,
+`owns tag[] @distinct`, `owns pid[] @key`, `relation team, relates member[]
+@distinct`, plus instance-level insert/fetch attempts):
+
+| Probe | Engine verdict |
+| --- | --- |
+| `owns attr[]` | define ACCEPT |
+| `owns attr[] @distinct` (and `@distinct @card(0..5)`) | define ACCEPT |
+| `owns attr[] @key` | define ACCEPT |
+| `relates role[] @distinct` | define ACCEPT |
+| Insert list values (`has attr[] [..]`) | REJECT (`REP256`: "List types are not yet implemented") |
+| Fetch over a list binding (`has attr[] $n`) | REJECT (`REP256`) |
+| List-form links insert (`links (role[]: [..])`) | REJECT (TypeQL parse error) |
+| Plain links insert on a list-declared role (`links (role: $a, role: $b)`) | ACCEPT |
+| Scalar match on a list-declared attribute | ACCEPT (returns no rows — no list instances can exist) |
+
+Consequence: **list interfaces are schema-only on current TypeDB.** The
+define/sync pipeline (authoring → IR → emission → generators) is fully
+supported and built; instance-level semantics — insertion-order
+preservation and `@distinct` duplicate rejection — are unimplemented
+engine-side (`REP256`), so the ORM cannot provide or test them. Runtime
+list-value support is deferred until the engine ships list instances; a
+live test pins the `REP256` rejection so an engine upgrade that implements
+lists surfaces as a test failure prompting the deferred work.
+
 ## Deprecated APIs
 
 The following APIs are deprecated and should NOT be used:

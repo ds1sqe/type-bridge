@@ -39,6 +39,8 @@ def _render_attr_field(
     is_key: bool,
     is_unique: bool,
     cardinality: Cardinality | None,
+    is_ordered: bool = False,
+    is_distinct: bool = False,
 ) -> str:
     """Render a single attribute field declaration."""
     py_name = to_python_name(attr_name)
@@ -48,6 +50,12 @@ def _render_attr_field(
 
     if is_unique:
         return f"{py_name}: attributes.{attr_class} = Flag(Unique)"
+
+    # List attribute (`owns attr[]`): render with Ordered/Distinct markers.
+    if is_ordered:
+        if is_distinct:
+            return f"{py_name}: list[attributes.{attr_class}] = Flag(Ordered, Distinct)"
+        return f"{py_name}: list[attributes.{attr_class}] = Flag(Ordered)"
 
     if cardinality is None or cardinality.is_optional_single:
         return f"{py_name}: attributes.{attr_class} | None = None"
@@ -121,6 +129,8 @@ def _build_entity_context(
                 is_key=attr in key_attrs,
                 is_unique=attr in unique_attrs,
                 cardinality=cardinality,
+                is_ordered=attr in entity.ordered_owns,
+                is_distinct=attr in entity.distinct_owns,
             )
         )
 
@@ -170,6 +180,13 @@ def render_entities(
     imports = ["Entity", "Flag", "Key", "TypeFlags", "Unique"]
     if needs_card:
         imports.insert(1, "Card")
+    # Add Ordered/Distinct when any entity has list or distinct attrs
+    needs_ordered = any(entity.ordered_owns for entity in schema.entities.values())
+    needs_distinct = any(entity.distinct_owns for entity in schema.entities.values())
+    if needs_distinct and "Distinct" not in imports:
+        imports.append("Distinct")
+    if needs_ordered and "Ordered" not in imports:
+        imports.append("Ordered")
 
     entities = []
     all_names = []

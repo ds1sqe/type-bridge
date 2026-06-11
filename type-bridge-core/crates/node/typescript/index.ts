@@ -11,7 +11,7 @@ export type ValueType =
   | "decimal"
   | "duration";
 
-export type Annotation = "Key" | "Unique" | { Card: [number, number | null] };
+export type Annotation = "Key" | "Unique" | "Distinct" | { Card: [number, number | null] };
 
 export interface OwnedAttributeDescriptor {
   field_name: string;
@@ -19,6 +19,10 @@ export interface OwnedAttributeDescriptor {
   value_type: ValueType;
   annotations: Annotation[];
   is_optional: boolean;
+  /** Whether this ownership is declared as an ordered list (`owns name[]`).
+   * Instance-level list semantics are engine-unimplemented (REP256); this is a
+   * schema-emission marker only. */
+  is_ordered: boolean;
   parent_type?: string | null;
   is_abstract?: boolean;
   is_independent?: boolean;
@@ -40,6 +44,12 @@ export interface RoleDescriptor {
   cardinality: [number, number | null] | null;
   overrides: string | null;
   is_abstract: boolean;
+  /** Whether this role is declared as an ordered list (`relates name[]`).
+   * Instance-level list semantics are engine-unimplemented (REP256); this is a
+   * schema-emission marker only. */
+  ordered: boolean;
+  /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
+  distinct: boolean;
 }
 
 export interface RelationDescriptor {
@@ -58,6 +68,10 @@ export interface OwnedAttributeEntry {
   attr_name: string;
   value_type: ValueType;
   annotations: Annotation[];
+  /** Whether this ownership is declared as an ordered list (`owns name[]`).
+   * Instance-level list semantics are engine-unimplemented (REP256); this is a
+   * schema-emission marker only. */
+  is_ordered: boolean;
 }
 
 export interface RoleEntry {
@@ -66,6 +80,12 @@ export interface RoleEntry {
   cardinality: [number, number | null] | null;
   overrides: string | null;
   is_abstract: boolean;
+  /** Whether this role is declared as an ordered list (`relates name[]`).
+   * Instance-level list semantics are engine-unimplemented (REP256); this is a
+   * schema-emission marker only. */
+  ordered: boolean;
+  /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
+  distinct: boolean;
 }
 
 export interface EntitySchemaEntry {

@@ -20,6 +20,7 @@ const person = registry.registerEntity({
       value_type: "string",
       annotations: ["Key"],
       is_optional: false,
+      is_ordered: false,
     },
     {
       field_name: "age",
@@ -27,6 +28,7 @@ const person = registry.registerEntity({
       value_type: "long",
       annotations: [],
       is_optional: true,
+      is_ordered: false,
     },
   ],
 });
@@ -42,6 +44,7 @@ const employment = registry.registerRelation({
       value_type: "date",
       annotations: [],
       is_optional: true,
+      is_ordered: false,
     },
   ],
   roles: [
@@ -49,11 +52,19 @@ const employment = registry.registerRelation({
       role_name: "employee",
       player_type_names: ["person"],
       cardinality: [1, 1],
+      overrides: null,
+      is_abstract: false,
+      ordered: false,
+      distinct: false,
     },
     {
       role_name: "employer",
       player_type_names: ["company"],
       cardinality: [1, 1],
+      overrides: null,
+      is_abstract: false,
+      ordered: false,
+      distinct: false,
     },
   ],
 });

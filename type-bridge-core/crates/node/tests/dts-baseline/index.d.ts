@@ -1,6 +1,6 @@
 import { loadNative } from "./native.js";
 export type ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime-tz" | "decimal" | "duration";
-export type Annotation = "Key" | "Unique" | {
+export type Annotation = "Key" | "Unique" | "Distinct" | {
     Card: [number, number | null];
 };
 export interface OwnedAttributeDescriptor {
@@ -9,6 +9,7 @@ export interface OwnedAttributeDescriptor {
     value_type: ValueType;
     annotations: Annotation[];
     is_optional: boolean;
+    is_ordered: boolean;
     parent_type?: string | null;
     is_abstract?: boolean;
     is_independent?: boolean;
@@ -26,6 +27,10 @@ export interface RoleDescriptor {
     role_name: string;
     player_type_names: string[];
     cardinality: [number, number | null] | null;
+    overrides: string | null;
+    is_abstract: boolean;
+    ordered: boolean;
+    distinct: boolean;
 }
 export interface RelationDescriptor {
     type_name: string;
@@ -45,11 +50,16 @@ export interface OwnedAttributeEntry {
     attr_name: string;
     value_type: ValueType;
     annotations: Annotation[];
+    is_ordered: boolean;
 }
 export interface RoleEntry {
     role_name: string;
     player_type_names: string[];
     cardinality: [number, number | null] | null;
+    overrides: string | null;
+    is_abstract: boolean;
+    ordered: boolean;
+    distinct: boolean;
 }
 export interface EntitySchemaEntry {
     type_name: string;

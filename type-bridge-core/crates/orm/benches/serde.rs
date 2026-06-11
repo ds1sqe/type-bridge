@@ -97,11 +97,13 @@ fn make_small_schema_info() -> SchemaInfo {
                         attr_name: "name".to_string(),
                         value_type: ValueType::String,
                         annotations: vec![],
+                        is_ordered: false,
                     },
                     OwnedAttributeEntry {
                         attr_name: "age".to_string(),
                         value_type: ValueType::Long,
                         annotations: vec![],
+                        is_ordered: false,
                     },
                 ],
                 plays_cardinalities: std::collections::BTreeMap::new(),
@@ -142,6 +144,7 @@ fn make_large_schema_info() -> SchemaInfo {
                     ValueType::Long
                 },
                 annotations: vec![],
+                is_ordered: false,
             })
             .collect();
         info.entities.insert(

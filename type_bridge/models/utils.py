@@ -167,8 +167,11 @@ def extract_metadata(field_type: type) -> FieldInfo:
             if isinstance(list_item_type, type) and issubclass(list_item_type, Attribute):
                 # Found an Attribute type in the list
                 info.attr_type = list_item_type
-                # Don't set card_min/card_max here - let Flag(Card(...)) handle it
-                # or use default multi-value cardinality
+                # Clear the scalar (1,1) default: multi-value cardinality comes
+                # from Flag(Card(...)), and an ordered list without Card must
+                # not inherit a scalar card.
+                info.card_min = None
+                info.card_max = None
                 return info
         except TypeError:
             pass

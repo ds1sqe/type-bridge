@@ -115,3 +115,32 @@ relation interaction @abstract, relates participant @abstract;`;
     assert.equal(participant.is_abstract, true, "participant role should be abstract");
   });
 });
+
+describe("parseSchema list owns (inline schema)", () => {
+  const inlineTql = `define
+entity person, owns nickname[] @distinct;
+attribute nickname, value string;`;
+
+  const inlineSchema = parseSchema(inlineTql, native);
+
+  test("list owns survive marshalling", () => {
+    const person = inlineSchema.entities["person"];
+    assert.ok(person, "entity person should be present");
+    const nicknameOwn = person.owns.find((o) => o.name === "nickname");
+    assert.ok(nicknameOwn, "person should own nickname");
+    assert.equal(nicknameOwn.ordered, true, "nickname ownership should be ordered");
+    assert.equal(nicknameOwn.distinct, true, "nickname ownership should be distinct");
+  });
+
+  test("plain corpus owns entries default ordered and distinct to false", () => {
+    // parity-person owns parity-tag (a plain @card ownership, no []), verifying
+    // ordered/distinct both come through as false from the Rust core.
+    const corpusSchema = parseSchema(schemaText, native);
+    const person = corpusSchema.entities["parity-person"];
+    assert.ok(person, "parity-person should be present in corpus schema");
+    const tagOwn = person.owns.find((o) => o.name === "parity-tag");
+    assert.ok(tagOwn, "parity-person should own parity-tag");
+    assert.equal(tagOwn.ordered, false, "parity-tag ownership should not be ordered");
+    assert.equal(tagOwn.distinct, false, "parity-tag ownership should not be distinct");
+  });
+});

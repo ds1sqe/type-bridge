@@ -221,6 +221,7 @@ export function keyAttributeDescriptor(schema: EntitySchema): OwnedAttributeDesc
         value_type: spec.attrType.valueType,
         annotations: ["Key"],
         is_optional: false,
+        is_ordered: false,
       };
     }
   }

@@ -1,4 +1,5 @@
 define
+attribute tag, value string;
 attribute isbn @abstract, value string;
 attribute isbn-13 sub isbn;
 attribute isbn-10 sub isbn;
@@ -22,7 +23,7 @@ attribute start-timestamp, value datetime;
 attribute end-timestamp, value datetime;
 attribute status, value string @regex("^(paid|dispatched|delivered|returned|canceled)$");
 attribute success, value boolean;
-entity book @abstract, owns isbn @card(0..2), owns isbn-13 @key, owns isbn-10 @unique, owns title, owns page-count, owns genre @card(0..), owns price, plays contribution:work, plays publishing:published, plays promotion-inclusion:item, plays order-line:item, plays rating:rated, plays recommendation:recommended;
+entity book @abstract, owns isbn @card(0..2), owns isbn-13 @key, owns isbn-10 @unique, owns title, owns page-count, owns genre @card(0..), owns price, owns tag[] @distinct, plays contribution:work, plays publishing:published, plays promotion-inclusion:item, plays order-line:item, plays rating:rated, plays recommendation:recommended;
 entity hardback sub book, owns stock;
 entity paperback sub book, owns stock;
 entity ebook sub book;
@@ -48,7 +49,7 @@ relation illustrating sub contribution, relates illustrator as contributor;
 relation publishing, relates publisher, relates published, relates publication;
 relation promotion-inclusion, relates promotion, relates item, owns discount;
 relation order-line, relates order, relates item, owns quantity, owns price;
-relation rating, relates review, relates rated;
+relation rating, relates review, relates rated, relates reviewer[] @distinct;
 relation action-execution, relates action, relates executor, owns timestamp;
 relation delivery, relates deliverer, relates delivered, relates destination;
 relation locating, relates located, relates location;

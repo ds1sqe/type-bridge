@@ -235,6 +235,10 @@ class SchemaInfo:
                     "role_name": role["role_name"],
                     "player_type_names": role["player_type_names"],
                     "cardinality": role["cardinality"],
+                    "overrides": role["overrides"],
+                    "is_abstract": role["is_abstract"],
+                    "ordered": role["ordered"],
+                    "distinct": role["distinct"],
                 }
                 for role in descriptor["roles"]
             ]
@@ -281,6 +285,7 @@ def _schema_entry_from_descriptor(descriptor: dict) -> dict:
                 "attr_name": attr["attr_name"],
                 "value_type": attr["value_type"],
                 "annotations": attr["annotations"],
+                "is_ordered": attr["is_ordered"],
             }
             for attr in descriptor["owned_attributes"]
         ],

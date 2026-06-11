@@ -22,6 +22,8 @@ class _RoleMetadata:
     cardinality: Any
     overrides: str | None = None
     is_abstract: bool = False
+    ordered: bool = False
+    distinct: bool = False
 
 
 PYTHON_TO_RUST_VALUE_TYPE = {
@@ -224,6 +226,8 @@ def relation_descriptor(model_cls: type[Relation]) -> dict[str, Any]:
                 "cardinality": cardinality_tuple(role.cardinality),
                 "overrides": role.overrides,
                 "is_abstract": role.is_abstract,
+                "ordered": role.ordered,
+                "distinct": role.distinct,
             }
         )
 
@@ -248,6 +252,8 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
                 cardinality=role.cardinality,
                 overrides=role.overrides,
                 is_abstract=role.is_abstract,
+                ordered=role.ordered,
+                distinct=role.distinct,
             )
             for role in own_role_map.values()
         ]
@@ -272,6 +278,8 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
                 cardinality=cardinality,
                 overrides=overrides,
                 is_abstract=is_abstract,
+                ordered=getattr(default, "ordered", False),
+                distinct=getattr(default, "distinct", False),
             )
         )
     return fallback
@@ -325,6 +333,7 @@ def attribute_descriptors(model_cls: type[TypeDBType]) -> list[dict[str, Any]]:
                 "value_type": attr_entry["value_type"],
                 "annotations": _annotations(attr_info.flags),
                 "is_optional": _is_optional(attr_info.flags),
+                "is_ordered": attr_info.flags.is_ordered,
             }
         )
     return descriptors
@@ -593,6 +602,8 @@ def _annotations(flags: Any) -> list[Any]:
         annotations.append("Key")
     if flags.is_unique:
         annotations.append("Unique")
+    if flags.is_distinct:
+        annotations.append("Distinct")
 
     should_emit_card = flags.card_min is not None or flags.card_max is not None
     default_unique_card = flags.is_unique and flags.card_min == 1 and flags.card_max == 1

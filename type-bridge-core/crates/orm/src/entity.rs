@@ -9,7 +9,7 @@ use crate::error::Result;
 use crate::filter::Filter;
 use crate::value::AttributeValue;
 
-/// Ownership annotation on an attribute (mirrors TypeDB `@key`, `@unique`, `@card`).
+/// Ownership annotation on an attribute (mirrors TypeDB `@key`, `@unique`, `@card`, `@distinct`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Annotation {
     /// `@key` — unique identifier attribute.
@@ -18,6 +18,12 @@ pub enum Annotation {
     Unique,
     /// `@card(min, max)` — cardinality constraint. `None` max = unbounded.
     Card(u32, Option<u32>),
+    /// `@distinct` — unique values within a list attribute ownership.
+    ///
+    /// Only valid on ordered ownerships (`owns name[]`). Instance-level list
+    /// semantics are engine-unimplemented (REP256); this variant is a schema-emission
+    /// marker only.
+    Distinct,
 }
 
 /// Metadata about one owned attribute on an entity type.

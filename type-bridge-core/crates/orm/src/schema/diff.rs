@@ -866,6 +866,7 @@ mod tests {
             attr_name: name.into(),
             value_type: vt,
             annotations,
+            is_ordered: false,
         }
     }
 

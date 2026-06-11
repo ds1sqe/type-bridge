@@ -339,5 +339,6 @@ pub fn attr(
             vec![Annotation::Card(0, Some(5))]
         },
         is_optional: !is_key,
+        is_ordered: false,
     }
 }

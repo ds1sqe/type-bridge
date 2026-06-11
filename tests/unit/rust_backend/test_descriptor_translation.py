@@ -13,12 +13,14 @@ from type_bridge import (
     DateTime,
     DateTimeTZ,
     Decimal,
+    Distinct,
     Double,
     Duration,
     Entity,
     Flag,
     Integer,
     Key,
+    Ordered,
     Relation,
     Role,
     String,
@@ -139,9 +141,31 @@ def test_entity_descriptor_translates_all_value_types() -> None:
 
     name = next(attr for attr in descriptor["owned_attributes"] if attr["field_name"] == "name")
     assert name["annotations"] == ["Key"]
+    assert name["is_ordered"] is False
     age = next(attr for attr in descriptor["owned_attributes"] if attr["field_name"] == "age")
     assert age["is_optional"] is True
     assert age["annotations"] == [{"Card": [0, 1]}]
+    assert age["is_ordered"] is False
+
+
+def test_role_descriptor_includes_ordered_and_distinct_defaults() -> None:
+    """Role descriptors include `ordered` and `distinct` fields defaulting to False."""
+    descriptor = descriptor_for_model(RustEmployment)
+
+    for role in descriptor["roles"]:
+        assert "ordered" in role, f"role {role['role_name']} missing 'ordered'"
+        assert "distinct" in role, f"role {role['role_name']} missing 'distinct'"
+        assert role["ordered"] is False
+        assert role["distinct"] is False
+
+
+def test_owned_attr_descriptor_includes_is_ordered_default() -> None:
+    """Owned attribute descriptors include `is_ordered` field defaulting to False."""
+    descriptor = descriptor_for_model(RustPerson)
+
+    for attr in descriptor["owned_attributes"]:
+        assert "is_ordered" in attr, f"attr {attr['field_name']} missing 'is_ordered'"
+        assert attr["is_ordered"] is False
 
 
 def test_relation_descriptor_translates_roles() -> None:
@@ -155,6 +179,8 @@ def test_relation_descriptor_translates_roles() -> None:
             "cardinality": None,
             "overrides": None,
             "is_abstract": False,
+            "ordered": False,
+            "distinct": False,
         },
         {
             "role_name": "employer",
@@ -162,6 +188,8 @@ def test_relation_descriptor_translates_roles() -> None:
             "cardinality": [1, 1],
             "overrides": None,
             "is_abstract": False,
+            "ordered": False,
+            "distinct": False,
         },
     ]
 
@@ -184,6 +212,8 @@ def test_subtype_relation_descriptor_flattens_inherited_roles() -> None:
             "cardinality": None,
             "overrides": None,
             "is_abstract": False,
+            "ordered": False,
+            "distinct": False,
         }
     ]
 
@@ -196,6 +226,8 @@ def test_subtype_relation_descriptor_flattens_inherited_roles() -> None:
             "cardinality": None,
             "overrides": None,
             "is_abstract": False,
+            "ordered": False,
+            "distinct": False,
         }
     ]
 
@@ -453,3 +485,105 @@ def test_abstract_role_inputs_ok_on_plain_inherited_child() -> None:
     inputs = role_player_inputs(instance)
     assert len(inputs) == 1
     assert inputs[0]["role_name"] == "participant"
+
+
+# ---------------------------------------------------------------------------
+# List-interface descriptor tests (Phase 3: ordered / distinct)
+# ---------------------------------------------------------------------------
+
+
+class RustTag(String):
+    pass
+
+
+class RustListEntity(Entity):
+    """Entity with an ordered-distinct (list) attribute."""
+
+    flags = TypeFlags(name="rust-list-entity")
+
+    name: RustName = Flag(Key)
+    tag: list[RustTag] = Flag(Ordered, Distinct)
+
+
+class RustTagOrderedOnly(String):
+    pass
+
+
+class RustListEntityOrderedOnly(Entity):
+    """Entity with an ordered (list, no distinct) attribute."""
+
+    flags = TypeFlags(name="rust-list-entity-ordered-only")
+
+    name: RustName = Flag(Key)
+    labels: list[RustTagOrderedOnly] = Flag(Ordered)
+
+
+class RustListRelation(Relation):
+    """Relation with an ordered-distinct role."""
+
+    flags = TypeFlags(name="rust-list-relation")
+
+    item: Role[RustListEntity] = Role("item", RustListEntity)
+    reviewer: Role[RustPerson] = Role("reviewer", RustPerson, ordered=True, distinct=True)
+
+
+def test_ordered_distinct_attr_descriptor_is_ordered_true() -> None:
+    """Flag(Ordered, Distinct) on an attribute must yield is_ordered=True in the descriptor."""
+    from type_bridge import Distinct, Ordered  # noqa: F401 — ensure imports work
+
+    descriptor = descriptor_for_model(RustListEntity)
+    tag_attr = next(a for a in descriptor["owned_attributes"] if a["field_name"] == "tag")
+    assert tag_attr["is_ordered"] is True, (
+        f"expected tag is_ordered=True, got {tag_attr['is_ordered']!r}"
+    )
+
+
+def test_ordered_distinct_attr_descriptor_has_distinct_annotation() -> None:
+    """Flag(Ordered, Distinct) must produce 'Distinct' in the annotations list."""
+    descriptor = descriptor_for_model(RustListEntity)
+    tag_attr = next(a for a in descriptor["owned_attributes"] if a["field_name"] == "tag")
+    assert "Distinct" in tag_attr["annotations"], (
+        f"expected 'Distinct' in annotations, got {tag_attr['annotations']!r}"
+    )
+
+
+def test_ordered_only_attr_descriptor_no_distinct_annotation() -> None:
+    """Flag(Ordered) without Distinct must NOT include 'Distinct' in annotations."""
+    descriptor = descriptor_for_model(RustListEntityOrderedOnly)
+    labels_attr = next(a for a in descriptor["owned_attributes"] if a["field_name"] == "labels")
+    assert labels_attr["is_ordered"] is True, (
+        f"expected labels is_ordered=True, got {labels_attr['is_ordered']!r}"
+    )
+    assert "Distinct" not in labels_attr["annotations"], (
+        f"expected 'Distinct' NOT in annotations, got {labels_attr['annotations']!r}"
+    )
+
+
+def test_ordered_distinct_role_descriptor_flags() -> None:
+    """Role(ordered=True, distinct=True) must yield ordered=True, distinct=True in the descriptor."""
+    descriptor = descriptor_for_model(RustListRelation)
+    reviewer_role = next(r for r in descriptor["roles"] if r["role_name"] == "reviewer")
+    assert reviewer_role["ordered"] is True, (
+        f"expected reviewer.ordered=True, got {reviewer_role['ordered']!r}"
+    )
+    assert reviewer_role["distinct"] is True, (
+        f"expected reviewer.distinct=True, got {reviewer_role['distinct']!r}"
+    )
+
+
+def test_flag_distinct_without_ordered_raises() -> None:
+    """Flag(Distinct) without Ordered must raise ValueError at class definition time."""
+    from type_bridge import Distinct  # noqa: F401
+
+    with pytest.raises(ValueError, match="(?i)ordered"):
+
+        class _BadEntity(Entity):
+            flags = TypeFlags(name="bad-entity")
+            name: RustName = Flag(Key)
+            tag: RustTag = Flag(Distinct)  # type: ignore[assignment]
+
+
+def test_role_distinct_without_ordered_raises() -> None:
+    """Role(distinct=True) without ordered=True must raise ValueError."""
+    with pytest.raises(ValueError, match="ordered"):
+        Role("bad-role", RustPerson, distinct=True)
