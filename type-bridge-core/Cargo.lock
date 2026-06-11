@@ -2594,6 +2594,7 @@ dependencies = [
  "tracing",
  "type-bridge-core-lib",
  "type-bridge-orm-derive",
+ "type-bridge-typedb-driver-b7",
  "typedb-driver",
 ]
 
@@ -2628,6 +2629,7 @@ dependencies = [
  "tracing-subscriber",
  "type-bridge-core-lib",
  "type-bridge-server",
+ "type-bridge-typedb-driver-b7",
  "typedb-driver",
  "uuid",
 ]
@@ -2640,6 +2642,39 @@ dependencies = [
  "serde",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "type-bridge-typedb-driver-b7"
+version = "3.8.1"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "crossbeam",
+ "futures",
+ "http",
+ "itertools 0.10.5",
+ "maybe-async",
+ "prost",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-types",
+ "tracing",
+ "tracing-subscriber",
+ "type-bridge-typedb-protocol-b7",
+ "uuid",
+]
+
+[[package]]
+name = "type-bridge-typedb-protocol-b7"
+version = "3.7.0"
+dependencies = [
+ "prost",
+ "tonic",
 ]
 
 [[package]]

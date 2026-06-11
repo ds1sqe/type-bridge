@@ -20,7 +20,7 @@ import sys
 # Substrings that identify which gate check produced the rejection.
 CLASS_MARKERS = {
     # The embedded Rust runtime driver check — wheel-appropriate remediation.
-    "embedded": "TypeBridge's embedded runtime driver",
+    "embedded": "TypeBridge's embedded runtime",
     # The installed Python driver band check — pip-level remediation.
     "installed": "is not protocol-compatible with",
     # The support-window check (either component below floor / above ceiling).

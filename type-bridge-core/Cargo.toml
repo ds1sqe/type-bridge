@@ -9,6 +9,8 @@ members = [
     "crates/orm-derive",
     "crates/node",
     "crates/toml-transpiler",
+    "vendor/typedb-protocol-b7",
+    "vendor/typedb-driver-b7",
 ]
 
 [workspace.package]

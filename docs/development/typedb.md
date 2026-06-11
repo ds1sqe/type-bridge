@@ -33,30 +33,28 @@ within a band; cross-band connections always fail at connect time.
 \* 3.7 is protocol-compatible with band 7 but unsupported. The band map is declared once
 in `crates/core`'s version module and consumed by every tier.
 
-### One band per release
+### Dual-band runtime
 
-Every TypeBridge transaction executes through the Rust driver embedded in the installed
-wheel. Therefore each type-bridge release operates against exactly **one** protocol band
-— the band its wheel embeds.
+TypeBridge's wheel embeds both TypeDB Rust driver lines — band-7 (3.8.1, vendored fork)
+and band-8 (3.11.5, upstream) — and dispatches to the correct driver at connect time based
+on the server's protocol band. A single type-bridge release therefore serves the full
+supported window without any user-side configuration.
 
-**This release line** embeds the band-8 (3.11) driver:
+**This release line** serves TypeDB 3.8 through 3.11:
 
 | Dimension | Supported range | Notes |
 |-----------|-----------------|-------|
-| TypeDB server | 3.11.x | Band-8 servers only |
-| Python `typedb-driver` | `~=3.11` (e.g. 3.11.5) | Must match band 8; the `dev` extra pins `~=3.11.5`; the `typedb-driver` extra allows `>=3.8,<3.12` (spans release lines, not for mixing bands) |
+| TypeDB server | 3.8.0–3.11.x | Band-7 (3.8.x, 3.10.x) and band-8 (3.11.x); dispatch is automatic |
+| Python `typedb-driver` | `~=3.11` (e.g. 3.11.5) | The `dev` extra pins `~=3.11.5`; the `typedb-driver` extra allows `>=3.8,<3.12`. This is the installed Python driver used for direct driver APIs and tests — it does not control which TypeDB server you can connect to via the ORM |
 | CPython interpreter | 3.12–3.13 | Floor: PEP 695 syntax in the codebase; ceiling tracks the highest CPython the typedb-driver publishes wheels for |
-
-Band-7 servers (3.8.x / 3.10.x) are served by the **previous type-bridge release line**.
 
 ### Update-safety contract
 
-If you upgrade type-bridge while your TypeDB server remains on band 7 (3.8.x or 3.10.x),
-`Database.connect()` raises a human-readable, actionable error that names the embedded
-runtime driver version and your server version and tells you exactly what to do (use a
-type-bridge release matching your server line, or a server matching this release) —
-before any transaction is attempted, never mid-operation. The error never exposes raw
-protocol numbers.
+`Database.connect()` raises a human-readable, actionable error when connecting to a server
+outside the supported window (e.g. 3.7.x) or when the installed Python `typedb-driver`
+mismatches the server's band — before any transaction is attempted, never mid-operation.
+The error names the relevant versions and tells you exactly what to do. It never exposes
+raw protocol numbers.
 
 The probe calls `GET :8000/v1/version` on the server's HTTP API port. If that endpoint is
 unreachable the probe fails closed (connection refused, not a silent pass).
@@ -541,7 +539,7 @@ If migrating from TypeDB 2.x:
 - Ensure correct clause ordering
 
 **Driver changes:**
-- Update `typedb-driver` to the band-8 line (`~=3.11`)
+- Update `typedb-driver` to the 3.11 line (`~=3.11`)
 - Remove session management code
 - Add credentials for authentication
 - Use `transaction.query()` instead of separate query methods

@@ -101,9 +101,29 @@ def check_supported(driver: str, server: str) -> None:
 def embedded_driver_version() -> str:
     """Return the typedb-driver version compiled into the Rust runtime.
 
-    Every TypeBridge transaction executes through the embedded Rust driver,
-    so its protocol band must match the server alongside the installed
-    Python driver's.
+    Returns the band-8 (3.11.x) pin for back-compat. Use
+    ``embedded_driver_versions()`` to get all compiled-in bands.
+    """
+    ...
+
+def embedded_driver_versions() -> dict[int, str]:
+    """Return all driver versions compiled into the Rust runtime, keyed by protocol band.
+
+    Returns a dict mapping ``int`` band → ``str`` version for every band
+    feature compiled into this build.  The default build returns
+    ``{7: "3.8.1", 8: "3.11.5"}``.
+    """
+    ...
+
+def check_server_supported(server: str) -> None:
+    """Assert this build's embedded runtime can serve ``server``.
+
+    Uses band-set membership (not equality): the server passes when its protocol
+    band is among the bands compiled into this build.  The band set is derived
+    from ``embedded_driver_versions()`` — never a hardcoded literal.
+
+    Raises ``VersionError`` when the server is outside the support window or
+    its band is not compiled into this build.
     """
     ...
 

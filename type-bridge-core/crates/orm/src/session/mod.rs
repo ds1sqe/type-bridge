@@ -19,3 +19,5 @@ pub use transaction::Transaction;
 
 #[cfg(feature = "typedb")]
 pub use real_driver::ensure_database_exists;
+#[cfg(feature = "typedb")]
+pub use real_driver::embedded_driver_versions;

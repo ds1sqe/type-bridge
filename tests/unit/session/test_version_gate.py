@@ -535,20 +535,47 @@ class TestConnectProbeUnreachable:
 class TestEnsureRuntimeSupported:
     """The embedded Rust runtime driver is gate-checked against the server."""
 
-    def test_same_band_passes(self):
-        """Embedded 3.8.1 (band 7) with a band-7 server passes."""
-        version.ensure_runtime_supported("3.8.1", "3.10.4")
+    def test_band7_server_passes(self):
+        """Band-7 server (3.10.4) is accepted by the embedded gate (whole-window service)."""
+        # Gate inversion: embedded runtime carries both bands, so band-7 servers pass.
+        version.ensure_runtime_supported("3.10.4")
 
-    def test_cross_band_raises_with_embedded_framing(self):
-        """Embedded 3.8.1 with a band-8 server raises with wheel-appropriate framing."""
+    def test_band8_server_passes(self):
+        """Band-8 server (3.11.5) is accepted by the embedded gate."""
+        version.ensure_runtime_supported("3.11.5")
+
+    def test_below_window_raises_with_embedded_framing(self):
+        """Server below the window (3.7.3) raises with wheel-appropriate framing."""
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
-            version.ensure_runtime_supported("3.8.1", "3.11.5")
+            version.ensure_runtime_supported("3.7.3")
         msg = str(exc_info.value)
-        assert "embedded runtime driver" in msg
-        assert "3.8.1" in msg
-        assert "3.11.5" in msg
-        # The pip-install remediation does not apply to a compiled-in driver.
+        # Message names the server and the supported window; no band tokens.
+        assert "3.7.3" in msg
+        assert "3.8" in msg
         assert "type-bridge release" in msg
+        assert "band 7" not in msg
+        assert "band 8" not in msg
+        assert "0.0.0" not in msg
+
+    def test_above_window_raises_with_embedded_framing(self):
+        """Server above the window (3.12.0) raises with wheel-appropriate framing."""
+        with pytest.raises(version.UnsupportedVersionError) as exc_info:
+            version.ensure_runtime_supported("3.12.0")
+        msg = str(exc_info.value)
+        assert "3.12.0" in msg
+        assert "3.8" in msg
+        assert "band 7" not in msg
+        assert "band 8" not in msg
+        assert "0.0.0" not in msg
+
+    def test_window_message_no_band_tokens(self):
+        """Out-of-window embedded message must not expose raw band numbers."""
+        with pytest.raises(version.UnsupportedVersionError) as exc_info:
+            version.ensure_runtime_supported("3.7.3")
+        msg = str(exc_info.value)
+        assert "band 7" not in msg
+        assert "band 8" not in msg
+        assert "0.0.0" not in msg
 
     def test_embedded_driver_version_reads_core(self, monkeypatch: pytest.MonkeyPatch):
         """The wrapper delegates the embedded version read to core."""
@@ -556,27 +583,103 @@ class TestEnsureRuntimeSupported:
         assert _typedb_driver_mod.embedded_driver_version() == "9.9.9"
 
 
+class TestEmbeddedDriverVersions:
+    """embedded_driver_versions() exposes both compiled-in pins."""
+
+    def test_returns_dict(self):
+        """embedded_driver_versions() must return a dict."""
+        result = _typedb_driver_mod.embedded_driver_versions()
+        assert isinstance(result, dict)
+
+    def test_contains_both_bands(self):
+        """Default build must include both band-7 and band-8 entries."""
+        result = _typedb_driver_mod.embedded_driver_versions()
+        assert 7 in result, f"band-7 missing from {result}"
+        assert 8 in result, f"band-8 missing from {result}"
+
+    def test_band8_matches_back_compat_single(self):
+        """Band-8 entry must equal the back-compat embedded_driver_version()."""
+        versions = _typedb_driver_mod.embedded_driver_versions()
+        single = _typedb_driver_mod.embedded_driver_version()
+        assert versions[8] == single
+
+    def test_band7_is_3_8_line(self):
+        """Band-7 pin must be on the 3.8.x server line."""
+        versions = _typedb_driver_mod.embedded_driver_versions()
+        pin = versions.get(7)
+        if pin is None:
+            return  # single-band8 build
+        assert pin.startswith("3.8."), f"band-7 pin {pin!r} not on 3.8.x line"
+
+    def test_delegates_to_core(self, monkeypatch: pytest.MonkeyPatch):
+        """embedded_driver_versions() delegates to type_bridge_core."""
+        fake = {7: "3.8.0", 8: "3.11.0"}
+        monkeypatch.setattr(type_bridge_core, "embedded_driver_versions", lambda: fake)
+        result = _typedb_driver_mod.embedded_driver_versions()
+        assert result == fake
+
+
 class TestConnectRuntimeGate:
     """connect() checks the embedded runtime driver as well as the installed one."""
 
-    def test_runtime_cross_band_raises_before_driver(self, monkeypatch: pytest.MonkeyPatch):
-        """Installed pair compatible, embedded pair cross-band: gate still fires."""
+    def test_band7_server_now_accepted(self, monkeypatch: pytest.MonkeyPatch):
+        """Band-7 server is now ACCEPTED by the embedded gate (whole-window service)."""
         import type_bridge.session as session_mod
 
-        # Installed Python driver matches the server (both band 8)...
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.11.5")
-        monkeypatch.setattr(
-            _typedb_driver_mod, "server_version", lambda address, **kwargs: "3.11.5"
-        )
-        # ...but the embedded runtime driver is band 7.
-        monkeypatch.setattr(_typedb_driver_mod, "embedded_driver_version", lambda: "3.8.1")
+        # Installed Python driver is band-7 to match the server.
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.10.0")
+        # Probe returns band-7 server.
+        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.10.4")
+        # Embedded driver_version kept for call-site compat; gate uses check_server_supported.
+        monkeypatch.setattr(_typedb_driver_mod, "embedded_driver_version", lambda: "3.11.5")
+
+        fake_driver = MagicMock()
+        mock_typedb = MagicMock()
+        mock_typedb.driver.return_value = fake_driver
+        monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
+        monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", MagicMock())
+
+        db = session_mod.Database(address="localhost:1729", database="runtime_gate")
+        db.connect()
+        mock_typedb.driver.assert_called_once()
+
+    def test_out_of_window_server_raises_before_driver(self, monkeypatch: pytest.MonkeyPatch):
+        """Out-of-window server raises UnsupportedVersionError and TypeDB.driver is NOT called."""
+        import type_bridge.session as session_mod
+
+        # Installed driver is band-7 to skip the installed-driver gate...
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.8.1")
+        # ...but server is below window floor.
+        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.7.3")
 
         driver_factory = MagicMock()
         monkeypatch.setattr(session_mod, "TypeDB", driver_factory)
+        monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", MagicMock())
 
         db = session_mod.Database(address="localhost:1729", database="runtime_gate")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
             db.connect()
 
-        assert "embedded runtime driver" in str(exc_info.value)
+        msg = str(exc_info.value)
+        assert "3.7.3" in msg
         driver_factory.driver.assert_not_called()
+
+    def test_runtime_gate_failure_message_no_band_tokens(self, monkeypatch: pytest.MonkeyPatch):
+        """Runtime gate failure message must not expose raw band numbers."""
+        import type_bridge.session as session_mod
+
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.8.1")
+        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.7.3")
+
+        driver_factory = MagicMock()
+        monkeypatch.setattr(session_mod, "TypeDB", driver_factory)
+        monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", MagicMock())
+
+        db = session_mod.Database(address="localhost:1729", database="runtime_gate")
+        with pytest.raises(version.UnsupportedVersionError) as exc_info:
+            db.connect()
+
+        msg = str(exc_info.value)
+        assert "band 7" not in msg
+        assert "band 8" not in msg
+        assert "0.0.0" not in msg

@@ -13,9 +13,21 @@
 //! | [`MAX_SUPPORTED_LINE`] | Ceiling of the support window as `(major, minor)` (`3.11`) |
 //! | [`window_contains`] | Range predicate combining both bounds |
 //! | [`band`] | Protocol-band lookup (data; measured against live servers) |
-//! | [`check_supported`] | Combined gate: window + band-equality check |
+//! | [`check_supported`] | Installed-driver gate: window + band-equality check |
+//! | [`check_server_supported`] | Embedded-runtime gate: window + band ∈ embedded set |
 //! | [`server_version`] | HTTP probe → `GET /v1/version` |
 //! | [`VersionError`] | Typed error for all failure modes |
+//!
+//! ## Two gates, two questions
+//!
+//! [`check_supported`] answers *"is the **installed** single-band Python driver
+//! protocol-compatible with this server?"* — it compares the one driver band the
+//! user has installed against the server's band.
+//!
+//! [`check_server_supported`] answers *"does **this build** of type-bridge embed a
+//! driver that can serve this server?"* — the embedded runtime can carry several
+//! bands at once (the default build embeds them all), so it tests band-set
+//! membership rather than equality.
 
 use std::fmt;
 use std::str::FromStr;
@@ -213,6 +225,58 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
     }
 }
 
+/// Assert that this build's **embedded** runtime can serve `server`.
+///
+/// This is the gate the embedded driver (the wheel / server binary / Node
+/// binding) uses, as opposed to [`check_supported`], which gates an externally
+/// **installed** single-band Python driver.  The embedded runtime may carry
+/// several protocol bands simultaneously (the default build embeds them all),
+/// so this gate tests **band-set membership** instead of band equality: the
+/// server is served when its band is present in `embedded_bands`.
+///
+/// `embedded_bands` is supplied by the caller and is cfg-derived from the
+/// `band7` / `band8` features compiled into that crate — core declares no band
+/// features and never hardcodes the set.
+///
+/// # Errors
+///
+/// - [`VersionError::Unsupported`] when `server` lies outside the support
+///   window (below-window `3.7`, above-window `3.12`) **or** is in-window but
+///   has no mapped band (e.g. a future `3.9` line, only reachable if the window
+///   ever widens past the band map).  This path names no band — it is the same
+///   window-class rejection an out-of-range server gets today.
+/// - [`VersionError::EmbeddedUnavailable`] when `server` is in-window with a
+///   mapped band that this build did **not** compile in.  Reachable only in a
+///   non-default single-band build; the default build embeds every band, so an
+///   in-window server is always served.
+pub fn check_server_supported(
+    server: &Version,
+    embedded_bands: &[u8],
+) -> Result<(), VersionError> {
+    // Window check first — identical class to check_supported's server arm, so
+    // below/above-window servers fail with the existing window message.
+    if !window_contains(server) {
+        return Err(VersionError::Unsupported {
+            component: "server",
+            found: *server,
+        });
+    }
+
+    match band(server) {
+        // In-window but unmapped minor: defensive, only reachable if the window
+        // widens past the band map (today the map covers the whole window).
+        // Reject with the window class — naming a band here would be a lie, as
+        // there is no band to name.
+        None => Err(VersionError::Unsupported {
+            component: "server",
+            found: *server,
+        }),
+        Some(b) if embedded_bands.contains(&b) => Ok(()),
+        // In-window, mapped, but this build did not embed the matching driver.
+        Some(_) => Err(VersionError::EmbeddedUnavailable { server: *server }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HTTP probe helpers (pure / unit-testable)
 // ---------------------------------------------------------------------------
@@ -339,6 +403,15 @@ pub enum VersionError {
         /// Band of the server.
         server_band: u8,
     },
+    /// An in-window server whose protocol band is mapped, but this build of
+    /// type-bridge did not embed a driver for that band.
+    ///
+    /// Only reachable in a non-default single-band build — the default build
+    /// embeds every band, so any in-window server is served.
+    EmbeddedUnavailable {
+        /// The server version that has no embedded driver in this build.
+        server: Version,
+    },
     /// The HTTP probe failed (network, HTTP, or response-parse error).
     Probe(String),
     /// A version string could not be parsed.
@@ -371,6 +444,12 @@ impl fmt::Display for VersionError {
                      (e.g. typedb-driver ~{server_line})"
                 )
             }
+            VersionError::EmbeddedUnavailable { server } => write!(
+                f,
+                "server {server} requires an embedded driver this build of type-bridge \
+                 does not include; rebuild with default features (or use a type-bridge \
+                 release built for this server line)"
+            ),
             VersionError::Probe(msg) => write!(f, "version probe failed: {msg}"),
             VersionError::Parse(msg) => write!(f, "version parse error: {msg}"),
         }
@@ -558,6 +637,109 @@ mod tests {
             ),
             "expected Unsupported(server), got {err:?}"
         );
+    }
+
+    // -- check_server_supported ----------------------------------------------
+
+    #[test]
+    fn server_383_both_bands_accept() {
+        // In-window band-7 server, both bands embedded → served.
+        assert!(check_server_supported(&Version::new(3, 8, 3), &[7, 8]).is_ok());
+    }
+
+    #[test]
+    fn server_3115_both_bands_accept() {
+        // In-window band-8 server, both bands embedded → served.
+        assert!(check_server_supported(&Version::new(3, 11, 5), &[7, 8]).is_ok());
+    }
+
+    #[test]
+    fn server_373_reject_window() {
+        // Below the floor — window class, never a band/embedded message.
+        let err = check_server_supported(&Version::new(3, 7, 3), &[7, 8]).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VersionError::Unsupported {
+                    component: "server",
+                    ..
+                }
+            ),
+            "expected Unsupported(server), got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("outside the supported window"),
+            "expected window message, got {err}"
+        );
+    }
+
+    #[test]
+    fn server_3120_reject_window() {
+        // Above the ceiling — window class.
+        let err = check_server_supported(&Version::new(3, 12, 0), &[7, 8]).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VersionError::Unsupported {
+                    component: "server",
+                    ..
+                }
+            ),
+            "expected Unsupported(server), got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("outside the supported window"),
+            "expected window message, got {err}"
+        );
+    }
+
+    #[test]
+    fn server_383_band8_only_unavailable() {
+        // Band-7 server, only band-8 embedded → embedded-unavailable.
+        let err = check_server_supported(&Version::new(3, 8, 3), &[8]).unwrap_err();
+        assert!(
+            matches!(err, VersionError::EmbeddedUnavailable { .. }),
+            "expected EmbeddedUnavailable, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn server_3115_band7_only_unavailable() {
+        // Band-8 server, only band-7 embedded → embedded-unavailable.
+        let err = check_server_supported(&Version::new(3, 11, 5), &[7]).unwrap_err();
+        assert!(
+            matches!(err, VersionError::EmbeddedUnavailable { .. }),
+            "expected EmbeddedUnavailable, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_unavailable_message_names_server_no_forbidden_tokens() {
+        let err = VersionError::EmbeddedUnavailable {
+            server: Version::new(3, 8, 3),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("3.8.3"), "missing server version: {msg}");
+        // The forbidden tokens must never appear in any gate message.
+        for forbidden in ["band 7", "band 8", "0.0.0"] {
+            assert!(
+                !msg.contains(forbidden),
+                "embedded-unavailable message leaked forbidden token {forbidden:?}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn check_server_supported_window_reject_no_forbidden_tokens() {
+        // The window-class rejection from the embedded gate must also be clean.
+        let err = check_server_supported(&Version::new(3, 7, 3), &[7, 8]).unwrap_err();
+        let msg = err.to_string();
+        for forbidden in ["band 7", "band 8", "0.0.0"] {
+            assert!(
+                !msg.contains(forbidden),
+                "window rejection leaked forbidden token {forbidden:?}: {msg}"
+            );
+        }
     }
 
     // -- error Display -------------------------------------------------------

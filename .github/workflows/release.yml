@@ -47,7 +47,8 @@ jobs:
       - name: Run unit tests
         run: uv run pytest tests/unit/ -v --tb=short
 
-  # Publish Rust crates to crates.io (dependency order)
+  # Publish Rust crates to crates.io (dependency order):
+  # core-lib → orm-derive → protocol-b7 → driver-b7 → orm → server
   publish-crates:
     name: Publish Rust crates to crates.io
     needs: test
@@ -89,6 +90,40 @@ jobs:
             echo "$out" | grep -qiE "already (uploaded|exists|published)" \
               || { echo "type-bridge-orm-derive publish failed (not already-published)"; exit 1; }
             echo "type-bridge-orm-derive already published at this version; skipping."
+          fi
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      # Band-7 fork pair published before orm/server: Cargo unifies semver-compatible
+      # 3.x versions, so the forks are republished under renamed crates; orm/server
+      # resolve them from crates.io via `version = "=3.8.1"`.
+      # Order: core-lib → orm-derive → protocol-b7 → driver-b7 → orm → server.
+      - name: Publish type-bridge-typedb-protocol-b7
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if ! out="$(cargo publish -p type-bridge-typedb-protocol-b7 2>&1)"; then
+            echo "$out"
+            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
+              || { echo "type-bridge-typedb-protocol-b7 publish failed (not already-published)"; exit 1; }
+            echo "type-bridge-typedb-protocol-b7 already published at this version; skipping."
+          fi
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish type-bridge-typedb-driver-b7
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if ! out="$(cargo publish -p type-bridge-typedb-driver-b7 2>&1)"; then
+            echo "$out"
+            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
+              || { echo "type-bridge-typedb-driver-b7 publish failed (not already-published)"; exit 1; }
+            echo "type-bridge-typedb-driver-b7 already published at this version; skipping."
           fi
 
       - name: Wait for crates.io index

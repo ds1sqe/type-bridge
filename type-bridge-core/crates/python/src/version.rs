@@ -11,12 +11,15 @@
 //! | `min_supported_version` | function | Returns the floor as `"3.8.0"` |
 //! | `max_supported_line` | function | Returns the ceiling line as `"3.11"` |
 //! | `band` | function | Protocol-band lookup; `None` for unmapped versions |
-//! | `check_supported` | function | Window + band gate; raises `VersionError` on failure |
-//! | `embedded_driver_version` | function | The typedb-driver version compiled into the Rust runtime |
+//! | `check_supported` | function | Window + band gate (installed driver); raises `VersionError` on failure |
+//! | `check_server_supported` | function | Embedded-runtime gate (band-set membership); raises `VersionError` on failure |
+//! | `embedded_driver_version` | function | The band-8 typedb-driver version compiled into the Rust runtime (back-compat) |
+//! | `embedded_driver_versions` | function | All compiled-in driver versions as `{band: version}` dict |
 //! | `server_version` | function | HTTP probe → detected server version string |
 
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use type_bridge_core_lib::version as core_version;
 
 // ---------------------------------------------------------------------------
@@ -107,6 +110,55 @@ pub fn embedded_driver_version() -> &'static str {
     type_bridge_orm::session::real_driver::PINNED_DRIVER_VERSION
 }
 
+/// Return all typedb-driver versions compiled into this Rust runtime, keyed by
+/// protocol band.
+///
+/// Returns a Python `dict` mapping `int` band → `str` version for every band
+/// feature compiled into this build.  The default build embeds both bands and
+/// returns `{7: "3.8.1", 8: "3.11.5"}`.  A single-band build returns only the
+/// one entry for its compiled band — the dict is cfg-derived, never hardcoded
+/// (master-plan I6).
+///
+/// Use [`embedded_driver_version`] when only the band-8 pin is needed (back-compat).
+#[pyfunction]
+pub fn embedded_driver_versions(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    let dict = PyDict::new(py);
+    for (band, version) in type_bridge_orm::embedded_driver_versions() {
+        dict.set_item(*band as u32, *version)?;
+    }
+    Ok(dict.into())
+}
+
+// ---------------------------------------------------------------------------
+// Embedded-runtime gate
+// ---------------------------------------------------------------------------
+
+/// Assert that this build's embedded runtime can serve `server`.
+///
+/// Uses band-set membership (not band equality): the server is accepted when
+/// its protocol band is among the bands compiled into this build.  For the
+/// default build (both bands embedded), any in-window server passes.
+///
+/// The band set is derived from the cfg-gated `embedded_driver_versions()` —
+/// never a hardcoded `[7, 8]` literal (master-plan I6).
+///
+/// # Errors
+///
+/// Raises `VersionError` when:
+/// - `server` cannot be parsed.
+/// - `server` is outside the support window (`Unsupported`).
+/// - `server` is in-window but its band is not compiled into this build
+///   (`EmbeddedUnavailable` — only reachable in non-default single-band builds).
+#[pyfunction]
+pub fn check_server_supported(server: &str) -> PyResult<()> {
+    let s = server.parse::<core_version::Version>().map_err(to_py_err)?;
+    let embedded_bands: Vec<u8> = type_bridge_orm::embedded_driver_versions()
+        .iter()
+        .map(|(band, _)| *band)
+        .collect();
+    core_version::check_server_supported(&s, &embedded_bands).map_err(to_py_err)
+}
+
 // ---------------------------------------------------------------------------
 // HTTP probe
 // ---------------------------------------------------------------------------
@@ -149,7 +201,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(max_supported_line, m)?)?;
     m.add_function(wrap_pyfunction!(band, m)?)?;
     m.add_function(wrap_pyfunction!(check_supported, m)?)?;
+    m.add_function(wrap_pyfunction!(check_server_supported, m)?)?;
     m.add_function(wrap_pyfunction!(embedded_driver_version, m)?)?;
+    m.add_function(wrap_pyfunction!(embedded_driver_versions, m)?)?;
     m.add_function(wrap_pyfunction!(server_version, m)?)?;
     Ok(())
 }
