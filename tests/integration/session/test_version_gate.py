@@ -6,6 +6,7 @@ All tests use @pytest.mark.integration.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
@@ -162,6 +163,25 @@ class TestVersionGateLiveNegative:
 
 
 @pytest.mark.integration
+@pytest.mark.order(4121)
+class TestVersionGateExplicitHttpPort:
+    """Database constructed with explicit http_port=8000 connects and round-trips cleanly."""
+
+    def test_database_gate_explicit_default_http_port(self, typedb_driver, test_database):
+        """Explicit http_port=8000 is accepted by the gate and a live connection succeeds."""
+        from tests.integration.conftest import TEST_DB_ADDRESS
+
+        db = Database(
+            address=TEST_DB_ADDRESS,
+            database=test_database,
+            http_port=8000,
+        )
+        db.connect()
+        assert db._driver is not None
+        db.close()
+
+
+@pytest.mark.integration
 @pytest.mark.order(413)
 class TestDistinctOrderedFormLive:
     """The ordered-role @distinct form is the one every live server accepts."""
@@ -179,3 +199,41 @@ class TestDistinctOrderedFormLive:
         schema = clean_db.get_schema()
         assert "vg_distinct_team" in schema
         assert "@distinct" in schema
+
+
+# ---------------------------------------------------------------------------
+# Opt-in: non-default HTTP port proof (demand-only, not in CI)
+# ---------------------------------------------------------------------------
+
+_PROOF_ADDRESS = os.environ.get("TYPEDB_PROOF_ADDRESS", "")
+_PROOF_HTTP_PORT = os.environ.get("TYPEDB_PROOF_HTTP_PORT", "")
+_proof_vars_set = bool(_PROOF_ADDRESS and _PROOF_HTTP_PORT)
+
+
+@pytest.mark.integration
+@pytest.mark.order(414)
+@pytest.mark.skipif(
+    not _proof_vars_set,
+    reason="TYPEDB_PROOF_ADDRESS and TYPEDB_PROOF_HTTP_PORT must both be set to run this test",
+)
+class TestGateNonDefaultHttpPort:
+    """Validates that the version gate probes the correct server when http_port is remapped.
+
+    On a host running multiple TypeDB instances (e.g. one on :8000, one on :9000), the gate
+    must probe the port that matches the target server, not always :8000.  This test exercises
+    that path on demand against a real alternative-port server; it is skipped in CI where no
+    such server is available.
+
+    Set TYPEDB_PROOF_ADDRESS and TYPEDB_PROOF_HTTP_PORT to opt in.
+    """
+
+    def test_gate_validates_non_default_http_port(self):
+        """Gate succeeds and driver is live when http_port points at the correct server."""
+        db = Database(
+            address=os.environ["TYPEDB_PROOF_ADDRESS"],
+            database="proof_http_port",
+            http_port=int(os.environ["TYPEDB_PROOF_HTTP_PORT"]),
+        )
+        db.connect()
+        assert db._driver is not None
+        db.close()

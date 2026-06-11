@@ -491,12 +491,14 @@ export interface NativeRuntime {
     database: string,
     username?: string | null,
     password?: string | null,
+    httpPort?: number | null,
   ): void;
   connectRustDatabase(
     address: string,
     database: string,
     username?: string | null,
     password?: string | null,
+    httpPort?: number | null,
   ): NativeRustDatabase;
 }
 
@@ -512,11 +514,15 @@ export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSc
 export interface RustDatabaseConnectOptions {
   username?: string | null;
   password?: string | null;
+  /** Port of the TypeDB HTTP API used for the connect-time version probe. */
+  httpPort?: number;
 }
 
 export interface EnsureDatabaseOptions {
   username?: string | null;
   password?: string | null;
+  /** Port of the TypeDB HTTP API used for the connect-time version probe. */
+  httpPort?: number;
 }
 
 /**
@@ -536,6 +542,7 @@ export function ensureDatabase(
     database,
     options?.username ?? null,
     options?.password ?? null,
+    options?.httpPort ?? null,
   );
 }
 
@@ -815,6 +822,7 @@ export class RustDatabase {
         parsed.database,
         parsed.options.username ?? null,
         parsed.options.password ?? null,
+        parsed.options.httpPort ?? null,
       ),
     );
   }

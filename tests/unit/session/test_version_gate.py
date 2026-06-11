@@ -513,6 +513,71 @@ class TestConnectVersionGate:
         assert "0.0.0" not in msg
 
 
+class TestConnectHttpPortForwarding:
+    """Database.connect() must forward http_port to both the facade and embedded gates."""
+
+    def test_database_facade_gate_forwards_http_port(self, monkeypatch: pytest.MonkeyPatch):
+        """http_port stored on Database is forwarded to server_version in the facade gate."""
+        import type_bridge.typedb_driver as tdm
+        from type_bridge.session import Database
+
+        recorded: list[int] = []
+
+        def _fake_server_version(address: str, *, http_port: int = 8000, tls: bool = False) -> str:
+            recorded.append(http_port)
+            # Return an out-of-window version so connect() aborts before driver construction.
+            raise type_bridge_core.VersionError("gate test abort")
+
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.10.0")
+        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.10.4")
+        # Intercept server_version at the typedb_driver module level (session.py calls it via
+        # the module reference, so patch there).
+        monkeypatch.setattr(tdm, "server_version", _fake_server_version)
+
+        db = Database(address="localhost:1729", database="test_db", http_port=9123)
+        with pytest.raises(type_bridge_core.VersionError):
+            db.connect()
+
+        assert recorded == [9123], f"Expected http_port=9123 forwarded, got {recorded}"
+
+    def test_database_embedded_gate_forwards_http_port(self, monkeypatch: pytest.MonkeyPatch):
+        """http_port stored on Database is forwarded to PyRustDatabase.connect."""
+        import type_bridge._rust_runtime as rust_mod
+        import type_bridge.session as session_mod
+        import type_bridge.typedb_driver as tdm
+
+        recorded: list[int] = []
+
+        class _FakeRustDB:
+            @staticmethod
+            def connect(address, database, username, password, http_port):
+                recorded.append(http_port)
+                return _FakeRustDB()
+
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.10.0")
+        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.10.4")
+        monkeypatch.setattr(tdm, "embedded_driver_version", lambda: "3.10.0")
+
+        fake_driver = MagicMock()
+        mock_typedb = MagicMock()
+        mock_typedb.driver.return_value = fake_driver
+        monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
+        monkeypatch.setattr(tdm, "DriverOptions", MagicMock())
+
+        # Patch rust_core() so PyRustDatabase.connect records the port.
+        fake_core = MagicMock()
+        fake_core.PyRustDatabase = _FakeRustDB
+        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
+
+        db = session_mod.Database(address="localhost:1729", database="test_db", http_port=9123)
+        db.connect()
+
+        # Trigger the embedded connect path by calling rust_database_for.
+        rust_mod.rust_database_for(db)
+
+        assert recorded == [9123], f"Expected http_port=9123 forwarded to Rust, got {recorded}"
+
+
 class TestConnectProbeUnreachable:
     """Unreachable server probe propagates core VersionError out of connect (fail-closed)."""
 
@@ -683,3 +748,27 @@ class TestConnectRuntimeGate:
         assert "band 7" not in msg
         assert "band 8" not in msg
         assert "0.0.0" not in msg
+
+
+class TestHttpPortBoundaries:
+    """Range and SSOT pins for the HTTP probe port surface."""
+
+    def test_default_http_port_matches_rust_ssot(self):
+        """The re-exported Python default must equal the Rust core constant."""
+        import type_bridge_core
+
+        from type_bridge import typedb_driver
+
+        assert typedb_driver.DEFAULT_HTTP_PORT == 8000
+        assert typedb_driver.DEFAULT_HTTP_PORT == type_bridge_core.DEFAULT_HTTP_PORT
+
+    def test_out_of_range_http_port_raises_before_io(self):
+        """A port above u16::MAX fails at the PyO3 boundary, not mid-probe.
+
+        The conversion error surfaces before any network I/O, so the test is
+        deterministic and DB-free.
+        """
+        from type_bridge import typedb_driver
+
+        with pytest.raises(OverflowError):
+            typedb_driver.server_version("localhost:1729", http_port=70000)

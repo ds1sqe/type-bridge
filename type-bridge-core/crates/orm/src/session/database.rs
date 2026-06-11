@@ -45,7 +45,12 @@ impl Database {
         }
     }
 
-    /// Connect to a TypeDB server.
+    /// Connect to a TypeDB server with default [`ConnectOptions`].
+    ///
+    /// Permanent convenience wrapper over [`Self::connect_with_options`] for
+    /// the common case (HTTP probe on the default port, no TLS).
+    ///
+    /// [`ConnectOptions`]: super::real_driver::ConnectOptions
     #[cfg(feature = "typedb")]
     pub async fn connect(
         address: &str,
@@ -53,7 +58,27 @@ impl Database {
         username: &str,
         password: &str,
     ) -> Result<Self> {
-        let backend = super::real_driver::RealBackend::connect(address, username, password).await?;
+        Self::connect_with_options(
+            address,
+            database,
+            username,
+            password,
+            super::real_driver::ConnectOptions::default(),
+        )
+        .await
+    }
+
+    /// Connect to a TypeDB server with explicit [`ConnectOptions`].
+    #[cfg(feature = "typedb")]
+    pub async fn connect_with_options(
+        address: &str,
+        database: &str,
+        username: &str,
+        password: &str,
+        options: super::real_driver::ConnectOptions,
+    ) -> Result<Self> {
+        let backend =
+            super::real_driver::RealBackend::connect(address, username, password, options).await?;
         Ok(Self {
             backend: Box::new(backend),
             database_name: database.to_string(),

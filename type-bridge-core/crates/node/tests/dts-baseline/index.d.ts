@@ -328,8 +328,8 @@ export interface NativeDynamicRelationManager {
     queryGroupByAggregateJson(specJson: string, groupFieldsJson: string, aggregatesJson: string): string;
 }
 export interface NativeRuntime {
-    ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null): void;
-    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null): NativeRustDatabase;
+    ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null): void;
+    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null): NativeRustDatabase;
 }
 interface NativeSchemaParser {
     parseSchemaJson(input: string): string;
@@ -341,10 +341,14 @@ export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSc
 export interface RustDatabaseConnectOptions {
     username?: string | null;
     password?: string | null;
+    /** Port of the TypeDB HTTP API used for the connect-time version probe. */
+    httpPort?: number;
 }
 export interface EnsureDatabaseOptions {
     username?: string | null;
     password?: string | null;
+    /** Port of the TypeDB HTTP API used for the connect-time version probe. */
+    httpPort?: number;
 }
 /**
  * Ensure the named TypeDB database exists, creating it if absent.

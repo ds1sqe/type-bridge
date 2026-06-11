@@ -4,6 +4,7 @@ import pytest
 
 from tests.utils.typedb_lifecycle import (
     TEST_DB_ADDRESS,
+    TEST_DB_HTTP_PORT,
     TEST_DB_NAME,
     start_typedb_container,
     stop_typedb_container,
@@ -87,7 +88,9 @@ def db(test_database):
     Yields:
         Database instance
     """
-    database = Database(address=TEST_DB_ADDRESS, database=test_database)
+    database = Database(
+        address=TEST_DB_ADDRESS, database=test_database, http_port=TEST_DB_HTTP_PORT
+    )
     database.connect()
     yield database
     database.close()
@@ -113,7 +116,9 @@ def clean_db(typedb_driver, test_database):
         typedb_driver.databases.get(test_database).delete()
     typedb_driver.databases.create(test_database)
 
-    database = Database(address=TEST_DB_ADDRESS, database=test_database)
+    database = Database(
+        address=TEST_DB_ADDRESS, database=test_database, http_port=TEST_DB_HTTP_PORT
+    )
     database.connect()
     yield database
     database.close()

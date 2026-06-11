@@ -7,9 +7,15 @@ pub async fn ensure_database_exists(
 ) {
     // Route through the orm seam so the test setup itself is band-dispatched;
     // a raw driver here would pin the helper to one protocol band.
-    type_bridge_orm::ensure_database_exists(address, database, username, password)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("{context}: failed to ensure database {database} at {address}: {error}")
-        });
+    type_bridge_orm::ensure_database_exists(
+        address,
+        database,
+        username,
+        password,
+        type_bridge_orm::ConnectOptions::default(),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!("{context}: failed to ensure database {database} at {address}: {error}")
+    });
 }

@@ -56,8 +56,58 @@ mismatches the server's band — before any transaction is attempted, never mid-
 The error names the relevant versions and tells you exactly what to do. It never exposes
 raw protocol numbers.
 
-The probe calls `GET :8000/v1/version` on the server's HTTP API port. If that endpoint is
-unreachable the probe fails closed (connection refused, not a silent pass).
+The probe calls `GET :<http_port>/v1/version` on the server's HTTP API port. If that endpoint
+is unreachable the probe fails closed (connection refused, not a silent pass).
+
+### HTTP version-probe port
+
+TypeDB exposes a version endpoint over HTTP in addition to its gRPC port. TypeBridge
+probes this endpoint at connect time to determine the server version before committing
+to a driver construction. The probe port defaults to `8000` but must match the HTTP port
+of the specific TypeDB instance being targeted.
+
+On a host running multiple TypeDB instances (for example, a primary on `:8000` and a
+test instance remapped to `:9000`), probing the wrong port silently validates the wrong
+server — the gate passes against instance A while the gRPC connection goes to instance B.
+Configuring the correct port prevents that mismatch.
+
+**Python ORM**
+
+```python
+# Default port (8000) — no configuration needed for a standard single-instance setup
+db = Database(address="localhost:1729", database="mydb")
+db.connect()
+
+# Explicit port — required when TypeDB's HTTP port is remapped
+db = Database(address="localhost:1729", database="mydb", http_port=9000)
+db.connect()
+```
+
+**Node binding**
+
+```typescript
+// Pass httpPort in the options object
+const db = new Database({ address: "localhost:1729", database: "mydb", httpPort: 9000 });
+```
+
+**Migration CLI**
+
+```bash
+# The _generate command accepts --http-port for the same reason
+python -m type_bridge._generate --address localhost:1729 --http-port 9000 ...
+```
+
+**Test suite environment variable**
+
+Set `TYPEDB_HTTP_PORT` to override the HTTP probe port across all pytest integration tiers:
+
+```bash
+TYPEDB_HTTP_PORT=9000 ./test.sh --no-isolated
+```
+
+The variable is read by `tests/utils/typedb_lifecycle.py` as `TEST_DB_HTTP_PORT` and
+forwarded to every fixture-level `Database` construction in `tests/integration/conftest.py`.
+`test.sh` passes it inline to the Python integration, parity, and Node integration tiers.
 
 ## Key TypeDB Concepts
 

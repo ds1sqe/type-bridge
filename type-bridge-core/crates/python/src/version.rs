@@ -178,7 +178,7 @@ pub fn check_server_supported(server: &str) -> PyResult<()> {
 /// Raises `VersionError` when the endpoint is unreachable, returns an
 /// unexpected response, or the version string cannot be parsed.
 #[pyfunction]
-#[pyo3(signature = (address, http_port = 8000, tls = false))]
+#[pyo3(signature = (address, http_port = core_version::DEFAULT_HTTP_PORT, tls = false))]
 pub fn server_version(
     py: Python<'_>,
     address: String,
@@ -205,5 +205,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(embedded_driver_version, m)?)?;
     m.add_function(wrap_pyfunction!(embedded_driver_versions, m)?)?;
     m.add_function(wrap_pyfunction!(server_version, m)?)?;
+    m.add("DEFAULT_HTTP_PORT", core_version::DEFAULT_HTTP_PORT)?;
     Ok(())
 }

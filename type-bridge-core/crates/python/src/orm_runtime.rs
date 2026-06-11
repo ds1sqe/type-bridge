@@ -11,6 +11,7 @@ use pyo3::types::{PyDict, PyList};
 use pythonize::{depythonize, pythonize};
 use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
+use type_bridge_core_lib::version as core_version;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
@@ -441,21 +442,26 @@ impl PyRustDatabase {
 impl PyRustDatabase {
     /// Connect to TypeDB using the shared Rust ORM session layer.
     #[staticmethod]
-    #[pyo3(signature = (address, database, username=None, password=None))]
+    #[pyo3(signature = (address, database, username=None, password=None, http_port=core_version::DEFAULT_HTTP_PORT))]
     fn connect(
         address: &str,
         database: &str,
         username: Option<&str>,
         password: Option<&str>,
+        http_port: u16,
     ) -> PyResult<Self> {
         let runtime = Runtime::new().map(Arc::new).map_err(|error| {
             py_runtime_error(format!("Failed to create Tokio runtime: {error}"))
         })?;
         let username = username.unwrap_or("admin").to_string();
         let password = password.unwrap_or("password").to_string();
+        let options = type_bridge_orm::ConnectOptions {
+            http_port,
+            ..type_bridge_orm::ConnectOptions::default()
+        };
         let db = runtime
-            .block_on(type_bridge_orm::Database::connect(
-                address, database, &username, &password,
+            .block_on(type_bridge_orm::Database::connect_with_options(
+                address, database, &username, &password, options,
             ))
             .map_err(py_orm_error)?;
 

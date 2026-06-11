@@ -110,6 +110,16 @@ impl FromStr for Version {
 }
 
 // ---------------------------------------------------------------------------
+// Port constant (SSOT)
+// ---------------------------------------------------------------------------
+
+/// TypeDB's default HTTP API port, used by the `/v1/version` probe endpoint.
+///
+/// This is the single source of truth for the default; every binding that needs
+/// a per-call fallback references this constant rather than hard-coding `8000`.
+pub const DEFAULT_HTTP_PORT: u16 = 8000;
+
+// ---------------------------------------------------------------------------
 // Window constants (SSOT — declared exactly once, here)
 // ---------------------------------------------------------------------------
 

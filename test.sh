@@ -146,9 +146,11 @@ run_step "npm run test:dts"  bash -c "cd '$NODE_DIR' && npm run test:dts"
 if [[ "$integration" == 1 ]]; then
     [[ "$isolated" == 1 ]] && start_typedb
 
+    TYPEDB_HTTP_PORT="${TYPEDB_HTTP_PORT:-8000}"
+
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
     run_step "pytest -m integration" \
-        env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" \
+        env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
 
     # The parity suite mixes live-TypeDB tests with deliberately unmarked
@@ -157,7 +159,7 @@ if [[ "$integration" == 1 ]]; then
     # don't fall through both the unit and `-m integration` selections.
     printf "${BOLD}━━━ Python (cross-language parity) ━━━${RESET}\n\n"
     run_step "pytest tests/integration/parity" \
-        env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" \
+        env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         uv run pytest tests/integration/parity -m "integration or not integration" \
         --tb=short "${pytest_args[@]}"
 
@@ -167,7 +169,8 @@ if [[ "$integration" == 1 ]]; then
     native="$(ls "$NODE_DIR"/type_bridge_node.*.node 2>/dev/null | head -1 || true)"
     run_step "npm run test:integration" \
         bash -c "cd '$NODE_DIR' && TYPE_BRIDGE_NODE_NATIVE_PATH='${native:+$PWD/$native}' \
-            USE_DOCKER=false TYPEDB_ADDRESS='$TYPEDB_ADDRESS' npm run test:integration"
+            USE_DOCKER=false TYPEDB_ADDRESS='$TYPEDB_ADDRESS' TYPEDB_HTTP_PORT='$TYPEDB_HTTP_PORT' \
+            npm run test:integration"
 fi
 
 # ── Proxy tier (opt-in; owns its own stack via proxy_lifecycle.py) ───────────

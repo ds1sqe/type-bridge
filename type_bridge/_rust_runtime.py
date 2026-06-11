@@ -450,6 +450,7 @@ def rust_database_for(connection: Any) -> Any:
         connection.database_name,
         connection.username or "admin",
         connection.password or "password",
+        http_port=connection.http_port,
     )
     setattr(connection, "_rust_backend_database", rust_db)
     return rust_db

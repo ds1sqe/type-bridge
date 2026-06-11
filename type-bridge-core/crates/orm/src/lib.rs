@@ -108,6 +108,8 @@ pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 pub use session::ensure_database_exists;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
+#[cfg(feature = "typedb")]
+pub use session::ConnectOptions;
 pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use value::AttributeValue;
 

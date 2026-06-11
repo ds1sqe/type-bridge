@@ -31,6 +31,9 @@ CONTAINER_TOOL = _detect_container_tool()
 TEST_DB_NAME = "type_bridge_test"
 # Allow overriding port/address via environment (for local conflicts or Podman/Docker remaps)
 TEST_DB_ADDRESS = os.getenv("TYPEDB_ADDRESS", "localhost:1730")
+# HTTP port for the TypeDB version-probe endpoint; forward when running against a
+# remapped port so the gate validates the right server, not a co-located default instance.
+TEST_DB_HTTP_PORT = int(os.getenv("TYPEDB_HTTP_PORT", "8000"))
 
 
 def start_typedb_container():
