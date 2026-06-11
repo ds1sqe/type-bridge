@@ -12,7 +12,7 @@
 
 use type_bridge_core_lib::version::{self as core_version, VersionError};
 use type_bridge_orm::error::OrmError;
-use type_bridge_orm::session::real_driver::PINNED_DRIVER_VERSION;
+use type_bridge_orm::session::real_driver::{PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B7};
 
 // ── 1. Cargo.lock pin assertion ──────────────────────────────────────────────
 
@@ -67,6 +67,53 @@ fn cargo_lock_pin() {
         Some(8),
         "pinned driver {PINNED_DRIVER_VERSION} is no longer in band 8; \
          update PINNED_DRIVER_VERSION and review the compatibility window"
+    );
+}
+
+/// Assert that `PINNED_DRIVER_VERSION_B7` matches the
+/// `type-bridge-typedb-driver-b7` entry in `Cargo.lock`, and that the pinned
+/// fork version falls in the expected protocol band (7).
+///
+/// If this test breaks after a fork refresh, update `PINNED_DRIVER_VERSION_B7`
+/// in `crates/orm/src/session/real_driver.rs` to the new value.
+#[test]
+fn cargo_lock_pin_b7() {
+    let lock_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock");
+    let lock_contents =
+        std::fs::read_to_string(lock_path).expect("Cargo.lock not found relative to crate root");
+
+    // Find the type-bridge-typedb-driver-b7 package block and extract its version.
+    let lock_version = lock_contents
+        .split("[[package]]")
+        .find(|block| block.contains("name = \"type-bridge-typedb-driver-b7\""))
+        .and_then(|block| {
+            block
+                .lines()
+                .find(|l| l.trim_start().starts_with("version = "))
+        })
+        .and_then(|line| {
+            let start = line.find('"')? + 1;
+            let end = line.rfind('"')?;
+            Some(&line[start..end])
+        })
+        .expect("could not parse type-bridge-typedb-driver-b7 version from Cargo.lock");
+
+    assert_eq!(
+        lock_version, PINNED_DRIVER_VERSION_B7,
+        "PINNED_DRIVER_VERSION_B7 ({PINNED_DRIVER_VERSION_B7}) does not match \
+         Cargo.lock type-bridge-typedb-driver-b7 version ({lock_version}); \
+         update the constant in crates/orm/src/session/real_driver.rs"
+    );
+
+    // Assert the band-7 fork is in band 7.
+    let pinned: core_version::Version = PINNED_DRIVER_VERSION_B7
+        .parse()
+        .expect("PINNED_DRIVER_VERSION_B7 must be a valid version string");
+    assert_eq!(
+        core_version::band(&pinned),
+        Some(7),
+        "pinned band-7 fork {PINNED_DRIVER_VERSION_B7} is no longer in band 7; \
+         update PINNED_DRIVER_VERSION_B7 and review the compatibility window"
     );
 }
 
