@@ -54,6 +54,7 @@ impl<'db> SchemaManager<'db> {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
                     annotations: a.annotations.to_vec(),
+                    is_ordered: false,
                 }
             })
             .collect();
@@ -85,6 +86,7 @@ impl<'db> SchemaManager<'db> {
                     attr_name: a.attr_name.to_string(),
                     value_type: a.value_type,
                     annotations: a.annotations.to_vec(),
+                    is_ordered: false,
                 }
             })
             .collect();
@@ -94,7 +96,7 @@ impl<'db> SchemaManager<'db> {
             .map(|r| RoleEntry {
                 role_name: r.role_name.to_string(),
                 player_type_names: vec![r.player_type_name.to_string()],
-                cardinality: None,
+                ..Default::default()
             })
             .collect();
 
@@ -273,6 +275,7 @@ impl<'db> SchemaManager<'db> {
                         attr_name: attr_name.to_string(),
                         value_type,
                         annotations: vec![],
+                        is_ordered: false,
                     });
                 }
             }
@@ -296,8 +299,7 @@ impl<'db> SchemaManager<'db> {
                 {
                     entries.push(RoleEntry {
                         role_name: role_name.to_string(),
-                        player_type_names: Vec::new(),
-                        cardinality: None,
+                        ..Default::default()
                     });
                 }
             }

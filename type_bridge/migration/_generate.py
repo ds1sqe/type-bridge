@@ -26,6 +26,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from type_bridge.typedb_driver import DEFAULT_HTTP_PORT
+
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m type_bridge.migration._generate``.
@@ -103,6 +105,13 @@ def main(argv: list[str] | None = None) -> int:
         help="TypeDB password (default: password).",
     )
     parser.add_argument(
+        "--http-port",
+        type=int,
+        metavar="<port>",
+        default=DEFAULT_HTTP_PORT,
+        help="TypeDB HTTP API port for the connect-time version gate probe (default: 8000).",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -126,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         db = Database(
             address=args.address,
             database=args.database,
+            http_port=args.http_port,
         )
         db.connect()
     except Exception as exc:  # noqa: BLE001

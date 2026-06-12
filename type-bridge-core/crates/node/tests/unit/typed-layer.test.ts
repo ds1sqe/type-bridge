@@ -88,13 +88,26 @@ class ParityTokenOrigin extends Relation("parity-token-origin", {
   kind: field(ParityKind),
 }) {}
 
+class ParityContribution extends Relation("parity-contribution", {
+  contributor: role("parity-person", { abstract: true }),
+  work: role(ParityEmailMessage),
+}) {}
+
+class ParityAuthoring extends Relation(
+  "parity-authoring",
+  {
+    author: role("parity-person", { overrides: "contributor" }),
+  },
+  { parent: ParityContribution },
+) {}
+
 // ---------------------------------------------------------------------------
-// Synthetic inherited-relation pair (Phase 3).
+// Synthetic inherited-relation pair.
 //
-// No relation in descriptors.json carries a parent_type, so coverage for
-// relation inheritance is provided by an inline synthetic pair. These are NOT
-// in the fixture; their expected descriptors are hand-written to match what the
-// typed factory must emit for the `parent_type` + flattened-roles/attrs case.
+// The fixture's parity-contribution/parity-authoring pair covers role
+// specialization against descriptors.json; this inline pair covers the
+// plain-inheritance case (no `as` override, inherited role flattened into the
+// child) with hand-written expected descriptors, independent of the fixture.
 //
 // synthetic-base-rel  — abstract parent relation (no parent_type).
 // synthetic-child-rel — concrete child relation that inherits from base.
@@ -165,21 +178,29 @@ describe("typed attribute and flag layer", () => {
       kind: "flag",
       annotations: ["Key"],
       cardinality: [1, 1],
+      isOrdered: false,
+      isDistinct: false,
     });
     assert.deepEqual(resolveFlags([Flag(Card(1, 5))]), {
       kind: "flag",
       annotations: [{ Card: [1, 5] }],
       cardinality: [1, 5],
+      isOrdered: false,
+      isDistinct: false,
     });
     assert.deepEqual(resolveFlags([Flag(Card(0))]), {
       kind: "flag",
       annotations: [{ Card: [0, null] }],
       cardinality: [0, null],
+      isOrdered: false,
+      isDistinct: false,
     });
     assert.deepEqual(resolveFlags([Unique]), {
       kind: "flag",
       annotations: ["Unique"],
       cardinality: null,
+      isOrdered: false,
+      isDistinct: false,
     });
   });
 
@@ -208,6 +229,7 @@ describe("typed attribute and flag layer", () => {
         value_type: "string",
         annotations: [],
         is_optional: false,
+        is_ordered: false,
       },
       {
         field_name: "state",
@@ -215,6 +237,7 @@ describe("typed attribute and flag layer", () => {
         value_type: "string",
         annotations: [],
         is_optional: false,
+        is_ordered: false,
       },
       {
         field_name: "score",
@@ -222,6 +245,7 @@ describe("typed attribute and flag layer", () => {
         value_type: "long",
         annotations: [],
         is_optional: false,
+        is_ordered: false,
       },
     ]);
 
@@ -294,16 +318,31 @@ describe("typed Entity and Relation factories", () => {
         role_name: "member",
         player_type_names: ["parity-person"],
         cardinality: [1, 1],
+        plays_cardinality: null,
+        overrides: null,
+        is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
       {
         role_name: "organization",
         player_type_names: ["parity-company"],
         cardinality: [1, 1],
+        plays_cardinality: null,
+        overrides: null,
+        is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
       {
         role_name: "evidence",
         player_type_names: ["parity-person", "parity-email-message"],
         cardinality: [0, 5],
+        plays_cardinality: null,
+        overrides: null,
+        is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
     ]);
   });
@@ -314,16 +353,26 @@ describe("typed Entity and Relation factories", () => {
         role_name: "definition",
         player_type_names: [],
         cardinality: null,
+        plays_cardinality: null,
+        overrides: null,
+        is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
       {
         role_name: "actor",
         player_type_names: ["parity-company"],
         cardinality: null,
+        plays_cardinality: null,
+        overrides: null,
+        is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
     ]);
   });
 
-  test("playsCardinality stays out of descriptor JSON and rejects relates-only roles", () => {
+  test("playsCardinality is emitted into role descriptor and rejects relates-only roles", () => {
     const spec = role(ParityCompany, { playsCardinality: Card(0, 1) });
     assert.deepEqual(spec.playsCardinality, [0, 1]);
 
@@ -333,11 +382,21 @@ describe("typed Entity and Relation factories", () => {
         role_name: "employee",
         player_type_names: ["parity-person"],
         cardinality: null,
+        plays_cardinality: null,
+        overrides: null,
+        is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
       {
         role_name: "employer",
         player_type_names: ["parity-company"],
         cardinality: [1, 1],
+        plays_cardinality: [0, 1],
+        overrides: null,
+        is_abstract: false,
+        ordered: false,
+        distinct: false,
       },
     ]);
     assert.deepEqual(JSON.parse(JSON.stringify(descriptor)), descriptor);
@@ -348,48 +407,28 @@ describe("typed Entity and Relation factories", () => {
     );
   });
 
-  test("schemaInfo overlays playsCardinality onto registered entity and relation players", () => {
-    const registry = new DescriptorRegistry(fakeNativeRegistry());
-    registry.registerEntity(ParityPerson.descriptor());
-    registry.registerEntity(ParityCompany.descriptor());
-    registry.registerRelation(PlaysCardEmployment.descriptor());
-    registry.registerRelation(PlaysCardMulti.descriptor());
-    registry.registerRelation(PlaysCardContract.descriptor());
-    registry.registerRelation(PlaysCardDispute.descriptor());
-    registry.registerRelation(RelatesOnlyRel.descriptor());
+  test("plays_cardinality is emitted on role descriptors for Rust from_descriptors to consume", () => {
+    // The plays_cardinalities overlay is built by Rust SchemaInfo::from_descriptors using the
+    // plays_cardinality field on each role descriptor. Verify the authoring datum is present
+    // on the descriptor so the Rust layer can build the overlay.
+    const employerRole = PlaysCardEmployment.descriptor().roles.find(
+      (r) => r.role_name === "employer",
+    );
+    assert.deepEqual(employerRole?.plays_cardinality, [0, 1]);
 
-    const info = registry.schemaInfo();
-    assert.deepEqual(
-      info.entities["parity-company"].plays_cardinalities?.[
-        "typed-plays-card-employment:employer"
-      ],
-      [0, 1],
+    const employeeRole = PlaysCardEmployment.descriptor().roles.find(
+      (r) => r.role_name === "employee",
     );
-    assert.deepEqual(
-      info.entities["parity-person"].plays_cardinalities?.[
-        "typed-plays-card-multi:participant"
-      ],
-      [0, 5],
+    assert.deepEqual(employeeRole?.plays_cardinality, null);
+
+    const relatesOnlyRole = RelatesOnlyRel.descriptor().roles.find(
+      (r) => r.role_name === "definition",
     );
-    assert.deepEqual(
-      info.entities["parity-company"].plays_cardinalities?.[
-        "typed-plays-card-multi:participant"
-      ],
-      [0, 5],
-    );
-    assert.deepEqual(
-      info.relations["typed-plays-card-contract"].plays_cardinalities?.[
-        "typed-plays-card-dispute:subject"
-      ],
-      [0, 1],
-    );
-    assert.deepEqual(
-      info.entities["parity-person"].plays_cardinalities?.[
-        "typed-relates-only-rel:definition"
-      ],
-      undefined,
-    );
-    assert.deepEqual(info.relations["typed-relates-only-rel"].plays_cardinalities, {});
+    assert.deepEqual(relatesOnlyRole?.plays_cardinality, null);
+
+    // Verify the descriptor round-trips through JSON (plays_cardinality must be enumerable).
+    const descriptor = PlaysCardEmployment.descriptor();
+    assert.deepEqual(JSON.parse(JSON.stringify(descriptor)), descriptor);
   });
 });
 
@@ -409,7 +448,12 @@ describe("descriptor emission parity", () => {
         ParityCompany.descriptor(),
         ParityEmailMessage.descriptor(),
       ],
-      relations: [ParityMembership.descriptor(), ParityTokenOrigin.descriptor()],
+      relations: [
+        ParityMembership.descriptor(),
+        ParityTokenOrigin.descriptor(),
+        ParityContribution.descriptor(),
+        ParityAuthoring.descriptor(),
+      ],
     });
     const expected = normalizeDescriptorSnapshot({
       version: fixture.version,
@@ -487,7 +531,12 @@ describe("Phase 3 full-corpus parity gate (all types in descriptors.json)", () =
         ParityCompany.descriptor(),
         ParityEmailMessage.descriptor(),
       ],
-      relations: [ParityMembership.descriptor(), ParityTokenOrigin.descriptor()],
+      relations: [
+        ParityMembership.descriptor(),
+        ParityTokenOrigin.descriptor(),
+        ParityContribution.descriptor(),
+        ParityAuthoring.descriptor(),
+      ],
     });
 
     const expected = normalizeDescriptorSnapshot({
@@ -541,7 +590,7 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
 
     // Roles: just `anchor` from the base schema.
     assert.deepEqual(d.roles, [
-      { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] },
+      { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
     ]);
   });
 
@@ -570,6 +619,11 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
       role_name: "anchor",
       player_type_names: ["parity-company"],
       cardinality: [1, 1],
+      plays_cardinality: null,
+      overrides: null,
+      is_abstract: false,
+      ordered: false,
+      distinct: false,
     });
 
     const extraRole = d.roles.find((r) => r.role_name === "extra");
@@ -577,6 +631,11 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
       role_name: "extra",
       player_type_names: ["parity-person"],
       cardinality: [0, 5],
+      plays_cardinality: null,
+      overrides: null,
+      is_abstract: false,
+      ordered: false,
+      distinct: false,
     });
   });
 
@@ -599,9 +658,9 @@ describe("Phase 3 relation inheritance (synthetic parent + child relation)", () 
           ],
           roles: [
             // parent role re-listed
-            { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] as [number, number | null] },
+            { role_name: "anchor", player_type_names: ["parity-company"], cardinality: [1, 1] as [number, number | null], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
             // child-local role
-            { role_name: "extra", player_type_names: ["parity-person"], cardinality: [0, 5] as [number, number | null] },
+            { role_name: "extra", player_type_names: ["parity-person"], cardinality: [0, 5] as [number, number | null], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
           ],
         },
       ],
@@ -623,7 +682,7 @@ type DescriptorSnapshot = {
   relations: RelationDescriptor[];
 };
 
-type Annotation = "Key" | "Unique" | { Card: [number, number | null] };
+type Annotation = "Key" | "Unique" | "Distinct" | { Card: [number, number | null] };
 type EntityDescriptor = {
   type_name: string;
   is_abstract: boolean;
@@ -637,11 +696,17 @@ type OwnedAttributeDescriptor = {
   value_type: string;
   annotations: Annotation[];
   is_optional: boolean;
+  is_ordered: boolean;
 };
 type RoleDescriptor = {
   role_name: string;
   player_type_names: string[];
   cardinality: [number, number | null] | null;
+  plays_cardinality: [number, number | null] | null;
+  overrides: string | null;
+  is_abstract: boolean;
+  ordered: boolean;
+  distinct: boolean;
 };
 type SchemaValueType = SchemaInfo["attributes"][string]["value_type"];
 
@@ -651,6 +716,7 @@ function attrDescriptor(
   valueType: string,
   annotations: Annotation[],
   isOptional: boolean,
+  isOrdered = false,
 ): OwnedAttributeDescriptor {
   return {
     field_name: fieldName,
@@ -658,6 +724,7 @@ function attrDescriptor(
     value_type: valueType,
     annotations,
     is_optional: isOptional,
+    is_ordered: isOrdered,
   };
 }
 
@@ -741,6 +808,7 @@ function schemaOwnedAttributes(
     attr_name: attribute.attr_name,
     value_type: attribute.value_type as SchemaValueType,
     annotations: attribute.annotations,
+    is_ordered: attribute.is_ordered,
   }));
 }
 

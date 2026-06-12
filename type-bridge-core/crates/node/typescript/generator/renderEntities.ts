@@ -29,7 +29,10 @@ import { isCardSingle, isCardRequired, isCardMulti, isCardOptionalSingle } from 
  * Render the `field(...)` expression for one owned attribute.
  *
  * Decision logic mirrors Python `_render_attr_field` (entities.py:38-65):
- *   Key > Unique > optional_single > multi (list) > required_single > fallback optional
+ *   Key > Unique > ordered (list) > optional_single > multi (list) > required_single > fallback optional
+ *
+ * Ordered list attributes use `.ordered()` / `.ordered().distinct()` instead of
+ * `.list(Card(...))`.  These correspond to `owns attr[] @distinct` in TypeQL.
  */
 function renderFieldExpr(
   owned: OwnedAttribute,
@@ -44,6 +47,12 @@ function renderFieldExpr(
 
   if (owned.is_unique) {
     return `field(${attrClassName}, Unique)`;
+  }
+
+  // Ordered list attribute: field(Attr).ordered() or field(Attr).ordered().distinct()
+  if (owned.ordered) {
+    const base = `field(${attrClassName}).ordered()`;
+    return owned.distinct ? `${base}.distinct()` : base;
   }
 
   // cardinality === null means default (optional single, same as @card(0..1))
@@ -187,12 +196,28 @@ export function renderEntities(schema: TypeSchema, options?: NamingOptions): str
 
   const needsTypeFlags = sortedNames.some((name) => schema.entities[name]?.is_abstract);
 
+  const needsOrdered = sortedNames.some((entityName) => {
+    const entity = schema.entities[entityName];
+    if (!entity) return false;
+    const parentOwns = buildParentOwns(entityName, schema);
+    return entity.owns.some((owned) => !parentOwns.has(owned.name) && owned.ordered);
+  });
+
+  const needsDistinct = sortedNames.some((entityName) => {
+    const entity = schema.entities[entityName];
+    if (!entity) return false;
+    const parentOwns = buildParentOwns(entityName, schema);
+    return entity.owns.some((owned) => !parentOwns.has(owned.name) && owned.distinct);
+  });
+
   // Build the factory import list
   const factoryImports: string[] = ["Entity", "field"];
   if (needsKey) factoryImports.push("Key");
   if (needsUnique) factoryImports.push("Unique");
   if (needsCard) factoryImports.push("Card");
   if (needsTypeFlags) factoryImports.push("TypeFlags");
+  if (needsOrdered) factoryImports.push("Ordered");
+  if (needsDistinct) factoryImports.push("Distinct");
   factoryImports.sort();
 
   const sortedAttrImports = [...referencedAttrClasses].sort();

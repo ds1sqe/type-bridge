@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use type_bridge_core_lib::version as core_version;
 
 #[derive(Debug, Deserialize)]
 pub struct ServerConfig {
@@ -82,7 +83,7 @@ fn default_port() -> u16 {
 }
 
 fn default_http_port() -> u16 {
-    8000
+    core_version::DEFAULT_HTTP_PORT
 }
 
 fn default_username() -> String {
@@ -107,17 +108,20 @@ fn default_audit_output() -> String {
 
 impl ServerConfig {
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_file_with_env(path, |name| std::env::var(name).ok())
+    }
+
+    fn from_file_with_env<F>(path: &str, get_env: F) -> Result<Self, Box<dyn std::error::Error>>
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
         let content = std::fs::read_to_string(path)?;
         let mut config: ServerConfig = toml::from_str(&content)?;
-        config.apply_env_overrides();
+        config.apply_env_overrides_from(get_env)?;
         Ok(config)
     }
 
-    fn apply_env_overrides(&mut self) {
-        self.apply_env_overrides_from(|name| std::env::var(name).ok());
-    }
-
-    fn apply_env_overrides_from<F>(&mut self, mut get_env: F)
+    fn apply_env_overrides_from<F>(&mut self, mut get_env: F) -> Result<(), Box<dyn std::error::Error>>
     where
         F: FnMut(&str) -> Option<String>,
     {
@@ -133,6 +137,12 @@ impl ServerConfig {
         if let Some(password) = get_env("TYPEDB_PASSWORD") {
             self.typedb.password = password;
         }
+        if let Some(raw) = get_env("TYPEDB_HTTP_PORT") {
+            self.typedb.http_port = raw.parse::<u16>().map_err(|_| {
+                format!("TYPEDB_HTTP_PORT must be a valid port number (0–65535), got {raw:?}")
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -183,7 +193,7 @@ database = "mydb"
         let path = dir.path().join("server.toml");
         std::fs::write(&path, FULL_CONFIG).unwrap();
 
-        let config = ServerConfig::from_file(path.to_str().unwrap()).unwrap();
+        let config = ServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 9090);
         assert_eq!(config.typedb.address, "localhost:1729");
@@ -202,13 +212,15 @@ database = "mydb"
     #[test]
     fn env_overrides_typedb_section() {
         let mut config: ServerConfig = toml::from_str(FULL_CONFIG).unwrap();
-        config.apply_env_overrides_from(|name| match name {
-            "TYPEDB_ADDRESS" => Some("typedb:1729".to_string()),
-            "TYPEDB_DATABASE" => Some("docker_db".to_string()),
-            "TYPEDB_USERNAME" => Some("docker_user".to_string()),
-            "TYPEDB_PASSWORD" => Some("docker_pass".to_string()),
-            _ => None,
-        });
+        config
+            .apply_env_overrides_from(|name| match name {
+                "TYPEDB_ADDRESS" => Some("typedb:1729".to_string()),
+                "TYPEDB_DATABASE" => Some("docker_db".to_string()),
+                "TYPEDB_USERNAME" => Some("docker_user".to_string()),
+                "TYPEDB_PASSWORD" => Some("docker_pass".to_string()),
+                _ => None,
+            })
+            .unwrap();
 
         assert_eq!(config.typedb.address, "typedb:1729");
         assert_eq!(config.typedb.database, "docker_db");
@@ -222,7 +234,7 @@ database = "mydb"
         let path = dir.path().join("server.toml");
         std::fs::write(&path, MINIMAL_CONFIG).unwrap();
 
-        let config = ServerConfig::from_file(path.to_str().unwrap()).unwrap();
+        let config = ServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
         // Defaults should kick in
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.server.port, 8080);
@@ -471,5 +483,59 @@ enabled = ["audit-log", "rate-limiter", "custom"]
 "#;
         let config: ServerConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.interceptors.enabled.len(), 3);
+    }
+
+    // --- TYPEDB_HTTP_PORT env override ---
+
+    #[test]
+    fn env_overrides_http_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(&path, MINIMAL_CONFIG).unwrap();
+
+        let config = ServerConfig::from_file_with_env(path.to_str().unwrap(), |name| {
+            if name == "TYPEDB_HTTP_PORT" {
+                Some("9123".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+
+        assert_eq!(config.typedb.http_port, 9123);
+    }
+
+    #[test]
+    fn env_invalid_http_port_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(&path, MINIMAL_CONFIG).unwrap();
+
+        let result = ServerConfig::from_file_with_env(path.to_str().unwrap(), |name| {
+            if name == "TYPEDB_HTTP_PORT" {
+                Some("not-a-port".to_string())
+            } else {
+                None
+            }
+        });
+
+        assert!(result.is_err(), "invalid TYPEDB_HTTP_PORT must return an error");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("TYPEDB_HTTP_PORT"),
+            "error message must mention TYPEDB_HTTP_PORT: {msg}"
+        );
+    }
+
+    #[test]
+    fn default_http_port_equals_ssot() {
+        // Pins the server default against the core SSOT constant so any
+        // divergence between the two fails at test time.
+        use super::core_version;
+        assert_eq!(
+            default_http_port(),
+            core_version::DEFAULT_HTTP_PORT,
+            "server default_http_port() must equal core DEFAULT_HTTP_PORT"
+        );
     }
 }

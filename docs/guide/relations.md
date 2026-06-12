@@ -405,6 +405,60 @@ company plays employment:employer @card(0..1);
 For multi-player roles declared with `Role.multi(...)`, the same
 `plays_cardinality` applies to each declared player type.
 
+## List Roles
+
+TypeDB supports *list-ordered* role participation via `relates role[]`.  An ordered
+role allows the same player type to appear in an ordered list of slots (rather than an
+unordered set), and optionally enforces that all players in the list are distinct.
+
+### Declaring a list role
+
+Pass `ordered=True` (or `ordered=True, distinct=True`) to `Role(...)`:
+
+```python
+from type_bridge import Entity, Relation, Role, TypeFlags
+
+class Book(Entity):
+    flags = TypeFlags(name="book")
+
+class Reviewer(Entity):
+    flags = TypeFlags(name="reviewer")
+
+class Rating(Relation):
+    flags = TypeFlags(name="rating")
+    rated: Role[Book] = Role("rated", Book)
+    # ordered list of reviewers, no duplicates
+    reviewer: Role[Reviewer] = Role("reviewer", Reviewer, ordered=True, distinct=True)
+```
+
+Generated TypeQL:
+
+```typeql
+relation rating, relates rated, relates reviewer[] @distinct;
+```
+
+Using `ordered=True` alone (without `distinct=True`) omits `@distinct`:
+
+```python
+reviewer: Role[Reviewer] = Role("reviewer", Reviewer, ordered=True)
+# → relates reviewer[]
+```
+
+### Validation
+
+`Role(distinct=True)` without `ordered=True` raises `ValueError` immediately:
+
+```python
+# This raises ValueError at class definition time:
+Role("bad", Reviewer, distinct=True)  # ValueError: distinct requires ordered
+```
+
+### Engine caveat — REP256
+
+Schema-side list role declarations are accepted by TypeDB 3.x.  Instance-level
+operations on list roles are **not yet implemented** (tracked as REP256).  Update
+this section when the engine ships support.
+
 ## Python Inheritance for Relations
 
 Relations support inheritance just like entities:
@@ -778,6 +832,59 @@ salary: Salary | None = None
 # ❌ WRONG
 salary: Salary | None
 ```
+
+## Abstract roles and role specialization
+
+A role can be marked abstract using `Role(..., abstract=True)`. The schema
+generator emits `@abstract` on the `relates` clause, and the engine enforces
+the following semantics:
+
+- **Declaring scope**: the engine rejects direct players supplied for an abstract
+  role on the relation that declares it. TypeBridge mirrors this at input-build
+  time and raises `ValueError` before reaching the engine.
+- **Plain-inherited subtypes**: a concrete sub-relation that plain-inherits an
+  abstract role CAN have players. The engine accepts those.
+- **Overriding subtypes**: a sub-relation that specializes an abstract parent role
+  via `overrides=` excludes the abstract parent from its effective role set and
+  uses the concrete specializing role instead.
+
+```python
+from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
+
+class ContributorName(String):
+    pass
+
+class Contributor(Entity):
+    flags = TypeFlags(name="contributor")
+    name: ContributorName = Flag(Key)
+
+# Abstract parent role: no direct players allowed on Contribution instances.
+class Contribution(Relation):
+    flags = TypeFlags(name="contribution")
+    contributor: Role[Contributor] = Role("contributor", Contributor, abstract=True)
+
+# Subtype that specializes the abstract role — players go through 'author'.
+class Authoring(Contribution):
+    flags = TypeFlags(name="authoring")
+    author: Role[Contributor] = Role("author", Contributor, overrides="contributor")
+
+# Subtype that plain-inherits the abstract role — players are accepted by the engine.
+class Editing(Contribution):
+    flags = TypeFlags(name="editing")
+```
+
+**Generated TypeQL**:
+
+```typeql
+relation contribution, relates contributor @abstract;
+relation authoring sub contribution, relates author as contributor;
+relation editing sub contribution;
+```
+
+`Contribution` instances cannot be created with a `contributor` player directly.
+`Authoring` instances use `author=` (the specializing role). `Editing` instances
+can use `contributor=` because the plain-inherited abstract role is accepted at
+the subtype scope.
 
 ## See Also
 

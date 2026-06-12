@@ -10,6 +10,7 @@ This guide covers TypeBridge's internal type system, architecture decisions, and
 - [Keyword-Only Arguments](#keyword-only-arguments)
 - [Modular Architecture](#modular-architecture)
 - [Connection Architecture](#connection-architecture)
+- [Descriptor Contract](#descriptor-contract)
 - [Deprecated APIs](#deprecated-apis)
 
 ## Internal Type System
@@ -538,6 +539,155 @@ with db.transaction(TransactionType.WRITE) as tx:
 Person.manager(db).insert_many(people)  # One transaction for all
 Person.manager(db).update_many(people)  # One transaction for all
 ```
+
+## Descriptor Contract
+
+Every binding registers its models with the Rust core as *descriptors*
+(`crates/orm/src/descriptor.rs`). The registry stores descriptors as-is — it
+never resolves type inheritance — so each descriptor must be self-contained:
+runtime query building and hydration consume exactly the lists the binding
+provided.
+
+### Inherited members flatten into subtypes
+
+For an entity or relation **subtype**, `owned_attributes` re-lists inherited
+attributes (parent declaration order first, then own). Relation `roles`
+follow the same rule with one refinement: the list is the **effective role
+set** —
+
+- plain-inherited parent roles are flattened in (parent order first),
+- own and specializing roles follow in declaration order,
+- a parent role overridden via `relates child as parent` is **excluded**.
+
+Both bindings (Python `_rust_runtime.relation_descriptor`, TypeScript
+`Relation().descriptor()`) must emit byte-identical role lists; the
+cross-language parity suite (`tests/integration/parity/`) enforces this for
+parented and unparented types alike.
+
+### Why the effective set (engine evidence)
+
+Decided for #139 against TypeDB 3.11.5 (probe transcript:
+`contribution relates contributor, relates work` /
+`authoring sub contribution, relates author as contributor`):
+
+| Probe | Engine verdict |
+| --- | --- |
+| `authoring` instance links a direct `contributor` player | REJECT (`INF11`: no compatible types for `links`) |
+| `authoring` links `author` + plain-inherited `work` | ACCEPT |
+| `match $r relates contributor` | rows: `contribution`, `authoring` (schema view keeps the edge) |
+| `contribution` instance links `contributor` directly | ACCEPT (parent unaffected) |
+| `match $r isa contribution, links (contributor: $x)` | rows include `authoring` (polymorphic read still works) |
+
+An overridden parent role is *unplayable on subtype instances*, so listing it
+(former TypeScript behavior) advertises a role the engine rejects; omitting
+plain-inherited roles (former Python behavior) starves query building and
+hydration of roles the engine accepts. The effective set is exactly what the
+engine permits at instance level.
+
+Schema-level introspection still sees inherited `relates` edges (third probe
+row); the descriptor is an instance-facing contract, which is why playability
+governs.
+
+### Forward compatibility
+
+Role specialization authoring (#140-A) extends `RoleDescriptor` with an
+`overrides` link. The effective-set shape composes with it: the specializing
+role carries `overrides: <parent role>`, from which the full schema picture
+(including the replaced parent role) is reconstructable without re-listing
+unplayable roles.
+
+### Abstract roles (engine evidence)
+
+Decided for #140-A against TypeDB 3.11.5 (probe shapes:
+`interaction @abstract, relates participant @abstract` with
+`collaboration sub interaction, relates collaborator as participant` and a
+plain subtype `chat sub interaction`; plus a concrete relation
+`meeting, relates attendee @abstract, relates room`):
+
+| Probe | Engine verdict |
+| --- | --- |
+| `relates r @abstract` on an abstract relation | define ACCEPT |
+| `relates r @abstract` on a concrete relation | define ACCEPT |
+| Concrete relation instance links its own abstract role directly | REJECT (`INF11`) |
+| Subtype that overrides the abstract role links it directly | REJECT (`INF11`, same as non-abstract override) |
+| Subtype links the specializing role | ACCEPT |
+| Plain-inheriting concrete subtype links the inherited abstract role | ACCEPT |
+| `relates y as x @card(0..1)` (`as` before annotations) | define ACCEPT |
+| `@abstract @card(...)` and `@card(...) @abstract` orders | both define ACCEPT |
+
+Two consequences:
+
+- **Abstractness gates direct play only at the declaring type's own scope.**
+  A concrete subtype that plain-inherits an abstract role can play it, so
+  inherited abstract roles **stay in the subtype's effective role set**. On
+  the declaring relation itself the role is schema-present but unplayable on
+  direct instances — the optional-role fetch partition already tolerates a
+  permanently empty role.
+- **Emission canon is free to pick one annotation order.** The generator
+  emits `relates <name>[ as <parent>][ @abstract][ @card(...)]`; the parser
+  accepts either annotation order, so round-trip stability comes from the
+  emitter's fixed canon.
+
+### plays_cardinality: authoring datum and ONE-LOWERING rule
+
+`RoleDescriptor.plays_cardinality` (`Option<(u32, Option<u32>)>` in Rust,
+`[number, number | null] | null` in TypeScript, `cardinality_tuple()` result
+in Python) is an authoring datum on each role: it declares what cardinality
+the player's `plays` edge should carry in the generated schema.
+
+**Lifecycle:**
+
+1. **Authoring.** Each binding language writes `plays_cardinality` directly
+   into the role entry in the descriptor dict. Python `_rust_runtime.relation_descriptor`
+   calls `cardinality_tuple(role.plays_cardinality)` and places it after
+   `"cardinality"` in the role dict. TypeScript `roleDescriptors()` copies
+   `spec.playsCardinality` as `plays_cardinality` in the emitted role object.
+   Both are serialized as `null` when absent.
+
+2. **Overlay construction.** `SchemaInfo::from_descriptors` (Rust) processes
+   `plays_cardinality` on each registered role and fans the value out to the
+   `plays_cardinalities` map on each named player's entity/relation schema
+   entry, keyed `"{relation_type_name}:{role_name}"`. Foreign-parent nulling
+   (types whose parent is absent from the registered set) is also handled here.
+
+3. **Emission.** `generate_define_block` reads each player entry's
+   `plays_cardinalities` map to emit `@card(min..max)` on the `plays` line.
+
+**ONE-LOWERING rule.** Bindings never hand-project descriptor fields into
+`SchemaInfo` dicts. The registry path (`PyDescriptorRegistry` → `schema_info()`)
+is the single lowering path; the Rust `from_descriptors` is the single point
+where authoring data becomes IR. The Python attributes-section merge (per-model
+`attribute_schema_entry` loop + `attribute_classes` loop) is the one documented
+exception because attribute-class metadata (regex, range, allowed_values, etc.)
+is not represented in the descriptor layer and must be merged from the Python
+attribute class after `schema_info()` returns.
+
+### List interfaces (engine evidence)
+
+Decided for #140-B against TypeDB 3.11.5 (probe shapes: `owns nickname[]`,
+`owns tag[] @distinct`, `owns pid[] @key`, `relation team, relates member[]
+@distinct`, plus instance-level insert/fetch attempts):
+
+| Probe | Engine verdict |
+| --- | --- |
+| `owns attr[]` | define ACCEPT |
+| `owns attr[] @distinct` (and `@distinct @card(0..5)`) | define ACCEPT |
+| `owns attr[] @key` | define ACCEPT |
+| `relates role[] @distinct` | define ACCEPT |
+| Insert list values (`has attr[] [..]`) | REJECT (`REP256`: "List types are not yet implemented") |
+| Fetch over a list binding (`has attr[] $n`) | REJECT (`REP256`) |
+| List-form links insert (`links (role[]: [..])`) | REJECT (TypeQL parse error) |
+| Plain links insert on a list-declared role (`links (role: $a, role: $b)`) | ACCEPT |
+| Scalar match on a list-declared attribute | ACCEPT (returns no rows — no list instances can exist) |
+
+Consequence: **list interfaces are schema-only on current TypeDB.** The
+define/sync pipeline (authoring → IR → emission → generators) is fully
+supported and built; instance-level semantics — insertion-order
+preservation and `@distinct` duplicate rejection — are unimplemented
+engine-side (`REP256`), so the ORM cannot provide or test them. Runtime
+list-value support is deferred until the engine ships list instances; a
+live test pins the `REP256` rejection so an engine upgrade that implements
+lists surfaces as a test failure prompting the deferred work.
 
 ## Deprecated APIs
 

@@ -7,14 +7,20 @@ function attr(fieldName, attrName, valueType, annotations = [], isOptional = fal
     value_type: valueType,
     annotations,
     is_optional: isOptional,
+    is_ordered: false,
   };
 }
 
-function role(roleName, playerTypeNames, cardinality) {
+function role(roleName, playerTypeNames, cardinality, { overrides = null, isAbstract = false } = {}) {
   return {
     role_name: roleName,
     player_type_names: playerTypeNames,
     cardinality,
+    plays_cardinality: null,
+    overrides,
+    is_abstract: isAbstract,
+    ordered: false,
+    distinct: false,
   };
 }
 
@@ -102,6 +108,28 @@ function registerParityDescriptors(typeBridge) {
     roles: [
       role("token", ["parity-party", "parity-person"], [1, 1]),
       role("issue", ["parity-company"], [1, 1]),
+    ],
+  });
+
+  descriptors.relations.parityContribution = registry.registerRelation({
+    type_name: "parity-contribution",
+    is_abstract: false,
+    parent_type: null,
+    owned_attributes: [],
+    roles: [
+      role("contributor", ["parity-person"], null, { isAbstract: true }),
+      role("work", ["parity-email-message"], null),
+    ],
+  });
+
+  descriptors.relations.parityAuthoring = registry.registerRelation({
+    type_name: "parity-authoring",
+    is_abstract: false,
+    parent_type: "parity-contribution",
+    owned_attributes: [],
+    roles: [
+      role("work", ["parity-email-message"], null),
+      role("author", ["parity-person"], null, { overrides: "contributor" }),
     ],
   });
 

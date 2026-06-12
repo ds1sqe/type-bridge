@@ -11,6 +11,10 @@ T = TypeVar("T")
 type Key[T] = Annotated[T, "key"]
 # Unique marker type
 type Unique[T] = Annotated[T, "unique"]
+# Ordered marker type — declares this owns clause as a list attribute (`owns attr[]`)
+type Ordered[T] = Annotated[T, "ordered"]
+# Distinct marker type — requires the Ordered marker; emits `@distinct` on the owns clause
+type Distinct[T] = Annotated[T, "distinct"]
 
 
 class TypeNameCase(Enum):
@@ -226,6 +230,8 @@ class AttributeFlags:
 
     is_key: bool = False
     is_unique: bool = False
+    is_ordered: bool = False
+    is_distinct: bool = False
     card_min: int | None = None
     card_max: int | None = None
     has_explicit_card: bool = False  # Track if Card(...) was explicitly used
@@ -304,12 +310,24 @@ def Flag(*annotations: Any) -> Annotated[Any, AttributeFlags]:
             flags.is_key = True
         elif ann is Unique:
             flags.is_unique = True
+        elif ann is Ordered:
+            flags.is_ordered = True
+        elif ann is Distinct:
+            flags.is_distinct = True
         elif isinstance(ann, Card):
             # Extract cardinality from Card instance
             flags.card_min = ann.min
             flags.card_max = ann.max
             flags.has_explicit_card = True
             has_card = True
+
+    # Distinct requires Ordered: the TypeDB list form (`owns attr[]`) is the
+    # only form the engine accepts @distinct on.
+    if flags.is_distinct and not flags.is_ordered:
+        raise ValueError(
+            "Flag(Distinct) requires Flag(Ordered): @distinct is only valid on a "
+            "list attribute (`owns attr[]`). Use Flag(Ordered, Distinct) together."
+        )
 
     # If Key was used but no Card, set default card(1,1)
     if flags.is_key and not has_card:

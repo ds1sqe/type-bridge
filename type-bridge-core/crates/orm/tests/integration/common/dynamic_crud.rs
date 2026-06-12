@@ -135,11 +135,13 @@ relation {employment_type}, relates employee, relates employer, owns {since_attr
                     role_name: "employee".into(),
                     player_type_names: vec![self.person_type.clone()],
                     cardinality: Some((1, Some(1))),
+                    ..Default::default()
                 },
                 RoleDescriptor {
                     role_name: "employer".into(),
                     player_type_names: vec![self.company_type.clone()],
                     cardinality: Some((1, Some(1))),
+                    ..Default::default()
                 },
             ],
         })
@@ -337,5 +339,6 @@ pub fn attr(
             vec![Annotation::Card(0, Some(5))]
         },
         is_optional: !is_key,
+        is_ordered: false,
     }
 }

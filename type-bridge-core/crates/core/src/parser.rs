@@ -404,6 +404,11 @@ fn parse_owns_statement(input: &mut &str) -> PResult<OwnedAttribute> {
     ws_comments_required(input)?;
     let name = identifier(input)?;
 
+    // Parse the optional ordered-ownership marker `[]` immediately after the name.
+    // TypeDB only accepts `@distinct` on ordered ownerships (`owns attr[]`); the
+    // bare form `owns attr @distinct` is rejected by all server versions.
+    let ordered = opt(literal("[]")).parse_next(input)?.is_some();
+
     let mut owned = OwnedAttribute {
         name: name.to_string(),
         is_key: false,
@@ -411,6 +416,8 @@ fn parse_owns_statement(input: &mut &str) -> PResult<OwnedAttribute> {
         is_cascade: false,
         subkey_group: None,
         cardinality: None,
+        ordered,
+        distinct: false,
     };
 
     loop {
@@ -436,6 +443,11 @@ fn parse_owns_statement(input: &mut &str) -> PResult<OwnedAttribute> {
                 ws_comments(i);
                 let group: &str = delimited("(", padded(identifier), ")").parse_next(i)?;
                 owned.subkey_group = Some(group.to_string());
+                Ok(())
+            },
+            |i: &mut &str| {
+                literal("@distinct").parse_next(i)?;
+                owned.distinct = true;
                 Ok(())
             },
             |i: &mut &str| {
@@ -489,6 +501,7 @@ fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
         cardinality: None,
         distinct: false,
         ordered,
+        is_abstract: false,
     };
 
     // Parse optional "as <parent_role>" — the override comes after the `[]` marker.
@@ -499,10 +512,15 @@ fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
         role.overrides = Some(parent_role.to_string());
     }
 
-    // Parse optional annotations
+    // Parse optional annotations: @abstract, @card(...), @distinct in any order.
     loop {
         ws_comments(input);
         let parsed = opt(alt((
+            |i: &mut &str| {
+                literal("@abstract").parse_next(i)?;
+                role.is_abstract = true;
+                Ok(())
+            },
             |i: &mut &str| {
                 literal("@distinct").parse_next(i)?;
                 role.distinct = true;
@@ -1267,6 +1285,181 @@ mod tests {
                 max: Some(2)
             })
         );
+    }
+
+    // --- @abstract role annotation tests ---
+
+    // `relates participant @abstract` on an @abstract relation.
+    #[test]
+    fn test_parse_role_abstract_on_abstract_relation() {
+        let schema = parse_typeql(
+            "define\nrelation interaction @abstract, relates participant @abstract;",
+        )
+        .unwrap();
+        let role = &schema.relations.get("interaction").unwrap().roles[0];
+        assert!(role.is_abstract, "role should be abstract");
+        assert_eq!(role.name, "participant");
+    }
+
+    // Override + @abstract + @card in any order.
+    #[test]
+    fn test_parse_role_abstract_with_override_and_card() {
+        let schema = parse_typeql(
+            "define\nrelation task sub work, relates worker as assignee @abstract @card(0..1);",
+        )
+        .unwrap();
+        let role = &schema.relations.get("task").unwrap().roles[0];
+        assert_eq!(role.overrides.as_deref(), Some("assignee"));
+        assert!(role.is_abstract, "role should be abstract");
+        assert_eq!(
+            role.cardinality,
+            Some(Cardinality { min: 0, max: Some(1) })
+        );
+    }
+
+    // @card before @abstract — order must not matter.
+    #[test]
+    fn test_parse_role_abstract_card_then_abstract() {
+        let schema =
+            parse_typeql("define\nrelation work, relates assignee @card(0..2) @abstract;").unwrap();
+        let role = &schema.relations.get("work").unwrap().roles[0];
+        assert!(role.is_abstract, "role should be abstract");
+        assert_eq!(
+            role.cardinality,
+            Some(Cardinality { min: 0, max: Some(2) })
+        );
+    }
+
+    // Plain role without @abstract — is_abstract defaults to false.
+    #[test]
+    fn test_parse_role_not_abstract_by_default() {
+        let schema = parse_typeql("define\nrelation friendship, relates plain;").unwrap();
+        let role = &schema.relations.get("friendship").unwrap().roles[0];
+        assert!(!role.is_abstract, "plain role should not be abstract");
+    }
+
+    // Serde round-trip: JSON without the `is_abstract` field deserializes with false.
+    #[test]
+    fn test_role_spec_serde_default_is_abstract() {
+        let json = r#"{
+            "name": "participant",
+            "overrides": null,
+            "cardinality": null,
+            "distinct": false,
+            "ordered": false
+        }"#;
+        let role: RoleSpec = serde_json::from_str(json).unwrap();
+        assert!(!role.is_abstract, "missing is_abstract field should default to false");
+    }
+
+    // --- owns [] (ordered ownership) annotation tests ---
+
+    // `owns nickname[]` — ordered true, distinct false.
+    #[test]
+    fn test_parse_owns_ordered_no_distinct() {
+        let schema =
+            parse_typeql("define\nentity person, owns nickname[];\nattribute nickname, value string;")
+                .unwrap();
+        let own = &schema.entities.get("person").unwrap().owns[0];
+        assert!(own.ordered, "ownership should be marked ordered");
+        assert!(!own.distinct, "ownership should not be marked distinct");
+    }
+
+    // `owns nickname[] @distinct` — both true.
+    #[test]
+    fn test_parse_owns_ordered_and_distinct() {
+        let schema = parse_typeql(
+            "define\nentity person, owns nickname[] @distinct;\nattribute nickname, value string;",
+        )
+        .unwrap();
+        let own = &schema.entities.get("person").unwrap().owns[0];
+        assert!(own.ordered, "ownership should be marked ordered");
+        assert!(own.distinct, "ownership should be marked distinct");
+    }
+
+    // `owns nickname[] @card(0..5) @distinct` — annotations in any order.
+    #[test]
+    fn test_parse_owns_ordered_card_then_distinct() {
+        let schema = parse_typeql(
+            "define\nentity person, owns nickname[] @card(0..5) @distinct;\nattribute nickname, value string;",
+        )
+        .unwrap();
+        let own = &schema.entities.get("person").unwrap().owns[0];
+        assert!(own.ordered);
+        assert!(own.distinct);
+        assert_eq!(own.cardinality, Some(Cardinality { min: 0, max: Some(5) }));
+    }
+
+    // `owns nickname[] @distinct @card(0..5)` — reversed annotation order.
+    #[test]
+    fn test_parse_owns_ordered_distinct_then_card() {
+        let schema = parse_typeql(
+            "define\nentity person, owns nickname[] @distinct @card(0..5);\nattribute nickname, value string;",
+        )
+        .unwrap();
+        let own = &schema.entities.get("person").unwrap().owns[0];
+        assert!(own.ordered);
+        assert!(own.distinct);
+        assert_eq!(own.cardinality, Some(Cardinality { min: 0, max: Some(5) }));
+    }
+
+    // `owns pid[] @key` — ordered plus is_key.
+    #[test]
+    fn test_parse_owns_ordered_key() {
+        let schema = parse_typeql(
+            "define\nentity person, owns pid[] @key;\nattribute pid, value string;",
+        )
+        .unwrap();
+        let own = &schema.entities.get("person").unwrap().owns[0];
+        assert!(own.ordered, "ownership should be marked ordered");
+        assert!(own.is_key, "ownership should be a key");
+    }
+
+    // Plain `owns x` — ordered and distinct both false.
+    #[test]
+    fn test_parse_owns_plain_both_false() {
+        let schema =
+            parse_typeql("define\nentity person, owns name;\nattribute name, value string;")
+                .unwrap();
+        let own = &schema.entities.get("person").unwrap().owns[0];
+        assert!(!own.ordered, "plain ownership should not be ordered");
+        assert!(!own.distinct, "plain ownership should not be distinct");
+    }
+
+    // Bare `owns x @distinct` (no `[]`) must be rejected by validation.
+    // `from_typeql` runs validate() after parsing; the error message must mention
+    // @distinct and the ordered `[]` syntax.
+    #[test]
+    fn test_parse_owns_distinct_bare_rejected() {
+        let err = TypeSchema::from_typeql(
+            "define\nentity person, owns name @distinct;\nattribute name, value string;",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("@distinct"),
+            "expected message mentioning @distinct, got: {msg}"
+        );
+        assert!(
+            msg.contains("[]"),
+            "expected message mentioning ordered-ownership syntax `[]`, got: {msg}"
+        );
+    }
+
+    // Serde round-trip: JSON without `ordered`/`distinct` deserializes to both false.
+    #[test]
+    fn test_owned_attribute_serde_default_ordered_distinct() {
+        let json = r#"{
+            "name": "nickname",
+            "is_key": false,
+            "is_unique": false,
+            "is_cascade": false,
+            "subkey_group": null,
+            "cardinality": null
+        }"#;
+        let own: OwnedAttribute = serde_json::from_str(json).unwrap();
+        assert!(!own.ordered, "missing ordered field should default to false");
+        assert!(!own.distinct, "missing distinct field should default to false");
     }
 
     #[test]

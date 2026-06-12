@@ -9,6 +9,7 @@ compile_error!(
 
 use futures::TryStreamExt;
 use type_bridge_core_lib::version as core_version;
+use type_bridge_core_lib::version::DEFAULT_HTTP_PORT;
 
 #[cfg(feature = "band8")]
 use typedb_driver::answer::QueryAnswer as B8QueryAnswer;
@@ -84,8 +85,28 @@ pub fn embedded_driver_versions() -> &'static [(u8, &'static str)] {
     ]
 }
 
-/// Band-tagged driver handle.  Private to this module; no driver type escapes.
-enum DriverHandle {
+/// Connection-time options for the version-gated TypeDB ORM session.
+///
+/// Callers that accept the defaults can pass `ConnectOptions::default()`.
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectOptions {
+    /// Port of the TypeDB HTTP API used for the connect-time version probe.
+    pub http_port: u16,
+    /// Whether to use TLS for the HTTP version probe.
+    pub tls: bool,
+}
+
+impl Default for ConnectOptions {
+    fn default() -> Self {
+        Self {
+            http_port: DEFAULT_HTTP_PORT,
+            tls: false,
+        }
+    }
+}
+
+/// Band-tagged driver handle.  Crate-private; no driver type escapes the crate.
+pub(crate) enum DriverHandle {
     #[cfg(feature = "band7")]
     B7(B7Driver),
     #[cfg(feature = "band8")]
@@ -97,30 +118,31 @@ pub struct RealBackend {
     driver: DriverHandle,
 }
 
-/// Version-gated [`DriverHandle`] constructor.
+/// Version-gated [`DriverHandle`] constructor with an injectable probe.
 ///
-/// Before allocating any gRPC connection, this helper:
-///
-/// 1. Probes the TypeDB HTTP version endpoint (port 8000, plain HTTP — TLS is
-///    not plumbed in this crate today).
-/// 2. Runs the embedded-runtime gate [`core_version::check_server_supported`]
-///    against [`EMBEDDED_BANDS`] — the server is served when it is in-window
-///    and its band is one this build embedded.
-/// 3. Only on success, constructs and returns a live [`DriverHandle`] for the
-///    server's band.
-///
-/// Any version incompatibility surfaces as [`OrmError::UnsupportedVersion`]
-/// **before** the gRPC handshake — fail fast, never silently.
-async fn gated_driver(
+/// The `probe` closure is called with `(address, http_port, tls)` and must
+/// return the server version or a [`core_version::VersionError`].  Production
+/// code passes [`core_version::server_version`]; tests inject a recording
+/// closure to exercise the gate without a live server.
+pub(crate) async fn gated_driver_with_probe<F>(
     address: &str,
     username: &str,
     password: &str,
-) -> Result<DriverHandle, OrmError> {
+    options: ConnectOptions,
+    probe: F,
+) -> Result<DriverHandle, OrmError>
+where
+    F: FnOnce(&str, u16, bool) -> Result<core_version::Version, core_version::VersionError>
+        + Send
+        + 'static,
+{
     // Probe the server version over HTTP (blocking I/O; offload to a
     // dedicated thread so we don't block the async executor).
     let address_owned = address.to_string();
+    let http_port = options.http_port;
+    let tls = options.tls;
     let server_version = tokio::task::spawn_blocking(move || {
-        core_version::server_version(&address_owned, 8000, false)
+        probe(&address_owned, http_port, tls)
     })
     .await
     .map_err(|e| OrmError::Connection(format!("Version probe task panicked: {e}")))?
@@ -185,14 +207,33 @@ async fn gated_driver(
     )))
 }
 
+/// Version-gated [`DriverHandle`] constructor.
+///
+/// Thin wrapper over [`gated_driver_with_probe`] that passes the real
+/// [`core_version::server_version`] HTTP probe.
+async fn gated_driver(
+    address: &str,
+    username: &str,
+    password: &str,
+    options: ConnectOptions,
+) -> Result<DriverHandle, OrmError> {
+    gated_driver_with_probe(address, username, password, options, core_version::server_version)
+        .await
+}
+
 impl RealBackend {
     /// Connect to a TypeDB server.
     ///
     /// Probes the server version via HTTP before opening any gRPC connection.
     /// Returns [`OrmError::UnsupportedVersion`] when the server is outside the
     /// supported window or on a different protocol band than the driver.
-    pub async fn connect(address: &str, username: &str, password: &str) -> Result<Self, OrmError> {
-        let driver = gated_driver(address, username, password).await?;
+    pub async fn connect(
+        address: &str,
+        username: &str,
+        password: &str,
+        options: ConnectOptions,
+    ) -> Result<Self, OrmError> {
+        let driver = gated_driver(address, username, password, options).await?;
         tracing::info!(address, "Connected to TypeDB");
         Ok(Self { driver })
     }
@@ -212,8 +253,9 @@ pub async fn ensure_database_exists(
     database: &str,
     username: &str,
     password: &str,
+    options: ConnectOptions,
 ) -> Result<(), OrmError> {
-    let driver = gated_driver(address, username, password).await?;
+    let driver = gated_driver(address, username, password, options).await?;
 
     match driver {
         #[cfg(feature = "band7")]
@@ -672,4 +714,53 @@ fn value_to_json_b8(value: &typedb_driver::concept::Value) -> serde_json::Value 
         return serde_json::Value::String(dur.to_string());
     }
     serde_json::Value::String(value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn connect_options_default_matches_ssot() {
+        let options = ConnectOptions::default();
+        assert_eq!(options.http_port, DEFAULT_HTTP_PORT);
+        assert!(!options.tls);
+    }
+
+    /// The injectable probe must receive the configured port, not a
+    /// hardcoded 8000.  The probe returns an in-window version so the gate
+    /// proceeds to the gRPC connection attempt, which fails with a network
+    /// error (no server) — the assertion is about the recorded port and
+    /// that the failure is NOT a version-gate rejection.
+    #[tokio::test]
+    async fn gated_driver_probe_receives_configured_port() {
+        let recorded_port: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
+        let captured = Arc::clone(&recorded_port);
+
+        let result = gated_driver_with_probe(
+            "localhost:1729",
+            "admin",
+            "password",
+            ConnectOptions {
+                http_port: 9123,
+                tls: false,
+            },
+            move |_addr, port, _tls| {
+                *captured.lock().unwrap() = Some(port);
+                Ok(core_version::Version::new(3, 8, 3))
+            },
+        )
+        .await;
+
+        let observed = recorded_port.lock().unwrap().expect("probe was not called");
+        assert_eq!(
+            observed, 9123,
+            "probe must receive the configured http_port (9123), got {observed}"
+        );
+
+        if let Err(OrmError::UnsupportedVersion(_)) = result {
+            panic!("expected a connection error (no server), not a version gate rejection")
+        }
+    }
 }

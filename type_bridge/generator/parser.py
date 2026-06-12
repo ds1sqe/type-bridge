@@ -55,17 +55,22 @@ def _convert_owned_attributes(
     set[str],
     set[str],
     set[str],
+    set[str],
+    set[str],
     dict[str, str],
     dict[str, Cardinality],
 ]:
     """Decompose ``Vec<OwnedAttribute>`` dicts into separate Python collections.
 
-    Returns (owns, owns_order, keys, uniques, cascades, subkeys, cardinalities).
+    Returns (owns, owns_order, keys, uniques, cascades, ordered_owns, distinct_owns,
+    subkeys, cardinalities).
     """
     owns: set[str] = set()
     keys: set[str] = set()
     uniques: set[str] = set()
     cascades: set[str] = set()
+    ordered_owns: set[str] = set()
+    distinct_owns: set[str] = set()
     subkeys: dict[str, str] = {}
     cardinalities: dict[str, Cardinality] = {}
 
@@ -78,13 +83,27 @@ def _convert_owned_attributes(
             uniques.add(name)
         if attr_dict["is_cascade"]:
             cascades.add(name)
+        if attr_dict.get("ordered", False):
+            ordered_owns.add(name)
+        if attr_dict.get("distinct", False):
+            distinct_owns.add(name)
         if attr_dict["subkey_group"] is not None:
             subkeys[name] = attr_dict["subkey_group"]
         card = _convert_cardinality(attr_dict.get("cardinality"))
         if card is not None:
             cardinalities[name] = card
 
-    return owns, list(owns_order), keys, uniques, cascades, subkeys, cardinalities
+    return (
+        owns,
+        list(owns_order),
+        keys,
+        uniques,
+        cascades,
+        ordered_owns,
+        distinct_owns,
+        subkeys,
+        cardinalities,
+    )
 
 
 def _convert_played_roles(
@@ -142,9 +161,17 @@ def _rust_schema_to_parsed(
 
     # --- Entities ---
     for name, ent_dict in rust_schema.entities.items():
-        owns, owns_order, keys, uniques, cascades, subkeys, cardinalities = (
-            _convert_owned_attributes(ent_dict.get("owns", []), ent_dict.get("owns_order", []))
-        )
+        (
+            owns,
+            owns_order,
+            keys,
+            uniques,
+            cascades,
+            ordered_owns,
+            distinct_owns,
+            subkeys,
+            cardinalities,
+        ) = _convert_owned_attributes(ent_dict.get("owns", []), ent_dict.get("owns_order", []))
         plays, plays_cardinalities = _convert_played_roles(ent_dict.get("plays", []))
 
         annots = entity_annots.get(name, {}).copy()
@@ -161,6 +188,8 @@ def _rust_schema_to_parsed(
             keys=keys,
             uniques=uniques,
             cascades=cascades,
+            ordered_owns=ordered_owns,
+            distinct_owns=distinct_owns,
             subkeys=subkeys,
             cardinalities=cardinalities,
             plays_cardinalities=plays_cardinalities,
@@ -170,9 +199,17 @@ def _rust_schema_to_parsed(
 
     # --- Relations ---
     for name, rel_dict in rust_schema.relations.items():
-        owns, owns_order, keys, uniques, cascades, subkeys, cardinalities = (
-            _convert_owned_attributes(rel_dict.get("owns", []), rel_dict.get("owns_order", []))
-        )
+        (
+            owns,
+            owns_order,
+            keys,
+            uniques,
+            cascades,
+            ordered_owns,
+            distinct_owns,
+            subkeys,
+            cardinalities,
+        ) = _convert_owned_attributes(rel_dict.get("owns", []), rel_dict.get("owns_order", []))
 
         # Convert role dicts → RoleSpec dataclasses
         roles: list[RoleSpec] = []
@@ -181,7 +218,9 @@ def _rust_schema_to_parsed(
                 name=role_dict["name"],
                 overrides=role_dict.get("overrides"),
                 cardinality=_convert_cardinality(role_dict.get("cardinality")),
+                ordered=role_dict.get("ordered", False),
                 distinct=role_dict.get("distinct", False),
+                is_abstract=role_dict.get("is_abstract", False),
             )
             roles.append(role)
 
@@ -205,6 +244,8 @@ def _rust_schema_to_parsed(
             keys=keys,
             uniques=uniques,
             cascades=cascades,
+            ordered_owns=ordered_owns,
+            distinct_owns=distinct_owns,
             subkeys=subkeys,
             cardinalities=cardinalities,
             docstring=rel_docstring,

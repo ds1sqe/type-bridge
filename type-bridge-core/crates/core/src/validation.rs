@@ -557,6 +557,11 @@ impl ValidationEngine {
                     self.validate_pattern_recursive(p, &format!("{}.not[{}]", path, i), errors);
                 }
             }
+            Pattern::Try(patterns) => {
+                for (i, p) in patterns.iter().enumerate() {
+                    self.validate_pattern_recursive(p, &format!("{}.try[{}]", path, i), errors);
+                }
+            }
             Pattern::Or(alternatives) => {
                 for (i, alt) in alternatives.iter().enumerate() {
                     for (j, p) in alt.iter().enumerate() {
@@ -755,6 +760,11 @@ impl ValidationEngine {
                     if let Some(first) = alternatives.first() {
                         self.build_type_env(first, schema, env);
                     }
+                }
+                Pattern::Try(inner) => {
+                    // Optional block: when matched it binds the same variables
+                    // as a plain pattern, so its type info is usable downstream.
+                    self.build_type_env(inner, schema, env);
                 }
                 // Not: don't bind (negation doesn't guarantee variable existence).
                 // SubType, ValueComparison, Iid, Raw: no type info to extract.
@@ -968,6 +978,18 @@ impl ValidationEngine {
                             errors,
                         );
                     }
+                }
+            }
+
+            Pattern::Try(inner) => {
+                for (i, p) in inner.iter().enumerate() {
+                    self.validate_pattern_against_schema(
+                        p,
+                        schema,
+                        env,
+                        &format!("{}.try[{}]", path, i),
+                        errors,
+                    );
                 }
             }
 
@@ -1825,6 +1847,8 @@ mod schema_validation_tests {
                         is_cascade: false,
                         subkey_group: None,
                         cardinality: None,
+                        ordered: false,
+                        distinct: false,
                     },
                     OwnedAttribute {
                         name: "age".into(),
@@ -1833,6 +1857,8 @@ mod schema_validation_tests {
                         is_cascade: false,
                         subkey_group: None,
                         cardinality: None,
+                        ordered: false,
+                        distinct: false,
                     },
                     OwnedAttribute {
                         name: "email".into(),
@@ -1841,6 +1867,8 @@ mod schema_validation_tests {
                         is_cascade: false,
                         subkey_group: None,
                         cardinality: None,
+                        ordered: false,
+                        distinct: false,
                     },
                 ],
                 owns_order: vec!["name".into(), "age".into(), "email".into()],
@@ -1865,6 +1893,8 @@ mod schema_validation_tests {
                         is_cascade: false,
                         subkey_group: None,
                         cardinality: None,
+                        ordered: false,
+                        distinct: false,
                     },
                     OwnedAttribute {
                         name: "age".into(),
@@ -1873,6 +1903,8 @@ mod schema_validation_tests {
                         is_cascade: false,
                         subkey_group: None,
                         cardinality: None,
+                        ordered: false,
+                        distinct: false,
                     },
                     OwnedAttribute {
                         name: "email".into(),
@@ -1881,6 +1913,8 @@ mod schema_validation_tests {
                         is_cascade: false,
                         subkey_group: None,
                         cardinality: None,
+                        ordered: false,
+                        distinct: false,
                     },
                     OwnedAttribute {
                         name: "salary".into(),
@@ -1889,6 +1923,8 @@ mod schema_validation_tests {
                         is_cascade: false,
                         subkey_group: None,
                         cardinality: None,
+                        ordered: false,
+                        distinct: false,
                     },
                 ],
                 owns_order: vec!["name".into(), "age".into(), "email".into(), "salary".into()],
@@ -1911,6 +1947,8 @@ mod schema_validation_tests {
                     is_cascade: false,
                     subkey_group: None,
                     cardinality: None,
+                    ordered: false,
+                    distinct: false,
                 }],
                 owns_order: vec!["name".into()],
                 plays: vec![PlayedRole {
@@ -1932,6 +1970,8 @@ mod schema_validation_tests {
                     is_cascade: false,
                     subkey_group: None,
                     cardinality: None,
+                    ordered: false,
+                    distinct: false,
                 }],
                 owns_order: vec!["name".into()],
                 plays: vec![],
@@ -1951,6 +1991,7 @@ mod schema_validation_tests {
                         cardinality: None,
                         distinct: false,
                         ordered: false,
+                        is_abstract: false,
                     },
                     RoleSpec {
                         name: "employer".into(),
@@ -1958,6 +1999,7 @@ mod schema_validation_tests {
                         cardinality: None,
                         distinct: false,
                         ordered: false,
+                        is_abstract: false,
                     },
                 ],
                 owns: vec![],
@@ -1977,6 +2019,7 @@ mod schema_validation_tests {
                     cardinality: None,
                     distinct: false,
                     ordered: false,
+                    is_abstract: false,
                 }],
                 owns: vec![],
                 owns_order: vec![],
@@ -2002,6 +2045,8 @@ mod schema_validation_tests {
                             min: 1,
                             max: Some(1),
                         }),
+                        ordered: false,
+                        distinct: false,
                     },
                     OwnedAttribute {
                         name: "score".into(),
@@ -2013,6 +2058,8 @@ mod schema_validation_tests {
                             min: 0,
                             max: Some(3),
                         }),
+                        ordered: false,
+                        distinct: false,
                     },
                 ],
                 owns_order: vec!["name".into(), "score".into()],

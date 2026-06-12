@@ -41,9 +41,6 @@ type ModelClassLike = (new (values: never) => object) & {
 };
 type ModelToken = string | ModelClassLike;
 const ATTRIBUTE_SCHEMA_METADATA = Symbol.for("@type-bridge/node.attributeSchemaMetadata");
-const ROLE_PLAYS_CARDINALITY_METADATA = Symbol.for(
-  "@type-bridge/node.rolePlaysCardinalityMetadata",
-);
 
 /**
  * A model class that also exposes its schema, used as a parent reference.
@@ -105,10 +102,12 @@ export class FieldSpec<Attr extends AttributeClass, Optional extends boolean = f
   list<const Min extends number, const Max extends number | null>(
     card: CardSpec<Min, Max>,
   ): ListFieldSpec<Attr, Min extends 0 ? true : false> {
-    return new ListFieldSpec(this.attrType, card) as ListFieldSpec<
-      Attr,
-      Min extends 0 ? true : false
-    >;
+    return new ListFieldSpec(
+      this.attrType,
+      card,
+      this.flags.isOrdered,
+      this.flags.isDistinct,
+    ) as ListFieldSpec<Attr, Min extends 0 ? true : false>;
   }
 }
 
@@ -125,15 +124,25 @@ export class ListFieldSpec<Attr extends AttributeClass, Optional extends boolean
   /** Explicit cardinality `[min, max | null]`. Always present for list fields. */
   readonly card: [number, number | null];
   readonly isOptional: Optional;
+  /** True when the parent FieldSpec carried the `Ordered` flag. A multi-value
+   * `Card` field is a set, not a TypeDB list: only the `Ordered` flag makes
+   * the descriptor emit `is_ordered: true` (and `[]` in the define block). */
+  readonly isOrdered: boolean;
+  /** True when the parent FieldSpec carried the `Distinct` flag. */
+  readonly isDistinct: boolean;
 
   constructor(
     readonly attrType: Attr,
     cardSpec: CardSpec,
+    isOrdered = false,
+    isDistinct = false,
   ) {
     this.card = [cardSpec.min, cardSpec.max];
     // A list field is optional when the minimum cardinality is 0, mirroring the
     // Python `_is_optional` rule: `flags.card_min == 0`.
     this.isOptional = (cardSpec.min === 0) as Optional;
+    this.isOrdered = isOrdered;
+    this.isDistinct = isDistinct;
   }
 }
 
@@ -148,18 +157,45 @@ export class RoleSpec<Players extends readonly ModelToken[]> {
   readonly kind = "role";
   readonly cardinality: [number, number | null] | null;
   readonly playsCardinality: [number, number | null] | null;
+  /** Parent role name this role specializes via TypeDB's `relates child as parent` syntax.
+   * Used only for descriptor computation (effective-set role exclusion); specialization
+   * semantics are resolved at schema-define time. */
+  readonly overrides: string | undefined;
+  /** When ``true``, this role is abstract at the TypeDB schema level (``@abstract`` on
+   * the ``relates`` clause). The engine rejects direct players at the declaring
+   * relation's own scope; subtypes that plain-inherit or override the role are
+   * unaffected. */
+  readonly isAbstract: boolean;
+  /** When ``true``, declares this role as a list role (``relates name[]`` in TypeQL).
+   * Schema-only; instance-level list writes are not yet supported by the engine. */
+  readonly ordered: boolean;
+  /** When ``true``, emits ``@distinct`` on the relates clause. Requires ``ordered``. */
+  readonly distinct: boolean;
 
   constructor(
     readonly players: Players,
     cardinality?: CardSpec | null,
     playsCardinality?: CardSpec | null,
+    overrides?: string,
+    isAbstract?: boolean,
+    ordered?: boolean,
+    distinct?: boolean,
   ) {
     if (playsCardinality != null && players.length === 0) {
       throw new TypeError("playsCardinality requires at least one role player");
     }
+    if (distinct && !ordered) {
+      throw new TypeError(
+        "RoleSpec: distinct requires ordered — @distinct is only valid on a list role (relates name[]).",
+      );
+    }
     this.cardinality = cardinality == null ? null : [cardinality.min, cardinality.max];
     this.playsCardinality =
       playsCardinality == null ? null : [playsCardinality.min, playsCardinality.max];
+    this.overrides = overrides;
+    this.isAbstract = isAbstract ?? false;
+    this.ordered = ordered ?? false;
+    this.distinct = distinct ?? false;
   }
 }
 
@@ -350,8 +386,8 @@ export function role<const Players extends readonly [ModelToken, ...ModelToken[]
 export function role<const Players extends readonly ModelToken[]>(
   ...playersAndOptions: RoleArguments<Players>
 ): RoleSpec<Players> {
-  const { players, cardinality, playsCardinality } = splitRoleArguments(playersAndOptions);
-  return new RoleSpec(players as Players, cardinality, playsCardinality);
+  const { players, cardinality, playsCardinality, overrides, isAbstract, ordered, distinct } = splitRoleArguments(playersAndOptions);
+  return new RoleSpec(players as Players, cardinality, playsCardinality, overrides, isAbstract, ordered, distinct);
 }
 
 /**
@@ -393,8 +429,11 @@ export function Entity<
  * contain `role(...)` specs, which are emitted as `roles[*]` in the descriptor.
  *
  * Pass a third `{ parent: ParentClass }` argument to declare a parent relation
- * type. The child's descriptor emits `parent_type` and the full flattened
- * `owned_attributes`; inherited roles are also re-listed.
+ * type. The child's descriptor emits `parent_type`, the full flattened
+ * `owned_attributes`, and the **effective role set**: plain-inherited parent roles
+ * first (in the parent's own effective order), then child-local roles — excluding
+ * any parent role whose name appears as the `overrides` target of a child role.
+ * This mirrors the Python descriptor contract (see `internals.md`, "Descriptor Contract").
  */
 export function Relation<const Schema extends RelationSchema>(
   typeNameOrFlags: string | ResolvedTypeFlags,
@@ -422,10 +461,18 @@ export function Relation<
 type RelatesOnlyRoleOptions = {
   readonly cardinality?: CardSpec | null;
   readonly playsCardinality?: never;
+  readonly overrides?: string;
+  readonly abstract?: boolean;
+  readonly ordered?: boolean;
+  readonly distinct?: boolean;
 };
 type RoleOptions = {
   readonly cardinality?: CardSpec | null;
   readonly playsCardinality?: CardSpec | null;
+  readonly overrides?: string;
+  readonly abstract?: boolean;
+  readonly ordered?: boolean;
+  readonly distinct?: boolean;
 };
 type RoleArguments<Players extends readonly ModelToken[]> =
   | [...Players]
@@ -574,12 +621,20 @@ function createModelClass(
         return descriptor;
       }
 
+      // For the effective role set we need the parent's own effective roles
+      // (recursively resolved), not its raw schema.  Calling parent.descriptor()
+      // here is safe: the parent class is already fully defined when descriptor()
+      // is invoked on the child.
+      const parentEffectiveRoles: RoleDescriptor[] = (() => {
+        if (parent == null) return [];
+        const pd = (parent as unknown as { descriptor(): EntityDescriptor | RelationDescriptor }).descriptor();
+        return (pd as RelationDescriptor).roles ?? [];
+      })();
       const relationDescriptor: RelationDescriptor = {
         ...descriptor,
-        roles: roleDescriptors(mergedSchema),
+        roles: roleDescriptors(parentEffectiveRoles, schema),
       };
       attachAttributeSchemaMetadata(relationDescriptor, parentSchema, schema);
-      attachRolePlaysCardinalityMetadata(relationDescriptor, mergedSchema);
       return relationDescriptor;
     }
 
@@ -648,12 +703,17 @@ function ownedAttributeEntry(
     // Multi-value list field: emit the explicit Card annotation unconditionally.
     // is_optional mirrors Python's `_is_optional`: card_min == 0.
     const cardAnnotation: Annotation = { Card: [spec.card[0], spec.card[1]] };
+    const annotations: Annotation[] = [cardAnnotation];
+    if (spec.isDistinct) {
+      annotations.push("Distinct");
+    }
     return {
       field_name: fieldName,
       attr_name: spec.attrType.attrName,
       value_type: spec.attrType.valueType,
-      annotations: [cardAnnotation],
+      annotations,
       is_optional: spec.isOptional,
+      is_ordered: spec.isOrdered,
     };
   }
   if (spec instanceof FieldSpec) {
@@ -663,6 +723,7 @@ function ownedAttributeEntry(
       value_type: spec.attrType.valueType,
       annotations: spec.flags.annotations.map(copyAnnotation),
       is_optional: spec.isOptional,
+      is_ordered: spec.flags.isOrdered,
     };
   }
   // RoleSpec — not an attribute descriptor.
@@ -686,22 +747,6 @@ function attachAttributeSchemaMetadata(
   });
 }
 
-function attachRolePlaysCardinalityMetadata(
-  descriptor: RelationDescriptor,
-  schema: Record<string, SchemaSpec>,
-): void {
-  const metadata = rolePlaysCardinalityMetadata(schema);
-  if (Object.keys(metadata).length === 0) {
-    return;
-  }
-  Object.defineProperty(descriptor, ROLE_PLAYS_CARDINALITY_METADATA, {
-    value: metadata,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
-}
-
 function attributeSchemaMetadata(
   parentSchema: Record<string, SchemaSpec>,
   childSchema: Record<string, SchemaSpec>,
@@ -712,18 +757,6 @@ function attributeSchemaMetadata(
       for (const entry of spec.attrType.attributeSchemaEntries) {
         metadata[entry.attr_name] = copyAttributeSchemaEntry(entry);
       }
-    }
-  }
-  return metadata;
-}
-
-function rolePlaysCardinalityMetadata(
-  schema: Record<string, SchemaSpec>,
-): Record<string, [number, number | null]> {
-  const metadata: Record<string, [number, number | null]> = {};
-  for (const [roleName, spec] of Object.entries(schema)) {
-    if (spec instanceof RoleSpec && spec.playsCardinality !== null) {
-      metadata[roleName] = [spec.playsCardinality[0], spec.playsCardinality[1]];
     }
   }
   return metadata;
@@ -740,18 +773,54 @@ function copyAttributeSchemaEntry(entry: AttributeSchemaEntry): AttributeSchemaE
   return copy;
 }
 
-function roleDescriptors(schema: Record<string, SchemaSpec>): RoleDescriptor[] {
-  const descriptors: RoleDescriptor[] = [];
-  for (const [roleName, spec] of Object.entries(schema)) {
-    if (!(spec instanceof RoleSpec)) {
-      continue;
+/**
+ * Emit the canonical effective role set for a relation descriptor.
+ *
+ * `parentEffectiveRoles` is the parent's already-resolved effective role list
+ * (empty for root relations).  `childSchema` is the child-local schema.
+ *
+ * Result: parent effective roles first (excluding those overridden by a child
+ * specialization), then child-local roles in declaration order.  This mirrors
+ * the Python `_effective_roles` algorithm and the contract in `descriptor.rs`.
+ */
+function roleDescriptors(
+  parentEffectiveRoles: RoleDescriptor[],
+  childSchema: Record<string, SchemaSpec>,
+): RoleDescriptor[] {
+  // Collect parent role names overridden by child specializations.
+  const overriddenRoleNames = new Set<string>();
+  for (const spec of Object.values(childSchema)) {
+    if (spec instanceof RoleSpec && spec.overrides != null) {
+      overriddenRoleNames.add(spec.overrides);
     }
+  }
+
+  const descriptors: RoleDescriptor[] = [];
+
+  // Parent effective roles first — skip those overridden at this level.
+  // Inherited-role entries keep all parent markers (overrides, is_abstract,
+  // ordered, distinct) because they were set at declaration time and travel
+  // with the descriptor.
+  for (const parentRole of parentEffectiveRoles) {
+    if (overriddenRoleNames.has(parentRole.role_name)) continue;
+    descriptors.push({ ...parentRole });
+  }
+
+  // Child-local roles follow in declaration order.
+  for (const [roleName, spec] of Object.entries(childSchema)) {
+    if (!(spec instanceof RoleSpec)) continue;
     descriptors.push({
       role_name: roleName,
       player_type_names: spec.players.map(typeNameFor),
       cardinality: spec.cardinality,
+      plays_cardinality: spec.playsCardinality,
+      overrides: spec.overrides ?? null,
+      is_abstract: spec.isAbstract,
+      ordered: spec.ordered,
+      distinct: spec.distinct,
     });
   }
+
   return descriptors;
 }
 
@@ -761,6 +830,7 @@ function typeNameFor(token: ModelToken): string {
 
 function copyAnnotation(annotation: Annotation): Annotation {
   if (typeof annotation === "string") {
+    // Covers "Key", "Unique", "Distinct" — all string-tag variants.
     return annotation;
   }
   return { Card: [annotation.Card[0], annotation.Card[1]] };
@@ -770,9 +840,13 @@ function splitRoleArguments(args: readonly unknown[]): {
   players: readonly ModelToken[];
   cardinality: CardSpec | null;
   playsCardinality: CardSpec | null;
+  overrides: string | undefined;
+  isAbstract: boolean;
+  ordered: boolean;
+  distinct: boolean;
 } {
   if (args.length === 0) {
-    return { players: [], cardinality: null, playsCardinality: null };
+    return { players: [], cardinality: null, playsCardinality: null, overrides: undefined, isAbstract: false, ordered: false, distinct: false };
   }
 
   const maybeOptions = args[args.length - 1];
@@ -781,6 +855,10 @@ function splitRoleArguments(args: readonly unknown[]): {
       players: args.slice(0, -1) as ModelToken[],
       cardinality: maybeOptions.cardinality ?? null,
       playsCardinality: maybeOptions.playsCardinality ?? null,
+      overrides: maybeOptions.overrides,
+      isAbstract: maybeOptions.abstract ?? false,
+      ordered: maybeOptions.ordered ?? false,
+      distinct: maybeOptions.distinct ?? false,
     };
   }
 
@@ -788,6 +866,10 @@ function splitRoleArguments(args: readonly unknown[]): {
     players: args as ModelToken[],
     cardinality: null,
     playsCardinality: null,
+    overrides: undefined,
+    isAbstract: false,
+    ordered: false,
+    distinct: false,
   };
 }
 
@@ -799,7 +881,7 @@ function isRoleOptions(value: unknown): value is RoleOptions {
   return (
     typeof value === "object" &&
     value !== null &&
-    ("cardinality" in value || "playsCardinality" in value) &&
+    ("cardinality" in value || "playsCardinality" in value || "overrides" in value || "abstract" in value || "ordered" in value || "distinct" in value) &&
     !(value instanceof FieldSpec) &&
     !(value instanceof RoleSpec)
   );

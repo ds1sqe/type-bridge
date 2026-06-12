@@ -156,9 +156,10 @@ describe("generator relation inheritance (source)", () => {
   test("a child relation emits only its own role and a { parent } reference", () => {
     // `authoring sub contribution, relates author as contributor`: only `author`,
     // with { parent: Contribution } — NOT the inherited contributor/work roles.
+    // The overrides marker is emitted on the specializing role.
     assert.match(
       relations,
-      /export class Authoring extends Relation\("authoring", \{\s*author: role\(Contributor\),\s*\}, \{ parent: Contribution \}\) \{\}/,
+      /export class Authoring extends Relation\("authoring", \{\s*author: role\(Contributor, \{ overrides: "contributor" \}\),\s*\}, \{ parent: Contribution \}\) \{\}/,
     );
     // The base relation still declares its own roles in full.
     assert.match(relations, /export class Contribution extends Relation\("contribution", \{/);

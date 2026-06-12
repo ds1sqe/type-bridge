@@ -6,16 +6,18 @@ from typing import ClassVar
 
 import pytest
 
-from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
+from type_bridge import Card, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.attribute import AttributeFlags
 from type_bridge.migration import operations as ops
 from type_bridge.migration._lower import (
+    _schema_info_for_models,
     lower_loaded_migration,
     lower_migration,
     lower_migration_graph,
     lower_operation,
 )
 from type_bridge.migration.base import Migration
+from type_bridge.migration.info import SchemaInfo
 from type_bridge.migration.loader import LoadedMigration, MigrationLoader
 
 
@@ -107,6 +109,7 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
             "attr_name": "lower-name",
             "value_type": "string",
             "annotations": ["Key"],
+            "is_ordered": False,
         }
     ]
     assert relation["relation"]["roles"] == [
@@ -114,11 +117,19 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
             "role_name": "employee",
             "player_type_names": ["lower-person"],
             "cardinality": None,
+            "overrides": None,
+            "is_abstract": False,
+            "ordered": False,
+            "distinct": False,
         },
         {
             "role_name": "employer",
             "player_type_names": ["lower-company"],
             "cardinality": None,
+            "overrides": None,
+            "is_abstract": False,
+            "ordered": False,
+            "distinct": False,
         },
     ]
     assert attribute["attribute"] == {
@@ -129,6 +140,7 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
         "attr_name": "lower-age",
         "value_type": "long",
         "annotations": [{"Card": (0, 1)}],
+        "is_ordered": False,
     }
 
 
@@ -271,3 +283,74 @@ def test_unsupported_operation_raises_type_error() -> None:
 
     with pytest.raises(TypeError, match="Unsupported migration operation type"):
         lower_operation(UnknownOperation())
+
+
+# ---------------------------------------------------------------------------
+# Projection-collapse regression pins (Phase 2: registry path)
+# ---------------------------------------------------------------------------
+
+
+class PlaysCardPlayer(Entity):
+    flags = TypeFlags(name="plays-card-player")
+
+
+class PlaysCardRelation(Relation):
+    flags = TypeFlags(name="plays-card-relation")
+
+    participant: Role[PlaysCardPlayer] = Role(
+        "participant", PlaysCardPlayer, plays_cardinality=Card(0, 1)
+    )
+
+
+def test_migration_lowering_carries_plays_cardinality_overlay() -> None:
+    """plays_cardinality on a Role reaches the player entry's plays_cardinalities via Rust from_descriptors."""
+    schema = _schema_info_for_models([PlaysCardPlayer, PlaysCardRelation])
+
+    assert schema["entities"]["plays-card-player"]["plays_cardinalities"] == {
+        "plays-card-relation:participant": (0, 1)
+    }
+    assert schema["relations"]["plays-card-relation"]["plays_cardinalities"] == {}
+
+
+class ForeignParentBase(Entity):
+    flags = TypeFlags(name="foreign-parent-base")
+
+
+class ForeignParentChild(ForeignParentBase):
+    flags = TypeFlags(name="foreign-parent-child")
+
+
+def test_migration_lowering_nulls_foreign_parent() -> None:
+    """A model whose parent is absent from the lowered set gets parent_type=null from Rust from_descriptors."""
+    # Register only the child — the parent type "foreign-parent-base" is not in the set.
+    schema = _schema_info_for_models([ForeignParentChild])
+
+    entry = schema["entities"]["foreign-parent-child"]
+    assert entry["parent_type"] is None
+
+
+class SelfDiffName(String):
+    flags = AttributeFlags(name="self-diff-name")
+
+
+class SelfDiffPerson(Entity):
+    flags = TypeFlags(name="self-diff-person")
+
+    name: SelfDiffName = Flag(Key)
+
+
+class SelfDiffEmployment(Relation):
+    flags = TypeFlags(name="self-diff-employment")
+
+    employee: Role[SelfDiffPerson] = Role("employee", SelfDiffPerson)
+
+
+def test_schema_diff_self_is_empty() -> None:
+    """SchemaInfo compared against itself after the registry-path collapse yields an empty diff."""
+    schema = SchemaInfo()
+    schema.entities.append(SelfDiffPerson)
+    schema.relations.append(SelfDiffEmployment)
+
+    diff = schema.compare(schema)
+
+    assert not diff.has_changes()

@@ -498,8 +498,8 @@ class TestComingSoonAnnotationStubs:
         assert "# cascade_attrs:" in source
         assert "'since'" in source
 
-    def test_relation_distinct_stub(self) -> None:
-        """Render relation with @distinct role annotation comment (ordered role form)."""
+    def test_relation_distinct_ordered(self) -> None:
+        """Render relation with ordered+distinct role: emits ordered=True, distinct=True args."""
         schema = parse_tql_schema("""
             define
             entity person,
@@ -515,13 +515,15 @@ class TestComingSoonAnnotationStubs:
         relation_names = build_class_name_map(schema.relations)
         source = render_relations(schema, attr_names, entity_names, relation_names)
 
-        # Stale TODO comment must not appear; accurate informational comment must appear
+        # No stale TODO comment
         assert "# TODO: @distinct annotation (coming soon in TypeDB)" not in source
-        assert "# Roles declared @distinct in the source schema (ordered roles):" in source
-        assert "'friend'" in source
+        # Role is rendered with ordered=True, distinct=True kwargs
+        assert "ordered=True" in source
+        assert "distinct=True" in source
+        assert '"friend"' in source
 
     def test_relation_distinct_end_to_end(self) -> None:
-        """Parse ordered+distinct schema end-to-end and confirm render is correct."""
+        """Parse ordered+distinct schema end-to-end: role flags propagate to rendered output."""
         schema = parse_tql_schema("""
             define
             entity participant,
@@ -533,6 +535,7 @@ class TestComingSoonAnnotationStubs:
         """)
         rel = schema.relations["team"]
         assert rel.roles[0].name == "member"
+        assert rel.roles[0].ordered is True
         assert rel.roles[0].distinct is True
 
         attr_names = build_class_name_map(schema.attributes)
@@ -540,8 +543,10 @@ class TestComingSoonAnnotationStubs:
         relation_names = build_class_name_map(schema.relations)
         source = render_relations(schema, attr_names, entity_names, relation_names)
 
-        assert "# Roles declared @distinct in the source schema (ordered roles):" in source
-        assert "'member'" in source
+        # Real emission: ordered=True and distinct=True appear on the role call
+        assert "ordered=True" in source
+        assert "distinct=True" in source
+        assert '"member"' in source
         assert "# TODO: @distinct annotation (coming soon in TypeDB)" not in source
 
     def test_no_stubs_when_annotations_absent(self) -> None:

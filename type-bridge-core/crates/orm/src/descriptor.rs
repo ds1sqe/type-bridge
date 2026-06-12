@@ -20,10 +20,20 @@ pub struct OwnedAttributeDescriptor {
     pub attr_name: String,
     /// TypeDB value type.
     pub value_type: ValueType,
-    /// Ownership annotations such as `@key`, `@unique`, or `@card`.
+    /// Ownership annotations such as `@key`, `@unique`, `@card`, or `@distinct`.
+    ///
+    /// `@distinct` appears here as `Annotation::Distinct` when the ownership is
+    /// declared as an ordered list with the distinct constraint.
     pub annotations: Vec<Annotation>,
     /// Whether the field may be omitted from dynamic input and hydration.
     pub is_optional: bool,
+    /// Whether this ownership is declared as an ordered list (`owns name[]`).
+    ///
+    /// Instance-level list semantics are engine-unimplemented (REP256); this field
+    /// is a schema-emission marker only. The `@distinct` annotation is valid only
+    /// when this is `true`.
+    #[serde(default)]
+    pub is_ordered: bool,
 }
 
 impl OwnedAttributeDescriptor {
@@ -53,7 +63,18 @@ impl OwnedAttributeDescriptor {
 }
 
 /// Owned metadata about one role in a relation type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The `overrides` field is present when this role specializes a parent
+/// relation's role via TypeDB's `relates child as parent` syntax.  Own
+/// specializing roles carry `overrides: Some(<parent role name>)`; plain-
+/// inherited role entries copied into a subtype's effective set keep the
+/// parent role's markers, including any `overrides` the parent itself carried.
+///
+/// `is_abstract` mirrors the role definition's schema-level `@abstract` marker.
+/// Abstractness gates direct play only at the declaring relation's own scope:
+/// the engine rejects players for the role on instances of the declaring type,
+/// while a concrete sub-relation that plain-inherits the role can play it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleDescriptor {
     /// Role name within the relation.
     pub role_name: String,
@@ -61,6 +82,30 @@ pub struct RoleDescriptor {
     pub player_type_names: Vec<String>,
     /// Optional role cardinality, where `None` max means unbounded.
     pub cardinality: Option<(u32, Option<u32>)>,
+    /// Parent role name this role specializes, or `null` for plain roles.
+    pub overrides: Option<String>,
+    /// Whether this role carries a schema-level `@abstract` annotation.
+    #[serde(default)]
+    pub is_abstract: bool,
+    /// Whether this role is declared as an ordered list (`relates name[]`).
+    ///
+    /// Instance-level list semantics are engine-unimplemented (REP256); this field
+    /// is a schema-emission marker only.
+    #[serde(default)]
+    pub ordered: bool,
+    /// Whether this role carries a schema-level `@distinct` annotation.
+    ///
+    /// Valid only when `ordered` is `true`.
+    #[serde(default)]
+    pub distinct: bool,
+    /// Relation-side authoring of the player's `plays` cardinality for this role.
+    ///
+    /// Consumed by `SchemaInfo::from_descriptors` to build the per-player
+    /// `plays_cardinalities` overlay (keyed `"{relation_type_name}:{role_name}"`).
+    /// Distinct from `cardinality`, which is the relates-side cardinality
+    /// constraining how many players may fill the role per relation instance.
+    #[serde(default)]
+    pub plays_cardinality: Option<(u32, Option<u32>)>,
 }
 
 /// Runtime descriptor for an entity type.
@@ -101,7 +146,17 @@ pub struct RelationDescriptor {
     pub parent_type: Option<String>,
     /// Attributes owned by this relation.
     pub owned_attributes: Vec<OwnedAttributeDescriptor>,
-    /// Roles declared by this relation.
+    /// The relation's *effective* role set: plain-inherited parent roles
+    /// (parent declaration order first), then own and specializing roles —
+    /// excluding any parent role overridden via `relates child as parent`.
+    ///
+    /// The registry stores descriptors as-is and never resolves inheritance,
+    /// so runtime consumers (query building, hydration) see exactly this
+    /// list; it must therefore be the set of roles the engine accepts on
+    /// instances of this relation type. TypeDB rejects a player for an
+    /// overridden parent role on a subtype instance, which is why overridden
+    /// roles are excluded while plain-inherited ones are flattened in —
+    /// mirroring how `owned_attributes` flattens inherited attributes.
     pub roles: Vec<RoleDescriptor>,
 }
 

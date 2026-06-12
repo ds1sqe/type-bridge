@@ -65,8 +65,10 @@ def _schema(*, entities: list, relations: list) -> dict:
 def test_plays_card_overlay_lands_on_entity_player() -> None:
     info = _schema(entities=[PcCompany], relations=[PcEmployment])
 
+    # Tuple, not list: the overlay is built by the Rust lowering and pythonizes
+    # its (min, max) pair as a tuple; only Rust consumers read it back.
     assert info["entities"]["pc-company"]["plays_cardinalities"] == {
-        "pc-employment:employer": [0, 1]
+        "pc-employment:employer": (0, 1)
     }
     # The relation declaring the role carries no overlay; plays-card is per-player.
     assert info["relations"]["pc-employment"]["plays_cardinalities"] == {}
@@ -75,8 +77,8 @@ def test_plays_card_overlay_lands_on_entity_player() -> None:
 def test_plays_card_overlay_written_per_player_for_multi_player_role() -> None:
     info = _schema(entities=[PcPerson, PcContractor], relations=[PcGig])
 
-    assert info["entities"]["pc-person"]["plays_cardinalities"] == {"pc-gig:worker": [0, 1]}
-    assert info["entities"]["pc-contractor"]["plays_cardinalities"] == {"pc-gig:worker": [0, 1]}
+    assert info["entities"]["pc-person"]["plays_cardinalities"] == {"pc-gig:worker": (0, 1)}
+    assert info["entities"]["pc-contractor"]["plays_cardinalities"] == {"pc-gig:worker": (0, 1)}
 
 
 def test_plays_card_overlay_lands_on_relation_player() -> None:
@@ -84,7 +86,7 @@ def test_plays_card_overlay_lands_on_relation_player() -> None:
     # the relations dict, not entities.
     info = _schema(entities=[PcPerson], relations=[PcContract, PcDispute])
 
-    assert info["relations"]["pc-contract"]["plays_cardinalities"] == {"pc-dispute:subject": [0, 1]}
+    assert info["relations"]["pc-contract"]["plays_cardinalities"] == {"pc-dispute:subject": (0, 1)}
     assert info["entities"]["pc-person"]["plays_cardinalities"] == {}
 
 

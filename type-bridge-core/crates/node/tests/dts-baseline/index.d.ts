@@ -1,6 +1,6 @@
 import { loadNative } from "./native.js";
 export type ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime-tz" | "decimal" | "duration";
-export type Annotation = "Key" | "Unique" | {
+export type Annotation = "Key" | "Unique" | "Distinct" | {
     Card: [number, number | null];
 };
 export interface OwnedAttributeDescriptor {
@@ -9,6 +9,7 @@ export interface OwnedAttributeDescriptor {
     value_type: ValueType;
     annotations: Annotation[];
     is_optional: boolean;
+    is_ordered: boolean;
     parent_type?: string | null;
     is_abstract?: boolean;
     is_independent?: boolean;
@@ -26,6 +27,10 @@ export interface RoleDescriptor {
     role_name: string;
     player_type_names: string[];
     cardinality: [number, number | null] | null;
+    overrides: string | null;
+    is_abstract: boolean;
+    ordered: boolean;
+    distinct: boolean;
 }
 export interface RelationDescriptor {
     type_name: string;
@@ -45,11 +50,16 @@ export interface OwnedAttributeEntry {
     attr_name: string;
     value_type: ValueType;
     annotations: Annotation[];
+    is_ordered: boolean;
 }
 export interface RoleEntry {
     role_name: string;
     player_type_names: string[];
     cardinality: [number, number | null] | null;
+    overrides: string | null;
+    is_abstract: boolean;
+    ordered: boolean;
+    distinct: boolean;
 }
 export interface EntitySchemaEntry {
     type_name: string;
@@ -318,8 +328,8 @@ export interface NativeDynamicRelationManager {
     queryGroupByAggregateJson(specJson: string, groupFieldsJson: string, aggregatesJson: string): string;
 }
 export interface NativeRuntime {
-    ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null): void;
-    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null): NativeRustDatabase;
+    ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null): void;
+    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null): NativeRustDatabase;
 }
 interface NativeSchemaParser {
     parseSchemaJson(input: string): string;
@@ -331,10 +341,14 @@ export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSc
 export interface RustDatabaseConnectOptions {
     username?: string | null;
     password?: string | null;
+    /** Port of the TypeDB HTTP API used for the connect-time version probe. */
+    httpPort?: number;
 }
 export interface EnsureDatabaseOptions {
     username?: string | null;
     password?: string | null;
+    /** Port of the TypeDB HTTP API used for the connect-time version probe. */
+    httpPort?: number;
 }
 /**
  * Ensure the named TypeDB database exists, creating it if absent.

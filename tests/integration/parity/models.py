@@ -154,6 +154,19 @@ class ParityTokenOrigin(Relation):
     kind: ParityKind
 
 
+class ParityContribution(Relation):
+    flags = TypeFlags(name="parity-contribution")
+
+    contributor: Role[ParityPerson] = Role("contributor", ParityPerson, abstract=True)
+    work: Role[ParityEmailMessage] = Role("work", ParityEmailMessage)
+
+
+class ParityAuthoring(ParityContribution):
+    flags = TypeFlags(name="parity-authoring")
+
+    author: Role[ParityPerson] = Role("author", ParityPerson, overrides="contributor")
+
+
 PARITY_ENTITIES = [
     ParityParty,
     ParityPerson,
@@ -164,4 +177,6 @@ PARITY_ENTITIES = [
 PARITY_RELATIONS = [
     ParityMembership,
     ParityTokenOrigin,
+    ParityContribution,
+    ParityAuthoring,
 ]

@@ -178,8 +178,13 @@ class TestDeleteEdgeCases:
         # Verify deleted
         assert len(manager.all()) == 0
 
-    def test_delete_entity_with_relation_cascades(self, schema_for_deletes):
-        """Delete entity that participates in relation also deletes the relation."""
+    def test_delete_entity_leaves_relation_with_remaining_player(self, schema_for_deletes):
+        """Deleting a player does not cascade: the relation survives with its
+        remaining players, and the deleted player's role reads as None.
+
+        TypeDB 3.x removes the deleted entity's role links but keeps the
+        relation instance while other players remain.
+        """
         db, Person, Company, Employment, Name = schema_for_deletes
 
         # Create person and company
@@ -195,15 +200,19 @@ class TestDeleteEdgeCases:
         # Verify relation exists
         assert len(Employment.manager(db).all()) == 1
 
-        # Delete person - TypeDB cascades and removes the relation too
+        # Delete person — the role link is removed, the relation persists
         fetched_person = Person.manager(db).get(name="Bob")[0]
         Person.manager(db).delete(fetched_person)
 
         # Person is deleted
         assert len(Person.manager(db).get(name="Bob")) == 0
 
-        # Relation is also deleted (cascade)
-        assert len(Employment.manager(db).all()) == 0
+        # The relation survives with only the employer player
+        survivors = Employment.manager(db).all()
+        assert len(survivors) == 1
+        assert survivors[0].employee is None
+        assert survivors[0].employer is not None
+        assert str(survivors[0].employer.name) == "TechCorp"
 
     def test_delete_relation_then_entity_succeeds(self, schema_for_deletes):
         """Delete relation first, then entity succeeds."""

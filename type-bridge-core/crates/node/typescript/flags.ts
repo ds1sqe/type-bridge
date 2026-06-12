@@ -45,14 +45,20 @@ export interface FlagSpec {
   readonly kind: "flag";
   readonly annotations: Annotation[];
   readonly cardinality: [number, number | null] | null;
+  readonly isOrdered: boolean;
+  readonly isDistinct: boolean;
 }
 
 /** Marks a field as the type's key attribute (implies cardinality `[1, 1]`). */
 export const Key = "Key";
 /** Marks a field's attribute value as unique across the type. */
 export const Unique = "Unique";
+/** Declares this owns clause as a list attribute (`owns attr[]`). Schema-only. */
+export const Ordered = "Ordered";
+/** Emits `@distinct` on the owns clause. Requires `Ordered`. Schema-only. */
+export const Distinct = "Distinct";
 
-export type FlagInput = typeof Key | typeof Unique | CardSpec | FlagSpec;
+export type FlagInput = typeof Key | typeof Unique | typeof Ordered | typeof Distinct | CardSpec | FlagSpec;
 
 /** Type-level config for an `Entity`/`Relation` (explicit name, abstract, base, case). */
 export function TypeFlags(options: TypeFlagsOptions = {}): ResolvedTypeFlags {
@@ -92,15 +98,19 @@ export function Flag(...flags: FlagInput[]): FlagSpec {
   return resolveFlags(flags);
 }
 
-/** Lower a flag list to its `{ annotations, cardinality }` descriptor form. */
+/** Lower a flag list to its `{ annotations, cardinality, isOrdered, isDistinct }` descriptor form. */
 export function resolveFlags(flags: readonly FlagInput[]): FlagSpec {
   const annotations: Annotation[] = [];
   let cardinality: [number, number | null] | null = null;
+  let isOrdered = false;
+  let isDistinct = false;
 
   for (const flag of flags) {
     if (isFlagSpec(flag)) {
       annotations.push(...flag.annotations);
       cardinality = flag.cardinality ?? cardinality;
+      isOrdered = isOrdered || flag.isOrdered;
+      isDistinct = isDistinct || flag.isDistinct;
       continue;
     }
     if (flag === Key) {
@@ -112,6 +122,14 @@ export function resolveFlags(flags: readonly FlagInput[]): FlagSpec {
       annotations.push("Unique");
       continue;
     }
+    if (flag === Ordered) {
+      isOrdered = true;
+      continue;
+    }
+    if (flag === Distinct) {
+      isDistinct = true;
+      continue;
+    }
     if (isCardSpec(flag)) {
       const card: [number, number | null] = [flag.min, flag.max];
       annotations.push({ Card: card });
@@ -119,7 +137,13 @@ export function resolveFlags(flags: readonly FlagInput[]): FlagSpec {
     }
   }
 
-  return { kind: "flag", annotations, cardinality };
+  if (isDistinct && !isOrdered) {
+    throw new TypeError(
+      "Flag(Distinct) requires Flag(Ordered): @distinct is only valid on a list attribute (owns attr[]).",
+    );
+  }
+
+  return { kind: "flag", annotations, cardinality, isOrdered, isDistinct };
 }
 
 /** Convert a model class name to its TypeDB type name under the given case. */

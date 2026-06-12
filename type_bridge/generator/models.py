@@ -106,6 +106,8 @@ class EntitySpec:
         keys: Attributes marked with @key
         uniques: Attributes marked with @unique
         cascades: Attributes marked with @cascade
+        ordered_owns: Attributes declared as list (`owns attr[]`)
+        distinct_owns: Attributes declared with @distinct on the owns clause
         subkeys: Attributes -> subkey group name mapping (from @subkey)
         cardinalities: Per-attribute cardinality constraints
         plays_cardinalities: Per-role cardinality constraints (e.g., plays friendship:friend @card(0..5))
@@ -121,6 +123,8 @@ class EntitySpec:
     keys: set[str] = field(default_factory=set)
     uniques: set[str] = field(default_factory=set)
     cascades: set[str] = field(default_factory=set)
+    ordered_owns: set[str] = field(default_factory=set)
+    distinct_owns: set[str] = field(default_factory=set)
     subkeys: dict[str, str] = field(default_factory=dict)
     cardinalities: dict[str, Cardinality] = field(default_factory=dict)
     plays_cardinalities: dict[str, Cardinality] = field(default_factory=dict)
@@ -140,14 +144,18 @@ class RoleSpec:
         name: The role name (e.g., "author")
         overrides: Parent role this overrides (from "as" syntax)
         cardinality: Optional cardinality constraint on the role
+        ordered: Whether this role is a list role (`relates name[]`)
         distinct: Whether this role has @distinct annotation
+        is_abstract: Whether this role carries the @abstract annotation
         annotations: Custom annotations from TQL comments
     """
 
     name: str
     overrides: str | None = None  # For "relates author as contributor"
     cardinality: Cardinality | None = None
+    ordered: bool = False
     distinct: bool = False
+    is_abstract: bool = False
     annotations: dict[str, AnnotationValue] = field(default_factory=dict)
 
 
@@ -163,6 +171,8 @@ class RelationSpec:
         owns_order: Ordered list preserving TQL declaration order
         abstract: Whether this is an abstract relation
         cascades: Attributes marked with @cascade
+        ordered_owns: Attributes declared as list (`owns attr[]`)
+        distinct_owns: Attributes declared with @distinct on the owns clause
         subkeys: Attributes -> subkey group name mapping (from @subkey)
         annotations: Custom annotations from TQL comments
     """
@@ -176,6 +186,8 @@ class RelationSpec:
     keys: set[str] = field(default_factory=set)
     uniques: set[str] = field(default_factory=set)
     cascades: set[str] = field(default_factory=set)
+    ordered_owns: set[str] = field(default_factory=set)
+    distinct_owns: set[str] = field(default_factory=set)
     subkeys: dict[str, str] = field(default_factory=dict)
     cardinalities: dict[str, Cardinality] = field(default_factory=dict)
     docstring: str | None = None

@@ -40,6 +40,8 @@ describe("parseSchema (Rust parser -> NAPI -> TS)", () => {
       "parity-person",
     ]);
     assert.deepEqual(Object.keys(schema.relations).sort(), [
+      "parity-authoring",
+      "parity-contribution",
       "parity-membership",
       "parity-token-origin",
     ]);
@@ -70,5 +72,75 @@ describe("parseSchema (Rust parser -> NAPI -> TS)", () => {
       membership.roles.map((role) => role.name).sort(),
       ["evidence", "member", "organization"],
     );
+  });
+
+  test("role specialization survives marshalling", () => {
+    const authoring = schema.relations["parity-authoring"];
+    assert.ok(authoring);
+    assert.equal(authoring.parent, "parity-contribution");
+    const author = authoring.roles.find((role) => role.name === "author");
+    assert.equal(author?.overrides, "contributor");
+
+    const contribution = schema.relations["parity-contribution"];
+    const contributor = contribution?.roles.find((role) => role.name === "contributor");
+    assert.equal(contributor?.is_abstract, true);
+  });
+
+  test("plain corpus roles are not abstract", () => {
+    // parity-membership roles carry no @abstract annotation; verify the
+    // field is marshalled and defaults to false rather than being omitted.
+    const membership = schema.relations["parity-membership"];
+    assert.ok(membership);
+    for (const role of membership.roles) {
+      assert.equal(role.is_abstract, false, `role ${role.name} should not be abstract`);
+    }
+  });
+});
+
+describe("parseSchema abstract roles (inline schema)", () => {
+  // Inline schema so the test does not depend on the fixture file evolving.
+  const inlineTql = `define
+entity person, owns name, plays interaction:participant;
+attribute name, value string;
+relation interaction @abstract, relates participant @abstract;`;
+
+  const inlineSchema = parseSchema(inlineTql, native);
+
+  test("abstract roles survive marshalling", () => {
+    const interaction = inlineSchema.relations["interaction"];
+    assert.ok(interaction, "relation interaction should be present");
+    assert.equal(interaction.is_abstract, true, "relation should be abstract");
+    const participant = interaction.roles.find((r) => r.name === "participant");
+    assert.ok(participant, "role participant should be present");
+    assert.equal(participant.is_abstract, true, "participant role should be abstract");
+  });
+});
+
+describe("parseSchema list owns (inline schema)", () => {
+  const inlineTql = `define
+entity person, owns nickname[] @distinct;
+attribute nickname, value string;`;
+
+  const inlineSchema = parseSchema(inlineTql, native);
+
+  test("list owns survive marshalling", () => {
+    const person = inlineSchema.entities["person"];
+    assert.ok(person, "entity person should be present");
+    const nicknameOwn = person.owns.find((o) => o.name === "nickname");
+    assert.ok(nicknameOwn, "person should own nickname");
+    assert.equal(nicknameOwn.ordered, true, "nickname ownership should be ordered");
+    assert.equal(nicknameOwn.distinct, true, "nickname ownership should be distinct");
+  });
+
+  test("plain corpus owns entries default ordered and distinct to false", () => {
+    // parity-person owns parity-tag (a plain @card ownership, no []), verifying
+    // ordered/distinct both come through as false from the Rust core.
+    const corpusSchema = parseSchema(schemaText, native);
+    const person = corpusSchema.entities["parity-person"];
+    assert.ok(person, "parity-person should be present in corpus schema");
+    const tagOwn = person.owns.find((o) => o.name === "parity-tag");
+    assert.ok(tagOwn, "parity-person should own parity-tag");
+    assert.equal(tagOwn.ordered, false, "parity-tag ownership should not be ordered");
+    assert.equal(tagOwn.distinct, false, "parity-tag ownership should not be distinct");
   });
 });

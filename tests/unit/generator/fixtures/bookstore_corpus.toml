@@ -14,6 +14,7 @@ owns = [
     "page-count",
     { attribute = "genre", card = "0.." },
     "price",
+    { attribute = "tag", ordered = true, distinct = true },
 ]
 plays = [
     { relation = "contribution", role = "work" },
@@ -136,7 +137,7 @@ sub = "place"
 
 [relations.contribution]
 roles = [
-    { name = "contributor" },
+    { name = "contributor", abstract = true },
     { name = "work" },
 ]
 
@@ -183,6 +184,7 @@ owns = ["quantity", "price"]
 roles = [
     { name = "review" },
     { name = "rated" },
+    { name = "reviewer", ordered = true, distinct = true },
 ]
 
 [relations.action-execution]
@@ -210,6 +212,9 @@ roles = [
     { name = "recommended" },
     { name = "recipient" },
 ]
+
+[attributes.tag]
+value = "string"
 
 [attributes.isbn]
 abstract = true

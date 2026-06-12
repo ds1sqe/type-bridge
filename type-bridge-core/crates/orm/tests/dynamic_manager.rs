@@ -21,6 +21,7 @@ fn person_descriptor() -> EntityDescriptor {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Key],
                 is_optional: false,
+                is_ordered: false,
             },
             OwnedAttributeDescriptor {
                 field_name: "age".into(),
@@ -28,6 +29,7 @@ fn person_descriptor() -> EntityDescriptor {
                 value_type: ValueType::Long,
                 annotations: vec![],
                 is_optional: false,
+                is_ordered: false,
             },
         ],
     }
@@ -44,17 +46,18 @@ fn employment_descriptor() -> RelationDescriptor {
             value_type: ValueType::String,
             annotations: vec![],
             is_optional: true,
+            is_ordered: false,
         }],
         roles: vec![
             RoleDescriptor {
                 role_name: "employee".into(),
                 player_type_names: vec!["person".into()],
-                cardinality: None,
+                ..Default::default()
             },
             RoleDescriptor {
                 role_name: "employer".into(),
                 player_type_names: vec!["company".into()],
-                cardinality: None,
+                ..Default::default()
             },
         ],
     }
@@ -68,6 +71,7 @@ fn tagged_employment_descriptor() -> RelationDescriptor {
         value_type: ValueType::String,
         annotations: vec![Annotation::Card(0, Some(4))],
         is_optional: true,
+        is_ordered: false,
     });
     descriptor
 }
@@ -124,6 +128,7 @@ fn tagged_person_descriptor() -> EntityDescriptor {
         value_type: ValueType::String,
         annotations: vec![Annotation::Card(0, Some(4))],
         is_optional: true,
+        is_ordered: false,
     });
     descriptor
 }
@@ -136,6 +141,7 @@ fn scored_person_descriptor() -> EntityDescriptor {
         value_type: ValueType::Long,
         annotations: vec![Annotation::Card(1, Some(4))],
         is_optional: false,
+        is_ordered: false,
     });
     descriptor
 }

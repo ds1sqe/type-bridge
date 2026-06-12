@@ -19,6 +19,10 @@ from typing import TYPE_CHECKING, Any
 
 import type_bridge_core as _core
 
+# Re-exported from the Rust core so every Python default shares the same
+# source as the Rust ConnectOptions/server defaults.
+DEFAULT_HTTP_PORT: int = _core.DEFAULT_HTTP_PORT
+
 _MISSING_DRIVER_MESSAGE = (
     "The Python TypeDB driver is required for this operation. Install "
     "type-bridge with the 'typedb-driver' extra to use direct typedb.driver "
@@ -151,7 +155,7 @@ def embedded_driver_versions() -> dict[int, str]:
     return _core.embedded_driver_versions()
 
 
-def server_version(address: str, *, http_port: int = 8000, tls: bool = False) -> str:
+def server_version(address: str, *, http_port: int = DEFAULT_HTTP_PORT, tls: bool = False) -> str:
     """Return the TypeDB server version by probing its HTTP API.
 
     Delegates entirely to ``type_bridge_core.server_version``; no HTTP code

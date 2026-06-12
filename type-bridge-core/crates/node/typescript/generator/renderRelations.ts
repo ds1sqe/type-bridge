@@ -46,12 +46,20 @@ function renderRoleCall(
   players: string[],
   card: Cardinality | null,
   playsCardinality: Cardinality | null,
+  overrides: string | null = null,
+  isAbstract = false,
+  ordered = false,
+  distinct = false,
 ): string {
   const cardArg = renderCardArg(card);
   const playsCardArg = renderCardArg(playsCardinality, false);
   const options: string[] = [];
   if (cardArg) options.push(`cardinality: ${cardArg}`);
   if (playsCardArg) options.push(`playsCardinality: ${playsCardArg}`);
+  if (overrides != null) options.push(`overrides: "${overrides}"`);
+  if (isAbstract) options.push(`abstract: true`);
+  if (ordered) options.push(`ordered: true`);
+  if (distinct) options.push(`distinct: true`);
   const cardOptions = options.length > 0 ? `{ ${options.join(", ")} }` : null;
 
   if (players.length === 1) {
@@ -207,12 +215,28 @@ function needsTypeFlagsImport(schema: TypeSchema): boolean {
   return Object.values(schema.relations).some((rel) => rel.is_abstract);
 }
 
+function needsOrderedImport(schema: TypeSchema): boolean {
+  return Object.values(schema.relations).some(
+    (rel) =>
+      rel.roles.some((r) => r.ordered) ||
+      rel.owns.some((o) => o.ordered),
+  );
+}
+
+function needsDistinctImport(schema: TypeSchema): boolean {
+  return Object.values(schema.relations).some(
+    (rel) =>
+      rel.roles.some((r) => r.distinct) ||
+      rel.owns.some((o) => o.distinct),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Single-field renderer for owned attributes (mirrors renderEntities.ts logic)
 // ---------------------------------------------------------------------------
 
 function renderAttrFieldExpr(
-  owned: { cardinality: Cardinality | null; is_unique: boolean },
+  owned: { cardinality: Cardinality | null; is_unique: boolean; ordered?: boolean; distinct?: boolean },
   attrClassName: string,
   isKey: boolean,
 ): string {
@@ -220,6 +244,13 @@ function renderAttrFieldExpr(
 
   if (isKey) return `field(${attrClassName}, Key)`;
   if (owned.is_unique) return `field(${attrClassName}, Unique)`;
+
+  // Ordered list attribute: field(Attr).ordered() or field(Attr).ordered().distinct()
+  if (owned.ordered) {
+    const base = `field(${attrClassName}).ordered()`;
+    return owned.distinct ? `${base}.distinct()` : base;
+  }
+
   if (card === null || isCardOptionalSingle(card)) return `field(${attrClassName}).optional()`;
   if (isCardMulti(card)) {
     const maxStr = card.max === null ? "null" : String(card.max);
@@ -270,12 +301,16 @@ export function renderRelations(schema: TypeSchema, options?: NamingOptions): st
   const needsKey = needsKeyImport(schema, options);
   const needsUnique = needsUniqueImport(schema);
   const needsTypeFlags = needsTypeFlagsImport(schema);
+  const needsOrdered = needsOrderedImport(schema);
+  const needsDistinct = needsDistinctImport(schema);
 
   const factoryImports: string[] = ["Relation", "role", "field"];
   if (needsCard) factoryImports.push("Card");
   if (needsKey) factoryImports.push("Key");
   if (needsUnique) factoryImports.push("Unique");
   if (needsTypeFlags) factoryImports.push("TypeFlags");
+  if (needsOrdered) factoryImports.push("Ordered");
+  if (needsDistinct) factoryImports.push("Distinct");
   factoryImports.sort();
 
   // Collect which attribute + entity class names are referenced (for imports)
@@ -394,6 +429,10 @@ export function renderRelations(schema: TypeSchema, options?: NamingOptions): st
         playerClassRefs,
         roleSpec.cardinality,
         playsCardinality,
+        roleSpec.overrides,
+        roleSpec.is_abstract,
+        roleSpec.ordered,
+        roleSpec.distinct,
       );
       fieldEntries.push(`  ${roleKey}: ${roleCall},`);
     }

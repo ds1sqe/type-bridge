@@ -11,6 +11,7 @@ fn attr(name: &str, value_type: ValueType) -> OwnedAttributeDescriptor {
         value_type,
         annotations: vec![],
         is_optional: false,
+        is_ordered: false,
     }
 }
 
@@ -26,6 +27,7 @@ fn person_descriptor() -> EntityDescriptor {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Key],
                 is_optional: false,
+                is_ordered: false,
             },
             OwnedAttributeDescriptor {
                 field_name: "email".into(),
@@ -33,6 +35,7 @@ fn person_descriptor() -> EntityDescriptor {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Unique, Annotation::Card(0, Some(1))],
                 is_optional: true,
+                is_ordered: false,
             },
         ],
     }
@@ -49,17 +52,20 @@ fn employment_descriptor() -> RelationDescriptor {
             value_type: ValueType::String,
             annotations: vec![],
             is_optional: true,
+            is_ordered: false,
         }],
         roles: vec![
             RoleDescriptor {
                 role_name: "employee".into(),
                 player_type_names: vec!["person".into()],
                 cardinality: Some((1, Some(1))),
+                ..Default::default()
             },
             RoleDescriptor {
                 role_name: "employer".into(),
                 player_type_names: vec!["company".into()],
                 cardinality: Some((1, Some(1))),
+                ..Default::default()
             },
         ],
     }
@@ -160,6 +166,7 @@ fn registry_rejects_duplicate_attributes_and_roles() {
         value_type: ValueType::String,
         annotations: vec![],
         is_optional: false,
+        is_ordered: false,
     });
     assert!(matches!(
         registry.register_entity(entity).unwrap_err(),
@@ -170,7 +177,7 @@ fn registry_rejects_duplicate_attributes_and_roles() {
     relation.roles.push(RoleDescriptor {
         role_name: "employee".into(),
         player_type_names: vec!["person".into()],
-        cardinality: None,
+        ..Default::default()
     });
     assert!(matches!(
         registry.register_relation(relation).unwrap_err(),
@@ -185,7 +192,7 @@ fn registry_accepts_relates_only_role() {
     relation.roles = vec![RoleDescriptor {
         role_name: "definition".into(),
         player_type_names: vec![],
-        cardinality: None,
+        ..Default::default()
     }];
 
     let registered = registry.register_relation(relation).unwrap();

@@ -39,22 +39,17 @@ def test_relates_only_roles_emit_empty_player_type_names() -> None:
 
     roles = schema.to_rust_schema_info()["relations"]["relates-only-rel"]["roles"]
 
+    base = {
+        "cardinality": None,
+        "overrides": None,
+        "is_abstract": False,
+        "ordered": False,
+        "distinct": False,
+    }
     assert roles == [
-        {
-            "role_name": "definition",
-            "player_type_names": [],
-            "cardinality": None,
-        },
-        {
-            "role_name": "allowed_value",
-            "player_type_names": [],
-            "cardinality": None,
-        },
-        {
-            "role_name": "actor",
-            "player_type_names": ["relates-only-person"],
-            "cardinality": None,
-        },
+        {"role_name": "definition", "player_type_names": [], **base},
+        {"role_name": "allowed_value", "player_type_names": [], **base},
+        {"role_name": "actor", "player_type_names": ["relates-only-person"], **base},
     ]
 
 

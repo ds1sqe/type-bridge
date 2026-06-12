@@ -195,108 +195,56 @@ class SchemaInfo:
         return from_rust_schema_diff(rust_diff, current_schema=self, target_schema=other)
 
     def to_rust_schema_info(self) -> dict:
-        """Serialize this Python model schema to the Rust ``SchemaInfo`` dict shape."""
+        """Serialize this Python model schema to the Rust ``SchemaInfo`` dict shape.
+
+        Registers all non-base entity and relation descriptors into a fresh
+        ``PyDescriptorRegistry`` and delegates to Rust ``SchemaInfo::from_descriptors``
+        for the full projection: entity/relation entries, plays_cardinalities overlays,
+        and foreign parent_type nulling all happen inside Rust.
+
+        The attributes section is merged on the Python side because it requires
+        attribute-class metadata (regex, range, allowed_values, etc.) that is not
+        represented in the descriptor layer.
+        """
         from type_bridge._rust_runtime import (
             attribute_schema_entry,
-            cardinality_tuple,
             descriptor_for_model,
+            rust_core,
         )
 
-        info: dict = {"entities": {}, "relations": {}, "attributes": {}}
-        entity_names = {
-            entity.get_type_name() for entity in self.entities if not _is_base_model(entity)
-        }
-        relation_names = {
-            relation.get_type_name() for relation in self.relations if not _is_base_model(relation)
-        }
-
+        registry = rust_core().PyDescriptorRegistry()
         for entity in self.entities:
             if _is_base_model(entity):
                 continue
-            descriptor = descriptor_for_model(entity)
-            entry = _schema_entry_from_descriptor(descriptor)
-            if entry["parent_type"] not in entity_names:
-                entry["parent_type"] = None
-            info["entities"][entry["type_name"]] = entry
-            _register_attributes(info, entry["owned_attributes"])
-            for attr_info in entity.get_all_attributes().values():
-                entry = attribute_schema_entry(attr_info.typ)
-                info["attributes"][entry["attr_name"]] = entry
-
+            registry.register_entity(descriptor_for_model(entity))
         for relation in self.relations:
             if _is_base_model(relation):
                 continue
-            descriptor = descriptor_for_model(relation)
-            entry = _schema_entry_from_descriptor(descriptor)
-            if entry["parent_type"] not in relation_names:
-                entry["parent_type"] = None
-            entry["roles"] = [
-                {
-                    "role_name": role["role_name"],
-                    "player_type_names": role["player_type_names"],
-                    "cardinality": role["cardinality"],
-                }
-                for role in descriptor["roles"]
-            ]
-            info["relations"][entry["type_name"]] = entry
-            _register_attributes(info, entry["owned_attributes"])
+            registry.register_relation(descriptor_for_model(relation))
+
+        info = registry.schema_info()
+
+        # Merge attribute-class metadata. Rust from_descriptors emits only the
+        # attr_name/value_type pairs it derives from owned_attributes; full
+        # attribute-class metadata (regex, range, allowed_values, abstract,
+        # independent, parent_type) requires the Python Attribute class.
+        for entity in self.entities:
+            if _is_base_model(entity):
+                continue
+            for attr_info in entity.get_all_attributes().values():
+                entry = attribute_schema_entry(attr_info.typ)
+                info["attributes"][entry["attr_name"]] = entry
+        for relation in self.relations:
+            if _is_base_model(relation):
+                continue
             for attr_info in relation.get_all_attributes().values():
                 entry = attribute_schema_entry(attr_info.typ)
                 info["attributes"][entry["attr_name"]] = entry
-
         for attr_cls in self.attribute_classes:
             entry = attribute_schema_entry(attr_cls)
             info["attributes"][entry["attr_name"]] = entry
 
-        # Resolve relation-side plays_cardinality authoring into the entity-side IR overlay.
-        # Plays-card is semantically per-player (relations-per-player), but Python declares
-        # it on the relation's Role; here it lands on each player's entry keyed
-        # "{relation}:{role}", which generate_define_block reads to emit @card on the plays
-        # line. A relates-only role (no players) carries no overlay.
-        for relation in self.relations:
-            if _is_base_model(relation):
-                continue
-            relation_name = relation.get_type_name()
-            for role in relation.get_roles().values():
-                if role.plays_cardinality is None:
-                    continue
-                card = cardinality_tuple(role.plays_cardinality)
-                key = f"{relation_name}:{role.role_name}"
-                for player_name in role.player_types:
-                    if player_name in info["entities"]:
-                        info["entities"][player_name]["plays_cardinalities"][key] = card
-                    elif player_name in info["relations"]:
-                        info["relations"][player_name]["plays_cardinalities"][key] = card
-
         return info
-
-
-def _schema_entry_from_descriptor(descriptor: dict) -> dict:
-    return {
-        "type_name": descriptor["type_name"],
-        "is_abstract": descriptor["is_abstract"],
-        "parent_type": descriptor["parent_type"],
-        "owned_attributes": [
-            {
-                "attr_name": attr["attr_name"],
-                "value_type": attr["value_type"],
-                "annotations": attr["annotations"],
-            }
-            for attr in descriptor["owned_attributes"]
-        ],
-        # Entity-side plays-card overlay, keyed "{relation}:{role}". Populated by the
-        # overlay pass in to_rust_schema_info from each relation's player-side authoring;
-        # empty here so the no-plays-card path emits a bare plays line unchanged.
-        "plays_cardinalities": {},
-    }
-
-
-def _register_attributes(info: dict, attrs: list[dict]) -> None:
-    for attr in attrs:
-        info["attributes"].setdefault(
-            attr["attr_name"],
-            {"attr_name": attr["attr_name"], "value_type": attr["value_type"]},
-        )
 
 
 def _is_base_model(model: type[Entity | Relation]) -> bool:

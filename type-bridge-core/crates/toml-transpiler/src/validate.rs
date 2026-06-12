@@ -20,7 +20,7 @@
 
 use crate::{
     TranspileError, TypeKind,
-    model::{TomlPlays, TomlSchema},
+    model::{TomlOwns, TomlPlays, TomlSchema},
 };
 
 /// Value type keywords accepted by the TypeDB parser.
@@ -55,6 +55,49 @@ pub(crate) fn validate(schema: &TomlSchema) -> Result<(), TranspileError> {
     check_missing_role_players(schema)?;
     check_empty_structs(schema)?;
     check_malformed_function_bodies(schema)?;
+    check_distinct_requires_ordered(schema)?;
+    Ok(())
+}
+
+/// Check: `distinct = true` without `ordered = true` is invalid on both roles and owns clauses.
+fn check_distinct_requires_ordered(schema: &TomlSchema) -> Result<(), TranspileError> {
+    for (rel_name, relation) in &schema.relations {
+        for role in &relation.roles {
+            if role.distinct && !role.ordered {
+                return Err(TranspileError::DistinctWithoutOrdered {
+                    kind: TypeKind::Relation,
+                    type_name: rel_name.clone(),
+                    item: format!("role `{}`", role.name),
+                });
+            }
+        }
+        for owns in &relation.owns {
+            if let TomlOwns::Annotated(a) = owns
+                && a.distinct
+                && !a.ordered
+            {
+                return Err(TranspileError::DistinctWithoutOrdered {
+                    kind: TypeKind::Relation,
+                    type_name: rel_name.clone(),
+                    item: format!("owns `{}`", a.attribute),
+                });
+            }
+        }
+    }
+    for (ent_name, entity) in &schema.entities {
+        for owns in &entity.owns {
+            if let TomlOwns::Annotated(a) = owns
+                && a.distinct
+                && !a.ordered
+            {
+                return Err(TranspileError::DistinctWithoutOrdered {
+                    kind: TypeKind::Entity,
+                    type_name: ent_name.clone(),
+                    item: format!("owns `{}`", a.attribute),
+                });
+            }
+        }
+    }
     Ok(())
 }
 

@@ -151,16 +151,8 @@ def test_typescript_generator_matches_python_generator(schema_path: Path) -> Non
     for name in py_entities:
         assert ts_entities[name] == py_entities[name], f"entity {name} descriptor differs"
 
-    # Parented relations are excluded from the descriptor comparison: the TS
-    # typed-surface runtime flattens inherited roles into a child relation's
-    # descriptor while the Python facade lists only the relation's own roles.
-    # That divergence is a runtime descriptor inconsistency, NOT a generator
-    # defect — the generated SOURCE is correct (own roles + ``{ parent }``,
-    # asserted by the node generator-render relation-inheritance test). Tracked
-    # by #139 for resolution against the Rust descriptor contract; remove this
-    # filter once both sides emit identical roles for parented relations.
-    py_relations = {r["type_name"]: r for r in python["relations"] if r["parent_type"] is None}
-    ts_relations = {r["type_name"]: r for r in typescript["relations"] if r["parent_type"] is None}
+    py_relations = {r["type_name"]: r for r in python["relations"]}
+    ts_relations = {r["type_name"]: r for r in typescript["relations"]}
     assert ts_relations.keys() == py_relations.keys()
     for name in py_relations:
         assert ts_relations[name] == py_relations[name], f"relation {name} descriptor differs"

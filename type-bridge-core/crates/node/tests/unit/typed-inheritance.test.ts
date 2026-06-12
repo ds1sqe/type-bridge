@@ -191,7 +191,7 @@ type DescriptorSnapshot = {
   relations: RelationDescriptor[];
 };
 
-type Annotation = "Key" | "Unique" | { Card: [number, number | null] };
+type Annotation = "Key" | "Unique" | "Distinct" | { Card: [number, number | null] };
 type EntityDescriptor = {
   type_name: string;
   is_abstract: boolean;
@@ -205,11 +205,16 @@ type OwnedAttributeDescriptor = {
   value_type: string;
   annotations: Annotation[];
   is_optional: boolean;
+  is_ordered: boolean;
 };
 type RoleDescriptor = {
   role_name: string;
   player_type_names: string[];
   cardinality: [number, number | null] | null;
+  overrides?: string | null;
+  is_abstract?: boolean;
+  ordered?: boolean;
+  distinct?: boolean;
 };
 
 function normalizeDescriptorSnapshot(snapshot: DescriptorSnapshot): DescriptorSnapshot {

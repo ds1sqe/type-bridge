@@ -141,8 +141,12 @@ The generator supports the full TypeDB 3.0 schema syntax:
 | `@card` on relates          | ✓      |
 | `@cascade` on owns          | ✓      |
 | `@subkey` on owns           | ✓      |
-| `@distinct` on relates      | ✓      |
+| `owns attr[]` (list)        | ✓ (schema-side; REP256) |
+| `relates role[]` (list)     | ✓ (schema-side; REP256) |
+| `@distinct` on owns/relates | ✓ (schema-side; REP256) |
 | Role overrides (`as`)       | ✓      |
+| `relates ... as ...`        | ✓      |
+| `@abstract` on relates      | ✓      |
 | Functions (`fun`)           | ✓      |
 | Structs (`struct`)          | ✓      |
 | `#` and `//` comments       | ✓      |
@@ -402,34 +406,44 @@ entity order-item,
 subkeys: dict[str, str] = {"order-id": "order", "product-id": "order"}
 ```
 
-#### `@distinct` - Distinct Role Players
+#### `@distinct` on list roles and list owns
 
-Ensure role players are distinct within a relation instance:
+`@distinct` is only valid on the list forms (`relates role[]` or `owns attr[]`).  It
+requires that all players / attribute values in the ordered list are unique.
 
 ```typeql
-relation friendship,
-    relates friend @distinct @card(2);  // Can't be friends with yourself
+relation rating, relates reviewer[] @distinct;
+entity book, owns tag[] @distinct;
 ```
 
-**Generated (tracked on RoleSpec):**
+Generated Python:
 
 ```python
-# Role has distinct=True
+# Relation role
+reviewer: Role[Reviewer] = Role("reviewer", Reviewer, ordered=True, distinct=True)
+
+# Entity attribute
+tag: list[Tag] = Flag(Ordered, Distinct)
 ```
+
+**Engine caveat — REP256**: schema-side declarations are accepted; instance-level
+list operations are not yet implemented.
 
 ## Cardinality Mapping
 
 The following cardinality rules apply to attributes on both **entities** and **relations**:
 
-| TypeQL                         | Python Type                      | Default                   |
-| ------------------------------ | -------------------------------- | ------------------------- |
-| `@card(1)` or `@card(1..1)`    | `Type`                           | Required                  |
-| `@card(0..1)` or no annotation | `Type \| None = None`            | Optional                  |
-| `@card(0..)`                   | `list[Type] = Flag(Card(min=0))` | Optional list             |
-| `@card(1..)`                   | `list[Type] = Flag(Card(min=1))` | Required list             |
-| `@card(2..5)`                  | `list[Type] = Flag(Card(2, 5))`  | Bounded list              |
-| `@key`                         | `Type = Flag(Key)`               | Key (implies required)    |
-| `@unique`                      | `Type = Flag(Unique)`            | Unique (implies required) |
+| TypeQL                         | Python Type                             | Default                   |
+| ------------------------------ | --------------------------------------- | ------------------------- |
+| `@card(1)` or `@card(1..1)`    | `Type`                                  | Required                  |
+| `@card(0..1)` or no annotation | `Type \| None = None`                   | Optional                  |
+| `@card(0..)`                   | `list[Type] = Flag(Card(min=0))`        | Optional list (unordered) |
+| `@card(1..)`                   | `list[Type] = Flag(Card(min=1))`        | Required list (unordered) |
+| `@card(2..5)`                  | `list[Type] = Flag(Card(2, 5))`         | Bounded list (unordered)  |
+| `owns attr[]`                  | `list[Type] = Flag(Ordered)`            | Ordered list              |
+| `owns attr[] @distinct`        | `list[Type] = Flag(Ordered, Distinct)`  | Ordered, unique list      |
+| `@key`                         | `Type = Flag(Key)`                      | Key (implies required)    |
+| `@unique`                      | `Type = Flag(Unique)`                   | Unique (implies required) |
 
 **Inheritance:** Child types inherit cardinality constraints from parent types. A child can override inherited constraints by redeclaring the attribute with a different `@card`.
 

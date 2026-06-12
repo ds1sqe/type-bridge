@@ -11,7 +11,7 @@ export type ValueType =
   | "decimal"
   | "duration";
 
-export type Annotation = "Key" | "Unique" | { Card: [number, number | null] };
+export type Annotation = "Key" | "Unique" | "Distinct" | { Card: [number, number | null] };
 
 export interface OwnedAttributeDescriptor {
   field_name: string;
@@ -19,6 +19,10 @@ export interface OwnedAttributeDescriptor {
   value_type: ValueType;
   annotations: Annotation[];
   is_optional: boolean;
+  /** Whether this ownership is declared as an ordered list (`owns name[]`).
+   * Instance-level list semantics are engine-unimplemented (REP256); this is a
+   * schema-emission marker only. */
+  is_ordered: boolean;
   parent_type?: string | null;
   is_abstract?: boolean;
   is_independent?: boolean;
@@ -38,6 +42,18 @@ export interface RoleDescriptor {
   role_name: string;
   player_type_names: string[];
   cardinality: [number, number | null] | null;
+  /** Plays-side cardinality for this role's players. Authoring datum consumed
+   * by `SchemaInfo.from_descriptors` to build the per-player `plays_cardinalities`
+   * overlay. `null` when no plays-side constraint is declared. */
+  plays_cardinality: [number, number | null] | null;
+  overrides: string | null;
+  is_abstract: boolean;
+  /** Whether this role is declared as an ordered list (`relates name[]`).
+   * Instance-level list semantics are engine-unimplemented (REP256); this is a
+   * schema-emission marker only. */
+  ordered: boolean;
+  /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
+  distinct: boolean;
 }
 
 export interface RelationDescriptor {
@@ -56,12 +72,27 @@ export interface OwnedAttributeEntry {
   attr_name: string;
   value_type: ValueType;
   annotations: Annotation[];
+  /** Whether this ownership is declared as an ordered list (`owns name[]`).
+   * Instance-level list semantics are engine-unimplemented (REP256); this is a
+   * schema-emission marker only. */
+  is_ordered: boolean;
 }
 
 export interface RoleEntry {
   role_name: string;
   player_type_names: string[];
   cardinality: [number, number | null] | null;
+  /** Plays-side cardinality authoring datum. Mirrors `RoleDescriptor.plays_cardinality`
+   * at the SchemaInfo (info-level) role entry. `null` when not declared. */
+  plays_cardinality: [number, number | null] | null;
+  overrides: string | null;
+  is_abstract: boolean;
+  /** Whether this role is declared as an ordered list (`relates name[]`).
+   * Instance-level list semantics are engine-unimplemented (REP256); this is a
+   * schema-emission marker only. */
+  ordered: boolean;
+  /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
+  distinct: boolean;
 }
 
 export interface EntitySchemaEntry {
@@ -94,12 +125,6 @@ export interface SchemaInfo {
 }
 
 const ATTRIBUTE_SCHEMA_METADATA = Symbol.for("@type-bridge/node.attributeSchemaMetadata");
-const ROLE_PLAYS_CARDINALITY_METADATA = Symbol.for(
-  "@type-bridge/node.rolePlaysCardinalityMetadata",
-);
-
-type CardinalityTuple = [number, number | null];
-type RolePlaysCardinalityMetadata = Record<string, CardinalityTuple>;
 
 export type TransactionType = "read" | "write" | "schema";
 
@@ -467,12 +492,14 @@ export interface NativeRuntime {
     database: string,
     username?: string | null,
     password?: string | null,
+    httpPort?: number | null,
   ): void;
   connectRustDatabase(
     address: string,
     database: string,
     username?: string | null,
     password?: string | null,
+    httpPort?: number | null,
   ): NativeRustDatabase;
 }
 
@@ -488,11 +515,15 @@ export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSc
 export interface RustDatabaseConnectOptions {
   username?: string | null;
   password?: string | null;
+  /** Port of the TypeDB HTTP API used for the connect-time version probe. */
+  httpPort?: number;
 }
 
 export interface EnsureDatabaseOptions {
   username?: string | null;
   password?: string | null;
+  /** Port of the TypeDB HTTP API used for the connect-time version probe. */
+  httpPort?: number;
 }
 
 /**
@@ -512,6 +543,7 @@ export function ensureDatabase(
     database,
     options?.username ?? null,
     options?.password ?? null,
+    options?.httpPort ?? null,
   );
 }
 
@@ -524,7 +556,6 @@ export function generateDefineBlock(info: SchemaInfo): string {
 export class DescriptorRegistry {
   readonly #native: NativeDescriptorRegistry;
   readonly #attributeSchemas = new Map<string, AttributeSchemaEntry>();
-  readonly #rolePlaysCardinalities = new Map<string, RolePlaysCardinalityMetadata>();
 
   constructor(nativeRegistry?: NativeDescriptorRegistry | null) {
     this.#native = nativeRegistry ?? new (loadNative().NodeDescriptorRegistry)();
@@ -537,12 +568,9 @@ export class DescriptorRegistry {
 
   registerRelation(descriptor: RelationDescriptor): RelationDescriptor {
     this.#rememberAttributeSchemas(descriptor);
-    const metadata = descriptorRolePlaysCardinalityMetadata(descriptor);
-    const registered = parseJson<RelationDescriptor>(
+    return parseJson<RelationDescriptor>(
       this.#native.registerRelationJson(JSON.stringify(descriptor)),
     );
-    this.#rememberRolePlaysCardinalities(registered.type_name, metadata);
-    return registered;
   }
 
   entity(typeName: string): EntityDescriptor {
@@ -558,6 +586,9 @@ export class DescriptorRegistry {
   }
 
   schemaInfo(): SchemaInfo {
+    // Rust from_descriptors builds plays_cardinalities overlays and nulls foreign
+    // parent_types; the Python attributes-section merge remains the only Python-side
+    // projection.
     const info = parseJson<SchemaInfo>(this.#native.schemaInfoJson());
     for (const [attrName, entry] of this.#attributeSchemas) {
       info.attributes[attrName] = {
@@ -565,8 +596,6 @@ export class DescriptorRegistry {
         ...copyAttributeSchemaEntry(entry),
       };
     }
-    ensurePlaysCardinalityMaps(info);
-    applyRolePlaysCardinalities(info, this.#rolePlaysCardinalities);
     return info;
   }
 
@@ -581,17 +610,6 @@ export class DescriptorRegistry {
       }
     }
   }
-
-  #rememberRolePlaysCardinalities(
-    relationName: string,
-    metadata: RolePlaysCardinalityMetadata,
-  ): void {
-    if (Object.keys(metadata).length === 0) {
-      this.#rolePlaysCardinalities.delete(relationName);
-      return;
-    }
-    this.#rolePlaysCardinalities.set(relationName, copyRolePlaysCardinalityMetadata(metadata));
-  }
 }
 
 function descriptorAttributeSchemaMetadata(
@@ -604,69 +622,6 @@ function descriptorAttributeSchemaMetadata(
     return [];
   }
   return Object.values(metadata as Record<string, AttributeSchemaEntry>).map(copyAttributeSchemaEntry);
-}
-
-function descriptorRolePlaysCardinalityMetadata(
-  descriptor: RelationDescriptor,
-): RolePlaysCardinalityMetadata {
-  const metadata = (descriptor as unknown as Record<PropertyKey, unknown>)[
-    ROLE_PLAYS_CARDINALITY_METADATA
-  ];
-  if (metadata === null || typeof metadata !== "object") {
-    return {};
-  }
-  return copyRolePlaysCardinalityMetadata(metadata as RolePlaysCardinalityMetadata);
-}
-
-function copyRolePlaysCardinalityMetadata(
-  metadata: RolePlaysCardinalityMetadata,
-): RolePlaysCardinalityMetadata {
-  const copy: RolePlaysCardinalityMetadata = {};
-  for (const [roleName, card] of Object.entries(metadata)) {
-    copy[roleName] = [card[0], card[1]];
-  }
-  return copy;
-}
-
-function ensurePlaysCardinalityMaps(info: SchemaInfo): void {
-  for (const entry of Object.values(info.entities)) {
-    entry.plays_cardinalities ??= {};
-  }
-  for (const entry of Object.values(info.relations)) {
-    entry.plays_cardinalities ??= {};
-  }
-}
-
-function applyRolePlaysCardinalities(
-  info: SchemaInfo,
-  relationMetadata: Map<string, RolePlaysCardinalityMetadata>,
-): void {
-  for (const [relationName, roleCards] of relationMetadata) {
-    const relation = info.relations[relationName];
-    if (relation === undefined) {
-      continue;
-    }
-    for (const role of relation.roles) {
-      const card = roleCards[role.role_name];
-      if (card === undefined) {
-        continue;
-      }
-      const roleRef = `${relationName}:${role.role_name}`;
-      for (const playerName of role.player_type_names) {
-        const entity = info.entities[playerName];
-        if (entity !== undefined) {
-          entity.plays_cardinalities ??= {};
-          entity.plays_cardinalities[roleRef] = [card[0], card[1]];
-          continue;
-        }
-        const playerRelation = info.relations[playerName];
-        if (playerRelation !== undefined) {
-          playerRelation.plays_cardinalities ??= {};
-          playerRelation.plays_cardinalities[roleRef] = [card[0], card[1]];
-        }
-      }
-    }
-  }
 }
 
 function ownedAttributeSchemaEntry(
@@ -791,6 +746,7 @@ export class RustDatabase {
         parsed.database,
         parsed.options.username ?? null,
         parsed.options.password ?? null,
+        parsed.options.httpPort ?? null,
       ),
     );
   }

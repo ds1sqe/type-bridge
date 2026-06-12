@@ -26,18 +26,25 @@ pub struct OwnedAttributeEntry {
     pub value_type: ValueType,
     /// Ownership annotations.
     pub annotations: Vec<Annotation>,
+    /// Whether this ownership is declared as an ordered list (`owns name[]`).
+    ///
+    /// Instance-level list semantics are engine-unimplemented (REP256); this field
+    /// is a schema-emission marker only.
+    #[serde(default)]
+    pub is_ordered: bool,
 }
 
 impl OwnedAttributeEntry {
     /// Format the annotation flags as a TypeQL annotation string.
     ///
-    /// Returns strings like `"@key"`, `"@unique"`, `"@card(2..5)"`.
+    /// Returns strings like `"@key"`, `"@unique"`, `"@distinct"`, `"@card(2..5)"`.
     pub fn flags_string(&self) -> String {
         let mut parts = Vec::new();
         for ann in &self.annotations {
             match ann {
                 Annotation::Key => parts.push("@key".to_string()),
                 Annotation::Unique => parts.push("@unique".to_string()),
+                Annotation::Distinct => parts.push("@distinct".to_string()),
                 Annotation::Card(min, max) => {
                     // TypeDB 3.x spells an unbounded upper bound as `@card(min..)`.
                     let max_str = match max {
@@ -53,7 +60,7 @@ impl OwnedAttributeEntry {
 }
 
 /// Metadata for one role in a relation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleEntry {
     /// Role name (e.g. `"employee"`).
     pub role_name: String,
@@ -61,6 +68,23 @@ pub struct RoleEntry {
     pub player_type_names: Vec<String>,
     /// Optional role cardinality, where `None` max means unbounded.
     pub cardinality: Option<(u32, Option<u32>)>,
+    /// Parent role name this role specializes, or `None` for plain roles.
+    #[serde(default)]
+    pub overrides: Option<String>,
+    /// Whether this role carries a schema-level `@abstract` annotation.
+    #[serde(default)]
+    pub is_abstract: bool,
+    /// Whether this role is declared as an ordered list (`relates name[]`).
+    ///
+    /// Instance-level list semantics are engine-unimplemented (REP256); this field
+    /// is a schema-emission marker only.
+    #[serde(default)]
+    pub ordered: bool,
+    /// Whether this role carries a schema-level `@distinct` annotation.
+    ///
+    /// Valid only when `ordered` is `true`.
+    #[serde(default)]
+    pub distinct: bool,
 }
 
 /// Schema entry for an entity type.
@@ -240,6 +264,10 @@ impl SchemaInfo {
                         role_name: role.name.clone(),
                         player_type_names,
                         cardinality: role.cardinality.as_ref().map(cardinality_tuple),
+                        overrides: role.overrides.clone(),
+                        is_abstract: role.is_abstract,
+                        ordered: role.ordered,
+                        distinct: role.distinct,
                     }
                 })
                 .collect();
@@ -272,6 +300,20 @@ impl SchemaInfo {
     /// crossing between the two — there is no second schema engine. Relation
     /// roles keep their player set grouped because cardinality belongs to the
     /// role, not to each individual player type.
+    ///
+    /// After the initial entry build, two post-passes run:
+    ///
+    /// **Plays-cardinality overlay**: for every relation descriptor role that carries
+    /// `plays_cardinality: Some(card)`, each named player type that is present in the
+    /// built entries (entity or relation) receives a `"{relation_type_name}:{role_name}"`
+    /// key in its `plays_cardinalities` map. This centralises the plays-card data so
+    /// every registry consumer (sync, migration, node) gets define-correct plays-card
+    /// without binding-side post-passes.
+    ///
+    /// **Foreign-parent nulling**: any entity or relation entry whose `parent_type`
+    /// names a type absent from the built entries has its `parent_type` set to `None`.
+    /// This is a DEFINE-EMISSION rule: `sub <unregistered>` cannot be emitted and
+    /// deliberately discards the raw parent string. It is not a neutral normalization.
     pub fn from_descriptors(descriptors: &[TypeDescriptor]) -> Self {
         let mut info = Self::default();
 
@@ -299,6 +341,10 @@ impl SchemaInfo {
                             role_name: role.role_name.clone(),
                             player_type_names: role.player_type_names.clone(),
                             cardinality: role.cardinality,
+                            overrides: role.overrides.clone(),
+                            is_abstract: role.is_abstract,
+                            ordered: role.ordered,
+                            distinct: role.distinct,
                         })
                         .collect();
 
@@ -314,6 +360,79 @@ impl SchemaInfo {
                         },
                     );
                 }
+            }
+        }
+
+        // Plays-cardinality overlay pass: propagate descriptor-authored plays-card
+        // values onto each listed player's entry. Collecting the overlays first avoids
+        // simultaneous mutable borrows of `info.entities` and `info.relations`.
+        let mut entity_overlays: BTreeMap<String, BTreeMap<String, (u32, Option<u32>)>> =
+            BTreeMap::new();
+        let mut relation_overlays: BTreeMap<String, BTreeMap<String, (u32, Option<u32>)>> =
+            BTreeMap::new();
+
+        for descriptor in descriptors {
+            if let TypeDescriptor::Relation(relation) = descriptor {
+                for role in &relation.roles {
+                    if let Some(card) = role.plays_cardinality {
+                        let role_ref =
+                            format!("{}:{}", relation.type_name, role.role_name);
+                        for player in &role.player_type_names {
+                            if info.entities.contains_key(player) {
+                                entity_overlays
+                                    .entry(player.clone())
+                                    .or_default()
+                                    .insert(role_ref.clone(), card);
+                            } else if info.relations.contains_key(player) {
+                                relation_overlays
+                                    .entry(player.clone())
+                                    .or_default()
+                                    .insert(role_ref.clone(), card);
+                            }
+                            // Players absent from the snapshot are skipped; no panic.
+                        }
+                    }
+                }
+            }
+        }
+
+        for (player, overlays) in entity_overlays {
+            if let Some(entry) = info.entities.get_mut(&player) {
+                entry.plays_cardinalities.extend(overlays);
+            }
+        }
+        for (player, overlays) in relation_overlays {
+            if let Some(entry) = info.relations.get_mut(&player) {
+                entry.plays_cardinalities.extend(overlays);
+            }
+        }
+
+        // Foreign-parent nulling pass: discard parent references that name a type not
+        // present in this snapshot. `sub <unregistered>` cannot be emitted in a define
+        // block, so the raw parent string is deliberately dropped rather than propagated.
+        let known: BTreeSet<String> = info
+            .entities
+            .keys()
+            .chain(info.relations.keys())
+            .cloned()
+            .collect();
+
+        for entry in info.entities.values_mut() {
+            if entry
+                .parent_type
+                .as_ref()
+                .is_some_and(|p| !known.contains(p))
+            {
+                entry.parent_type = None;
+            }
+        }
+        for entry in info.relations.values_mut() {
+            if entry
+                .parent_type
+                .as_ref()
+                .is_some_and(|p| !known.contains(p))
+            {
+                entry.parent_type = None;
             }
         }
 
@@ -378,6 +497,7 @@ fn owned_attribute_entries_from_typeql(
                 .map(|entry| entry.value_type)
                 .unwrap_or(ValueType::String),
             annotations: annotations_from_typeql(attr),
+            is_ordered: attr.ordered,
         })
         .collect()
 }
@@ -389,6 +509,9 @@ fn annotations_from_typeql(attr: &core_schema::OwnedAttribute) -> Vec<Annotation
     }
     if attr.is_unique {
         annotations.push(Annotation::Unique);
+    }
+    if attr.distinct {
+        annotations.push(Annotation::Distinct);
     }
     if let Some(cardinality) = &attr.cardinality {
         annotations.push(Annotation::Card(cardinality.min, cardinality.max));
@@ -478,6 +601,7 @@ fn owned_attribute_entries(attributes: &[OwnedAttributeDescriptor]) -> Vec<Owned
                 attr_name: attr.attr_name.clone(),
                 value_type: attr.value_type,
                 annotations: attr.annotations.clone(),
+                is_ordered: attr.is_ordered,
             }
         })
         .collect()
@@ -560,6 +684,7 @@ mod tests {
             attr_name: "name".into(),
             value_type: ValueType::String,
             annotations: vec![Annotation::Key],
+            is_ordered: false,
         };
         assert_eq!(entry.flags_string(), "@key");
     }
@@ -570,6 +695,7 @@ mod tests {
             attr_name: "tag".into(),
             value_type: ValueType::String,
             annotations: vec![Annotation::Card(2, Some(5))],
+            is_ordered: false,
         };
         assert_eq!(entry.flags_string(), "@card(2..5)");
     }
@@ -580,6 +706,7 @@ mod tests {
             attr_name: "phone".into(),
             value_type: ValueType::String,
             annotations: vec![Annotation::Card(0, None)],
+            is_ordered: false,
         };
         assert_eq!(entry.flags_string(), "@card(0..)");
     }
@@ -590,6 +717,7 @@ mod tests {
             attr_name: "email".into(),
             value_type: ValueType::String,
             annotations: vec![Annotation::Unique, Annotation::Card(1, Some(3))],
+            is_ordered: false,
         };
         assert_eq!(entry.flags_string(), "@unique @card(1..3)");
     }
@@ -607,6 +735,7 @@ mod tests {
                     attr_name: "name".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -622,6 +751,9 @@ mod tests {
                     role_name: "employee".into(),
                     player_type_names: vec!["person".into()],
                     cardinality: None,
+                    overrides: None,
+                    is_abstract: false,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -655,6 +787,7 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_optional: false,
+                    is_ordered: false,
                 }],
             }),
             TypeDescriptor::Relation(RelationDescriptor {
@@ -667,27 +800,36 @@ mod tests {
                     value_type: ValueType::Date,
                     annotations: vec![],
                     is_optional: false,
+                    is_ordered: false,
                 }],
                 roles: vec![RoleDescriptor {
                     role_name: "participant".into(),
                     player_type_names: vec!["person".into(), "company".into()],
                     cardinality: Some((1, Some(2))),
+                    overrides: None,
+                    is_abstract: false,
+                    ordered: false,
+                    distinct: false,
+                    plays_cardinality: None,
                 }],
             }),
         ];
 
         let info = SchemaInfo::from_descriptors(&descriptors);
 
+        // "thing" and "contract" are not in the snapshot, so foreign-parent nulling
+        // clears both parent_type fields.
         assert_eq!(
             info.entities.get("person"),
             Some(&EntitySchemaEntry {
                 type_name: "person".into(),
                 is_abstract: false,
-                parent_type: Some("thing".into()),
+                parent_type: None,
                 owned_attributes: vec![OwnedAttributeEntry {
                     attr_name: "name".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             })
@@ -697,16 +839,21 @@ mod tests {
             Some(&RelationSchemaEntry {
                 type_name: "employment".into(),
                 is_abstract: true,
-                parent_type: Some("contract".into()),
+                parent_type: None,
                 owned_attributes: vec![OwnedAttributeEntry {
                     attr_name: "since".into(),
                     value_type: ValueType::Date,
                     annotations: vec![],
+                    is_ordered: false,
                 }],
                 roles: vec![RoleEntry {
                     role_name: "participant".into(),
                     player_type_names: vec!["person".into(), "company".into()],
                     cardinality: Some((1, Some(2))),
+                    overrides: None,
+                    is_abstract: false,
+                    ordered: false,
+                    distinct: false,
                 },],
                 plays_cardinalities: BTreeMap::new(),
             })
@@ -733,6 +880,7 @@ mod tests {
                 value_type: ValueType::Long,
                 annotations: vec![Annotation::Card(0, Some(1))],
                 is_optional: true,
+                is_ordered: false,
             }],
         })];
 
@@ -955,6 +1103,274 @@ entity holder, plays owns-one:slot @card(0..1);
         assert!(
             person.plays_cardinalities.is_empty(),
             "missing plays_cardinalities field should default to empty map"
+        );
+    }
+
+    // ---- plays_cardinality overlay and foreign-parent nulling tests ----
+
+    fn make_entity(type_name: &str) -> TypeDescriptor {
+        TypeDescriptor::Entity(EntityDescriptor {
+            type_name: type_name.into(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![],
+        })
+    }
+
+    fn make_relation_with_roles(
+        type_name: &str,
+        roles: Vec<RoleDescriptor>,
+    ) -> TypeDescriptor {
+        TypeDescriptor::Relation(RelationDescriptor {
+            type_name: type_name.into(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![],
+            roles,
+        })
+    }
+
+    /// `plays_cardinality` on a role overlays onto an entity player.
+    #[test]
+    fn plays_cardinality_overlay_lands_on_entity_player() {
+        let descriptors = vec![
+            make_entity("person"),
+            make_relation_with_roles(
+                "employment",
+                vec![RoleDescriptor {
+                    role_name: "employee".into(),
+                    player_type_names: vec!["person".into()],
+                    plays_cardinality: Some((0, Some(1))),
+                    ..Default::default()
+                }],
+            ),
+        ];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        let person = info.entities.get("person").expect("person missing");
+        assert_eq!(
+            person.plays_cardinalities.get("employment:employee"),
+            Some(&(0, Some(1))),
+            "entity player must receive plays-card overlay"
+        );
+    }
+
+    /// `plays_cardinality` on a role overlays onto a relation player (relation playing
+    /// a role in another relation).
+    #[test]
+    fn plays_cardinality_overlay_lands_on_relation_player() {
+        let descriptors = vec![
+            make_relation_with_roles("inner-rel", vec![]),
+            make_relation_with_roles(
+                "outer-rel",
+                vec![RoleDescriptor {
+                    role_name: "container".into(),
+                    player_type_names: vec!["inner-rel".into()],
+                    plays_cardinality: Some((1, None)),
+                    ..Default::default()
+                }],
+            ),
+        ];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        let inner = info.relations.get("inner-rel").expect("inner-rel missing");
+        assert_eq!(
+            inner.plays_cardinalities.get("outer-rel:container"),
+            Some(&(1, None)),
+            "relation player must receive plays-card overlay"
+        );
+    }
+
+    /// A role with multiple players: all present players receive the overlay.
+    #[test]
+    fn plays_cardinality_fans_out_to_all_present_players() {
+        let descriptors = vec![
+            make_entity("alpha"),
+            make_entity("beta"),
+            make_relation_with_roles(
+                "link",
+                vec![RoleDescriptor {
+                    role_name: "member".into(),
+                    player_type_names: vec!["alpha".into(), "beta".into()],
+                    plays_cardinality: Some((0, Some(3))),
+                    ..Default::default()
+                }],
+            ),
+        ];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        assert_eq!(
+            info.entities["alpha"].plays_cardinalities.get("link:member"),
+            Some(&(0, Some(3))),
+        );
+        assert_eq!(
+            info.entities["beta"].plays_cardinalities.get("link:member"),
+            Some(&(0, Some(3))),
+        );
+    }
+
+    /// A player name listed in a role but absent from the snapshot is silently skipped.
+    #[test]
+    fn plays_cardinality_skips_absent_player_without_panic() {
+        let descriptors = vec![make_relation_with_roles(
+            "rel",
+            vec![RoleDescriptor {
+                role_name: "slot".into(),
+                player_type_names: vec!["ghost".into()],
+                plays_cardinality: Some((1, Some(1))),
+                ..Default::default()
+            }],
+        )];
+
+        // Must not panic; "ghost" is not in the snapshot.
+        let info = SchemaInfo::from_descriptors(&descriptors);
+        assert!(info.entities.is_empty());
+    }
+
+    /// A role with `plays_cardinality: None` produces no overlay entries.
+    #[test]
+    fn plays_cardinality_none_produces_no_overlay() {
+        let descriptors = vec![
+            make_entity("person"),
+            make_relation_with_roles(
+                "employment",
+                vec![RoleDescriptor {
+                    role_name: "employee".into(),
+                    player_type_names: vec!["person".into()],
+                    plays_cardinality: None,
+                    ..Default::default()
+                }],
+            ),
+        ];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        assert!(
+            info.entities["person"].plays_cardinalities.is_empty(),
+            "no plays-card overlay expected for None role"
+        );
+    }
+
+    /// Subtype flattened inherited role: both the parent relation descriptor and the
+    /// child relation descriptor list the same role carrying plays_cardinality. The
+    /// player map gains both `Parent:role` and `Child:role` keys because each
+    /// descriptor's listing produces its own key.
+    #[test]
+    fn plays_cardinality_subtype_flattened_role_produces_both_keys() {
+        let descriptors = vec![
+            make_entity("person"),
+            // Parent relation descriptor lists the role.
+            make_relation_with_roles(
+                "base-employment",
+                vec![RoleDescriptor {
+                    role_name: "employee".into(),
+                    player_type_names: vec!["person".into()],
+                    plays_cardinality: Some((0, Some(5))),
+                    ..Default::default()
+                }],
+            ),
+            // Child relation descriptor flattens the inherited role with its own card.
+            TypeDescriptor::Relation(RelationDescriptor {
+                type_name: "sub-employment".into(),
+                is_abstract: false,
+                parent_type: Some("base-employment".into()),
+                owned_attributes: vec![],
+                roles: vec![RoleDescriptor {
+                    role_name: "employee".into(),
+                    player_type_names: vec!["person".into()],
+                    plays_cardinality: Some((1, Some(2))),
+                    ..Default::default()
+                }],
+            }),
+        ];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        let person = info.entities.get("person").expect("person missing");
+        assert_eq!(
+            person.plays_cardinalities.get("base-employment:employee"),
+            Some(&(0, Some(5))),
+            "parent relation key must be present"
+        );
+        assert_eq!(
+            person.plays_cardinalities.get("sub-employment:employee"),
+            Some(&(1, Some(2))),
+            "child relation key must be present"
+        );
+    }
+
+    /// Foreign-parent nulling: an entity with a parent not in the snapshot gets
+    /// `parent_type = None`; an entity with a registered parent keeps it.
+    #[test]
+    fn foreign_parent_nulled_registered_parent_kept() {
+        let descriptors = vec![
+            TypeDescriptor::Entity(EntityDescriptor {
+                type_name: "root".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+            }),
+            TypeDescriptor::Entity(EntityDescriptor {
+                type_name: "child".into(),
+                is_abstract: false,
+                // "root" is registered — must be preserved.
+                parent_type: Some("root".into()),
+                owned_attributes: vec![],
+            }),
+            TypeDescriptor::Entity(EntityDescriptor {
+                type_name: "orphan".into(),
+                is_abstract: false,
+                // "thing" is not in the snapshot — must be nulled.
+                parent_type: Some("thing".into()),
+                owned_attributes: vec![],
+            }),
+        ];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        assert_eq!(
+            info.entities["child"].parent_type.as_deref(),
+            Some("root"),
+            "registered parent must be preserved"
+        );
+        assert_eq!(
+            info.entities["orphan"].parent_type,
+            None,
+            "unregistered parent must be nulled"
+        );
+    }
+
+    /// `RoleDescriptor` without `plays_cardinality` key deserializes with `None` default.
+    #[test]
+    fn role_descriptor_serde_plays_cardinality_defaults_to_none() {
+        let json = r#"{
+            "role_name": "participant",
+            "player_type_names": ["person"],
+            "cardinality": null
+        }"#;
+        let role: RoleDescriptor = serde_json::from_str(json).expect("deserialize failed");
+        assert_eq!(
+            role.plays_cardinality, None,
+            "missing plays_cardinality must default to None"
+        );
+    }
+
+    /// `RoleDescriptor` serializes with `"plays_cardinality":null` included.
+    #[test]
+    fn role_descriptor_serde_serializes_plays_cardinality_null() {
+        let role = RoleDescriptor {
+            role_name: "participant".into(),
+            player_type_names: vec!["person".into()],
+            plays_cardinality: None,
+            ..Default::default()
+        };
+        let serialized = serde_json::to_string(&role).expect("serialize failed");
+        assert!(
+            serialized.contains("\"plays_cardinality\":null"),
+            "serialized role must include plays_cardinality:null — got: {serialized}"
         );
     }
 }

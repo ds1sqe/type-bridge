@@ -76,6 +76,12 @@ def _assert_entity_equivalent(name: str, a: EntitySpec, b: EntitySpec) -> None:
     assert set(a.keys) == set(b.keys), f"[{name}] keys (as set) mismatch"
     assert set(a.uniques) == set(b.uniques), f"[{name}] uniques (as set) mismatch"
     assert set(a.cascades) == set(b.cascades), f"[{name}] cascades (as set) mismatch"
+    assert set(a.ordered_owns) == set(b.ordered_owns), (
+        f"[{name}] ordered_owns (as set): {set(a.ordered_owns)} != {set(b.ordered_owns)}"
+    )
+    assert set(a.distinct_owns) == set(b.distinct_owns), (
+        f"[{name}] distinct_owns (as set): {set(a.distinct_owns)} != {set(b.distinct_owns)}"
+    )
     # owns_order: ORDERED — order must match (transpiler must preserve TOML array order)
     assert a.owns_order == b.owns_order, (
         f"[{name}] owns_order (ordered list): {a.owns_order} != {b.owns_order}"
@@ -118,12 +124,20 @@ def _assert_relation_equivalent(name: str, a: RelationSpec, b: RelationSpec) -> 
         assert ra.name == rb.name, f"[{name}] roles[{i}].name mismatch"
         assert ra.overrides == rb.overrides, f"[{name}] roles[{i}].overrides mismatch"
         assert ra.cardinality == rb.cardinality, f"[{name}] roles[{i}].cardinality mismatch"
+        assert ra.ordered == rb.ordered, f"[{name}] roles[{i}].ordered mismatch"
         assert ra.distinct == rb.distinct, f"[{name}] roles[{i}].distinct mismatch"
+        assert ra.is_abstract == rb.is_abstract, f"[{name}] roles[{i}].is_abstract mismatch"
     # owns/keys/uniques/cascades: UNORDERED sets
     assert set(a.owns) == set(b.owns), f"[{name}] owns (as set) mismatch"
     assert set(a.keys) == set(b.keys), f"[{name}] keys (as set) mismatch"
     assert set(a.uniques) == set(b.uniques), f"[{name}] uniques (as set) mismatch"
     assert set(a.cascades) == set(b.cascades), f"[{name}] cascades (as set) mismatch"
+    assert set(a.ordered_owns) == set(b.ordered_owns), (
+        f"[{name}] ordered_owns (as set): {set(a.ordered_owns)} != {set(b.ordered_owns)}"
+    )
+    assert set(a.distinct_owns) == set(b.distinct_owns), (
+        f"[{name}] distinct_owns (as set): {set(a.distinct_owns)} != {set(b.distinct_owns)}"
+    )
     # owns_order: ORDERED list
     assert a.owns_order == b.owns_order, f"[{name}] owns_order (ordered list) mismatch"
     # cardinalities: dict key-by-key
@@ -997,6 +1011,25 @@ class TestBookstoreRoundtrip:
             FIXTURES_DIR / "bookstore_corpus.tql",
         )
 
+    def test_contribution_contributor_role_is_abstract(self) -> None:
+        """bookstore_corpus must round-trip with contributor role marked abstract.
+
+        The `contribution` relation declares `relates contributor @abstract`; the
+        child relations (`authoring`, `editing`, `illustrating`) override it via
+        `relates X as contributor`.  The abstract flag must survive the TOML →
+        TypeQL → ParsedSchema round-trip.
+        """
+        toml_text = (FIXTURES_DIR / "bookstore_corpus.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "contribution" in schema.relations, "expected 'contribution' relation"
+        role_map = {r.name: r for r in schema.relations["contribution"].roles}
+        assert "contributor" in role_map, "expected 'contributor' role in contribution"
+        assert role_map["contributor"].is_abstract is True, (
+            f"expected contributor.is_abstract=True, got {role_map['contributor'].is_abstract!r}"
+        )
+        assert role_map["work"].is_abstract is False, "work role must NOT be abstract"
+
     def test_stream_and_scalar_functions_parsed(self) -> None:
         """Parsed TOML must yield at least one stream-return and one scalar-return function.
 
@@ -1123,6 +1156,97 @@ class TestBookstoreRoundtrip:
                     f"--- TOML output ({filename}) ---\n{toml_content}\n"
                     f"--- TQL output ({filename}) ---\n{tql_content}\n"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Tests: list-interface (ordered / distinct) round-trip equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestListInterfaceRoundtrip:
+    """Focused assertions that ordered_owns, distinct_owns, and role ordered/distinct
+    flags survive the TOML -> TypeQL -> ParsedSchema round-trip.
+
+    Uses the bookstore_corpus fixtures which contain:
+    - ``book`` entity: ``owns tag[] @distinct`` (ordered + distinct)
+    - ``rating`` relation: ``relates reviewer[] @distinct`` (ordered + distinct)
+    """
+
+    def test_book_entity_tag_is_ordered_and_distinct(self) -> None:
+        """book.ordered_owns must contain 'tag'; book.distinct_owns must contain 'tag'."""
+        toml_text = (FIXTURES_DIR / "bookstore_corpus.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "book" in schema.entities, "expected 'book' entity"
+        book = schema.entities["book"]
+        assert "tag" in book.ordered_owns, (
+            f"expected 'tag' in book.ordered_owns, got {book.ordered_owns!r}"
+        )
+        assert "tag" in book.distinct_owns, (
+            f"expected 'tag' in book.distinct_owns, got {book.distinct_owns!r}"
+        )
+
+    def test_book_tql_entity_tag_is_ordered_and_distinct(self) -> None:
+        """Same assertion reading from the TQL fixture directly."""
+        tql_text = (FIXTURES_DIR / "bookstore_corpus.tql").read_text(encoding="utf-8")
+        schema = parse_tql_schema(tql_text)
+
+        assert "book" in schema.entities, "expected 'book' entity"
+        book = schema.entities["book"]
+        assert "tag" in book.ordered_owns, (
+            f"[TQL] expected 'tag' in book.ordered_owns, got {book.ordered_owns!r}"
+        )
+        assert "tag" in book.distinct_owns, (
+            f"[TQL] expected 'tag' in book.distinct_owns, got {book.distinct_owns!r}"
+        )
+
+    def test_rating_relation_reviewer_role_ordered_and_distinct(self) -> None:
+        """rating relation: reviewer role must have ordered=True and distinct=True."""
+        toml_text = (FIXTURES_DIR / "bookstore_corpus.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        assert "rating" in schema.relations, "expected 'rating' relation"
+        rating = schema.relations["rating"]
+        role_map = {r.name: r for r in rating.roles}
+        assert "reviewer" in role_map, (
+            f"expected 'reviewer' role in rating, got {list(role_map.keys())!r}"
+        )
+        reviewer = role_map["reviewer"]
+        assert reviewer.ordered is True, f"expected reviewer.ordered=True, got {reviewer.ordered!r}"
+        assert reviewer.distinct is True, (
+            f"expected reviewer.distinct=True, got {reviewer.distinct!r}"
+        )
+
+    def test_rating_tql_reviewer_role_ordered_and_distinct(self) -> None:
+        """Same assertion reading from the TQL fixture directly."""
+        tql_text = (FIXTURES_DIR / "bookstore_corpus.tql").read_text(encoding="utf-8")
+        schema = parse_tql_schema(tql_text)
+
+        assert "rating" in schema.relations, "expected 'rating' relation"
+        rating = schema.relations["rating"]
+        role_map = {r.name: r for r in rating.roles}
+        assert "reviewer" in role_map, (
+            f"[TQL] expected 'reviewer' role in rating, got {list(role_map.keys())!r}"
+        )
+        reviewer = role_map["reviewer"]
+        assert reviewer.ordered is True, (
+            f"[TQL] expected reviewer.ordered=True, got {reviewer.ordered!r}"
+        )
+        assert reviewer.distinct is True, (
+            f"[TQL] expected reviewer.distinct=True, got {reviewer.distinct!r}"
+        )
+
+    def test_non_list_owns_not_in_ordered_owns(self) -> None:
+        """Attributes that are NOT declared as list must NOT appear in ordered_owns."""
+        toml_text = (FIXTURES_DIR / "bookstore_corpus.toml").read_text(encoding="utf-8")
+        schema = parse_tql_schema(toml_to_typeql(toml_text))
+
+        book = schema.entities["book"]
+        # title, page-count, genre, price are all non-list on book
+        for attr in ("title", "page-count", "price"):
+            assert attr not in book.ordered_owns, (
+                f"expected '{attr}' NOT in book.ordered_owns (not a list attribute)"
+            )
 
 
 # ---------------------------------------------------------------------------

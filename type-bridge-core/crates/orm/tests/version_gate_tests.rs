@@ -206,3 +206,24 @@ fn orm_error_probe_message_preserved() {
         "OrmError message lost probe detail: {msg}"
     );
 }
+
+// ── 5. ConnectOptions defaults ───────────────────────────────────────────────
+
+use type_bridge_core_lib::version::DEFAULT_HTTP_PORT;
+use type_bridge_orm::ConnectOptions;
+
+/// `ConnectOptions::default()` must produce `{ http_port: DEFAULT_HTTP_PORT, tls: false }`.
+///
+/// Pins the default so a future change to `DEFAULT_HTTP_PORT` also fails
+/// this test, keeping the constant and the default in sync.
+#[test]
+fn connect_options_default_equals_ssot() {
+    let opts = ConnectOptions::default();
+    assert_eq!(
+        opts.http_port,
+        DEFAULT_HTTP_PORT,
+        "ConnectOptions::default().http_port must equal DEFAULT_HTTP_PORT ({DEFAULT_HTTP_PORT})"
+    );
+    assert!(!opts.tls, "ConnectOptions::default().tls must be false");
+}
+

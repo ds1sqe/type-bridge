@@ -923,6 +923,7 @@ pub fn ensure_rust_database(
     database: String,
     username: Option<String>,
     password: Option<String>,
+    http_port: Option<u32>,
 ) -> Result<()> {
     let runtime = Runtime::new().map(Arc::new).map_err(|error| {
         Error::new(
@@ -932,9 +933,10 @@ pub fn ensure_rust_database(
     })?;
     let username = username.unwrap_or_else(|| "admin".to_string());
     let password = password.unwrap_or_else(|| "password".to_string());
+    let options = napi_connect_options(http_port)?;
     runtime
         .block_on(type_bridge_orm::ensure_database_exists(
-            &address, &database, &username, &password,
+            &address, &database, &username, &password, options,
         ))
         .map_err(napi_orm_error)
 }
@@ -946,6 +948,7 @@ pub fn connect_rust_database(
     database: String,
     username: Option<String>,
     password: Option<String>,
+    http_port: Option<u32>,
 ) -> Result<NodeRustDatabase> {
     let runtime = Runtime::new().map(Arc::new).map_err(|error| {
         Error::new(
@@ -955,9 +958,10 @@ pub fn connect_rust_database(
     })?;
     let username = username.unwrap_or_else(|| "admin".to_string());
     let password = password.unwrap_or_else(|| "password".to_string());
+    let options = napi_connect_options(http_port)?;
     let db = runtime
-        .block_on(type_bridge_orm::Database::connect(
-            &address, &database, &username, &password,
+        .block_on(type_bridge_orm::Database::connect_with_options(
+            &address, &database, &username, &password, options,
         ))
         .map_err(napi_orm_error)?;
 
@@ -1646,6 +1650,25 @@ fn tx_type_name(tx_type: TxType) -> &'static str {
         TxType::Write => "write",
         TxType::Schema => "schema",
     }
+}
+
+/// Build [`type_bridge_orm::ConnectOptions`] from the optional `http_port`
+/// parameter coming across the NAPI boundary.
+///
+/// NAPI does not expose `u16` natively; callers pass an optional `u32` and we
+/// clamp it here.  `None` → default (8000).  An out-of-range value is a caller
+/// error, not a configuration error, so we return a hard `InvalidArg`.
+fn napi_connect_options(http_port: Option<u32>) -> Result<type_bridge_orm::ConnectOptions> {
+    let mut opts = type_bridge_orm::ConnectOptions::default();
+    if let Some(port) = http_port {
+        opts.http_port = u16::try_from(port).map_err(|_| {
+            Error::new(
+                Status::InvalidArg,
+                format!("httpPort {port} is out of the valid port range (0–65535)"),
+            )
+        })?;
+    }
+    Ok(opts)
 }
 
 fn napi_orm_error(error: OrmError) -> napi::Error {

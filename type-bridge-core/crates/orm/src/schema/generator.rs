@@ -95,12 +95,7 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
             if parent_attr_names.contains(attr.attr_name.as_str()) {
                 continue;
             }
-            let flags = attr.flags_string();
-            if flags.is_empty() {
-                parts.push(format!("    owns {}", attr.attr_name));
-            } else {
-                parts.push(format!("    owns {} {}", attr.attr_name, flags));
-            }
+            parts.push(build_owns_clause(attr));
         }
 
         // Build header: entity <name> [@abstract] [sub <parent>]
@@ -156,32 +151,41 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
 
         let mut parts = Vec::new();
 
-        // Deduplicate roles by name, skip inherited roles
+        // Deduplicate roles by name, skip inherited roles.
+        // Inherited roles are present in the child descriptor (effective-set
+        // contract) but belong to the parent type in TypeDB's schema — emitting
+        // `relates` or `plays` for them on the child would create phantom role
+        // references that the engine rejects.  The parent's own descriptor
+        // already emitted the correct `plays` clauses.
         let mut seen_roles = BTreeSet::new();
         for role in &relation.roles {
             if parent_role_names.contains(role.role_name.as_str()) {
-                // Still collect plays clause for inherited roles
-                for player_type_name in &role.player_type_names {
-                    let role_ref = format!("{}:{}", relation.type_name, role.role_name);
-                    let cardinality = plays_card_for(info, player_type_name, &role_ref);
-                    plays_clauses.push(PlaysClause {
-                        player: player_type_name.clone(),
-                        role_ref,
-                        cardinality,
-                    });
-                }
+                // Inherited role: skip both the `relates` emission and the `plays`
+                // clause — the declaring parent's descriptor handles both.
                 continue;
             }
             if seen_roles.insert(&role.role_name) {
-                if let Some((min, max)) = role.cardinality {
-                    parts.push(format!(
-                        "    relates {} {}",
-                        role.role_name,
-                        card_annotation(min, max)
-                    ));
+                // Emit per canon: relates <name>[<[]>][ as <parent>][ @abstract][ @distinct][ @card(...)].
+                // `[]` attaches directly to the name with no space.
+                let mut clause = if role.ordered {
+                    format!("    relates {}[]", role.role_name)
                 } else {
-                    parts.push(format!("    relates {}", role.role_name));
+                    format!("    relates {}", role.role_name)
+                };
+                if let Some(ref parent_role) = role.overrides {
+                    clause.push_str(&format!(" as {parent_role}"));
                 }
+                if role.is_abstract {
+                    clause.push_str(" @abstract");
+                }
+                if role.distinct {
+                    clause.push_str(" @distinct");
+                }
+                if let Some((min, max)) = role.cardinality {
+                    clause.push(' ');
+                    clause.push_str(&card_annotation(min, max));
+                }
+                parts.push(clause);
             }
             for player_type_name in &role.player_type_names {
                 let role_ref = format!("{}:{}", relation.type_name, role.role_name);
@@ -198,12 +202,7 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
             if parent_attr_names.contains(attr.attr_name.as_str()) {
                 continue;
             }
-            let flags = attr.flags_string();
-            if flags.is_empty() {
-                parts.push(format!("    owns {}", attr.attr_name));
-            } else {
-                parts.push(format!("    owns {} {}", attr.attr_name, flags));
-            }
+            parts.push(build_owns_clause(attr));
         }
 
         // Build header: relation <name> [@abstract] [sub <parent>]
@@ -243,6 +242,24 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
     }
 
     lines.join("\n")
+}
+
+/// Build one `owns` clause per emission canon.
+///
+/// Canon: `owns <name>[<[]>][ @key|@unique|@distinct|@card(...)]`
+/// `[]` attaches directly to the name (no space) when `is_ordered` is set.
+fn build_owns_clause(attr: &super::info::OwnedAttributeEntry) -> String {
+    let name_token = if attr.is_ordered {
+        format!("{}[]", attr.attr_name)
+    } else {
+        attr.attr_name.clone()
+    };
+    let flags = attr.flags_string();
+    if flags.is_empty() {
+        format!("    owns {name_token}")
+    } else {
+        format!("    owns {name_token} {flags}")
+    }
 }
 
 fn typedb_value_type(value_type: &ValueType) -> &'static str {
@@ -474,6 +491,7 @@ mod tests {
                     attr_name: "name".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -498,11 +516,13 @@ mod tests {
                         attr_name: "name".into(),
                         value_type: ValueType::String,
                         annotations: vec![Annotation::Key],
+                        is_ordered: false,
                     },
                     OwnedAttributeEntry {
                         attr_name: "age".into(),
                         value_type: ValueType::Long,
                         annotations: vec![],
+                        is_ordered: false,
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
@@ -527,17 +547,20 @@ mod tests {
                     attr_name: "position".into(),
                     value_type: ValueType::String,
                     annotations: vec![],
+                    is_ordered: false,
                 }],
                 roles: vec![
                     RoleEntry {
                         role_name: "employee".into(),
                         player_type_names: vec!["person".into()],
                         cardinality: None,
+                        ..Default::default()
                     },
                     RoleEntry {
                         role_name: "employer".into(),
                         player_type_names: vec!["company".into()],
                         cardinality: None,
+                        ..Default::default()
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
@@ -566,6 +589,7 @@ mod tests {
                     attr_name: "tag".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Card(2, Some(5))],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -588,6 +612,7 @@ mod tests {
                     attr_name: "email".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Unique],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -610,6 +635,7 @@ mod tests {
                     attr_name: "name".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -636,6 +662,7 @@ mod tests {
                     attr_name: "name".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -651,11 +678,13 @@ mod tests {
                         attr_name: "name".into(),
                         value_type: ValueType::String,
                         annotations: vec![Annotation::Key],
+                        is_ordered: false,
                     },
                     OwnedAttributeEntry {
                         attr_name: "breed".into(),
                         value_type: ValueType::String,
                         annotations: vec![],
+                        is_ordered: false,
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
@@ -747,6 +776,7 @@ mod tests {
                     attr_name: "name".into(),
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
+                    is_ordered: false,
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -762,11 +792,13 @@ mod tests {
                         attr_name: "name".into(),
                         value_type: ValueType::String,
                         annotations: vec![Annotation::Key],
+                        is_ordered: false,
                     },
                     OwnedAttributeEntry {
                         attr_name: "breed".into(),
                         value_type: ValueType::String,
                         annotations: vec![],
+                        is_ordered: false,
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
@@ -804,7 +836,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "source".into(),
                     player_type_names: vec!["node".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -841,7 +873,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "employee".into(),
                     player_type_names: vec!["person".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -900,12 +932,12 @@ mod tests {
                     RoleEntry {
                         role_name: "friend".into(),
                         player_type_names: vec!["person".into()],
-                        cardinality: None,
+                        ..Default::default()
                     },
                     RoleEntry {
                         role_name: "friend".into(),
                         player_type_names: vec!["person".into()],
-                        cardinality: None,
+                        ..Default::default()
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
@@ -937,11 +969,13 @@ mod tests {
                         role_name: "definition".into(),
                         player_type_names: vec![],
                         cardinality: None,
+                        ..Default::default()
                     },
                     RoleDescriptor {
                         role_name: "actor".into(),
                         player_type_names: vec!["player".into()],
                         cardinality: None,
+                        ..Default::default()
                     },
                 ],
             }),
@@ -975,11 +1009,13 @@ mod tests {
                         role_name: "definition".into(),
                         player_type_names: vec![],
                         cardinality: None,
+                        ..Default::default()
                     },
                     RoleDescriptor {
                         role_name: "actor".into(),
                         player_type_names: vec!["player".into()],
                         cardinality: None,
+                        ..Default::default()
                     },
                 ],
             }),
@@ -1023,7 +1059,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "role".into(),
                     player_type_names: vec!["player".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1061,7 +1097,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "employee".into(),
                     player_type_names: vec!["person".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1105,6 +1141,7 @@ mod tests {
                     role_name: "employee".into(),
                     player_type_names: vec!["person".into()],
                     cardinality: Some((1, Some(1))),
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1138,7 +1175,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "role".into(),
                     player_type_names: vec!["b".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1189,7 +1226,7 @@ mod tests {
                 roles: vec![RoleEntry {
                     role_name: "slot".into(),
                     player_type_names: vec!["thing".into()],
-                    cardinality: None,
+                    ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
             },
@@ -1231,12 +1268,12 @@ mod tests {
                     RoleEntry {
                         role_name: "friend".into(),
                         player_type_names: vec!["person".into()],
-                        cardinality: None,
+                        ..Default::default()
                     },
                     RoleEntry {
                         role_name: "friend".into(),
                         player_type_names: vec!["person".into()],
-                        cardinality: None,
+                        ..Default::default()
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
@@ -1251,5 +1288,565 @@ mod tests {
             count, 1,
             "annotated plays line must dedupe to one:\n{result}"
         );
+    }
+
+    /// Serde backward-compatibility: a role entry without the new keys
+    /// deserializes correctly (defaults take over), and the round-tripped
+    /// serialized form includes both `overrides` and `is_abstract`.
+    #[test]
+    fn role_descriptor_serde_defaults_on_missing_keys() {
+        // Old-format role JSON without `overrides` or `is_abstract`.
+        let json = r#"{
+            "role_name": "participant",
+            "player_type_names": ["person"],
+            "cardinality": null
+        }"#;
+        let role: RoleDescriptor = serde_json::from_str(json).expect("deserialize failed");
+        assert_eq!(role.role_name, "participant");
+        assert!(role.overrides.is_none());
+        assert!(!role.is_abstract);
+
+        // Serialized form must include the new keys.
+        let serialized = serde_json::to_string(&role).expect("serialize failed");
+        assert!(
+            serialized.contains("\"overrides\":null"),
+            "serialized role must include overrides: {serialized}"
+        );
+        assert!(
+            serialized.contains("\"is_abstract\":false"),
+            "serialized role must include is_abstract: {serialized}"
+        );
+    }
+
+    /// Specializing role emits `relates author as contributor`.
+    #[test]
+    fn specializing_role_emits_as_clause() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "contribution".into(),
+            RelationSchemaEntry {
+                type_name: "contribution".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "contributor".into(),
+                    player_type_names: vec!["person".into()],
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        info.relations.insert(
+            "authoring".into(),
+            RelationSchemaEntry {
+                type_name: "authoring".into(),
+                is_abstract: false,
+                parent_type: Some("contribution".into()),
+                owned_attributes: vec![],
+                roles: vec![
+                    // Inherited role (will be skipped by the generator)
+                    RoleEntry {
+                        role_name: "contributor".into(),
+                        player_type_names: vec!["person".into()],
+                        ..Default::default()
+                    },
+                    // Own specializing role
+                    RoleEntry {
+                        role_name: "author".into(),
+                        player_type_names: vec!["author-entity".into()],
+                        overrides: Some("contributor".into()),
+                        ..Default::default()
+                    },
+                ],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("relates author as contributor"),
+            "specializing role must emit 'as contributor': {result}"
+        );
+        // Inherited role must not be re-emitted on the child.
+        let authoring_section = result
+            .lines()
+            .skip_while(|l| !l.contains("relation authoring"))
+            .take_while(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !authoring_section.contains("relates contributor"),
+            "inherited role must not be re-emitted: {authoring_section}"
+        );
+    }
+
+    /// Abstract own role emits `relates participant @abstract`.
+    #[test]
+    fn abstract_role_emits_abstract_annotation() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "presence".into(),
+            RelationSchemaEntry {
+                type_name: "presence".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "participant".into(),
+                    player_type_names: vec![],
+                    is_abstract: true,
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("relates participant @abstract"),
+            "abstract role must include @abstract annotation: {result}"
+        );
+    }
+
+    /// Combined: `relates worker as assignee @abstract @card(0..1)` matches canon exactly.
+    #[test]
+    fn combined_overrides_abstract_card_role_matches_canon() {
+        let mut info = SchemaInfo::default();
+        // Parent relation declaring the base role.
+        info.relations.insert(
+            "task".into(),
+            RelationSchemaEntry {
+                type_name: "task".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "assignee".into(),
+                    player_type_names: vec![],
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        // Child relation specializing the role.
+        info.relations.insert(
+            "restricted-task".into(),
+            RelationSchemaEntry {
+                type_name: "restricted-task".into(),
+                is_abstract: false,
+                parent_type: Some("task".into()),
+                owned_attributes: vec![],
+                roles: vec![
+                    // Inherited (will be skipped)
+                    RoleEntry {
+                        role_name: "assignee".into(),
+                        player_type_names: vec![],
+                        ..Default::default()
+                    },
+                    // Own specializing + abstract + card
+                    RoleEntry {
+                        role_name: "worker".into(),
+                        player_type_names: vec![],
+                        overrides: Some("assignee".into()),
+                        is_abstract: true,
+                        cardinality: Some((0, Some(1))),
+                        ..Default::default()
+                    },
+                ],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("relates worker as assignee @abstract @card(0..1)"),
+            "combined role must match canon exactly: {result}"
+        );
+    }
+
+    /// Emit→parse round trip: `generate_define_block` output feeds back through the
+    /// core parser and produces the same `overrides`/`is_abstract`/cardinality values.
+    #[test]
+    fn specializing_role_emit_parse_roundtrip() {
+        use crate::schema::info::SchemaInfo;
+
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "base-rel".into(),
+            RelationSchemaEntry {
+                type_name: "base-rel".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "contributor".into(),
+                    player_type_names: vec![],
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        info.relations.insert(
+            "derived-rel".into(),
+            RelationSchemaEntry {
+                type_name: "derived-rel".into(),
+                is_abstract: false,
+                parent_type: Some("base-rel".into()),
+                owned_attributes: vec![],
+                roles: vec![
+                    RoleEntry {
+                        role_name: "contributor".into(),
+                        player_type_names: vec![],
+                        ..Default::default()
+                    },
+                    RoleEntry {
+                        role_name: "author".into(),
+                        player_type_names: vec![],
+                        overrides: Some("contributor".into()),
+                        cardinality: Some((1, Some(1))),
+                        ..Default::default()
+                    },
+                ],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let emitted = generate_define_block(&info);
+        // Parse the emitted block back through the core schema parser.
+        let parsed = SchemaInfo::from_typeql(&emitted).expect("round-trip parse failed");
+
+        let derived = parsed
+            .relations
+            .get("derived-rel")
+            .expect("derived-rel must be present");
+        let author_role = derived
+            .roles
+            .iter()
+            .find(|r| r.role_name == "author")
+            .expect("author role must survive round-trip");
+
+        assert_eq!(
+            author_role.overrides.as_deref(),
+            Some("contributor"),
+            "overrides must survive emit→parse"
+        );
+        assert_eq!(
+            author_role.cardinality,
+            Some((1, Some(1))),
+            "cardinality must survive emit→parse"
+        );
+    }
+
+    /// Ordered `owns name[]` emits the `[]` suffix on the attribute name token.
+    #[test]
+    fn ordered_owns_emits_list_marker() {
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "tag".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![],
+                    is_ordered: true,
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("owns tag[]"),
+            "ordered attr must emit [] marker: {result}"
+        );
+    }
+
+    /// `@distinct` annotation emits correctly on an ordered owns clause.
+    #[test]
+    fn distinct_annotation_emits_on_ordered_owns() {
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "nickname".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Distinct, Annotation::Card(0, Some(3))],
+                    is_ordered: true,
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("owns nickname[] @distinct @card(0..3)"),
+            "ordered distinct attr must match canon exactly: {result}"
+        );
+    }
+
+    /// Ordered `relates member[]` emits the `[]` suffix on the role name token.
+    #[test]
+    fn ordered_role_emits_list_marker() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "feed".into(),
+            RelationSchemaEntry {
+                type_name: "feed".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "member".into(),
+                    player_type_names: vec!["item".into()],
+                    ordered: true,
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("relates member[]"),
+            "ordered role must emit [] marker: {result}"
+        );
+    }
+
+    /// `@distinct` on a role emits after `@abstract` per the emission canon.
+    #[test]
+    fn distinct_role_emits_after_abstract() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "collection".into(),
+            RelationSchemaEntry {
+                type_name: "collection".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "member".into(),
+                    player_type_names: vec![],
+                    is_abstract: true,
+                    distinct: true,
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains("relates member @abstract @distinct"),
+            "distinct role must emit @abstract @distinct in order: {result}"
+        );
+    }
+
+    /// Emit→parse round trip for `owns nickname[] @distinct @card(0..3)`:
+    /// the generated TypeQL parses back to identical IR flags.
+    #[test]
+    fn list_owns_emit_parse_roundtrip() {
+        use crate::schema::info::SchemaInfo;
+
+        let mut info = SchemaInfo::default();
+        info.attributes
+            .insert("nickname".into(), AttributeSchemaEntry::new("nickname", ValueType::String));
+        info.attributes
+            .insert("plain".into(), AttributeSchemaEntry::new("plain", ValueType::String));
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![
+                    OwnedAttributeEntry {
+                        attr_name: "nickname".into(),
+                        value_type: ValueType::String,
+                        annotations: vec![Annotation::Distinct, Annotation::Card(0, Some(3))],
+                        is_ordered: true,
+                    },
+                    OwnedAttributeEntry {
+                        attr_name: "plain".into(),
+                        value_type: ValueType::String,
+                        annotations: vec![],
+                        is_ordered: false,
+                    },
+                ],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let emitted = generate_define_block(&info);
+        let parsed = SchemaInfo::from_typeql(&emitted).expect("list-owns round-trip parse failed");
+
+        let person = parsed.entities.get("person").expect("person entity must survive");
+        let nick = person
+            .owned_attributes
+            .iter()
+            .find(|a| a.attr_name == "nickname")
+            .expect("nickname must survive round-trip");
+        let plain = person
+            .owned_attributes
+            .iter()
+            .find(|a| a.attr_name == "plain")
+            .expect("plain must survive round-trip");
+
+        assert!(nick.is_ordered, "nickname must be ordered after round-trip");
+        assert!(
+            nick.annotations.contains(&Annotation::Distinct),
+            "nickname must carry @distinct after round-trip"
+        );
+        assert_eq!(
+            nick.annotations.iter().find(|a| matches!(a, Annotation::Card(..))),
+            Some(&Annotation::Card(0, Some(3))),
+            "nickname must carry @card(0..3) after round-trip"
+        );
+        assert!(!plain.is_ordered, "plain must not be ordered");
+    }
+
+    /// Emit→parse round trip for `relates member[] @distinct`:
+    /// the generated TypeQL parses back to identical IR flags.
+    #[test]
+    fn list_role_emit_parse_roundtrip() {
+        use crate::schema::info::SchemaInfo;
+
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "feed".into(),
+            RelationSchemaEntry {
+                type_name: "feed".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "member".into(),
+                    player_type_names: vec![],
+                    ordered: true,
+                    distinct: true,
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let emitted = generate_define_block(&info);
+        let parsed = SchemaInfo::from_typeql(&emitted).expect("list-role round-trip parse failed");
+
+        let feed = parsed.relations.get("feed").expect("feed relation must survive");
+        let member = feed
+            .roles
+            .iter()
+            .find(|r| r.role_name == "member")
+            .expect("member role must survive round-trip");
+
+        assert!(member.ordered, "member must be ordered after round-trip");
+        assert!(member.distinct, "member must be distinct after round-trip");
+    }
+
+    /// `RoleDescriptor` serde: new fields `ordered` and `distinct` appear in
+    /// serialized form with default values even when absent in source JSON.
+    #[test]
+    fn role_descriptor_serde_includes_ordered_and_distinct() {
+        // Old-format role JSON without the new keys.
+        let json = r#"{
+            "role_name": "participant",
+            "player_type_names": ["person"],
+            "cardinality": null
+        }"#;
+        let role: RoleDescriptor = serde_json::from_str(json).expect("deserialize failed");
+        assert!(!role.ordered, "ordered must default to false");
+        assert!(!role.distinct, "distinct must default to false");
+
+        let serialized = serde_json::to_string(&role).expect("serialize failed");
+        assert!(
+            serialized.contains("\"ordered\":false"),
+            "serialized role must include ordered: {serialized}"
+        );
+        assert!(
+            serialized.contains("\"distinct\":false"),
+            "serialized role must include distinct: {serialized}"
+        );
+    }
+
+    /// `OwnedAttributeDescriptor` serde: new field `is_ordered` appears in
+    /// serialized form with default value even when absent in source JSON.
+    #[test]
+    fn owned_attr_descriptor_serde_includes_is_ordered() {
+        let json = r#"{
+            "field_name": "tag",
+            "attr_name": "tag",
+            "value_type": "string",
+            "annotations": [],
+            "is_optional": false
+        }"#;
+        use crate::descriptor::OwnedAttributeDescriptor;
+        let attr: OwnedAttributeDescriptor =
+            serde_json::from_str(json).expect("deserialize failed");
+        assert!(!attr.is_ordered, "is_ordered must default to false");
+
+        let serialized = serde_json::to_string(&attr).expect("serialize failed");
+        assert!(
+            serialized.contains("\"is_ordered\":false"),
+            "serialized attr descriptor must include is_ordered: {serialized}"
+        );
+    }
+
+    /// `SchemaInfo::from_descriptors` carries `ordered`, `distinct`, and
+    /// `is_ordered` from descriptors into IR entries.
+    #[test]
+    fn from_descriptors_carries_list_interface_flags() {
+        use crate::descriptor::{EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor};
+
+        let descriptors = vec![
+            TypeDescriptor::Entity(EntityDescriptor {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![OwnedAttributeDescriptor {
+                    field_name: "tag".into(),
+                    attr_name: "tag".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Distinct],
+                    is_optional: false,
+                    is_ordered: true,
+                }],
+            }),
+            TypeDescriptor::Relation(RelationDescriptor {
+                type_name: "feed".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleDescriptor {
+                    role_name: "member".into(),
+                    player_type_names: vec!["person".into()],
+                    ordered: true,
+                    distinct: true,
+                    ..Default::default()
+                }],
+            }),
+        ];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+
+        let person = info.entities.get("person").expect("person must be present");
+        let tag = &person.owned_attributes[0];
+        assert!(tag.is_ordered, "tag must be ordered in IR");
+        assert!(
+            tag.annotations.contains(&Annotation::Distinct),
+            "tag must carry @distinct in IR"
+        );
+
+        let feed = info.relations.get("feed").expect("feed must be present");
+        let member = &feed.roles[0];
+        assert!(member.ordered, "member role must be ordered in IR");
+        assert!(member.distinct, "member role must be distinct in IR");
     }
 }

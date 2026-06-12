@@ -25,7 +25,9 @@
     "unique",
     "optional",
     "inherited",
-    "multi-value"
+    "multi-value",
+    "relation-subtype",
+    "role-specialization"
   ],
   "required_schema_labels": [
     "parity-party",
@@ -34,6 +36,8 @@
     "parity-email-message",
     "parity-membership",
     "parity-token-origin",
+    "parity-contribution",
+    "parity-authoring",
     "parity-id",
     "parity-email",
     "parity-tag",
