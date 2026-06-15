@@ -1,0 +1,12 @@
+[attributes.customer-name]
+value = "string"
+
+[attributes.email]
+value = "string"
+regex = "^[^@]+@[^@]+\\.[^@]+$"
+
+[entities.customer]
+owns = [
+    { attribute = "customer-name", key = true },
+    { attribute = "email", card = "0..1" },
+]

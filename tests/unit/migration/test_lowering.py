@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 # pyright: reportMissingImports=false
+import importlib
+import sys
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
-from type_bridge import Card, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
+from type_bridge import (
+    Card,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    Relation,
+    Role,
+    String,
+    TypeFlags,
+    _rust_runtime,
+)
 from type_bridge.attribute import AttributeFlags
+from type_bridge.generator import generate_models
 from type_bridge.migration import operations as ops
 from type_bridge.migration._lower import (
     _schema_info_for_models,
@@ -17,8 +31,17 @@ from type_bridge.migration._lower import (
     lower_operation,
 )
 from type_bridge.migration.base import Migration
+from type_bridge.migration.generator import MigrationGenerator
 from type_bridge.migration.info import SchemaInfo
+from type_bridge.migration.introspection import (
+    IntrospectedAttribute,
+    IntrospectedEntity,
+    IntrospectedOwnership,
+    IntrospectedSchema,
+)
 from type_bridge.migration.loader import LoadedMigration, MigrationLoader
+from type_bridge.migration.registry import ModelRegistry
+from type_bridge.migration.schema_manager import SchemaManager
 
 
 class LowerName(String):
@@ -142,6 +165,185 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
         "annotations": [{"Card": (0, 1)}],
         "is_ordered": False,
     }
+
+
+def test_generator_renders_typed_operation_source() -> None:
+    generator = MigrationGenerator.__new__(MigrationGenerator)
+
+    rendered = generator._render_operations(
+        [
+            ops.AddAttribute(LowerAge),
+            ops.AddEntity(LowerPerson),
+            ops.AddOwnership(LowerPerson, LowerAge, optional=True),
+            ops.RunTypeQL(
+                forward="define attribute lower-nick, value string;",
+                reverse="undefine attribute lower-nick;",
+            ),
+        ]
+    )
+
+    assert "ops.AddAttribute(LowerAge)" in rendered
+    assert "ops.AddEntity(LowerPerson)" in rendered
+    assert "ops.AddOwnership(LowerPerson, LowerAge, optional=True)" in rendered
+    assert "ops.RunTypeQL(" in rendered
+
+
+def test_generator_sidecar_preserves_typed_operation_specs(tmp_path: Path) -> None:
+    generator = MigrationGenerator.__new__(MigrationGenerator)
+    generator.migrations_dir = tmp_path
+    py_path = tmp_path / "0001_initial.py"
+    py_path.write_text("# generated migration\n")
+
+    generator._write_sidecar(
+        py_path,
+        [
+            ops.AddAttribute(LowerAge),
+            ops.AddEntity(LowerPerson),
+            ops.AddOwnership(LowerPerson, LowerAge, optional=True),
+            ops.RunTypeQL(
+                forward="define attribute lower-nick, value string;",
+                reverse="undefine attribute lower-nick;",
+            ),
+        ],
+        dependencies=[],
+        migration_name="0001_initial",
+    )
+
+    sidecar = _rust_runtime.migration_spec_from_json(py_path.with_suffix(".json").read_text())
+
+    assert [operation["kind"] for operation in sidecar["operations"]] == [
+        "add_attribute",
+        "add_entity",
+        "add_ownership",
+        "run_typeql",
+    ]
+    assert sidecar["operations"][0]["attribute"]["attr_name"] == "lower-age"
+    assert sidecar["operations"][1]["entity"]["type_name"] == "lower-person"
+    assert sidecar["operations"][2]["owner_type"] == "lower-person"
+
+
+def test_bindgen_package_can_render_importable_typed_migration(tmp_path: Path) -> None:
+    schema_path = tmp_path / "schema.toml"
+    schema_path.write_text(
+        """
+[attributes.customer-name]
+value = "string"
+
+[attributes.email]
+value = "string"
+
+[entities.customer]
+owns = [
+    { attribute = "customer-name", key = true },
+    { attribute = "email", card = "0..1" },
+]
+""".lstrip()
+    )
+    package_dir = tmp_path / "generated_models"
+    generate_models(schema_path, package_dir)
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        models = ModelRegistry.discover("generated_models", register=False)
+        package = importlib.import_module("generated_models")
+        email = next(
+            attribute
+            for attribute in package.ATTRIBUTES
+            if attribute.get_attribute_name() == "email"
+        )
+        customer = models[0]
+        generator = MigrationGenerator.__new__(MigrationGenerator)
+        operations = [ops.AddAttribute(email), ops.AddOwnership(customer, email, optional=True)]
+        operations_code = generator._render_operations(operations)
+        imports_code = generator._generate_operations_imports(operations)
+        migrations_dir = tmp_path / "migrations"
+        migrations_dir.mkdir()
+        migration_file = migrations_dir / "0001_add_email.py"
+        migration_file.write_text(
+            generator._render_migration(
+                class_name="AddEmailMigration",
+                dependencies=[],
+                operations_code=operations_code,
+                models_code="",
+                imports_code=imports_code,
+                description="add email",
+            )
+        )
+
+        loaded = MigrationLoader(migrations_dir).discover()[0]
+    finally:
+        sys.path.remove(str(tmp_path))
+        ModelRegistry.clear()
+        for module_name in list(sys.modules):
+            if module_name == "generated_models" or module_name.startswith("generated_models."):
+                del sys.modules[module_name]
+
+    add_attribute = loaded.migration.operations[0]
+    add_ownership = loaded.migration.operations[1]
+    assert isinstance(add_attribute, ops.AddAttribute)
+    assert isinstance(add_ownership, ops.AddOwnership)
+    assert add_attribute.attribute.get_attribute_name() == "email"
+    assert add_ownership.owner.get_type_name() == "customer"
+
+
+def test_bindgen_optional_cardinality_survives_generated_diff(tmp_path: Path) -> None:
+    schema_path = tmp_path / "schema.toml"
+    schema_path.write_text(
+        """
+[attributes.customer-name]
+value = "string"
+
+[attributes.email]
+value = "string"
+
+[entities.customer]
+owns = [
+    { attribute = "customer-name", key = true },
+    { attribute = "email", card = "0..1" },
+]
+""".lstrip()
+    )
+    package_dir = tmp_path / "generated_models"
+    generate_models(schema_path, package_dir)
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        models = ModelRegistry.discover("generated_models", register=False)
+        schema_mgr = SchemaManager(None)  # type: ignore[arg-type]
+        schema_mgr.register(*models)
+        model_info = schema_mgr.collect_schema_info()
+
+        current_schema = IntrospectedSchema(
+            entities={"customer": IntrospectedEntity(name="customer")},
+            attributes={
+                "customer-name": IntrospectedAttribute(
+                    name="customer-name",
+                    value_type="string",
+                )
+            },
+            ownerships=[
+                IntrospectedOwnership(
+                    owner_name="customer",
+                    attribute_name="customer-name",
+                    annotations=["@key"],
+                )
+            ],
+        )
+
+        generator = MigrationGenerator.__new__(MigrationGenerator)
+        operations = generator._introspected_to_operations(current_schema, model_info)
+        add_ownership = next(op for op in operations if isinstance(op, ops.AddOwnership))
+        rendered = generator._render_operations([add_ownership])
+    finally:
+        sys.path.remove(str(tmp_path))
+        ModelRegistry.clear()
+        for module_name in list(sys.modules):
+            if module_name == "generated_models" or module_name.startswith("generated_models."):
+                del sys.modules[module_name]
+
+    assert add_ownership.attribute.get_attribute_name() == "email"
+    assert add_ownership.optional is True
+    assert "ops.AddOwnership(Customer, Email, optional=True)" in rendered
 
 
 def test_model_based_migration_lowers_to_define_schema() -> None:

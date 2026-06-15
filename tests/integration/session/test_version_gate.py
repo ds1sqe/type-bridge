@@ -27,8 +27,8 @@ class TestVersionGateLivePositive:
 
     def test_connect_passes_version_gate(self, clean_db: Database):
         """Database.connect() succeeds against the live server — gate green."""
-        # clean_db fixture already called connect(); assert driver is up
-        assert clean_db._driver is not None
+        # clean_db fixture already called connect(); assert Rust handle is up.
+        assert getattr(clean_db, "_rust_backend_database", None) is not None
 
     def test_connect_minimal_round_trip(self, clean_db: Database):
         """Gate passes and a trivial schema query returns a non-error response."""
@@ -70,14 +70,16 @@ class TestServerVersionLive:
             f"server_version did not return a semver-like string: {result!r}"
         )
 
-    def test_server_version_matches_gate_accepted_range(self):
-        """server_version result is within the supported window."""
+    def test_server_version_matches_runtime_accepted_range(self):
+        """server_version result is accepted by the embedded Rust runtime."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         sv = _tdm.server_version(TEST_DB_ADDRESS)
-        dv = _tdm.driver_version()
-        # ensure_supported must not raise — if it does the test failure is descriptive
-        version.ensure_supported(dv, sv)
+        # TypeBridge's default backend uses embedded Rust drivers, not the
+        # optional Python typedb-driver package.  The installed Python driver
+        # may target a different protocol band from the live test server.
+        version.ensure_runtime_supported(sv)
+        assert version.band(sv) in _tdm.embedded_driver_versions()
 
 
 # ---------------------------------------------------------------------------
@@ -101,11 +103,11 @@ def _mismatched_driver_version(server: str) -> str:
 @pytest.mark.integration
 @pytest.mark.order(412)
 class TestVersionGateLiveNegative:
-    """Gate fires before driver construction when the detector is monkeypatched."""
+    """Python driver gate fires before driver construction when monkeypatched."""
 
     def test_cross_band_raises_before_driver_constructed(self, monkeypatch: pytest.MonkeyPatch):
         """Monkeypatching driver_version to the opposite band of the live server
-        causes connect() to raise UnsupportedVersionError before TypeDB.driver is
+        causes direct driver access to raise UnsupportedVersionError before TypeDB.driver is
         called."""
         import type_bridge.session as session_mod
         from tests.integration.conftest import TEST_DB_ADDRESS
@@ -131,7 +133,7 @@ class TestVersionGateLiveNegative:
 
         db = Database(address=TEST_DB_ADDRESS, database="test_gate_negative")
         with pytest.raises(version.UnsupportedVersionError):
-            db.connect()
+            _ = db.driver
 
         assert driver_called == [], "TypeDB.driver should not have been called"
 
@@ -147,7 +149,7 @@ class TestVersionGateLiveNegative:
 
         db = Database(address=TEST_DB_ADDRESS, database="test_gate_message")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
-            db.connect()
+            _ = db.driver
 
         msg = str(exc_info.value)
         driver_line = mismatched.rsplit(".", 1)[0]
@@ -167,7 +169,7 @@ class TestVersionGateLiveNegative:
 class TestVersionGateExplicitHttpPort:
     """Database constructed with explicit http_port=8000 connects and round-trips cleanly."""
 
-    def test_database_gate_explicit_default_http_port(self, typedb_driver, test_database):
+    def test_database_gate_explicit_default_http_port(self, test_database):
         """Explicit http_port=8000 is accepted by the gate and a live connection succeeds."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
@@ -177,7 +179,7 @@ class TestVersionGateExplicitHttpPort:
             http_port=8000,
         )
         db.connect()
-        assert db._driver is not None
+        assert getattr(db, "_rust_backend_database", None) is not None
         db.close()
 
 
@@ -235,5 +237,5 @@ class TestGateNonDefaultHttpPort:
             http_port=int(os.environ["TYPEDB_PROOF_HTTP_PORT"]),
         )
         db.connect()
-        assert db._driver is not None
+        assert getattr(db, "_rust_backend_database", None) is not None
         db.close()

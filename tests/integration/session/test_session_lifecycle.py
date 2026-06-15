@@ -35,34 +35,34 @@ class SessionTestPerson(Entity):
 class TestDatabaseLifecycle:
     """Tests for Database connection lifecycle."""
 
-    def test_connect_creates_driver(self, clean_db):
-        """connect() should create a driver instance."""
+    def test_connect_creates_rust_handle(self, clean_db):
+        """connect() should create a Rust database handle."""
         # clean_db is already connected
-        assert clean_db._driver is not None
+        assert getattr(clean_db, "_rust_backend_database", None) is not None
 
-    def test_close_destroys_driver(self, typedb_driver, test_database):
-        """close() should destroy the driver instance."""
+    def test_close_destroys_rust_handle(self, test_database):
+        """close() should clear the Rust database handle."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         db = Database(address=TEST_DB_ADDRESS, database=test_database)
         db.connect()
-        assert db._driver is not None
+        assert getattr(db, "_rust_backend_database", None) is not None
         db.close()
-        assert db._driver is None
+        assert getattr(db, "_rust_backend_database", None) is None
 
     def test_context_manager_connect_close(self, test_database):
         """Database as context manager should connect and close."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         with Database(address=TEST_DB_ADDRESS, database=test_database) as db:
-            assert db._driver is not None
-        assert db._driver is None
+            assert getattr(db, "_rust_backend_database", None) is not None
+        assert getattr(db, "_rust_backend_database", None) is None
 
     def test_database_exists_true(self, clean_db, test_database):
         """database_exists() should return True for existing database."""
         assert clean_db.database_exists() is True
 
-    def test_database_exists_false(self, typedb_driver):
+    def test_database_exists_false(self):
         """database_exists() should return False for non-existing database."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
@@ -79,69 +79,62 @@ class TestDatabaseLifecycle:
 class TestDatabaseOperations:
     """Tests for database creation and deletion."""
 
-    def test_create_database_when_not_exists(self, typedb_driver):
+    def test_create_database_when_not_exists(self):
         """create_database() should create a new database."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         db_name = "test_create_new_db"
 
-        # Ensure database doesn't exist
-        if typedb_driver.databases.contains(db_name):
-            typedb_driver.databases.get(db_name).delete()
-
         db = Database(address=TEST_DB_ADDRESS, database=db_name)
         db.connect()
         try:
+            if db.database_exists():
+                db.delete_database()
             db.create_database()
-            assert typedb_driver.databases.contains(db_name) is True
+            assert db.database_exists() is True
         finally:
+            if db.database_exists():
+                db.delete_database()
             db.close()
-            # Cleanup
-            if typedb_driver.databases.contains(db_name):
-                typedb_driver.databases.get(db_name).delete()
 
-    def test_create_database_idempotent(self, clean_db, test_database, typedb_driver):
+    def test_create_database_idempotent(self, clean_db, test_database):
         """create_database() should be idempotent (not error on existing)."""
         # Database already exists from clean_db fixture
-        assert typedb_driver.databases.contains(test_database) is True
+        assert clean_db.database_exists() is True
         # Should not raise
         clean_db.create_database()
-        assert typedb_driver.databases.contains(test_database) is True
+        assert clean_db.database_exists() is True
 
-    def test_delete_database_when_exists(self, typedb_driver):
+    def test_delete_database_when_exists(self):
         """delete_database() should delete an existing database."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         db_name = "test_delete_db"
 
-        # Create database first
-        if not typedb_driver.databases.contains(db_name):
-            typedb_driver.databases.create(db_name)
-
         db = Database(address=TEST_DB_ADDRESS, database=db_name)
         db.connect()
         try:
+            db.create_database()
+            assert db.database_exists() is True
             db.delete_database()
-            assert typedb_driver.databases.contains(db_name) is False
+            assert db.database_exists() is False
         finally:
             db.close()
 
-    def test_delete_database_idempotent(self, typedb_driver):
+    def test_delete_database_idempotent(self):
         """delete_database() should be idempotent (not error on non-existing)."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         db_name = "test_delete_nonexistent"
 
-        # Ensure database doesn't exist
-        if typedb_driver.databases.contains(db_name):
-            typedb_driver.databases.get(db_name).delete()
-
         db = Database(address=TEST_DB_ADDRESS, database=db_name)
         db.connect()
         try:
+            if db.database_exists():
+                db.delete_database()
             # Should not raise
             db.delete_database()
-            assert typedb_driver.databases.contains(db_name) is False
+            assert db.database_exists() is False
         finally:
             db.close()
 

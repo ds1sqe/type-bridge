@@ -95,8 +95,8 @@ def test_mixed_migration_lowers_to_execution_steps() -> None:
     ]
 
 
-def test_non_reversible_migration_drops_reverses() -> None:
-    """A migration flagged non-reversible carries None reverses on every step."""
+def test_non_reversible_migration_keeps_flag_for_rust_planner() -> None:
+    """A non-reversible migration preserves authored ops and carries the outer flag."""
 
     class IrreversibleMigration(Migration):
         reversible: ClassVar[bool] = False
@@ -111,10 +111,13 @@ def test_non_reversible_migration_drops_reverses() -> None:
         [_loaded(IrreversibleMigration(), "planner", "0001_note", "csum")]
     )
 
-    step = graph["migrations"][0]["operations"][0]
+    migration = graph["migrations"][0]
+    step = migration["operations"][0]
+
+    assert migration["reversible"] is False
     assert step["kind"] == "run_typeql"
     assert step["forward"] == "define attribute planner-note, value string;"
-    assert step["reverse"] is None
+    assert step["reverse"] == "undefine attribute planner-note;"
 
 
 # ── migrate() ↔ state-record coupling (oracle risk 2) ────────────────────────
@@ -355,3 +358,30 @@ def test_sqlmigrate_preview_equals_lowered_forward(monkeypatch: pytest.MonkeyPat
     # Reverse preview joins reverses in reverse step order.
     reverse = executor.sqlmigrate("0001_preview", reverse=True)
     assert reverse == "undefine attribute planner-y;\n\nundefine attribute planner-x;"
+
+
+def test_sqlmigrate_preview_uses_rust_planner_for_typed_ops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Typed OperationSpec previews are lowered by Rust, not Python to_typeql()."""
+
+    class PreviewTypedMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [
+            ops.AddAttribute(PlannerName),
+            ops.AddEntity(PlannerPerson),
+        ]
+
+    loaded = _loaded(PreviewTypedMigration(), "planner", "0001_typed", "csum")
+
+    dummy_db: Any = object()
+    executor = MigrationExecutor(db=dummy_db, migrations_dir=Path("migrations"))
+    monkeypatch.setattr(executor.loader, "get_by_name", lambda name: loaded)
+
+    forward = executor.sqlmigrate("0001_typed")
+
+    assert "attribute planner-name, value string;" in forward
+    assert "entity planner-person," in forward
+    assert "owns planner-name @key;" in forward
+
+    reverse = executor.sqlmigrate("0001_typed", reverse=True)
+    assert reverse == "undefine\nentity planner-person;\n\nundefine\nattribute planner-name;"

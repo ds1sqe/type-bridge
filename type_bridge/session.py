@@ -197,58 +197,63 @@ class Database:
         self._owns_driver: bool = driver is None  # Track ownership
 
     def connect(self) -> None:
-        """Connect to TypeDB server.
+        """Connect to TypeDB server through the Rust runtime.
 
         If a driver was injected via __init__, this method does nothing
-        (the driver is already connected). Otherwise, creates a new driver.
+        (the driver is already connected). Otherwise, initializes the cached
+        Rust database handle. Direct access to the external Python TypeDB
+        driver remains available through the ``driver`` property.
         """
-        if self._driver is None:
-            logger.debug(f"Connecting to TypeDB at {self.address} (database: {self.database_name})")
-            # Create credentials if username/password provided
-            credentials = (
-                Credentials(self.username, self.password)
-                if self.username and self.password
-                else None
-            )
+        if self._driver is not None:
+            return
 
-            # TLS flag is needed by both the version probe and driver-options construction.
-            is_tls_enabled = self.address.startswith("https://")
-            logger.debug(f"TLS enabled: {is_tls_enabled}")
+        logger.debug(f"Connecting to TypeDB at {self.address} (database: {self.database_name})")
+        from type_bridge._backend import selected_backend
+        from type_bridge._rust_runtime import rust_database_for
 
-            # Version gate — probe versions and fail before any driver construction.
-            # Two checks: the installed Python driver must match the server's
-            # protocol band, and the server must fall within the window the
-            # embedded Rust runtime serves (band-set membership — the default
-            # build embeds drivers for the whole window). UnsupportedVersionError
-            # (and core VersionError from an unreachable probe) propagate
-            # uncaught — fail-closed.
-            detected_driver = typedb_driver.driver_version()
-            detected_server = typedb_driver.server_version(
-                self.address, http_port=self.http_port, tls=is_tls_enabled
-            )
-            version.ensure_supported(detected_driver, detected_server)
-            version.ensure_runtime_supported(detected_server)
-            logger.debug(f"Version gate passed: driver={detected_driver}, server={detected_server}")
+        selected_backend()
+        rust_database_for(self)
+        logger.info(f"Connected to TypeDB at {self.address}")
 
-            # Create driver options (band-keyed dispatch on the installed driver)
-            driver_options = create_driver_options(is_tls_enabled=is_tls_enabled)
+    def _connect_python_driver(self) -> None:
+        """Connect using the external Python TypeDB driver for direct driver access."""
+        if self._driver is not None:
+            return
 
-            # Connect to TypeDB
-            try:
-                if credentials:
-                    logger.debug("Using provided credentials for authentication")
-                    self._driver = TypeDB.driver(self.address, credentials, driver_options)
-                else:
-                    # For local TypeDB Core without authentication
-                    logger.debug("Using default credentials for local connection")
-                    self._driver = TypeDB.driver(
-                        self.address, Credentials("admin", "password"), driver_options
-                    )
-                self._owns_driver = True
-                logger.info(f"Connected to TypeDB at {self.address}")
-            except Exception as e:
-                logger.error(f"Failed to connect to TypeDB at {self.address}: {e}")
-                raise
+        logger.debug(
+            f"Connecting Python TypeDB driver at {self.address} (database: {self.database_name})"
+        )
+        credentials = (
+            Credentials(self.username, self.password) if self.username and self.password else None
+        )
+
+        is_tls_enabled = self.address.startswith("https://")
+        logger.debug(f"TLS enabled: {is_tls_enabled}")
+
+        detected_driver = typedb_driver.driver_version()
+        detected_server = typedb_driver.server_version(
+            self.address, http_port=self.http_port, tls=is_tls_enabled
+        )
+        version.ensure_supported(detected_driver, detected_server)
+        version.ensure_runtime_supported(detected_server)
+        logger.debug(f"Version gate passed: driver={detected_driver}, server={detected_server}")
+
+        driver_options = create_driver_options(is_tls_enabled=is_tls_enabled)
+
+        try:
+            if credentials:
+                logger.debug("Using provided credentials for authentication")
+                self._driver = TypeDB.driver(self.address, credentials, driver_options)
+            else:
+                logger.debug("Using default credentials for local connection")
+                self._driver = TypeDB.driver(
+                    self.address, Credentials("admin", "password"), driver_options
+                )
+            self._owns_driver = True
+            logger.info(f"Connected Python TypeDB driver at {self.address}")
+        except Exception as e:
+            logger.error(f"Failed to connect Python TypeDB driver at {self.address}: {e}")
+            raise
 
     def close(self) -> None:
         """Close connection to TypeDB server.
@@ -265,6 +270,8 @@ class Database:
             else:
                 logger.debug("Clearing driver reference (external driver, not closing)")
             self._driver = None
+        if hasattr(self, "_rust_backend_database"):
+            delattr(self, "_rust_backend_database")
 
     def __enter__(self) -> Database:
         """Context manager entry."""
@@ -295,31 +302,60 @@ class Database:
     def driver(self) -> Driver:
         """Get the TypeDB driver, connecting if necessary."""
         if self._driver is None:
-            self.connect()
+            self._connect_python_driver()
         assert self._driver is not None, "Driver should be initialized after connect()"
         return self._driver
 
     def create_database(self) -> None:
         """Create the database if it doesn't exist."""
-        if not self.driver.databases.contains(self.database_name):
+        if self._driver is not None:
+            if not self.driver.databases.contains(self.database_name):
+                logger.debug(f"Creating database: {self.database_name}")
+                self.driver.databases.create(self.database_name)
+                logger.info(f"Database created: {self.database_name}")
+            else:
+                logger.debug(f"Database already exists: {self.database_name}")
+            return
+
+        from type_bridge._rust_runtime import rust_database_for
+
+        rust_db = rust_database_for(self)
+        if not rust_db.database_exists():
             logger.debug(f"Creating database: {self.database_name}")
-            self.driver.databases.create(self.database_name)
+            rust_db.create_database()
             logger.info(f"Database created: {self.database_name}")
         else:
             logger.debug(f"Database already exists: {self.database_name}")
 
     def delete_database(self) -> None:
         """Delete the database."""
-        if self.driver.databases.contains(self.database_name):
+        if self._driver is not None:
+            if self.driver.databases.contains(self.database_name):
+                logger.debug(f"Deleting database: {self.database_name}")
+                self.driver.databases.get(self.database_name).delete()
+                logger.info(f"Database deleted: {self.database_name}")
+            else:
+                logger.debug(f"Database does not exist, skipping delete: {self.database_name}")
+            return
+
+        from type_bridge._rust_runtime import rust_database_for
+
+        rust_db = rust_database_for(self)
+        if rust_db.database_exists():
             logger.debug(f"Deleting database: {self.database_name}")
-            self.driver.databases.get(self.database_name).delete()
+            rust_db.delete_database()
             logger.info(f"Database deleted: {self.database_name}")
         else:
             logger.debug(f"Database does not exist, skipping delete: {self.database_name}")
 
     def database_exists(self) -> bool:
         """Check if database exists."""
-        exists = self.driver.databases.contains(self.database_name)
+        if self._driver is not None:
+            exists = self.driver.databases.contains(self.database_name)
+        else:
+            from type_bridge._rust_runtime import rust_database_for
+
+            exists = rust_database_for(self).database_exists()
         logger.debug(f"Database exists check for '{self.database_name}': {exists}")
         return exists
 
@@ -380,8 +416,13 @@ class Database:
     def get_schema(self) -> str:
         """Get the schema definition for this database."""
         logger.debug(f"Fetching schema for database: {self.database_name}")
-        db = self.driver.databases.get(self.database_name)
-        schema = db.schema()
+        if self._driver is not None:
+            db = self.driver.databases.get(self.database_name)
+            schema = db.schema()
+        else:
+            from type_bridge._rust_runtime import schema_text
+
+            schema = schema_text(self)
         logger.debug(f"Schema fetched ({len(schema)} chars)")
         return schema
 

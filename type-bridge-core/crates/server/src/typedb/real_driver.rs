@@ -135,15 +135,18 @@ async fn gated_driver(config: &TypeDBSection) -> Result<DriverHandle, PipelineEr
         // DriverOptions::new(tls_enabled, ca_path).  TLS is disabled.
         let opts = B7DriverOptions::new(false, None)
             .map_err(|e| PipelineError::Connection(format!("Band-7 driver options error: {e}")))?;
-        let driver =
-            B7Driver::new(&config.address, B7Credentials::new(&config.username, &config.password), opts)
-                .await
-                .map_err(|e| {
-                    PipelineError::Connection(format!(
-                        "Failed to connect to TypeDB at {}: {e}",
-                        config.address
-                    ))
-                })?;
+        let driver = B7Driver::new(
+            &config.address,
+            B7Credentials::new(&config.username, &config.password),
+            opts,
+        )
+        .await
+        .map_err(|e| {
+            PipelineError::Connection(format!(
+                "Failed to connect to TypeDB at {}: {e}",
+                config.address
+            ))
+        })?;
         return Ok(DriverHandle::B7(driver));
     }
 
@@ -211,12 +214,9 @@ impl DriverBackend for RealTypeDBBackend {
                         TransactionType::Write => B7TransactionType::Write,
                         TransactionType::Schema => B7TransactionType::Schema,
                     };
-                    let transaction = d
-                        .transaction(&db, typedb_tx_type)
-                        .await
-                        .map_err(|e| {
-                            PipelineError::QueryExecution(format!("Failed to open transaction: {e}"))
-                        })?;
+                    let transaction = d.transaction(&db, typedb_tx_type).await.map_err(|e| {
+                        PipelineError::QueryExecution(format!("Failed to open transaction: {e}"))
+                    })?;
                     Ok(Box::new(RealTransaction {
                         inner: RealTransactionInner::B7(Some(transaction)),
                     }) as Box<dyn TransactionOps>)
@@ -228,12 +228,9 @@ impl DriverBackend for RealTypeDBBackend {
                         TransactionType::Write => B8TransactionType::Write,
                         TransactionType::Schema => B8TransactionType::Schema,
                     };
-                    let transaction = d
-                        .transaction(&db, typedb_tx_type)
-                        .await
-                        .map_err(|e| {
-                            PipelineError::QueryExecution(format!("Failed to open transaction: {e}"))
-                        })?;
+                    let transaction = d.transaction(&db, typedb_tx_type).await.map_err(|e| {
+                        PipelineError::QueryExecution(format!("Failed to open transaction: {e}"))
+                    })?;
                     Ok(Box::new(RealTransaction {
                         inner: RealTransactionInner::B8(Some(transaction)),
                     }) as Box<dyn TransactionOps>)
@@ -285,10 +282,9 @@ impl TransactionOps for RealTransaction {
                     match answer {
                         B7QueryAnswer::Ok(_) => Ok(QueryResultKind::Ok),
                         B7QueryAnswer::ConceptRowStream(_, stream) => {
-                            let rows: Vec<_> = stream
-                                .try_collect()
-                                .await
-                                .map_err(|e| PipelineError::QueryExecution(format!("Row collect: {e}")))?;
+                            let rows: Vec<_> = stream.try_collect().await.map_err(|e| {
+                                PipelineError::QueryExecution(format!("Row collect: {e}"))
+                            })?;
                             let json_rows = rows
                                 .iter()
                                 .map(|row| {
@@ -308,10 +304,9 @@ impl TransactionOps for RealTransaction {
                             Ok(QueryResultKind::Rows(json_rows))
                         }
                         B7QueryAnswer::ConceptDocumentStream(_, stream) => {
-                            let docs: Vec<_> = stream
-                                .try_collect()
-                                .await
-                                .map_err(|e| PipelineError::QueryExecution(format!("Doc collect: {e}")))?;
+                            let docs: Vec<_> = stream.try_collect().await.map_err(|e| {
+                                PipelineError::QueryExecution(format!("Doc collect: {e}"))
+                            })?;
                             let json_docs = docs
                                 .into_iter()
                                 .map(|doc| {
@@ -328,17 +323,17 @@ impl TransactionOps for RealTransaction {
                     let tx = opt.as_ref().ok_or_else(|| {
                         PipelineError::QueryExecution("Transaction already consumed".into())
                     })?;
-                    let answer = tx
-                        .query(&tql)
-                        .await
-                        .map_err(|e| PipelineError::QueryExecution(format!("Query execution failed: {e}")))?;
+                    let answer = tx.query(&tql).await.map_err(|e| {
+                        PipelineError::QueryExecution(format!("Query execution failed: {e}"))
+                    })?;
                     match answer {
                         B8QueryAnswer::Ok(_) => Ok(QueryResultKind::Ok),
                         B8QueryAnswer::ConceptRowStream(_, stream) => {
-                            let rows: Vec<_> = stream
-                                .try_collect()
-                                .await
-                                .map_err(|e| PipelineError::QueryExecution(format!("Failed to collect rows: {e}")))?;
+                            let rows: Vec<_> = stream.try_collect().await.map_err(|e| {
+                                PipelineError::QueryExecution(format!(
+                                    "Failed to collect rows: {e}"
+                                ))
+                            })?;
                             let json_rows = rows
                                 .iter()
                                 .map(|row| {
@@ -359,10 +354,11 @@ impl TransactionOps for RealTransaction {
                             Ok(QueryResultKind::Rows(json_rows))
                         }
                         B8QueryAnswer::ConceptDocumentStream(_, stream) => {
-                            let docs: Vec<_> = stream
-                                .try_collect()
-                                .await
-                                .map_err(|e| PipelineError::QueryExecution(format!("Failed to collect documents: {e}")))?;
+                            let docs: Vec<_> = stream.try_collect().await.map_err(|e| {
+                                PipelineError::QueryExecution(format!(
+                                    "Failed to collect documents: {e}"
+                                ))
+                            })?;
                             let json_docs = docs
                                 .into_iter()
                                 .map(|doc| {
@@ -389,9 +385,9 @@ impl TransactionOps for RealTransaction {
                     let t = tx.ok_or_else(|| {
                         PipelineError::QueryExecution("Transaction already consumed".into())
                     })?;
-                    t.commit()
-                        .await
-                        .map_err(|e| PipelineError::QueryExecution(format!("Failed to commit transaction: {e}")))
+                    t.commit().await.map_err(|e| {
+                        PipelineError::QueryExecution(format!("Failed to commit transaction: {e}"))
+                    })
                 })
             }
             #[cfg(feature = "band8")]
@@ -401,9 +397,9 @@ impl TransactionOps for RealTransaction {
                     let t = tx.ok_or_else(|| {
                         PipelineError::QueryExecution("Transaction already consumed".into())
                     })?;
-                    t.commit()
-                        .await
-                        .map_err(|e| PipelineError::QueryExecution(format!("Failed to commit transaction: {e}")))
+                    t.commit().await.map_err(|e| {
+                        PipelineError::QueryExecution(format!("Failed to commit transaction: {e}"))
+                    })
                 })
             }
         }

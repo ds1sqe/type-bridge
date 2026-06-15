@@ -1292,10 +1292,9 @@ mod tests {
     // `relates participant @abstract` on an @abstract relation.
     #[test]
     fn test_parse_role_abstract_on_abstract_relation() {
-        let schema = parse_typeql(
-            "define\nrelation interaction @abstract, relates participant @abstract;",
-        )
-        .unwrap();
+        let schema =
+            parse_typeql("define\nrelation interaction @abstract, relates participant @abstract;")
+                .unwrap();
         let role = &schema.relations.get("interaction").unwrap().roles[0];
         assert!(role.is_abstract, "role should be abstract");
         assert_eq!(role.name, "participant");
@@ -1313,7 +1312,10 @@ mod tests {
         assert!(role.is_abstract, "role should be abstract");
         assert_eq!(
             role.cardinality,
-            Some(Cardinality { min: 0, max: Some(1) })
+            Some(Cardinality {
+                min: 0,
+                max: Some(1)
+            })
         );
     }
 
@@ -1326,7 +1328,10 @@ mod tests {
         assert!(role.is_abstract, "role should be abstract");
         assert_eq!(
             role.cardinality,
-            Some(Cardinality { min: 0, max: Some(2) })
+            Some(Cardinality {
+                min: 0,
+                max: Some(2)
+            })
         );
     }
 
@@ -1349,7 +1354,10 @@ mod tests {
             "ordered": false
         }"#;
         let role: RoleSpec = serde_json::from_str(json).unwrap();
-        assert!(!role.is_abstract, "missing is_abstract field should default to false");
+        assert!(
+            !role.is_abstract,
+            "missing is_abstract field should default to false"
+        );
     }
 
     // --- owns [] (ordered ownership) annotation tests ---
@@ -1357,9 +1365,10 @@ mod tests {
     // `owns nickname[]` — ordered true, distinct false.
     #[test]
     fn test_parse_owns_ordered_no_distinct() {
-        let schema =
-            parse_typeql("define\nentity person, owns nickname[];\nattribute nickname, value string;")
-                .unwrap();
+        let schema = parse_typeql(
+            "define\nentity person, owns nickname[];\nattribute nickname, value string;",
+        )
+        .unwrap();
         let own = &schema.entities.get("person").unwrap().owns[0];
         assert!(own.ordered, "ownership should be marked ordered");
         assert!(!own.distinct, "ownership should not be marked distinct");
@@ -1387,7 +1396,13 @@ mod tests {
         let own = &schema.entities.get("person").unwrap().owns[0];
         assert!(own.ordered);
         assert!(own.distinct);
-        assert_eq!(own.cardinality, Some(Cardinality { min: 0, max: Some(5) }));
+        assert_eq!(
+            own.cardinality,
+            Some(Cardinality {
+                min: 0,
+                max: Some(5)
+            })
+        );
     }
 
     // `owns nickname[] @distinct @card(0..5)` — reversed annotation order.
@@ -1400,16 +1415,21 @@ mod tests {
         let own = &schema.entities.get("person").unwrap().owns[0];
         assert!(own.ordered);
         assert!(own.distinct);
-        assert_eq!(own.cardinality, Some(Cardinality { min: 0, max: Some(5) }));
+        assert_eq!(
+            own.cardinality,
+            Some(Cardinality {
+                min: 0,
+                max: Some(5)
+            })
+        );
     }
 
     // `owns pid[] @key` — ordered plus is_key.
     #[test]
     fn test_parse_owns_ordered_key() {
-        let schema = parse_typeql(
-            "define\nentity person, owns pid[] @key;\nattribute pid, value string;",
-        )
-        .unwrap();
+        let schema =
+            parse_typeql("define\nentity person, owns pid[] @key;\nattribute pid, value string;")
+                .unwrap();
         let own = &schema.entities.get("person").unwrap().owns[0];
         assert!(own.ordered, "ownership should be marked ordered");
         assert!(own.is_key, "ownership should be a key");
@@ -1458,8 +1478,14 @@ mod tests {
             "cardinality": null
         }"#;
         let own: OwnedAttribute = serde_json::from_str(json).unwrap();
-        assert!(!own.ordered, "missing ordered field should default to false");
-        assert!(!own.distinct, "missing distinct field should default to false");
+        assert!(
+            !own.ordered,
+            "missing ordered field should default to false"
+        );
+        assert!(
+            !own.distinct,
+            "missing distinct field should default to false"
+        );
     }
 
     #[test]

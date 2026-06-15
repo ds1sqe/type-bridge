@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-migration"
-version = "1.4.5"
+version = "1.5.0"
 edition = "2024"
 description = "Migration IR and planning substrate for type-bridge"
 license.workspace = true
@@ -20,7 +20,7 @@ name = "type-bridge-migration"
 path = "src/bin/type_bridge_migration.rs"
 
 [dependencies]
-type-bridge-orm = { path = "../orm", version = "1.4.5", default-features = false, features = ["band7", "band8"] }
+type-bridge-orm = { path = "../orm", version = "1.5.0", default-features = false, features = ["band7", "band8"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }

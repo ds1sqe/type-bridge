@@ -56,26 +56,35 @@ def typedb_driver(docker_typedb):
 
 
 @pytest.fixture(scope="session")
-def test_database(typedb_driver):
+def test_database(docker_typedb):
     """Create a test database for the session and clean it up after.
 
     Args:
-        typedb_driver: TypeDB driver fixture
+        docker_typedb: Fixture that ensures Docker container is running
 
     Yields:
         Database name (str)
     """
-    # Create database if it doesn't exist
-    if typedb_driver.databases.contains(TEST_DB_NAME):
-        typedb_driver.databases.get(TEST_DB_NAME).delete()
+    database = Database(
+        address=TEST_DB_ADDRESS,
+        database=TEST_DB_NAME,
+        http_port=TEST_DB_HTTP_PORT,
+    )
+    try:
+        database.connect()
 
-    typedb_driver.databases.create(TEST_DB_NAME)
+        if database.database_exists():
+            database.delete_database()
+        database.create_database()
 
-    yield TEST_DB_NAME
+        yield TEST_DB_NAME
 
-    # Cleanup: Delete test database after all tests
-    if typedb_driver.databases.contains(TEST_DB_NAME):
-        typedb_driver.databases.get(TEST_DB_NAME).delete()
+        if database.database_exists():
+            database.delete_database()
+    except Exception as e:
+        pytest.skip(f"TypeDB server not available at {TEST_DB_ADDRESS}: {e}")
+    finally:
+        database.close()
 
 
 @pytest.fixture(scope="function")
@@ -97,7 +106,7 @@ def db(test_database):
 
 
 @pytest.fixture(scope="function")
-def clean_db(typedb_driver, test_database):
+def clean_db(docker_typedb, test_database):
     """Provide a clean database for each test by wiping all data.
 
     This fixture ensures each test starts with an empty database by:
@@ -105,21 +114,19 @@ def clean_db(typedb_driver, test_database):
     2. Recreating it fresh
 
     Args:
-        typedb_driver: TypeDB driver fixture
+        docker_typedb: Fixture that ensures Docker container is running
         test_database: Test database name
 
     Yields:
         Database instance with clean state
     """
-    # Delete and recreate database for clean state
-    if typedb_driver.databases.contains(test_database):
-        typedb_driver.databases.get(test_database).delete()
-    typedb_driver.databases.create(test_database)
-
     database = Database(
         address=TEST_DB_ADDRESS, database=test_database, http_port=TEST_DB_HTTP_PORT
     )
     database.connect()
+    if database.database_exists():
+        database.delete_database()
+    database.create_database()
     yield database
     database.close()
 

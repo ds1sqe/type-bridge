@@ -259,10 +259,7 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
 ///   mapped band that this build did **not** compile in.  Reachable only in a
 ///   non-default single-band build; the default build embeds every band, so an
 ///   in-window server is always served.
-pub fn check_server_supported(
-    server: &Version,
-    embedded_bands: &[u8],
-) -> Result<(), VersionError> {
+pub fn check_server_supported(server: &Version, embedded_bands: &[u8]) -> Result<(), VersionError> {
     // Window check first — identical class to check_supported's server arm, so
     // below/above-window servers fail with the existing window message.
     if !window_contains(server) {

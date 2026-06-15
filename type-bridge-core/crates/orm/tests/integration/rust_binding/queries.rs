@@ -202,10 +202,7 @@ async fn test_answer_json_shape_band_invariant() {
             p["category"].is_string(),
             "'p.category' must be a string: {p:?}"
         );
-        assert!(
-            p["label"].is_string(),
-            "'p.label' must be a string: {p:?}"
-        );
+        assert!(p["label"].is_string(), "'p.label' must be a string: {p:?}");
         assert!(
             p["iid"].is_string(),
             "'p.iid' must be a string (iid): {p:?}"
@@ -227,10 +224,7 @@ async fn test_answer_json_shape_band_invariant() {
             n["category"].is_string(),
             "'n.category' must be a string: {n:?}"
         );
-        assert!(
-            n["label"].is_string(),
-            "'n.label' must be a string: {n:?}"
-        );
+        assert!(n["label"].is_string(), "'n.label' must be a string: {n:?}");
         assert!(
             n["value"].is_string(),
             "'n.value' must be a JSON string (string attribute): {n:?}"
@@ -247,10 +241,7 @@ async fn test_answer_json_shape_band_invariant() {
             a["category"].is_string(),
             "'a.category' must be a string: {a:?}"
         );
-        assert!(
-            a["label"].is_string(),
-            "'a.label' must be a string: {a:?}"
-        );
+        assert!(a["label"].is_string(), "'a.label' must be a string: {a:?}");
         assert!(
             a["value"].is_number(),
             "'a.value' must be a JSON number (integer attribute): {a:?}"

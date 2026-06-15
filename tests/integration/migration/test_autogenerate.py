@@ -185,10 +185,9 @@ def test_incremental_migration_detects_new_attribute(clean_db, tmp_path: Path):
     assert "0002_add_age.py" in str(path)
 
     content = path.read_text()
-    # Should have RunTypeQL operations for adding attribute and ownership
-    assert "ops.RunTypeQL" in content
-    assert "attribute age" in content  # defines the age attribute
-    assert "person owns age" in content  # adds ownership
+    # Should have typed operations for adding the attribute and ownership.
+    assert "ops.AddAttribute(Age)" in content
+    assert "ops.AddOwnership(PersonV2, Age, optional=True)" in content
 
 
 @pytest.mark.integration
@@ -213,10 +212,7 @@ def test_incremental_migration_detects_new_entity(clean_db, tmp_path: Path):
     # Assert
     assert path is not None
     content = path.read_text()
-    # Should have RunTypeQL for adding entity
-    assert "ops.RunTypeQL" in content
-    # Should reference company
-    assert "company" in content.lower()
+    assert "ops.AddEntity(CompanyV1)" in content
 
 
 @pytest.mark.integration
@@ -241,9 +237,7 @@ def test_incremental_migration_detects_new_relation(clean_db, tmp_path: Path):
     # Assert
     assert path is not None
     content = path.read_text()
-    # Should have RunTypeQL for adding relation
-    assert "ops.RunTypeQL" in content
-    assert "employment" in content.lower()
+    assert "ops.AddRelation(EmploymentV3)" in content
 
 
 @pytest.mark.integration

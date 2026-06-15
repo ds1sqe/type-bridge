@@ -476,6 +476,27 @@ impl PyRustDatabase {
         self.db.is_connected()
     }
 
+    /// Return whether the configured database exists.
+    fn database_exists(&self) -> PyResult<bool> {
+        self.runtime
+            .block_on(self.db.database_exists())
+            .map_err(py_orm_error)
+    }
+
+    /// Create the configured database if it does not already exist.
+    fn create_database(&self) -> PyResult<()> {
+        self.runtime
+            .block_on(self.db.create_database())
+            .map_err(py_orm_error)
+    }
+
+    /// Delete the configured database if it exists.
+    fn delete_database(&self) -> PyResult<()> {
+        self.runtime
+            .block_on(self.db.delete_database())
+            .map_err(py_orm_error)
+    }
+
     /// Export the live TypeDB schema as TypeQL text.
     fn schema_text(&self) -> PyResult<String> {
         self.runtime

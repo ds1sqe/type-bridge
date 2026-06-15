@@ -220,10 +220,8 @@ use type_bridge_orm::ConnectOptions;
 fn connect_options_default_equals_ssot() {
     let opts = ConnectOptions::default();
     assert_eq!(
-        opts.http_port,
-        DEFAULT_HTTP_PORT,
+        opts.http_port, DEFAULT_HTTP_PORT,
         "ConnectOptions::default().http_port must equal DEFAULT_HTTP_PORT ({DEFAULT_HTTP_PORT})"
     );
     assert!(!opts.tls, "ConnectOptions::default().tls must be false");
 }
-

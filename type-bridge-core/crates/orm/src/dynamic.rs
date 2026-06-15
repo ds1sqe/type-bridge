@@ -2034,13 +2034,8 @@ mod tests {
             iid: Some("0xdef".to_string()),
             key: None,
         }];
-        let clauses = relation_fetch_with_role_filters(
-            &descriptor(),
-            vec![],
-            vec![],
-            &role_filters,
-            "$r",
-        );
+        let clauses =
+            relation_fetch_with_role_filters(&descriptor(), vec![], vec![], &role_filters, "$r");
         let query = compile(&clauses);
 
         // Filtering on `participant` (otherwise optional) pulls it into the
@@ -2090,4 +2085,3 @@ mod tests {
         assert!(!query.contains("observer"));
     }
 }
-

@@ -69,6 +69,39 @@ pub trait DriverBackend: Send + Sync {
     /// Check if the underlying connection is still alive.
     fn is_open(&self) -> bool;
 
+    /// Check whether a database exists, when the backend supports database
+    /// lifecycle operations.
+    fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            Err(OrmError::Connection(format!(
+                "Database existence checks are not supported by this backend for database '{database}'"
+            )))
+        })
+    }
+
+    /// Create a database, when the backend supports database lifecycle
+    /// operations.
+    fn create_database(&self, database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            Err(OrmError::Connection(format!(
+                "Database creation is not supported by this backend for database '{database}'"
+            )))
+        })
+    }
+
+    /// Delete a database, when the backend supports database lifecycle
+    /// operations.
+    fn delete_database(&self, database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            Err(OrmError::Connection(format!(
+                "Database deletion is not supported by this backend for database '{database}'"
+            )))
+        })
+    }
+
     /// Export the database schema as TypeQL text, when the backend supports it.
     fn schema_text(&self, database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
         let database = database.to_string();

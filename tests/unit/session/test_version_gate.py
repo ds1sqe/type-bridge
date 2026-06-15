@@ -400,11 +400,11 @@ class TestCreateDriverOptionsBandNone:
 # ---------------------------------------------------------------------------
 
 
-class TestConnectVersionGate:
-    """Database.connect() must call the gate before TypeDB.driver()."""
+class TestPythonDriverVersionGate:
+    """Direct Python driver access must call the gate before TypeDB.driver()."""
 
     def test_gate_passes_on_supported_pair(self, monkeypatch: pytest.MonkeyPatch):
-        """connect() succeeds when driver+server are in-window same-band."""
+        """driver access succeeds when driver+server are in-window same-band."""
         import type_bridge.session as session_mod
         import type_bridge.typedb_driver as tdm
         from type_bridge.session import Database
@@ -425,13 +425,13 @@ class TestConnectVersionGate:
         monkeypatch.setattr(tdm, "DriverOptions", MagicMock())
 
         db = Database(address="localhost:1729", database="test_db")
-        db.connect()
+        _ = db.driver
         mock_typedb.driver.assert_called_once()
 
     def test_gate_fires_before_typedb_driver_on_unsupported_pair(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """connect() raises UnsupportedVersionError and TypeDB.driver is NOT called."""
+        """driver access raises UnsupportedVersionError and TypeDB.driver is NOT called."""
         import type_bridge.session as session_mod
         import type_bridge.typedb_driver as tdm
         from type_bridge.session import Database
@@ -445,7 +445,7 @@ class TestConnectVersionGate:
 
         db = Database(address="localhost:1729", database="test_db")
         with pytest.raises(version.UnsupportedVersionError):
-            db.connect()
+            _ = db.driver
         mock_typedb.driver.assert_not_called()
 
     def test_gate_fires_before_typedb_driver_below_window(self, monkeypatch: pytest.MonkeyPatch):
@@ -464,13 +464,13 @@ class TestConnectVersionGate:
 
         db = Database(address="localhost:1729", database="test_db")
         with pytest.raises(version.UnsupportedVersionError):
-            db.connect()
+            _ = db.driver
         mock_typedb.driver.assert_not_called()
 
     def test_gate_error_message_contains_both_versions_and_install(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """UnsupportedVersionError from connect must name both versions and 'install'."""
+        """UnsupportedVersionError from driver access must name both versions and 'install'."""
         import type_bridge.session as session_mod
         import type_bridge.typedb_driver as tdm
         from type_bridge.session import Database
@@ -483,7 +483,7 @@ class TestConnectVersionGate:
 
         db = Database(address="localhost:1729", database="test_db")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
-            db.connect()
+            _ = db.driver
         msg = str(exc_info.value)
         assert "3.11" in msg
         assert "3.10" in msg
@@ -506,7 +506,7 @@ class TestConnectVersionGate:
 
         db = Database(address="localhost:1729", database="test_db")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
-            db.connect()
+            _ = db.driver
         msg = str(exc_info.value)
         assert "band 7" not in msg
         assert "band 8" not in msg
@@ -514,10 +514,10 @@ class TestConnectVersionGate:
 
 
 class TestConnectHttpPortForwarding:
-    """Database.connect() must forward http_port to both the facade and embedded gates."""
+    """Database paths must forward http_port to their version probes."""
 
-    def test_database_facade_gate_forwards_http_port(self, monkeypatch: pytest.MonkeyPatch):
-        """http_port stored on Database is forwarded to server_version in the facade gate."""
+    def test_python_driver_gate_forwards_http_port(self, monkeypatch: pytest.MonkeyPatch):
+        """http_port stored on Database is forwarded to server_version for direct driver access."""
         import type_bridge.typedb_driver as tdm
         from type_bridge.session import Database
 
@@ -536,7 +536,7 @@ class TestConnectHttpPortForwarding:
 
         db = Database(address="localhost:1729", database="test_db", http_port=9123)
         with pytest.raises(type_bridge_core.VersionError):
-            db.connect()
+            _ = db.driver
 
         assert recorded == [9123], f"Expected http_port=9123 forwarded, got {recorded}"
 
@@ -544,7 +544,6 @@ class TestConnectHttpPortForwarding:
         """http_port stored on Database is forwarded to PyRustDatabase.connect."""
         import type_bridge._rust_runtime as rust_mod
         import type_bridge.session as session_mod
-        import type_bridge.typedb_driver as tdm
 
         recorded: list[int] = []
 
@@ -554,16 +553,6 @@ class TestConnectHttpPortForwarding:
                 recorded.append(http_port)
                 return _FakeRustDB()
 
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.10.0")
-        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.10.4")
-        monkeypatch.setattr(tdm, "embedded_driver_version", lambda: "3.10.0")
-
-        fake_driver = MagicMock()
-        mock_typedb = MagicMock()
-        mock_typedb.driver.return_value = fake_driver
-        monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
-        monkeypatch.setattr(tdm, "DriverOptions", MagicMock())
-
         # Patch rust_core() so PyRustDatabase.connect records the port.
         fake_core = MagicMock()
         fake_core.PyRustDatabase = _FakeRustDB
@@ -571,9 +560,6 @@ class TestConnectHttpPortForwarding:
 
         db = session_mod.Database(address="localhost:1729", database="test_db", http_port=9123)
         db.connect()
-
-        # Trigger the embedded connect path by calling rust_database_for.
-        rust_mod.rust_database_for(db)
 
         assert recorded == [9123], f"Expected http_port=9123 forwarded to Rust, got {recorded}"
 
@@ -583,14 +569,17 @@ class TestConnectProbeUnreachable:
 
     def test_probe_version_error_propagates(self, monkeypatch: pytest.MonkeyPatch):
         """VersionError from server_version propagates out of connect uncaught."""
-        import type_bridge.typedb_driver as tdm
+        import type_bridge._rust_runtime as rust_mod
         from type_bridge.session import Database
 
-        def _raise_probe(*args: object, **kwargs: object) -> str:
-            raise type_bridge_core.VersionError("probe unreachable")
+        class _FailRustDB:
+            @staticmethod
+            def connect(*args: object, **kwargs: object) -> object:
+                raise type_bridge_core.VersionError("probe unreachable")
 
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.10.0")
-        monkeypatch.setattr(type_bridge_core, "server_version", _raise_probe)
+        fake_core = MagicMock()
+        fake_core.PyRustDatabase = _FailRustDB
+        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
 
         db = Database(address="localhost:1729", database="test_db")
         with pytest.raises(type_bridge_core.VersionError):
@@ -685,41 +674,49 @@ class TestEmbeddedDriverVersions:
 
 
 class TestConnectRuntimeGate:
-    """connect() checks the embedded runtime driver as well as the installed one."""
+    """connect() uses the embedded Rust runtime, not the external Python driver."""
 
     def test_band7_server_now_accepted(self, monkeypatch: pytest.MonkeyPatch):
         """Band-7 server is now ACCEPTED by the embedded gate (whole-window service)."""
+        import type_bridge._rust_runtime as rust_mod
         import type_bridge.session as session_mod
 
-        # Installed Python driver is band-7 to match the server.
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.10.0")
-        # Probe returns band-7 server.
-        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.10.4")
-        # Embedded driver_version kept for call-site compat; gate uses check_server_supported.
-        monkeypatch.setattr(_typedb_driver_mod, "embedded_driver_version", lambda: "3.11.5")
+        recorded: list[tuple[str, str, int]] = []
 
-        fake_driver = MagicMock()
+        class _FakeRustDB:
+            @staticmethod
+            def connect(address, database, username, password, http_port):
+                recorded.append((address, database, http_port))
+                return _FakeRustDB()
+
+        fake_core = MagicMock()
+        fake_core.PyRustDatabase = _FakeRustDB
+        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
+
         mock_typedb = MagicMock()
-        mock_typedb.driver.return_value = fake_driver
         monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
-        monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", MagicMock())
 
         db = session_mod.Database(address="localhost:1729", database="runtime_gate")
         db.connect()
-        mock_typedb.driver.assert_called_once()
+        assert recorded == [("localhost:1729", "runtime_gate", 8000)]
+        mock_typedb.driver.assert_not_called()
 
     def test_out_of_window_server_raises_before_driver(self, monkeypatch: pytest.MonkeyPatch):
         """Out-of-window server raises UnsupportedVersionError and TypeDB.driver is NOT called."""
+        import type_bridge._rust_runtime as rust_mod
         import type_bridge.session as session_mod
 
-        # Installed driver is band-7 to skip the installed-driver gate...
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.8.1")
-        # ...but server is below window floor.
-        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.7.3")
+        class _FailRustDB:
+            @staticmethod
+            def connect(*args: object, **kwargs: object) -> object:
+                raise version.UnsupportedVersionError("server 3.7.3 is unsupported")
+
+        fake_core = MagicMock()
+        fake_core.PyRustDatabase = _FailRustDB
+        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
 
         driver_factory = MagicMock()
         monkeypatch.setattr(session_mod, "TypeDB", driver_factory)
-        monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", MagicMock())
 
         db = session_mod.Database(address="localhost:1729", database="runtime_gate")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
@@ -731,14 +728,20 @@ class TestConnectRuntimeGate:
 
     def test_runtime_gate_failure_message_no_band_tokens(self, monkeypatch: pytest.MonkeyPatch):
         """Runtime gate failure message must not expose raw band numbers."""
+        import type_bridge._rust_runtime as rust_mod
         import type_bridge.session as session_mod
 
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.8.1")
-        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.7.3")
+        class _FailRustDB:
+            @staticmethod
+            def connect(*args: object, **kwargs: object) -> object:
+                raise version.UnsupportedVersionError("server 3.7.3 is unsupported")
+
+        fake_core = MagicMock()
+        fake_core.PyRustDatabase = _FailRustDB
+        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
 
         driver_factory = MagicMock()
         monkeypatch.setattr(session_mod, "TypeDB", driver_factory)
-        monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", MagicMock())
 
         db = session_mod.Database(address="localhost:1729", database="runtime_gate")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:

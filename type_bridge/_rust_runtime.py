@@ -173,6 +173,15 @@ def check_migration_drift(
     rust_core().check_migration_drift(graph, applied_records)
 
 
+def plan_migration_graph(
+    graph: dict[str, Any],
+    applied_records: list[dict[str, Any]] | None = None,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Plan a migration graph through Rust and return executable steps."""
+    return rust_core().plan_migration_graph(graph, applied_records, target)
+
+
 def introspect_schema(connection: Any) -> dict[str, Any]:
     """Introspect the live TypeDB schema through the Rust schema manager."""
     return rust_database_for(connection).introspect_schema()

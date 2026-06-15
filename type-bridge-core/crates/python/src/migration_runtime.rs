@@ -134,6 +134,25 @@ fn check_migration_drift(
         .map_err(|error| py_value_error(error.to_string()))
 }
 
+/// Plan a serialized migration graph and return the lowered execution plan.
+#[pyfunction]
+#[pyo3(signature = (graph, applied_records = None, target = None))]
+fn plan_migration_graph(
+    py: Python<'_>,
+    graph: Bound<'_, PyAny>,
+    applied_records: Option<Bound<'_, PyAny>>,
+    target: Option<&str>,
+) -> PyResult<PyObject> {
+    let graph: MigrationGraph = depythonize(&graph)
+        .map_err(|error| py_value_error(format!("Invalid MigrationGraph: {error}")))?;
+    let applied_records = depythonize_applied_records(applied_records)?;
+    let execution_plan = plan(&graph, &applied_records, target)
+        .map_err(|error| py_value_error(error.to_string()))?;
+    pythonize(py, &execution_plan)
+        .map(|obj| obj.unbind())
+        .map_err(|error| py_value_error(error.to_string()))
+}
+
 /// Rust-owned migration executor bound to a live `PyRustDatabase`.
 ///
 /// Plans a validated migration graph into an ordered execution plan and runs
@@ -298,6 +317,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(calculate_migration_file_checksum, m)?)?;
     m.add_function(wrap_pyfunction!(validate_migration_graph, m)?)?;
     m.add_function(wrap_pyfunction!(check_migration_drift, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_migration_graph, m)?)?;
     m.add_function(wrap_pyfunction!(migration_runner, m)?)?;
     m.add_function(wrap_pyfunction!(migration_state_manager, m)?)?;
     m.add_class::<PyMigrationRunner>()?;
