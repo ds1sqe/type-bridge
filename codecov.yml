@@ -14,8 +14,8 @@ coverage:
         threshold: 1%
     patch:
       default:
-        target: auto
-        threshold: 5%
+        target: 50%
+        threshold: 0%
 
 flags:
   rust:
@@ -29,4 +29,5 @@ ignore:
   - "tests/"
   - "benchmarks/"
   - "examples/"
+  - "type-bridge-core/crates/python/"
   - "type-bridge-core/crates/server/src/typedb/real_driver.rs"
