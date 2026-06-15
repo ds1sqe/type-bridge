@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use crate::version::VersionError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pythonize::{depythonize, pythonize};
@@ -1572,6 +1573,7 @@ fn required_string(obj: &Map<String, Value>, key: &str) -> PyResult<String> {
 
 fn py_orm_error(error: OrmError) -> PyErr {
     match error {
+        OrmError::UnsupportedVersion(error) => VersionError::new_err(error.to_string()),
         OrmError::DescriptorValidation { .. } | OrmError::DescriptorConflict { .. } => {
             py_value_error(error.to_string())
         }
