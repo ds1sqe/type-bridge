@@ -122,6 +122,27 @@ impl Database {
         self.backend.is_open()
     }
 
+    /// Return whether this database exists on the connected TypeDB server.
+    pub async fn database_exists(&self) -> Result<bool> {
+        self.backend.database_exists(&self.database_name).await
+    }
+
+    /// Create this database if it does not already exist.
+    pub async fn create_database(&self) -> Result<()> {
+        if !self.database_exists().await? {
+            self.backend.create_database(&self.database_name).await?;
+        }
+        Ok(())
+    }
+
+    /// Delete this database if it exists.
+    pub async fn delete_database(&self) -> Result<()> {
+        if self.database_exists().await? {
+            self.backend.delete_database(&self.database_name).await?;
+        }
+        Ok(())
+    }
+
     /// Export the database schema as TypeQL text.
     pub async fn schema_text(&self) -> Result<String> {
         self.backend.schema_text(&self.database_name).await

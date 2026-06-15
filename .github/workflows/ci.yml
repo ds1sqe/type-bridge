@@ -704,15 +704,10 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
         run: npm run test:integration
 
-  # Version-gate rejection cells: the update-safety contract, CI-proven.
-  # Each cell boots a server the release wheel must REJECT at connect — green
-  # means "gate fired with the right error class", not "suite passed".
-  # The two cells here prove the two true rejection paths:
-  #   NEG-window: a server outside the supported window (3.7.3) triggers the
-  #     window class, regardless of the installed driver.
-  #   NEG-driver: a band-8 server (3.11.5) paired with the band-7 installed
-  #     driver (3.10.0) triggers the installed class — installed check fires
-  #     before the embedded check, proving check order.
+  # Version-gate rejection cells: each cell boots a server and checks the
+  # relevant path rejects with the expected error class.
+  #   NEG-window: Database.connect() rejects unsupported servers.
+  #   NEG-driver: Database.driver rejects incompatible installed Python drivers.
   # The band-7 servers (3.8.3, 3.10.4) are now SERVED: they are proven green
   # by the positive test-integration and node-integration legs and no longer
   # need a separate rejection cell. Cell versions mirror the version SSOT in
@@ -727,10 +722,12 @@ jobs:
           - cell: NEG-window
             typedb-server: "typedb/typedb:3.7.3"
             python-driver: "3.11.5"
+            probe: connect
             expect-class: window
           - cell: NEG-driver
             typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.10.0"
+            probe: driver
             expect-class: installed
 
     services:
@@ -786,5 +783,5 @@ jobs:
           done
           nc -z localhost 1729
 
-      - name: Assert connect-time rejection
-        run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --expect-class ${{ matrix.expect-class }}
+      - name: Assert version-gate rejection
+        run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --probe ${{ matrix.probe }} --expect-class ${{ matrix.expect-class }}

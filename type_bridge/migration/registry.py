@@ -138,6 +138,14 @@ class ModelRegistry:
         module = importlib.import_module(module_path)
         discovered: list[type[Entity | Relation]] = []
 
+        def add_model(model: type[Entity | Relation]) -> None:
+            if model not in discovered:
+                discovered.append(model)
+                logger.debug(f"Discovered model: {model.__name__}")
+
+                if register:
+                    cls.register(model)
+
         for name in dir(module):
             # Skip private/magic attributes
             if name.startswith("_"):
@@ -155,11 +163,18 @@ class ModelRegistry:
 
             # Must be Entity or Relation subclass (but not the base classes)
             if issubclass(obj, (Entity, Relation)) and obj not in (Entity, Relation):
-                discovered.append(obj)
-                logger.debug(f"Discovered model: {obj.__name__}")
+                add_model(obj)
 
-                if register:
-                    cls.register(obj)
+        # Generated bindgen packages expose ENTITIES and RELATIONS lists from
+        # their package __init__.py while the actual classes live in generated
+        # submodules. Accept those package-level lists so `--models myapp.models`
+        # can discover the full generated schema in one argument.
+        for collection_name in ("ENTITIES", "RELATIONS"):
+            for obj in getattr(module, collection_name, ()):
+                if not isinstance(obj, type):
+                    continue
+                if issubclass(obj, (Entity, Relation)) and obj not in (Entity, Relation):
+                    add_model(obj)
 
         logger.info(f"Discovered {len(discovered)} models from {module_path}")
         return discovered

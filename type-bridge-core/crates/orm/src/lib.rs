@@ -105,11 +105,11 @@ pub use registry::DescriptorRegistry;
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 #[cfg(feature = "typedb")]
-pub use session::ensure_database_exists;
+pub use session::ConnectOptions;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
 #[cfg(feature = "typedb")]
-pub use session::ConnectOptions;
+pub use session::ensure_database_exists;
 pub use session::{Database, Transaction, TransactionContext, TxType};
 pub use value::AttributeValue;
 

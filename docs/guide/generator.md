@@ -30,6 +30,42 @@ python -m type_bridge.generator schema.tql \
 
 Schemas can also be authored in TOML — see [TOML Schema DSL](toml.md).
 
+### TOML Bindgen and Migrations
+
+For a `schema.toml` project, use the generator as the bindgen step and then run
+`makemigrations` against the generated package:
+
+```bash
+python -m type_bridge.generator schema.toml -o generated_models
+
+python -m type_bridge.migration makemigrations \
+  --models generated_models \
+  --migrations-dir migrations \
+  --name initial
+
+python -m type_bridge.migration migrate --migrations-dir migrations
+```
+
+Generated migration files use typed operations by default:
+
+```python
+operations = [
+    ops.AddAttribute(Name),
+    ops.AddEntity(Person),
+    ops.AddOwnership(Person, Email, optional=True),
+]
+```
+
+The `.json` sidecar beside the migration keeps the same typed Rust
+`OperationSpec` variants. `ops.RunTypeQL` remains available for explicit custom
+TypeQL, but schema diffs are not flattened to `RunTypeQL` by default.
+
+Existing files in `--migrations-dir` determine the next migration number and
+dependency. The current diff source is the live TypeDB schema, so apply each
+generated migration before generating the next one. See
+[`examples/advanced/toml_migration`](../../examples/advanced/toml_migration/)
+for a two-step `schema.toml` example.
+
 ### Programmatic Usage
 
 ```python

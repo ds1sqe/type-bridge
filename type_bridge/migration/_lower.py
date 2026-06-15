@@ -70,106 +70,23 @@ def lower_migration_graph(loaded: Sequence[LoadedMigration]) -> dict[str, Any]:
 
 
 def lower_execution_migration(loaded: LoadedMigration) -> dict[str, Any]:
-    """Lower one loaded migration into an execution-ready Rust spec dict.
+    """Lower one loaded migration into the Rust migration IR used for execution.
 
-    Unlike :func:`lower_migration`, every operation here carries the TypeQL the
-    Rust executor runs. Each frozen ``ops.*`` op becomes one of:
-
-    - ``run_typeql`` — for schema/DDL ops and ``ops.RunTypeQL``, holding
-      ``to_typeql()`` forward and ``to_rollback_typeql()`` reverse (or ``None``).
-    - ``copy_attribute`` — for ``ops.CopyAttribute`` (DML backfill), preserving
-      the op fields so the Rust planner can assign ``StepKind::Backfill`` and
-      ``TxType::Write`` and the backfill executor can derive counts via bracketing
-      read queries (invariant 2 — no semantic re-derivation here).
-    - ``define_schema`` — for model-initial migrations (non-reversible).
-
-    This mirrors the TypeQL the Python executor previously assembled, so execution
-    semantics are preserved.
-
-    When the ``LoadedMigration`` carries a pre-lowered ``execution_spec`` (from the
-    JSON sidecar written at generation time), that spec is returned directly after
-    a normalize pass for shape parity.  This avoids re-deriving the TypeQL from
-    the loaded ``Migration`` instance for generated migrations, while keeping the
-    fallback path intact for legacy/hand-authored files.
+    Generated migrations normally carry a JSON sidecar.  When present, that
+    sidecar is the executable contract and is returned after Rust serde
+    normalization.  Legacy or hand-authored ``.py`` files fall back to the same
+    structured lowering as :func:`lower_migration`, preserving typed
+    ``OperationSpec`` variants so Rust remains the execution-lowering source of
+    truth.  Explicit ``ops.RunTypeQL`` operations still lower to ``run_typeql``.
     """
     if loaded.execution_spec is not None:
-        # The sidecar carries the already-lowered MigrationSpec.  Normalize it
-        # so the shape is identical to what the to_typeql() derivation would
-        # produce after its own normalize_migration_spec call.
         return _rust_runtime.normalize_migration_spec(loaded.execution_spec)
 
-    migration = loaded.migration
-    operations: list[dict[str, Any]] = []
-
-    # Model-initial migrations carry SchemaInfo as a single non-reversible
-    # DefineSchema op; the Rust planner generates its define-block TypeQL via the
-    # canonical schema generator, so no per-op TypeQL is assembled here.
-    if migration.models:
-        operations.append(
-            {
-                "kind": "define_schema",
-                "schema": _schema_info_for_models(migration.models),
-            }
-        )
-
-    # A migration is reversible only when its reversible flag is set and it has
-    # no model-initial schema op (matching the prior rollback-generation gate).
-    migration_reversible = migration.reversible and not migration.models
-
-    for operation in migration.operations:
-        if isinstance(operation, ops.CopyAttribute):
-            # CopyAttribute is a write-typed backfill step.  The forward/reverse
-            # TypeQL is carried from the frozen to_typeql()/to_rollback_typeql()
-            # so the Rust planner assigns StepKind::Backfill + TxType::Write and
-            # the executor runs the carried strings (invariant 2: one TypeQL
-            # source; the backfill path derives counts from the carried match).
-            operations.append(
-                {
-                    "kind": "copy_attribute",
-                    "forward": operation.to_typeql(),
-                    "reverse": operation.to_rollback_typeql() if migration_reversible else None,
-                }
-            )
-            continue
-
-        forward = operation.to_typeql()
-        if not forward:
-            # Mirror the prior apply path, which skipped empty forward TypeQL.
-            continue
-        reverse = operation.to_rollback_typeql() if migration_reversible else None
-        operations.append(
-            {
-                "kind": "run_typeql",
-                "forward": forward,
-                "reverse": reverse,
-            }
-        )
-
-    return _rust_runtime.normalize_migration_spec(
-        {
-            "app_label": migration.app_label,
-            "name": migration.name,
-            "dependencies": [
-                {
-                    "app_label": dependency.app_label,
-                    "migration_name": dependency.migration_name,
-                }
-                for dependency in migration.get_dependencies()
-            ],
-            "operations": operations,
-            "checksum": loaded.checksum,
-            "reversible": migration.reversible,
-        }
-    )
+    return lower_migration(loaded.migration, checksum=loaded.checksum)
 
 
 def lower_execution_graph(loaded: Sequence[LoadedMigration]) -> dict[str, Any]:
-    """Lower loaded migrations into an execution-ready Rust-normalized graph.
-
-    The returned graph's every operation is execution-ready (``run_typeql`` or
-    ``define_schema``) so the Rust planner can assemble steps without any
-    ``OperationSpec``-to-TypeQL re-derivation.
-    """
+    """Lower loaded migrations into a Rust-normalized execution graph."""
     return _rust_runtime.normalize_migration_graph(
         {"migrations": [lower_execution_migration(migration) for migration in loaded]}
     )

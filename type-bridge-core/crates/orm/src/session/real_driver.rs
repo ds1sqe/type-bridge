@@ -141,12 +141,10 @@ where
     let address_owned = address.to_string();
     let http_port = options.http_port;
     let tls = options.tls;
-    let server_version = tokio::task::spawn_blocking(move || {
-        probe(&address_owned, http_port, tls)
-    })
-    .await
-    .map_err(|e| OrmError::Connection(format!("Version probe task panicked: {e}")))?
-    .map_err(OrmError::UnsupportedVersion)?;
+    let server_version = tokio::task::spawn_blocking(move || probe(&address_owned, http_port, tls))
+        .await
+        .map_err(|e| OrmError::Connection(format!("Version probe task panicked: {e}")))?
+        .map_err(OrmError::UnsupportedVersion)?;
 
     // Embedded-runtime gate: accept the server when it is in-window and its
     // band is one this build embedded.  Unlike the installed-driver gate
@@ -184,9 +182,8 @@ where
     {
         // TLS is not plumbed in this crate today; the band-8 driver's
         // `DriverTlsConfig::default()` would ENABLE it, so disable explicitly.
-        let addresses = Addresses::try_from_address_str(address).map_err(|e| {
-            OrmError::Connection(format!("Invalid TypeDB address {address}: {e}"))
-        })?;
+        let addresses = Addresses::try_from_address_str(address)
+            .map_err(|e| OrmError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
         let driver = B8Driver::new(
             addresses,
             B8Credentials::new(username, password),
@@ -217,8 +214,14 @@ async fn gated_driver(
     password: &str,
     options: ConnectOptions,
 ) -> Result<DriverHandle, OrmError> {
-    gated_driver_with_probe(address, username, password, options, core_version::server_version)
-        .await
+    gated_driver_with_probe(
+        address,
+        username,
+        password,
+        options,
+        core_version::server_version,
+    )
+    .await
 }
 
 impl RealBackend {
@@ -307,10 +310,9 @@ impl DriverBackend for RealBackend {
                         TxType::Write => B7TransactionType::Write,
                         TxType::Schema => B7TransactionType::Schema,
                     };
-                    let transaction = d
-                        .transaction(&db, typedb_tx_type)
-                        .await
-                        .map_err(|e| OrmError::Transaction(format!("Failed to open transaction: {e}")))?;
+                    let transaction = d.transaction(&db, typedb_tx_type).await.map_err(|e| {
+                        OrmError::Transaction(format!("Failed to open transaction: {e}"))
+                    })?;
                     Ok(Box::new(RealTransaction {
                         inner: RealTransactionInner::B7(Some(transaction)),
                     }) as Box<dyn TransactionOps>)
@@ -322,10 +324,9 @@ impl DriverBackend for RealBackend {
                         TxType::Write => B8TransactionType::Write,
                         TxType::Schema => B8TransactionType::Schema,
                     };
-                    let transaction = d
-                        .transaction(&db, typedb_tx_type)
-                        .await
-                        .map_err(|e| OrmError::Transaction(format!("Failed to open transaction: {e}")))?;
+                    let transaction = d.transaction(&db, typedb_tx_type).await.map_err(|e| {
+                        OrmError::Transaction(format!("Failed to open transaction: {e}"))
+                    })?;
                     Ok(Box::new(RealTransaction {
                         inner: RealTransactionInner::B8(Some(transaction)),
                     }) as Box<dyn TransactionOps>)
@@ -343,28 +344,90 @@ impl DriverBackend for RealBackend {
         }
     }
 
+    fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            match &self.driver {
+                #[cfg(feature = "band7")]
+                DriverHandle::B7(d) => d
+                    .databases()
+                    .contains(database)
+                    .await
+                    .map_err(|e| OrmError::Connection(format!("Database lookup failed: {e}"))),
+                #[cfg(feature = "band8")]
+                DriverHandle::B8(d) => d
+                    .databases()
+                    .contains(database)
+                    .await
+                    .map_err(|e| OrmError::Connection(format!("Database lookup failed: {e}"))),
+            }
+        })
+    }
+
+    fn create_database(&self, database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            match &self.driver {
+                #[cfg(feature = "band7")]
+                DriverHandle::B7(d) => d
+                    .databases()
+                    .create(database)
+                    .await
+                    .map_err(|e| OrmError::Connection(format!("Database create failed: {e}"))),
+                #[cfg(feature = "band8")]
+                DriverHandle::B8(d) => d
+                    .databases()
+                    .create(database)
+                    .await
+                    .map_err(|e| OrmError::Connection(format!("Database create failed: {e}"))),
+            }
+        })
+    }
+
+    fn delete_database(&self, database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            match &self.driver {
+                #[cfg(feature = "band7")]
+                DriverHandle::B7(d) => {
+                    let db = d.databases().get(&database).await.map_err(|e| {
+                        OrmError::Connection(format!("Database lookup failed: {e}"))
+                    })?;
+                    db.delete()
+                        .await
+                        .map_err(|e| OrmError::Connection(format!("Database delete failed: {e}")))
+                }
+                #[cfg(feature = "band8")]
+                DriverHandle::B8(d) => {
+                    let db = d.databases().get(database).await.map_err(|e| {
+                        OrmError::Connection(format!("Database lookup failed: {e}"))
+                    })?;
+                    db.delete()
+                        .await
+                        .map_err(|e| OrmError::Connection(format!("Database delete failed: {e}")))
+                }
+            }
+        })
+    }
+
     fn schema_text(&self, database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
         let database = database.to_string();
         Box::pin(async move {
             match &self.driver {
                 #[cfg(feature = "band7")]
                 DriverHandle::B7(d) => {
-                    let db = d
-                        .databases()
-                        .get(&database)
-                        .await
-                        .map_err(|e| OrmError::Connection(format!("Database lookup failed: {e}")))?;
+                    let db = d.databases().get(&database).await.map_err(|e| {
+                        OrmError::Connection(format!("Database lookup failed: {e}"))
+                    })?;
                     db.schema()
                         .await
                         .map_err(|e| OrmError::Connection(format!("Schema export failed: {e}")))
                 }
                 #[cfg(feature = "band8")]
                 DriverHandle::B8(d) => {
-                    let db = d
-                        .databases()
-                        .get(&database)
-                        .await
-                        .map_err(|e| OrmError::Connection(format!("Database lookup failed: {e}")))?;
+                    let db = d.databases().get(&database).await.map_err(|e| {
+                        OrmError::Connection(format!("Database lookup failed: {e}"))
+                    })?;
                     db.schema()
                         .await
                         .map_err(|e| OrmError::Connection(format!("Schema export failed: {e}")))
@@ -407,10 +470,9 @@ impl TransactionOps for RealTransaction {
                     match answer {
                         B7QueryAnswer::Ok(_) => Ok(QueryResult::Ok),
                         B7QueryAnswer::ConceptRowStream(_, stream) => {
-                            let rows: Vec<_> = stream
-                                .try_collect()
-                                .await
-                                .map_err(|e| OrmError::QueryExecution(format!("Row collect: {e}")))?;
+                            let rows: Vec<_> = stream.try_collect().await.map_err(|e| {
+                                OrmError::QueryExecution(format!("Row collect: {e}"))
+                            })?;
                             let json_rows = rows
                                 .iter()
                                 .map(|row| {
@@ -430,10 +492,9 @@ impl TransactionOps for RealTransaction {
                             Ok(QueryResult::Rows(json_rows))
                         }
                         B7QueryAnswer::ConceptDocumentStream(_, stream) => {
-                            let docs: Vec<_> = stream
-                                .try_collect()
-                                .await
-                                .map_err(|e| OrmError::QueryExecution(format!("Doc collect: {e}")))?;
+                            let docs: Vec<_> = stream.try_collect().await.map_err(|e| {
+                                OrmError::QueryExecution(format!("Doc collect: {e}"))
+                            })?;
                             let json_docs = docs
                                 .into_iter()
                                 .map(|doc| {
@@ -457,10 +518,9 @@ impl TransactionOps for RealTransaction {
                     match answer {
                         B8QueryAnswer::Ok(_) => Ok(QueryResult::Ok),
                         B8QueryAnswer::ConceptRowStream(_, stream) => {
-                            let rows: Vec<_> = stream
-                                .try_collect()
-                                .await
-                                .map_err(|e| OrmError::QueryExecution(format!("Row collect: {e}")))?;
+                            let rows: Vec<_> = stream.try_collect().await.map_err(|e| {
+                                OrmError::QueryExecution(format!("Row collect: {e}"))
+                            })?;
                             let json_rows = rows
                                 .iter()
                                 .map(|row| {
@@ -480,10 +540,9 @@ impl TransactionOps for RealTransaction {
                             Ok(QueryResult::Rows(json_rows))
                         }
                         B8QueryAnswer::ConceptDocumentStream(_, stream) => {
-                            let docs: Vec<_> = stream
-                                .try_collect()
-                                .await
-                                .map_err(|e| OrmError::QueryExecution(format!("Doc collect: {e}")))?;
+                            let docs: Vec<_> = stream.try_collect().await.map_err(|e| {
+                                OrmError::QueryExecution(format!("Doc collect: {e}"))
+                            })?;
                             let json_docs = docs
                                 .into_iter()
                                 .map(|doc| {
@@ -596,7 +655,9 @@ impl TransactionOps for RealTransaction {
 ///
 /// Output shape is identical to [`concept_to_json_b8`] for all common concepts.
 #[cfg(feature = "band7")]
-fn concept_to_json_b7(concept: &type_bridge_typedb_driver_b7::concept::Concept) -> serde_json::Value {
+fn concept_to_json_b7(
+    concept: &type_bridge_typedb_driver_b7::concept::Concept,
+) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert(
         "category".into(),

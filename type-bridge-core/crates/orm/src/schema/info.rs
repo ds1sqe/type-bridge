@@ -375,8 +375,7 @@ impl SchemaInfo {
             if let TypeDescriptor::Relation(relation) = descriptor {
                 for role in &relation.roles {
                     if let Some(card) = role.plays_cardinality {
-                        let role_ref =
-                            format!("{}:{}", relation.type_name, role.role_name);
+                        let role_ref = format!("{}:{}", relation.type_name, role.role_name);
                         for player in &role.player_type_names {
                             if info.entities.contains_key(player) {
                                 entity_overlays
@@ -1117,10 +1116,7 @@ entity holder, plays owns-one:slot @card(0..1);
         })
     }
 
-    fn make_relation_with_roles(
-        type_name: &str,
-        roles: Vec<RoleDescriptor>,
-    ) -> TypeDescriptor {
+    fn make_relation_with_roles(type_name: &str, roles: Vec<RoleDescriptor>) -> TypeDescriptor {
         TypeDescriptor::Relation(RelationDescriptor {
             type_name: type_name.into(),
             is_abstract: false,
@@ -1203,7 +1199,9 @@ entity holder, plays owns-one:slot @card(0..1);
         let info = SchemaInfo::from_descriptors(&descriptors);
 
         assert_eq!(
-            info.entities["alpha"].plays_cardinalities.get("link:member"),
+            info.entities["alpha"]
+                .plays_cardinalities
+                .get("link:member"),
             Some(&(0, Some(3))),
         );
         assert_eq!(
@@ -1337,8 +1335,7 @@ entity holder, plays owns-one:slot @card(0..1);
             "registered parent must be preserved"
         );
         assert_eq!(
-            info.entities["orphan"].parent_type,
-            None,
+            info.entities["orphan"].parent_type, None,
             "unregistered parent must be nulled"
         );
     }

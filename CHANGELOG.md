@@ -4,7 +4,45 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-06-15
+
 ### Changes
+
+#### Rust-SSOT typed migrations from generated schema diffs (#152)
+
+- **Generated migrations default to typed operations** — `makemigrations` now
+  renders schema diffs as operations such as `ops.AddAttribute(...)`,
+  `ops.AddEntity(...)`, `ops.AddRelation(...)`, `ops.AddOwnership(...,
+  optional=True)`, and role/player changes instead of flattening schema diffs to
+  raw TypeQL.
+- **Rust remains the migration execution source of truth** — generated migration
+  sidecars preserve structured Rust `OperationSpec` values, and the Rust planner
+  lowers typed operations to executable TypeQL at planning/execution time.
+- **`ops.RunTypeQL` remains supported as an escape hatch** — handwritten data
+  migrations and custom TypeQL can still use `ops.RunTypeQL(...)`; Rust planning
+  infers schema vs write transaction kind so data scripts execute correctly.
+- **Django-style `schema.toml` lifecycle documented** — the generator guide and
+  `examples/advanced/toml_migration/` now show the user flow: edit
+  `schema.toml`, run bindgen/generator and `makemigrations`, receive
+  `0001_initial.py`, migrate, edit the TOML again, and receive a follow-up
+  typed migration such as `0002_add_email.py`.
+- **Real smoke coverage added** — integration coverage exercises TOML bindgen,
+  an initial typed migration, real data insertion, a typed optional-ownership
+  delta, an explicit `ops.RunTypeQL` data migration, and a failing migration path
+  that remains unapplied while preserving prior data.
+
+#### Rust runtime as the default Python execution backend
+
+- **`Database.connect()` now opens the embedded Rust runtime by default** — the
+  Python ORM no longer needs the optional external `typedb-driver` package for
+  normal connection, schema, CRUD, query, migration, or database lifecycle
+  operations.
+- **Database lifecycle operations are Rust-backed** — `database_exists()`,
+  `create_database()`, `delete_database()`, and schema export use the same
+  embedded Rust runtime path as query execution.
+- **Direct Python driver access remains explicit** — `Database.driver` still
+  opens the optional external Python `typedb-driver` and keeps its installed
+  driver/server compatibility gate for callers that need direct driver APIs.
 
 #### Dual-band TypeDB driver support: servers 3.8–3.11 served by one artifact (#145)
 

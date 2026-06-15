@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from type_bridge import _rust_runtime
 from type_bridge.attribute.base import Attribute
@@ -31,7 +31,7 @@ def _add_ownership_operation(
     if attr is None:
         return None
 
-    attr_info = owner.get_owned_attributes().get(attr_name)
+    attr_info = _owned_attribute_info(owner, attr_name)
     if attr_info is None:
         return ops.AddOwnership(owner, attr)
 
@@ -45,6 +45,27 @@ def _add_ownership_operation(
         card_min=flags.card_min,
         card_max=flags.card_max,
     )
+
+
+def _owned_attribute_info(owner: type[Entity | Relation], attr_name: str) -> Any | None:
+    """Return ownership metadata for a TypeDB attribute label.
+
+    Model metadata is keyed by Python field name, while Rust schema diffs use
+    TypeDB labels. Bindgen-generated models commonly map ``smoke152-email`` to
+    the Python field ``smoke152_email``, so lookup must compare the attribute
+    class label rather than only the dict key.
+    """
+    owned_attributes = owner.get_owned_attributes()
+    if attr_name in owned_attributes:
+        return owned_attributes[attr_name]
+
+    for attr_info in owned_attributes.values():
+        typ = getattr(attr_info, "typ", None)
+        get_attribute_name = getattr(typ, "get_attribute_name", None)
+        if get_attribute_name is not None and get_attribute_name() == attr_name:
+            return attr_info
+
+    return None
 
 
 def _role_player_type_names(role: object) -> list[str]:
@@ -75,6 +96,11 @@ def _attribute_type_change_keyword(changes: dict) -> str:
                 return "redefine"
 
     return "define"
+
+
+def _class_ref(cls: type) -> str:
+    """Render a class reference for generated migration source."""
+    return cls.__name__
 
 
 class MigrationGenerator:
@@ -147,7 +173,7 @@ class MigrationGenerator:
                 logger.info("No changes detected")
                 return None
 
-            # Always use operations-based migration
+            # Always use operations-based migration.
             operations_code = self._render_operations(operations)
             models_code = ""
             imports_code = self._generate_operations_imports(operations)
@@ -323,9 +349,10 @@ class MigrationGenerator:
     def _render_operations(self, operations: list[ops.Operation]) -> str:
         """Render operations list as Python code.
 
-        Converts class-based operations to RunTypeQL operations so that
-        the generated migration file is self-contained and doesn't need
-        to import model classes.
+        Generated migrations keep the operation-object authoring surface
+        (`ops.AddAttribute(...)`, `ops.AddEntity(...)`, etc.) so users can review
+        schema changes at the same abstraction level as their models. Custom
+        `ops.RunTypeQL` operations are still rendered as `ops.RunTypeQL`.
 
         Args:
             operations: List of operations
@@ -338,18 +365,112 @@ class MigrationGenerator:
 
         lines = ["    operations: ClassVar[list[Operation]] = ["]
         for op in operations:
-            # Convert to RunTypeQL to make migrations self-contained
-            forward_tql = op.to_typeql()
-            reverse_tql = op.to_rollback_typeql()
-
-            if reverse_tql:
-                lines.append(
-                    f"        ops.RunTypeQL(forward={forward_tql!r}, reverse={reverse_tql!r}),"
-                )
-            else:
-                lines.append(f"        ops.RunTypeQL(forward={forward_tql!r}),")
+            lines.append(f"        {self._render_operation(op)},")
         lines.append("    ]")
         return "\n".join(lines)
+
+    def _render_operation(self, operation: ops.Operation) -> str:
+        """Render one operation object as Python source."""
+        if isinstance(operation, ops.AddAttribute):
+            return f"ops.AddAttribute({_class_ref(operation.attribute)})"
+        if isinstance(operation, ops.RemoveAttribute):
+            return f"ops.RemoveAttribute({_class_ref(operation.attribute)})"
+        if isinstance(operation, ops.AddEntity):
+            return f"ops.AddEntity({_class_ref(operation.entity)})"
+        if isinstance(operation, ops.RemoveEntity):
+            return f"ops.RemoveEntity({_class_ref(operation.entity)})"
+        if isinstance(operation, ops.AddOwnership):
+            args = [_class_ref(operation.owner), _class_ref(operation.attribute)]
+            kwargs = self._render_add_ownership_kwargs(operation)
+            return self._render_call("AddOwnership", args, kwargs)
+        if isinstance(operation, ops.RemoveOwnership):
+            return (
+                "ops.RemoveOwnership("
+                f"{_class_ref(operation.owner)}, {_class_ref(operation.attribute)})"
+            )
+        if isinstance(operation, ops.ModifyOwnership):
+            return self._render_call(
+                "ModifyOwnership",
+                [_class_ref(operation.owner), _class_ref(operation.attribute)],
+                {
+                    "old_annotations": repr(operation.old_annotations),
+                    "new_annotations": repr(operation.new_annotations),
+                },
+            )
+        if isinstance(operation, ops.AddRelation):
+            return f"ops.AddRelation({_class_ref(operation.relation)})"
+        if isinstance(operation, ops.RemoveRelation):
+            return f"ops.RemoveRelation({_class_ref(operation.relation)})"
+        if isinstance(operation, ops.AddRole):
+            return self._render_call(
+                "AddRole",
+                [
+                    _class_ref(operation.relation),
+                    repr(operation.role_name),
+                    repr(operation.player_types),
+                ],
+                {},
+            )
+        if isinstance(operation, ops.RemoveRole):
+            return f"ops.RemoveRole({_class_ref(operation.relation)}, {operation.role_name!r})"
+        if isinstance(operation, ops.AddRolePlayer):
+            return (
+                "ops.AddRolePlayer("
+                f"{_class_ref(operation.relation)}, {operation.role_name!r}, "
+                f"{operation.player_type!r})"
+            )
+        if isinstance(operation, ops.RemoveRolePlayer):
+            return (
+                "ops.RemoveRolePlayer("
+                f"{_class_ref(operation.relation)}, {operation.role_name!r}, "
+                f"{operation.player_type!r})"
+            )
+        if isinstance(operation, ops.RunTypeQL):
+            kwargs = {"forward": repr(operation.forward)}
+            if operation.reverse is not None:
+                kwargs["reverse"] = repr(operation.reverse)
+            return self._render_call("RunTypeQL", [], kwargs)
+        if isinstance(operation, ops.RenameAttribute):
+            return self._render_call(
+                "RenameAttribute",
+                [repr(operation.old_name), repr(operation.new_name), repr(operation.value_type)],
+                {},
+            )
+        if isinstance(operation, ops.CopyAttribute):
+            kwargs = {
+                "owner": _class_ref(operation.owner),
+                "source": repr(operation.source),
+                "dest": repr(operation.dest),
+            }
+            if operation.filter is not None:
+                kwargs["filter"] = repr(operation.filter)
+            return self._render_call("CopyAttribute", [], kwargs)
+        raise TypeError(f"Unsupported migration operation type: {type(operation).__name__}")
+
+    def _render_add_ownership_kwargs(self, operation: ops.AddOwnership) -> dict[str, str]:
+        """Render non-default AddOwnership keyword args without redundant cardinality."""
+        kwargs: dict[str, str] = {}
+        if operation.key:
+            kwargs["key"] = "True"
+            return kwargs
+        if operation.unique:
+            kwargs["unique"] = "True"
+            return kwargs
+        if operation.optional and operation.card_min == 0 and operation.card_max == 1:
+            kwargs["optional"] = "True"
+            return kwargs
+        if operation.optional:
+            kwargs["optional"] = "True"
+        if operation.card_min is not None:
+            kwargs["card_min"] = repr(operation.card_min)
+        if operation.card_max is not None:
+            kwargs["card_max"] = repr(operation.card_max)
+        return kwargs
+
+    def _render_call(self, op_name: str, args: list[str], kwargs: dict[str, str]) -> str:
+        """Render an operation constructor call."""
+        parts = [*args, *(f"{key}={value}" for key, value in kwargs.items())]
+        return f"ops.{op_name}({', '.join(parts)})"
 
     def _describe_operations(self, operations: list[ops.Operation]) -> str:
         """Generate description of operations.
@@ -387,18 +508,21 @@ class MigrationGenerator:
     ) -> None:
         """Write the JSON sidecar for a generated migration alongside its .py file.
 
-        Builds the execution-ready MigrationSpec from the same operations list
-        that _render_operations rendered into the .py.  Each ops.Operation becomes
-        a run_typeql entry carrying the exact forward/reverse TypeQL strings
-        _render_operations used.  The checksum is computed over the .py text so
-        the drift gate (04) reads a consistent value regardless of which path
-        (sidecar or exec_module) is used.
+        Builds the structured MigrationSpec from the same operations list that
+        _render_operations rendered into the .py.  Typed operations stay typed
+        in the sidecar; only explicit ops.RunTypeQL instances become run_typeql.
+        The checksum is computed over the .py text so the drift gate reads a
+        consistent value regardless of which path (sidecar or exec_module) is
+        used.
 
         The sidecar is omitted if migration_spec_to_json or any serialization step
         raises — we log the error rather than failing the whole generate() call,
         since the .py is already written and is fully usable without a sidecar.
         """
         try:
+            from type_bridge.migration._lower import lower_migration
+            from type_bridge.migration.base import Migration
+
             app_label = self.migrations_dir.name
 
             # Compute the .py checksum over the just-written file so the sidecar
@@ -407,47 +531,21 @@ class MigrationGenerator:
             py_content = py_path.read_text()
             checksum = _rust_runtime.migration_file_checksum(py_content)
 
-            # Build run_typeql ops — identical to the path lower_execution_migration
-            # takes when it processes the exec_module'd migration.
-            # Generated migrations are operations-only (no .models), so every op
-            # becomes a run_typeql entry.
-            op_specs = []
-            for operation in operations:
-                forward = operation.to_typeql()
-                if not forward:
-                    continue
-                reverse = operation.to_rollback_typeql() or None
-                op_specs.append(
-                    {
-                        "kind": "run_typeql",
-                        "forward": forward,
-                        "reverse": reverse,
-                    }
-                )
+            migration_cls = type(
+                "GeneratedSidecarMigration",
+                (Migration,),
+                {
+                    "dependencies": dependencies,
+                    "operations": operations,
+                    "reversible": True,
+                },
+            )
+            migration = migration_cls()
+            migration.app_label = app_label
+            migration.name = migration_name
 
-            # reversible: generated Migration subclasses inherit the default
-            # reversible=True from the base class (the generator never overrides
-            # it).  lower_execution_migration reads migration.reversible (the class
-            # attribute) as the outer gate, so the sidecar must carry the same
-            # value — True for all generator-produced migrations.
-            reversible = True
-
-            spec: dict = {
-                "app_label": app_label,
-                "name": migration_name,
-                "dependencies": [
-                    {"app_label": dep_app, "migration_name": dep_name}
-                    for dep_app, dep_name in dependencies
-                ],
-                "operations": op_specs,
-                "checksum": checksum,
-                "reversible": reversible,
-            }
-
-            # Normalize through Rust serde so the shape is canonical, then
-            # serialize to JSON and write beside the .py.
-            normalized = _rust_runtime.normalize_migration_spec(spec)
-            json_text = _rust_runtime.migration_spec_to_json(normalized)
+            spec = lower_migration(migration, checksum=checksum)
+            json_text = _rust_runtime.migration_spec_to_json(spec)
             sidecar_path = py_path.with_suffix(".json")
             sidecar_path.write_text(json_text)
             logger.info(f"Created migration sidecar: {sidecar_path}")
@@ -483,26 +581,39 @@ from type_bridge.migration import operations as ops"""
             "from type_bridge.migration import operations as ops",
         ]
 
-        # Collect types used in operations
-        types_needed: set[str] = set()
+        imports_by_module: dict[str, set[str]] = {}
+
+        def add_type(cls: type) -> None:
+            imports_by_module.setdefault(cls.__module__, set()).add(cls.__name__)
+
         for op in operations:
             if isinstance(op, (ops.AddAttribute, ops.RemoveAttribute)):
-                types_needed.add(op.attribute.__name__)
+                add_type(op.attribute)
             elif isinstance(op, (ops.AddEntity, ops.RemoveEntity)):
-                types_needed.add(op.entity.__name__)
+                add_type(op.entity)
             elif isinstance(op, (ops.AddRelation, ops.RemoveRelation)):
-                types_needed.add(op.relation.__name__)
-            elif isinstance(op, ops.AddOwnership):
-                types_needed.add(op.owner.__name__)
-                types_needed.add(op.attribute.__name__)
-            elif isinstance(op, (ops.AddRole, ops.AddRolePlayer, ops.RemoveRolePlayer)):
-                types_needed.add(op.relation.__name__)
+                add_type(op.relation)
+            elif isinstance(op, (ops.AddOwnership, ops.RemoveOwnership, ops.ModifyOwnership)):
+                add_type(op.owner)
+                add_type(op.attribute)
+            elif isinstance(
+                op,
+                (
+                    ops.AddRole,
+                    ops.RemoveRole,
+                    ops.AddRolePlayer,
+                    ops.RemoveRolePlayer,
+                ),
+            ):
+                add_type(op.relation)
+            elif isinstance(op, ops.CopyAttribute):
+                add_type(op.owner)
 
-        if types_needed:
+        if imports_by_module:
             lines.append("")
-            lines.append("# TODO: Update these imports to match your model locations")
-            for type_name in sorted(types_needed):
-                lines.append(f"# from your_app.models import {type_name}")
+            for module in sorted(imports_by_module):
+                names = ", ".join(sorted(imports_by_module[module]))
+                lines.append(f"from {module} import {names}")
 
         return "\n".join(lines)
 

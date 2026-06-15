@@ -1656,10 +1656,14 @@ mod tests {
         use crate::schema::info::SchemaInfo;
 
         let mut info = SchemaInfo::default();
-        info.attributes
-            .insert("nickname".into(), AttributeSchemaEntry::new("nickname", ValueType::String));
-        info.attributes
-            .insert("plain".into(), AttributeSchemaEntry::new("plain", ValueType::String));
+        info.attributes.insert(
+            "nickname".into(),
+            AttributeSchemaEntry::new("nickname", ValueType::String),
+        );
+        info.attributes.insert(
+            "plain".into(),
+            AttributeSchemaEntry::new("plain", ValueType::String),
+        );
         info.entities.insert(
             "person".into(),
             EntitySchemaEntry {
@@ -1687,7 +1691,10 @@ mod tests {
         let emitted = generate_define_block(&info);
         let parsed = SchemaInfo::from_typeql(&emitted).expect("list-owns round-trip parse failed");
 
-        let person = parsed.entities.get("person").expect("person entity must survive");
+        let person = parsed
+            .entities
+            .get("person")
+            .expect("person entity must survive");
         let nick = person
             .owned_attributes
             .iter()
@@ -1705,7 +1712,9 @@ mod tests {
             "nickname must carry @distinct after round-trip"
         );
         assert_eq!(
-            nick.annotations.iter().find(|a| matches!(a, Annotation::Card(..))),
+            nick.annotations
+                .iter()
+                .find(|a| matches!(a, Annotation::Card(..))),
             Some(&Annotation::Card(0, Some(3))),
             "nickname must carry @card(0..3) after round-trip"
         );
@@ -1740,7 +1749,10 @@ mod tests {
         let emitted = generate_define_block(&info);
         let parsed = SchemaInfo::from_typeql(&emitted).expect("list-role round-trip parse failed");
 
-        let feed = parsed.relations.get("feed").expect("feed relation must survive");
+        let feed = parsed
+            .relations
+            .get("feed")
+            .expect("feed relation must survive");
         let member = feed
             .roles
             .iter()
@@ -1803,7 +1815,10 @@ mod tests {
     /// `is_ordered` from descriptors into IR entries.
     #[test]
     fn from_descriptors_carries_list_interface_flags() {
-        use crate::descriptor::{EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor};
+        use crate::descriptor::{
+            EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
+            TypeDescriptor,
+        };
 
         let descriptors = vec![
             TypeDescriptor::Entity(EntityDescriptor {

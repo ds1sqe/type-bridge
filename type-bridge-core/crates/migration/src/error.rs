@@ -27,17 +27,13 @@ pub enum MigrationError {
         /// All validation errors discovered.
         errors: Vec<MigrationValidationError>,
     },
-    /// An `OperationSpec` variant that has not been lowered to `RunTypeql` or
-    /// `DefineSchema` was encountered by the planner.
-    ///
-    /// Granular typed ops (e.g. `AddAttribute`, `AddOwnership`) must be
-    /// converted to `RunTypeql` by the Python executor's lowering pass (Phase 3)
-    /// before they reach the Rust planner.
+    /// An `OperationSpec` variant is intentionally unsupported by the Rust
+    /// planner.
     #[error(
-        "operation {kind} is not lowered for execution; lower granular ops to RunTypeql before planning"
+        "operation {kind} is not supported for Rust planning; use RunTypeql or supported typed ops"
     )]
     UnloweredOperation {
-        /// Variant name of the unlowered operation.
+        /// Variant name of the unsupported operation.
         kind: String,
     },
     /// The requested target migration was not found in the graph.

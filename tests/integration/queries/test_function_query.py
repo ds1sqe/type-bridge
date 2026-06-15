@@ -72,27 +72,25 @@ fun get-artifacts-with-score($min_score: integer) -> { artifact-id, artifact-sco
 @pytest.fixture
 def db(docker_typedb):
     """Provide database connection."""
-    from tests.integration.conftest import TEST_DB_ADDRESS
-    from type_bridge import Credentials, TypeDB, create_driver_options
+    from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
     # Create database if needed
-    # Address passed positionally: the band-8 driver renamed the keyword
-    # (address -> addresses); the positional form works on every band.
-    driver = TypeDB.driver(
-        TEST_DB_ADDRESS,
-        credentials=Credentials(username="admin", password="password"),
-        driver_options=create_driver_options(is_tls_enabled=False),
-    )
     db_name = "test_function_query"
-    if driver.databases.contains(db_name):
-        driver.databases.get(db_name).delete()
-    driver.databases.create(db_name)
-    driver.close()
-
-    database = Database(address=TEST_DB_ADDRESS, database=db_name)
+    database = Database(
+        TEST_DB_ADDRESS,
+        database=db_name,
+        http_port=TEST_DB_HTTP_PORT,
+    )
     database.connect()
-    yield database
-    database.close()
+    if database.database_exists():
+        database.delete_database()
+    database.create_database()
+    try:
+        yield database
+    finally:
+        if database.database_exists():
+            database.delete_database()
+        database.close()
 
 
 @pytest.fixture

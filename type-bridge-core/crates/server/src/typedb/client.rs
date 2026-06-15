@@ -126,7 +126,10 @@ pub(crate) fn concept_to_json_b7(
         serde_json::Value::String(concept.get_label().to_string()),
     );
     if let Some(iid) = concept.try_get_iid() {
-        obj.insert("iid".to_string(), serde_json::Value::String(iid.to_string()));
+        obj.insert(
+            "iid".to_string(),
+            serde_json::Value::String(iid.to_string()),
+        );
     }
     if let Some(value) = concept.try_get_value() {
         obj.insert("value".to_string(), value_to_json_b7(value));
@@ -189,7 +192,10 @@ pub(crate) fn concept_to_json_b8(concept: &typedb_driver::concept::Concept) -> s
         serde_json::Value::String(concept.get_label().to_string()),
     );
     if let Some(iid) = concept.try_get_iid() {
-        obj.insert("iid".to_string(), serde_json::Value::String(iid.to_string()));
+        obj.insert(
+            "iid".to_string(),
+            serde_json::Value::String(iid.to_string()),
+        );
     }
     if let Some(value) = concept.try_get_value() {
         obj.insert("value".to_string(), value_to_json_b8(value));

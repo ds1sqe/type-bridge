@@ -285,16 +285,26 @@ class MigrationExecutor:
     def _preview_typeql(self, loaded: LoadedMigration, *, reverse: bool) -> str | None:
         """Render a migration's lowered execution TypeQL for preview/dry-run.
 
-        Routes through the same execution-step lowering the Rust executor runs,
-        so preview and execution share one TypeQL source. Returns the forward
-        TypeQL (joined per step) when ``reverse`` is ``False``; the reverse
+        Routes through the Rust planner so preview and execution share one
+        TypeQL source even when the migration carries typed ``OperationSpec``
+        sidecars. Returns forward TypeQL when ``reverse`` is ``False``; reverse
         TypeQL in reverse step order when ``reverse`` is ``True``, or ``None``
         when any step is non-reversible.
         """
         from type_bridge.migration._lower import lower_execution_migration
 
         spec = lower_execution_migration(loaded)
-        steps = spec["operations"]
+        # Preview is scoped to one migration file, matching the historical
+        # Python sqlmigrate behavior. Dependencies are irrelevant for rendering
+        # this migration's steps and would fail graph validation without the
+        # rest of the migration directory.
+        spec = {**spec, "dependencies": []}
+        graph = _rust_runtime.normalize_migration_graph({"migrations": [spec]})
+        execution_plan = _rust_runtime.plan_migration_graph(graph, [], loaded.migration.name)
+        executions = execution_plan["to_apply"]
+        if not executions:
+            return ""
+        steps = executions[0]["steps"]
 
         if not reverse:
             return "\n\n".join(_step_forward(step) for step in steps)

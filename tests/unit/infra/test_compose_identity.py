@@ -8,6 +8,7 @@ only when no compose binary exists.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -238,6 +239,9 @@ class TestComposeConfigRendersWorktreeUnique:
     def _render_config(self, project_name: str) -> str:
         tool = _compose_binary()
         assert tool is not None  # guarded by the class-level skipif
+        env = os.environ.copy()
+        env.pop("TYPEDB_PORT", None)
+        env.pop("TYPEDB_HTTP_PORT", None)
         result = subprocess.run(
             [
                 tool,
@@ -251,6 +255,7 @@ class TestComposeConfigRendersWorktreeUnique:
             capture_output=True,
             text=True,
             cwd=str(REPO_ROOT),
+            env=env,
         )
         assert result.returncode == 0, (
             f"compose config failed for project {project_name!r}:\n{result.stderr}"

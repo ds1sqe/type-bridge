@@ -7,6 +7,10 @@
 
 use serde::{Deserialize, Serialize};
 use type_bridge_orm::TxType;
+use type_bridge_orm::schema::info::{
+    AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry, RoleEntry,
+    SchemaInfo,
+};
 
 use crate::checksum::check_checksum_drift;
 use crate::error::MigrationError;
@@ -96,9 +100,8 @@ pub struct ExecutionPlan {
 /// - [`MigrationError::ChecksumDrift`] – an applied migration's checksum has
 ///   drifted (hard gate; no plan is produced).
 /// - [`MigrationError::UnloweredOperation`] – the graph contains an
-///   [`OperationSpec`] variant that has not been lowered to `RunTypeql` or
-///   `DefineSchema` (granular typed ops must be lowered by the Python executor
-///   before they reach this planner — that is Phase 3).
+///   [`OperationSpec`] variant that is intentionally unsupported by the Rust
+///   planner.
 pub fn plan(
     graph: &MigrationGraph,
     applied: &[AppliedMigrationRecord],
@@ -160,7 +163,7 @@ pub fn plan(
     // Assemble MigrationExecution objects for the apply list.
     let mut apply_executions = Vec::with_capacity(to_apply.len());
     for migration in to_apply {
-        let steps = assemble_steps(&migration.operations)?;
+        let steps = assemble_steps(&migration.operations, migration.reversible)?;
         let reversible = steps.iter().all(|s| s.reverse.is_some());
         apply_executions.push(MigrationExecution {
             app_label: migration.app_label.clone(),
@@ -174,7 +177,7 @@ pub fn plan(
     // Assemble MigrationExecution objects for the rollback list.
     let mut rollback_executions = Vec::with_capacity(to_rollback.len());
     for migration in to_rollback {
-        let steps = assemble_steps(&migration.operations)?;
+        let steps = assemble_steps(&migration.operations, migration.reversible)?;
         let reversible = steps.iter().all(|s| s.reverse.is_some());
         rollback_executions.push(MigrationExecution {
             app_label: migration.app_label.clone(),
@@ -192,19 +195,26 @@ pub fn plan(
 }
 
 /// Lower a slice of [`OperationSpec`] into [`ExecutionStep`]s.
-///
-/// `RunTypeql`, `DefineSchema`, and `CopyAttribute` are handled; any other
-/// variant returns [`MigrationError::UnloweredOperation`].
-fn assemble_steps(operations: &[OperationSpec]) -> crate::Result<Vec<ExecutionStep>> {
+fn assemble_steps(
+    operations: &[OperationSpec],
+    migration_reversible: bool,
+) -> crate::Result<Vec<ExecutionStep>> {
     let mut steps = Vec::with_capacity(operations.len());
     for op in operations {
-        let step = match op {
-            OperationSpec::RunTypeql { forward, reverse } => ExecutionStep {
-                tx_type: TxType::Schema,
-                kind: StepKind::Schema,
-                forward: forward.clone(),
-                reverse: reverse.clone(),
-            },
+        let mut step = match op {
+            OperationSpec::RunTypeql { forward, reverse } => {
+                let tx_type = run_typeql_tx_type(forward);
+                ExecutionStep {
+                    tx_type,
+                    kind: if tx_type == TxType::Write {
+                        StepKind::Write
+                    } else {
+                        StepKind::Schema
+                    },
+                    forward: forward.clone(),
+                    reverse: reverse.clone(),
+                }
+            }
             OperationSpec::DefineSchema { schema } => {
                 // Route through the existing canonical Rust generator
                 // (SchemaInfo::to_typeql → generator::generate_define_block).
@@ -223,6 +233,85 @@ fn assemble_steps(operations: &[OperationSpec]) -> crate::Result<Vec<ExecutionSt
                     reverse: None,
                 }
             }
+            OperationSpec::AddAttribute { attribute } => schema_step(
+                define_attribute(attribute)?,
+                Some(undefine_attribute(&attribute.attr_name)),
+            ),
+            OperationSpec::RemoveAttribute { attr_name } => {
+                schema_step(undefine_attribute(attr_name), None)
+            }
+            OperationSpec::AddEntity { entity } => schema_step(
+                define_entity(entity)?,
+                Some(undefine_entity(&entity.type_name)),
+            ),
+            OperationSpec::RemoveEntity { type_name } => {
+                schema_step(undefine_entity(type_name), None)
+            }
+            OperationSpec::AddRelation { relation } => schema_step(
+                define_relation(relation)?,
+                Some(undefine_relation_with_players(relation)),
+            ),
+            OperationSpec::RemoveRelation { type_name } => {
+                schema_step(undefine_relation(type_name), None)
+            }
+            OperationSpec::AddOwnership {
+                owner_type,
+                attribute,
+            } => schema_step(
+                define_ownership(owner_type, attribute),
+                Some(undefine_ownership(
+                    owner_type,
+                    &owned_attribute_type_ref(attribute),
+                )),
+            ),
+            OperationSpec::RemoveOwnership {
+                owner_type,
+                attr_name,
+            } => schema_step(undefine_ownership(owner_type, attr_name), None),
+            OperationSpec::ModifyOwnership {
+                owner_type,
+                attr_name,
+                old_annotations,
+                new_annotations,
+            } => schema_step(
+                redefine_ownership(owner_type, attr_name, new_annotations),
+                Some(redefine_ownership(owner_type, attr_name, old_annotations)),
+            ),
+            OperationSpec::AddRole {
+                relation_type,
+                role,
+            } => schema_step(
+                define_role(relation_type, role),
+                Some(undefine_role_with_players(relation_type, role)),
+            ),
+            OperationSpec::RemoveRole {
+                relation_type,
+                role_name,
+            } => schema_step(undefine_role(relation_type, role_name), None),
+            OperationSpec::AddRolePlayer {
+                relation_type,
+                role_name,
+                player_type_name,
+            } => schema_step(
+                define_role_player(relation_type, role_name, player_type_name),
+                Some(undefine_role_player(
+                    relation_type,
+                    role_name,
+                    player_type_name,
+                )),
+            ),
+            OperationSpec::RemoveRolePlayer {
+                relation_type,
+                role_name,
+                player_type_name,
+            } => schema_step(
+                undefine_role_player(relation_type, role_name, player_type_name),
+                Some(define_role_player(
+                    relation_type,
+                    role_name,
+                    player_type_name,
+                )),
+            ),
             OperationSpec::CopyAttribute { forward, reverse } => {
                 // The backfill TypeQL is carried verbatim from the frozen
                 // `CopyAttribute.to_typeql()` (invariant 2: no re-synthesis here).
@@ -235,20 +324,231 @@ fn assemble_steps(operations: &[OperationSpec]) -> crate::Result<Vec<ExecutionSt
                     reverse: reverse.clone(),
                 }
             }
-            other => {
+            other @ OperationSpec::RenameAttribute { .. } => {
                 return Err(MigrationError::UnloweredOperation {
                     kind: op_kind_name(other).to_string(),
                 });
             }
         };
+        if !migration_reversible {
+            step.reverse = None;
+        }
         steps.push(step);
     }
     Ok(steps)
 }
 
+fn schema_step(forward: String, reverse: Option<String>) -> ExecutionStep {
+    ExecutionStep {
+        tx_type: TxType::Schema,
+        kind: StepKind::Schema,
+        forward,
+        reverse,
+    }
+}
+
+fn run_typeql_tx_type(forward: &str) -> TxType {
+    let first_statement = forward
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("//"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if first_statement.starts_with("define")
+        || first_statement.starts_with("undefine")
+        || first_statement.starts_with("redefine")
+    {
+        TxType::Schema
+    } else {
+        TxType::Write
+    }
+}
+
+fn schema_to_typeql(schema: &SchemaInfo) -> crate::Result<String> {
+    schema
+        .to_typeql()
+        .map_err(|e| MigrationError::SchemaGeneration {
+            message: e.to_string(),
+        })
+}
+
+fn define_attribute(attribute: &AttributeSchemaEntry) -> crate::Result<String> {
+    let mut schema = SchemaInfo::default();
+    schema
+        .attributes
+        .insert(attribute.attr_name.clone(), attribute.clone());
+    schema_to_typeql(&schema)
+}
+
+fn undefine_attribute(attr_name: &str) -> String {
+    format!("undefine\nattribute {attr_name};")
+}
+
+fn define_entity(entity: &EntitySchemaEntry) -> crate::Result<String> {
+    let mut schema = SchemaInfo::default();
+    schema
+        .entities
+        .insert(entity.type_name.clone(), entity.clone());
+    schema_to_typeql(&schema)
+}
+
+fn undefine_entity(type_name: &str) -> String {
+    format!("undefine\nentity {type_name};")
+}
+
+fn define_relation(relation: &RelationSchemaEntry) -> crate::Result<String> {
+    let mut schema = SchemaInfo::default();
+    schema
+        .relations
+        .insert(relation.type_name.clone(), relation.clone());
+    schema_to_typeql(&schema)
+}
+
+fn undefine_relation(type_name: &str) -> String {
+    format!("undefine\nrelation {type_name};")
+}
+
+fn undefine_relation_with_players(relation: &RelationSchemaEntry) -> String {
+    let mut statements = Vec::new();
+    for role in &relation.roles {
+        for player_type_name in &role.player_type_names {
+            statements.push(format!(
+                "{player_type_name} plays {}:{};",
+                relation.type_name, role.role_name
+            ));
+        }
+    }
+    statements.push(format!("relation {};", relation.type_name));
+    typeql_block("undefine", statements)
+}
+
+fn define_ownership(owner_type: &str, attribute: &OwnedAttributeEntry) -> String {
+    let attr_ref = owned_attribute_type_ref(attribute);
+    let flags = annotation_suffix(&attribute.flags_string());
+    typeql_block(
+        "define",
+        vec![format!("{owner_type} owns {attr_ref}{flags};")],
+    )
+}
+
+fn undefine_ownership(owner_type: &str, attr_name: &str) -> String {
+    typeql_block("undefine", vec![format!("{owner_type} owns {attr_name};")])
+}
+
+fn redefine_ownership(owner_type: &str, attr_name: &str, annotations: &str) -> String {
+    let suffix = annotation_suffix(annotations);
+    typeql_block(
+        "redefine",
+        vec![format!("{owner_type} owns {attr_name}{suffix};")],
+    )
+}
+
+fn owned_attribute_type_ref(attribute: &OwnedAttributeEntry) -> String {
+    if attribute.is_ordered {
+        format!("{}[]", attribute.attr_name)
+    } else {
+        attribute.attr_name.clone()
+    }
+}
+
+fn define_role(relation_type: &str, role: &RoleEntry) -> String {
+    let mut statements = vec![format!(
+        "{relation_type} relates {};",
+        role_definition(role)
+    )];
+    for player_type_name in &role.player_type_names {
+        statements.push(format!(
+            "{player_type_name} plays {relation_type}:{};",
+            role.role_name
+        ));
+    }
+    typeql_block("define", statements)
+}
+
+fn undefine_role(relation_type: &str, role_name: &str) -> String {
+    typeql_block(
+        "undefine",
+        vec![format!("{relation_type} relates {role_name};")],
+    )
+}
+
+fn undefine_role_with_players(relation_type: &str, role: &RoleEntry) -> String {
+    let mut statements = Vec::new();
+    for player_type_name in &role.player_type_names {
+        statements.push(format!(
+            "{player_type_name} plays {relation_type}:{};",
+            role.role_name
+        ));
+    }
+    statements.push(format!("{relation_type} relates {};", role_type_ref(role)));
+    typeql_block("undefine", statements)
+}
+
+fn define_role_player(relation_type: &str, role_name: &str, player_type_name: &str) -> String {
+    typeql_block(
+        "define",
+        vec![format!(
+            "{player_type_name} plays {relation_type}:{role_name};"
+        )],
+    )
+}
+
+fn undefine_role_player(relation_type: &str, role_name: &str, player_type_name: &str) -> String {
+    typeql_block(
+        "undefine",
+        vec![format!(
+            "{player_type_name} plays {relation_type}:{role_name};"
+        )],
+    )
+}
+
+fn role_definition(role: &RoleEntry) -> String {
+    let mut definition = role_type_ref(role);
+    if let Some(ref parent_role) = role.overrides {
+        definition.push_str(&format!(" as {parent_role}"));
+    }
+    if role.is_abstract {
+        definition.push_str(" @abstract");
+    }
+    if role.distinct {
+        definition.push_str(" @distinct");
+    }
+    if let Some((min, max)) = role.cardinality {
+        definition.push(' ');
+        definition.push_str(&card_annotation(min, max));
+    }
+    definition
+}
+
+fn role_type_ref(role: &RoleEntry) -> String {
+    if role.ordered {
+        format!("{}[]", role.role_name)
+    } else {
+        role.role_name.clone()
+    }
+}
+
+fn card_annotation(min: u32, max: Option<u32>) -> String {
+    let max_str = max.map(|value| value.to_string()).unwrap_or_default();
+    format!("@card({min}..{max_str})")
+}
+
+fn annotation_suffix(annotations: &str) -> String {
+    let trimmed = annotations.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!(" {trimmed}")
+    }
+}
+
+fn typeql_block(keyword: &str, statements: Vec<String>) -> String {
+    format!("{keyword}\n{}", statements.join("\n"))
+}
+
 /// Return a stable string name for an [`OperationSpec`] variant.
 ///
-/// Used only in error messages; no TypeQL is produced from these variants.
+/// Used only in error messages.
 fn op_kind_name(op: &OperationSpec) -> &'static str {
     match op {
         OperationSpec::RunTypeql { .. } => "RunTypeql",
@@ -277,7 +577,8 @@ mod tests {
 
     use super::*;
     use type_bridge_orm::schema::info::{
-        AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry, SchemaInfo,
+        AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry,
+        RoleEntry, SchemaInfo,
     };
     use type_bridge_orm::{Annotation, ValueType};
 
@@ -315,6 +616,48 @@ mod tests {
             },
         );
         OperationSpec::DefineSchema { schema }
+    }
+
+    fn owned_attr(
+        attr_name: &str,
+        value_type: ValueType,
+        annotations: Vec<Annotation>,
+    ) -> OwnedAttributeEntry {
+        OwnedAttributeEntry {
+            attr_name: attr_name.to_string(),
+            value_type,
+            annotations,
+            is_ordered: false,
+        }
+    }
+
+    fn entity_entry(type_name: &str) -> EntitySchemaEntry {
+        EntitySchemaEntry {
+            type_name: type_name.to_string(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![owned_attr("name", ValueType::String, vec![Annotation::Key])],
+            plays_cardinalities: BTreeMap::new(),
+        }
+    }
+
+    fn relation_entry(type_name: &str) -> RelationSchemaEntry {
+        RelationSchemaEntry {
+            type_name: type_name.to_string(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![],
+            roles: vec![RoleEntry {
+                role_name: "employee".to_string(),
+                player_type_names: vec!["person".to_string()],
+                cardinality: None,
+                overrides: None,
+                is_abstract: false,
+                ordered: false,
+                distinct: false,
+            }],
+            plays_cardinalities: BTreeMap::new(),
+        }
     }
 
     fn migration(name: &str, ops: Vec<OperationSpec>, deps: Vec<(&str, &str)>) -> MigrationSpec {
@@ -566,24 +909,251 @@ mod tests {
         assert_eq!(result.to_apply[0].steps[0].tx_type, TxType::Schema);
     }
 
-    // ── test: unlowered operation returns Err ─────────────────────────────────
+    #[test]
+    fn data_run_typeql_step_tx_type_is_write() {
+        let g = graph(vec![migration(
+            "0002_seed",
+            vec![run_typeql(
+                r#"match $a isa account, has account-id "acct-001";
+insert $a has email "ops@example.com";"#,
+                Some(
+                    r#"match $a isa account, has email "ops@example.com";
+delete $a has email "ops@example.com";"#,
+                ),
+            )],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let step = &result.to_apply[0].steps[0];
+        assert_eq!(step.tx_type, TxType::Write);
+        assert_eq!(step.kind, StepKind::Write);
+    }
+
+    // ── tests: typed OperationSpec variants lower in Rust ─────────────────────
 
     #[test]
-    fn unlowered_op_returns_err() {
-        use type_bridge_orm::schema::info::AttributeSchemaEntry;
-
+    fn typed_attribute_operations_lower_to_schema_steps() {
         let g = graph(vec![migration(
-            "0001_add_attr",
+            "0001_attrs",
+            vec![
+                OperationSpec::AddAttribute {
+                    attribute: AttributeSchemaEntry::new("score", ValueType::Long),
+                },
+                OperationSpec::RemoveAttribute {
+                    attr_name: "legacy-score".to_string(),
+                },
+            ],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].forward.contains("attribute score, value integer;"));
+        assert_eq!(
+            steps[0].reverse.as_deref(),
+            Some("undefine\nattribute score;")
+        );
+        assert_eq!(steps[1].forward, "undefine\nattribute legacy-score;");
+        assert!(steps[1].reverse.is_none());
+        assert!(!result.to_apply[0].reversible);
+    }
+
+    #[test]
+    fn typed_entity_and_relation_operations_lower_to_schema_steps() {
+        let g = graph(vec![migration(
+            "0001_types",
+            vec![
+                OperationSpec::AddEntity {
+                    entity: entity_entry("person"),
+                },
+                OperationSpec::AddRelation {
+                    relation: relation_entry("employment"),
+                },
+            ],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+
+        assert!(steps[0].forward.contains("entity person,"));
+        assert!(steps[0].forward.contains("owns name @key;"));
+        assert_eq!(
+            steps[0].reverse.as_deref(),
+            Some("undefine\nentity person;")
+        );
+        assert!(steps[1].forward.contains("relation employment,"));
+        assert!(steps[1].forward.contains("relates employee;"));
+        assert!(
+            steps[1]
+                .forward
+                .contains("person plays employment:employee;")
+        );
+        assert!(
+            steps[1]
+                .reverse
+                .as_deref()
+                .unwrap()
+                .contains("person plays employment:employee;")
+        );
+        assert!(
+            steps[1]
+                .reverse
+                .as_deref()
+                .unwrap()
+                .contains("relation employment;")
+        );
+    }
+
+    #[test]
+    fn typed_ownership_operations_lower_to_schema_steps() {
+        let g = graph(vec![migration(
+            "0001_ownership",
+            vec![
+                OperationSpec::AddOwnership {
+                    owner_type: "person".to_string(),
+                    attribute: owned_attr("email", ValueType::String, vec![Annotation::Key]),
+                },
+                OperationSpec::RemoveOwnership {
+                    owner_type: "person".to_string(),
+                    attr_name: "legacy-email".to_string(),
+                },
+                OperationSpec::ModifyOwnership {
+                    owner_type: "person".to_string(),
+                    attr_name: "nickname".to_string(),
+                    old_annotations: "@card(0..1)".to_string(),
+                    new_annotations: "@card(1..1)".to_string(),
+                },
+            ],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+
+        assert_eq!(steps[0].forward, "define\nperson owns email @key;");
+        assert_eq!(
+            steps[0].reverse.as_deref(),
+            Some("undefine\nperson owns email;")
+        );
+        assert_eq!(steps[1].forward, "undefine\nperson owns legacy-email;");
+        assert!(steps[1].reverse.is_none());
+        assert_eq!(
+            steps[2].forward,
+            "redefine\nperson owns nickname @card(1..1);"
+        );
+        assert_eq!(
+            steps[2].reverse.as_deref(),
+            Some("redefine\nperson owns nickname @card(0..1);")
+        );
+    }
+
+    #[test]
+    fn typed_role_operations_lower_to_schema_steps() {
+        let role = RoleEntry {
+            role_name: "reviewer".to_string(),
+            player_type_names: vec!["person".to_string()],
+            cardinality: Some((0, Some(2))),
+            overrides: None,
+            is_abstract: false,
+            ordered: false,
+            distinct: false,
+        };
+        let g = graph(vec![migration(
+            "0001_roles",
+            vec![
+                OperationSpec::AddRole {
+                    relation_type: "employment".to_string(),
+                    role,
+                },
+                OperationSpec::RemoveRole {
+                    relation_type: "employment".to_string(),
+                    role_name: "legacy".to_string(),
+                },
+                OperationSpec::AddRolePlayer {
+                    relation_type: "employment".to_string(),
+                    role_name: "employee".to_string(),
+                    player_type_name: "contractor".to_string(),
+                },
+                OperationSpec::RemoveRolePlayer {
+                    relation_type: "employment".to_string(),
+                    role_name: "employee".to_string(),
+                    player_type_name: "company".to_string(),
+                },
+            ],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+
+        assert_eq!(
+            steps[0].forward,
+            "define\nemployment relates reviewer @card(0..2);\nperson plays employment:reviewer;"
+        );
+        assert_eq!(
+            steps[0].reverse.as_deref(),
+            Some("undefine\nperson plays employment:reviewer;\nemployment relates reviewer;")
+        );
+        assert_eq!(steps[1].forward, "undefine\nemployment relates legacy;");
+        assert!(steps[1].reverse.is_none());
+        assert_eq!(
+            steps[2].forward,
+            "define\ncontractor plays employment:employee;"
+        );
+        assert_eq!(
+            steps[2].reverse.as_deref(),
+            Some("undefine\ncontractor plays employment:employee;")
+        );
+        assert_eq!(
+            steps[3].forward,
+            "undefine\ncompany plays employment:employee;"
+        );
+        assert_eq!(
+            steps[3].reverse.as_deref(),
+            Some("define\ncompany plays employment:employee;")
+        );
+    }
+
+    #[test]
+    fn migration_reversible_flag_drops_typed_operation_reverses() {
+        let mut spec = migration(
+            "0001_non_reversible",
             vec![OperationSpec::AddAttribute {
                 attribute: AttributeSchemaEntry::new("score", ValueType::Long),
             }],
             vec![],
+        );
+        spec.reversible = false;
+        let g = graph(vec![spec]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+
+        assert!(result.to_apply[0].steps[0].reverse.is_none());
+        assert!(!result.to_apply[0].reversible);
+    }
+
+    // ── test: intentionally unsupported operation returns Err ────────────────
+
+    #[test]
+    fn unlowered_op_returns_err() {
+        let g = graph(vec![migration(
+            "0001_rename_attr",
+            vec![OperationSpec::RenameAttribute {
+                old_name: "old-score".to_string(),
+                new_name: "new-score".to_string(),
+                value_type: "string".to_string(),
+            }],
+            vec![],
         )]);
 
-        let err = plan(&g, &[], None).expect_err("should fail for unlowered op");
+        let err = plan(&g, &[], None).expect_err("should fail for unsupported op");
         match err {
             MigrationError::UnloweredOperation { kind } => {
-                assert_eq!(kind, "AddAttribute");
+                assert_eq!(kind, "RenameAttribute");
             }
             other => panic!("expected UnloweredOperation, got {other:?}"),
         }

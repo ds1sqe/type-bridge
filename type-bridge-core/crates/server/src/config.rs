@@ -121,7 +121,10 @@ impl ServerConfig {
         Ok(config)
     }
 
-    fn apply_env_overrides_from<F>(&mut self, mut get_env: F) -> Result<(), Box<dyn std::error::Error>>
+    fn apply_env_overrides_from<F>(
+        &mut self,
+        mut get_env: F,
+    ) -> Result<(), Box<dyn std::error::Error>>
     where
         F: FnMut(&str) -> Option<String>,
     {
@@ -519,7 +522,10 @@ enabled = ["audit-log", "rate-limiter", "custom"]
             }
         });
 
-        assert!(result.is_err(), "invalid TYPEDB_HTTP_PORT must return an error");
+        assert!(
+            result.is_err(),
+            "invalid TYPEDB_HTTP_PORT must return an error"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("TYPEDB_HTTP_PORT"),

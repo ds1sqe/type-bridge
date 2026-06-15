@@ -1,0 +1,7 @@
+[attributes.customer-name]
+value = "string"
+
+[entities.customer]
+owns = [
+    { attribute = "customer-name", key = true },
+]
