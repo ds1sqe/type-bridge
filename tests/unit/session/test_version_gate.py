@@ -428,6 +428,61 @@ class TestPythonDriverVersionGate:
         _ = db.driver
         mock_typedb.driver.assert_called_once()
 
+    def test_server_version_pin_skips_http_probe(self, monkeypatch: pytest.MonkeyPatch):
+        """driver access validates an explicit server_version without probing HTTP."""
+        import type_bridge.session as session_mod
+        import type_bridge.typedb_driver as tdm
+        from type_bridge.session import Database
+
+        def _unexpected_server_version(*args: object, **kwargs: object) -> str:
+            raise AssertionError("server_version HTTP probe should not be called")
+
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.8.1")
+        monkeypatch.setattr(tdm, "server_version", _unexpected_server_version)
+        monkeypatch.setattr(tdm, "DriverOptions", MagicMock())
+
+        fake_driver = MagicMock()
+        mock_typedb = MagicMock()
+        mock_typedb.driver.return_value = fake_driver
+        monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
+
+        db = Database(
+            address="localhost:1729",
+            database="test_db",
+            server_version="3.8.3",
+        )
+        _ = db.driver
+
+        mock_typedb.driver.assert_called_once()
+
+    def test_unsupported_server_version_pin_rejects_before_driver(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """unsupported explicit server_version fails before TypeDB.driver."""
+        import type_bridge.session as session_mod
+        import type_bridge.typedb_driver as tdm
+        from type_bridge.session import Database
+
+        def _unexpected_server_version(*args: object, **kwargs: object) -> str:
+            raise AssertionError("server_version HTTP probe should not be called")
+
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.8.1")
+        monkeypatch.setattr(tdm, "server_version", _unexpected_server_version)
+
+        mock_typedb = MagicMock()
+        monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
+
+        db = Database(
+            address="localhost:1729",
+            database="test_db",
+            server_version="3.7.3",
+        )
+        with pytest.raises(version.UnsupportedVersionError) as exc_info:
+            _ = db.driver
+
+        assert "3.7.3" in str(exc_info.value)
+        mock_typedb.driver.assert_not_called()
+
     def test_gate_fires_before_typedb_driver_on_unsupported_pair(
         self, monkeypatch: pytest.MonkeyPatch
     ):
@@ -562,6 +617,40 @@ class TestConnectHttpPortForwarding:
         db.connect()
 
         assert recorded == [9123], f"Expected http_port=9123 forwarded to Rust, got {recorded}"
+
+    def test_database_embedded_gate_forwards_server_version(self, monkeypatch: pytest.MonkeyPatch):
+        """server_version stored on Database is forwarded to PyRustDatabase.connect."""
+        import type_bridge._rust_runtime as rust_mod
+        import type_bridge.session as session_mod
+
+        recorded: list[tuple[int, str | None]] = []
+
+        class _FakeRustDB:
+            @staticmethod
+            def connect(
+                address,
+                database,
+                username,
+                password,
+                http_port,
+                server_version=None,
+            ):
+                recorded.append((http_port, server_version))
+                return _FakeRustDB()
+
+        fake_core = MagicMock()
+        fake_core.PyRustDatabase = _FakeRustDB
+        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
+
+        db = session_mod.Database(
+            address="localhost:1729",
+            database="test_db",
+            http_port=9123,
+            server_version="3.10.4",
+        )
+        db.connect()
+
+        assert recorded == [(9123, "3.10.4")]
 
 
 class TestConnectProbeUnreachable:

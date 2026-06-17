@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Assert that the TypeBridge version gate rejects with the expected error class.
+"""Assert a TypeBridge version-gate CI matrix cell.
 
-CI's rejection cells call this against a live TypeDB service container. A cell
-is green when the requested probe path raises with the expected error class,
-and the message respects the human-version contract (no protocol band numbers,
-no ``0.0.0``).
+CI calls this against a live TypeDB service container. Rejection cells are green
+when the requested probe path raises with the expected error class, and the
+message respects the human-version contract (no protocol band numbers, no
+``0.0.0``). Positive cells are green when the requested probe path succeeds.
 
 Usage:
-    assert_gate_rejection.py --address localhost:1729 --probe connect --expect-class window
-    assert_gate_rejection.py --address localhost:1729 --probe driver --expect-class installed
+    assert_gate_rejection.py --address localhost:1729 --probe connect --expect window
+    assert_gate_rejection.py --address localhost:1729 --probe driver --expect installed
+    assert_gate_rejection.py --address localhost:1729 --probe connect --http-port 1 --expect ok
 """
 
 from __future__ import annotations
@@ -41,40 +42,67 @@ def main() -> int:
     )
     parser.add_argument(
         "--expect-class",
-        required=True,
+        required=False,
         choices=sorted(CLASS_MARKERS),
-        help="Which gate check must have produced the rejection",
+        help="Deprecated alias for --expect when expecting a rejection class",
+    )
+    parser.add_argument(
+        "--expect",
+        required=False,
+        choices=["ok", *sorted(CLASS_MARKERS)],
+        help="Expected outcome: ok for success, otherwise the rejection class",
+    )
+    parser.add_argument(
+        "--http-port",
+        type=int,
+        default=8000,
+        help="HTTP version-probe port to pass into Database",
     )
     args = parser.parse_args()
+    expect = args.expect or args.expect_class
+    if expect is None:
+        parser.error("--expect is required")
 
     import type_bridge_core
 
     from type_bridge.session import Database
 
-    db = Database(address=args.address, database="ci_gate_rejection_probe")
+    db = Database(
+        address=args.address,
+        database="ci_gate_rejection_probe",
+        http_port=args.http_port,
+    )
     try:
         if args.probe == "driver":
             _ = db.driver
         else:
             db.connect()
     except type_bridge_core.VersionError as exc:
+        if expect == "ok":
+            print(f"FAIL: {args.probe} rejected unexpectedly: {exc}")
+            return 1
         msg = str(exc)
         print(f"gate fired at {args.probe}: {msg}")
-        marker = CLASS_MARKERS[args.expect_class]
+        marker = CLASS_MARKERS[expect]
         if marker not in msg:
-            print(f"FAIL: expected the {args.expect_class!r} class marker {marker!r}")
+            print(f"FAIL: expected the {expect!r} class marker {marker!r}")
             return 1
-        if args.expect_class == "installed" and CLASS_MARKERS["embedded"] in msg:
+        if expect == "installed" and CLASS_MARKERS["embedded"] in msg:
             print("FAIL: installed-class rejection carries the embedded framing")
             return 1
         for forbidden in FORBIDDEN:
             if forbidden in msg:
                 print(f"FAIL: message exposes forbidden token {forbidden!r}")
                 return 1
-        print(f"OK: version-gate rejection with the {args.expect_class!r} error class")
+        print(f"OK: version-gate rejection with the {expect!r} error class")
         return 0
 
-    print(f"FAIL: {args.probe} succeeded — the gate did not fire")
+    db.close()
+    if expect == "ok":
+        print(f"OK: {args.probe} succeeded")
+        return 0
+
+    print(f"FAIL: {args.probe} succeeded - the gate did not fire")
     return 1
 
 

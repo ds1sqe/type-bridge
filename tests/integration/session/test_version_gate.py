@@ -184,6 +184,40 @@ class TestVersionGateExplicitHttpPort:
 
 
 @pytest.mark.integration
+@pytest.mark.order(4122)
+class TestVersionGatePinnedServerVersion:
+    """Pinned server_version bypasses the HTTP probe on a live server."""
+
+    def test_server_version_pin_connects_with_unreachable_http_port(self, test_database):
+        """A pinned exact version lets connect use gRPC even when http_port is wrong."""
+        from tests.integration.conftest import TEST_DB_ADDRESS
+
+        detected_server = _tdm.server_version(TEST_DB_ADDRESS, tls=False)
+        db = Database(
+            address=TEST_DB_ADDRESS,
+            database=test_database,
+            http_port=1,
+            server_version=detected_server,
+        )
+        db.connect()
+        assert getattr(db, "_rust_backend_database", None) is not None
+        db.close()
+
+    def test_http_probe_failure_falls_back_to_grpc(self, test_database):
+        """Without a pin, an unreachable HTTP port falls back to gRPC band negotiation."""
+        from tests.integration.conftest import TEST_DB_ADDRESS
+
+        db = Database(
+            address=TEST_DB_ADDRESS,
+            database=test_database,
+            http_port=1,
+        )
+        db.connect()
+        assert getattr(db, "_rust_backend_database", None) is not None
+        db.close()
+
+
+@pytest.mark.integration
 @pytest.mark.order(413)
 class TestDistinctOrderedFormLive:
     """The ordered-role @distinct form is the one every live server accepts."""

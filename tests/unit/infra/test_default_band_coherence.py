@@ -100,11 +100,10 @@ class TestDefaultBandCoherence:
         2. Every other server image in those matrices is on a band-7 line (3.8.x or
            3.10.x) — confirmed via the version SSOT, not a hardcoded list.  Adding a
            band-7 patch bump won't break this test.
-        3. The version-gate-cells matrix contains no server whose band is a key in
-           embedded_driver_versions() EXCEPT in the NEG-driver cell (which tests the
-           installed-driver mismatch, not the embedded gate).  In practice this means
-           3.8.x and 3.10.x servers must not appear in version-gate-cells; the only
-           band-8 server allowed there is the NEG-driver cell's 3.11.5.
+        3. The version-gate-cells matrix may contain served band-7 servers only
+           as explicit positive gRPC fallback cells.  They must not reappear as
+           rejection cells, because band-7 servers are now served by the embedded
+           runtime.
         """
         versions = _embedded_versions()
         band8_pin = versions[8]
@@ -154,34 +153,47 @@ class TestDefaultBandCoherence:
                     f"band {ver_band!r}, expected band 7 (the non-band-8 served lines)"
                 )
 
-        # --- Gate cells: no SAFE (served, within-window) band-7 servers remain ---
+        # --- Gate cells: served band-7 servers are only positive fallback cells ---
         gate_block = _job_block(gate_job)
         assert gate_block, f"ci.yml: job '{gate_job}' not found"
-        gate_images = re.findall(r'"typedb/typedb:([\d.]+)"', gate_block)
+        gate_cells = re.findall(
+            r"\n\s+- cell: ([^\n]+)(.*?)(?=\n\s+- cell:|\n\s+services:)",
+            gate_block,
+            re.DOTALL,
+        )
+        assert gate_cells, f"ci.yml job '{gate_job}': no matrix cells found"
 
         # A "served" band-7 server is one that (a) is within the support window
         # (check_server_supported passes) AND (b) is on band 7.  These were
-        # formerly SAFE cells (3.8.3, 3.10.4) and must now be positive legs.
-        # Sub-window band-7 servers (e.g. 3.7.3, the NEG-window cell) are still
-        # valid gate cells — they test the window-class rejection.
-        # The NEG-driver cell's band-8 server (3.11.5) is also allowed.
-        for ver in gate_images:
-            try:
-                type_bridge_core.check_server_supported(ver)
-                server_in_window = True
-            except type_bridge_core.VersionError:
-                server_in_window = False
+        # formerly SAFE rejection cells (3.8.3, 3.10.4).  They are valid here
+        # only when the cell proves the HTTP-failure -> gRPC fallback path.
+        for cell_name, cell_block in gate_cells:
+            images = re.findall(r'"typedb/typedb:([\d.]+)"', cell_block)
+            for ver in images:
+                try:
+                    type_bridge_core.check_server_supported(ver)
+                    server_in_window = True
+                except type_bridge_core.VersionError:
+                    server_in_window = False
 
-            if not server_in_window:
-                continue  # Below-floor or out-of-window rejection cell — fine
+                if not server_in_window:
+                    continue  # Below-floor or out-of-window rejection cell — fine
 
-            server_band = type_bridge_core.band(ver)
-            assert server_band != 7, (
-                f"ci.yml job '{gate_job}': within-window band-7 server "
-                f"typedb/typedb:{ver!r} still present in version-gate-cells; "
-                f"it should be a positive test-integration/node-integration leg, "
-                f"not a rejection cell (band-7 servers are now SERVED)"
-            )
+                server_band = type_bridge_core.band(ver)
+                if server_band != 7:
+                    continue
+
+                assert cell_name.startswith("POS-grpc-fallback-"), (
+                    f"ci.yml job '{gate_job}': within-window band-7 server "
+                    f"typedb/typedb:{ver!r} appears in non-fallback cell "
+                    f"{cell_name!r}; band-7 servers must be positive fallback "
+                    f"regressions, not rejection cells"
+                )
+                assert "http-port: 1" in cell_block and "expect: ok" in cell_block, (
+                    f"ci.yml job '{gate_job}' cell {cell_name!r}: band-7 fallback "
+                    f"regression must force HTTP failure with http-port: 1 and "
+                    f"expect success with expect: ok"
+                )
 
     def test_dev_pin_matches_embedded_line(self):
         """The dev extra pins a driver on the embedded driver's minor line."""

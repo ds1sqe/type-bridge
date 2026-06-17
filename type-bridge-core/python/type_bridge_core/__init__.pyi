@@ -136,4 +136,18 @@ def server_version(address: str, http_port: int = 8000, tls: bool = False) -> st
     """
     ...
 
+class PyRustDatabase:
+    """Rust-backed TypeDB database connection."""
+
+    @staticmethod
+    def connect(
+        address: str,
+        database: str,
+        username: str | None = ...,
+        password: str | None = ...,
+        http_port: int = 8000,
+        server_version: str | None = ...,
+    ) -> PyRustDatabase: ...
+    def __getattr__(self, name: str) -> Any: ...
+
 def __getattr__(name: str) -> Any: ...
