@@ -81,6 +81,7 @@ export const INTG_DATABASE =
   process.env.TYPE_BRIDGE_NODE_INTG_DATABASE ?? "type_bridge_test";
 export const TYPEDB_USERNAME = process.env.TYPEDB_USERNAME ?? "admin";
 export const TYPEDB_PASSWORD = process.env.TYPEDB_PASSWORD ?? "password";
+export const TYPEDB_HTTP_PORT = Number(process.env.TYPEDB_HTTP_PORT ?? "8000");
 
 // ---------------------------------------------------------------------------
 // Schema suffix generator — mirrors integration_support.rs unique_schema_suffix
@@ -107,10 +108,12 @@ export function connectIntegration() {
   ensureDatabase(TYPEDB_ADDRESS, INTG_DATABASE, {
     username: TYPEDB_USERNAME,
     password: TYPEDB_PASSWORD,
+    httpPort: TYPEDB_HTTP_PORT,
   });
   return RustDatabase.connect(TYPEDB_ADDRESS, INTG_DATABASE, {
     username: TYPEDB_USERNAME,
     password: TYPEDB_PASSWORD,
+    httpPort: TYPEDB_HTTP_PORT,
   });
 }
 

@@ -262,6 +262,30 @@ people.delete(inserted);
 Every hydrated instance carries its TypeDB internal id on `_iid` and is a real
 instance of your class (so it also carries `toDict()`).
 
+### Database lifecycle
+
+`RustDatabase` is bound to one database name and exposes the same lifecycle
+helpers as the Python ORM:
+
+```ts
+import { RustDatabase } from "@type-bridge/node";
+
+const db = RustDatabase.connect("localhost:1730", "scratch", {
+  username: "admin",
+  password: "password",
+});
+
+if (!db.databaseExists()) {
+  db.createDatabase();
+}
+
+db.resetDatabase(); // delete if present, then create
+db.deleteDatabase();
+```
+
+The top-level `ensureDatabase(address, database, options?)` helper remains
+available for setup code that does not need to keep a bound handle.
+
 ## Queries and expressions
 
 Build expression-form queries with `manager.query()`. Comparison operators are

@@ -247,6 +247,72 @@ impl DriverBackend for RealTypeDBBackend {
             DriverHandle::B8(d) => d.is_open(),
         }
     }
+
+    fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, PipelineError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            match &self.driver {
+                #[cfg(feature = "band7")]
+                DriverHandle::B7(d) => {
+                    d.databases().contains(database).await.map_err(|e| {
+                        PipelineError::Connection(format!("Database lookup failed: {e}"))
+                    })
+                }
+                #[cfg(feature = "band8")]
+                DriverHandle::B8(d) => {
+                    d.databases().contains(database).await.map_err(|e| {
+                        PipelineError::Connection(format!("Database lookup failed: {e}"))
+                    })
+                }
+            }
+        })
+    }
+
+    fn create_database(&self, database: &str) -> BoxFuture<'_, Result<(), PipelineError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            match &self.driver {
+                #[cfg(feature = "band7")]
+                DriverHandle::B7(d) => {
+                    d.databases().create(database).await.map_err(|e| {
+                        PipelineError::Connection(format!("Database create failed: {e}"))
+                    })
+                }
+                #[cfg(feature = "band8")]
+                DriverHandle::B8(d) => {
+                    d.databases().create(database).await.map_err(|e| {
+                        PipelineError::Connection(format!("Database create failed: {e}"))
+                    })
+                }
+            }
+        })
+    }
+
+    fn delete_database(&self, database: &str) -> BoxFuture<'_, Result<(), PipelineError>> {
+        let database = database.to_string();
+        Box::pin(async move {
+            match &self.driver {
+                #[cfg(feature = "band7")]
+                DriverHandle::B7(d) => {
+                    let db = d.databases().get(&database).await.map_err(|e| {
+                        PipelineError::Connection(format!("Database lookup failed: {e}"))
+                    })?;
+                    db.delete().await.map_err(|e| {
+                        PipelineError::Connection(format!("Database delete failed: {e}"))
+                    })
+                }
+                #[cfg(feature = "band8")]
+                DriverHandle::B8(d) => {
+                    let db = d.databases().get(database).await.map_err(|e| {
+                        PipelineError::Connection(format!("Database lookup failed: {e}"))
+                    })?;
+                    db.delete().await.map_err(|e| {
+                        PipelineError::Connection(format!("Database delete failed: {e}"))
+                    })
+                }
+            }
+        })
+    }
 }
 
 /// Band-tagged transaction inner state.

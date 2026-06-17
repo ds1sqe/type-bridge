@@ -9,6 +9,9 @@ export interface OwnedAttributeDescriptor {
     value_type: ValueType;
     annotations: Annotation[];
     is_optional: boolean;
+    /** Whether this ownership is declared as an ordered list (`owns name[]`).
+     * Instance-level list semantics are engine-unimplemented (REP256); this is a
+     * schema-emission marker only. */
     is_ordered: boolean;
     parent_type?: string | null;
     is_abstract?: boolean;
@@ -27,9 +30,17 @@ export interface RoleDescriptor {
     role_name: string;
     player_type_names: string[];
     cardinality: [number, number | null] | null;
+    /** Plays-side cardinality for this role's players. Authoring datum consumed
+     * by `SchemaInfo.from_descriptors` to build the per-player `plays_cardinalities`
+     * overlay. `null` when no plays-side constraint is declared. */
+    plays_cardinality: [number, number | null] | null;
     overrides: string | null;
     is_abstract: boolean;
+    /** Whether this role is declared as an ordered list (`relates name[]`).
+     * Instance-level list semantics are engine-unimplemented (REP256); this is a
+     * schema-emission marker only. */
     ordered: boolean;
+    /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
     distinct: boolean;
 }
 export interface RelationDescriptor {
@@ -50,15 +61,25 @@ export interface OwnedAttributeEntry {
     attr_name: string;
     value_type: ValueType;
     annotations: Annotation[];
+    /** Whether this ownership is declared as an ordered list (`owns name[]`).
+     * Instance-level list semantics are engine-unimplemented (REP256); this is a
+     * schema-emission marker only. */
     is_ordered: boolean;
 }
 export interface RoleEntry {
     role_name: string;
     player_type_names: string[];
     cardinality: [number, number | null] | null;
+    /** Plays-side cardinality authoring datum. Mirrors `RoleDescriptor.plays_cardinality`
+     * at the SchemaInfo (info-level) role entry. `null` when not declared. */
+    plays_cardinality: [number, number | null] | null;
     overrides: string | null;
     is_abstract: boolean;
+    /** Whether this role is declared as an ordered list (`relates name[]`).
+     * Instance-level list semantics are engine-unimplemented (REP256); this is a
+     * schema-emission marker only. */
     ordered: boolean;
+    /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
     distinct: boolean;
 }
 export interface EntitySchemaEntry {
@@ -277,6 +298,10 @@ interface NativeMarshalling {
 export interface NativeRustDatabase {
     isConnected(): boolean;
     databaseName(): string;
+    databaseExists(): boolean;
+    createDatabase(): void;
+    deleteDatabase(): void;
+    resetDatabase(): void;
     transaction(transactionType?: TransactionType): NativeRustTransactionContext;
     entityManagerJson(descriptorJson: string): NativeDynamicEntityManager;
     relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
@@ -389,6 +414,10 @@ export declare class RustDatabase {
     static connect(native: NativeRuntime, address: string, database: string, options?: RustDatabaseConnectOptions): RustDatabase;
     isConnected(): boolean;
     databaseName(): string;
+    databaseExists(): boolean;
+    createDatabase(): void;
+    deleteDatabase(): void;
+    resetDatabase(): void;
     transaction(transactionType?: TransactionType): RustTransactionContext;
     entityManager(descriptor: EntityDescriptor): RustDynamicEntityManager;
     relationManager(descriptor: RelationDescriptor): RustDynamicRelationManager;

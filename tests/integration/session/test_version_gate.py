@@ -53,9 +53,9 @@ class TestServerVersionLive:
 
     def test_server_version_returns_string(self):
         """server_version(address) returns a non-empty version string."""
-        from tests.integration.conftest import TEST_DB_ADDRESS
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        result = _tdm.server_version(TEST_DB_ADDRESS)
+        result = _tdm.server_version(TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT)
         assert isinstance(result, str)
         assert len(result) > 0
 
@@ -63,18 +63,18 @@ class TestServerVersionLive:
         """server_version(address) returns something that looks like a version."""
         import re
 
-        from tests.integration.conftest import TEST_DB_ADDRESS
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        result = _tdm.server_version(TEST_DB_ADDRESS)
+        result = _tdm.server_version(TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT)
         assert re.match(r"\d+\.\d+\.\d+", result), (
             f"server_version did not return a semver-like string: {result!r}"
         )
 
     def test_server_version_matches_runtime_accepted_range(self):
         """server_version result is accepted by the embedded Rust runtime."""
-        from tests.integration.conftest import TEST_DB_ADDRESS
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        sv = _tdm.server_version(TEST_DB_ADDRESS)
+        sv = _tdm.server_version(TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT)
         # TypeBridge's default backend uses embedded Rust drivers, not the
         # optional Python typedb-driver package.  The installed Python driver
         # may target a different protocol band from the live test server.
@@ -110,9 +110,11 @@ class TestVersionGateLiveNegative:
         causes direct driver access to raise UnsupportedVersionError before TypeDB.driver is
         called."""
         import type_bridge.session as session_mod
-        from tests.integration.conftest import TEST_DB_ADDRESS
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        detected_server = _tdm.server_version(TEST_DB_ADDRESS, tls=False)
+        detected_server = _tdm.server_version(
+            TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT, tls=False
+        )
         mismatched = _mismatched_driver_version(detected_server)
         monkeypatch.setattr(_tdm, "driver_version", lambda: mismatched)
 
@@ -131,7 +133,11 @@ class TestVersionGateLiveNegative:
 
         monkeypatch.setattr(session_mod, "TypeDB", _SpyTypeDB())
 
-        db = Database(address=TEST_DB_ADDRESS, database="test_gate_negative")
+        db = Database(
+            address=TEST_DB_ADDRESS,
+            database="test_gate_negative",
+            http_port=TEST_DB_HTTP_PORT,
+        )
         with pytest.raises(version.UnsupportedVersionError):
             _ = db.driver
 
@@ -141,13 +147,19 @@ class TestVersionGateLiveNegative:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         """Error message from live gate contains both driver and server version strings."""
-        from tests.integration.conftest import TEST_DB_ADDRESS
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        detected_server = _tdm.server_version(TEST_DB_ADDRESS, tls=False)
+        detected_server = _tdm.server_version(
+            TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT, tls=False
+        )
         mismatched = _mismatched_driver_version(detected_server)
         monkeypatch.setattr(_tdm, "driver_version", lambda: mismatched)
 
-        db = Database(address=TEST_DB_ADDRESS, database="test_gate_message")
+        db = Database(
+            address=TEST_DB_ADDRESS,
+            database="test_gate_message",
+            http_port=TEST_DB_HTTP_PORT,
+        )
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
             _ = db.driver
 
@@ -190,9 +202,11 @@ class TestVersionGatePinnedServerVersion:
 
     def test_server_version_pin_connects_with_unreachable_http_port(self, test_database):
         """A pinned exact version lets connect use gRPC even when http_port is wrong."""
-        from tests.integration.conftest import TEST_DB_ADDRESS
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        detected_server = _tdm.server_version(TEST_DB_ADDRESS, tls=False)
+        detected_server = _tdm.server_version(
+            TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT, tls=False
+        )
         db = Database(
             address=TEST_DB_ADDRESS,
             database=test_database,

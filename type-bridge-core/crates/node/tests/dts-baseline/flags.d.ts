@@ -38,12 +38,18 @@ export interface FlagSpec {
     readonly kind: "flag";
     readonly annotations: Annotation[];
     readonly cardinality: [number, number | null] | null;
+    readonly isOrdered: boolean;
+    readonly isDistinct: boolean;
 }
 /** Marks a field as the type's key attribute (implies cardinality `[1, 1]`). */
 export declare const Key = "Key";
 /** Marks a field's attribute value as unique across the type. */
 export declare const Unique = "Unique";
-export type FlagInput = typeof Key | typeof Unique | CardSpec | FlagSpec;
+/** Declares this owns clause as a list attribute (`owns attr[]`). Schema-only. */
+export declare const Ordered = "Ordered";
+/** Emits `@distinct` on the owns clause. Requires `Ordered`. Schema-only. */
+export declare const Distinct = "Distinct";
+export type FlagInput = typeof Key | typeof Unique | typeof Ordered | typeof Distinct | CardSpec | FlagSpec;
 /** Type-level config for an `Entity`/`Relation` (explicit name, abstract, base, case). */
 export declare function TypeFlags(options?: TypeFlagsOptions): ResolvedTypeFlags;
 /** Attribute-level config: an explicit attribute name and/or case override. */
@@ -55,7 +61,7 @@ export declare function Card<const Min extends number, const Max extends number 
  * of descriptor annotations plus a derived cardinality.
  */
 export declare function Flag(...flags: FlagInput[]): FlagSpec;
-/** Lower a flag list to its `{ annotations, cardinality }` descriptor form. */
+/** Lower a flag list to its `{ annotations, cardinality, isOrdered, isDistinct }` descriptor form. */
 export declare function resolveFlags(flags: readonly FlagInput[]): FlagSpec;
 /** Convert a model class name to its TypeDB type name under the given case. */
 export declare function formatTypeName(className: string, typeCase: TypeNameCase): string;

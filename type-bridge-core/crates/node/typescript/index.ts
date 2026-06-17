@@ -432,6 +432,10 @@ interface NativeMarshalling {
 export interface NativeRustDatabase {
   isConnected(): boolean;
   databaseName(): string;
+  databaseExists(): boolean;
+  createDatabase(): void;
+  deleteDatabase(): void;
+  resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeRustTransactionContext;
   entityManagerJson(descriptorJson: string): NativeDynamicEntityManager;
   relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
@@ -757,6 +761,22 @@ export class RustDatabase {
 
   databaseName(): string {
     return this.#native.databaseName();
+  }
+
+  databaseExists(): boolean {
+    return this.#native.databaseExists();
+  }
+
+  createDatabase(): void {
+    this.#native.createDatabase();
+  }
+
+  deleteDatabase(): void {
+    this.#native.deleteDatabase();
+  }
+
+  resetDatabase(): void {
+    this.#native.resetDatabase();
   }
 
   transaction(transactionType: TransactionType = "read"): RustTransactionContext {
