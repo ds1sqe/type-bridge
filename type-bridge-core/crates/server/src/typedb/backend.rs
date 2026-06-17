@@ -56,6 +56,15 @@ pub(crate) trait DriverBackend: Send + Sync {
         tx_type: TransactionType,
     ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, PipelineError>>;
 
+    /// Check whether a database exists.
+    fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, PipelineError>>;
+
+    /// Create a database.
+    fn create_database(&self, database: &str) -> BoxFuture<'_, Result<(), PipelineError>>;
+
+    /// Delete a database.
+    fn delete_database(&self, database: &str) -> BoxFuture<'_, Result<(), PipelineError>>;
+
     /// Check if the driver connection is open.
     fn is_open(&self) -> bool;
 }

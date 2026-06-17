@@ -74,6 +74,29 @@ impl TypeDBClient {
         Ok(results)
     }
 
+    /// Return whether a TypeDB database exists on the connected server.
+    pub async fn database_exists(&self, database: &str) -> Result<bool, PipelineError> {
+        self.backend.database_exists(database).await
+    }
+
+    /// Create a TypeDB database.
+    pub async fn create_database(&self, database: &str) -> Result<(), PipelineError> {
+        self.backend.create_database(database).await
+    }
+
+    /// Delete a TypeDB database.
+    pub async fn delete_database(&self, database: &str) -> Result<(), PipelineError> {
+        self.backend.delete_database(database).await
+    }
+
+    /// Delete a TypeDB database if it exists, then create it.
+    pub async fn reset_database(&self, database: &str) -> Result<(), PipelineError> {
+        if self.database_exists(database).await? {
+            self.delete_database(database).await?;
+        }
+        self.create_database(database).await
+    }
+
     /// Check if the driver connection is open.
     pub fn is_connected(&self) -> bool {
         self.backend.is_open()
@@ -248,6 +271,7 @@ pub(crate) fn value_to_json_b8(value: &typedb_driver::concept::Value) -> serde_j
 #[cfg(feature = "band8")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::collections::VecDeque;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -333,11 +357,23 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct MockDatabaseAdmin {
+        exists_results: std::sync::Mutex<VecDeque<Result<bool, String>>>,
+        create_errors: std::sync::Mutex<VecDeque<String>>,
+        delete_errors: std::sync::Mutex<VecDeque<String>>,
+        exists_called: AtomicUsize,
+        create_called: AtomicUsize,
+        delete_called: AtomicUsize,
+        operations: std::sync::Mutex<Vec<String>>,
+    }
+
     struct MockBackend {
         transaction: std::sync::Mutex<Option<MockTransaction>>,
         open_error: Option<String>,
         is_open: bool,
         open_called: Arc<AtomicUsize>,
+        database_admin: Arc<MockDatabaseAdmin>,
     }
 
     impl MockBackend {
@@ -347,6 +383,7 @@ mod tests {
                 open_error: None,
                 is_open: true,
                 open_called: Arc::new(AtomicUsize::new(0)),
+                database_admin: Arc::new(MockDatabaseAdmin::default()),
             }
         }
 
@@ -356,7 +393,29 @@ mod tests {
                 open_error: Some(msg.to_string()),
                 is_open: true,
                 open_called: Arc::new(AtomicUsize::new(0)),
+                database_admin: Arc::new(MockDatabaseAdmin::default()),
             }
+        }
+
+        fn with_database_exists_results(self, results: Vec<Result<bool, String>>) -> Self {
+            *self.database_admin.exists_results.lock().unwrap() = results.into();
+            self
+        }
+
+        fn with_create_errors(self, errors: Vec<&str>) -> Self {
+            *self.database_admin.create_errors.lock().unwrap() =
+                errors.into_iter().map(str::to_string).collect();
+            self
+        }
+
+        fn with_delete_errors(self, errors: Vec<&str>) -> Self {
+            *self.database_admin.delete_errors.lock().unwrap() =
+                errors.into_iter().map(str::to_string).collect();
+            self
+        }
+
+        fn database_admin_state(&self) -> Arc<MockDatabaseAdmin> {
+            Arc::clone(&self.database_admin)
         }
     }
 
@@ -383,6 +442,80 @@ mod tests {
 
         fn is_open(&self) -> bool {
             self.is_open
+        }
+
+        fn database_exists(
+            &self,
+            database: &str,
+        ) -> Pin<Box<dyn Future<Output = Result<bool, PipelineError>> + Send + '_>> {
+            self.database_admin
+                .exists_called
+                .fetch_add(1, Ordering::SeqCst);
+            self.database_admin
+                .operations
+                .lock()
+                .unwrap()
+                .push(format!("exists:{database}"));
+            let result = self
+                .database_admin
+                .exists_results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(false));
+            Box::pin(async move { result.map_err(PipelineError::Connection) })
+        }
+
+        fn create_database(
+            &self,
+            database: &str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), PipelineError>> + Send + '_>> {
+            self.database_admin
+                .create_called
+                .fetch_add(1, Ordering::SeqCst);
+            self.database_admin
+                .operations
+                .lock()
+                .unwrap()
+                .push(format!("create:{database}"));
+            let error = self
+                .database_admin
+                .create_errors
+                .lock()
+                .unwrap()
+                .pop_front();
+            Box::pin(async move {
+                if let Some(msg) = error {
+                    return Err(PipelineError::Connection(msg));
+                }
+                Ok(())
+            })
+        }
+
+        fn delete_database(
+            &self,
+            database: &str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), PipelineError>> + Send + '_>> {
+            self.database_admin
+                .delete_called
+                .fetch_add(1, Ordering::SeqCst);
+            self.database_admin
+                .operations
+                .lock()
+                .unwrap()
+                .push(format!("delete:{database}"));
+            let error = self
+                .database_admin
+                .delete_errors
+                .lock()
+                .unwrap()
+                .pop_front();
+            Box::pin(async move {
+                if let Some(msg) = error {
+                    return Err(PipelineError::Connection(msg));
+                }
+                Ok(())
+            })
         }
     }
 
@@ -651,6 +784,170 @@ mod tests {
         backend.is_open = false;
         let client = make_client(backend);
         assert!(!client.is_connected());
+    }
+
+    // =============================================
+    // database admin tests (via MockBackend)
+    // =============================================
+
+    #[tokio::test]
+    async fn database_exists_true_delegates_to_backend() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok))
+            .with_database_exists_results(vec![Ok(true)]);
+        let admin = backend.database_admin_state();
+        let client = make_client(backend);
+
+        assert!(client.database_exists("admin_db").await.unwrap());
+        assert_eq!(admin.exists_called.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            admin.operations.lock().unwrap().clone(),
+            vec!["exists:admin_db".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn database_exists_false_delegates_to_backend() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok))
+            .with_database_exists_results(vec![Ok(false)]);
+        let admin = backend.database_admin_state();
+        let client = make_client(backend);
+
+        assert!(!client.database_exists("missing_db").await.unwrap());
+        assert_eq!(admin.exists_called.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            admin.operations.lock().unwrap().clone(),
+            vec!["exists:missing_db".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn create_database_delegates_to_backend() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok));
+        let admin = backend.database_admin_state();
+        let client = make_client(backend);
+
+        client.create_database("new_db").await.unwrap();
+        assert_eq!(admin.create_called.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            admin.operations.lock().unwrap().clone(),
+            vec!["create:new_db".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_database_delegates_to_backend() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok));
+        let admin = backend.database_admin_state();
+        let client = make_client(backend);
+
+        client.delete_database("old_db").await.unwrap();
+        assert_eq!(admin.delete_called.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            admin.operations.lock().unwrap().clone(),
+            vec!["delete:old_db".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_database_deletes_existing_database_before_create() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok))
+            .with_database_exists_results(vec![Ok(true)]);
+        let admin = backend.database_admin_state();
+        let client = make_client(backend);
+
+        client.reset_database("reset_db").await.unwrap();
+        assert_eq!(admin.exists_called.load(Ordering::SeqCst), 1);
+        assert_eq!(admin.delete_called.load(Ordering::SeqCst), 1);
+        assert_eq!(admin.create_called.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            admin.operations.lock().unwrap().clone(),
+            vec![
+                "exists:reset_db".to_string(),
+                "delete:reset_db".to_string(),
+                "create:reset_db".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_database_creates_when_database_is_absent() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok))
+            .with_database_exists_results(vec![Ok(false)]);
+        let admin = backend.database_admin_state();
+        let client = make_client(backend);
+
+        client.reset_database("reset_db").await.unwrap();
+        assert_eq!(admin.exists_called.load(Ordering::SeqCst), 1);
+        assert_eq!(admin.delete_called.load(Ordering::SeqCst), 0);
+        assert_eq!(admin.create_called.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            admin.operations.lock().unwrap().clone(),
+            vec!["exists:reset_db".to_string(), "create:reset_db".to_string(),]
+        );
+    }
+
+    #[tokio::test]
+    async fn database_exists_propagates_backend_error() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok))
+            .with_database_exists_results(vec![Err("lookup failed".to_string())]);
+        let client = make_client(backend);
+
+        let err = client.database_exists("db").await.unwrap_err();
+        assert!(matches!(&err, PipelineError::Connection(msg) if msg.contains("lookup failed")));
+    }
+
+    #[tokio::test]
+    async fn create_database_propagates_backend_error() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok))
+            .with_create_errors(vec!["create failed"]);
+        let client = make_client(backend);
+
+        let err = client.create_database("db").await.unwrap_err();
+        assert!(matches!(&err, PipelineError::Connection(msg) if msg.contains("create failed")));
+    }
+
+    #[tokio::test]
+    async fn delete_database_propagates_backend_error() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok))
+            .with_delete_errors(vec!["delete failed"]);
+        let client = make_client(backend);
+
+        let err = client.delete_database("db").await.unwrap_err();
+        assert!(matches!(&err, PipelineError::Connection(msg) if msg.contains("delete failed")));
+    }
+
+    #[tokio::test]
+    async fn reset_database_propagates_lookup_error_without_mutating() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok))
+            .with_database_exists_results(vec![Err("lookup failed".to_string())]);
+        let admin = backend.database_admin_state();
+        let client = make_client(backend);
+
+        let err = client.reset_database("db").await.unwrap_err();
+        assert!(matches!(&err, PipelineError::Connection(msg) if msg.contains("lookup failed")));
+        assert_eq!(admin.delete_called.load(Ordering::SeqCst), 0);
+        assert_eq!(admin.create_called.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            admin.operations.lock().unwrap().clone(),
+            vec!["exists:db".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_database_propagates_delete_error_without_create() {
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok))
+            .with_database_exists_results(vec![Ok(true)])
+            .with_delete_errors(vec!["delete failed"]);
+        let admin = backend.database_admin_state();
+        let client = make_client(backend);
+
+        let err = client.reset_database("db").await.unwrap_err();
+        assert!(matches!(&err, PipelineError::Connection(msg) if msg.contains("delete failed")));
+        assert_eq!(admin.create_called.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            admin.operations.lock().unwrap().clone(),
+            vec!["exists:db".to_string(), "delete:db".to_string()]
+        );
     }
 
     // =============================================
@@ -926,6 +1223,51 @@ mod tests {
         let result = TypeDBClient::connect(&live_config()).await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_connected());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running TypeDB server"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    async fn integration_database_admin_roundtrip() {
+        let config = live_config();
+        let client = TypeDBClient::connect(&config)
+            .await
+            .expect("connect failed");
+        let database = format!("type_bridge_server_admin_{}", uuid::Uuid::new_v4().simple());
+
+        if client.database_exists(&database).await.unwrap_or(false) {
+            let _ = client.delete_database(&database).await;
+        }
+
+        assert!(!client.database_exists(&database).await.unwrap());
+        client
+            .create_database(&database)
+            .await
+            .expect("create failed");
+        assert!(client.database_exists(&database).await.unwrap());
+
+        client
+            .reset_database(&database)
+            .await
+            .expect("reset existing database failed");
+        assert!(client.database_exists(&database).await.unwrap());
+
+        client
+            .delete_database(&database)
+            .await
+            .expect("delete failed");
+        assert!(!client.database_exists(&database).await.unwrap());
+
+        client
+            .reset_database(&database)
+            .await
+            .expect("reset absent database failed");
+        assert!(client.database_exists(&database).await.unwrap());
+
+        client
+            .delete_database(&database)
+            .await
+            .expect("cleanup delete failed");
     }
 
     #[tokio::test]

@@ -4,6 +4,13 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### New Features
+
+- **Band-aware server database admin API (#155)** - `type_bridge_server::typedb::TypeDBClient`
+  now exposes `database_exists`, `create_database`, `delete_database`, and
+  `reset_database`, dispatching through the embedded TypeDB driver band selected
+  at connection time.
+
 ## [1.5.0] - 2026-06-15
 
 ### Changes

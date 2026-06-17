@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 # but Cargo still needs all workspace manifests to resolve the package graph.
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
+COPY vendor vendor
 
 # Build the server
 RUN cargo build --release -p type-bridge-server
