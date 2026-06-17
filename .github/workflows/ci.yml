@@ -704,14 +704,16 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
         run: npm run test:integration
 
-  # Version-gate rejection cells: each cell boots a server and checks the
-  # relevant path rejects with the expected error class.
+  # Version-gate cells: each cell boots a server and checks either a positive
+  # connect path or the expected rejection class.
+  #   POS-grpc-fallback-band8: wrong HTTP port still connects through gRPC band 8.
+  #   POS-grpc-fallback-band7: wrong HTTP port tries band 8, then connects through band 7.
   #   NEG-window: Database.connect() rejects unsupported servers.
   #   NEG-driver: Database.driver rejects incompatible installed Python drivers.
-  # The band-7 servers (3.8.3, 3.10.4) are now SERVED: they are proven green
-  # by the positive test-integration and node-integration legs and no longer
-  # need a separate rejection cell. Cell versions mirror the version SSOT in
-  # crates/core and the compatibility table.
+  # The band-7 servers (3.8.3, 3.10.4) are now SERVED: normal operation is
+  # proven green by the test-integration and node-integration legs, while the
+  # gRPC-only fallback is covered here as an explicit positive cell. Cell
+  # versions mirror the version SSOT in crates/core and the compatibility table.
   version-gate-cells:
     name: Version gate (${{ matrix.cell }})
     runs-on: ubuntu-latest
@@ -719,16 +721,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - cell: POS-grpc-fallback-band8
+            typedb-server: "typedb/typedb:3.11.5"
+            python-driver: "3.11.5"
+            probe: connect
+            http-port: 1
+            expect: ok
+          - cell: POS-grpc-fallback-band7
+            typedb-server: "typedb/typedb:3.10.4"
+            python-driver: "3.10.0"
+            probe: connect
+            http-port: 1
+            expect: ok
           - cell: NEG-window
             typedb-server: "typedb/typedb:3.7.3"
             python-driver: "3.11.5"
             probe: connect
-            expect-class: window
+            http-port: 8000
+            expect: window
           - cell: NEG-driver
             typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.10.0"
             probe: driver
-            expect-class: installed
+            http-port: 8000
+            expect: installed
 
     services:
       typedb:
@@ -783,5 +799,5 @@ jobs:
           done
           nc -z localhost 1729
 
-      - name: Assert version-gate rejection
-        run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --probe ${{ matrix.probe }} --expect-class ${{ matrix.expect-class }}
+      - name: Assert version-gate cell
+        run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --probe ${{ matrix.probe }} --http-port ${{ matrix.http-port }} --expect ${{ matrix.expect }}
