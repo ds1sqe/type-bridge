@@ -24,6 +24,7 @@ const address = process.env.TYPEDB_ADDRESS ?? "localhost:1730";
 const database = process.env.TYPE_BRIDGE_NODE_INTG_DATABASE ?? "type_bridge_test";
 const username = process.env.TYPEDB_USERNAME ?? "admin";
 const password = process.env.TYPEDB_PASSWORD ?? "password";
+const httpPort = Number(process.env.TYPEDB_HTTP_PORT ?? "8000");
 
 const suffix = `typed-model-${process.pid}-${Date.now()}`;
 const personType = `${suffix}-person`;
@@ -179,8 +180,8 @@ describe("typed model layer integration", () => {
 });
 
 function connectIntegration() {
-  typeBridge.ensureDatabase(address, database, { username, password });
-  return typeBridge.RustDatabase.connect(address, database, { username, password });
+  typeBridge.ensureDatabase(address, database, { username, password, httpPort });
+  return typeBridge.RustDatabase.connect(address, database, { username, password, httpPort });
 }
 
 function defineSchema(db: ReturnType<typeof connectIntegration>, typeql: string): void {

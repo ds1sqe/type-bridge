@@ -10,6 +10,10 @@ All notable changes to TypeBridge will be documented in this file.
   now exposes `database_exists`, `create_database`, `delete_database`, and
   `reset_database`, dispatching through the embedded TypeDB driver band selected
   at connection time.
+- **Node database lifecycle parity (#155)** - `@type-bridge/node` `RustDatabase`
+  now exposes `databaseExists`, `createDatabase`, `deleteDatabase`, and
+  `resetDatabase` on the bound database handle, matching the Python/Rust ORM
+  lifecycle surface.
 
 ## [1.5.0] - 2026-06-15
 

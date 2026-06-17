@@ -71,18 +71,41 @@ export declare class ListFieldSpec<Attr extends AttributeClass, Optional extends
     /** Explicit cardinality `[min, max | null]`. Always present for list fields. */
     readonly card: [number, number | null];
     readonly isOptional: Optional;
-    constructor(attrType: Attr, cardSpec: CardSpec);
+    /** True when the parent FieldSpec carried the `Ordered` flag. A multi-value
+     * `Card` field is a set, not a TypeDB list: only the `Ordered` flag makes
+     * the descriptor emit `is_ordered: true` (and `[]` in the define block). */
+    readonly isOrdered: boolean;
+    /** True when the parent FieldSpec carried the `Distinct` flag. */
+    readonly isDistinct: boolean;
+    constructor(attrType: Attr, cardSpec: CardSpec, isOrdered?: boolean, isDistinct?: boolean);
 }
 /**
- * A declared relation role: its permitted player model(s) and optional
- * cardinality. Produced by `role()`; consumed by the model factory to emit
- * `roles[*]`. Multi-player roles list more than one player token.
+ * A declared relation role: its permitted player model(s), optional
+ * relates-side cardinality, and optional plays-side cardinality. Produced by
+ * `role()`; consumed by the model factory to emit `roles[*]` plus metadata
+ * used by `DescriptorRegistry.schemaInfo()`. Multi-player roles list more than
+ * one player token.
  */
 export declare class RoleSpec<Players extends readonly ModelToken[]> {
     readonly players: Players;
     readonly kind = "role";
     readonly cardinality: [number, number | null] | null;
-    constructor(players: Players, cardinality?: CardSpec | null);
+    readonly playsCardinality: [number, number | null] | null;
+    /** Parent role name this role specializes via TypeDB's `relates child as parent` syntax.
+     * Used only for descriptor computation (effective-set role exclusion); specialization
+     * semantics are resolved at schema-define time. */
+    readonly overrides: string | undefined;
+    /** When ``true``, this role is abstract at the TypeDB schema level (``@abstract`` on
+     * the ``relates`` clause). The engine rejects direct players at the declaring
+     * relation's own scope; subtypes that plain-inherit or override the role are
+     * unaffected. */
+    readonly isAbstract: boolean;
+    /** When ``true``, declares this role as a list role (``relates name[]`` in TypeQL).
+     * Schema-only; instance-level list writes are not yet supported by the engine. */
+    readonly ordered: boolean;
+    /** When ``true``, emits ``@distinct`` on the relates clause. Requires ``ordered``. */
+    readonly distinct: boolean;
+    constructor(players: Players, cardinality?: CardSpec | null, playsCardinality?: CardSpec | null, overrides?: string, isAbstract?: boolean, ordered?: boolean, distinct?: boolean);
 }
 export type SchemaSpec = FieldSpec<AttributeClass, boolean> | ListFieldSpec<AttributeClass, boolean> | RoleSpec<readonly ModelToken[]>;
 export type EntitySchema = Record<string, FieldSpec<AttributeClass, boolean> | ListFieldSpec<AttributeClass, boolean>>;
@@ -133,7 +156,7 @@ type OptionalKeys<Schema extends Record<string, SchemaSpec>> = {
 }[keyof Schema];
 type RequiredKeys<Schema extends Record<string, SchemaSpec>> = Exclude<keyof Schema, OptionalKeys<Schema>>;
 type RoleValue<Players extends readonly ModelToken[]> = Players extends readonly [] ? undefined : RolePlayerInstance<Players[number]> | readonly RolePlayerInstance<Players[number]>[];
-type RolePlayerInstance<Token> = Token extends string ? never : Token extends new (values: never) => infer Instance ? Instance : never;
+type RolePlayerInstance<Token> = Token extends string ? object : Token extends new (values: never) => infer Instance ? Instance : never;
 /**
  * The canonical hydrated-instance type for a model schema. This is the single
  * source of truth for what `class X extends Entity(...) {}` produces AND what a
@@ -184,12 +207,15 @@ export type ModelClass<Schema extends Record<string, SchemaSpec>, Descriptor ext
 export declare function field<Attr extends AttributeClass>(attrType: Attr, ...flags: FlagInput[]): FieldSpec<Attr, false>;
 /**
  * Declare a relation role. Pass zero or more player model tokens, optionally
- * followed by `{ cardinality }`. Player tokens may be model classes or raw type
- * name strings (the latter for players whose typed class is not yet declared).
+ * followed by `{ cardinality, playsCardinality }`. Player tokens may be model
+ * classes or raw type name strings (the latter for players whose typed class is
+ * not yet declared). `cardinality` is relates-side; `playsCardinality` is
+ * player-side and therefore requires at least one player token.
  */
 export declare function role(): RoleSpec<readonly []>;
-export declare function role(options: RoleOptions): RoleSpec<readonly []>;
-export declare function role<const Players extends readonly [ModelToken, ...ModelToken[]]>(...playersAndOptions: RoleArguments<Players>): RoleSpec<Players>;
+export declare function role(options: RelatesOnlyRoleOptions): RoleSpec<readonly []>;
+export declare function role<const Players extends readonly [ModelToken, ...ModelToken[]]>(...players: Players): RoleSpec<Players>;
+export declare function role<const Players extends readonly [ModelToken, ...ModelToken[]]>(...playersAndOptions: [...Players, RoleOptions]): RoleSpec<Players>;
 /**
  * Build a hard-typed entity base class from a name (or `TypeFlags`) and a field
  * schema. Extend the result to declare the model:
@@ -208,13 +234,28 @@ export declare function Entity<const ParentSchema extends EntitySchema, const Sc
  * contain `role(...)` specs, which are emitted as `roles[*]` in the descriptor.
  *
  * Pass a third `{ parent: ParentClass }` argument to declare a parent relation
- * type. The child's descriptor emits `parent_type` and the full flattened
- * `owned_attributes`; inherited roles are also re-listed.
+ * type. The child's descriptor emits `parent_type`, the full flattened
+ * `owned_attributes`, and the **effective role set**: plain-inherited parent roles
+ * first (in the parent's own effective order), then child-local roles — excluding
+ * any parent role whose name appears as the `overrides` target of a child role.
+ * This mirrors the Python descriptor contract (see `internals.md`, "Descriptor Contract").
  */
 export declare function Relation<const Schema extends RelationSchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema): ModelClass<Schema, RelationDescriptor>;
 export declare function Relation<const ParentSchema extends RelationSchema, const Schema extends RelationSchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema, options: ParentOption<ParentSchema>): ModelClass<MergedSchema<ParentSchema, Schema>, RelationDescriptor>;
+type RelatesOnlyRoleOptions = {
+    readonly cardinality?: CardSpec | null;
+    readonly playsCardinality?: never;
+    readonly overrides?: string;
+    readonly abstract?: boolean;
+    readonly ordered?: boolean;
+    readonly distinct?: boolean;
+};
 type RoleOptions = {
     readonly cardinality?: CardSpec | null;
+    readonly playsCardinality?: CardSpec | null;
+    readonly overrides?: string;
+    readonly abstract?: boolean;
+    readonly ordered?: boolean;
+    readonly distinct?: boolean;
 };
-type RoleArguments<Players extends readonly ModelToken[]> = [...Players] | [...Players, RoleOptions];
 export type { IidBearing };

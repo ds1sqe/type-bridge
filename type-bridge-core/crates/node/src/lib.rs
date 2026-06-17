@@ -237,6 +237,43 @@ impl NodeRustDatabase {
         self.db.database_name().to_string()
     }
 
+    /// Return whether the bound database exists on the connected server.
+    #[napi(js_name = "databaseExists")]
+    pub fn database_exists(&self) -> Result<bool> {
+        self.runtime
+            .block_on(self.db.database_exists())
+            .map_err(napi_orm_error)
+    }
+
+    /// Create the bound database if it does not already exist.
+    #[napi(js_name = "createDatabase")]
+    pub fn create_database(&self) -> Result<()> {
+        self.runtime
+            .block_on(self.db.create_database())
+            .map_err(napi_orm_error)
+    }
+
+    /// Delete the bound database if it exists.
+    #[napi(js_name = "deleteDatabase")]
+    pub fn delete_database(&self) -> Result<()> {
+        self.runtime
+            .block_on(self.db.delete_database())
+            .map_err(napi_orm_error)
+    }
+
+    /// Delete the bound database if present, then create it.
+    #[napi(js_name = "resetDatabase")]
+    pub fn reset_database(&self) -> Result<()> {
+        self.runtime
+            .block_on(async {
+                if self.db.database_exists().await? {
+                    self.db.delete_database().await?;
+                }
+                self.db.create_database().await
+            })
+            .map_err(napi_orm_error)
+    }
+
     /// Open a Rust-owned transaction context.
     #[napi(js_name = "transaction")]
     pub fn transaction(
