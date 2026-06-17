@@ -25,7 +25,7 @@ uv pip install -e ".[dev]"
 ### Project Dependencies
 
 The project requires:
-- `type-bridge-core>=1.5.0`: Rust runtime for ORM connectivity and query execution
+- `type-bridge-core>=1.5.1`: Rust runtime for ORM connectivity and query execution
 - `pydantic>=2.12.4`: For validation and type coercion
 - `isodate==0.7.2`: For Duration type support (ISO 8601)
 - `jinja2>=3.1.0`: Template engine for code generation

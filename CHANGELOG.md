@@ -4,6 +4,22 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-06-17
+
+### Bug Fixes
+
+- **gRPC-only TypeDB connect support (#154)** - `Database.connect(..., server_version=...)`
+  now accepts an exact server version across Rust, PyO3, and Python connect surfaces,
+  letting deployments without a reachable HTTP version endpoint skip the HTTP probe
+  while still validating the supported window.
+- **HTTP probe fallback to embedded driver negotiation (#154)** - when no
+  `server_version` is supplied and the HTTP probe fails, the Rust runtime now falls
+  back through gRPC band negotiation, trying band 8 and then band 7 and reporting
+  every attempted path if neither driver can connect.
+- **Version-gate CI coverage for fallback paths (#154)** - CI now includes positive
+  cells that force the HTTP probe onto a bad port and assert the gRPC fallback
+  succeeds, with helper updates for both success and rejection expectations.
+
 ### New Features
 
 - **Band-aware server database admin API (#155)** - `type_bridge_server::typedb::TypeDBClient`

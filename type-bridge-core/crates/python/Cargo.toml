@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-core"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2024"
 description = "PyO3 bindings exposing the type-bridge Rust core to Python"
 license.workspace = true
@@ -12,10 +12,10 @@ name = "type_bridge_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "1.5.0" }
-type-bridge-migration = { path = "../migration", version = "1.5.0" }
-type-bridge-orm = { path = "../orm", version = "1.5.0" }
-type-bridge-toml-transpiler = { path = "../toml-transpiler", version = "1.5.0" }
+type-bridge-core-lib = { path = "../core", version = "1.5.1" }
+type-bridge-migration = { path = "../migration", version = "1.5.1" }
+type-bridge-orm = { path = "../orm", version = "1.5.1" }
+type-bridge-toml-transpiler = { path = "../toml-transpiler", version = "1.5.1" }
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py312"] }
 pythonize = "0.23"
 serde = { version = "1.0", features = ["derive"] }
