@@ -56,15 +56,18 @@ mismatches the server's band — before any transaction is attempted, never mid-
 The error names the relevant versions and tells you exactly what to do. It never exposes
 raw protocol numbers.
 
-The probe calls `GET :<http_port>/v1/version` on the server's HTTP API port. If that endpoint
-is unreachable the probe fails closed (connection refused, not a silent pass).
+By default, the gate calls `GET :<http_port>/v1/version` on the server's HTTP API port.
+If that endpoint is unreachable and no exact server version was supplied, TypeBridge
+falls back to gRPC protocol negotiation: it tries the band-8 driver first, then the
+band-7 driver. If both gRPC attempts fail, the gate fails loudly with all attempted
+paths in the error.
 
 ### HTTP version-probe port
 
 TypeDB exposes a version endpoint over HTTP in addition to its gRPC port. TypeBridge
 probes this endpoint at connect time to determine the server version before committing
 to a driver construction. The probe port defaults to `8000` but must match the HTTP port
-of the specific TypeDB instance being targeted.
+of the specific TypeDB instance being targeted unless you supply `server_version`.
 
 On a host running multiple TypeDB instances (for example, a primary on `:8000` and a
 test instance remapped to `:9000`), probing the wrong port silently validates the wrong
@@ -82,6 +85,37 @@ db.connect()
 db = Database(address="localhost:1729", database="mydb", http_port=9000)
 db.connect()
 ```
+
+### gRPC-only deployments
+
+If the TypeDB server exposes gRPC but disables or firewalls the HTTP API, TypeBridge
+can still connect by falling back to gRPC protocol negotiation. The fallback tries
+band 8 before band 7 and reports both failures if neither driver can open a
+connection.
+
+For strict exact-version validation on gRPC-only deployments, pass the exact server
+version explicitly:
+
+```python
+db = Database(
+    address="localhost:1729",
+    database="mydb",
+    server_version="3.10.4",
+)
+db.connect()
+```
+
+When `server_version` is set, TypeBridge skips the HTTP probe and gRPC fallback,
+validates the supplied semantic version against the same support window, derives the
+protocol band from the validated version, and then opens the matching embedded Rust
+driver.
+
+Use an exact TypeDB version such as `3.8.3`, `3.10.4`, or `3.11.5`; do not substitute a
+raw protocol band. Band 7 includes unsupported TypeDB `3.7.x` as well as supported
+`3.8.x` and `3.10.x`. When HTTP is unavailable, automatic band-7 fallback can identify
+the protocol band but not the exact semantic version; use `server_version` when that
+exact validation is required. Invalid or unsupported pinned versions still fail with
+`VersionError`.
 
 **Node binding**
 

@@ -459,12 +459,16 @@ def rust_database_for(connection: Any) -> Any:
     if cached is not None:
         return cached
 
+    connect_kwargs: dict[str, object] = {"http_port": connection.http_port}
+    if connection.server_version is not None:
+        connect_kwargs["server_version"] = connection.server_version
+
     rust_db = rust_core().PyRustDatabase.connect(
         connection.address,
         connection.database_name,
         connection.username or "admin",
         connection.password or "password",
-        http_port=connection.http_port,
+        **connect_kwargs,
     )
     setattr(connection, "_rust_backend_database", rust_db)
     return rust_db

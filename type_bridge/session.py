@@ -174,6 +174,7 @@ class Database:
         driver: Driver | None = None,
         *,
         http_port: int = typedb_driver.DEFAULT_HTTP_PORT,
+        server_version: str | None = None,
     ):
         """Initialize database connection.
 
@@ -187,12 +188,16 @@ class Database:
                 The caller retains ownership and is responsible for closing it.
             http_port: TypeDB HTTP API port used by the connect-time version
                 gate probe (default 8000).
+            server_version: Exact TypeDB server version to use for connect-time
+                validation instead of probing the HTTP API. Use this for
+                gRPC-only deployments with the HTTP API disabled.
         """
         self.address = address
         self.database_name = database
         self.username = username
         self.password = password
         self.http_port = http_port
+        self.server_version = server_version
         self._driver: Driver | None = driver
         self._owns_driver: bool = driver is None  # Track ownership
 
@@ -231,8 +236,14 @@ class Database:
         logger.debug(f"TLS enabled: {is_tls_enabled}")
 
         detected_driver = typedb_driver.driver_version()
-        detected_server = typedb_driver.server_version(
-            self.address, http_port=self.http_port, tls=is_tls_enabled
+        detected_server = (
+            self.server_version
+            if self.server_version is not None
+            else typedb_driver.server_version(
+                self.address,
+                http_port=self.http_port,
+                tls=is_tls_enabled,
+            )
         )
         version.ensure_supported(detected_driver, detected_server)
         version.ensure_runtime_supported(detected_server)

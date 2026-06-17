@@ -443,21 +443,27 @@ impl PyRustDatabase {
 impl PyRustDatabase {
     /// Connect to TypeDB using the shared Rust ORM session layer.
     #[staticmethod]
-    #[pyo3(signature = (address, database, username=None, password=None, http_port=core_version::DEFAULT_HTTP_PORT))]
+    #[pyo3(signature = (address, database, username=None, password=None, http_port=core_version::DEFAULT_HTTP_PORT, server_version=None))]
     fn connect(
         address: &str,
         database: &str,
         username: Option<&str>,
         password: Option<&str>,
         http_port: u16,
+        server_version: Option<&str>,
     ) -> PyResult<Self> {
         let runtime = Runtime::new().map(Arc::new).map_err(|error| {
             py_runtime_error(format!("Failed to create Tokio runtime: {error}"))
         })?;
         let username = username.unwrap_or("admin").to_string();
         let password = password.unwrap_or("password").to_string();
+        let server_version: Option<core_version::Version> =
+            server_version.map(str::parse).transpose().map_err(
+                |error: core_version::VersionError| VersionError::new_err(error.to_string()),
+            )?;
         let options = type_bridge_orm::ConnectOptions {
             http_port,
+            server_version,
             ..type_bridge_orm::ConnectOptions::default()
         };
         let db = runtime

@@ -94,6 +94,12 @@ pub struct ConnectOptions {
     pub http_port: u16,
     /// Whether to use TLS for the HTTP version probe.
     pub tls: bool,
+    /// Exact server version supplied by the caller.
+    ///
+    /// When set, the connect gate validates this version and skips the HTTP
+    /// `/v1/version` probe. This is the supported path for gRPC-only TypeDB
+    /// deployments where the HTTP API is disabled or unreachable.
+    pub server_version: Option<core_version::Version>,
 }
 
 impl Default for ConnectOptions {
@@ -101,6 +107,7 @@ impl Default for ConnectOptions {
         Self {
             http_port: DEFAULT_HTTP_PORT,
             tls: false,
+            server_version: None,
         }
     }
 }
@@ -120,8 +127,11 @@ pub struct RealBackend {
 
 /// Version-gated [`DriverHandle`] constructor with an injectable probe.
 ///
-/// The `probe` closure is called with `(address, http_port, tls)` and must
-/// return the server version or a [`core_version::VersionError`].  Production
+/// When `options.server_version` is set, the supplied exact version is validated
+/// and the `probe` closure is not called. Otherwise, the `probe` closure is
+/// called with `(address, http_port, tls)` and must return the server version or
+/// a [`core_version::VersionError`]. If that HTTP probe fails, the constructor
+/// falls back to gRPC driver negotiation: band 8 first, then band 7. Production
 /// code passes [`core_version::server_version`]; tests inject a recording
 /// closure to exercise the gate without a live server.
 pub(crate) async fn gated_driver_with_probe<F>(
@@ -136,25 +146,46 @@ where
         + Send
         + 'static,
 {
-    // Probe the server version over HTTP (blocking I/O; offload to a
-    // dedicated thread so we don't block the async executor).
+    if let Some(server_version) = options.server_version {
+        return driver_for_server_version(address, username, password, server_version).await;
+    }
+
+    // Probe the server version over HTTP (blocking I/O; offload to a dedicated
+    // thread so we don't block the async executor).
     let address_owned = address.to_string();
     let http_port = options.http_port;
     let tls = options.tls;
-    let server_version = tokio::task::spawn_blocking(move || probe(&address_owned, http_port, tls))
+    match tokio::task::spawn_blocking(move || probe(&address_owned, http_port, tls))
         .await
         .map_err(|e| OrmError::Connection(format!("Version probe task panicked: {e}")))?
-        .map_err(OrmError::UnsupportedVersion)?;
+    {
+        Ok(server_version) => {
+            driver_for_server_version(address, username, password, server_version).await
+        }
+        Err(http_error) => grpc_fallback_driver(address, username, password, http_error).await,
+    }
+}
 
+fn validate_server_band(server_version: &core_version::Version) -> Result<u8, OrmError> {
     // Embedded-runtime gate: accept the server when it is in-window and its
     // band is one this build embedded.  Unlike the installed-driver gate
     // (check_supported, band equality), the embedded runtime carries every
     // compiled-in band, so a band-7 server is now served, not rejected.  After
     // this passes, band(&server_version) is guaranteed ∈ EMBEDDED_BANDS.
-    core_version::check_server_supported(&server_version, EMBEDDED_BANDS)
+    core_version::check_server_supported(server_version, EMBEDDED_BANDS)
         .map_err(OrmError::UnsupportedVersion)?;
 
-    let band = core_version::band(&server_version);
+    Ok(core_version::band(server_version)
+        .expect("check_server_supported accepted a server without a mapped band"))
+}
+
+async fn driver_for_server_version(
+    address: &str,
+    username: &str,
+    password: &str,
+    server_version: core_version::Version,
+) -> Result<DriverHandle, OrmError> {
+    let band = validate_server_band(&server_version)?;
 
     tracing::debug!(
         address,
@@ -164,15 +195,10 @@ where
     );
 
     #[cfg(feature = "band7")]
-    if band == Some(7) {
-        // Band-7 driver takes a raw address string and a two-argument
-        // DriverOptions::new(tls_enabled, ca_path).  TLS is disabled.
-        let opts = B7DriverOptions::new(false, None)
-            .map_err(|e| OrmError::Connection(format!("Band-7 driver options error: {e}")))?;
-        let driver = B7Driver::new(address, B7Credentials::new(username, password), opts)
+    if band == 7 {
+        return connect_band7_driver(address, username, password)
             .await
-            .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))?;
-        return Ok(DriverHandle::B7(driver));
+            .map(DriverHandle::B7);
     }
 
     // Every band that is not 7 is band 8 here: the gate already rejected any
@@ -180,18 +206,9 @@ where
     // band-8 server this build embedded.
     #[cfg(feature = "band8")]
     {
-        // TLS is not plumbed in this crate today; the band-8 driver's
-        // `DriverTlsConfig::default()` would ENABLE it, so disable explicitly.
-        let addresses = Addresses::try_from_address_str(address)
-            .map_err(|e| OrmError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
-        let driver = B8Driver::new(
-            addresses,
-            B8Credentials::new(username, password),
-            DriverOptions::new(DriverTlsConfig::disabled()),
-        )
-        .await
-        .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))?;
-        Ok(DriverHandle::B8(driver))
+        connect_band8_driver(address, username, password)
+            .await
+            .map(DriverHandle::B8)
     }
 
     // Unreachable by invariant: with band8 compiled out, EMBEDDED_BANDS cannot
@@ -202,6 +219,110 @@ where
     Err(OrmError::Connection(format!(
         "No compiled driver band supports the detected server band ({band:?})"
     )))
+}
+
+#[cfg(feature = "band7")]
+async fn connect_band7_driver(
+    address: &str,
+    username: &str,
+    password: &str,
+) -> Result<B7Driver, OrmError> {
+    // Band-7 driver takes a raw address string and a two-argument
+    // DriverOptions::new(tls_enabled, ca_path).  TLS is disabled.
+    let opts = B7DriverOptions::new(false, None)
+        .map_err(|e| OrmError::Connection(format!("Band-7 driver options error: {e}")))?;
+    B7Driver::new(address, B7Credentials::new(username, password), opts)
+        .await
+        .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))
+}
+
+#[cfg(feature = "band8")]
+async fn connect_band8_driver(
+    address: &str,
+    username: &str,
+    password: &str,
+) -> Result<B8Driver, OrmError> {
+    // TLS is not plumbed in this crate today; the band-8 driver's
+    // `DriverTlsConfig::default()` would ENABLE it, so disable explicitly.
+    let addresses = Addresses::try_from_address_str(address)
+        .map_err(|e| OrmError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
+    B8Driver::new(
+        addresses,
+        B8Credentials::new(username, password),
+        DriverOptions::new(DriverTlsConfig::disabled()),
+    )
+    .await
+    .map_err(|e| OrmError::Connection(format!("Failed to connect to {address}: {e}")))
+}
+
+async fn grpc_fallback_driver(
+    address: &str,
+    username: &str,
+    password: &str,
+    http_error: core_version::VersionError,
+) -> Result<DriverHandle, OrmError> {
+    let mut failures = vec![format!("HTTP version probe failed: {http_error}")];
+
+    #[cfg(feature = "band8")]
+    {
+        match connect_band8_driver(address, username, password).await {
+            Ok(driver) => {
+                let reported = driver.server_version().await.map_err(|e| {
+                    OrmError::Connection(format!(
+                        "Band-8 gRPC version validation failed after connect to {address}: {e}"
+                    ))
+                })?;
+                let server_version = reported
+                    .version()
+                    .parse::<core_version::Version>()
+                    .map_err(OrmError::UnsupportedVersion)?;
+                let band = validate_server_band(&server_version)?;
+                if band != 8 {
+                    return Err(OrmError::UnsupportedVersion(
+                        core_version::VersionError::Probe(format!(
+                            "band-8 gRPC connection reported non-band-8 server version {server_version}"
+                        )),
+                    ));
+                }
+                tracing::debug!(
+                    address,
+                    server_version = %server_version,
+                    "Connected through gRPC band-8 fallback after HTTP version probe failed"
+                );
+                return Ok(DriverHandle::B8(driver));
+            }
+            Err(error) => failures.push(format!("band-8 gRPC attempt failed: {error}")),
+        }
+    }
+
+    #[cfg(not(feature = "band8"))]
+    failures.push("band-8 gRPC attempt skipped: band8 feature is not compiled in".to_string());
+
+    #[cfg(feature = "band7")]
+    {
+        match connect_band7_driver(address, username, password).await {
+            Ok(driver) => {
+                tracing::warn!(
+                    address,
+                    "Connected through gRPC band-7 fallback after HTTP version probe failed; \
+                     exact server version is unavailable on band 7, so use server_version=... \
+                     for strict gRPC-only version validation"
+                );
+                return Ok(DriverHandle::B7(driver));
+            }
+            Err(error) => failures.push(format!("band-7 gRPC attempt failed: {error}")),
+        }
+    }
+
+    #[cfg(not(feature = "band7"))]
+    failures.push("band-7 gRPC attempt skipped: band7 feature is not compiled in".to_string());
+
+    Err(OrmError::UnsupportedVersion(
+        core_version::VersionError::Probe(format!(
+            "HTTP version probe and gRPC fallback both failed: {}",
+            failures.join("; ")
+        )),
+    ))
 }
 
 /// Version-gated [`DriverHandle`] constructor.
@@ -227,7 +348,8 @@ async fn gated_driver(
 impl RealBackend {
     /// Connect to a TypeDB server.
     ///
-    /// Probes the server version via HTTP before opening any gRPC connection.
+    /// Validates the supplied server version, or probes via HTTP before opening
+    /// any gRPC connection when no version is supplied.
     /// Returns [`OrmError::UnsupportedVersion`] when the server is outside the
     /// supported window or on a different protocol band than the driver.
     pub async fn connect(
@@ -244,7 +366,8 @@ impl RealBackend {
 
 /// Ensure a TypeDB database exists, creating it if absent.
 ///
-/// Probes the server version via HTTP before opening any gRPC connection.
+/// Validates the supplied server version, or probes via HTTP before opening any
+/// gRPC connection when no version is supplied.
 /// Returns [`OrmError::UnsupportedVersion`] when the server is outside the
 /// supported window or on a different protocol band than the driver.
 ///
@@ -787,13 +910,14 @@ mod tests {
         let options = ConnectOptions::default();
         assert_eq!(options.http_port, DEFAULT_HTTP_PORT);
         assert!(!options.tls);
+        assert_eq!(options.server_version, None);
     }
 
     /// The injectable probe must receive the configured port, not a
     /// hardcoded 8000.  The probe returns an in-window version so the gate
     /// proceeds to the gRPC connection attempt, which fails with a network
     /// error (no server) — the assertion is about the recorded port and
-    /// that the failure is NOT a version-gate rejection.
+    /// that the HTTP failure fallback path was not involved.
     #[tokio::test]
     async fn gated_driver_probe_receives_configured_port() {
         let recorded_port: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
@@ -806,6 +930,7 @@ mod tests {
             ConnectOptions {
                 http_port: 9123,
                 tls: false,
+                server_version: None,
             },
             move |_addr, port, _tls| {
                 *captured.lock().unwrap() = Some(port);
@@ -822,6 +947,116 @@ mod tests {
 
         if let Err(OrmError::UnsupportedVersion(_)) = result {
             panic!("expected a connection error (no server), not a version gate rejection")
+        }
+    }
+
+    /// When HTTP version detection fails, the constructor attempts gRPC band 8
+    /// and then band 7. If neither can connect, the error should preserve all
+    /// attempted paths instead of surfacing only the HTTP failure.
+    #[tokio::test]
+    async fn gated_driver_http_failure_reports_grpc_fallback_failures() {
+        let result = gated_driver_with_probe(
+            "127.0.0.1:1",
+            "admin",
+            "password",
+            ConnectOptions {
+                http_port: 9123,
+                tls: false,
+                server_version: None,
+            },
+            move |_addr, _port, _tls| {
+                Err(core_version::VersionError::Probe(
+                    "HTTP endpoint unavailable".to_string(),
+                ))
+            },
+        )
+        .await;
+
+        match result {
+            Err(OrmError::UnsupportedVersion(err)) => {
+                let msg = err.to_string();
+                assert!(msg.contains("HTTP endpoint unavailable"), "{msg}");
+                assert!(msg.contains("band-8 gRPC attempt failed"), "{msg}");
+                assert!(msg.contains("band-7 gRPC attempt failed"), "{msg}");
+            }
+            Err(other) => panic!("expected aggregated version-probe failure, got {other}"),
+            Ok(_) => panic!("expected aggregated version-probe failure, got successful connection"),
+        }
+    }
+
+    /// A caller-supplied exact server version is the gRPC-only escape hatch: it
+    /// must bypass the HTTP probe but still flow through the normal embedded
+    /// runtime gate before driver construction.
+    #[tokio::test]
+    async fn gated_driver_pinned_version_skips_probe() {
+        let probe_called = Arc::new(Mutex::new(false));
+        let captured = Arc::clone(&probe_called);
+
+        let result = gated_driver_with_probe(
+            "localhost:1729",
+            "admin",
+            "password",
+            ConnectOptions {
+                http_port: 9123,
+                tls: false,
+                server_version: Some(core_version::Version::new(3, 8, 3)),
+            },
+            move |_addr, _port, _tls| {
+                *captured.lock().unwrap() = true;
+                Ok(core_version::Version::new(3, 11, 5))
+            },
+        )
+        .await;
+
+        assert!(
+            !*probe_called.lock().unwrap(),
+            "pinned server_version must skip the HTTP probe"
+        );
+
+        if let Err(OrmError::UnsupportedVersion(_)) = result {
+            panic!("expected a connection error (no server), not a version gate rejection")
+        }
+    }
+
+    /// Pinned versions still use the exact semantic version gate. This prevents
+    /// a gRPC-only band-7 path from silently accepting unsupported 3.7 servers.
+    #[tokio::test]
+    async fn gated_driver_rejects_unsupported_pinned_version_without_probe() {
+        let probe_called = Arc::new(Mutex::new(false));
+        let captured = Arc::clone(&probe_called);
+
+        let result = gated_driver_with_probe(
+            "localhost:1729",
+            "admin",
+            "password",
+            ConnectOptions {
+                http_port: 9123,
+                tls: false,
+                server_version: Some(core_version::Version::new(3, 7, 3)),
+            },
+            move |_addr, _port, _tls| {
+                *captured.lock().unwrap() = true;
+                Ok(core_version::Version::new(3, 8, 3))
+            },
+        )
+        .await;
+
+        assert!(
+            !*probe_called.lock().unwrap(),
+            "unsupported pinned server_version must skip the HTTP probe"
+        );
+
+        match result {
+            Err(OrmError::UnsupportedVersion(err)) => {
+                assert!(
+                    err.to_string().contains("3.7.3"),
+                    "error should name rejected version: {err}"
+                );
+            }
+            Err(other) => panic!("expected unsupported-version rejection for 3.7.3, got {other}"),
+            Ok(_) => panic!(
+                "expected unsupported-version rejection for 3.7.3, got successful connection"
+            ),
         }
     }
 }
