@@ -14,6 +14,7 @@ use napi_derive::napi;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
+use type_bridge_core_lib::bindgen::{BindgenOptions, TargetLanguage};
 use type_bridge_core_lib::schema::TypeSchema;
 use type_bridge_core_lib::version as core_version;
 use type_bridge_orm::session::backend::QueryResult;
@@ -1128,6 +1129,26 @@ pub fn parse_schema_json(input: String) -> Result<String> {
     schema
         .to_json()
         .map_err(|e| Error::from_reason(format!("Failed to serialize schema JSON: {e}")))
+}
+
+/// Render generated model files as a JSON package for a target language.
+#[napi(js_name = "renderModelsJson")]
+pub fn render_models_json(
+    input: String,
+    target: String,
+    options_json: Option<String>,
+) -> Result<String> {
+    let target: TargetLanguage = target
+        .parse()
+        .map_err(|e| Error::from_reason(format!("Invalid bindgen target: {e}")))?;
+    let options: BindgenOptions = match options_json {
+        Some(options_json) => {
+            serde_json::from_str(&options_json).map_err(invalid_json_error("bindgen options"))?
+        }
+        None => BindgenOptions::default(),
+    };
+    type_bridge_core_lib::bindgen::generate_json_from_typeql(&input, target, &options)
+        .map_err(|e| Error::from_reason(format!("Failed to render models: {e}")))
 }
 
 /// Generate a TypeQL `define` block from serialized SchemaInfo JSON.

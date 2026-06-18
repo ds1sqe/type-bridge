@@ -328,7 +328,7 @@ type_bridge                              # Root logger
 ├── type_bridge.query                    # Query builder
 ├── type_bridge.generator                # Code generation
 │   ├── type_bridge.generator.parser
-│   └── type_bridge.generator.render.*
+│   └── type_bridge.generator.api_dto
 ├── type_bridge.models.entity            # Entity model
 ├── type_bridge.models.relation          # Relation model
 └── type_bridge.validation               # Validation

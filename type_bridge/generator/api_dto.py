@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..dto_config import DTOConfig
-from ..naming import to_class_name, to_python_name
+from .dto_config import DTOConfig
+from .naming import to_class_name, to_python_name
 from .template_loader import get_template
 
 if TYPE_CHECKING:
-    from ..models import EntitySpec, ParsedSchema, RelationSpec
+    from .models import EntitySpec, ParsedSchema, RelationSpec
 
 # Map TypeDB value types to Python types
 TYPE_MAP = {

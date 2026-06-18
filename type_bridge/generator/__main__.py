@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib
 import logging
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="type_bridge.generator",
-    help="Generate TypeBridge Python models from a TypeDB schema file.",
+    help="Generate TypeBridge models from a TypeDB schema file.",
     epilog=(
         "The --output directory is required. We recommend a dedicated "
         "directory like './myapp/models/' or './src/schema/' to keep "
@@ -121,8 +121,12 @@ def main(
             ),
         ),
     ] = None,
+    target: Annotated[
+        Literal["python", "typescript", "rust"],
+        typer.Option("--target", help="Output model language"),
+    ] = "python",
 ) -> None:
-    """Generate TypeBridge Python models from a TypeDB schema file."""
+    """Generate TypeBridge models from a TypeDB schema file."""
     logger.debug(f"CLI arguments: schema={schema}, output={output}, version={version}")
 
     if not schema.exists():
@@ -157,6 +161,7 @@ def main(
             schema_path=schema_path,
             generate_dto=dto,
             dto_config=loaded_config,
+            target=target,
         )
     except Exception as e:
         logger.error(f"Generation failed: {e}", exc_info=True)
@@ -164,7 +169,7 @@ def main(
         raise typer.Exit(1)
 
     logger.info(f"Successfully generated models in: {output}")
-    typer.echo(f"Generated TypeBridge models in: {output}")
+    typer.echo(f"Generated TypeBridge {target} models in: {output}")
 
 
 if __name__ == "__main__":

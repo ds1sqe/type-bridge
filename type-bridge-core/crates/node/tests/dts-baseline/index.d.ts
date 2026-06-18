@@ -358,6 +358,7 @@ export interface NativeRuntime {
 }
 interface NativeSchemaParser {
     parseSchemaJson(input: string): string;
+    renderModelsJson(input: string, target: string, optionsJson?: string | null): string;
 }
 export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
     NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
@@ -478,4 +479,4 @@ export declare class RustDynamicRelationManager {
     queryGroupByAggregate(spec: DynamicQuerySpec, groupFields: string[], aggregates: AggregateInput[]): unknown[];
     deleteByIid(iid: string): void;
 }
-export { generateModels, type GenerateModelsOptions, type NamingOptions, } from "./generator/index.js";
+export { generateModels, generateModelsForTarget, type BindgenRenderOptions, type BindgenTarget, type GenerateModelsOptions, type GenerateTargetModelsOptions, type NamingOptions, } from "./generator/index.js";

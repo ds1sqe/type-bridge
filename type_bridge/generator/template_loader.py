@@ -11,8 +11,8 @@ from jinja2 import Environment, FileSystemLoader
 if TYPE_CHECKING:
     from jinja2 import Template
 
-# Template directory relative to this file
-TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
+# Template directory relative to this file.
+TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
 def _render_annotation_value(value: Any) -> str:
@@ -79,7 +79,7 @@ def get_template(name: str) -> Template:
     """Load a template by name.
 
     Args:
-        name: Template filename (e.g., "attributes.py.jinja")
+        name: Template filename, for example "api_dto.py.jinja".
 
     Returns:
         Loaded Jinja2 Template object

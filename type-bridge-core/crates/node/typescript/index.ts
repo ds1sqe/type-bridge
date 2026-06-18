@@ -511,6 +511,7 @@ export interface NativeRuntime {
 
 interface NativeSchemaParser {
   parseSchemaJson(input: string): string;
+  renderModelsJson(input: string, target: string, optionsJson?: string | null): string;
 }
 
 export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
@@ -1064,6 +1065,10 @@ function parseConnectArguments(
 // ---------------------------------------------------------------------------
 export {
   generateModels,
+  generateModelsForTarget,
+  type BindgenRenderOptions,
+  type BindgenTarget,
   type GenerateModelsOptions,
+  type GenerateTargetModelsOptions,
   type NamingOptions,
 } from "./generator/index.js";

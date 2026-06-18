@@ -31,9 +31,12 @@ The generated package structure:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
+from .annotations import extract_annotations
+from .api_dto import render_api_dto
 from .dto_config import (
     BaseClassConfig,
     CompositeEntityConfig,
@@ -45,18 +48,15 @@ from .dto_config import (
     ValidatorConfig,
 )
 from .models import ParsedSchema
-from .naming import build_class_name_map
 from .parser import parse_tql_schema
-from .render import (
-    render_api_dto,
-    render_attributes,
-    render_entities,
-    render_functions,
-    render_package_init,
-    render_registry,
-    render_relations,
-    render_structs,
-)
+
+try:
+    from type_bridge_core import render_models_json as _rust_render_models_json
+
+    _RUST_BINDGEN_AVAILABLE = True
+except ImportError:
+    _rust_render_models_json = None
+    _RUST_BINDGEN_AVAILABLE = False
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -87,6 +87,7 @@ def generate_models(
     generate_dto: bool = False,
     dto_config: DTOConfig | None = None,
     format: Literal["tql", "toml"] | None = None,  # noqa: A002
+    target: Literal["python", "typescript", "rust"] = "python",
 ) -> None:
     """Generate TypeBridge models from a TypeDB schema.
 
@@ -103,7 +104,18 @@ def generate_models(
         format: Explicit schema format override. ``"toml"`` routes through the TOML
             transpiler; ``"tql"`` or ``None`` keeps the default TQL path. When
             ``None``, a ``.toml`` file suffix also triggers transpilation.
+        target: Output model language. Defaults to ``"python"`` for the historical
+            Python package generator; ``"typescript"`` and ``"rust"`` use the same
+            Rust-hosted bindgen engine for cross-target generation.
     """
+    if not _RUST_BINDGEN_AVAILABLE or _rust_render_models_json is None:
+        raise RuntimeError(
+            "type_bridge_core is required to generate models but is not "
+            "available. Reinstall type-bridge with its native core."
+        )
+    if generate_dto and target != "python":
+        raise ValueError("generate_dto is only supported for the python generation target")
+
     # Resolve schema text
     schema_source_path: Path | None = None
     if isinstance(schema, Path):
@@ -140,64 +152,6 @@ def generate_models(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
-    # Parse schema
-    parsed = parse_tql_schema(schema_text)
-    implicit_keys = set(implicit_key_attributes or set())
-
-    # Build class name mappings
-    attr_class_names = build_class_name_map(parsed.attributes)
-    entity_class_names = build_class_name_map(parsed.entities)
-    relation_class_names = build_class_name_map(parsed.relations)
-    struct_class_names = build_class_name_map(parsed.structs)
-
-    # Generate and write files
-    (output / "attributes.py").write_text(
-        render_attributes(parsed, attr_class_names),
-        encoding="utf-8",
-    )
-
-    (output / "entities.py").write_text(
-        render_entities(parsed, attr_class_names, entity_class_names, implicit_keys),
-        encoding="utf-8",
-    )
-
-    (output / "relations.py").write_text(
-        render_relations(parsed, attr_class_names, entity_class_names, relation_class_names),
-        encoding="utf-8",
-    )
-
-    # Render functions if present
-    functions_content = render_functions(parsed)
-    functions_present = False
-    if functions_content:
-        (output / "functions.py").write_text(functions_content, encoding="utf-8")
-        functions_present = True
-
-    # Render structs if present
-    structs_content = render_structs(parsed, struct_class_names)
-    if structs_content:
-        (output / "structs.py").write_text(structs_content, encoding="utf-8")
-
-    # Render registry with pre-computed metadata
-    (output / "registry.py").write_text(
-        render_registry(
-            parsed,
-            attr_class_names,
-            entity_class_names,
-            relation_class_names,
-            schema_version=schema_version,
-            schema_text=schema_text,
-        ),
-        encoding="utf-8",
-    )
-
-    # Render Pydantic DTOs if requested
-    if generate_dto:
-        (output / "api_dto.py").write_text(
-            render_api_dto(parsed, config=dto_config),
-            encoding="utf-8",
-        )
-
     # Determine schema output location
     schema_filename: str | None = None
     schema_output_path: Path | None = None
@@ -225,18 +179,33 @@ def generate_models(
                 else:
                     schema_filename = None  # In subdir, loader won't work
 
-    (output / "__init__.py").write_text(
-        render_package_init(
-            attr_class_names,
-            entity_class_names,
-            relation_class_names,
-            schema_version=schema_version,
-            include_schema_loader=schema_filename is not None,
-            schema_filename=schema_filename,
-            functions_present=functions_present,
-        ),
-        encoding="utf-8",
-    )
+    entity_annots, attr_annots, rel_annots, role_annots = extract_annotations(schema_text)
+    options: dict[str, Any] = {
+        "schema_version": schema_version,
+        "schema_filename": schema_filename,
+        "schema_text": schema_text,
+        "implicit_key_attributes": sorted(implicit_key_attributes or ()),
+        "python_metadata": {
+            "entity_annotations": entity_annots,
+            "attribute_annotations": attr_annots,
+            "relation_annotations": rel_annots,
+            "role_annotations": role_annots,
+        },
+    }
+    package = json.loads(_rust_render_models_json(schema_text, target, json.dumps(options)))
+    for file_info in package["files"]:
+        relative_path = Path(file_info["path"])
+        path = output / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(file_info["contents"], encoding="utf-8")
+
+    # Render Pydantic DTOs if requested. DTOs remain a Python-only wrapper feature.
+    if generate_dto:
+        parsed = parse_tql_schema(schema_text)
+        (output / "api_dto.py").write_text(
+            render_api_dto(parsed, config=dto_config),
+            encoding="utf-8",
+        )
 
     # Copy schema file if requested
     if schema_output_path:

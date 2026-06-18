@@ -21,6 +21,8 @@
 
 /// TypeQL Abstract Syntax Tree — patterns, statements, clauses, and values.
 pub mod ast;
+/// Rust-hosted model generation for Python, TypeScript, and Rust targets.
+pub mod bindgen;
 /// Compiles an AST back into a TypeQL query string.
 pub mod compiler;
 /// Low-level PEG grammar for TypeQL, consumed by [`query_parser`].

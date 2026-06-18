@@ -1,76 +1,118 @@
 /**
- * TypeScript model generator — the `generate_models()` twin.
+ * TypeScript model generator facade.
  *
- * Mirrors `type_bridge/generator/__init__.py` → `generate_models()`.
- * Consumes a parsed `TypeSchema` (via `parseSchema`) and writes the typed
- * `.ts` surface to a caller-supplied output directory.
- *
- * The native module is INJECTED (not self-resolved) — callers load the native
- * module via the package root's `loadNative()` and pass the `SchemaParserNative`
- * slice in `options.native`. This keeps the generator free of any native-resolution
- * path, so it survives the package layout change.
- *
- * Generated files import from `@type-bridge/node` (package entrypoint), never
- * from a hardcoded relative path, so they are valid across packaging layout changes.
- *
- * Build-time code generation; no runtime ORM logic.
+ * Rendering is owned by the Rust bindgen engine. This module only injects the
+ * native module, requests a target package, and writes returned files.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 
-import { parseSchema, type SchemaParserNative } from "../parser.js";
-import { renderAttributes } from "./renderAttributes.js";
-import { renderEntities } from "./renderEntities.js";
-import { renderRelations } from "./renderRelations.js";
-import { renderPackage } from "./renderPackage.js";
 import type { NamingOptions } from "./naming.js";
 
+/** Output targets supported by the Rust bindgen engine. */
+export type BindgenTarget = "python" | "typescript" | "rust";
+
+/** One generated source file returned by the native bindgen engine. */
+export interface GeneratedFile {
+  /** Relative output path. */
+  path: string;
+  /** Complete source text. */
+  contents: string;
+}
+
+/** Generated package payload returned by the native bindgen engine. */
+export interface GeneratedPackage {
+  /** Target language rendered by Rust. */
+  target: BindgenTarget;
+  /** Files to write. */
+  files: GeneratedFile[];
+}
+
+/** Native module slice required by the generator facade. */
+export interface BindgenNative {
+  /** Render model files as a JSON {@link GeneratedPackage}. */
+  renderModelsJson(input: string, target: string, optionsJson?: string | null): string;
+}
+
+/** Shared Rust bindgen render options exposed through the TypeScript facade. */
+export interface BindgenRenderOptions extends NamingOptions {
+  /** Schema version rendered into generated Python package metadata. */
+  schemaVersion?: string;
+  /** Bundled schema filename for generated Python `schema_text()`, or `null` to omit it. */
+  schemaFilename?: string | null;
+  /** Source schema text used by generated Python registry metadata. */
+  schemaText?: string | null;
+}
+
 /** Options for `generateModels`. */
-export interface GenerateModelsOptions extends NamingOptions {
+export interface GenerateModelsOptions extends BindgenRenderOptions {
   /**
-   * The native module slice providing `parseSchemaJson`. Callers obtain this
-   * from the package root's `loadNative()` return value. Required — the
-   * generator does not self-load the native module.
+   * The native module slice providing `renderModelsJson`. Callers obtain this
+   * from the package root's `loadNative()` return value.
    */
-  native: SchemaParserNative;
+  native: BindgenNative;
+}
+
+/** Options for cross-target model generation. */
+export interface GenerateTargetModelsOptions extends GenerateModelsOptions {
+  /** Target language to render. */
+  target: BindgenTarget;
+}
+
+function requestGeneratedPackage(
+  tql: string,
+  options: GenerateModelsOptions,
+  target: BindgenTarget,
+): GeneratedPackage {
+  const payload: Record<string, unknown> = {
+    implicit_key_attributes: options.implicitKeyAttributes ?? [],
+  };
+  if (options.schemaVersion !== undefined) {
+    payload.schema_version = options.schemaVersion;
+  }
+  if (options.schemaFilename !== undefined) {
+    payload.schema_filename = options.schemaFilename;
+  }
+  if (options.schemaText !== undefined) {
+    payload.schema_text = options.schemaText;
+  }
+  return JSON.parse(
+    options.native.renderModelsJson(tql, target, JSON.stringify(payload)),
+  ) as GeneratedPackage;
+}
+
+function writePackage(outputDir: string, generated: GeneratedPackage): void {
+  fs.mkdirSync(outputDir, { recursive: true });
+  for (const file of generated.files) {
+    const filePath = path.join(outputDir, file.path);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, file.contents, "utf-8");
+  }
 }
 
 /**
  * Generate the typed TypeScript model surface from a TQL `define` block.
  *
- * Mirrors Python `generate_models(tql, output_dir, implicit_key_attributes=...)`.
- *
- * Writes `attributes.ts`, `entities.ts`, `relations.ts`, and `index.ts`
- * (package barrel) to `outputDir`.
- *
- * @param tql       - TQL schema string (a `define` block).
- * @param outputDir - Directory to write the generated `.ts` files into.
- *                    Created if absent. Passed by the caller; the generator
- *                    does not enforce a specific location.
- * @param options   - `native` (required) + optional `implicitKeyAttributes`.
+ * Historical entrypoint: this always targets TypeScript. Use
+ * `generateModelsForTarget` for cross-target generation.
  */
 export function generateModels(
   tql: string,
   outputDir: string,
   options: GenerateModelsOptions,
 ): void {
-  // Parse: TQL string → fully-resolved TypeSchema (Rust-backed, via NAPI)
-  const schema = parseSchema(tql, options.native);
-
-  // Render
-  const attrSource = renderAttributes(schema);
-  const entitySource = renderEntities(schema, options);
-  const relationSource = renderRelations(schema, options);
-  const packageSource = renderPackage(schema);
-
-  // Write
-  fs.mkdirSync(outputDir, { recursive: true });
-  fs.writeFileSync(path.join(outputDir, "attributes.ts"), attrSource, "utf-8");
-  fs.writeFileSync(path.join(outputDir, "entities.ts"), entitySource, "utf-8");
-  fs.writeFileSync(path.join(outputDir, "relations.ts"), relationSource, "utf-8");
-  fs.writeFileSync(path.join(outputDir, "index.ts"), packageSource, "utf-8");
+  writePackage(outputDir, requestGeneratedPackage(tql, options, "typescript"));
 }
 
-// Re-export the naming utilities and options type for callers that need them
+/** Generate model files for any Rust-bindgen target. */
+export function generateModelsForTarget(
+  tql: string,
+  outputDir: string,
+  options: GenerateTargetModelsOptions,
+): void {
+  writePackage(outputDir, requestGeneratedPackage(tql, options, options.target));
+}
+
+// Re-export the naming utilities and options type for callers that need them.
 export { toClassName, toFieldName, type NamingOptions } from "./naming.js";

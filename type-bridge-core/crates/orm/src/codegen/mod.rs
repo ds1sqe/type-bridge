@@ -5,4 +5,6 @@
 pub mod generator;
 pub mod naming;
 
-pub use generator::{GeneratedModels, generate_from_typeql, generate_rust_models};
+pub use generator::{
+    GeneratedModels, generate_for_target, generate_from_typeql, generate_rust_models,
+};
