@@ -14,7 +14,9 @@ use napi_derive::napi;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
+use type_bridge_core_lib::bindgen::{BindgenOptions, TargetLanguage};
 use type_bridge_core_lib::schema::TypeSchema;
+use type_bridge_core_lib::version as core_version;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
@@ -961,6 +963,7 @@ pub fn ensure_rust_database(
     username: Option<String>,
     password: Option<String>,
     http_port: Option<u32>,
+    server_version: Option<String>,
 ) -> Result<()> {
     let runtime = Runtime::new().map(Arc::new).map_err(|error| {
         Error::new(
@@ -970,7 +973,7 @@ pub fn ensure_rust_database(
     })?;
     let username = username.unwrap_or_else(|| "admin".to_string());
     let password = password.unwrap_or_else(|| "password".to_string());
-    let options = napi_connect_options(http_port)?;
+    let options = napi_connect_options(http_port, server_version)?;
     runtime
         .block_on(type_bridge_orm::ensure_database_exists(
             &address, &database, &username, &password, options,
@@ -986,6 +989,7 @@ pub fn connect_rust_database(
     username: Option<String>,
     password: Option<String>,
     http_port: Option<u32>,
+    server_version: Option<String>,
 ) -> Result<NodeRustDatabase> {
     let runtime = Runtime::new().map(Arc::new).map_err(|error| {
         Error::new(
@@ -995,7 +999,7 @@ pub fn connect_rust_database(
     })?;
     let username = username.unwrap_or_else(|| "admin".to_string());
     let password = password.unwrap_or_else(|| "password".to_string());
-    let options = napi_connect_options(http_port)?;
+    let options = napi_connect_options(http_port, server_version)?;
     let db = runtime
         .block_on(type_bridge_orm::Database::connect_with_options(
             &address, &database, &username, &password, options,
@@ -1125,6 +1129,26 @@ pub fn parse_schema_json(input: String) -> Result<String> {
     schema
         .to_json()
         .map_err(|e| Error::from_reason(format!("Failed to serialize schema JSON: {e}")))
+}
+
+/// Render generated model files as a JSON package for a target language.
+#[napi(js_name = "renderModelsJson")]
+pub fn render_models_json(
+    input: String,
+    target: String,
+    options_json: Option<String>,
+) -> Result<String> {
+    let target: TargetLanguage = target
+        .parse()
+        .map_err(|e| Error::from_reason(format!("Invalid bindgen target: {e}")))?;
+    let options: BindgenOptions = match options_json {
+        Some(options_json) => {
+            serde_json::from_str(&options_json).map_err(invalid_json_error("bindgen options"))?
+        }
+        None => BindgenOptions::default(),
+    };
+    type_bridge_core_lib::bindgen::generate_json_from_typeql(&input, target, &options)
+        .map_err(|e| Error::from_reason(format!("Failed to render models: {e}")))
 }
 
 /// Generate a TypeQL `define` block from serialized SchemaInfo JSON.
@@ -1689,13 +1713,16 @@ fn tx_type_name(tx_type: TxType) -> &'static str {
     }
 }
 
-/// Build [`type_bridge_orm::ConnectOptions`] from the optional `http_port`
-/// parameter coming across the NAPI boundary.
+/// Build [`type_bridge_orm::ConnectOptions`] from optional parameters coming
+/// across the NAPI boundary.
 ///
 /// NAPI does not expose `u16` natively; callers pass an optional `u32` and we
 /// clamp it here.  `None` → default (8000).  An out-of-range value is a caller
 /// error, not a configuration error, so we return a hard `InvalidArg`.
-fn napi_connect_options(http_port: Option<u32>) -> Result<type_bridge_orm::ConnectOptions> {
+fn napi_connect_options(
+    http_port: Option<u32>,
+    server_version: Option<String>,
+) -> Result<type_bridge_orm::ConnectOptions> {
     let mut opts = type_bridge_orm::ConnectOptions::default();
     if let Some(port) = http_port {
         opts.http_port = u16::try_from(port).map_err(|_| {
@@ -1704,6 +1731,14 @@ fn napi_connect_options(http_port: Option<u32>) -> Result<type_bridge_orm::Conne
                 format!("httpPort {port} is out of the valid port range (0–65535)"),
             )
         })?;
+    }
+    if let Some(version) = server_version {
+        opts.server_version = Some(version.parse::<core_version::Version>().map_err(|error| {
+            Error::new(
+                Status::InvalidArg,
+                format!("serverVersion must be a TypeDB semantic version: {error}"),
+            )
+        })?);
     }
     Ok(opts)
 }

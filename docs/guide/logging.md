@@ -32,9 +32,9 @@ type_bridge                              # Root - enable to see all logs
 │       ├── type_bridge.crud.relation.query
 │       └── type_bridge.crud.relation.group_by
 ├── type_bridge.query                    # Query builder
-├── type_bridge.generator                # Code generator (TQL → Python)
+├── type_bridge.generator                # Code generator and DTO helpers
 │   ├── type_bridge.generator.parser
-│   └── type_bridge.generator.render.*
+│   └── type_bridge.generator.api_dto
 ├── type_bridge.models                   # Model definitions
 │   ├── type_bridge.models.entity
 │   └── type_bridge.models.relation

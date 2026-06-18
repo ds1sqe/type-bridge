@@ -6,7 +6,6 @@ import tempfile
 from pathlib import Path
 
 from type_bridge.generator import generate_models, parse_tql_schema
-from type_bridge.generator.render import render_functions
 
 
 class TestParseFunctions:
@@ -166,45 +165,6 @@ class TestParseFunctions:
             ("double", False),
             ("double", False),
         ]
-
-
-class TestRenderFunctions:
-    """Tests for function rendering."""
-
-    def test_render_simple_function(self) -> None:
-        """Render a simple function wrapper."""
-        schema_text = """
-            define
-            fun calculate-age($birth-date: date) -> { int }:
-                return { 1 };
-        """
-        schema = parse_tql_schema(schema_text)
-        source = render_functions(schema)
-
-        assert (
-            "def calculate_age(birth_date: date | str) -> FunctionQuery[Iterator[int]]:" in source
-        )
-        assert 'name="calculate-age"' in source
-        assert 'args=[("$birth-date", birth_date)]' in source
-        assert "from datetime import date" in source
-        assert "from type_bridge.expressions import FunctionQuery, ReturnType" in source
-
-    def test_render_multi_arg_function(self) -> None:
-        """Render function with multiple arguments."""
-        schema_text = """
-            define
-            fun risk-score($age: int, $income: double) -> { double }:
-                return { 1.0 };
-        """
-        schema = parse_tql_schema(schema_text)
-        source = render_functions(schema)
-
-        assert (
-            "def risk_score(age: int | str, income: float | str) -> FunctionQuery[Iterator[float]]:"
-            in source
-        )
-        assert 'name="risk-score"' in source
-        assert 'args=[("$age", age), ("$income", income)]' in source
 
 
 class TestGenerateFunctions:

@@ -259,6 +259,17 @@ impl TypeSchema {
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
+    /// Render generated model files as a JSON package for a target language.
+    #[pyo3(signature = (target, options_json=None))]
+    fn render_models_json(&self, target: &str, options_json: Option<&str>) -> PyResult<String> {
+        let target = parse_bindgen_target(target)?;
+        let options = parse_bindgen_options(options_json)?;
+        core::bindgen::BindgenPlan::from_schema(&self.inner)
+            .render(target, &options)
+            .to_json()
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
     /// Check if a type (entity, relation, or attribute) is abstract.
     fn is_abstract(&self, type_name: &str) -> bool {
         self.inner.is_abstract(type_name)
@@ -571,6 +582,33 @@ fn parse_typeql_query(py: Python<'_>, input: &str) -> PyResult<PyObject> {
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
+fn parse_bindgen_target(target: &str) -> PyResult<core::bindgen::TargetLanguage> {
+    target
+        .parse()
+        .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+fn parse_bindgen_options(options_json: Option<&str>) -> PyResult<core::bindgen::BindgenOptions> {
+    match options_json {
+        Some(options_json) => serde_json::from_str(options_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Failed to deserialize bindgen options: {e}"
+            ))
+        }),
+        None => Ok(core::bindgen::BindgenOptions::default()),
+    }
+}
+
+/// Render generated model files as a JSON package from a TypeQL schema string.
+#[pyfunction]
+#[pyo3(signature = (input, target, options_json=None))]
+fn render_models_json(input: &str, target: &str, options_json: Option<&str>) -> PyResult<String> {
+    let target = parse_bindgen_target(target)?;
+    let options = parse_bindgen_options(options_json)?;
+    core::bindgen::generate_json_from_typeql(input, target, &options)
+        .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
 #[pymodule]
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationEngine>()?;
@@ -578,6 +616,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TypeSchema>()?;
     m.add_class::<ValueCoercer>()?;
     m.add_function(wrap_pyfunction!(parse_typeql_query, m)?)?;
+    m.add_function(wrap_pyfunction!(render_models_json, m)?)?;
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
     m.add_function(wrap_pyfunction!(transpiler::toml_to_typeql, m)?)?;

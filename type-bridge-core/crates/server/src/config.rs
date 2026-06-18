@@ -33,6 +33,10 @@ pub struct TypeDBSection {
     /// connect-time version gate probes `/v1/version` here.
     #[serde(default = "default_http_port")]
     pub http_port: u16,
+    /// Exact TypeDB server version to validate when the HTTP API is disabled
+    /// or unreachable. When set, the connect-time gate skips HTTP probing.
+    #[serde(default)]
+    pub server_version: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -145,6 +149,9 @@ impl ServerConfig {
                 format!("TYPEDB_HTTP_PORT must be a valid port number (0–65535), got {raw:?}")
             })?;
         }
+        if let Some(server_version) = get_env("TYPEDB_SERVER_VERSION") {
+            self.typedb.server_version = Some(server_version);
+        }
         Ok(())
     }
 }
@@ -164,6 +171,7 @@ address = "localhost:1729"
 database = "mydb"
 username = "root"
 password = "secret"
+server_version = "3.11.5"
 
 [schema]
 source_file = "schema.tql"
@@ -203,6 +211,7 @@ database = "mydb"
         assert_eq!(config.typedb.database, "mydb");
         assert_eq!(config.typedb.username, "root");
         assert_eq!(config.typedb.password, "secret");
+        assert_eq!(config.typedb.server_version.as_deref(), Some("3.11.5"));
         assert_eq!(config.schema.source_file, "schema.tql");
         assert_eq!(config.interceptors.enabled, vec!["audit-log"]);
         let audit = config.interceptors.audit_log.unwrap();
@@ -243,6 +252,7 @@ database = "mydb"
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.typedb.username, "admin");
         assert_eq!(config.typedb.password, "password");
+        assert_eq!(config.typedb.server_version, None);
         assert_eq!(config.schema.source_file, "");
         assert!(config.interceptors.enabled.is_empty());
         assert!(config.interceptors.audit_log.is_none());
@@ -506,6 +516,24 @@ enabled = ["audit-log", "rate-limiter", "custom"]
         .unwrap();
 
         assert_eq!(config.typedb.http_port, 9123);
+    }
+
+    #[test]
+    fn env_overrides_server_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(&path, MINIMAL_CONFIG).unwrap();
+
+        let config = ServerConfig::from_file_with_env(path.to_str().unwrap(), |name| {
+            if name == "TYPEDB_SERVER_VERSION" {
+                Some("3.10.4".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+
+        assert_eq!(config.typedb.server_version.as_deref(), Some("3.10.4"));
     }
 
     #[test]

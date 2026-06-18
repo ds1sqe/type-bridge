@@ -1,10 +1,10 @@
 # Code Generator
 
-Generate TypeBridge Python models from TypeDB schema files (`.tql`).
+Generate TypeBridge models from TypeDB schema files (`.tql`).
 
 ## Overview
 
-The generator eliminates manual synchronization between TypeDB schemas and Python code. Instead of writing both `.tql` and Python classes, you write the schema once in TypeQL and generate type-safe Python models.
+The generator eliminates manual synchronization between TypeDB schemas and model code. Instead of writing both `.tql` and language classes, you write the schema once in TypeQL and generate type-safe models. Rust is the bindgen single source of truth for Python, TypeScript, and Rust target rendering.
 
 ```text
 schema.tql  →  generator  →  attributes.py
@@ -18,7 +18,7 @@ schema.tql  →  generator  →  attributes.py
 ### CLI Usage
 
 ```bash
-# Generate models from a schema file
+# Generate Python models from a schema file
 python -m type_bridge.generator schema.tql -o ./myapp/models/
 
 # With options
@@ -26,6 +26,11 @@ python -m type_bridge.generator schema.tql \
     --output ./myapp/models/ \
     --version 2.0.0 \
     --implicit-keys id
+
+# Cross-target generation through the same Rust bindgen engine
+python -m type_bridge.generator schema.tql \
+    --output ./generated/rust-models \
+    --target rust
 ```
 
 Schemas can also be authored in TOML — see [TOML Schema DSL](toml.md).
@@ -81,6 +86,10 @@ entity person, owns name @key;
 attribute name, value string;
 """
 generate_models(schema, "./myapp/models/")
+
+# Generate Rust or TypeScript models from Python
+generate_models(schema, "./generated/rust-models/", target="rust")
+generate_models(schema, "./generated/ts-models/", target="typescript")
 ```
 
 ## CLI Reference
@@ -98,6 +107,8 @@ Options:
   --implicit-keys TEXT    Attribute names to treat as @key even if not marked
   --dto                   Generate Pydantic API DTOs (api_dto.py)
   --dto-config TEXT       Python module path to DTOConfig (e.g., myapp.config:dto_config)
+  --target [python|typescript|rust]
+                          Output model language [default: python]
   --help                  Show this message and exit
 ```
 

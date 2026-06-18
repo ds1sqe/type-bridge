@@ -75,6 +75,8 @@ address = "localhost:1729"
 database = "my_database"
 username = "admin"
 password = "password"
+http_port = 8000              # default; used for connect-time version probing
+server_version = "3.11.5"     # optional; skips HTTP probing for gRPC-only TypeDB
 
 [server]
 host = "0.0.0.0"     # default
@@ -196,7 +198,7 @@ impl QueryExecutor for MyBackend {
 
 | Feature | Default | Effect |
 |---------|---------|--------|
-| `typedb` | yes | Enables `TypeDBClient` and `typedb-driver` dependency |
+| `typedb` | yes | Enables `TypeDBClient` through the shared TypeDB runtime |
 | `axum-transport` | yes | Enables HTTP server with Axum |
 
 Build as bare library (no transport, no TypeDB):

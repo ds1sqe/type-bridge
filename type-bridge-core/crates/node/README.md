@@ -60,7 +60,11 @@ const person = registry.registerEntity({
 const attrs = { name: string("Alice"), age: long(42n) };
 new Marshalling().entityAttributes(person, attrs);
 
-const db = RustDatabase.connect("127.0.0.1:1729", "example");
+const db = RustDatabase.connect("127.0.0.1:1729", "example", {
+  httpPort: 8000,
+  // Optional: skip HTTP probing when only gRPC is reachable.
+  serverVersion: "3.11.5",
+});
 const manager = db.entityManager(person);
 manager.insert(attrs);
 ```

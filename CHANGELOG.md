@@ -4,6 +4,19 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- **Shared TypeDB runtime parity (#155/#154)** - `type_bridge_server::typedb::TypeDBClient`
+  now uses the same gRPC-only connect path, HTTP-probe fallback, and exact
+  `server_version` override logic as the ORM `Database.connect` surface. The
+  ORM and server both depend on a shared TypeDB runtime crate for driver
+  construction, database lifecycle, transaction execution, and JSON result
+  conversion.
+- **Node gRPC-only connect option parity (#154)** - `@type-bridge/node`
+  `ensureDatabase` and `RustDatabase.connect` now accept `serverVersion`, letting
+  Node callers skip the HTTP version probe for gRPC-only deployments while still
+  validating the exact TypeDB server version.
+
 ## [1.5.1] - 2026-06-17
 
 ### Bug Fixes

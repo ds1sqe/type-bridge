@@ -497,6 +497,7 @@ export interface NativeRuntime {
     username?: string | null,
     password?: string | null,
     httpPort?: number | null,
+    serverVersion?: string | null,
   ): void;
   connectRustDatabase(
     address: string,
@@ -504,11 +505,13 @@ export interface NativeRuntime {
     username?: string | null,
     password?: string | null,
     httpPort?: number | null,
+    serverVersion?: string | null,
   ): NativeRustDatabase;
 }
 
 interface NativeSchemaParser {
   parseSchemaJson(input: string): string;
+  renderModelsJson(input: string, target: string, optionsJson?: string | null): string;
 }
 
 export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
@@ -521,6 +524,8 @@ export interface RustDatabaseConnectOptions {
   password?: string | null;
   /** Port of the TypeDB HTTP API used for the connect-time version probe. */
   httpPort?: number;
+  /** Exact TypeDB server version; skips HTTP probing for gRPC-only deployments. */
+  serverVersion?: string | null;
 }
 
 export interface EnsureDatabaseOptions {
@@ -528,6 +533,8 @@ export interface EnsureDatabaseOptions {
   password?: string | null;
   /** Port of the TypeDB HTTP API used for the connect-time version probe. */
   httpPort?: number;
+  /** Exact TypeDB server version; skips HTTP probing for gRPC-only deployments. */
+  serverVersion?: string | null;
 }
 
 /**
@@ -548,6 +555,7 @@ export function ensureDatabase(
     options?.username ?? null,
     options?.password ?? null,
     options?.httpPort ?? null,
+    options?.serverVersion ?? null,
   );
 }
 
@@ -751,6 +759,7 @@ export class RustDatabase {
         parsed.options.username ?? null,
         parsed.options.password ?? null,
         parsed.options.httpPort ?? null,
+        parsed.options.serverVersion ?? null,
       ),
     );
   }
@@ -1056,6 +1065,10 @@ function parseConnectArguments(
 // ---------------------------------------------------------------------------
 export {
   generateModels,
+  generateModelsForTarget,
+  type BindgenRenderOptions,
+  type BindgenTarget,
   type GenerateModelsOptions,
+  type GenerateTargetModelsOptions,
   type NamingOptions,
 } from "./generator/index.js";

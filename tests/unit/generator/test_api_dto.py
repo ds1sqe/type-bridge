@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from type_bridge.generator import parse_tql_schema
+from type_bridge.generator.api_dto import render_api_dto
 from type_bridge.generator.dto_config import (
     BaseClassConfig,
     CompositeEntityConfig,
@@ -13,7 +14,6 @@ from type_bridge.generator.dto_config import (
     FieldSyncConfig,
     ValidatorConfig,
 )
-from type_bridge.generator.render import render_api_dto
 
 
 class TestRenderApiDto:

@@ -120,9 +120,32 @@ exact validation is required. Invalid or unsupported pinned versions still fail 
 **Node binding**
 
 ```typescript
-// Pass httpPort in the options object
-const db = new Database({ address: "localhost:1729", database: "mydb", httpPort: 9000 });
+import { RustDatabase, ensureDatabase } from "@type-bridge/node";
+
+// Pass httpPort in the options object when TypeDB's HTTP port is remapped.
+const db = RustDatabase.connect("localhost:1729", "mydb", { httpPort: 9000 });
+
+// Pass serverVersion to skip HTTP probing for gRPC-only deployments.
+ensureDatabase("localhost:1729", "mydb", { serverVersion: "3.10.4" });
+const grpcOnly = RustDatabase.connect("localhost:1729", "mydb", {
+  serverVersion: "3.10.4",
+});
 ```
+
+**Server config**
+
+```toml
+[typedb]
+address = "localhost:1729"
+database = "mydb"
+http_port = 9000
+
+# Optional: exact server version for gRPC-only deployments.
+server_version = "3.10.4"
+```
+
+The same settings can be supplied with `TYPEDB_HTTP_PORT` and
+`TYPEDB_SERVER_VERSION`.
 
 **Migration CLI**
 

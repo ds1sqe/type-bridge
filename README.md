@@ -375,7 +375,7 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 
 - Python 3.12–3.13
 - TypeDB 3.8.0–3.11.x server (see the [compatibility table](docs/development/typedb.md#server-and-driver-compatibility) for the full support window; band-7 and band-8 servers are all served by one artifact)
-- type-bridge-core>=1.5.1
+- type-bridge-core>=1.5.2rc1
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
 - jinja2>=3.1.0 (for code generation)

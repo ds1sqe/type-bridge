@@ -389,18 +389,18 @@ The four generated files mirror the Python generator's output (`.py` files plus
 `__init__.py`). The barrel `index.ts` re-exports all generated classes so consumer
 code can import from a single path.
 
-### Architecture: one parser, two renderers
+### Architecture: Rust-hosted bindgen
 
-Parsing and inheritance resolution happen **once** in the shared Rust core. Each
-language then runs its own renderer over that resolved schema. The Python generator
-and the TypeScript generator both consume the same `TypeSchema` — they do not
-re-implement parsing. This is why a model generated from TypeScript and the
-corresponding Python model are structurally equivalent: the shared schema walk
-produces identical descriptors in both renderers.
+Parsing, inheritance resolution, and target-language rendering happen in the
+shared Rust core. The TypeScript generator is a file-writing facade: it injects
+the native module, asks Rust to render the TypeScript target, and writes the
+returned files. The same Rust bindgen path can also render Python or Rust model
+files, which keeps naming, cardinality, inheritance, and role-player decisions
+consistent across language surfaces.
 
 ### Usage
 
-`generateModels` and `parseSchema` are exported from `@type-bridge/node`.
+`generateModels`, `generateModelsForTarget`, and `parseSchema` are exported from `@type-bridge/node`.
 The native module must be **injected** — obtain it from `loadNative()` and
 pass it via the `native` option:
 
@@ -417,10 +417,22 @@ generateModels(tql, "src/models", { native: loadNative() });
 `@type-bridge/node`, so generated code has no transitive dependencies beyond
 the package itself.
 
+For cross-target generation, use `generateModelsForTarget`:
+
+```ts
+import { generateModelsForTarget, loadNative } from "@type-bridge/node";
+
+generateModelsForTarget(tql, "generated/rust-models", {
+  native: loadNative(),
+  target: "rust",
+});
+```
+
 ### API
 
 ```ts
 generateModels(tql: string, outputDir: string, options: GenerateModelsOptions): void
+generateModelsForTarget(tql: string, outputDir: string, options: GenerateTargetModelsOptions): void
 ```
 
 | Parameter   | Type                    | Description                              |
@@ -429,17 +441,26 @@ generateModels(tql: string, outputDir: string, options: GenerateModelsOptions): 
 | `outputDir` | `string`                | Directory to write the four output files |
 | `options`   | `GenerateModelsOptions` | Must include `native`; see below         |
 
+`GenerateTargetModelsOptions` adds `target: "python" | "typescript" | "rust"`.
+
 `GenerateModelsOptions` is defined as:
 
 ```ts
-type GenerateModelsOptions = { native: SchemaParserNative } & NamingOptions;
+type GenerateModelsOptions = { native: SchemaParserNative } & BindgenRenderOptions;
 type NamingOptions = { implicitKeyAttributes?: string[] };
+type BindgenRenderOptions = NamingOptions & {
+  schemaVersion?: string;
+  schemaFilename?: string | null;
+  schemaText?: string | null;
+};
 ```
 
 `SchemaParserNative` is the native module handle; `loadNative()` returns it.
 `implicitKeyAttributes` lists attribute names that should be treated as `@key`
 even when the schema does not annotate them — useful for convention-based key
-fields such as `id`.
+fields such as `id`. The schema metadata options are forwarded to the Rust
+bindgen engine for cross-target parity, especially when TypeScript requests the
+Python target.
 
 For the lower-level parse step, `parseSchema` is also exported:
 
