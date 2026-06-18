@@ -4,6 +4,19 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-06-18
+
+### New Features
+
+- **Rust bindgen model renderer (#157)** - Python, TypeScript, and Rust model
+  rendering now run through the shared Rust bindgen engine, with Python
+  `generate_models` and the Node generator facade delegating to native
+  `render_models_json` bindings.
+- **Renderer deduplication (#157)** - The old Python Jinja renderer and
+  duplicated TypeScript renderer implementation were removed, so future model
+  generation changes land in one core implementation with cross-language parity
+  coverage.
+
 ### Bug Fixes
 
 - **Shared TypeDB runtime parity (#155/#154)** - `type_bridge_server::typedb::TypeDBClient`

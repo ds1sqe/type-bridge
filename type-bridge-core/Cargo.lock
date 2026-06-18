@@ -2522,7 +2522,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge-core"
-version = "1.5.2-rc1"
+version = "1.5.2"
 dependencies = [
  "pyo3",
  "pythonize",
@@ -2537,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "1.5.2-rc1"
+version = "1.5.2"
 dependencies = [
  "criterion",
  "once_cell",
@@ -2554,7 +2554,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-migration"
-version = "1.5.2-rc1"
+version = "1.5.2"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-node"
-version = "1.5.2-rc1"
+version = "1.5.2"
 dependencies = [
  "napi",
  "napi-derive",
@@ -2584,7 +2584,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm"
-version = "1.5.2-rc1"
+version = "1.5.2"
 dependencies = [
  "criterion",
  "serde",
@@ -2599,7 +2599,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "1.5.2-rc1"
+version = "1.5.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2609,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-server"
-version = "1.5.2-rc1"
+version = "1.5.2"
 dependencies = [
  "axum 0.8.8",
  "chrono",
@@ -2633,7 +2633,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-toml-transpiler"
-version = "1.5.2-rc1"
+version = "1.5.2"
 dependencies = [
  "indexmap 2.13.1",
  "serde",
@@ -2676,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-typedb-runtime"
-version = "1.5.2-rc1"
+version = "1.5.2"
 dependencies = [
  "futures",
  "serde",
