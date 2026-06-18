@@ -37,4 +37,16 @@ describe("connect honors an explicit httpPort", () => {
       /port|invalid/i,
     );
   });
+
+  test("an invalid serverVersion is rejected at the binding boundary", () => {
+    assert.throws(
+      () =>
+        typeBridge.ensureDatabase(address, database, {
+          username,
+          password,
+          serverVersion: "3.11.x",
+        }),
+      /serverVersion|version/i,
+    );
+  });
 });

@@ -1,0 +1,34 @@
+[package]
+name = "type-bridge-typedb-runtime"
+version = "1.5.2-rc1"
+edition = "2024"
+description = "Shared TypeDB runtime driver layer for type-bridge"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "type_bridge_typedb_runtime"
+path = "src/lib.rs"
+
+[features]
+default = ["band7", "band8"]
+band7 = ["dep:type-bridge-typedb-driver-b7"]
+band8 = ["dep:typedb-driver"]
+
+[dependencies]
+type-bridge-core-lib = { path = "../core", version = "1.5.2-rc1" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+tracing = "0.1"
+futures = "0.3"
+typedb-driver = { version = "3", optional = true }
+type-bridge-typedb-driver-b7 = { path = "../../vendor/typedb-driver-b7", version = "=3.8.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[lints]
+workspace = true

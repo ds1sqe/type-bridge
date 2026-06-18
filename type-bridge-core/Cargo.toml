@@ -5,6 +5,7 @@ members = [
     "crates/migration",
     "crates/python",
     "crates/server",
+    "crates/typedb-runtime",
     "crates/orm",
     "crates/orm-derive",
     "crates/node",

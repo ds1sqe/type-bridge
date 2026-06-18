@@ -2586,7 +2586,6 @@ name = "type-bridge-orm"
 version = "1.5.2-rc1"
 dependencies = [
  "criterion",
- "futures",
  "serde",
  "serde_json",
  "thiserror",
@@ -2594,8 +2593,7 @@ dependencies = [
  "tracing",
  "type-bridge-core-lib",
  "type-bridge-orm-derive",
- "type-bridge-typedb-driver-b7",
- "typedb-driver",
+ "type-bridge-typedb-runtime",
 ]
 
 [[package]]
@@ -2615,7 +2613,6 @@ dependencies = [
  "axum 0.8.8",
  "chrono",
  "clap",
- "futures",
  "http-body-util",
  "serde",
  "serde_json",
@@ -2629,8 +2626,7 @@ dependencies = [
  "tracing-subscriber",
  "type-bridge-core-lib",
  "type-bridge-server",
- "type-bridge-typedb-driver-b7",
- "typedb-driver",
+ "type-bridge-typedb-runtime",
  "uuid",
 ]
 
@@ -2675,6 +2671,21 @@ version = "3.7.0"
 dependencies = [
  "prost",
  "tonic",
+]
+
+[[package]]
+name = "type-bridge-typedb-runtime"
+version = "1.5.2-rc1"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "type-bridge-core-lib",
+ "type-bridge-typedb-driver-b7",
+ "typedb-driver",
 ]
 
 [[package]]
