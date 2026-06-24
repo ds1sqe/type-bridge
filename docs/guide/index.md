@@ -20,7 +20,8 @@ TypeBridge provides a Pythonic interface to TypeDB that aligns with TypeDB's typ
 - **[CRUD Operations](crud.md)** - Create, read, update, delete with type-safe managers
 - **[Queries](queries.md)** - Query expressions, filtering, aggregations, and pagination
 - **[Functions](functions.md)** - TypeDB schema-defined functions and FunctionQuery
-- **[Schema Management](schema.md)** - Schema operations, conflict detection, and migrations
+- **[Schema Management](schema.md)** - Schema operations and conflict detection
+- **[Migrations](migrations.md)** - Schema history, snapshots, data migrations, and rollback
 
 ### Code Generation
 
@@ -196,6 +197,7 @@ entity person,
 - [Queries Documentation](queries.md)
 - [Functions Documentation](functions.md)
 - [Schema Management Documentation](schema.md)
+- [Migration Documentation](migrations.md)
 - [Generator Documentation](generator.md)
 - [API DTOs Documentation](dto.md)
 - [Validation Documentation](validation.md)

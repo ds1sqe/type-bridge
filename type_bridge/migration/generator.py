@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from type_bridge import _rust_runtime
 from type_bridge.attribute.base import Attribute
 from type_bridge.migration import operations as ops
+from type_bridge.migration import ref
 from type_bridge.migration.info import SchemaInfo
 from type_bridge.migration.introspection import IntrospectedSchema, SchemaIntrospector
 from type_bridge.migration.loader import MigrationLoader
@@ -20,6 +21,26 @@ if TYPE_CHECKING:
     from type_bridge.session import Database
 
 logger = logging.getLogger(__name__)
+
+_MIGRATION_STATE_ENTITIES = {
+    "type_bridge_migration",
+    "type_bridge_migration_run",
+}
+_MIGRATION_STATE_ATTRIBUTES = {
+    "migration_id",
+    "migration_app_label",
+    "migration_name",
+    "migration_applied_at",
+    "migration_checksum",
+    "migration_run_id",
+    "migration_direction",
+    "migration_status",
+    "migration_started_at",
+    "migration_finished_at",
+    "migration_error",
+    "migration_executor_ip",
+    "migration_executor_mac",
+}
 
 
 def _add_ownership_operation(
@@ -98,9 +119,57 @@ def _attribute_type_change_keyword(changes: dict) -> str:
     return "define"
 
 
-def _class_ref(cls: type) -> str:
-    """Render a class reference for generated migration source."""
-    return cls.__name__
+def _type_label(value: Any) -> str:
+    return str(value.get_type_name())
+
+
+def _attribute_label(value: Any) -> str:
+    return str(value.get_attribute_name())
+
+
+def _player_type_label(value: object) -> str:
+    get_type_name = getattr(value, "get_type_name", None)
+    if callable(get_type_name):
+        return str(get_type_name())
+    return str(value)
+
+
+def _type_ref(value: object) -> str:
+    from type_bridge.models import Relation
+
+    label = _type_label(value)
+    if getattr(value, "kind", None) == "relation":
+        return f"ref.relation({label!r})"
+    if isinstance(value, type) and issubclass(value, Relation):
+        return f"ref.relation({label!r})"
+    return f"ref.entity({label!r})"
+
+
+def _attribute_ref(value: object) -> str:
+    return f"ref.attribute({_attribute_label(value)!r})"
+
+
+def _without_migration_state_schema(schema: IntrospectedSchema) -> IntrospectedSchema:
+    """Remove TypeBridge's migration ledger types from a live schema snapshot."""
+    return IntrospectedSchema(
+        entities={
+            name: entity
+            for name, entity in schema.entities.items()
+            if name not in _MIGRATION_STATE_ENTITIES
+        },
+        relations=dict(schema.relations),
+        attributes={
+            name: attribute
+            for name, attribute in schema.attributes.items()
+            if name not in _MIGRATION_STATE_ATTRIBUTES
+        },
+        ownerships=[
+            ownership
+            for ownership in schema.ownerships
+            if ownership.owner_name not in _MIGRATION_STATE_ENTITIES
+            and ownership.attribute_name not in _MIGRATION_STATE_ATTRIBUTES
+        ],
+    )
 
 
 class MigrationGenerator:
@@ -165,6 +234,10 @@ class MigrationGenerator:
             models_code = ""
             imports_code = self._generate_empty_imports()
             description = "empty migration"
+            self._pre_version = f"v{next_num - 1:04d}" if next_num > 1 else None
+            self._post_version = f"v{next_num:04d}"
+            self._import_records = {}
+            self._symbol_aliases = {}
         else:
             # Detect changes - now always returns operations
             operations, _ = self._detect_changes(models, existing)
@@ -173,7 +246,30 @@ class MigrationGenerator:
                 logger.info("No changes detected")
                 return None
 
-            # Always use operations-based migration.
+            # Phase 2: Generate snapshot first
+            from type_bridge.migration.snapshots import generate_snapshot
+
+            schema_mgr = SchemaManager(self.db)
+            schema_mgr.register(*models)
+            schema_text = schema_mgr.generate_schema()
+
+            migration_name = f"{next_num:04d}_{name}"
+            version_str = f"v{next_num:04d}"
+
+            generate_snapshot(
+                migrations_dir=self.migrations_dir,
+                version=version_str,
+                migration_name=migration_name,
+                schema_text=schema_text,
+            )
+
+            self._pre_version = f"v{next_num - 1:04d}" if next_num > 1 else None
+            self._post_version = f"v{next_num:04d}"
+            self._import_records = {}
+            self._symbol_aliases = {}
+
+            # Collect imports and render
+            self._collect_imports_and_aliases(operations)
             operations_code = self._render_operations(operations)
             models_code = ""
             imports_code = self._generate_operations_imports(operations)
@@ -235,9 +331,11 @@ class MigrationGenerator:
         schema_mgr.register(*models)
         new_info = schema_mgr.collect_schema_info()
 
-        # Introspect actual database schema using model-aware approach
+        # Introspect the full application schema so removed target types are
+        # still visible to the diff. TypeBridge's own migration state schema is
+        # filtered out because it is storage infrastructure, not app schema.
         introspector = SchemaIntrospector(self.db)
-        db_schema = introspector.introspect_for_models(models)
+        db_schema = _without_migration_state_schema(introspector.introspect())
 
         # Generate operations - this works for both initial and incremental migrations
         # For empty database, all model types will be "new" and get Add operations
@@ -310,8 +408,8 @@ class MigrationGenerator:
                     operations.append(operation)
                     logger.debug(f"Will add ownership: {entity_name} owns {attr_name}")
             for attr_name in changes.get("removed_attributes", []):
-                if attr := attributes.get(attr_name):
-                    operations.append(ops.RemoveOwnership(entity, attr))
+                attr = attributes.get(attr_name) or ref.attribute(attr_name)
+                operations.append(ops.RemoveOwnership(entity, attr))
             for attr_name, old_flags, new_flags in changes.get("modified_attributes", []):
                 if attr := attributes.get(attr_name):
                     operations.append(ops.ModifyOwnership(entity, attr, old_flags, new_flags))
@@ -325,8 +423,8 @@ class MigrationGenerator:
                     operations.append(operation)
                     logger.debug(f"Will add ownership: {relation_name} owns {attr_name}")
             for attr_name in changes.get("removed_attributes", []):
-                if attr := attributes.get(attr_name):
-                    operations.append(ops.RemoveOwnership(relation, attr))
+                attr = attributes.get(attr_name) or ref.attribute(attr_name)
+                operations.append(ops.RemoveOwnership(relation, attr))
             for attr_name, old_flags, new_flags in changes.get("modified_attributes", []):
                 if attr := attributes.get(attr_name):
                     operations.append(ops.ModifyOwnership(relation, attr, old_flags, new_flags))
@@ -343,6 +441,45 @@ class MigrationGenerator:
                     operations.append(ops.AddRolePlayer(relation, role_name, player_type))
                 for player_type in player_change.get("removed_player_types", []):
                     operations.append(ops.RemoveRolePlayer(relation, role_name, player_type))
+
+        for relation_name in rust_diff.get("removed_relations", []):
+            relation_ref = ref.relation(relation_name)
+            if relation := db_schema.relations.get(relation_name):
+                for role in relation.roles.values():
+                    for player_type in role.player_types:
+                        operations.append(
+                            ops.RemoveRolePlayer(
+                                relation_ref,
+                                role.name,
+                                _player_type_label(player_type),
+                            )
+                        )
+                    operations.append(ops.RemoveRole(relation_ref, role.name))
+                for ownership in db_schema.get_ownerships_for(relation_name):
+                    operations.append(
+                        ops.RemoveOwnership(
+                            relation_ref,
+                            ref.attribute(ownership.attribute_name),
+                        )
+                    )
+            operations.append(ops.RemoveRelation(ref.relation(relation_name)))
+            logger.debug(f"Will remove relation: {relation_name}")
+
+        for entity_name in rust_diff.get("removed_entities", []):
+            entity_ref = ref.entity(entity_name)
+            for ownership in db_schema.get_ownerships_for(entity_name):
+                operations.append(
+                    ops.RemoveOwnership(
+                        entity_ref,
+                        ref.attribute(ownership.attribute_name),
+                    )
+                )
+            operations.append(ops.RemoveEntity(entity_ref))
+            logger.debug(f"Will remove entity: {entity_name}")
+
+        for attr_name in rust_diff.get("removed_attributes", []):
+            operations.append(ops.RemoveAttribute(ref.attribute(attr_name)))
+            logger.debug(f"Will remove attribute: {attr_name}")
 
         return operations
 
@@ -369,60 +506,237 @@ class MigrationGenerator:
         lines.append("    ]")
         return "\n".join(lines)
 
+    def _collect_imports_and_aliases(self, operations: list[ops.Operation]) -> None:
+        """Scan operations to collect all needed snapshot imports and compute aliases."""
+        self._import_records = {}
+        self._symbol_aliases = {}
+
+        # 1. Collect imports by scanning each operation
+        for op in operations:
+            self._collect_op_imports(op)
+
+        # 2. Compute aliases for colliding symbol names
+        # Count occurrences of each symbol name across all versions
+        symbol_counts: dict[str, int] = {}
+        symbol_versions: dict[str, list[str]] = {}
+        for version, submodules in self._import_records.items():
+            for submodule, symbols in submodules.items():
+                for symbol in symbols:
+                    symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
+                    symbol_versions.setdefault(symbol, []).append(version)
+
+        # For symbols with count > 1, latest version gets the unaliased symbol,
+        # and others get aliased to Symbol{Version}
+        for symbol, count in symbol_counts.items():
+            if count > 1:
+                versions = sorted(symbol_versions[symbol])
+                latest_version = versions[-1]
+                # Register aliases
+                for version in versions:
+                    if version != latest_version:
+                        alias = f"{symbol}{version.upper()}"
+                        self._symbol_aliases[(version, symbol)] = alias
+
+    def _collect_op_imports(self, op: ops.Operation) -> None:
+        # Determine the version (pre or post) for the operation
+        if isinstance(
+            op,
+            (
+                ops.AddEntity,
+                ops.AddRelation,
+                ops.AddAttribute,
+                ops.AddOwnership,
+                ops.AddRole,
+                ops.AddRolePlayer,
+            ),
+        ):
+            version = self._post_version
+        else:
+            version = self._pre_version
+
+        if not version:
+            return
+
+        # Helper to try to resolve type references
+        def record_ref(value: object):
+            if not isinstance(value, str):
+                self._resolve_snapshot_symbol(value, version)
+
+        if isinstance(op, (ops.AddEntity, ops.RemoveEntity)):
+            record_ref(op.entity)
+        elif isinstance(op, (ops.AddRelation, ops.RemoveRelation)):
+            record_ref(op.relation)
+        elif isinstance(op, (ops.AddAttribute, ops.RemoveAttribute)):
+            record_ref(op.attribute)
+        elif isinstance(op, (ops.AddOwnership, ops.RemoveOwnership)):
+            record_ref(op.owner)
+            record_ref(op.attribute)
+        elif isinstance(op, ops.ModifyOwnership):
+            record_ref(op.owner)
+            record_ref(op.attribute)
+        elif isinstance(op, (ops.AddRole, ops.RemoveRole)):
+            record_ref(op.relation)
+        elif isinstance(op, (ops.AddRolePlayer, ops.RemoveRolePlayer)):
+            record_ref(op.relation)
+        elif isinstance(op, ops.CopyAttribute):
+            record_ref(op.owner)
+
+    def _resolve_snapshot_symbol(self, value: Any, version: str) -> str | None:
+        if not version:
+            return None
+
+        # Extract label
+        from type_bridge.migration.snapshots import get_snapshot_class_map
+
+        # Get label and kind
+        try:
+            label, kind = self._get_label_and_kind(value)
+        except Exception:
+            return None
+
+        class_map = get_snapshot_class_map(self.migrations_dir, version)
+        if label not in class_map:
+            return None
+
+        cls = class_map[label]
+        class_name = cls.__name__
+
+        # Determine submodule
+        from type_bridge.attribute.base import Attribute
+        from type_bridge.models import Relation
+
+        if issubclass(cls, Relation):
+            submodule = "relations"
+        elif issubclass(cls, Attribute):
+            submodule = "attributes"
+        else:
+            submodule = "entities"
+
+        # Record the import
+        self._import_records.setdefault(version, {}).setdefault(submodule, set()).add(class_name)
+        return class_name
+
+    def _get_label_and_kind(self, value: Any) -> tuple[str, str]:
+        if isinstance(value, type):
+            from type_bridge.attribute.base import Attribute
+            from type_bridge.models import Relation
+
+            if issubclass(value, Relation):
+                return value.get_type_name(), "relation"
+            elif issubclass(value, Attribute):
+                return value.get_attribute_name(), "attribute"
+            else:
+                return value.get_type_name(), "entity"
+        elif hasattr(value, "get_type_name"):
+            kind = getattr(value, "kind", "entity")
+            return str(value.get_type_name()), kind
+        elif hasattr(value, "get_attribute_name"):
+            return str(value.get_attribute_name()), "attribute"
+        elif hasattr(value, "label"):
+            kind = getattr(value, "kind", "entity")
+            return str(value.label), kind
+        else:
+            raise ValueError(f"Cannot get label from {value}")
+
+    def _type_ref(self, value: Any, version: str | None) -> str:
+        if version:
+            symbol = self._resolve_snapshot_symbol(value, version)
+            if symbol:
+                resolved_symbol = self._symbol_aliases.get((version, symbol), symbol)
+                return resolved_symbol
+
+        # Fallback to old behavior
+        from type_bridge.models import Relation
+
+        try:
+            label, kind = self._get_label_and_kind(value)
+        except Exception:
+            label = getattr(value, "label", str(value))
+            kind = "entity"
+
+        if kind == "relation":
+            return f"ref.relation({label!r})"
+        if isinstance(value, type) and issubclass(value, Relation):
+            return f"ref.relation({label!r})"
+        return f"ref.entity({label!r})"
+
+    def _attribute_ref(self, value: Any, version: str | None) -> str:
+        if version:
+            symbol = self._resolve_snapshot_symbol(value, version)
+            if symbol:
+                resolved_symbol = self._symbol_aliases.get((version, symbol), symbol)
+                return resolved_symbol
+
+        # Fallback to old behavior
+        try:
+            label, _ = self._get_label_and_kind(value)
+        except Exception:
+            label = getattr(value, "label", str(value))
+        return f"ref.attribute({label!r})"
+
     def _render_operation(self, operation: ops.Operation) -> str:
         """Render one operation object as Python source."""
+        pre_version = getattr(self, "_pre_version", None)
+        post_version = getattr(self, "_post_version", None)
+
         if isinstance(operation, ops.AddAttribute):
-            return f"ops.AddAttribute({_class_ref(operation.attribute)})"
+            return f"ops.AddAttribute({self._attribute_ref(operation.attribute, post_version)})"
         if isinstance(operation, ops.RemoveAttribute):
-            return f"ops.RemoveAttribute({_class_ref(operation.attribute)})"
+            return f"ops.RemoveAttribute({self._attribute_ref(operation.attribute, pre_version)})"
         if isinstance(operation, ops.AddEntity):
-            return f"ops.AddEntity({_class_ref(operation.entity)})"
+            return f"ops.AddEntity({self._type_ref(operation.entity, post_version)})"
         if isinstance(operation, ops.RemoveEntity):
-            return f"ops.RemoveEntity({_class_ref(operation.entity)})"
+            return f"ops.RemoveEntity({self._type_ref(operation.entity, pre_version)})"
         if isinstance(operation, ops.AddOwnership):
-            args = [_class_ref(operation.owner), _class_ref(operation.attribute)]
+            args = [
+                self._type_ref(operation.owner, post_version),
+                self._attribute_ref(operation.attribute, post_version),
+            ]
             kwargs = self._render_add_ownership_kwargs(operation)
             return self._render_call("AddOwnership", args, kwargs)
         if isinstance(operation, ops.RemoveOwnership):
             return (
                 "ops.RemoveOwnership("
-                f"{_class_ref(operation.owner)}, {_class_ref(operation.attribute)})"
+                f"{self._type_ref(operation.owner, pre_version)}, {self._attribute_ref(operation.attribute, pre_version)})"
             )
         if isinstance(operation, ops.ModifyOwnership):
             return self._render_call(
                 "ModifyOwnership",
-                [_class_ref(operation.owner), _class_ref(operation.attribute)],
+                [
+                    self._type_ref(operation.owner, pre_version),
+                    self._attribute_ref(operation.attribute, pre_version),
+                ],
                 {
                     "old_annotations": repr(operation.old_annotations),
                     "new_annotations": repr(operation.new_annotations),
                 },
             )
         if isinstance(operation, ops.AddRelation):
-            return f"ops.AddRelation({_class_ref(operation.relation)})"
+            return f"ops.AddRelation({self._type_ref(operation.relation, post_version)})"
         if isinstance(operation, ops.RemoveRelation):
-            return f"ops.RemoveRelation({_class_ref(operation.relation)})"
+            return f"ops.RemoveRelation({self._type_ref(operation.relation, pre_version)})"
         if isinstance(operation, ops.AddRole):
             return self._render_call(
                 "AddRole",
                 [
-                    _class_ref(operation.relation),
+                    self._type_ref(operation.relation, post_version),
                     repr(operation.role_name),
                     repr(operation.player_types),
                 ],
                 {},
             )
         if isinstance(operation, ops.RemoveRole):
-            return f"ops.RemoveRole({_class_ref(operation.relation)}, {operation.role_name!r})"
+            return f"ops.RemoveRole({self._type_ref(operation.relation, pre_version)}, {operation.role_name!r})"
         if isinstance(operation, ops.AddRolePlayer):
             return (
                 "ops.AddRolePlayer("
-                f"{_class_ref(operation.relation)}, {operation.role_name!r}, "
+                f"{self._type_ref(operation.relation, post_version)}, {operation.role_name!r}, "
                 f"{operation.player_type!r})"
             )
         if isinstance(operation, ops.RemoveRolePlayer):
             return (
                 "ops.RemoveRolePlayer("
-                f"{_class_ref(operation.relation)}, {operation.role_name!r}, "
+                f"{self._type_ref(operation.relation, pre_version)}, {operation.role_name!r}, "
                 f"{operation.player_type!r})"
             )
         if isinstance(operation, ops.RunTypeQL):
@@ -438,7 +752,7 @@ class MigrationGenerator:
             )
         if isinstance(operation, ops.CopyAttribute):
             kwargs = {
-                "owner": _class_ref(operation.owner),
+                "owner": self._type_ref(operation.owner, pre_version),
                 "source": repr(operation.source),
                 "dest": repr(operation.dest),
             }
@@ -508,9 +822,10 @@ class MigrationGenerator:
     ) -> None:
         """Write the JSON sidecar for a generated migration alongside its .py file.
 
-        Builds the structured MigrationSpec from the same operations list that
-        _render_operations rendered into the .py.  Typed operations stay typed
-        in the sidecar; only explicit ops.RunTypeQL instances become run_typeql.
+        Builds the structured MigrationSpec from the original typed operation
+        list, while generated .py source renders stable snapshot bindings. Typed
+        operations stay typed in the sidecar; only explicit ops.RunTypeQL
+        instances become run_typeql.
         The checksum is computed over the .py text so the drift gate reads a
         consistent value regardless of which path (sidecar or exec_module) is
         used.
@@ -578,42 +893,26 @@ from type_bridge.migration import operations as ops"""
             "",
             "from type_bridge.migration import Migration",
             "from type_bridge.migration.operations import Operation",
-            "from type_bridge.migration import operations as ops",
+            "from type_bridge.migration import operations as ops, ref",
         ]
 
-        imports_by_module: dict[str, set[str]] = {}
-
-        def add_type(cls: type) -> None:
-            imports_by_module.setdefault(cls.__module__, set()).add(cls.__name__)
-
-        for op in operations:
-            if isinstance(op, (ops.AddAttribute, ops.RemoveAttribute)):
-                add_type(op.attribute)
-            elif isinstance(op, (ops.AddEntity, ops.RemoveEntity)):
-                add_type(op.entity)
-            elif isinstance(op, (ops.AddRelation, ops.RemoveRelation)):
-                add_type(op.relation)
-            elif isinstance(op, (ops.AddOwnership, ops.RemoveOwnership, ops.ModifyOwnership)):
-                add_type(op.owner)
-                add_type(op.attribute)
-            elif isinstance(
-                op,
-                (
-                    ops.AddRole,
-                    ops.RemoveRole,
-                    ops.AddRolePlayer,
-                    ops.RemoveRolePlayer,
-                ),
-            ):
-                add_type(op.relation)
-            elif isinstance(op, ops.CopyAttribute):
-                add_type(op.owner)
-
-        if imports_by_module:
+        if hasattr(self, "_import_records") and self._import_records:
             lines.append("")
-            for module in sorted(imports_by_module):
-                names = ", ".join(sorted(imports_by_module[module]))
-                lines.append(f"from {module} import {names}")
+            app_name = self.migrations_dir.name
+            for version in sorted(self._import_records.keys()):
+                submodules = self._import_records[version]
+                symbols = sorted({symbol for symbols in submodules.values() for symbol in symbols})
+                import_parts = []
+                for sym in symbols:
+                    alias = self._symbol_aliases.get((version, sym))
+                    if alias:
+                        import_parts.append(f"{sym} as {alias}")
+                    else:
+                        import_parts.append(sym)
+
+                lines.append(
+                    f"from {app_name}.snapshots.{version} import {', '.join(import_parts)}"
+                )
 
         return "\n".join(lines)
 

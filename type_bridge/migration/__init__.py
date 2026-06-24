@@ -66,7 +66,7 @@ CLI Usage:
     python -m type_bridge.migration makemigrations --name add_phone --models myapp.models
 """
 
-from type_bridge.migration import operations
+from type_bridge.migration import operations, ref
 from type_bridge.migration.base import Migration, MigrationDependency
 from type_bridge.migration.breaking import (
     BreakingChangeAnalyzer,
@@ -104,7 +104,7 @@ from type_bridge.migration.loader import (
     MigrationLoader,
     MigrationLoadError,
 )
-from type_bridge.migration.operations import CopyAttribute
+from type_bridge.migration.operations import CopyAttribute, RunPython
 from type_bridge.migration.registry import ModelRegistry
 from type_bridge.migration.schema_manager import SchemaManager
 from type_bridge.migration.simple_migration import (
@@ -112,6 +112,7 @@ from type_bridge.migration.simple_migration import (
 )
 from type_bridge.migration.state import (
     MigrationRecord,
+    MigrationRunRecord,
     MigrationState,
     MigrationStateManager,
 )
@@ -144,6 +145,7 @@ __all__ = [
     "MigrationState",
     "MigrationStateManager",
     "MigrationRecord",
+    "MigrationRunRecord",
     # Loader
     "MigrationLoader",
     "LoadedMigration",
@@ -169,6 +171,8 @@ __all__ = [
     "type_exists",
     # Operations module
     "operations",
+    "ref",
     # Ops shorthand
     "CopyAttribute",
+    "RunPython",
 ]

@@ -15,10 +15,14 @@
 //! documented contract for this boundary.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use type_bridge_orm::Database;
 
 use crate::backfill::{BackfillResult, execute_backfill};
 use crate::plan::{ExecutionPlan, MigrationAction, MigrationExecution, StepKind};
+use crate::state::{
+    MigrationExecutorInfo, MigrationStateStore, finished_run_record, started_run_record,
+};
 
 /// Result of executing a single migration (one entry per attempted migration).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,16 +57,20 @@ pub async fn execute_plan(db: &Database, plan: ExecutionPlan) -> Vec<MigrationRe
 
     // Process rollbacks before applies (planner already reverse-ordered them).
     for migration in plan.to_rollback {
-        let halting = execute_migration(db, &migration, &mut results).await;
-        if halting {
+        let result = execute_migration(db, &migration).await;
+        let should_halt = !result.success;
+        results.push(result);
+        if should_halt {
             return results;
         }
     }
 
     // Process applies.
     for migration in plan.to_apply {
-        let halting = execute_migration(db, &migration, &mut results).await;
-        if halting {
+        let result = execute_migration(db, &migration).await;
+        let should_halt = !result.success;
+        results.push(result);
+        if should_halt {
             return results;
         }
     }
@@ -70,26 +78,76 @@ pub async fn execute_plan(db: &Database, plan: ExecutionPlan) -> Vec<MigrationRe
     results
 }
 
+/// Execute a plan while writing one DB-backed run-log row per attempted migration.
+pub async fn execute_plan_with_run_log<S: MigrationStateStore>(
+    db: &Database,
+    store: &S,
+    plan: ExecutionPlan,
+    checksums: &BTreeMap<(String, String), String>,
+    executor: &MigrationExecutorInfo,
+) -> crate::Result<Vec<MigrationResult>> {
+    let mut results: Vec<MigrationResult> = Vec::new();
+
+    for migration in plan.to_rollback {
+        let result = execute_logged_migration(db, store, &migration, checksums, executor).await?;
+        let should_halt = !result.success;
+        results.push(result);
+        if should_halt {
+            return Ok(results);
+        }
+    }
+
+    for migration in plan.to_apply {
+        let result = execute_logged_migration(db, store, &migration, checksums, executor).await?;
+        let should_halt = !result.success;
+        results.push(result);
+        if should_halt {
+            return Ok(results);
+        }
+    }
+
+    Ok(results)
+}
+
+async fn execute_logged_migration<S: MigrationStateStore>(
+    db: &Database,
+    store: &S,
+    migration: &MigrationExecution,
+    checksums: &BTreeMap<(String, String), String>,
+    executor: &MigrationExecutorInfo,
+) -> crate::Result<MigrationResult> {
+    let checksum = checksums
+        .get(&(migration.app_label.clone(), migration.name.clone()))
+        .cloned()
+        .unwrap_or_default();
+    let run = started_run_record(migration, checksum, executor);
+    store.record_run(run.clone()).await?;
+
+    let result = execute_migration(db, migration).await;
+    let status = if result.success {
+        "succeeded"
+    } else {
+        "failed"
+    };
+    let finished = finished_run_record(run, status, result.error.clone());
+    store.record_run(finished).await?;
+    Ok(result)
+}
+
 /// Execute a single [`MigrationExecution`].
 ///
-/// Pushes a [`MigrationResult`] onto `results` and returns `true` when the
-/// run should halt (i.e. a failure occurred).
-async fn execute_migration(
-    db: &Database,
-    migration: &MigrationExecution,
-    results: &mut Vec<MigrationResult>,
-) -> bool {
+/// Returns one [`MigrationResult`] for this attempted migration.
+pub async fn execute_migration(db: &Database, migration: &MigrationExecution) -> MigrationResult {
     // Non-reversible rollback: fail immediately without opening a transaction.
     if migration.action == MigrationAction::Rollback && !migration.reversible {
-        results.push(MigrationResult {
+        return MigrationResult {
             app_label: migration.app_label.clone(),
             name: migration.name.clone(),
             action: migration.action,
             success: false,
             error: Some(format!("{} is not reversible", migration.name)),
             backfill: None,
-        });
-        return true; // halt
+        };
     }
 
     let mut backfill_results: Vec<BackfillResult> = Vec::new();
@@ -104,15 +162,14 @@ async fn execute_migration(
                     continue;
                 }
                 Err(e) => {
-                    results.push(MigrationResult {
+                    return MigrationResult {
                         app_label: migration.app_label.clone(),
                         name: migration.name.clone(),
                         action: migration.action,
                         success: false,
                         error: Some(format!("backfill step {step_index} failed: {e}")),
                         backfill: None,
-                    });
-                    return true; // halt
+                    };
                 }
             }
         }
@@ -132,15 +189,14 @@ async fn execute_migration(
         let ctx = match db.transaction_context(step.tx_type).await {
             Ok(ctx) => ctx,
             Err(e) => {
-                results.push(MigrationResult {
+                return MigrationResult {
                     app_label: migration.app_label.clone(),
                     name: migration.name.clone(),
                     action: migration.action,
                     success: false,
                     error: Some(format!("failed to open transaction: {e}")),
                     backfill: None,
-                });
-                return true; // halt
+                };
             }
         };
 
@@ -148,28 +204,26 @@ async fn execute_migration(
         if let Err(e) = ctx.query(typeql).await {
             // Best-effort rollback; ignore its error.
             let _ = ctx.rollback().await;
-            results.push(MigrationResult {
+            return MigrationResult {
                 app_label: migration.app_label.clone(),
                 name: migration.name.clone(),
                 action: migration.action,
                 success: false,
                 error: Some(format!("query failed: {e}")),
                 backfill: None,
-            });
-            return true; // halt
+            };
         }
 
         // Commit the step.
         if let Err(e) = ctx.commit().await {
-            results.push(MigrationResult {
+            return MigrationResult {
                 app_label: migration.app_label.clone(),
                 name: migration.name.clone(),
                 action: migration.action,
                 success: false,
                 error: Some(format!("commit failed: {e}")),
                 backfill: None,
-            });
-            return true; // halt
+            };
         }
     }
 
@@ -179,21 +233,21 @@ async fn execute_migration(
     } else {
         Some(backfill_results)
     };
-    results.push(MigrationResult {
+    MigrationResult {
         app_label: migration.app_label.clone(),
         name: migration.name.clone(),
         action: migration.action,
         success: true,
         error: None,
         backfill,
-    });
-    false // continue
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plan::ExecutionStep;
+    use crate::state::InMemoryStateStore;
     use crate::testing::{MockEvent, MockMigrationBackend};
     use type_bridge_orm::{Database, TxType};
 
@@ -285,6 +339,45 @@ mod tests {
                 MockEvent::Commit,
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn execute_plan_with_run_log_records_started_and_finished_rows() {
+        let (backend, _log) = MockMigrationBackend::new(None);
+        let db = Database::with_backend(Box::new(backend), "test");
+        let store = InMemoryStateStore::new();
+        let mut checksums = BTreeMap::new();
+        checksums.insert(
+            ("app".to_string(), "0001_initial".to_string()),
+            "checksum-1".to_string(),
+        );
+        let executor = MigrationExecutorInfo {
+            ip: Some("127.0.0.1".to_string()),
+            mac: Some("00:11:22:33:44:55".to_string()),
+        };
+        let plan = ExecutionPlan {
+            to_apply: vec![apply_migration(
+                "0001_initial",
+                vec![schema_step("define attribute a, value string;", None)],
+            )],
+            to_rollback: Vec::new(),
+        };
+
+        let results = execute_plan_with_run_log(&db, &store, plan, &checksums, &executor)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+        let runs = store.load_runs().await.unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].name, "0001_initial");
+        assert_eq!(runs[0].checksum, "checksum-1");
+        assert_eq!(runs[0].direction, "apply");
+        assert_eq!(runs[0].status, "succeeded");
+        assert!(runs[0].finished_at.is_some());
+        assert_eq!(runs[0].executor_ip.as_deref(), Some("127.0.0.1"));
+        assert_eq!(runs[0].executor_mac.as_deref(), Some("00:11:22:33:44:55"));
     }
 
     // ── test: rollback path ───────────────────────────────────────────────────

@@ -1371,6 +1371,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "network-interface"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ddcb8865ad3d9950f22f42ffa0ef0aecbfbf191867b3122413602b0a360b2a6"
+dependencies = [
+ "cc",
+ "libc",
+ "thiserror",
+ "winapi",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2522,7 +2534,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge-core"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "pyo3",
  "pythonize",
@@ -2537,7 +2549,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "criterion",
  "once_cell",
@@ -2554,12 +2566,13 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-migration"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
  "chrono",
  "clap",
+ "network-interface",
  "serde",
  "serde_json",
  "sha2",
@@ -2567,11 +2580,12 @@ dependencies = [
  "thiserror",
  "tokio",
  "type-bridge-orm",
+ "uuid",
 ]
 
 [[package]]
 name = "type-bridge-node"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "napi",
  "napi-derive",
@@ -2584,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "criterion",
  "serde",
@@ -2599,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2609,7 +2623,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-server"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "axum 0.8.8",
  "chrono",
@@ -2633,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-toml-transpiler"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "indexmap 2.13.1",
  "serde",
@@ -2676,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-typedb-runtime"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "futures",
  "serde",
@@ -2984,6 +2998,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2991,6 +3021,12 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows-core"

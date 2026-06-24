@@ -51,25 +51,34 @@ python -m type_bridge.migration makemigrations \
 python -m type_bridge.migration migrate --migrations-dir migrations
 ```
 
-Generated migration files use typed operations by default:
+Generated migration files use historical snapshot bindings by default, so
+historical migrations do not import the latest generated model package:
 
 ```python
+from migrations.snapshots.v0001 import Name, Person
+from type_bridge.migration import operations as ops
+
 operations = [
     ops.AddAttribute(Name),
     ops.AddEntity(Person),
-    ops.AddOwnership(Person, Email, optional=True),
+    ops.AddOwnership(Person, Name, key=True),
 ]
 ```
 
-The `.json` sidecar beside the migration keeps the same typed Rust
-`OperationSpec` variants. `ops.RunTypeQL` remains available for explicit custom
-TypeQL, but schema diffs are not flattened to `RunTypeQL` by default.
+The `.json` sidecar beside the migration keeps the typed Rust `OperationSpec`
+payloads needed for execution. The `.py` file stays readable and stable across
+bindgen removals because `migrations.snapshots.vNNNN` is append-only migration
+history, not the active application model package. `ops.RunTypeQL` remains
+available for explicit custom TypeQL, but schema diffs are not flattened to
+`RunTypeQL` by default.
 
 Existing files in `--migrations-dir` determine the next migration number and
 dependency. The current diff source is the live TypeDB schema, so apply each
 generated migration before generating the next one. See
 [`examples/advanced/toml_migration`](../../examples/advanced/toml_migration/)
-for a two-step `schema.toml` example.
+for a two-step `schema.toml` example, and see [Migrations](migrations.md) for
+the full migration workflow, snapshot rationale, data migrations, rollback, and
+database-backed migration state.
 
 ### Programmatic Usage
 

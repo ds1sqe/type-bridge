@@ -13,6 +13,8 @@ Lifecycle covered:
 - record_unapplied removes the record;
 - state is durable in TypeDB across a fresh ``MigrationStateManager`` (reloaded
   from the database, not a process-local cache).
+- migration run-log rows are durable and are updated from started to terminal
+  status by run_id.
 """
 
 # pyright: reportMissingImports=false
@@ -112,3 +114,32 @@ def test_state_durable_across_fresh_manager(clean_db):
     records = state.get_all_for_app("orders")
     assert {r.name for r in records} == {"0001_initial", "0002_add_index"}
     assert {r.checksum for r in records} == {"sum-1", "sum-2"}
+
+
+@pytest.mark.integration
+@pytest.mark.order(325)
+def test_run_log_records_start_and_finish(clean_db):
+    """Run-log rows persist execution attempts separately from applied state."""
+    manager = MigrationStateManager(clean_db)
+    manager.ensure_schema()
+
+    started = manager.record_run_started(
+        "orders",
+        "0003_backfill",
+        "sum-3",
+        "apply",
+    )
+    finished = manager.record_run_finished(started, "failed", "boom")
+
+    runs = MigrationStateManager(clean_db).load_runs()
+
+    assert len(runs) == 1
+    assert runs[0].run_id == started.run_id == finished.run_id
+    assert runs[0].app_label == "orders"
+    assert runs[0].name == "0003_backfill"
+    assert runs[0].checksum == "sum-3"
+    assert runs[0].direction == "apply"
+    assert runs[0].status == "failed"
+    assert runs[0].started_at
+    assert runs[0].finished_at
+    assert runs[0].error == "boom"

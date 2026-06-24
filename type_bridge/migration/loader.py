@@ -140,6 +140,22 @@ class MigrationLoader:
         content = path.read_text()
         checksum = _rust_runtime.migration_file_checksum(content)
 
+        execution_spec = _rust_runtime.load_migration_sidecar(str(path))
+        if execution_spec is not None:
+            sidecar_checksum = execution_spec.get("checksum")
+            if sidecar_checksum is not None and sidecar_checksum != checksum:
+                raise MigrationLoadError(
+                    f"sidecar drift detected for {path}: sidecar checksum "
+                    f"{sidecar_checksum} does not match current .py checksum {checksum}"
+                )
+            migration = self._migration_from_sidecar(execution_spec, path)
+            return LoadedMigration(
+                migration=migration,
+                path=path,
+                checksum=checksum,
+                execution_spec=execution_spec,
+            )
+
         # Load module dynamically
         module_name = f"migration_{path.stem}"
         spec = importlib.util.spec_from_file_location(module_name, path)
@@ -150,10 +166,23 @@ class MigrationLoader:
         module = importlib.util.module_from_spec(spec)
 
         # Execute the module
+        import sys
+
+        parent_path = str(self.migrations_dir.parent.resolve())
+        added_to_path = False
+        if parent_path not in sys.path:
+            sys.path.insert(0, parent_path)
+            added_to_path = True
         try:
             spec.loader.exec_module(module)
         except Exception as e:
             raise MigrationLoadError(f"Error executing migration {path}: {e}") from e
+        finally:
+            if added_to_path:
+                try:
+                    sys.path.remove(parent_path)
+                except ValueError:
+                    pass
 
         # Find Migration subclass in module
         migration_cls = self._find_migration_class(module)
@@ -167,18 +196,33 @@ class MigrationLoader:
         migration.name = path.stem
         migration.app_label = self.migrations_dir.name
 
-        # Prefer the JSON sidecar as the pre-lowered execution spec when present.
-        # The sidecar is produced at generation time from the same op list the
-        # .py renders, so it is structurally identical to what lowering the .py
-        # would produce.  The .py text remains the sole checksum source (04 gate).
-        execution_spec = _rust_runtime.load_migration_sidecar(str(path))
-
         return LoadedMigration(
             migration=migration,
             path=path,
             checksum=checksum,
-            execution_spec=execution_spec,
+            execution_spec=None,
         )
+
+    def _migration_from_sidecar(self, execution_spec: dict[str, Any], path: Path) -> Migration:
+        """Create lightweight migration metadata without executing sidecar-backed .py."""
+        dependencies = [
+            (str(dependency["app_label"]), str(dependency["migration_name"]))
+            for dependency in execution_spec.get("dependencies", [])
+        ]
+        migration_cls = type(
+            "SidecarMigration",
+            (Migration,),
+            {
+                "dependencies": dependencies,
+                "operations": [],
+                "models": [],
+                "reversible": bool(execution_spec.get("reversible", True)),
+            },
+        )
+        migration = migration_cls()
+        migration.name = str(execution_spec.get("name") or path.stem)
+        migration.app_label = str(execution_spec.get("app_label") or self.migrations_dir.name)
+        return migration
 
     def _find_migration_class(self, module: types.ModuleType) -> type[Migration] | None:
         """Find a Migration subclass in a module.
@@ -227,8 +271,8 @@ class MigrationLoader:
         Returns:
             List of error messages (empty if valid)
         """
-        from type_bridge.migration._lower import lower_migration_graph
+        from type_bridge.migration._lower import lower_validation_graph
 
-        graph = lower_migration_graph(self.discover())
+        graph = lower_validation_graph(self.discover())
         errors = _rust_runtime.validate_migration_graph(graph)
         return [str(error["message"]) for error in errors]

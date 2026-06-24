@@ -4,6 +4,38 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-06-24
+
+### New Features
+
+- **ORM-backed Python data migrations (#158)** - migrations can now use
+  `ops.RunPython(...)` to run normal TypeBridge ORM code during migration
+  execution, including `User.manager(db).filter(...)`, bulk inserts, updates,
+  deletes, and JSON/TOML-backed data loading.
+- **Database-backed migration history (#158)** - applied migration state and
+  execution attempts are stored in TypeDB through `type_bridge_migration` and
+  `type_bridge_migration_run`, including run IDs, checksums, direction, status,
+  timestamps, errors, and executor metadata when available.
+- **Historical snapshot bindings for generated migrations (#160)** - generated
+  migrations now import stable time-state bindings such as
+  `migrations.snapshots.v0001.User` instead of the active generated model
+  package, keeping old migrations replayable after later bindgen output removes
+  or reshapes types.
+
+### Changes
+
+- **Snapshot drift protection (#160)** - existing snapshot packages are
+  validated by schema hash, generated file hash manifest, and top-level binding
+  exports before reuse, so stale or hand-edited historical bindings fail
+  clearly instead of silently changing migration semantics.
+
+### Documentation
+
+- **Migration guide added (#158/#160)** - added a dedicated migration guide that
+  explains the generated migration workflow, why snapshots matter, `RunPython`
+  data migrations, rollback, sidecar checksum drift, and TypeDB-backed
+  migration/run history.
+
 ## [1.5.2] - 2026-06-18
 
 ### New Features

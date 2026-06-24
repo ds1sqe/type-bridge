@@ -21,6 +21,7 @@ from type_bridge.migration import (
     SchemaIntrospector,
 )
 from type_bridge.migration.executor import MigrationError
+from type_bridge.migration.loader import MigrationLoadError
 
 
 # Test fixtures - Version 1: Basic schema
@@ -154,7 +155,7 @@ class DriftProbeMigration(Migration):
 """.lstrip()
     )
 
-    with pytest.raises(MigrationError, match="checksum drift"):
+    with pytest.raises((MigrationError, MigrationLoadError), match=r"sidecar drift|checksum drift"):
         executor.migrate()
 
     schema = SchemaIntrospector(clean_db).introspect()
@@ -185,9 +186,9 @@ def test_incremental_migration_detects_new_attribute(clean_db, tmp_path: Path):
     assert "0002_add_age.py" in str(path)
 
     content = path.read_text()
-    # Should have typed operations for adding the attribute and ownership.
+    assert "from migrations.snapshots.v0002 import Age, Person" in content
     assert "ops.AddAttribute(Age)" in content
-    assert "ops.AddOwnership(PersonV2, Age, optional=True)" in content
+    assert "ops.AddOwnership(Person, Age, optional=True)" in content
 
 
 @pytest.mark.integration
@@ -212,7 +213,8 @@ def test_incremental_migration_detects_new_entity(clean_db, tmp_path: Path):
     # Assert
     assert path is not None
     content = path.read_text()
-    assert "ops.AddEntity(CompanyV1)" in content
+    assert "from migrations.snapshots.v0002 import Company" in content
+    assert "ops.AddEntity(Company)" in content
 
 
 @pytest.mark.integration
@@ -237,7 +239,8 @@ def test_incremental_migration_detects_new_relation(clean_db, tmp_path: Path):
     # Assert
     assert path is not None
     content = path.read_text()
-    assert "ops.AddRelation(EmploymentV3)" in content
+    assert "from migrations.snapshots.v0002 import Employment" in content
+    assert "ops.AddRelation(Employment)" in content
 
 
 @pytest.mark.integration

@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use type_bridge_orm::session::backend::BoxFuture;
 
 use crate::state::MigrationStateStore;
-use crate::{AppliedMigrationRecord, Result};
+use crate::{AppliedMigrationRecord, MigrationRunRecord, Result};
 
 /// In-memory migration state store backed by a `Mutex<Vec<AppliedMigrationRecord>>`.
 ///
@@ -23,6 +23,7 @@ use crate::{AppliedMigrationRecord, Result};
 /// replaces the first entry rather than appending a duplicate.
 pub struct InMemoryStateStore {
     records: Mutex<Vec<AppliedMigrationRecord>>,
+    runs: Mutex<Vec<MigrationRunRecord>>,
 }
 
 impl InMemoryStateStore {
@@ -30,6 +31,7 @@ impl InMemoryStateStore {
     pub fn new() -> Self {
         Self {
             records: Mutex::new(Vec::new()),
+            runs: Mutex::new(Vec::new()),
         }
     }
 }
@@ -49,6 +51,12 @@ impl MigrationStateStore for InMemoryStateStore {
     /// Return a clone of all stored records in stable insertion order.
     fn load_applied(&self) -> BoxFuture<'_, Result<Vec<AppliedMigrationRecord>>> {
         let snapshot = self.records.lock().unwrap().clone();
+        Box::pin(async move { Ok(snapshot) })
+    }
+
+    /// Return a clone of all stored run-log records in stable insertion order.
+    fn load_runs(&self) -> BoxFuture<'_, Result<Vec<MigrationRunRecord>>> {
+        let snapshot = self.runs.lock().unwrap().clone();
         Box::pin(async move { Ok(snapshot) })
     }
 
@@ -86,6 +94,19 @@ impl MigrationStateStore for InMemoryStateStore {
         }
         Box::pin(async { Ok(()) })
     }
+
+    /// Insert or replace a run-log record by `run_id`.
+    fn record_run(&self, record: MigrationRunRecord) -> BoxFuture<'_, Result<()>> {
+        {
+            let mut runs = self.runs.lock().unwrap();
+            if let Some(existing) = runs.iter_mut().find(|r| r.run_id == record.run_id) {
+                *existing = record;
+            } else {
+                runs.push(record);
+            }
+        }
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[cfg(test)]
@@ -99,6 +120,22 @@ mod tests {
             name: name.to_string(),
             checksum: format!("{app}-{name}-checksum"),
             applied_at: Some("2026-06-05T00:00:00.000000".to_string()),
+        }
+    }
+
+    fn run_record(run_id: &str, status: &str) -> MigrationRunRecord {
+        MigrationRunRecord {
+            run_id: run_id.to_string(),
+            app_label: "app".to_string(),
+            name: "0001_initial".to_string(),
+            checksum: "checksum".to_string(),
+            direction: "apply".to_string(),
+            status: status.to_string(),
+            started_at: "2026-06-05T00:00:00.000000".to_string(),
+            finished_at: None,
+            error: None,
+            executor_ip: None,
+            executor_mac: None,
         }
     }
 
@@ -123,6 +160,13 @@ mod tests {
         assert!(applied.is_empty());
     }
 
+    #[tokio::test]
+    async fn load_runs_on_empty_store_returns_empty_vec() {
+        let store = InMemoryStateStore::new();
+        let runs = store.load_runs().await.unwrap();
+        assert!(runs.is_empty());
+    }
+
     // ── record then load ───────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -135,6 +179,17 @@ mod tests {
         let applied = store.load_applied().await.unwrap();
         assert_eq!(applied.len(), 1);
         assert_eq!(applied[0], rec);
+    }
+
+    #[tokio::test]
+    async fn record_run_then_load_returns_the_record() {
+        let store = InMemoryStateStore::new();
+        let rec = run_record("run-1", "started");
+
+        store.record_run(rec.clone()).await.unwrap();
+
+        let runs = store.load_runs().await.unwrap();
+        assert_eq!(runs, vec![rec]);
     }
 
     // ── idempotent re-record ───────────────────────────────────────────────────
@@ -155,6 +210,23 @@ mod tests {
         let applied = store.load_applied().await.unwrap();
         assert_eq!(applied.len(), 1, "must not duplicate on re-record");
         assert_eq!(applied[0].checksum, "updated-checksum");
+    }
+
+    #[tokio::test]
+    async fn record_run_twice_replaces_existing_run() {
+        let store = InMemoryStateStore::new();
+        let rec = run_record("run-1", "started");
+        let finished = MigrationRunRecord {
+            status: "succeeded".to_string(),
+            finished_at: Some("2026-06-05T00:00:01.000000".to_string()),
+            ..rec.clone()
+        };
+
+        store.record_run(rec).await.unwrap();
+        store.record_run(finished.clone()).await.unwrap();
+
+        let runs = store.load_runs().await.unwrap();
+        assert_eq!(runs, vec![finished]);
     }
 
     // ── record unapplied removes the entry ─────────────────────────────────────

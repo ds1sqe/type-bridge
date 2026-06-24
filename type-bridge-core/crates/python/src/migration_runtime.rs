@@ -5,6 +5,7 @@
 //! checks over it. They open no transactions and execute no TypeQL — migration
 //! execution is owned by a later sub-plan.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,9 +13,9 @@ use pyo3::prelude::*;
 use pythonize::{depythonize, pythonize};
 use tokio::runtime::Runtime;
 use type_bridge_migration::{
-    AppliedMigrationRecord, MigrationGraph, MigrationSpec, MigrationStateStore, TypeDbStateStore,
-    check_checksum_drift, execute_plan, load_sidecar, migration_file_checksum, plan,
-    validate_graph,
+    AppliedMigrationRecord, MigrationGraph, MigrationRunRecord, MigrationSpec, MigrationStateStore,
+    TypeDbStateStore, check_checksum_drift, collect_executor_info, execute_plan_with_run_log,
+    load_sidecar, migration_file_checksum, plan, validate_graph,
 };
 
 use crate::orm_runtime::PyRustDatabase;
@@ -195,9 +196,19 @@ impl PyMigrationRunner {
         let execution_plan =
             plan(&graph, &applied, target).map_err(|error| py_value_error(error.to_string()))?;
 
+        let store = TypeDbStateStore::new(Arc::clone(&self.db));
+        let checksums = migration_checksums(&graph);
+        let executor = collect_executor_info();
         let results = self
             .runtime
-            .block_on(execute_plan(&self.db, execution_plan));
+            .block_on(execute_plan_with_run_log(
+                &self.db,
+                &store,
+                execution_plan,
+                &checksums,
+                &executor,
+            ))
+            .map_err(|error| py_value_error(error.to_string()))?;
 
         pythonize(py, &results)
             .map(|obj| obj.unbind())
@@ -256,6 +267,17 @@ impl PyMigrationStateManager {
             .map_err(|error| py_value_error(error.to_string()))
     }
 
+    /// Load all migration run-log records as a list of dicts.
+    fn load_runs(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let records = self
+            .runtime
+            .block_on(self.store.load_runs())
+            .map_err(|error| py_value_error(error.to_string()))?;
+        pythonize(py, &records)
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
     /// Record a migration as applied.
     ///
     /// Accepts a serialized `AppliedMigrationRecord` dict. When `applied_at` is
@@ -274,6 +296,15 @@ impl PyMigrationStateManager {
     fn record_unapplied(&self, app_label: &str, name: &str) -> PyResult<()> {
         self.runtime
             .block_on(self.store.record_unapplied(app_label, name))
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
+    /// Insert or replace one migration run-log record.
+    fn record_run(&self, record: Bound<'_, PyAny>) -> PyResult<()> {
+        let record: MigrationRunRecord = depythonize(&record)
+            .map_err(|error| py_value_error(format!("Invalid migration run record: {error}")))?;
+        self.runtime
+            .block_on(self.store.record_run(record))
             .map_err(|error| py_value_error(error.to_string()))
     }
 }
@@ -299,6 +330,19 @@ fn depythonize_applied_records(
     }
     depythonize(&applied_records)
         .map_err(|error| py_value_error(format!("Invalid applied migration records: {error}")))
+}
+
+fn migration_checksums(graph: &MigrationGraph) -> BTreeMap<(String, String), String> {
+    graph
+        .migrations
+        .iter()
+        .map(|migration| {
+            (
+                (migration.app_label.clone(), migration.name.clone()),
+                migration.checksum.clone().unwrap_or_default(),
+            )
+        })
+        .collect()
 }
 
 fn py_value_error(message: impl Into<String>) -> PyErr {

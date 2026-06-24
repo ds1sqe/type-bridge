@@ -381,7 +381,7 @@ fn define_attribute(attribute: &AttributeSchemaEntry) -> crate::Result<String> {
 }
 
 fn undefine_attribute(attr_name: &str) -> String {
-    format!("undefine\nattribute {attr_name};")
+    format!("undefine\n{attr_name};")
 }
 
 fn define_entity(entity: &EntitySchemaEntry) -> crate::Result<String> {
@@ -393,7 +393,7 @@ fn define_entity(entity: &EntitySchemaEntry) -> crate::Result<String> {
 }
 
 fn undefine_entity(type_name: &str) -> String {
-    format!("undefine\nentity {type_name};")
+    format!("undefine\n{type_name};")
 }
 
 fn define_relation(relation: &RelationSchemaEntry) -> crate::Result<String> {
@@ -405,7 +405,7 @@ fn define_relation(relation: &RelationSchemaEntry) -> crate::Result<String> {
 }
 
 fn undefine_relation(type_name: &str) -> String {
-    format!("undefine\nrelation {type_name};")
+    format!("undefine\n{type_name};")
 }
 
 fn undefine_relation_with_players(relation: &RelationSchemaEntry) -> String {
@@ -413,12 +413,12 @@ fn undefine_relation_with_players(relation: &RelationSchemaEntry) -> String {
     for role in &relation.roles {
         for player_type_name in &role.player_type_names {
             statements.push(format!(
-                "{player_type_name} plays {}:{};",
+                "plays {}:{} from {player_type_name};",
                 relation.type_name, role.role_name
             ));
         }
     }
-    statements.push(format!("relation {};", relation.type_name));
+    statements.push(format!("{};", relation.type_name));
     typeql_block("undefine", statements)
 }
 
@@ -432,7 +432,10 @@ fn define_ownership(owner_type: &str, attribute: &OwnedAttributeEntry) -> String
 }
 
 fn undefine_ownership(owner_type: &str, attr_name: &str) -> String {
-    typeql_block("undefine", vec![format!("{owner_type} owns {attr_name};")])
+    typeql_block(
+        "undefine",
+        vec![format!("owns {attr_name} from {owner_type};")],
+    )
 }
 
 fn redefine_ownership(owner_type: &str, attr_name: &str, annotations: &str) -> String {
@@ -468,7 +471,7 @@ fn define_role(relation_type: &str, role: &RoleEntry) -> String {
 fn undefine_role(relation_type: &str, role_name: &str) -> String {
     typeql_block(
         "undefine",
-        vec![format!("{relation_type} relates {role_name};")],
+        vec![format!("relates {role_name} from {relation_type};")],
     )
 }
 
@@ -476,11 +479,14 @@ fn undefine_role_with_players(relation_type: &str, role: &RoleEntry) -> String {
     let mut statements = Vec::new();
     for player_type_name in &role.player_type_names {
         statements.push(format!(
-            "{player_type_name} plays {relation_type}:{};",
+            "plays {relation_type}:{} from {player_type_name};",
             role.role_name
         ));
     }
-    statements.push(format!("{relation_type} relates {};", role_type_ref(role)));
+    statements.push(format!(
+        "relates {} from {relation_type};",
+        role_type_ref(role)
+    ));
     typeql_block("undefine", statements)
 }
 
@@ -497,7 +503,7 @@ fn undefine_role_player(relation_type: &str, role_name: &str, player_type_name: 
     typeql_block(
         "undefine",
         vec![format!(
-            "{player_type_name} plays {relation_type}:{role_name};"
+            "plays {relation_type}:{role_name} from {player_type_name};"
         )],
     )
 }
@@ -952,11 +958,8 @@ delete $a has email "ops@example.com";"#,
 
         assert_eq!(steps.len(), 2);
         assert!(steps[0].forward.contains("attribute score, value integer;"));
-        assert_eq!(
-            steps[0].reverse.as_deref(),
-            Some("undefine\nattribute score;")
-        );
-        assert_eq!(steps[1].forward, "undefine\nattribute legacy-score;");
+        assert_eq!(steps[0].reverse.as_deref(), Some("undefine\nscore;"));
+        assert_eq!(steps[1].forward, "undefine\nlegacy-score;");
         assert!(steps[1].reverse.is_none());
         assert!(!result.to_apply[0].reversible);
     }
@@ -981,10 +984,7 @@ delete $a has email "ops@example.com";"#,
 
         assert!(steps[0].forward.contains("entity person,"));
         assert!(steps[0].forward.contains("owns name @key;"));
-        assert_eq!(
-            steps[0].reverse.as_deref(),
-            Some("undefine\nentity person;")
-        );
+        assert_eq!(steps[0].reverse.as_deref(), Some("undefine\nperson;"));
         assert!(steps[1].forward.contains("relation employment,"));
         assert!(steps[1].forward.contains("relates employee;"));
         assert!(
@@ -997,15 +997,9 @@ delete $a has email "ops@example.com";"#,
                 .reverse
                 .as_deref()
                 .unwrap()
-                .contains("person plays employment:employee;")
+                .contains("plays employment:employee from person;")
         );
-        assert!(
-            steps[1]
-                .reverse
-                .as_deref()
-                .unwrap()
-                .contains("relation employment;")
-        );
+        assert!(steps[1].reverse.as_deref().unwrap().contains("employment;"));
     }
 
     #[test]
@@ -1037,9 +1031,9 @@ delete $a has email "ops@example.com";"#,
         assert_eq!(steps[0].forward, "define\nperson owns email @key;");
         assert_eq!(
             steps[0].reverse.as_deref(),
-            Some("undefine\nperson owns email;")
+            Some("undefine\nowns email from person;")
         );
-        assert_eq!(steps[1].forward, "undefine\nperson owns legacy-email;");
+        assert_eq!(steps[1].forward, "undefine\nowns legacy-email from person;");
         assert!(steps[1].reverse.is_none());
         assert_eq!(
             steps[2].forward,
@@ -1096,9 +1090,14 @@ delete $a has email "ops@example.com";"#,
         );
         assert_eq!(
             steps[0].reverse.as_deref(),
-            Some("undefine\nperson plays employment:reviewer;\nemployment relates reviewer;")
+            Some(
+                "undefine\nplays employment:reviewer from person;\nrelates reviewer from employment;"
+            )
         );
-        assert_eq!(steps[1].forward, "undefine\nemployment relates legacy;");
+        assert_eq!(
+            steps[1].forward,
+            "undefine\nrelates legacy from employment;"
+        );
         assert!(steps[1].reverse.is_none());
         assert_eq!(
             steps[2].forward,
@@ -1106,11 +1105,11 @@ delete $a has email "ops@example.com";"#,
         );
         assert_eq!(
             steps[2].reverse.as_deref(),
-            Some("undefine\ncontractor plays employment:employee;")
+            Some("undefine\nplays employment:employee from contractor;")
         );
         assert_eq!(
             steps[3].forward,
-            "undefine\ncompany plays employment:employee;"
+            "undefine\nplays employment:employee from company;"
         );
         assert_eq!(
             steps[3].reverse.as_deref(),

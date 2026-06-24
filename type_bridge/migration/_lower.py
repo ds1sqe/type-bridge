@@ -69,6 +69,36 @@ def lower_migration_graph(loaded: Sequence[LoadedMigration]) -> dict[str, Any]:
     )
 
 
+def lower_validation_graph(loaded: Sequence[LoadedMigration]) -> dict[str, Any]:
+    """Lower loaded migrations into the graph shape needed for validation.
+
+    Dependency and checksum validation only needs migration metadata, not
+    executable operations. This keeps validation available for Python-only
+    operations such as ``ops.RunPython`` that cannot be serialized into Rust
+    ``OperationSpec`` values.
+    """
+    migrations: list[dict[str, Any]] = []
+    for item in loaded:
+        migration = item.migration
+        migrations.append(
+            {
+                "app_label": migration.app_label,
+                "name": migration.name,
+                "dependencies": [
+                    {
+                        "app_label": dependency.app_label,
+                        "migration_name": dependency.migration_name,
+                    }
+                    for dependency in migration.get_dependencies()
+                ],
+                "operations": [],
+                "checksum": item.checksum,
+                "reversible": migration.reversible,
+            }
+        )
+    return _rust_runtime.normalize_migration_graph({"migrations": migrations})
+
+
 def lower_execution_migration(loaded: LoadedMigration) -> dict[str, Any]:
     """Lower one loaded migration into the Rust migration IR used for execution.
 
@@ -96,31 +126,30 @@ def _operation_spec(operation: ops.Operation) -> dict[str, Any]:
     if isinstance(operation, ops.AddAttribute):
         return {
             "kind": "add_attribute",
-            "attribute": _attribute_entry(operation.attribute),
+            "attribute": _attribute_entry(_attribute_class(operation.attribute)),
         }
     if isinstance(operation, ops.RemoveAttribute):
         return {
             "kind": "remove_attribute",
-            "attr_name": operation.attribute.get_attribute_name(),
+            "attr_name": _attribute_name(operation.attribute),
         }
     if isinstance(operation, ops.AddEntity):
+        entity = _model_class(operation.entity)
         return {
             "kind": "add_entity",
-            "entity": _schema_info_for_models([operation.entity])["entities"][
-                operation.entity.get_type_name()
-            ],
+            "entity": _schema_info_for_models([entity])["entities"][entity.get_type_name()],
         }
     if isinstance(operation, ops.RemoveEntity):
         return {
             "kind": "remove_entity",
-            "type_name": operation.entity.get_type_name(),
+            "type_name": _type_name(operation.entity),
         }
     if isinstance(operation, ops.AddOwnership):
         return {
             "kind": "add_ownership",
             "owner_type": operation.owner.get_type_name(),
             "attribute": _owned_attribute_entry(
-                operation.attribute,
+                _attribute_class(operation.attribute),
                 optional=operation.optional,
                 key=operation.key,
                 unique=operation.unique,
@@ -131,33 +160,32 @@ def _operation_spec(operation: ops.Operation) -> dict[str, Any]:
     if isinstance(operation, ops.RemoveOwnership):
         return {
             "kind": "remove_ownership",
-            "owner_type": operation.owner.get_type_name(),
-            "attr_name": operation.attribute.get_attribute_name(),
+            "owner_type": _type_name(operation.owner),
+            "attr_name": _attribute_name(operation.attribute),
         }
     if isinstance(operation, ops.ModifyOwnership):
         return {
             "kind": "modify_ownership",
-            "owner_type": operation.owner.get_type_name(),
-            "attr_name": operation.attribute.get_attribute_name(),
+            "owner_type": _type_name(operation.owner),
+            "attr_name": _attribute_name(operation.attribute),
             "old_annotations": operation.old_annotations,
             "new_annotations": operation.new_annotations,
         }
     if isinstance(operation, ops.AddRelation):
+        relation = _model_class(operation.relation)
         return {
             "kind": "add_relation",
-            "relation": _schema_info_for_models([operation.relation])["relations"][
-                operation.relation.get_type_name()
-            ],
+            "relation": _schema_info_for_models([relation])["relations"][relation.get_type_name()],
         }
     if isinstance(operation, ops.RemoveRelation):
         return {
             "kind": "remove_relation",
-            "type_name": operation.relation.get_type_name(),
+            "type_name": _type_name(operation.relation),
         }
     if isinstance(operation, ops.AddRole):
         return {
             "kind": "add_role",
-            "relation_type": operation.relation.get_type_name(),
+            "relation_type": _type_name(operation.relation),
             "role": {
                 "role_name": operation.role_name,
                 "player_type_names": operation.player_types,
@@ -167,20 +195,20 @@ def _operation_spec(operation: ops.Operation) -> dict[str, Any]:
     if isinstance(operation, ops.RemoveRole):
         return {
             "kind": "remove_role",
-            "relation_type": operation.relation.get_type_name(),
+            "relation_type": _type_name(operation.relation),
             "role_name": operation.role_name,
         }
     if isinstance(operation, ops.AddRolePlayer):
         return {
             "kind": "add_role_player",
-            "relation_type": operation.relation.get_type_name(),
+            "relation_type": _type_name(operation.relation),
             "role_name": operation.role_name,
             "player_type_name": operation.player_type,
         }
     if isinstance(operation, ops.RemoveRolePlayer):
         return {
             "kind": "remove_role_player",
-            "relation_type": operation.relation.get_type_name(),
+            "relation_type": _type_name(operation.relation),
             "role_name": operation.role_name,
             "player_type_name": operation.player_type,
         }
@@ -221,6 +249,11 @@ def _schema_info_for_models(models: Sequence[type[Any]]) -> dict[str, Any]:
 
     registry = _rust_runtime.rust_core().PyDescriptorRegistry()
     for model in models:
+        if not isinstance(model, type):
+            raise TypeError(
+                "Schema-bearing migration operations require full model classes "
+                "when no sidecar execution spec is present"
+            )
         descriptor = _rust_runtime.descriptor_for_model(model)
         if issubclass(model, Relation):
             registry.register_relation(descriptor)
@@ -236,6 +269,38 @@ def _schema_info_for_models(models: Sequence[type[Any]]) -> dict[str, Any]:
 
 def _attribute_entry(attribute: type[Any]) -> dict[str, Any]:
     return _rust_runtime.attribute_schema_entry(attribute)
+
+
+def _model_class(value: object) -> type[Any]:
+    if not isinstance(value, type):
+        raise TypeError(
+            "Schema-bearing migration operations require full model classes "
+            "when no sidecar execution spec is present"
+        )
+    return value
+
+
+def _attribute_class(value: object) -> type[Any]:
+    if not isinstance(value, type):
+        raise TypeError(
+            "Schema-bearing migration operations require full attribute classes "
+            "when no sidecar execution spec is present"
+        )
+    return value
+
+
+def _type_name(value: object) -> str:
+    get_type_name = getattr(value, "get_type_name", None)
+    if get_type_name is None:
+        raise TypeError(f"{value!r} is not a TypeBridge type or migration type ref")
+    return str(get_type_name())
+
+
+def _attribute_name(value: object) -> str:
+    get_attribute_name = getattr(value, "get_attribute_name", None)
+    if get_attribute_name is None:
+        raise TypeError(f"{value!r} is not a TypeBridge attribute or migration attribute ref")
+    return str(get_attribute_name())
 
 
 def _owned_attribute_entry(

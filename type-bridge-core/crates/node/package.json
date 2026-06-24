@@ -1,6 +1,6 @@
 {
   "name": "@type-bridge/node",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "Node.js NAPI facade for the type-bridge Rust ORM runtime",
   "license": "MIT",
   "main": "dist/index.js",
