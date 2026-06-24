@@ -23,6 +23,7 @@ path = "src/bin/type_bridge_migration.rs"
 type-bridge-orm = { path = "../orm", version = "1.5.3", default-features = false, features = ["band7", "band8"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
+network-interface = "2.0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

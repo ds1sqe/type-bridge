@@ -14,10 +14,10 @@ pub mod typedb;
 pub use memory::InMemoryStateStore;
 pub use typedb::TypeDbStateStore;
 
-use std::fs;
 use std::net::UdpSocket;
 
 use chrono::Utc;
+use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 use type_bridge_orm::session::backend::BoxFuture;
 use uuid::Uuid;
 
@@ -129,27 +129,39 @@ fn local_ip() -> Option<String> {
 }
 
 fn local_mac() -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        let entries = fs::read_dir("/sys/class/net").ok()?;
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if name == "lo" {
-                continue;
-            }
-            let address_path = entry.path().join("address");
-            let address = fs::read_to_string(address_path).ok()?;
-            let address = address.trim().to_ascii_lowercase();
-            if address.len() == 17 && address != "00:00:00:00:00:00" {
-                return Some(address);
-            }
+    NetworkInterface::show()
+        .ok()?
+        .into_iter()
+        .filter(|interface| !interface.internal)
+        .find_map(|interface| {
+            interface
+                .mac_addr
+                .as_deref()
+                .and_then(normalize_mac_address)
+        })
+}
+
+fn normalize_mac_address(value: &str) -> Option<String> {
+    let mut bytes = [0_u8; 6];
+    let mut parts = value.split([':', '-']);
+    for byte in &mut bytes {
+        let part = parts.next()?;
+        if part.len() != 2 {
+            return None;
         }
-        None
+        *byte = u8::from_str_radix(part, 16).ok()?;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
+    if parts.next().is_some() || bytes.iter().all(|byte| *byte == 0) {
+        return None;
     }
+    Some(format_mac_address(bytes))
+}
+
+fn format_mac_address(bytes: [u8; 6]) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+    )
 }
 
 /// Seam trait for migration applied-state storage.
@@ -197,4 +209,36 @@ pub trait MigrationStateStore: Send + Sync {
 
     /// Insert or replace one migration execution run-log record by `run_id`.
     fn record_run(&self, record: MigrationRunRecord) -> BoxFuture<'_, Result<()>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_mac_address, normalize_mac_address};
+
+    #[test]
+    fn formats_mac_addresses_in_lowercase_colon_notation() {
+        assert_eq!(
+            format_mac_address([0x00, 0x11, 0xAB, 0xCD, 0xEF, 0x42]),
+            "00:11:ab:cd:ef:42"
+        );
+    }
+
+    #[test]
+    fn normalizes_supported_mac_address_strings() {
+        assert_eq!(
+            normalize_mac_address("00:11:AB:CD:EF:42").as_deref(),
+            Some("00:11:ab:cd:ef:42")
+        );
+        assert_eq!(
+            normalize_mac_address("00-11-ab-cd-ef-42").as_deref(),
+            Some("00:11:ab:cd:ef:42")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_zero_mac_address_strings() {
+        assert_eq!(normalize_mac_address("00:00:00:00:00:00"), None);
+        assert_eq!(normalize_mac_address("00:11:22:33:44"), None);
+        assert_eq!(normalize_mac_address("00:11:22:33:44:zz"), None);
+    }
 }
