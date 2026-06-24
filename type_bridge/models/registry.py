@@ -13,6 +13,20 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound="TypeDBType")
 
 
+def _is_snapshot(model: type) -> bool:
+    """Helper to detect if a class is a snapshot class."""
+    if getattr(model, "_is_snapshot", False):
+        return True
+    module = getattr(model, "__module__", "") or ""
+    parts = module.split(".")
+    for i, part in enumerate(parts):
+        if part == "snapshots" and i + 1 < len(parts):
+            next_part = parts[i + 1]
+            if next_part.startswith("v") and next_part[1:].isdigit():
+                return True
+    return False
+
+
 class ModelRegistry:
     """Registry for TypeDB model classes.
 
@@ -34,6 +48,9 @@ class ModelRegistry:
         """
         # Skip base classes like Entity/Relation
         if model.is_base():
+            return
+
+        if _is_snapshot(model):
             return
 
         type_name = model.get_type_name()
@@ -108,6 +125,8 @@ class ModelRegistry:
         def find_in_subclasses(search_cls: type[T]) -> type[T] | None:
             """Recursively search subclasses for matching type name."""
             for subclass in search_cls.__subclasses__():
+                if _is_snapshot(subclass) != _is_snapshot(search_cls):
+                    continue
                 if subclass.get_type_name() == type_label:
                     return cast("type[T]", subclass)
                 found = find_in_subclasses(cast("type[T]", subclass))
@@ -134,6 +153,8 @@ class ModelRegistry:
         (i.e. after SchemaScanner runs in Entity/Relation ``__init_subclass__``).
         """
         if model.is_base():
+            return
+        if _is_snapshot(model):
             return
         for attr_info in model._owned_attrs.values():
             cls._attribute_owners.setdefault(attr_info.typ, set()).add(model)

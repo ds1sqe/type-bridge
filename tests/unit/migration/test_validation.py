@@ -104,6 +104,26 @@ def test_loader_validate_dependencies_preserves_list_of_strings(tmp_path: Path) 
     assert "depends on missing.0001_initial which does not exist" in errors[0]
 
 
+def test_loader_validate_dependencies_accepts_run_python(tmp_path: Path) -> None:
+    (tmp_path / "0001_python.py").write_text(
+        """
+from typing import ClassVar
+from type_bridge.migration import Migration, operations as ops
+from type_bridge.migration.operations import Operation
+
+
+def forwards(db):
+    pass
+
+
+class TestMigration(Migration):
+    operations: ClassVar[list[Operation]] = [ops.RunPython(forwards)]
+""".lstrip()
+    )
+
+    assert MigrationLoader(tmp_path).validate_dependencies() == []
+
+
 def test_valid_graph_with_applied_records_passes() -> None:
     graph = _graph(
         _spec("0001_initial", checksum="aaa"),

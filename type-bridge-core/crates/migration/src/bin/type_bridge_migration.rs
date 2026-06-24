@@ -11,7 +11,7 @@
 //! Pure verbs (`plan`, `sqlmigrate`) run entirely from the sidecar files on
 //! disk via [`load_dir_checked`].  The three connected verbs open their own
 //! `Database::connect` + Tokio runtime; the shared `TypeDbStateStore` and
-//! `execute_plan` from `crates/migration` are reused without re-implementation
+//! logged executor from `crates/migration` are reused without re-implementation
 //! (invariant 2: one engine, two bootstraps).
 
 mod display;
@@ -25,7 +25,7 @@ use thiserror::Error;
 use tokio::runtime::Runtime;
 use type_bridge_migration::{
     AppliedMigrationRecord, MigrationAction, MigrationError, MigrationStateStore, TypeDbStateStore,
-    execute_plan, load_dir, load_dir_checked, plan,
+    collect_executor_info, execute_plan_with_run_log, load_dir, load_dir_checked, plan,
 };
 use type_bridge_orm::Database;
 
@@ -323,6 +323,21 @@ fn resolve_address(flag: Option<String>) -> String {
         .unwrap_or_else(|| DEFAULT_ADDRESS.to_string())
 }
 
+fn migration_checksums(
+    graph: &type_bridge_migration::MigrationGraph,
+) -> std::collections::BTreeMap<(String, String), String> {
+    graph
+        .migrations
+        .iter()
+        .map(|migration| {
+            (
+                (migration.app_label.clone(), migration.name.clone()),
+                migration.checksum.clone().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
 /// `plan` — load sidecars, plan with empty applied state, print per-step info.
 fn cmd_plan(migrations_dir: &Path, target: Option<&str>) -> CliResult<()> {
     let graph = load_dir_checked(migrations_dir)?;
@@ -406,7 +421,7 @@ fn connect(
 /// `migrate` — connect, load state, plan, execute, record state.
 ///
 /// Mirrors the Python `executor.py` coordination:
-///   load_applied → plan (filters out applied) → execute_plan
+///   load_applied → plan (filters out applied) → logged execution
 ///   → for each successful to_apply: record_applied
 ///   → for each to_rollback: record_unapplied
 #[allow(clippy::too_many_arguments)]
@@ -433,7 +448,15 @@ fn cmd_migrate(
         return Ok(());
     }
 
-    let results = runtime.block_on(execute_plan(&db, execution_plan));
+    let checksums = migration_checksums(&graph);
+    let executor = collect_executor_info();
+    let results = runtime.block_on(execute_plan_with_run_log(
+        &db,
+        &store,
+        execution_plan,
+        &checksums,
+        &executor,
+    ))?;
 
     let mut any_failure = false;
     for result in &results {

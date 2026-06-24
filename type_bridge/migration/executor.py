@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from type_bridge import _rust_runtime
+from type_bridge.migration import operations as ops
 from type_bridge.migration.loader import LoadedMigration, MigrationLoader
-from type_bridge.migration.state import MigrationRecord, MigrationState, MigrationStateManager
+from type_bridge.migration.state import (
+    MigrationRecord,
+    MigrationRunRecord,
+    MigrationState,
+    MigrationStateManager,
+)
 
 if TYPE_CHECKING:
     from type_bridge.session import Database
@@ -136,6 +143,10 @@ class MigrationExecutor:
         if self.dry_run:
             return self._dry_run(plan)
 
+        if _loaded_contains_run_python(all_migrations):
+            self._preflight_python_plan(plan)
+            return self._migrate_with_python_operations(plan, all_migrations)
+
         graph = lower_execution_graph(all_migrations)
         applied_records = [_applied_record_dict(record) for record in state.applied]
 
@@ -157,6 +168,301 @@ class MigrationExecutor:
                 raise MigrationError(f"Migration failed: {result.error}")
 
         return results
+
+    def _migrate_with_python_operations(
+        self,
+        plan: MigrationPlan,
+        all_migrations: list[LoadedMigration],
+    ) -> list[MigrationResult]:
+        """Execute a plan that contains at least one ``ops.RunPython`` operation.
+
+        Rust remains the default executor for non-Python migrations (including
+        sidecar-backed migrations).  A plan containing ``RunPython`` needs
+        Python call boundaries only at those migration boundaries.
+        """
+        from type_bridge.migration._lower import lower_execution_migration
+
+        results: list[MigrationResult] = []
+        checksums = {
+            (loaded.migration.app_label, loaded.migration.name): loaded.checksum
+            for loaded in all_migrations
+        }
+        index_by_key = {
+            (loaded.migration.app_label, loaded.migration.name): i
+            for i, loaded in enumerate(all_migrations)
+        }
+
+        has_non_python = any(
+            not _migration_contains_run_python(loaded.migration)
+            for loaded in [*plan.to_rollback, *plan.to_apply]
+        )
+
+        runner = None
+        graph = None
+        if has_non_python:
+            runner = _rust_runtime.migration_runner_for(self.db)
+            graph = self._execution_graph_for_mixed_plan(
+                all_migrations,
+                lower_execution_migration=lower_execution_migration,
+            )
+
+        def run_rust_segment(target: str | None) -> list[MigrationResult]:
+            if runner is None or graph is None:
+                raise MigrationError("Mixed migration plan has no Rust runner configured")
+            state = self.state_manager.load_state()
+            applied_records = [_applied_record_dict(record) for record in state.applied]
+            rust_results = runner.apply(graph, applied_records, target)
+
+            mapped: list[MigrationResult] = []
+            for rust_result in rust_results:
+                result = self._record_result(rust_result, checksums)
+                mapped.append(result)
+                if not result.success:
+                    if result.action == "rolled_back":
+                        raise MigrationError(f"Rollback failed: {result.error}")
+                    raise MigrationError(f"Migration failed: {result.error}")
+            return mapped
+
+        non_python_segment: list[LoadedMigration] = []
+
+        for loaded in plan.to_rollback:
+            if _migration_contains_run_python(loaded.migration):
+                if non_python_segment:
+                    segment_target_idx = min(
+                        index_by_key[(segment.migration.app_label, segment.migration.name)]
+                        for segment in non_python_segment
+                    )
+                    target = (
+                        all_migrations[segment_target_idx - 1].migration.name
+                        if segment_target_idx > 0
+                        else None
+                    )
+                    results.extend(run_rust_segment(target))
+                    non_python_segment = []
+
+                result = self._execute_loaded_python_path(loaded, reverse=True)
+                results.append(result)
+                if not result.success:
+                    raise MigrationError(f"Rollback failed: {result.error}")
+            else:
+                non_python_segment.append(loaded)
+
+        if non_python_segment:
+            segment_target_idx = min(
+                index_by_key[(segment.migration.app_label, segment.migration.name)]
+                for segment in non_python_segment
+            )
+            target = (
+                all_migrations[segment_target_idx - 1].migration.name
+                if segment_target_idx > 0
+                else None
+            )
+            results.extend(run_rust_segment(target))
+
+        non_python_segment = []
+        for loaded in plan.to_apply:
+            if _migration_contains_run_python(loaded.migration):
+                if non_python_segment:
+                    target = non_python_segment[-1].migration.name
+                    results.extend(run_rust_segment(target))
+                    non_python_segment = []
+
+                result = self._execute_loaded_python_path(loaded, reverse=False)
+                results.append(result)
+                if not result.success:
+                    raise MigrationError(f"Migration failed: {result.error}")
+            else:
+                non_python_segment.append(loaded)
+
+        if non_python_segment:
+            target = non_python_segment[-1].migration.name
+            results.extend(run_rust_segment(target))
+
+        return results
+
+    def _execution_graph_for_mixed_plan(
+        self,
+        all_migrations: list[LoadedMigration],
+        *,
+        lower_execution_migration: Callable[[LoadedMigration], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Lower all migrations into one executable graph for mixed plans.
+
+        ``ops.RunPython`` migrations cannot be lowered into Rust operation
+        specs, so they are represented as no-op placeholders in this mixed
+        graph. Other migrations keep their full executable lowering path.
+        """
+        specifications: list[dict[str, Any]] = []
+        for loaded in all_migrations:
+            if _migration_contains_run_python(loaded.migration):
+                migration = loaded.migration
+                specifications.append(
+                    {
+                        "app_label": migration.app_label,
+                        "name": migration.name,
+                        "dependencies": [
+                            {
+                                "app_label": dependency.app_label,
+                                "migration_name": dependency.migration_name,
+                            }
+                            for dependency in migration.get_dependencies()
+                        ],
+                        "operations": [],
+                        "checksum": loaded.checksum,
+                        "reversible": migration.reversible,
+                    }
+                )
+                continue
+
+            specifications.append(lower_execution_migration(loaded))
+
+        return _rust_runtime.normalize_migration_graph({"migrations": specifications})
+
+    def _preflight_python_plan(self, plan: MigrationPlan) -> None:
+        """Validate declared RunPython imports/resources before any step mutates data."""
+        for loaded in [*plan.to_rollback, *plan.to_apply]:
+            for operation in getattr(loaded.migration, "operations", []):
+                if isinstance(operation, ops.RunPython):
+                    self._preflight_run_python_operation(loaded, operation)
+
+    def _preflight_run_python_operation(
+        self,
+        loaded: LoadedMigration,
+        operation: ops.RunPython,
+    ) -> None:
+        operation_label = operation.description or operation._callable_name(operation.code)
+
+        for module_name in operation.import_checks:
+            if not module_name:
+                raise MigrationError(
+                    f"RunPython operation {operation_label} in {loaded.migration.name} "
+                    "declares an empty import check"
+                )
+            try:
+                importlib.import_module(module_name)
+            except (ImportError, AttributeError, ValueError) as exc:
+                raise MigrationError(
+                    f"RunPython operation {operation_label} in {loaded.migration.name} "
+                    f"failed import check {module_name!r}: {exc}"
+                ) from exc
+
+        for resource in operation.resources:
+            if not resource:
+                raise MigrationError(
+                    f"RunPython operation {operation_label} in {loaded.migration.name} "
+                    "declares an empty resource path"
+                )
+            path = _resolve_migration_resource(loaded.path, resource)
+            if not path.is_file():
+                raise MigrationError(
+                    f"RunPython operation {operation_label} in {loaded.migration.name} "
+                    f"requires missing resource {resource!r} at {path}"
+                )
+            try:
+                with path.open("rb"):
+                    pass
+            except OSError as exc:
+                raise MigrationError(
+                    f"RunPython operation {operation_label} in {loaded.migration.name} "
+                    f"cannot read resource {resource!r} at {path}: {exc}"
+                ) from exc
+
+    def _execute_loaded_python_path(
+        self,
+        loaded: LoadedMigration,
+        *,
+        reverse: bool,
+    ) -> MigrationResult:
+        migration = loaded.migration
+        action = "rolled_back" if reverse else "applied"
+        direction = "rollback" if reverse else "apply"
+        run = self.state_manager.record_run_started(
+            migration.app_label,
+            migration.name,
+            loaded.checksum,
+            direction,
+        )
+
+        try:
+            if reverse:
+                self._execute_migration_reverse(migration)
+                self._record_state(
+                    migration.name,
+                    action,
+                    lambda: self.state_manager.record_unapplied(
+                        migration.app_label,
+                        migration.name,
+                    ),
+                )
+            else:
+                self._execute_migration_forward(migration)
+                self._record_state(
+                    migration.name,
+                    action,
+                    lambda: self.state_manager.record_applied(
+                        migration.app_label,
+                        migration.name,
+                        loaded.checksum,
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001 - mapped to MigrationResult error
+            self._record_run_finished(run, "failed", str(exc))
+            return MigrationResult(
+                name=migration.name,
+                action=action,
+                success=False,
+                error=str(exc),
+            )
+
+        self._record_run_finished(run, "succeeded", None)
+        return MigrationResult(name=migration.name, action=action, success=True)
+
+    def _execute_migration_forward(self, migration: object) -> None:
+        models = getattr(migration, "models", [])
+        if models:
+            self._execute_typeql(_schema_typeql_for_models(models), "schema")
+
+        for operation in getattr(migration, "operations", []):
+            self._execute_operation_forward(operation)
+
+    def _execute_migration_reverse(self, migration: object) -> None:
+        models = getattr(migration, "models", [])
+        if models:
+            raise MigrationError(
+                f"Migration {getattr(migration, 'name', '<unknown>')} is not reversible"
+            )
+
+        operations = list(getattr(migration, "operations", []))
+        for operation in reversed(operations):
+            self._execute_operation_reverse(operation)
+
+    def _execute_operation_forward(self, operation: ops.Operation) -> None:
+        if isinstance(operation, ops.RunPython):
+            operation.run(self.db)
+            return
+
+        typeql = operation.to_typeql()
+        if typeql.strip():
+            self._execute_typeql(typeql, _typeql_transaction_type(typeql))
+
+    def _execute_operation_reverse(self, operation: ops.Operation) -> None:
+        if isinstance(operation, ops.RunPython):
+            operation.rollback(self.db)
+            return
+
+        typeql = operation.to_rollback_typeql()
+        if typeql is None:
+            raise MigrationError(f"Operation {type(operation).__name__} is not reversible")
+        if typeql.strip():
+            self._execute_typeql(typeql, _typeql_transaction_type(typeql))
+
+    def _execute_typeql(self, typeql: str, transaction_type: str) -> None:
+        execute_query = getattr(self.db, "execute_query", None)
+        if execute_query is None:
+            raise MigrationError(
+                "Cannot execute TypeQL migration operation: database object has no execute_query()"
+            )
+        execute_query(typeql, transaction_type=transaction_type)
 
     def _record_result(
         self,
@@ -215,6 +521,20 @@ class MigrationExecutor:
             verb = "apply" if action == "applied" else "rollback"
             raise MigrationError(
                 f"Migration {name} {verb} succeeded but recording its state failed: {exc}"
+            ) from exc
+
+    def _record_run_finished(
+        self,
+        run: MigrationRunRecord,
+        status: str,
+        error: str | None,
+    ) -> None:
+        try:
+            self.state_manager.record_run_finished(run, status, error)
+        except Exception as exc:  # noqa: BLE001 - re-raised as MigrationError below
+            raise MigrationError(
+                f"Migration {run.name} {run.direction} finished but recording its run log failed: "
+                f"{exc}"
             ) from exc
 
     def _dry_run(self, plan: MigrationPlan) -> list[MigrationResult]:
@@ -291,6 +611,9 @@ class MigrationExecutor:
         TypeQL in reverse step order when ``reverse`` is ``True``, or ``None``
         when any step is non-reversible.
         """
+        if _migration_contains_run_python(loaded.migration):
+            return _preview_python_migration(loaded, reverse=reverse)
+
         from type_bridge.migration._lower import lower_execution_migration
 
         spec = lower_execution_migration(loaded)
@@ -385,9 +708,14 @@ class MigrationExecutor:
         state: MigrationState,
     ) -> None:
         """Validate graph and checksum drift before any migration step runs."""
-        from type_bridge.migration._lower import lower_migration_graph
+        if _loaded_contains_run_python(all_migrations):
+            from type_bridge.migration._lower import lower_validation_graph
 
-        graph = lower_migration_graph(all_migrations)
+            graph = lower_validation_graph(all_migrations)
+        else:
+            from type_bridge.migration._lower import lower_migration_graph
+
+            graph = lower_migration_graph(all_migrations)
         applied_records = [_applied_record_dict(record) for record in state.applied]
         errors = _rust_runtime.validate_migration_graph(graph, applied_records)
         if errors:
@@ -425,3 +753,66 @@ def _applied_record_dict(record: MigrationRecord) -> dict[str, str]:
         "checksum": record.checksum,
         "applied_at": record.applied_at,
     }
+
+
+def _loaded_contains_run_python(loaded: list[LoadedMigration]) -> bool:
+    return any(_migration_contains_run_python(item.migration) for item in loaded)
+
+
+def _migration_contains_run_python(migration: object) -> bool:
+    return any(
+        isinstance(operation, ops.RunPython) for operation in getattr(migration, "operations", [])
+    )
+
+
+def _schema_typeql_for_models(models: list[type[object]]) -> str:
+    from type_bridge.migration._lower import _schema_info_for_models
+
+    return _rust_runtime.generate_define_block(_schema_info_for_models(models))
+
+
+def _resolve_migration_resource(migration_path: Path, resource: str) -> Path:
+    path = Path(resource)
+    if path.is_absolute():
+        return path
+    return migration_path.parent / path
+
+
+def _typeql_transaction_type(typeql: str) -> str:
+    first_statement = next(
+        (
+            line.strip().lower()
+            for line in typeql.splitlines()
+            if line.strip() and not line.strip().startswith(("#", "//"))
+        ),
+        "",
+    )
+    if first_statement.startswith(("define", "undefine", "redefine")):
+        return "schema"
+    return "write"
+
+
+def _preview_python_migration(loaded: LoadedMigration, *, reverse: bool) -> str | None:
+    operations = list(getattr(loaded.migration, "operations", []))
+    if reverse:
+        previews: list[str] = []
+        for operation in reversed(operations):
+            if isinstance(operation, ops.RunPython):
+                preview = operation.to_rollback_typeql()
+                if preview is None:
+                    return None
+                previews.append(preview)
+                continue
+            typeql = operation.to_rollback_typeql()
+            if typeql is None:
+                return None
+            previews.append(typeql)
+        return "\n\n".join(previews)
+
+    previews = []
+    models = getattr(loaded.migration, "models", [])
+    if models:
+        previews.append(_schema_typeql_for_models(models))
+    for operation in operations:
+        previews.append(operation.to_typeql())
+    return "\n\n".join(preview for preview in previews if preview.strip())

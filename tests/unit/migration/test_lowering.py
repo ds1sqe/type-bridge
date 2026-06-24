@@ -37,6 +37,8 @@ from type_bridge.migration.introspection import (
     IntrospectedAttribute,
     IntrospectedEntity,
     IntrospectedOwnership,
+    IntrospectedRelation,
+    IntrospectedRole,
     IntrospectedSchema,
 )
 from type_bridge.migration.loader import LoadedMigration, MigrationLoader
@@ -182,9 +184,12 @@ def test_generator_renders_typed_operation_source() -> None:
         ]
     )
 
-    assert "ops.AddAttribute(LowerAge)" in rendered
-    assert "ops.AddEntity(LowerPerson)" in rendered
-    assert "ops.AddOwnership(LowerPerson, LowerAge, optional=True)" in rendered
+    assert "ops.AddAttribute(ref.attribute('lower-age'))" in rendered
+    assert "ops.AddEntity(ref.entity('lower-person'))" in rendered
+    assert (
+        "ops.AddOwnership(ref.entity('lower-person'), ref.attribute('lower-age'), optional=True)"
+        in rendered
+    )
     assert "ops.RunTypeQL(" in rendered
 
 
@@ -222,7 +227,7 @@ def test_generator_sidecar_preserves_typed_operation_specs(tmp_path: Path) -> No
     assert sidecar["operations"][2]["owner_type"] == "lower-person"
 
 
-def test_bindgen_package_can_render_importable_typed_migration(tmp_path: Path) -> None:
+def test_bindgen_package_renders_migration_refs_without_model_imports(tmp_path: Path) -> None:
     schema_path = tmp_path / "schema.toml"
     schema_path.write_text(
         """
@@ -256,6 +261,8 @@ owns = [
         operations = [ops.AddAttribute(email), ops.AddOwnership(customer, email, optional=True)]
         operations_code = generator._render_operations(operations)
         imports_code = generator._generate_operations_imports(operations)
+        assert "generated_models" not in imports_code
+        assert "ref" in imports_code
         migrations_dir = tmp_path / "migrations"
         migrations_dir.mkdir()
         migration_file = migrations_dir / "0001_add_email.py"
@@ -343,7 +350,51 @@ owns = [
 
     assert add_ownership.attribute.get_attribute_name() == "email"
     assert add_ownership.optional is True
-    assert "ops.AddOwnership(Customer, Email, optional=True)" in rendered
+    assert (
+        "ops.AddOwnership(ref.entity('customer'), ref.attribute('email'), optional=True)"
+        in rendered
+    )
+
+
+def test_generator_emits_ref_based_top_level_removals() -> None:
+    db_schema = IntrospectedSchema(
+        entities={"removed-user": IntrospectedEntity(name="removed-user")},
+        relations={
+            "removed-membership": IntrospectedRelation(
+                name="removed-membership",
+                roles={
+                    "member": IntrospectedRole(
+                        name="member",
+                        player_types=["removed-user"],
+                    )
+                },
+            )
+        },
+        attributes={
+            "removed-email": IntrospectedAttribute(
+                name="removed-email",
+                value_type="string",
+            )
+        },
+        ownerships=[
+            IntrospectedOwnership(
+                owner_name="removed-user",
+                attribute_name="removed-email",
+            )
+        ],
+    )
+    target = SchemaInfo()
+
+    generator = MigrationGenerator.__new__(MigrationGenerator)
+    operations = generator._introspected_to_operations(db_schema, target)
+    rendered = generator._render_operations(operations)
+
+    assert any(isinstance(operation, ops.RemoveRelation) for operation in operations)
+    assert any(isinstance(operation, ops.RemoveEntity) for operation in operations)
+    assert any(isinstance(operation, ops.RemoveAttribute) for operation in operations)
+    assert "ops.RemoveRelation(ref.relation('removed-membership'))" in rendered
+    assert "ops.RemoveEntity(ref.entity('removed-user'))" in rendered
+    assert "ops.RemoveAttribute(ref.attribute('removed-email'))" in rendered
 
 
 def test_model_based_migration_lowers_to_define_schema() -> None:

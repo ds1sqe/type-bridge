@@ -11,7 +11,7 @@ from __future__ import annotations
 
 # pyright: reportMissingImports=false
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
 
@@ -24,9 +24,13 @@ from type_bridge.migration.executor import MigrationError, MigrationExecutor
 from type_bridge.migration.loader import LoadedMigration
 from type_bridge.migration.state import (
     MigrationRecord,
+    MigrationRunRecord,
     MigrationState,
     MigrationStateManager,
 )
+
+if TYPE_CHECKING:
+    from type_bridge.session import Database
 
 
 class PlannerName(String):
@@ -140,6 +144,7 @@ class _RecordingStateManager:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
+        self.run_calls: list[tuple[str, str, str, str, str]] = []
         self.raise_on_apply: str | None = None
 
     def load_state(self) -> MigrationState:
@@ -152,6 +157,52 @@ class _RecordingStateManager:
 
     def record_unapplied(self, app_label: str, name: str) -> None:
         self.calls.append(("unapplied", app_label, name))
+
+    def record_run_started(
+        self,
+        app_label: str,
+        name: str,
+        checksum: str,
+        direction: str,
+    ) -> MigrationRunRecord:
+        record = MigrationRunRecord(
+            run_id=f"run-{name}",
+            app_label=app_label,
+            name=name,
+            checksum=checksum,
+            direction=direction,
+            status="started",
+            started_at="2026-06-23T00:00:00.000000",
+        )
+        self.run_calls.append(("started", app_label, name, checksum, direction))
+        return record
+
+    def record_run_finished(
+        self,
+        record: MigrationRunRecord,
+        status: str,
+        error: str | None = None,
+    ) -> MigrationRunRecord:
+        self.run_calls.append((status, record.app_label, record.name, record.checksum, error or ""))
+        return MigrationRunRecord(
+            run_id=record.run_id,
+            app_label=record.app_label,
+            name=record.name,
+            checksum=record.checksum,
+            direction=record.direction,
+            status=status,
+            started_at=record.started_at,
+            finished_at="2026-06-23T00:00:01.000000",
+            error=error,
+        )
+
+
+class _RecordingDb:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, str]] = []
+
+    def execute_query(self, query: str, *, transaction_type: str) -> None:
+        self.queries.append((query, transaction_type))
 
 
 def _executor_with(
@@ -325,6 +376,389 @@ def test_record_applied_failure_surfaces_migration_error(monkeypatch: pytest.Mon
         executor.migrate()
 
 
+# ── RunPython execution path ─────────────────────────────────────────────────
+
+
+def test_run_python_migration_receives_db_and_records_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RunPython executes in Python with the executor DB and records state."""
+    dummy_db: Any = object()
+    calls: list[Any] = []
+
+    def forwards(db: Any) -> None:
+        calls.append(db)
+
+    class PythonMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [ops.RunPython(forwards)]
+
+    state_manager = _RecordingStateManager()
+    loaded = [_loaded(PythonMigration(), "app", "0001_python", "csum-py")]
+    executor = MigrationExecutor(db=dummy_db, migrations_dir=Path("migrations"))
+    executor.state_manager = cast(MigrationStateManager, state_manager)
+    monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
+
+    def fail_if_called(_db: object) -> object:
+        pytest.fail("RunPython migrations must not be sent to the Rust TypeQL runner")
+
+    monkeypatch.setattr("type_bridge._rust_runtime.migration_runner_for", fail_if_called)
+
+    results = executor.migrate()
+
+    assert calls == [dummy_db]
+    assert [(result.name, result.action, result.success) for result in results] == [
+        ("0001_python", "applied", True)
+    ]
+    assert state_manager.calls == [("applied", "app", "0001_python")]
+    assert state_manager.run_calls == [
+        ("started", "app", "0001_python", "csum-py", "apply"),
+        ("succeeded", "app", "0001_python", "csum-py", ""),
+    ]
+
+
+def test_run_python_rollback_uses_reverse_callable_and_records_unapplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def forwards(db: Any) -> None:
+        calls.append("forwards")
+
+    def backwards(db: Any) -> None:
+        calls.append("backwards")
+
+    class BaseMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = []
+
+    class PythonMigration(Migration):
+        dependencies: ClassVar[list[tuple[str, str]]] = [("app", "0001_base")]
+        operations: ClassVar[list[ops.Operation]] = [ops.RunPython(forwards, reverse=backwards)]
+
+    state_manager = _RecordingStateManager()
+    state_manager.load_state = lambda: MigrationState(
+        applied=[
+            MigrationRecord("app", "0001_base", "2026-01-01T00:00:00", "csum-base"),
+            MigrationRecord("app", "0002_python", "2026-01-01T00:00:00", "csum-py"),
+        ]
+    )
+    loaded = [
+        _loaded(BaseMigration(), "app", "0001_base", "csum-base"),
+        _loaded(PythonMigration(), "app", "0002_python", "csum-py"),
+    ]
+    executor = MigrationExecutor(db=cast("Database", object()), migrations_dir=Path("migrations"))
+    executor.state_manager = cast(MigrationStateManager, state_manager)
+    monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
+
+    results = executor.migrate(target="0001_base")
+
+    assert calls == ["backwards"]
+    assert [(result.name, result.action, result.success) for result in results] == [
+        ("0002_python", "rolled_back", True)
+    ]
+    assert state_manager.calls == [("unapplied", "app", "0002_python")]
+    assert state_manager.run_calls == [
+        ("started", "app", "0002_python", "csum-py", "rollback"),
+        ("succeeded", "app", "0002_python", "csum-py", ""),
+    ]
+
+
+def test_run_python_preflights_declared_resource_and_import(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    resource_dir = tmp_path / "data"
+    resource_dir.mkdir()
+    (resource_dir / "users.json").write_text("[]")
+    calls: list[Any] = []
+
+    def forwards(db: Any) -> None:
+        calls.append(db)
+
+    class PythonMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [
+            ops.RunPython(
+                forwards,
+                resources=["data/users.json"],
+                import_checks=["json"],
+            )
+        ]
+
+    state_manager = _RecordingStateManager()
+    migration = PythonMigration()
+    migration.app_label = "app"
+    migration.name = "0001_python"
+    loaded = [
+        LoadedMigration(
+            migration=migration,
+            path=tmp_path / "0001_python.py",
+            checksum="csum-py",
+        )
+    ]
+    executor = MigrationExecutor(db=cast("Database", object()), migrations_dir=tmp_path)
+    executor.state_manager = cast(MigrationStateManager, state_manager)
+    monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
+
+    results = executor.migrate()
+
+    assert calls
+    assert [(result.name, result.action, result.success) for result in results] == [
+        ("0001_python", "applied", True)
+    ]
+    assert state_manager.calls == [("applied", "app", "0001_python")]
+
+
+def test_run_python_missing_resource_preflight_blocks_entire_plan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def first(db: Any) -> None:
+        calls.append("first")
+
+    def second(db: Any) -> None:
+        calls.append("second")
+
+    class FirstMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [ops.RunPython(first)]
+
+    class SecondMigration(Migration):
+        dependencies: ClassVar[list[tuple[str, str]]] = [("app", "0001_first")]
+        operations: ClassVar[list[ops.Operation]] = [
+            ops.RunPython(second, resources=["data/missing.json"])
+        ]
+
+    state_manager = _RecordingStateManager()
+    loaded = [
+        LoadedMigration(
+            migration=FirstMigration(),
+            path=tmp_path / "0001_first.py",
+            checksum="csum-first",
+        ),
+        LoadedMigration(
+            migration=SecondMigration(),
+            path=tmp_path / "0002_second.py",
+            checksum="csum-second",
+        ),
+    ]
+    for item in loaded:
+        item.migration.app_label = "app"
+        item.migration.name = item.path.stem
+
+    executor = MigrationExecutor(db=cast("Database", object()), migrations_dir=tmp_path)
+    executor.state_manager = cast(MigrationStateManager, state_manager)
+    monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
+
+    with pytest.raises(MigrationError, match="missing resource"):
+        executor.migrate()
+
+    assert calls == []
+    assert state_manager.calls == []
+
+
+def test_run_python_missing_import_check_fails_before_user_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def forwards(db: Any) -> None:
+        calls.append("forwards")
+
+    class PythonMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [
+            ops.RunPython(
+                forwards,
+                import_checks=["type_bridge_missing_test_module"],
+            )
+        ]
+
+    state_manager = _RecordingStateManager()
+    loaded = [_loaded(PythonMigration(), "app", "0001_python", "csum-py")]
+    executor = MigrationExecutor(db=cast("Database", object()), migrations_dir=Path("migrations"))
+    executor.state_manager = cast(MigrationStateManager, state_manager)
+    monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
+
+    with pytest.raises(MigrationError, match="failed import check"):
+        executor.migrate()
+
+    assert calls == []
+    assert state_manager.calls == []
+
+
+def test_run_python_history_uses_python_path_for_later_typeql_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forwards(db: Any) -> None:
+        pass
+
+    class PythonMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [ops.RunPython(forwards)]
+
+    class TypeQLMigration(Migration):
+        dependencies: ClassVar[list[tuple[str, str]]] = [("app", "0001_python")]
+        operations: ClassVar[list[ops.Operation]] = [
+            ops.RunTypeQL("define attribute later-typeql, value string;")
+        ]
+
+    state_manager = _RecordingStateManager()
+    state_manager.load_state = lambda: MigrationState(
+        applied=[
+            MigrationRecord("app", "0001_python", "2026-01-01T00:00:00", "csum-py"),
+        ]
+    )
+    loaded = [
+        _loaded(PythonMigration(), "app", "0001_python", "csum-py"),
+        _loaded(TypeQLMigration(), "app", "0002_typeql", "csum-typeql"),
+    ]
+    db = _RecordingDb()
+    executor = MigrationExecutor(db=cast("Database", db), migrations_dir=Path("migrations"))
+    executor.state_manager = cast(MigrationStateManager, state_manager)
+    monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
+
+    runner = _ScriptedRunner(
+        [
+            {
+                "app_label": "app",
+                "name": "0002_typeql",
+                "action": "apply",
+                "success": True,
+                "error": None,
+            },
+        ]
+    )
+
+    monkeypatch.setattr("type_bridge._rust_runtime.migration_runner_for", lambda db: runner)
+
+    results = executor.migrate()
+
+    assert [(result.name, result.action, result.success) for result in results] == [
+        ("0002_typeql", "applied", True)
+    ]
+    assert len(runner.apply_calls) == 1
+    assert runner.apply_calls[0][2] == "0002_typeql"
+    assert len(runner.apply_calls[0][0]["migrations"]) == 2
+    assert db.queries == []
+    assert state_manager.calls == [("applied", "app", "0002_typeql")]
+
+
+def test_run_python_plan_executes_sidecar_migration_via_rust(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[Any] = []
+
+    def forwards(db: Any) -> None:
+        calls.append("run_python")
+
+    class PythonMigration(Migration):
+        dependencies: ClassVar[list[tuple[str, str]]] = [("app", "0001_initial")]
+        operations: ClassVar[list[ops.Operation]] = [ops.RunPython(forwards)]
+
+    sidecar_migration = _loaded(
+        _runtypeql_migration("unused"), "app", "0001_initial", "csum-initial"
+    )
+    sidecar_migration.migration.name = "0001_initial"
+    sidecar_migration.migration.app_label = "app"
+    sidecar_migration.execution_spec = {
+        "app_label": "app",
+        "name": "0001_initial",
+        "dependencies": [],
+        "operations": [
+            {
+                "kind": "run_typeql",
+                "forward": "define attribute sidecar-attr, value string;",
+                "reverse": "undefine attribute sidecar-attr;",
+            }
+        ],
+        "checksum": "csum-initial",
+        "reversible": True,
+    }
+
+    runner = _ScriptedRunner(
+        [
+            {
+                "app_label": "app",
+                "name": "0001_initial",
+                "action": "apply",
+                "success": True,
+                "error": None,
+            },
+        ]
+    )
+    loaded = [
+        sidecar_migration,
+        _loaded(PythonMigration(), "app", "0002_python", "csum-python"),
+    ]
+
+    state_manager = _RecordingStateManager()
+    dummy_db: Any = object()
+    executor = MigrationExecutor(db=dummy_db, migrations_dir=Path("migrations"))
+    executor.state_manager = cast(MigrationStateManager, state_manager)
+    monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
+    monkeypatch.setattr("type_bridge._rust_runtime.migration_runner_for", lambda db: runner)
+
+    results = executor.migrate()
+
+    assert calls == ["run_python"]
+    assert [(result.name, result.action, result.success) for result in results] == [
+        ("0001_initial", "applied", True),
+        ("0002_python", "applied", True),
+    ]
+    assert state_manager.calls == [
+        ("applied", "app", "0001_initial"),
+        ("applied", "app", "0002_python"),
+    ]
+    assert len(runner.apply_calls) == 1
+    assert runner.apply_calls[0][2] == "0001_initial"
+
+
+def test_run_python_sqlmigrate_preview_is_comment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forwards(db: Any) -> None:
+        pass
+
+    def backwards(db: Any) -> None:
+        pass
+
+    class PythonMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [
+            ops.RunPython(
+                forwards,
+                reverse=backwards,
+                resources=["data/users.json"],
+                import_checks=["json"],
+            )
+        ]
+
+    loaded = _loaded(PythonMigration(), "app", "0001_python", "csum-py")
+    executor = MigrationExecutor(db=cast("Database", object()), migrations_dir=Path("migrations"))
+    monkeypatch.setattr(executor.loader, "get_by_name", lambda name: loaded)
+
+    preview = executor.sqlmigrate("0001_python")
+    assert "RunPython" in preview
+    assert "data/users.json" in preview
+    assert "json" in preview
+    assert "RunPython reverse" in executor.sqlmigrate("0001_python", reverse=True)
+
+
+def test_run_python_sqlmigrate_reverse_requires_reverse_callable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forwards(db: Any) -> None:
+        pass
+
+    class PythonMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [ops.RunPython(forwards)]
+
+    loaded = _loaded(PythonMigration(), "app", "0001_python", "csum-py")
+    executor = MigrationExecutor(db=cast("Database", object()), migrations_dir=Path("migrations"))
+    monkeypatch.setattr(executor.loader, "get_by_name", lambda name: loaded)
+
+    with pytest.raises(MigrationError, match="not reversible"):
+        executor.sqlmigrate("0001_python", reverse=True)
+
+
 # ── sqlmigrate preview parity ────────────────────────────────────────────────
 
 
@@ -384,4 +818,4 @@ def test_sqlmigrate_preview_uses_rust_planner_for_typed_ops(
     assert "owns planner-name @key;" in forward
 
     reverse = executor.sqlmigrate("0001_typed", reverse=True)
-    assert reverse == "undefine\nentity planner-person;\n\nundefine\nattribute planner-name;"
+    assert reverse == "undefine\nplanner-person;\n\nundefine\nplanner-name;"

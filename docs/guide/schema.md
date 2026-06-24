@@ -365,72 +365,13 @@ class MatchResult(Entity):
     pass
 ```
 
-## Migration Manager
+## Migrations
 
-For complex schema migrations, use `MigrationManager`:
-
-```python
-from type_bridge.schema import MigrationManager
-
-migration_manager = MigrationManager(db)
-```
-
-### Add Migrations
-
-```python
-# Add individual migration
-migration_manager.add_migration(
-    name="add_email_to_person",
-    schema="define person owns email;"
-)
-
-# Add complex migration
-migration_manager.add_migration(
-    name="add_company_entity",
-    schema="""
-    define
-    entity company,
-        owns name @key,
-        owns industry;
-
-    attribute industry, value string;
-    """
-)
-
-# Add migration with data transformation
-migration_manager.add_migration(
-    name="split_name_field",
-    schema="""
-    define
-    person owns first-name,
-        owns last-name;
-
-    attribute first-name, value string;
-    attribute last-name, value string;
-    """,
-    data_script="""
-    # TypeQL to transform data
-    match
-    $p isa person, has name $n;
-    # ... split logic
-    """
-)
-```
-
-### Apply Migrations
-
-```python
-# Apply all pending migrations in order
-migration_manager.apply_migrations()
-
-# Apply specific migration
-migration_manager.apply_migration("add_email_to_person")
-
-# Check migration status
-status = migration_manager.get_migration_status()
-print(f"Applied: {status.applied}")
-print(f"Pending: {status.pending}")
-```
+For production schema history, use the dedicated migration system documented in
+[Migrations](migrations.md). It covers generated schema migrations,
+`ops.RunPython` data migrations that can use `User.manager(db)`, historical
+snapshot bindings, rollback, sidecar drift checks, and migration state stored in
+TypeDB.
 
 ## Complete Schema Workflow
 

@@ -6,6 +6,8 @@ Tracks applied migrations in TypeDB as the sole source of truth.
 from __future__ import annotations
 
 import logging
+import socket
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -29,6 +31,23 @@ class MigrationRecord:
         if not isinstance(other, MigrationRecord):
             return NotImplemented
         return self.app_label == other.app_label and self.name == other.name
+
+
+@dataclass
+class MigrationRunRecord:
+    """Record of one migration execution attempt."""
+
+    run_id: str
+    app_label: str
+    name: str
+    checksum: str
+    direction: str
+    status: str
+    started_at: str
+    finished_at: str | None = None
+    error: str | None = None
+    executor_ip: str | None = None
+    executor_mac: str | None = None
 
 
 @dataclass
@@ -97,12 +116,12 @@ class MigrationState:
 class MigrationStateManager:
     """Manages migration state in TypeDB.
 
-    State is stored in TypeDB as type_bridge_migration entities. The storage
-    mechanism — schema bootstrap, the applied-state read, and the
-    record/unrecord writes — lives in Rust behind the ``MigrationStateStore``
-    seam; this class is a thin facade that delegates to a Rust-owned
-    ``PyMigrationStateManager`` and assembles the ``MigrationState`` /
-    ``MigrationRecord`` dataclasses Python callers consume.
+    Applied state is stored in TypeDB as ``type_bridge_migration`` entities, and
+    execution attempts are stored as ``type_bridge_migration_run`` entities. The
+    storage mechanism — schema bootstrap, reads, and writes — lives in Rust
+    behind the ``MigrationStateStore`` seam; this class is a thin facade that
+    delegates to a Rust-owned ``PyMigrationStateManager`` and assembles Python
+    dataclasses for callers.
 
     Example:
         manager = MigrationStateManager(db)
@@ -172,6 +191,29 @@ class MigrationStateManager:
         self._state = state
         return state
 
+    def load_runs(self) -> list[MigrationRunRecord]:
+        """Load the migration execution run log from TypeDB."""
+        self.ensure_schema()
+
+        runs: list[MigrationRunRecord] = []
+        for row in self._manager.load_runs():
+            runs.append(
+                MigrationRunRecord(
+                    run_id=str(row["run_id"]),
+                    app_label=str(row["app_label"]),
+                    name=str(row["name"]),
+                    checksum=str(row["checksum"]),
+                    direction=str(row["direction"]),
+                    status=str(row["status"]),
+                    started_at=str(row["started_at"]),
+                    finished_at=_optional_str(row.get("finished_at")),
+                    error=_optional_str(row.get("error")),
+                    executor_ip=_optional_str(row.get("executor_ip")),
+                    executor_mac=_optional_str(row.get("executor_mac")),
+                )
+            )
+        return runs
+
     def record_applied(self, app_label: str, name: str, checksum: str) -> None:
         """Record that a migration was applied.
 
@@ -223,3 +265,105 @@ class MigrationStateManager:
         # Update local state
         if self._state:
             self._state.remove(app_label, name)
+
+    def record_run_started(
+        self,
+        app_label: str,
+        name: str,
+        checksum: str,
+        direction: str,
+    ) -> MigrationRunRecord:
+        """Record that one migration execution attempt started."""
+        if direction not in {"apply", "rollback"}:
+            raise ValueError(f"Unsupported migration run direction: {direction}")
+
+        started_at = _timestamp_now()
+        executor_ip, executor_mac = _executor_info()
+        record = MigrationRunRecord(
+            run_id=str(uuid.uuid4()),
+            app_label=app_label,
+            name=name,
+            checksum=checksum,
+            direction=direction,
+            status="started",
+            started_at=started_at,
+            executor_ip=executor_ip,
+            executor_mac=executor_mac,
+        )
+        self._record_run(record)
+        return record
+
+    def record_run_finished(
+        self,
+        record: MigrationRunRecord,
+        status: str,
+        error: str | None = None,
+    ) -> MigrationRunRecord:
+        """Record that a migration execution attempt finished."""
+        if status not in {"succeeded", "failed"}:
+            raise ValueError(f"Unsupported migration run status: {status}")
+
+        finished = MigrationRunRecord(
+            run_id=record.run_id,
+            app_label=record.app_label,
+            name=record.name,
+            checksum=record.checksum,
+            direction=record.direction,
+            status=status,
+            started_at=record.started_at,
+            finished_at=_timestamp_now(),
+            error=error,
+            executor_ip=record.executor_ip,
+            executor_mac=record.executor_mac,
+        )
+        self._record_run(finished)
+        return finished
+
+    def _record_run(self, record: MigrationRunRecord) -> None:
+        self.ensure_schema()
+        self._manager.record_run(
+            {
+                "run_id": record.run_id,
+                "app_label": record.app_label,
+                "name": record.name,
+                "checksum": record.checksum,
+                "direction": record.direction,
+                "status": record.status,
+                "started_at": record.started_at,
+                "finished_at": record.finished_at,
+                "error": record.error,
+                "executor_ip": record.executor_ip,
+                "executor_mac": record.executor_mac,
+            }
+        )
+
+
+def _timestamp_now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
+def _executor_info() -> tuple[str | None, str | None]:
+    return _local_ip(), _local_mac()
+
+
+def _local_ip() -> str | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return str(sock.getsockname()[0])
+    except OSError:
+        return None
+
+
+def _local_mac() -> str | None:
+    node = uuid.getnode()
+    if (node >> 40) & 1:
+        return None
+    return ":".join(f"{(node >> shift) & 0xFF:02x}" for shift in range(40, -1, -8))

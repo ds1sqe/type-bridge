@@ -19,12 +19,40 @@ Example:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
+    from type_bridge.migration.ref import AttributeRef, EntityRef, RelationRef
     from type_bridge.models import Entity, Relation
+
+    TypeLike = type[Entity | Relation] | EntityRef | RelationRef
+    AttributeLike = type[Attribute] | AttributeRef
+
+
+def _type_name(value: object) -> str:
+    get_type_name = getattr(value, "get_type_name", None)
+    if get_type_name is None:
+        raise TypeError(f"{value!r} is not a TypeBridge type or migration type ref")
+    return str(get_type_name())
+
+
+def _attribute_name(value: object) -> str:
+    get_attribute_name = getattr(value, "get_attribute_name", None)
+    if get_attribute_name is None:
+        raise TypeError(f"{value!r} is not a TypeBridge attribute or migration attribute ref")
+    return str(get_attribute_name())
+
+
+def _schema_definition(value: object, operation: str) -> str:
+    to_schema_definition = getattr(value, "to_schema_definition", None)
+    if to_schema_definition is None:
+        raise TypeError(
+            f"{operation} requires a full model class when no sidecar execution spec is present"
+        )
+    return str(to_schema_definition())
 
 
 class Operation(ABC):
@@ -74,14 +102,14 @@ class AddAttribute(Operation):
         ops.AddAttribute(Phone)  # Creates: define attribute phone, value string;
     """
 
-    attribute: type[Attribute]
+    attribute: AttributeLike
 
     def to_typeql(self) -> str:
-        return f"define\n{self.attribute.to_schema_definition()}"
+        return f"define\n{_schema_definition(self.attribute, 'AddAttribute')}"
 
     def to_rollback_typeql(self) -> str | None:
-        name = self.attribute.get_attribute_name()
-        return f"undefine\nattribute {name};"
+        name = _attribute_name(self.attribute)
+        return f"undefine\n{name};"
 
 
 @dataclass
@@ -92,11 +120,11 @@ class RemoveAttribute(Operation):
     and ownerships are removed first.
     """
 
-    attribute: type[Attribute]
+    attribute: AttributeLike
 
     def to_typeql(self) -> str:
-        name = self.attribute.get_attribute_name()
-        return f"undefine\nattribute {name};"
+        name = _attribute_name(self.attribute)
+        return f"undefine\n{name};"
 
     def to_rollback_typeql(self) -> str | None:
         # Cannot restore deleted data
@@ -114,17 +142,17 @@ class AddEntity(Operation):
         ops.AddEntity(Person)
     """
 
-    entity: type[Entity]
+    entity: TypeLike
 
     def to_typeql(self) -> str:
-        schema = self.entity.to_schema_definition()
+        schema = _schema_definition(self.entity, "AddEntity")
         if schema:
             return f"define\n{schema}"
         return ""
 
     def to_rollback_typeql(self) -> str | None:
-        name = self.entity.get_type_name()
-        return f"undefine\nentity {name};"
+        name = _type_name(self.entity)
+        return f"undefine\n{name};"
 
 
 @dataclass
@@ -135,11 +163,11 @@ class RemoveEntity(Operation):
     are deleted first.
     """
 
-    entity: type[Entity]
+    entity: TypeLike
 
     def to_typeql(self) -> str:
-        name = self.entity.get_type_name()
-        return f"undefine\nentity {name};"
+        name = _type_name(self.entity)
+        return f"undefine\n{name};"
 
     def to_rollback_typeql(self) -> str | None:
         # Cannot restore deleted data
@@ -161,8 +189,8 @@ class AddOwnership(Operation):
         # Creates: define person owns email @key;
     """
 
-    owner: type[Entity | Relation]
-    attribute: type[Attribute]
+    owner: TypeLike
+    attribute: AttributeLike
     optional: bool = False
     key: bool = False
     unique: bool = False
@@ -172,8 +200,8 @@ class AddOwnership(Operation):
     def to_typeql(self) -> str:
         from type_bridge.typeql.annotations import format_card_annotation
 
-        owner_name = self.owner.get_type_name()
-        attr_name = self.attribute.get_attribute_name()
+        owner_name = _type_name(self.owner)
+        attr_name = _attribute_name(self.attribute)
 
         annotations = []
         if self.key:
@@ -191,9 +219,9 @@ class AddOwnership(Operation):
         return f"define\n{owner_name} owns {attr_name}{ann_str};"
 
     def to_rollback_typeql(self) -> str | None:
-        owner_name = self.owner.get_type_name()
-        attr_name = self.attribute.get_attribute_name()
-        return f"undefine\n{owner_name} owns {attr_name};"
+        owner_name = _type_name(self.owner)
+        attr_name = _attribute_name(self.attribute)
+        return f"undefine\nowns {attr_name} from {owner_name};"
 
 
 @dataclass
@@ -204,13 +232,13 @@ class RemoveOwnership(Operation):
     are removed from instances first.
     """
 
-    owner: type[Entity | Relation]
-    attribute: type[Attribute]
+    owner: TypeLike
+    attribute: AttributeLike
 
     def to_typeql(self) -> str:
-        owner_name = self.owner.get_type_name()
-        attr_name = self.attribute.get_attribute_name()
-        return f"undefine\n{owner_name} owns {attr_name};"
+        owner_name = _type_name(self.owner)
+        attr_name = _attribute_name(self.attribute)
+        return f"undefine\nowns {attr_name} from {owner_name};"
 
     def to_rollback_typeql(self) -> str | None:
         # Would need to know original flags (key, unique, cardinality)
@@ -229,20 +257,20 @@ class ModifyOwnership(Operation):
         )
     """
 
-    owner: type[Entity | Relation]
-    attribute: type[Attribute]
+    owner: TypeLike
+    attribute: AttributeLike
     old_annotations: str
     new_annotations: str
 
     def to_typeql(self) -> str:
-        owner_name = self.owner.get_type_name()
-        attr_name = self.attribute.get_attribute_name()
+        owner_name = _type_name(self.owner)
+        attr_name = _attribute_name(self.attribute)
         # TypeDB 3.x uses redefine for modifications
         return f"redefine\n{owner_name} owns {attr_name} {self.new_annotations};"
 
     def to_rollback_typeql(self) -> str | None:
-        owner_name = self.owner.get_type_name()
-        attr_name = self.attribute.get_attribute_name()
+        owner_name = _type_name(self.owner)
+        attr_name = _attribute_name(self.attribute)
         return f"redefine\n{owner_name} owns {attr_name} {self.old_annotations};"
 
 
@@ -257,26 +285,24 @@ class AddRelation(Operation):
         ops.AddRelation(Employment)
     """
 
-    relation: type[Relation]
+    relation: TypeLike
 
     def to_typeql(self) -> str:
         lines = []
-        schema = self.relation.to_schema_definition()
+        schema = _schema_definition(self.relation, "AddRelation")
         if schema:
             lines.append(f"define\n{schema}")
 
             # Add role player definitions
-            for role_name, role in self.relation._roles.items():
+            for role_name, role in getattr(self.relation, "_roles", {}).items():
                 for player_type in role.player_types:
-                    lines.append(
-                        f"{player_type} plays {self.relation.get_type_name()}:{role.role_name};"
-                    )
+                    lines.append(f"{player_type} plays {_type_name(self.relation)}:{role_name};")
 
         return "\n".join(lines)
 
     def to_rollback_typeql(self) -> str | None:
-        name = self.relation.get_type_name()
-        return f"undefine\nrelation {name};"
+        name = _type_name(self.relation)
+        return f"undefine\n{name};"
 
 
 @dataclass
@@ -287,11 +313,11 @@ class RemoveRelation(Operation):
     are deleted first.
     """
 
-    relation: type[Relation]
+    relation: TypeLike
 
     def to_typeql(self) -> str:
-        name = self.relation.get_type_name()
-        return f"undefine\nrelation {name};"
+        name = _type_name(self.relation)
+        return f"undefine\n{name};"
 
     def to_rollback_typeql(self) -> str | None:
         # Cannot restore deleted data
@@ -309,20 +335,20 @@ class AddRole(Operation):
         ops.AddRole(Employment, "manager", ["person"])
     """
 
-    relation: type[Relation]
+    relation: TypeLike
     role_name: str
     player_types: list[str] = field(default_factory=list)
 
     def to_typeql(self) -> str:
-        rel_name = self.relation.get_type_name()
+        rel_name = _type_name(self.relation)
         lines = [f"define\n{rel_name} relates {self.role_name};"]
         for player in self.player_types:
             lines.append(f"{player} plays {rel_name}:{self.role_name};")
         return "\n".join(lines)
 
     def to_rollback_typeql(self) -> str | None:
-        rel_name = self.relation.get_type_name()
-        return f"undefine\n{rel_name} relates {self.role_name};"
+        rel_name = _type_name(self.relation)
+        return f"undefine\nrelates {self.role_name} from {rel_name};"
 
 
 @dataclass
@@ -333,12 +359,12 @@ class RemoveRole(Operation):
     have role players for this role.
     """
 
-    relation: type[Relation]
+    relation: TypeLike
     role_name: str
 
     def to_typeql(self) -> str:
-        rel_name = self.relation.get_type_name()
-        return f"undefine\n{rel_name} relates {self.role_name};"
+        rel_name = _type_name(self.relation)
+        return f"undefine\nrelates {self.role_name} from {rel_name};"
 
     def to_rollback_typeql(self) -> str | None:
         # Would need to know player types
@@ -354,17 +380,17 @@ class AddRolePlayer(Operation):
         # Allows Contractor entities to play the employee role
     """
 
-    relation: type[Relation]
+    relation: TypeLike
     role_name: str
     player_type: str
 
     def to_typeql(self) -> str:
-        rel_name = self.relation.get_type_name()
+        rel_name = _type_name(self.relation)
         return f"define\n{self.player_type} plays {rel_name}:{self.role_name};"
 
     def to_rollback_typeql(self) -> str | None:
-        rel_name = self.relation.get_type_name()
-        return f"undefine\n{self.player_type} plays {rel_name}:{self.role_name};"
+        rel_name = _type_name(self.relation)
+        return f"undefine\nplays {rel_name}:{self.role_name} from {self.player_type};"
 
 
 @dataclass
@@ -375,16 +401,16 @@ class RemoveRolePlayer(Operation):
     have this player type in this role.
     """
 
-    relation: type[Relation]
+    relation: TypeLike
     role_name: str
     player_type: str
 
     def to_typeql(self) -> str:
-        rel_name = self.relation.get_type_name()
-        return f"undefine\n{self.player_type} plays {rel_name}:{self.role_name};"
+        rel_name = _type_name(self.relation)
+        return f"undefine\nplays {rel_name}:{self.role_name} from {self.player_type};"
 
     def to_rollback_typeql(self) -> str | None:
-        rel_name = self.relation.get_type_name()
+        rel_name = _type_name(self.relation)
         return f"define\n{self.player_type} plays {rel_name}:{self.role_name};"
 
 
@@ -422,6 +448,72 @@ class RunTypeQL(Operation):
 
     def to_rollback_typeql(self) -> str | None:
         return self.reverse.strip() if self.reverse else None
+
+
+PythonMigrationCallable = Callable[[Any], None]
+
+
+@dataclass
+class RunPython(Operation):
+    """Run Python ORM code during migration execution.
+
+    ``RunPython`` is for migrations that need the normal TypeBridge ORM surface
+    rather than portable TypeQL, for example loading JSON/TOML data, creating
+    many entities/relations, or querying existing data before writing derived
+    values.  The callable receives the migration executor's database connection,
+    so existing code such as ``User.manager(db).filter(...).execute()`` works.
+
+    Example:
+        def forwards(db):
+            users = User.manager(db).filter(name__startswith="A").execute()
+            ...
+
+        operations = [ops.RunPython(forwards)]
+    """
+
+    code: PythonMigrationCallable
+    reverse: PythonMigrationCallable | None = None
+    description: str | None = None
+    resources: Sequence[str] = ()
+    import_checks: Sequence[str] = ()
+
+    def to_typeql(self) -> str:
+        name = self.description or self._callable_name(self.code)
+        return self._preview("RunPython", name)
+
+    def to_rollback_typeql(self) -> str | None:
+        if self.reverse is None:
+            return None
+        name = self.description or self._callable_name(self.reverse)
+        return self._preview("RunPython reverse", name)
+
+    @property
+    def reversible(self) -> bool:
+        return self.reverse is not None
+
+    def run(self, db: Any) -> None:
+        self.code(db)
+
+    def rollback(self, db: Any) -> None:
+        if self.reverse is None:
+            raise RuntimeError(
+                f"RunPython operation {self._callable_name(self.code)} is not reversible"
+            )
+        self.reverse(db)
+
+    @staticmethod
+    def _callable_name(func: PythonMigrationCallable) -> str:
+        module = getattr(func, "__module__", "")
+        name = getattr(func, "__qualname__", getattr(func, "__name__", repr(func)))
+        return f"{module}:{name}" if module else name
+
+    def _preview(self, prefix: str, name: str) -> str:
+        lines = [f"# {prefix}: {name}"]
+        if self.resources:
+            lines.append(f"# resources: {', '.join(self.resources)}")
+        if self.import_checks:
+            lines.append(f"# import checks: {', '.join(self.import_checks)}")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -495,7 +587,7 @@ class CopyAttribute(Operation):
     Note: ``dest`` must already be owned by ``owner`` via a prior schema op.
     """
 
-    owner: type[Entity | Relation]
+    owner: TypeLike
     source: str
     dest: str
     filter: str | None = None
@@ -506,7 +598,7 @@ class CopyAttribute(Operation):
         Emits a match+insert that copies ``source`` values to ``dest`` for every
         owner instance that does not already have the destination attribute.
         """
-        owner_name = self.owner.get_type_name()
+        owner_name = _type_name(self.owner)
         filter_line = f"\n  {self.filter};" if self.filter else ""
         # `has <dest> == $v` assigns the *value* of the matched source attribute
         # to a new destination attribute. Writing `has <dest> $v` instead would
@@ -522,5 +614,5 @@ class CopyAttribute(Operation):
 
     def to_rollback_typeql(self) -> str | None:
         """Generate the inverse delete that removes all dest values added by this op."""
-        owner_name = self.owner.get_type_name()
+        owner_name = _type_name(self.owner)
         return f"match $x isa {owner_name}, has {self.dest} $v;\ndelete $v of $x;"

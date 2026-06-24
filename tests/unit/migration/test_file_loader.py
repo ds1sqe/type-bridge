@@ -3,7 +3,8 @@
 
 Covers:
 - Generator writes a JSON sidecar beside the .py
-- Sidecar loaded via load_migration_sidecar matches lowering the .py (anti-drift)
+- Sidecar-backed .py files are not executed during discovery
+- Sidecar checksum drift is rejected before Python import
 - Legacy .py with no sidecar → execution_spec is None, lowering falls back
 - .py still contains ops.RunTypeQL text after generation
 """
@@ -16,7 +17,7 @@ import pytest
 
 from type_bridge import _rust_runtime
 from type_bridge.migration._lower import lower_execution_migration
-from type_bridge.migration.loader import LoadedMigration, MigrationLoader
+from type_bridge.migration.loader import MigrationLoader, MigrationLoadError
 
 # ---------------------------------------------------------------------------
 # Shared fixture: require the Rust extension for all tests in this module.
@@ -157,17 +158,19 @@ def test_discover_populates_execution_spec_from_sidecar(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: sidecar path = lower_execution_migration (anti-drift equivalence)
+# Test 4: sidecar-backed discovery does not execute .py
 # ---------------------------------------------------------------------------
 
 
-def test_sidecar_spec_equals_lowered_py_spec(tmp_path: Path) -> None:
-    """The sidecar-loaded spec must be byte-identical to what lowering the .py produces.
-
-    This is the anti-drift equivalence: both paths derive from the same op list,
-    so the normalized execution MigrationSpec must agree.
-    """
-    py_path = _write_py(tmp_path, "0001_auto.py")
+def test_sidecar_backed_discovery_skips_python_execution(tmp_path: Path) -> None:
+    """A valid sidecar lets discovery succeed even if .py imports are stale."""
+    py_path = _write_py(
+        tmp_path,
+        "0001_auto.py",
+        """
+import generated_models_that_no_longer_exists
+""".lstrip(),
+    )
     _build_and_write_sidecar(
         py_path,
         forward="define attribute loader-name, value string;",
@@ -180,22 +183,29 @@ def test_sidecar_spec_equals_lowered_py_spec(tmp_path: Path) -> None:
     migrations = MigrationLoader(tmp_path).discover()
     loaded = migrations[0]
 
-    # Sidecar path: lower_execution_migration returns the normalized sidecar spec.
-    sidecar_spec = lower_execution_migration(loaded)
+    assert loaded.execution_spec is not None
+    assert loaded.migration.operations == []
+    assert lower_execution_migration(loaded)["operations"][0]["kind"] == "run_typeql"
 
-    # .py path: load the same migration without the sidecar (clear execution_spec)
-    # and derive the spec via the to_typeql() fallback.
-    no_sidecar = LoadedMigration(
-        migration=loaded.migration,
-        path=loaded.path,
-        checksum=loaded.checksum,
-        execution_spec=None,
-    )
-    py_derived_spec = lower_execution_migration(no_sidecar)
 
-    assert sidecar_spec == py_derived_spec, (
-        "Sidecar-loaded spec must equal the spec derived from lowering the .py"
+def test_sidecar_drift_rejected_before_python_execution(tmp_path: Path) -> None:
+    py_path = _write_py(tmp_path, "0001_auto.py")
+    _build_and_write_sidecar(
+        py_path,
+        forward="define attribute loader-name, value string;",
+        reverse="undefine attribute loader-name;",
+        app_label=tmp_path.name,
+        migration_name="0001_auto",
+        dependencies=[],
     )
+    py_path.write_text(
+        """
+import generated_models_that_no_longer_exists
+""".lstrip()
+    )
+
+    with pytest.raises(MigrationLoadError, match="sidecar drift"):
+        MigrationLoader(tmp_path).discover()
 
 
 # ---------------------------------------------------------------------------

@@ -56,6 +56,7 @@ fn parse_schema(input: &mut &str) -> PResult<TypeSchema> {
         return Err(ContextError::new());
     }
 
+    let mut standalone_plays = Vec::new();
     let mut schema = TypeSchema::new();
     for block in blocks {
         for stmt in block {
@@ -132,9 +133,36 @@ fn parse_schema(input: &mut &str) -> PResult<TypeSchema> {
                 Statement::Struct(struct_type) => {
                     schema.structs.insert(struct_type.name.clone(), struct_type);
                 }
+                Statement::Plays(plays) => {
+                    standalone_plays.push(plays);
+                }
             }
         }
     }
+
+    for plays in standalone_plays {
+        if let Some(entity) = schema.entities.get_mut(&plays.player) {
+            if !entity.plays.iter().any(|p| p.role_ref == plays.played.role_ref) {
+                entity.plays.push(plays.played);
+            }
+        } else if let Some(relation) = schema.relations.get_mut(&plays.player) {
+            if !relation.plays.iter().any(|p| p.role_ref == plays.played.role_ref) {
+                relation.plays.push(plays.played);
+            }
+        } else {
+            // Player type is not explicitly defined yet. Create a shell entity.
+            let entity = EntityType {
+                name: plays.player.clone(),
+                parent: None,
+                is_abstract: false,
+                owns: Vec::new(),
+                owns_order: Vec::new(),
+                plays: vec![plays.played],
+            };
+            schema.entities.insert(plays.player, entity);
+        }
+    }
+
     Ok(schema)
 }
 
@@ -150,12 +178,18 @@ fn parse_define_block(input: &mut &str) -> PResult<Vec<Statement>> {
 // Statement dispatch
 // ---------------------------------------------------------------------------
 
+struct StandalonePlays {
+    player: String,
+    played: PlayedRole,
+}
+
 enum Statement {
     Attribute(AttributeType),
     Entity(EntityType),
     Relation(RelationType),
     Function(FunctionType),
     Struct(StructType),
+    Plays(StandalonePlays),
 }
 
 fn parse_statement(input: &mut &str) -> PResult<Option<Statement>> {
@@ -166,8 +200,21 @@ fn parse_statement(input: &mut &str) -> PResult<Option<Statement>> {
         parse_relation_def.map(|r| Some(Statement::Relation(r))),
         parse_function_def.map(|f| Some(Statement::Function(f))),
         parse_struct_def.map(|s| Some(Statement::Struct(s))),
+        parse_standalone_plays.map(|p| Some(Statement::Plays(p))),
     ))
     .parse_next(input)
+}
+
+fn parse_standalone_plays(input: &mut &str) -> PResult<StandalonePlays> {
+    let player = identifier(input)?;
+    ws_comments_required(input)?;
+    let played = parse_plays_statement(input)?;
+    ws_comments(input);
+    literal(";").parse_next(input)?;
+    Ok(StandalonePlays {
+        player: player.to_string(),
+        played,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1889,5 +1936,13 @@ entity person
         let attr = schema.attributes.get("age").unwrap();
         assert!(attr.range_min.is_none());
         assert_eq!(attr.range_max.as_deref(), Some("150"));
+    }
+
+    #[test]
+    fn test_parse_standalone_plays() {
+        let schema = parse_typeql("define\nentity person;\nperson plays friendship:friend;\n").unwrap();
+        let person = schema.entities.get("person").unwrap();
+        assert_eq!(person.plays.len(), 1);
+        assert_eq!(person.plays[0].role_ref, "friendship:friend");
     }
 }

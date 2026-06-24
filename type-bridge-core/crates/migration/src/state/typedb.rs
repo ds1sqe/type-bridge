@@ -21,13 +21,16 @@ use type_bridge_orm::Database;
 use type_bridge_orm::OrmError;
 use type_bridge_orm::session::backend::{BoxFuture, QueryResult, TxType};
 
-use crate::state::MigrationStateStore;
+use crate::state::{MigrationRunRecord, MigrationStateStore};
 use crate::{AppliedMigrationRecord, MigrationError, Result};
 
 /// The migration-tracking entity type name.
 ///
 /// Mirrors `MigrationStateManager.ENTITY_NAME` (`state.py:111`).
 const ENTITY_NAME: &str = "type_bridge_migration";
+
+/// The append/update migration run-log entity type name.
+const RUN_ENTITY_NAME: &str = "type_bridge_migration_run";
 
 /// Timestamp format mirroring Python's `strftime("%Y-%m-%dT%H:%M:%S.%f")`.
 ///
@@ -55,6 +58,58 @@ impl TypeDbStateStore {
             schema_ensured: AtomicBool::new(false),
         }
     }
+
+    async fn type_exists(&self, type_name: &str) -> bool {
+        let check_query = format!(
+            "\n            match $t type {type_name};\n            fetch {{ \"exists\": true }};\n        "
+        );
+
+        match self.db.transaction_context(TxType::Read).await {
+            Ok(ctx) => match ctx.query(&check_query).await {
+                Ok(QueryResult::Documents(docs)) => !docs.is_empty(),
+                Ok(QueryResult::Rows(rows)) => !rows.is_empty(),
+                Ok(QueryResult::Ok) => false,
+                Err(_) => false,
+            },
+            Err(_) => false,
+        }
+    }
+
+    async fn ensure_type(&self, type_name: &str, define_typeql: &str) -> Result<()> {
+        if self.type_exists(type_name).await {
+            return Ok(());
+        }
+
+        let ctx = self
+            .db
+            .transaction_context(TxType::Schema)
+            .await
+            .map_err(map_orm_error)?;
+        match ctx.query(define_typeql).await {
+            Ok(_) => {
+                ctx.commit().await.map_err(map_orm_error)?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = ctx.rollback().await;
+                if self.type_exists(type_name).await {
+                    Ok(())
+                } else {
+                    Err(map_orm_error(error))
+                }
+            }
+        }
+    }
+
+    async fn query_documents(&self, query: &str) -> Result<Vec<serde_json::Value>> {
+        let ctx = self
+            .db
+            .transaction_context(TxType::Read)
+            .await
+            .map_err(map_orm_error)?;
+        let result = ctx.query(query).await.map_err(map_orm_error)?;
+        Ok(query_result_values(result))
+    }
 }
 
 /// Format the current UTC time as the Python-compatible applied-at string.
@@ -64,6 +119,24 @@ impl TypeDbStateStore {
 /// live clock or TypeDB.
 fn format_applied_at(now: chrono::DateTime<Utc>) -> String {
     now.format(APPLIED_AT_FORMAT).to_string()
+}
+
+fn query_result_values(result: QueryResult) -> Vec<serde_json::Value> {
+    match result {
+        QueryResult::Documents(docs) => docs,
+        QueryResult::Rows(rows) => rows,
+        QueryResult::Ok => Vec::new(),
+    }
+}
+
+fn typeql_string_literal(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{escaped}\"")
 }
 
 /// Map an ORM-layer error into the migration error hierarchy.
@@ -134,6 +207,135 @@ pub fn parse_applied_documents(
     Ok(records)
 }
 
+/// Parse TypeDB fetch documents into migration run-log records.
+pub fn parse_run_documents(values: &[serde_json::Value]) -> Result<Vec<MigrationRunRecord>> {
+    let mut records = Vec::with_capacity(values.len());
+    for doc in values {
+        let (
+            Some(run_id),
+            Some(app_label),
+            Some(name),
+            Some(checksum),
+            Some(direction),
+            Some(status),
+            Some(started_at),
+        ) = (
+            extract_value(doc, "run_id"),
+            extract_value(doc, "app"),
+            extract_value(doc, "name"),
+            extract_value(doc, "checksum"),
+            extract_value(doc, "direction"),
+            extract_value(doc, "status"),
+            extract_value(doc, "started"),
+        )
+        else {
+            continue;
+        };
+        records.push(MigrationRunRecord {
+            run_id,
+            app_label,
+            name,
+            checksum,
+            direction,
+            status,
+            started_at,
+            finished_at: None,
+            error: None,
+            executor_ip: None,
+            executor_mac: None,
+        });
+    }
+    Ok(records)
+}
+
+fn optional_run_field_query(attribute: &str, alias: &str) -> String {
+    format!(
+        "\nmatch\n$r isa {RUN_ENTITY_NAME},\n    has migration_run_id $run_id,\n    has {attribute} ${alias};\nfetch {{\n    \"run_id\": $run_id,\n    \"{alias}\": ${alias}\n}};\n"
+    )
+}
+
+fn merge_optional_run_field(
+    runs: &mut [MigrationRunRecord],
+    docs: &[serde_json::Value],
+    target: &str,
+    source: &str,
+) {
+    for doc in docs {
+        let (Some(run_id), Some(value)) =
+            (extract_value(doc, "run_id"), extract_value(doc, source))
+        else {
+            continue;
+        };
+        let Some(run) = runs.iter_mut().find(|run| run.run_id == run_id) else {
+            continue;
+        };
+        match target {
+            "finished_at" => run.finished_at = Some(value),
+            "error" => run.error = Some(value),
+            "executor_ip" => run.executor_ip = Some(value),
+            "executor_mac" => run.executor_mac = Some(value),
+            _ => {}
+        }
+    }
+}
+
+fn run_insert_query(record: &MigrationRunRecord) -> String {
+    let mut fields = vec![
+        format!(
+            "    has migration_run_id {}",
+            typeql_string_literal(&record.run_id)
+        ),
+        format!(
+            "    has migration_app_label {}",
+            typeql_string_literal(&record.app_label)
+        ),
+        format!(
+            "    has migration_name {}",
+            typeql_string_literal(&record.name)
+        ),
+        format!(
+            "    has migration_checksum {}",
+            typeql_string_literal(&record.checksum)
+        ),
+        format!(
+            "    has migration_direction {}",
+            typeql_string_literal(&record.direction)
+        ),
+        format!(
+            "    has migration_status {}",
+            typeql_string_literal(&record.status)
+        ),
+        format!("    has migration_started_at {}", record.started_at),
+    ];
+
+    if let Some(finished_at) = &record.finished_at {
+        fields.push(format!("    has migration_finished_at {finished_at}"));
+    }
+    if let Some(error) = &record.error {
+        fields.push(format!(
+            "    has migration_error {}",
+            typeql_string_literal(error)
+        ));
+    }
+    if let Some(executor_ip) = &record.executor_ip {
+        fields.push(format!(
+            "    has migration_executor_ip {}",
+            typeql_string_literal(executor_ip)
+        ));
+    }
+    if let Some(executor_mac) = &record.executor_mac {
+        fields.push(format!(
+            "    has migration_executor_mac {}",
+            typeql_string_literal(executor_mac)
+        ));
+    }
+
+    format!(
+        "\ninsert $r isa {RUN_ENTITY_NAME},\n{};\n",
+        fields.join(",\n")
+    )
+}
+
 impl MigrationStateStore for TypeDbStateStore {
     fn ensure_schema(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
@@ -141,45 +343,34 @@ impl MigrationStateStore for TypeDbStateStore {
                 return Ok(());
             }
 
-            // Check whether the entity type already exists. Ported from
-            // state.py:132-135 (read tx + fetch).
-            let check_query = format!(
-                "\n            match $t type {ENTITY_NAME};\n            fetch {{ \"exists\": true }};\n        "
-            );
-
-            let exists = match self.db.transaction_context(TxType::Read).await {
-                Ok(ctx) => match ctx.query(&check_query).await {
-                    // A non-empty document set means the type is defined.
-                    Ok(QueryResult::Documents(docs)) => !docs.is_empty(),
-                    Ok(QueryResult::Rows(rows)) => !rows.is_empty(),
-                    Ok(QueryResult::Ok) => false,
-                    // Type absent → the check query errors; fall through to
-                    // define, matching the Python bare `except` (state.py:143).
-                    Err(_) => false,
-                },
-                // Opening the read tx failed the same way the Python `except`
-                // swallows it: proceed to define.
-                Err(_) => false,
-            };
-
-            if exists {
-                self.schema_ensured.store(true, Ordering::Release);
-                return Ok(());
+            for (name, value_type) in [
+                ("migration_id", "string"),
+                ("migration_app_label", "string"),
+                ("migration_name", "string"),
+                ("migration_applied_at", "datetime"),
+                ("migration_checksum", "string"),
+                ("migration_run_id", "string"),
+                ("migration_direction", "string"),
+                ("migration_status", "string"),
+                ("migration_started_at", "datetime"),
+                ("migration_finished_at", "datetime"),
+                ("migration_error", "string"),
+                ("migration_executor_ip", "string"),
+                ("migration_executor_mac", "string"),
+            ] {
+                let define = format!("define\nattribute {name}, value {value_type};\n");
+                self.ensure_type(name, &define).await?;
             }
 
-            // Create the migration tracking schema. Ported verbatim from
-            // state.py:149-162 (composite-key entity + five attributes).
-            let schema = format!(
-                "define\nattribute migration_id, value string;\nattribute migration_app_label, value string;\nattribute migration_name, value string;\nattribute migration_applied_at, value datetime;\nattribute migration_checksum, value string;\n\nentity {ENTITY_NAME},\n    owns migration_id @key,\n    owns migration_app_label,\n    owns migration_name,\n    owns migration_applied_at,\n    owns migration_checksum;\n"
+            let applied_entity = format!(
+                "define\nentity {ENTITY_NAME},\n    owns migration_id @key,\n    owns migration_app_label,\n    owns migration_name,\n    owns migration_applied_at,\n    owns migration_checksum;\n"
             );
+            self.ensure_type(ENTITY_NAME, &applied_entity).await?;
 
-            let ctx = self
-                .db
-                .transaction_context(TxType::Schema)
-                .await
-                .map_err(map_orm_error)?;
-            ctx.query(&schema).await.map_err(map_orm_error)?;
-            ctx.commit().await.map_err(map_orm_error)?;
+            let run_entity = format!(
+                "define\nentity {RUN_ENTITY_NAME},\n    owns migration_run_id @key,\n    owns migration_app_label,\n    owns migration_name,\n    owns migration_checksum,\n    owns migration_direction,\n    owns migration_status,\n    owns migration_started_at,\n    owns migration_finished_at,\n    owns migration_error,\n    owns migration_executor_ip,\n    owns migration_executor_mac;\n"
+            );
+            self.ensure_type(RUN_ENTITY_NAME, &run_entity).await?;
 
             self.schema_ensured.store(true, Ordering::Release);
             Ok(())
@@ -202,12 +393,37 @@ impl MigrationStateStore for TypeDbStateStore {
                 .map_err(map_orm_error)?;
             let result = ctx.query(&query).await.map_err(map_orm_error)?;
 
-            let values = match result {
-                QueryResult::Documents(docs) => docs,
-                QueryResult::Rows(rows) => rows,
-                QueryResult::Ok => Vec::new(),
-            };
+            let values = query_result_values(result);
             parse_applied_documents(&values)
+        })
+    }
+
+    fn load_runs(&self) -> BoxFuture<'_, Result<Vec<MigrationRunRecord>>> {
+        Box::pin(async move {
+            self.ensure_schema().await?;
+
+            let query = format!(
+                "\nmatch\n$r isa {RUN_ENTITY_NAME},\n    has migration_run_id $run_id,\n    has migration_app_label $app,\n    has migration_name $name,\n    has migration_checksum $checksum,\n    has migration_direction $direction,\n    has migration_status $status,\n    has migration_started_at $started;\nfetch {{\n    \"run_id\": $run_id,\n    \"app\": $app,\n    \"name\": $name,\n    \"checksum\": $checksum,\n    \"direction\": $direction,\n    \"status\": $status,\n    \"started\": $started\n}};\n"
+            );
+            let mut runs = parse_run_documents(&self.query_documents(&query).await?)?;
+
+            let finished_query = optional_run_field_query("migration_finished_at", "finished");
+            let finished_docs = self.query_documents(&finished_query).await?;
+            merge_optional_run_field(&mut runs, &finished_docs, "finished_at", "finished");
+
+            let error_query = optional_run_field_query("migration_error", "error");
+            let error_docs = self.query_documents(&error_query).await?;
+            merge_optional_run_field(&mut runs, &error_docs, "error", "error");
+
+            let ip_query = optional_run_field_query("migration_executor_ip", "executor_ip");
+            let ip_docs = self.query_documents(&ip_query).await?;
+            merge_optional_run_field(&mut runs, &ip_docs, "executor_ip", "executor_ip");
+
+            let mac_query = optional_run_field_query("migration_executor_mac", "executor_mac");
+            let mac_docs = self.query_documents(&mac_query).await?;
+            merge_optional_run_field(&mut runs, &mac_docs, "executor_mac", "executor_mac");
+
+            Ok(runs)
         })
     }
 
@@ -223,6 +439,10 @@ impl MigrationStateStore for TypeDbStateStore {
                 .unwrap_or_else(|| format_applied_at(Utc::now()));
 
             let migration_id = format!("{}:{}", record.app_label, record.name);
+            let migration_id = typeql_string_literal(&migration_id);
+            let app = typeql_string_literal(&record.app_label);
+            let name = typeql_string_literal(&record.name);
+            let checksum = typeql_string_literal(&record.checksum);
 
             // Idempotent replace: delete any existing row for this migration_id
             // (the @key) before inserting, so re-recording an already-applied
@@ -230,16 +450,13 @@ impl MigrationStateStore for TypeDbStateStore {
             // This gives the TypeDB store the same dedup semantics the in-memory
             // store has behind the shared seam.
             let delete_existing = format!(
-                "\nmatch\n$m isa {ENTITY_NAME},\n    has migration_id \"{migration_id}\";\ndelete $m;\n"
+                "\nmatch\n$m isa {ENTITY_NAME},\n    has migration_id {migration_id};\ndelete $m;\n"
             );
 
             // Field set + storage schema match state.py:253-260. `applied_at` is
             // emitted unquoted (a TypeQL datetime literal); every other field quoted.
             let insert = format!(
-                "\ninsert $m isa {ENTITY_NAME},\n    has migration_id \"{migration_id}\",\n    has migration_app_label \"{app}\",\n    has migration_name \"{name}\",\n    has migration_applied_at {applied_at},\n    has migration_checksum \"{checksum}\";\n",
-                app = record.app_label,
-                name = record.name,
-                checksum = record.checksum,
+                "\ninsert $m isa {ENTITY_NAME},\n    has migration_id {migration_id},\n    has migration_app_label {app},\n    has migration_name {name},\n    has migration_applied_at {applied_at},\n    has migration_checksum {checksum};\n",
             );
 
             let ctx = self
@@ -265,8 +482,10 @@ impl MigrationStateStore for TypeDbStateStore {
             // Storage schema matches state.py:288-293; the delete clause uses the
             // TypeDB 3.x form `delete $m;` (the older `delete $m isa <type>;` that
             // the Python code carried is a parse error on TypeDB 3.x).
+            let app_label = typeql_string_literal(app_label);
+            let name = typeql_string_literal(name);
             let query = format!(
-                "\nmatch\n$m isa {ENTITY_NAME},\n    has migration_app_label \"{app_label}\",\n    has migration_name \"{name}\";\ndelete $m;\n"
+                "\nmatch\n$m isa {ENTITY_NAME},\n    has migration_app_label {app_label},\n    has migration_name {name};\ndelete $m;\n"
             );
 
             let ctx = self
@@ -275,6 +494,28 @@ impl MigrationStateStore for TypeDbStateStore {
                 .await
                 .map_err(map_orm_error)?;
             ctx.query(&query).await.map_err(map_orm_error)?;
+            ctx.commit().await.map_err(map_orm_error)?;
+            Ok(())
+        })
+    }
+
+    fn record_run(&self, record: MigrationRunRecord) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            self.ensure_schema().await?;
+
+            let run_id = typeql_string_literal(&record.run_id);
+            let delete_existing = format!(
+                "\nmatch\n$r isa {RUN_ENTITY_NAME},\n    has migration_run_id {run_id};\ndelete $r;\n"
+            );
+            let insert = run_insert_query(&record);
+
+            let ctx = self
+                .db
+                .transaction_context(TxType::Write)
+                .await
+                .map_err(map_orm_error)?;
+            ctx.query(&delete_existing).await.map_err(map_orm_error)?;
+            ctx.query(&insert).await.map_err(map_orm_error)?;
             ctx.commit().await.map_err(map_orm_error)?;
             Ok(())
         })
@@ -374,6 +615,85 @@ mod tests {
         let records = parse_applied_documents(&docs).unwrap();
         assert_eq!(records.len(), 1);
         assert!(records[0].applied_at.is_none());
+    }
+
+    #[test]
+    fn parse_run_documents_extracts_required_fields() {
+        let docs = vec![serde_json::json!({
+            "run_id": "run-1",
+            "app": "app",
+            "name": "0001_initial",
+            "checksum": "abc123",
+            "direction": "apply",
+            "status": "started",
+            "started": "2026-06-05T00:00:00.000000"
+        })];
+
+        let records = parse_run_documents(&docs).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].run_id, "run-1");
+        assert_eq!(records[0].direction, "apply");
+        assert_eq!(records[0].status, "started");
+        assert_eq!(records[0].finished_at, None);
+    }
+
+    #[test]
+    fn merge_optional_run_field_updates_matching_record_only() {
+        let mut records = vec![MigrationRunRecord {
+            run_id: "run-1".to_string(),
+            app_label: "app".to_string(),
+            name: "0001_initial".to_string(),
+            checksum: "abc123".to_string(),
+            direction: "apply".to_string(),
+            status: "started".to_string(),
+            started_at: "2026-06-05T00:00:00.000000".to_string(),
+            finished_at: None,
+            error: None,
+            executor_ip: None,
+            executor_mac: None,
+        }];
+        let docs = vec![serde_json::json!({
+            "run_id": "run-1",
+            "finished": "2026-06-05T00:00:01.000000"
+        })];
+
+        merge_optional_run_field(&mut records, &docs, "finished_at", "finished");
+
+        assert_eq!(
+            records[0].finished_at.as_deref(),
+            Some("2026-06-05T00:00:01.000000")
+        );
+    }
+
+    #[test]
+    fn typeql_string_literal_escapes_user_controlled_text() {
+        assert_eq!(typeql_string_literal("a\"b\\c\n"), "\"a\\\"b\\\\c\\n\"");
+    }
+
+    #[test]
+    fn run_insert_query_includes_optional_fields_when_present() {
+        let record = MigrationRunRecord {
+            run_id: "run-1".to_string(),
+            app_label: "app".to_string(),
+            name: "0001_initial".to_string(),
+            checksum: "abc123".to_string(),
+            direction: "apply".to_string(),
+            status: "failed".to_string(),
+            started_at: "2026-06-05T00:00:00.000000".to_string(),
+            finished_at: Some("2026-06-05T00:00:01.000000".to_string()),
+            error: Some("quote: \"boom\"".to_string()),
+            executor_ip: Some("127.0.0.1".to_string()),
+            executor_mac: Some("00:11:22:33:44:55".to_string()),
+        };
+
+        let query = run_insert_query(&record);
+
+        assert!(query.contains("has migration_run_id \"run-1\""));
+        assert!(query.contains("has migration_finished_at 2026-06-05T00:00:01.000000"));
+        assert!(query.contains("has migration_error \"quote: \\\"boom\\\"\""));
+        assert!(query.contains("has migration_executor_ip \"127.0.0.1\""));
+        assert!(query.contains("has migration_executor_mac \"00:11:22:33:44:55\""));
     }
 
     // ── timestamp parity (no TypeDB) ────────────────────────────────────────

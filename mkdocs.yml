@@ -95,6 +95,7 @@ nav:
     - CRUD Operations: guide/crud.md
     - Queries & Expressions: guide/queries.md
     - Schema Management: guide/schema.md
+    - Migrations: guide/migrations.md
     - Code Generator: guide/generator.md
     - TOML Schema DSL: guide/toml.md
     - API DTOs: guide/dto.md
