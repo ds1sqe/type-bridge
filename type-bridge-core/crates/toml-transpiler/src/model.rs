@@ -44,6 +44,12 @@ pub struct TomlSchema {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlAttribute {
+    /// Code generator annotations to emit as `# @...` before the definition.
+    #[serde(default)]
+    pub annotations: Vec<String>,
+    /// Explicit case override for bindgen (emitted as `# @case(...)`).
+    #[serde(default)]
+    pub bindgen_case: Option<String>,
     /// TypeDB value type, e.g. `"string"` or `"long"`. `None` when `sub` is set.
     #[serde(default)]
     pub value: Option<String>,
@@ -73,6 +79,12 @@ pub struct TomlAttribute {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlEntity {
+    /// Code generator annotations to emit as `# @...` before the definition.
+    #[serde(default)]
+    pub annotations: Vec<String>,
+    /// Explicit case override for bindgen (emitted as `# @case(...)`).
+    #[serde(default)]
+    pub bindgen_case: Option<String>,
     /// Parent entity type for inheritance (`sub <parent>`).
     #[serde(default)]
     pub sub: Option<String>,
@@ -110,6 +122,12 @@ pub struct TomlPlays {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlRelation {
+    /// Code generator annotations to emit as `# @...` before the definition.
+    #[serde(default)]
+    pub annotations: Vec<String>,
+    /// Explicit case override for bindgen (emitted as `# @case(...)`).
+    #[serde(default)]
+    pub bindgen_case: Option<String>,
     /// Parent relation type for inheritance (`sub <parent>`).
     #[serde(default)]
     pub sub: Option<String>,

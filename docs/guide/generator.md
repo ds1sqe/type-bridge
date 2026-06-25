@@ -538,10 +538,30 @@ entity user,
 | --------------------- | ------------------------------------ |
 | `# @prefix(XXX)`      | Adds `prefix: ClassVar[str] = "XXX"` |
 | `# @internal`         | Sets `internal = True` on the spec   |
-| `# @case(SNAKE_CASE)` | Uses specified case for type name    |
 | `# @transform(xxx)`   | Adds `transform = "xxx"` attribute   |
 | `# @tags(a, b, c)`    | Adds list annotation                 |
 | `# Any other comment` | Becomes the class docstring          |
+
+### Automatic Type Name Case Inference
+
+When generating Python models, the generator automatically infers the correct `TypeNameCase` for each type based on its TypeDB name. You do not need to manually specify a case or use annotations, but you can override it if you want.
+
+To override the case, you can use the `@case` annotation. The argument is case-insensitive:
+```typeql
+# Applies to all languages
+# @case(PascalCase)
+entity forced_class_name;
+
+# Applies only to Python
+# @case(Python, SnakeCase)
+entity forced_python_snake;
+```
+
+
+- If the TypeDB name is `person_name`, the generator assigns `flags = TypeFlags(case=TypeNameCase.SNAKE_CASE)`.
+- If the TypeDB name is `PersonName`, it assigns `flags = TypeFlags(case=TypeNameCase.CLASS_NAME)`.
+- If the TypeDB name is `personname`, it assigns `flags = TypeFlags(case=TypeNameCase.LOWERCASE)`.
+- For names that don't fit these conventions (e.g., kebab-case `person-name`), the generator falls back to explicitly emitting `name="person-name"`.
 
 ## Functions
 

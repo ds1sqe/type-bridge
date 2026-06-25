@@ -41,6 +41,66 @@ class TestGenerateModels:
                 content = py_file.read_text()
                 compile(content, py_file.name, "exec")
 
+    def test_case_annotation_inference_and_overrides(self) -> None:
+        """Test that TypeNameCase inference and @case overrides work correctly."""
+        schema_text = """
+            define
+            attribute name, value string;
+
+            # @case(PascalCase)
+            entity forced_class_name, owns name @key;
+
+            # @case(Python, LowerCase)
+            entity forced_python_lower, owns name @key;
+
+            entity FirstPerson, owns name @key;
+
+            entity technology_company, owns name @key;
+        """
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "models"
+            generate_models(schema_text, output)
+
+            entities_code = (output / "entities.py").read_text()
+
+            # forced_class_name should have CLASS_NAME (override)
+            assert "case=TypeNameCase.CLASS_NAME" in entities_code
+            assert "class ForcedClassName" in entities_code
+
+            # forced_python_lower should have LOWERCASE (override)
+            assert "case=TypeNameCase.LOWERCASE" in entities_code
+            assert "class ForcedPythonLower" in entities_code
+
+            # FirstPerson should automatically get CLASS_NAME
+            # wait, it might be implicitly inferred without any string because default is CLASS_NAME
+            assert "class Firstperson" not in entities_code
+            assert "class FirstPerson" in entities_code
+
+            # technology_company should automatically get SNAKE_CASE
+            assert "case=TypeNameCase.SNAKE_CASE" in entities_code
+            assert "class TechnologyCompany" in entities_code
+
+    def test_toml_transpiler_annotations(self) -> None:
+        """Test that annotations in TOML schemas are emitted correctly."""
+        schema_text = """
+        [attributes.name]
+        value = "string"
+
+        [entities.customer]
+        bindgen_case = "Python, PascalCase"
+        annotations = ["dto_name(CustomerDto)"]
+        owns = ["name"]
+        """
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "models"
+            generate_models(schema_text, output, format="toml")
+
+            entities_code = (output / "entities.py").read_text()
+            assert "class Customer" in entities_code
+            assert "case=TypeNameCase.CLASS_NAME" in entities_code
+
     def test_generates_from_file(self) -> None:
         """Generate from a schema file path."""
         if not BOOKSTORE_SCHEMA.exists():

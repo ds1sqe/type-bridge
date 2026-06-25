@@ -22,7 +22,11 @@ def to_class_name(label: str) -> str:
     """
     # Split by both - and _
     parts = label.replace("_", "-").split("-")
-    return "".join(part.capitalize() for part in parts)
+    return "".join(
+        part.capitalize() if part.isupper() or part.islower() else part[0].upper() + part[1:]
+        for part in parts
+        if part
+    )
 
 
 def to_python_name(label: str) -> str:

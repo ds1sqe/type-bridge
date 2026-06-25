@@ -256,7 +256,14 @@ fn class_name(label: &str) -> String {
             match chars.next() {
                 Some(first) => {
                     let mut out = first.to_uppercase().collect::<String>();
-                    out.push_str(&chars.as_str().to_lowercase());
+                    let rest = chars.as_str();
+                    let is_upper = part.chars().all(|c| c.is_uppercase());
+                    let is_lower = part.chars().all(|c| c.is_lowercase());
+                    if is_upper || is_lower {
+                        out.push_str(&rest.to_lowercase());
+                    } else {
+                        out.push_str(rest);
+                    }
                     out
                 }
                 None => String::new(),
@@ -284,6 +291,82 @@ fn rust_pascal_case(label: &str) -> String {
 
 fn field_name(label: &str) -> String {
     label.replace('-', "_")
+}
+
+fn python_type_name_case(
+    name: &str,
+    class: &str,
+    default_case: &str,
+    annotations: Option<&AnnotationMap>,
+) -> Option<String> {
+    if let Some(annotations) = annotations
+        && let Some(val) = annotations.get("case")
+    {
+        let mut explicit_case = None;
+        if let Some(s) = val.as_str() {
+            explicit_case = Some(s.to_string());
+        } else if let Some(arr) = val.as_array()
+            && arr.len() == 2
+            && let (Some(lang), Some(case_val)) = (arr[0].as_str(), arr[1].as_str())
+            && lang.to_lowercase() == "python"
+        {
+            explicit_case = Some(case_val.to_string());
+        }
+        if let Some(c) = explicit_case {
+            let mut c_lower = c.to_lowercase();
+            c_lower = c_lower.replace("_", "");
+            let mapped_case = match c_lower.as_str() {
+                "pascalcase" | "classname" => "CLASS_NAME",
+                "snakecase" => "SNAKE_CASE",
+                "lowercase" => "LOWERCASE",
+                _ => &c, // fallback
+            };
+            return Some(format!("case=TypeNameCase.{}", mapped_case));
+        }
+    }
+
+    let lower = class.to_lowercase();
+    let mut snake = String::new();
+    let chars: Vec<char> = class.chars().collect();
+    for i in 0..chars.len() {
+        let c = chars[i];
+        if i > 0 && c.is_uppercase() {
+            let prev = chars[i - 1];
+            let next = if i + 1 < chars.len() {
+                Some(chars[i + 1])
+            } else {
+                None
+            };
+            let is_prev_lower_or_digit = prev.is_lowercase() || prev.is_ascii_digit();
+            let is_next_lower = next.map(|n| n.is_lowercase()).unwrap_or(false);
+            if is_prev_lower_or_digit || is_next_lower {
+                snake.push('_');
+            }
+        }
+        snake.extend(c.to_lowercase());
+    }
+
+    if name == snake {
+        if default_case == "SNAKE_CASE" {
+            None
+        } else {
+            Some("case=TypeNameCase.SNAKE_CASE".to_string())
+        }
+    } else if name == class {
+        if default_case == "CLASS_NAME" {
+            None
+        } else {
+            Some("case=TypeNameCase.CLASS_NAME".to_string())
+        }
+    } else if name == lower {
+        if default_case == "LOWERCASE" {
+            None
+        } else {
+            Some("case=TypeNameCase.LOWERCASE".to_string())
+        }
+    } else {
+        Some(format!("name={}", string_literal(name)))
+    }
 }
 
 fn string_literal(value: &str) -> String {
@@ -723,12 +806,24 @@ fn render_python_attributes(schema: &TypeSchema, options: &BindgenOptions) -> St
 
         writeln!(out, "class {class}({base}):").unwrap();
         writeln!(out, "    \"\"\"{doc}\"\"\"").unwrap();
-        writeln!(
-            out,
-            "    flags = AttributeFlags(name={})",
-            string_literal(name)
-        )
-        .unwrap();
+        let mut flags = Vec::new();
+        if let Some(case) = python_type_name_case(
+            name,
+            &class,
+            "SNAKE_CASE",
+            options.python_metadata.attribute_annotations.get(name),
+        ) {
+            flags.push(case);
+        }
+        if !flags.iter().any(|f| f.starts_with("name=")) {
+            flags.insert(0, format!("name={}", string_literal(name)));
+        }
+        let flags_str = if flags.is_empty() {
+            String::new()
+        } else {
+            flags.join(", ")
+        };
+        writeln!(out, "    flags = AttributeFlags({flags_str})").unwrap();
         if attr.is_independent {
             writeln!(out, "    independent = True").unwrap();
         }
@@ -838,7 +933,14 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
         .values()
         .any(|entity| entity.owns.iter().any(|owned| owned.distinct));
 
-    let mut imports = vec!["Entity", "Flag", "Key", "TypeFlags", "Unique"];
+    let mut imports = vec![
+        "Entity",
+        "Flag",
+        "Key",
+        "TypeFlags",
+        "TypeNameCase",
+        "Unique",
+    ];
     if needs_card {
         imports.insert(1, "Card");
     }
@@ -873,7 +975,19 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
             .unwrap_or_else(|| "Entity".to_string());
         let doc = docstring(&options.python_metadata.entity_annotations, name)
             .unwrap_or_else(|| format!("Entity generated from `{name}`."));
-        let mut flags = vec![format!("name={}", string_literal(name))];
+        let mut flags = Vec::new();
+        if let Some(case) = python_type_name_case(
+            name,
+            &class,
+            "CLASS_NAME",
+            options
+                .python_metadata
+                .entity_annotations
+                .get(name)
+                .or_else(|| options.python_metadata.relation_annotations.get(name)),
+        ) {
+            flags.push(case);
+        }
         if entity.is_abstract {
             flags.push("abstract=True".to_string());
         }
@@ -1061,7 +1175,7 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
             || relation.owns.iter().any(|owned| owned.distinct)
     });
 
-    let mut imports = vec!["Relation", "Role", "TypeFlags"];
+    let mut imports = vec!["Relation", "Role", "TypeFlags", "TypeNameCase"];
     if needs_card {
         imports.insert(0, "Card");
     }
@@ -1118,7 +1232,19 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
             .unwrap_or_else(|| "Relation".to_string());
         let doc = docstring(&options.python_metadata.relation_annotations, name)
             .unwrap_or_else(|| format!("Relation generated from `{name}`."));
-        let mut flags = vec![format!("name={}", string_literal(name))];
+        let mut flags = Vec::new();
+        if let Some(case) = python_type_name_case(
+            name,
+            &class,
+            "CLASS_NAME",
+            options
+                .python_metadata
+                .entity_annotations
+                .get(name)
+                .or_else(|| options.python_metadata.relation_annotations.get(name)),
+        ) {
+            flags.push(case);
+        }
         if relation.is_abstract {
             flags.push("abstract=True".to_string());
         }
@@ -2737,5 +2863,69 @@ relation friendship, relates friend @card(1..2);"
                 .contains("#[entity(name = \"party\", r#abstract)]")
         );
         assert!(models.relations_rs.contains("player_type = \"person\""));
+    }
+
+    #[test]
+    fn python_render_infers_and_applies_case_overrides() {
+        let schema_text = r#"define
+attribute name, value string;
+
+# @case(PascalCase)
+entity forced_class_name, owns name @key;
+
+# @case(Python, LowerCase)
+entity forced_python_lower, owns name @key;
+
+entity FirstPerson, owns name @key;
+
+        entity technology_company, owns name @key;"#;
+
+        let plan = BindgenPlan::from_typeql(schema_text).unwrap();
+        let mut options = BindgenOptions::default();
+        options.python_metadata.entity_annotations.insert(
+            "forced_class_name".to_string(),
+            BTreeMap::from([("case".to_string(), serde_json::json!("PascalCase"))]),
+        );
+        options.python_metadata.entity_annotations.insert(
+            "forced_python_lower".to_string(),
+            BTreeMap::from([(
+                "case".to_string(),
+                serde_json::json!(["Python", "LowerCase"]),
+            )]),
+        );
+        let package = plan.render(TargetLanguage::Python, &options);
+        let entities = package
+            .file("entities.py")
+            .expect("entities.py was generated");
+
+        assert!(entities.contents.contains("class ForcedClassName(Entity):"));
+        assert!(
+            entities
+                .contents
+                .contains("flags = TypeFlags(case=TypeNameCase.CLASS_NAME)")
+        );
+        assert!(
+            entities
+                .contents
+                .contains("class ForcedPythonLower(Entity):")
+        );
+        assert!(
+            entities
+                .contents
+                .contains("flags = TypeFlags(case=TypeNameCase.LOWERCASE)")
+        );
+        assert!(entities.contents.contains("class FirstPerson(Entity):"));
+        assert!(
+            entities
+                .contents
+                .contains("class TechnologyCompany(Entity):")
+        );
+        assert!(
+            entities
+                .contents
+                .contains("flags = TypeFlags(case=TypeNameCase.SNAKE_CASE)")
+        );
+        assert!(entities.contents.contains("class FirstPerson(Entity):"));
+        assert!(entities.contents.contains("flags = TypeFlags()"));
     }
 }
