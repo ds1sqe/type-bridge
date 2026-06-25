@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [master, develop]
 
+env:
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
 jobs:
   # Rust crate: compile, test, lint (parallel with Python jobs)
   rust-check:
