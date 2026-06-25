@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-orm-derive"
-version = "1.5.3"
+version = "1.5.4"
 edition = "2024"
 description = "Derive macros for type-bridge-orm: TypeBridgeEntity, TypeBridgeAttribute, TypeBridgeRelation"
 license.workspace = true
@@ -14,7 +14,7 @@ proc-macro = true
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
-type-bridge-core-lib = { path = "../core", version = "1.5.3" }
+type-bridge-core-lib = { path = "../core", version = "1.5.4" }
 
 [lints]
 workspace = true
