@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-typedb-runtime"
-version = "1.5.3"
+version = "1.5.4"
 edition = "2024"
 description = "Shared TypeDB runtime driver layer for type-bridge"
 license.workspace = true
@@ -17,7 +17,7 @@ band7 = ["dep:type-bridge-typedb-driver-b7"]
 band8 = ["dep:typedb-driver"]
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "1.5.3" }
+type-bridge-core-lib = { path = "../core", version = "1.5.4" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

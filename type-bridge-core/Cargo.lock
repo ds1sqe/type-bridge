@@ -30,7 +30,7 @@ dependencies = [
 name = "anes"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
+checksum = "4b46cbb362ab8752921c97e041.5.466ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "anstream"
@@ -1143,7 +1143,7 @@ dependencies = [
 name = "is-terminal"
 version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
+checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51.5.413d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
@@ -1612,7 +1612,7 @@ dependencies = [
 name = "prost-derive"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
+checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1.5.4472929fdd74bec4d"
 dependencies = [
  "anyhow",
  "itertools 0.14.0",
@@ -1821,7 +1821,7 @@ dependencies = [
 name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa01.5.4185d0a"
 
 [[package]]
 name = "ring"
@@ -2534,7 +2534,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge-core"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "pyo3",
  "pythonize",
@@ -2549,7 +2549,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "criterion",
  "once_cell",
@@ -2566,7 +2566,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-migration"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-node"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "napi",
  "napi-derive",
@@ -2598,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "criterion",
  "serde",
@@ -2613,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2623,7 +2623,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-server"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "axum 0.8.8",
  "chrono",
@@ -2647,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-toml-transpiler"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "indexmap 2.13.1",
  "serde",
@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-typedb-runtime"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "futures",
  "serde",
