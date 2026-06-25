@@ -48,7 +48,7 @@ jobs:
         run: uv run pytest tests/unit/ -v --tb=short
 
   # Publish Rust crates to crates.io (dependency order):
-  # core-lib → orm-derive → protocol-b7 → driver-b7 → orm → server
+  # core-lib → orm-derive → protocol-b7 → driver-b7 → typedb-runtime → orm → server
   publish-crates:
     name: Publish Rust crates to crates.io
     needs: test
@@ -63,19 +63,51 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Create crates.io publish helper
+        working-directory: type-bridge-core
+        run: |
+          cat > "$RUNNER_TEMP/publish-crate.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          crate="$1"
+          pkgid="$(cargo pkgid -p "$crate")"
+          version="${pkgid##*@}"
+          if [ -z "$version" ] || [ "$version" = "$pkgid" ]; then
+            echo "Could not resolve version for crate: $crate"
+            exit 1
+          fi
+
+          api_url="https://crates.io/api/v1/crates/${crate}/${version}"
+          status="$(
+            curl -sS --retry 3 --retry-delay 2 \
+              -H "User-Agent: ds1sqe/type-bridge release workflow" \
+              -o "$RUNNER_TEMP/crates-io-response.json" \
+              -w "%{http_code}" \
+              "$api_url" || true
+          )"
+
+          if [ "$status" = "200" ]; then
+            echo "${crate}@${version} already published on crates.io; skipping."
+            exit 0
+          elif [ "$status" != "404" ]; then
+            echo "Could not confirm crates.io state for ${crate}@${version} (HTTP ${status}); attempting publish."
+          fi
+
+          if ! out="$(cargo publish -p "$crate" 2>&1)"; then
+            echo "$out"
+            echo "$out" | grep -qiE "already (uploaded|exists|published)|crate .* already exists on crates.io index" \
+              || { echo "${crate}@${version} publish failed (not already-published)"; exit 1; }
+            echo "${crate}@${version} already published on crates.io; skipping."
+          fi
+          EOF
+          chmod +x "$RUNNER_TEMP/publish-crate.sh"
+
       - name: Publish type-bridge-core-lib
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        # `|| true` swallowed every error; instead skip only when this version is
-        # already on crates.io and let any other failure red the job.
-        run: |
-          if ! out="$(cargo publish -p type-bridge-core-lib 2>&1)"; then
-            echo "$out"
-            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
-              || { echo "type-bridge-core-lib publish failed (not already-published)"; exit 1; }
-            echo "type-bridge-core-lib already published at this version; skipping."
-          fi
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-core-lib"
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -84,32 +116,22 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if ! out="$(cargo publish -p type-bridge-orm-derive 2>&1)"; then
-            echo "$out"
-            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
-              || { echo "type-bridge-orm-derive publish failed (not already-published)"; exit 1; }
-            echo "type-bridge-orm-derive already published at this version; skipping."
-          fi
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-orm-derive"
 
       - name: Wait for crates.io index
         run: sleep 30
 
-      # Band-7 fork pair published before orm/server: Cargo unifies semver-compatible
-      # 3.x versions, so the forks are republished under renamed crates; orm/server
-      # resolve them from crates.io via `version = "=3.8.1"`.
-      # Order: core-lib → orm-derive → protocol-b7 → driver-b7 → orm → server.
+      # Band-7 fork pair published before typedb-runtime: Cargo unifies
+      # semver-compatible 3.x versions, so the forks are republished under
+      # renamed crates; typedb-runtime resolves them from crates.io via
+      # `version = "=3.8.1"`.
+      # Order: core-lib → orm-derive → protocol-b7 → driver-b7 →
+      # typedb-runtime → orm → server.
       - name: Publish type-bridge-typedb-protocol-b7
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if ! out="$(cargo publish -p type-bridge-typedb-protocol-b7 2>&1)"; then
-            echo "$out"
-            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
-              || { echo "type-bridge-typedb-protocol-b7 publish failed (not already-published)"; exit 1; }
-            echo "type-bridge-typedb-protocol-b7 already published at this version; skipping."
-          fi
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-protocol-b7"
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -118,13 +140,16 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if ! out="$(cargo publish -p type-bridge-typedb-driver-b7 2>&1)"; then
-            echo "$out"
-            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
-              || { echo "type-bridge-typedb-driver-b7 publish failed (not already-published)"; exit 1; }
-            echo "type-bridge-typedb-driver-b7 already published at this version; skipping."
-          fi
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-driver-b7"
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish type-bridge-typedb-runtime
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-runtime"
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -133,13 +158,7 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if ! out="$(cargo publish -p type-bridge-orm 2>&1)"; then
-            echo "$out"
-            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
-              || { echo "type-bridge-orm publish failed (not already-published)"; exit 1; }
-            echo "type-bridge-orm already published at this version; skipping."
-          fi
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-orm"
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -148,13 +167,7 @@ jobs:
         working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if ! out="$(cargo publish -p type-bridge-server 2>&1)"; then
-            echo "$out"
-            echo "$out" | grep -qiE "already (uploaded|exists|published)" \
-              || { echo "type-bridge-server publish failed (not already-published)"; exit 1; }
-            echo "type-bridge-server already published at this version; skipping."
-          fi
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-server"
 
   # Build type-bridge-core wheels for all platforms
   build-core-wheels:
@@ -333,7 +346,14 @@ jobs:
         if: steps.npm_token.outputs.present == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "${package_name}@${package_version} already published; skipping."
+          else
+            npm publish --access public
+          fi
 
   # Publish type-bridge-core to PyPI (must complete before type-bridge)
   publish-core-pypi:
