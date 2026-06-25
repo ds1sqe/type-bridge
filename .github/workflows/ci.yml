@@ -7,6 +7,7 @@ on:
     branches: [master, develop]
 
 env:
+  CARGO_HOME: ${{ github.workspace }}/.cargo-home
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
 
 jobs:
@@ -35,8 +36,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
@@ -78,8 +79,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-band-v2-${{ matrix.band }}-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
@@ -111,8 +112,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-nightly-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
@@ -208,8 +209,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-node-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
@@ -508,8 +509,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-parity-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
@@ -640,8 +641,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-node-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
@@ -759,8 +760,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-gate-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 

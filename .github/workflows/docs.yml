@@ -29,6 +29,7 @@ permissions:
   id-token: write
 
 env:
+  CARGO_HOME: ${{ github.workspace }}/.cargo-home
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
 
 jobs:
@@ -53,8 +54,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-docs-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
