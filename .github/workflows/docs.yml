@@ -53,9 +53,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('type-bridge-core/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-docs-
+          key: ${{ runner.os }}-cargo-docs-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
