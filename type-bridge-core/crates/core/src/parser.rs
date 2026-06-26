@@ -142,11 +142,19 @@ fn parse_schema(input: &mut &str) -> PResult<TypeSchema> {
 
     for plays in standalone_plays {
         if let Some(entity) = schema.entities.get_mut(&plays.player) {
-            if !entity.plays.iter().any(|p| p.role_ref == plays.played.role_ref) {
+            if !entity
+                .plays
+                .iter()
+                .any(|p| p.role_ref == plays.played.role_ref)
+            {
                 entity.plays.push(plays.played);
             }
         } else if let Some(relation) = schema.relations.get_mut(&plays.player) {
-            if !relation.plays.iter().any(|p| p.role_ref == plays.played.role_ref) {
+            if !relation
+                .plays
+                .iter()
+                .any(|p| p.role_ref == plays.played.role_ref)
+            {
                 relation.plays.push(plays.played);
             }
         } else {
@@ -1940,7 +1948,8 @@ entity person
 
     #[test]
     fn test_parse_standalone_plays() {
-        let schema = parse_typeql("define\nentity person;\nperson plays friendship:friend;\n").unwrap();
+        let schema =
+            parse_typeql("define\nentity person;\nperson plays friendship:friend;\n").unwrap();
         let person = schema.entities.get("person").unwrap();
         assert_eq!(person.plays.len(), 1);
         assert_eq!(person.plays[0].role_ref, "friendship:friend");

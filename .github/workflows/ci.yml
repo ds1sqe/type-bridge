@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [master, develop]
 
+env:
+  CARGO_HOME: ${{ github.workspace }}/../.cargo-home
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  RUST_STABLE_TOOLCHAIN: "1.94.1"
+
 jobs:
   # Rust crate: compile, test, lint (parallel with Python jobs)
   rust-check:
@@ -26,18 +31,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          components: clippy
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('type-bridge-core/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: cargo check
         working-directory: type-bridge-core
@@ -71,19 +75,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-band-${{ matrix.band }}-${{ hashFiles('type-bridge-core/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-band-${{ matrix.band }}-
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-band-v3-${{ matrix.band }}-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: cargo check (${{ matrix.band }})
         working-directory: type-bridge-core
@@ -113,12 +114,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-nightly-${{ hashFiles('type-bridge-core/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-nightly-
+          key: ${{ runner.os }}-cargo-nightly-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Generate LCOV report
         run: ./scripts/coverage.sh branch --lcov
@@ -180,6 +179,7 @@ jobs:
           CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '-D__ARM_ARCH=8' || '' }}
         with:
           target: ${{ matrix.target }}
+          rust-toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
           args: --release --out dist -i python3.13
           manylinux: auto
           working-directory: type-bridge-core
@@ -206,19 +206,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-node-${{ hashFiles('type-bridge-core/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-node-
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-node-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -267,7 +264,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -304,7 +301,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -345,7 +342,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -418,7 +415,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -509,19 +506,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-parity-${{ hashFiles('type-bridge-core/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-parity-
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-parity-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -644,19 +638,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-node-${{ hashFiles('type-bridge-core/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-node-
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-node-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       # Node >= 22 is required here (unlike the other Node jobs): run-integration.js
       # executes the .test.ts files directly via node --test, relying on Node's
@@ -766,16 +757,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-gate-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-gate-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5

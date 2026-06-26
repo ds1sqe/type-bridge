@@ -51,6 +51,9 @@ A `.tql` file or raw TypeQL text continues to work exactly as before.
 value = "string"      # value type (see table below); required unless sub is set
 sub   = "parent"      # inherit from a parent attribute instead of declaring a value type
 abstract = true       # mark as abstract
+bindgen_case = "SnakeCase" # specify class name case explicitly for bindgen
+annotations = ["dto_name(MyDTO)"] # specify code generator annotations for bindgen
+
 
 # Annotation constraints (optional, combine as needed)
 regex  = "^active|inactive$"
@@ -103,6 +106,8 @@ sub = "id"     # inherits from id; no value key
 [entities.NAME]
 sub      = "parent"    # optional; inherit from another entity
 abstract = true        # optional; mark as abstract
+bindgen_case = "PascalCase" # optional; explicitly override class case naming
+annotations = ["dto_name(MyDTO)"] # optional; add custom generator annotations
 owns     = [...]       # list of owned attributes (see below)
 plays    = [...]       # list of roles the entity plays (see below)
 ```
@@ -146,12 +151,16 @@ value  = "string"
 values = ["beginner", "intermediate", "expert"]
 
 [entities.user]
+bindgen_case = "PascalCase"
+annotations = ["dto_name(UserDto)"]
 owns = [
     { attribute = "username", key = true },
     "score",
-    { attribute = "tag", card = "0..5" },
+    { attribute = "tag", card = "0..3" },
 ]
-plays = [{ relation = "membership", role = "member" }]
+plays = [
+    { relation = "membership", role = "member" }
+]
 ```
 
 ### Relations
@@ -160,6 +169,8 @@ plays = [{ relation = "membership", role = "member" }]
 [relations.NAME]
 sub      = "parent"    # optional; inherit from another relation
 abstract = true        # optional; mark as abstract
+bindgen_case = "PascalCase" # optional; explicitly override class case naming
+annotations = ["dto_name(MyDTO)"] # optional; add custom generator annotations
 roles    = [...]       # list of role definitions (see below)
 owns     = [...]       # list of owned attributes (same syntax as entities)
 plays    = [...]       # roles this relation itself plays

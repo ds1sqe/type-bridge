@@ -79,6 +79,13 @@ pub fn emit(schema: &TomlSchema) -> String {
         // The head itself is: `attribute <name>[sub <parent>] [@abstract]`
         // Then value + value-annotations follow as additional clauses.
 
+        for ann in &attr.annotations {
+            out.push_str(&format!("# @{}\n", ann));
+        }
+        if let Some(case) = &attr.bindgen_case {
+            out.push_str(&format!("# @case({})\n", case));
+        }
+
         let head = type_head("attribute", name, attr.is_abstract, attr.sub.as_deref());
 
         // Build the value clause (with optional value-level annotations).
@@ -114,6 +121,12 @@ pub fn emit(schema: &TomlSchema) -> String {
     // --- entities ---
     for (name, entity) in &schema.entities {
         // Build the type-head: `entity <name>` + optional abstract/sub tokens.
+        for ann in &entity.annotations {
+            out.push_str(&format!("# @{}\n", ann));
+        }
+        if let Some(case) = &entity.bindgen_case {
+            out.push_str(&format!("# @case({})\n", case));
+        }
         let head = type_head("entity", name, entity.is_abstract, entity.sub.as_deref());
 
         let mut clauses: Vec<String> = Vec::new();
@@ -151,6 +164,12 @@ pub fn emit(schema: &TomlSchema) -> String {
     // --- relations ---
     for (name, relation) in &schema.relations {
         // Build the type-head: `relation <name>` + optional abstract/sub tokens.
+        for ann in &relation.annotations {
+            out.push_str(&format!("# @{}\n", ann));
+        }
+        if let Some(case) = &relation.bindgen_case {
+            out.push_str(&format!("# @case({})\n", case));
+        }
         let head = type_head(
             "relation",
             name,
@@ -576,6 +595,40 @@ regex = "^(paid|dispatched)$"
         assert!(
             result.contains(r#"attribute status, value string @regex("^(paid|dispatched)$");"#),
             "expected @regex after value; got:\n{result}"
+        );
+    }
+
+    /// Explicit `annotations` and `bindgen_case` emit correctly.
+    #[test]
+    fn test_emit_annotations_and_bindgen_case() {
+        let toml_text = r#"
+[attributes.my-attr]
+value = "string"
+bindgen_case = "PascalCase"
+annotations = ["internal"]
+
+[entities.my-entity]
+bindgen_case = "Python, SnakeCase"
+annotations = ["dto_name(MyEntityDto)"]
+
+[relations.my-relation]
+bindgen_case = "CamelCase"
+annotations = ["custom_annotation"]
+"#;
+        let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+
+        assert!(
+            result.contains("# @internal\n# @case(PascalCase)\nattribute my-attr"),
+            "expected attr annotations; got:\n{result}"
+        );
+        assert!(
+            result
+                .contains("# @dto_name(MyEntityDto)\n# @case(Python, SnakeCase)\nentity my-entity"),
+            "expected entity annotations; got:\n{result}"
+        );
+        assert!(
+            result.contains("# @custom_annotation\n# @case(CamelCase)\nrelation my-relation"),
+            "expected relation annotations; got:\n{result}"
         );
     }
 
