@@ -4,6 +4,34 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-06-26
+
+### New Features
+
+- **Generator name-case overrides (#163)** - bindgen now accepts case
+  annotations case-insensitively, including `@case(PascalCase)` and
+  language-scoped forms such as `@case(Python, SnakeCase)`.
+- **PascalCase and TOML bindgen metadata (#163)** - Python model generation now
+  maps PascalCase TypeDB names to `TypeNameCase.CLASS_NAME`, and TOML schemas
+  can carry `bindgen_case` plus `annotations` metadata for generated bindings.
+
+### Bug Fixes
+
+- **Mixed-case generated names (#163)** - class-name generation now preserves
+  mixed-case sub-segments such as `FirstPerson` instead of lowercasing them
+  during Python and Rust bindgen output.
+- **Explicit generated type names (#163)** - generated attribute configs now
+  emit explicit `name="..."` flags when the TypeDB name does not align with
+  the default language-specific name inference.
+
+### Testing & Tooling
+
+- **Cargo CI isolation (#163)** - CI now keeps Cargo homes and caches outside
+  the workspace, isolates cache keys by lockfile, and pins the stable Rust
+  toolchain to reduce release-run cache and registry churn.
+- **Cargo lock checksum repair (#163)** - refreshed the affected Rust lockfile
+  checksums so locked metadata validation passes cleanly in release checks.
+
 ## [1.5.3] - 2026-06-24
 
 ### New Features
