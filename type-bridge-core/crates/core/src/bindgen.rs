@@ -742,7 +742,7 @@ fn render_python_attributes(schema: &TypeSchema, options: &BindgenOptions) -> St
             || attr.range_max.is_some()
     });
 
-    let mut imports = BTreeSet::from(["AttributeFlags".to_string()]);
+    let mut imports = BTreeSet::from(["AttributeFlags".to_string(), "TypeNameCase".to_string()]);
     for name in &order {
         let attr = &schema.attributes[name];
         let base = if let Some(parent) = attr.parent.as_deref() {
@@ -2868,6 +2868,7 @@ relation friendship, relates friend @card(1..2);"
     #[test]
     fn python_render_infers_and_applies_case_overrides() {
         let schema_text = r#"define
+attribute FirstName, value string;
 attribute name, value string;
 
 # @case(PascalCase)
@@ -2894,10 +2895,24 @@ entity FirstPerson, owns name @key;
             )]),
         );
         let package = plan.render(TargetLanguage::Python, &options);
+        let attributes = package
+            .file("attributes.py")
+            .expect("attributes.py was generated");
         let entities = package
             .file("entities.py")
             .expect("entities.py was generated");
 
+        assert!(
+            attributes
+                .contents
+                .contains("from type_bridge import AttributeFlags, String, TypeNameCase")
+        );
+        assert!(attributes.contents.contains("class FirstName(String):"));
+        assert!(
+            attributes.contents.contains(
+                "flags = AttributeFlags(name=\"FirstName\", case=TypeNameCase.CLASS_NAME)"
+            )
+        );
         assert!(entities.contents.contains("class ForcedClassName(Entity):"));
         assert!(
             entities
