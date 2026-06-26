@@ -7,7 +7,7 @@ on:
     branches: [master, develop]
 
 env:
-  CARGO_HOME: ${{ runner.temp }}/cargo-home
+  CARGO_HOME: ${{ github.workspace }}/../.cargo-home
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   RUST_STABLE_TOOLCHAIN: "1.94.1"
 
