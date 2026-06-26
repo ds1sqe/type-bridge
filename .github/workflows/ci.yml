@@ -7,7 +7,7 @@ on:
     branches: [master, develop]
 
 env:
-  CARGO_HOME: ${{ github.workspace }}/.cargo-home
+  CARGO_HOME: ${{ runner.temp }}/cargo-home
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   RUST_STABLE_TOOLCHAIN: "1.94.1"
 
@@ -32,6 +32,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          components: clippy
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -40,7 +41,7 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: cargo check
         working-directory: type-bridge-core
@@ -83,7 +84,7 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-band-v2-${{ matrix.band }}-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-band-v3-${{ matrix.band }}-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: cargo check (${{ matrix.band }})
         working-directory: type-bridge-core
@@ -116,7 +117,7 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-nightly-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-nightly-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Generate LCOV report
         run: ./scripts/coverage.sh branch --lcov
@@ -214,7 +215,7 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-node-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-node-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

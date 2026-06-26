@@ -29,7 +29,7 @@ permissions:
   id-token: write
 
 env:
-  CARGO_HOME: ${{ github.workspace }}/.cargo-home
+  CARGO_HOME: ${{ runner.temp }}/cargo-home
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   RUST_STABLE_TOOLCHAIN: "1.94.1"
 
@@ -58,7 +58,7 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-docs-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-docs-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
