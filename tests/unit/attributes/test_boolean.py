@@ -1,5 +1,7 @@
 """Test Boolean attribute type."""
 
+import pytest
+
 from type_bridge import Boolean, Card, Entity, Flag, Key, String, TypeFlags
 
 
@@ -15,6 +17,50 @@ def test_boolean_creation():
 
     inactive = IsActive(False)
     assert inactive.value is False
+
+
+@pytest.mark.parametrize("raw", ["False", "false", "0", "1", "", 0, 1, None])
+def test_boolean_rejects_non_bool_values(raw):
+    """Boolean wrappers must not coerce non-bool values by truthiness."""
+
+    class IsActive(Boolean):
+        pass
+
+    with pytest.raises(TypeError, match="IsActive expects bool"):
+        IsActive(raw)
+
+
+def test_boolean_pydantic_validate_rejects_string_false():
+    """Pydantic validation must not turn string false into True."""
+
+    class IsActive(Boolean):
+        pass
+
+    with pytest.raises(TypeError, match="IsActive expects bool"):
+        IsActive._pydantic_validate("False")
+
+
+def test_boolean_pydantic_serialize_rejects_string_false():
+    """Raw string serialization must not turn string false into True."""
+
+    class IsActive(Boolean):
+        pass
+
+    with pytest.raises(TypeError, match="IsActive expects bool"):
+        IsActive._pydantic_serialize("False")
+
+
+def test_boolean_pydantic_hooks_preserve_real_bool_values():
+    """Real bool values remain valid through validation and serialization."""
+
+    class IsActive(Boolean):
+        pass
+
+    inactive = IsActive._pydantic_validate(False)
+    assert inactive.value is False
+    assert bool(inactive) is False
+    assert IsActive._pydantic_serialize(inactive) is False
+    assert IsActive._pydantic_serialize(False) is False
 
 
 def test_boolean_value_type():

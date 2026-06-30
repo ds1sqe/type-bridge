@@ -7,7 +7,7 @@ import pytest
 
 from type_bridge import Card, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.crud.hooks import HookCancelled
-from type_bridge.crud.rust_manager import RustTypeDBManager
+from type_bridge.crud.rust_manager import RustTypeDBManager, _strict_bool
 from type_bridge.expressions import AggregateExpr
 from type_bridge.session import Database
 
@@ -36,6 +36,16 @@ class RustManagerAgedPerson(Entity):
     name: RustManagerName = Flag(Key)
     age: RustManagerAge
     scores: list[RustManagerScore] = Flag(Card(1, 4))
+
+
+def test_strict_bool_rejects_string_false() -> None:
+    with pytest.raises(TypeError, match="boolean values must be bool"):
+        _strict_bool("False")
+
+
+def test_strict_bool_accepts_real_bool_values() -> None:
+    assert _strict_bool(False) is False
+    assert _strict_bool(True) is True
 
 
 class RustManagerCompany(Entity):
