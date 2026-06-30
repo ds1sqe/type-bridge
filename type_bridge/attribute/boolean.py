@@ -29,6 +29,8 @@ class Boolean(Attribute):
         Args:
             value: The boolean value to store
         """
+        if not isinstance(value, bool):
+            raise TypeError(f"{self.__class__.__name__} expects bool, got {type(value).__name__}")
         super().__init__(value)
 
     @property
@@ -56,12 +58,16 @@ class Boolean(Attribute):
     def _pydantic_serialize(cls, value: Any) -> bool:
         """Serialize Boolean to raw bool value."""
         if isinstance(value, cls):
-            return bool(value._value) if value._value is not None else False
-        return bool(value)
+            return value.value
+        if isinstance(value, bool):
+            return value
+        raise TypeError(f"{cls.__name__} expects bool, got {type(value).__name__}")
 
     @classmethod
     def _pydantic_validate(cls, value: Any) -> Self:
         """Validate and wrap value in Boolean instance."""
         if isinstance(value, cls):
             return value
-        return cls(bool(value))
+        if isinstance(value, bool):
+            return cls(value)
+        raise TypeError(f"{cls.__name__} expects bool, got {type(value).__name__}")

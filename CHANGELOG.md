@@ -4,6 +4,21 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-06-30
+
+### Bug Fixes
+
+- **Strict Boolean wrappers** - `Boolean` now rejects non-`bool` values at
+  construction, Pydantic validation, Pydantic serialization, hydration, and
+  Rust-backend dynamic value boundaries instead of truthiness-coercing strings
+  such as `"False"` into `True`.
+
+### Testing & Tooling
+
+- **Boolean strictness regressions** - added unit coverage for direct Boolean
+  construction, Pydantic hooks, CRUD hydration through `wrap_attribute_value`,
+  and Rust backend boolean value marshalling.
+
 ## [1.5.4] - 2026-06-26
 
 ### New Features

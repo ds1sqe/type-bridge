@@ -1113,7 +1113,7 @@ def _dynamic_value(raw_value: Any, attr_type: type[Any]) -> Any:
     if value_type == "double":
         return core.DynamicValue.double(float(value))
     if value_type == "boolean":
-        return core.DynamicValue.boolean(bool(value))
+        return core.DynamicValue.boolean(_strict_bool(value))
     if value_type == "date":
         return core.DynamicValue.date(str(value))
     if value_type == "datetime":
@@ -1136,7 +1136,7 @@ def _dynamic_value_from_rust_type(raw_value: Any, value_type: str) -> Any:
     if value_type == "double":
         return core.DynamicValue.double(float(raw_value))
     if value_type == "boolean":
-        return core.DynamicValue.boolean(bool(raw_value))
+        return core.DynamicValue.boolean(_strict_bool(raw_value))
     if value_type == "date":
         return core.DynamicValue.date(str(raw_value))
     if value_type == "datetime":
@@ -1148,6 +1148,12 @@ def _dynamic_value_from_rust_type(raw_value: Any, value_type: str) -> Any:
     if value_type == "duration":
         return core.DynamicValue.duration(str(raw_value))
     raise ValueError(f"Unsupported Rust dynamic value type {value_type!r}")
+
+
+def _strict_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise TypeError(f"boolean values must be bool, got {type(value).__name__}")
 
 
 def _raw_attr_value(value: Any) -> Any:

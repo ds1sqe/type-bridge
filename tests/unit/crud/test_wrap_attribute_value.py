@@ -1,6 +1,8 @@
 """Tests for unified wrap_attribute_value function."""
 
-from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
+import pytest
+
+from type_bridge import Boolean, Entity, Flag, Integer, Key, String, TypeFlags
 from type_bridge.attribute import Card
 from type_bridge.crud.types import wrap_attribute_value
 
@@ -17,10 +19,15 @@ class Tag(String):
     pass
 
 
+class Enabled(Boolean):
+    pass
+
+
 class SampleEntity(Entity):
     flags = TypeFlags(name="test_entity")
     name: Name = Flag(Key)
     age: Age | None = None
+    enabled: Enabled | None = None
     tags: list[Tag] = Flag(Card(min=0))
 
 
@@ -53,6 +60,19 @@ class TestWrapSingleValue:
         attr_info = SampleEntity.get_all_attributes()["age"]
         result = wrap_attribute_value(None, attr_info)
         assert result is None
+
+    def test_wrap_boolean_false(self) -> None:
+        """Test wrapping a raw False value."""
+        attr_info = SampleEntity.get_all_attributes()["enabled"]
+        result = wrap_attribute_value(False, attr_info)
+        assert isinstance(result, Enabled)
+        assert result.value is False
+
+    def test_wrap_string_false_rejected_for_boolean(self) -> None:
+        """String false must not hydrate as a truthy Boolean wrapper."""
+        attr_info = SampleEntity.get_all_attributes()["enabled"]
+        with pytest.raises(TypeError, match="Enabled expects bool"):
+            wrap_attribute_value("False", attr_info)
 
 
 class TestWrapMultiValue:
