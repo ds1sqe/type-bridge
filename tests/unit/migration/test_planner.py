@@ -133,9 +133,19 @@ class _ScriptedRunner:
     def __init__(self, results: list[dict[str, Any]]):
         self._results = results
         self.apply_calls: list[Any] = []
+        self.state_free_apply_calls: list[Any] = []
 
     def apply(self, graph: Any, applied_records: Any, target: Any) -> list[dict[str, Any]]:
         self.apply_calls.append((graph, applied_records, target))
+        return self._results
+
+    def apply_state_free(
+        self,
+        graph: Any,
+        applied_records: Any,
+        target: Any,
+    ) -> list[dict[str, Any]]:
+        self.state_free_apply_calls.append((graph, applied_records, target))
         return self._results
 
 
@@ -203,6 +213,42 @@ class _RecordingDb:
 
     def execute_query(self, query: str, *, transaction_type: str) -> None:
         self.queries.append((query, transaction_type))
+
+
+def test_executor_constructs_default_state_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    state_manager = _RecordingStateManager()
+    seen_databases: list[Any] = []
+
+    def build_default(db: Any) -> _RecordingStateManager:
+        seen_databases.append(db)
+        return state_manager
+
+    monkeypatch.setattr("type_bridge.migration.executor.MigrationStateManager", build_default)
+    db = object()
+
+    executor = MigrationExecutor(db=cast("Database", db), migrations_dir=Path("migrations"))
+
+    assert executor.state_manager is state_manager
+    assert seen_databases == [db]
+
+
+def test_executor_uses_injected_state_manager_without_constructing_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_manager = _RecordingStateManager()
+
+    def fail_default(_db: Any) -> _RecordingStateManager:
+        pytest.fail("an injected migration state manager must bypass the TypeDB default")
+
+    monkeypatch.setattr("type_bridge.migration.executor.MigrationStateManager", fail_default)
+
+    executor = MigrationExecutor(
+        db=cast("Database", object()),
+        migrations_dir=Path("migrations"),
+        state_manager=state_manager,
+    )
+
+    assert executor.state_manager is state_manager
 
 
 def _executor_with(
@@ -275,6 +321,42 @@ def test_migrate_records_state_in_result_order(monkeypatch: pytest.MonkeyPatch) 
         ("applied", "app", "0001_a"),
         ("applied", "app", "0002_b"),
     ]
+
+
+def test_injected_state_manager_selects_state_free_rust_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _ScriptedRunner(
+        [
+            {
+                "app_label": "app",
+                "name": "0001_a",
+                "action": "apply",
+                "success": True,
+                "error": None,
+            }
+        ]
+    )
+    state_manager = _RecordingStateManager()
+    loaded = [_loaded(_runtypeql_migration("a"), "app", "0001_a", "csum-a")]
+    executor = MigrationExecutor(
+        db=cast("Database", object()),
+        migrations_dir=Path("migrations"),
+        state_manager=state_manager,
+    )
+    monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
+    monkeypatch.setattr(executor, "_preflight_migrations", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "type_bridge.migration._lower.lower_execution_graph", lambda loaded: {"migrations": []}
+    )
+    monkeypatch.setattr("type_bridge._rust_runtime.migration_runner_for", lambda db: runner)
+
+    results = executor.migrate()
+
+    assert [(result.name, result.success) for result in results] == [("0001_a", True)]
+    assert runner.apply_calls == []
+    assert len(runner.state_free_apply_calls) == 1
+    assert state_manager.calls == [("applied", "app", "0001_a")]
 
 
 def test_migrate_records_unapplied_for_rollback_results(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,8 +476,11 @@ def test_run_python_migration_receives_db_and_records_state(
 
     state_manager = _RecordingStateManager()
     loaded = [_loaded(PythonMigration(), "app", "0001_python", "csum-py")]
-    executor = MigrationExecutor(db=dummy_db, migrations_dir=Path("migrations"))
-    executor.state_manager = cast(MigrationStateManager, state_manager)
+    executor = MigrationExecutor(
+        db=dummy_db,
+        migrations_dir=Path("migrations"),
+        state_manager=state_manager,
+    )
     monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
 
     def fail_if_called(_db: object) -> object:
@@ -445,8 +530,11 @@ def test_run_python_rollback_uses_reverse_callable_and_records_unapplied(
         _loaded(BaseMigration(), "app", "0001_base", "csum-base"),
         _loaded(PythonMigration(), "app", "0002_python", "csum-py"),
     ]
-    executor = MigrationExecutor(db=cast("Database", object()), migrations_dir=Path("migrations"))
-    executor.state_manager = cast(MigrationStateManager, state_manager)
+    executor = MigrationExecutor(
+        db=cast("Database", object()),
+        migrations_dir=Path("migrations"),
+        state_manager=state_manager,
+    )
     monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
 
     results = executor.migrate(target="0001_base")
@@ -611,8 +699,11 @@ def test_run_python_history_uses_python_path_for_later_typeql_migration(
         _loaded(TypeQLMigration(), "app", "0002_typeql", "csum-typeql"),
     ]
     db = _RecordingDb()
-    executor = MigrationExecutor(db=cast("Database", db), migrations_dir=Path("migrations"))
-    executor.state_manager = cast(MigrationStateManager, state_manager)
+    executor = MigrationExecutor(
+        db=cast("Database", db),
+        migrations_dir=Path("migrations"),
+        state_manager=state_manager,
+    )
     monkeypatch.setattr(executor.loader, "discover", lambda: loaded)
 
     runner = _ScriptedRunner(
@@ -634,9 +725,10 @@ def test_run_python_history_uses_python_path_for_later_typeql_migration(
     assert [(result.name, result.action, result.success) for result in results] == [
         ("0002_typeql", "applied", True)
     ]
-    assert len(runner.apply_calls) == 1
-    assert runner.apply_calls[0][2] == "0002_typeql"
-    assert len(runner.apply_calls[0][0]["migrations"]) == 2
+    assert runner.apply_calls == []
+    assert len(runner.state_free_apply_calls) == 1
+    assert runner.state_free_apply_calls[0][2] == "0002_typeql"
+    assert len(runner.state_free_apply_calls[0][0]["migrations"]) == 2
     assert db.queries == []
     assert state_manager.calls == [("applied", "app", "0002_typeql")]
 

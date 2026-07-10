@@ -20,7 +20,12 @@ Lifecycle covered:
 # pyright: reportMissingImports=false
 import pytest
 
-from type_bridge.migration import MigrationStateManager
+from type_bridge.migration import (
+    MIGRATION_STATE_SCHEMA,
+    MigrationStateManager,
+    SchemaIntrospector,
+    without_migration_state_schema,
+)
 
 
 @pytest.mark.integration
@@ -34,6 +39,12 @@ def test_load_state_empty(clean_db):
 
     assert state.applied == []
     assert not state.is_applied("myapp", "0001_initial")
+
+    raw_schema = SchemaIntrospector(clean_db).introspect()
+    assert raw_schema.get_entity_names() == MIGRATION_STATE_SCHEMA.entities
+    assert raw_schema.get_relation_names() == MIGRATION_STATE_SCHEMA.relations
+    assert raw_schema.get_attribute_names() == MIGRATION_STATE_SCHEMA.attributes
+    assert without_migration_state_schema(raw_schema).is_empty()
 
 
 @pytest.mark.integration

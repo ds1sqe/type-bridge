@@ -1,11 +1,11 @@
 //! TypeDB-backed [`MigrationStateStore`] implementation.
 //!
-//! [`TypeDbStateStore`] ports the exact TypeQL previously hand-written in
-//! `type_bridge/migration/state.py` over the ORM
-//! [`Database`][type_bridge_orm::Database] seam. The schema, the `define`
-//! block, and every query string are byte-for-byte equivalent to the Python
-//! source (modulo the fixed `type_bridge_migration` entity name), per
-//! invariant 5 — applied-state storage is NOT redesigned.
+//! [`TypeDbStateStore`] persists the established migration projection and run
+//! log over the ORM [`Database`][type_bridge_orm::Database] seam. Its per-type
+//! bootstrap definitions are rendered from the canonical migration-state
+//! [`SchemaInfo`][type_bridge_orm::schema::SchemaInfo], and its row queries use
+//! the same semantic label constants. Existing labels, value types, keys, and
+//! storage behavior remain unchanged.
 //!
 //! All work runs through [`Database::transaction_context`], mirroring the
 //! Phase-05 executor: open a context for the right [`TxType`], run the query,
@@ -19,18 +19,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use chrono::Utc;
 use type_bridge_orm::Database;
 use type_bridge_orm::OrmError;
+use type_bridge_orm::schema::{SchemaError, SchemaInfo};
 use type_bridge_orm::session::backend::{BoxFuture, QueryResult, TxType};
 
+use crate::state::schema::labels::{
+    APP_LABEL, APPLIED_AT, APPLIED_ENTITY, CHECKSUM, DIRECTION, ERROR, EXECUTOR_IP, EXECUTOR_MAC,
+    FINISHED_AT, MIGRATION_ID, NAME, RUN_ENTITY, RUN_ID, STARTED_AT, STATUS,
+};
+use crate::state::schema::migration_state_schema;
 use crate::state::{MigrationRunRecord, MigrationStateStore};
 use crate::{AppliedMigrationRecord, MigrationError, Result};
-
-/// The migration-tracking entity type name.
-///
-/// Mirrors `MigrationStateManager.ENTITY_NAME` (`state.py:111`).
-const ENTITY_NAME: &str = "type_bridge_migration";
-
-/// The append/update migration run-log entity type name.
-const RUN_ENTITY_NAME: &str = "type_bridge_migration_run";
 
 /// Timestamp format mirroring Python's `strftime("%Y-%m-%dT%H:%M:%S.%f")`.
 ///
@@ -146,6 +144,12 @@ fn map_orm_error(error: OrmError) -> MigrationError {
     }
 }
 
+fn map_schema_error(error: SchemaError) -> MigrationError {
+    MigrationError::State {
+        message: error.to_string(),
+    }
+}
+
 /// Unwrap a single fetched field into its scalar string.
 ///
 /// The Phase-05 ORM backend renders a `fetch { "k": $attr }` document so that
@@ -250,7 +254,7 @@ pub fn parse_run_documents(values: &[serde_json::Value]) -> Result<Vec<Migration
 
 fn optional_run_field_query(attribute: &str, alias: &str) -> String {
     format!(
-        "\nmatch\n$r isa {RUN_ENTITY_NAME},\n    has migration_run_id $run_id,\n    has {attribute} ${alias};\nfetch {{\n    \"run_id\": $run_id,\n    \"{alias}\": ${alias}\n}};\n"
+        "\nmatch\n$r isa {RUN_ENTITY},\n    has {RUN_ID} $run_id,\n    has {attribute} ${alias};\nfetch {{\n    \"run_id\": $run_id,\n    \"{alias}\": ${alias}\n}};\n"
     )
 }
 
@@ -281,59 +285,44 @@ fn merge_optional_run_field(
 
 fn run_insert_query(record: &MigrationRunRecord) -> String {
     let mut fields = vec![
+        format!("    has {RUN_ID} {}", typeql_string_literal(&record.run_id)),
         format!(
-            "    has migration_run_id {}",
-            typeql_string_literal(&record.run_id)
-        ),
-        format!(
-            "    has migration_app_label {}",
+            "    has {APP_LABEL} {}",
             typeql_string_literal(&record.app_label)
         ),
+        format!("    has {NAME} {}", typeql_string_literal(&record.name)),
         format!(
-            "    has migration_name {}",
-            typeql_string_literal(&record.name)
-        ),
-        format!(
-            "    has migration_checksum {}",
+            "    has {CHECKSUM} {}",
             typeql_string_literal(&record.checksum)
         ),
         format!(
-            "    has migration_direction {}",
+            "    has {DIRECTION} {}",
             typeql_string_literal(&record.direction)
         ),
-        format!(
-            "    has migration_status {}",
-            typeql_string_literal(&record.status)
-        ),
-        format!("    has migration_started_at {}", record.started_at),
+        format!("    has {STATUS} {}", typeql_string_literal(&record.status)),
+        format!("    has {STARTED_AT} {}", record.started_at),
     ];
 
     if let Some(finished_at) = &record.finished_at {
-        fields.push(format!("    has migration_finished_at {finished_at}"));
+        fields.push(format!("    has {FINISHED_AT} {finished_at}"));
     }
     if let Some(error) = &record.error {
-        fields.push(format!(
-            "    has migration_error {}",
-            typeql_string_literal(error)
-        ));
+        fields.push(format!("    has {ERROR} {}", typeql_string_literal(error)));
     }
     if let Some(executor_ip) = &record.executor_ip {
         fields.push(format!(
-            "    has migration_executor_ip {}",
+            "    has {EXECUTOR_IP} {}",
             typeql_string_literal(executor_ip)
         ));
     }
     if let Some(executor_mac) = &record.executor_mac {
         fields.push(format!(
-            "    has migration_executor_mac {}",
+            "    has {EXECUTOR_MAC} {}",
             typeql_string_literal(executor_mac)
         ));
     }
 
-    format!(
-        "\ninsert $r isa {RUN_ENTITY_NAME},\n{};\n",
-        fields.join(",\n")
-    )
+    format!("\ninsert $r isa {RUN_ENTITY},\n{};\n", fields.join(",\n"))
 }
 
 impl MigrationStateStore for TypeDbStateStore {
@@ -343,34 +332,30 @@ impl MigrationStateStore for TypeDbStateStore {
                 return Ok(());
             }
 
-            for (name, value_type) in [
-                ("migration_id", "string"),
-                ("migration_app_label", "string"),
-                ("migration_name", "string"),
-                ("migration_applied_at", "datetime"),
-                ("migration_checksum", "string"),
-                ("migration_run_id", "string"),
-                ("migration_direction", "string"),
-                ("migration_status", "string"),
-                ("migration_started_at", "datetime"),
-                ("migration_finished_at", "datetime"),
-                ("migration_error", "string"),
-                ("migration_executor_ip", "string"),
-                ("migration_executor_mac", "string"),
-            ] {
-                let define = format!("define\nattribute {name}, value {value_type};\n");
+            let state_schema = migration_state_schema();
+
+            for (name, attribute) in &state_schema.attributes {
+                let mut definition = SchemaInfo::default();
+                definition
+                    .attributes
+                    .insert(name.clone(), attribute.clone());
+                let define = definition.to_typeql().map_err(map_schema_error)?;
                 self.ensure_type(name, &define).await?;
             }
 
-            let applied_entity = format!(
-                "define\nentity {ENTITY_NAME},\n    owns migration_id @key,\n    owns migration_app_label,\n    owns migration_name,\n    owns migration_applied_at,\n    owns migration_checksum;\n"
-            );
-            self.ensure_type(ENTITY_NAME, &applied_entity).await?;
+            for (name, entity) in &state_schema.entities {
+                let mut definition = SchemaInfo::default();
+                definition.entities.insert(name.clone(), entity.clone());
+                let define = definition.to_typeql().map_err(map_schema_error)?;
+                self.ensure_type(name, &define).await?;
+            }
 
-            let run_entity = format!(
-                "define\nentity {RUN_ENTITY_NAME},\n    owns migration_run_id @key,\n    owns migration_app_label,\n    owns migration_name,\n    owns migration_checksum,\n    owns migration_direction,\n    owns migration_status,\n    owns migration_started_at,\n    owns migration_finished_at,\n    owns migration_error,\n    owns migration_executor_ip,\n    owns migration_executor_mac;\n"
-            );
-            self.ensure_type(RUN_ENTITY_NAME, &run_entity).await?;
+            for (name, relation) in &state_schema.relations {
+                let mut definition = SchemaInfo::default();
+                definition.relations.insert(name.clone(), relation.clone());
+                let define = definition.to_typeql().map_err(map_schema_error)?;
+                self.ensure_type(name, &define).await?;
+            }
 
             self.schema_ensured.store(true, Ordering::Release);
             Ok(())
@@ -383,7 +368,7 @@ impl MigrationStateStore for TypeDbStateStore {
 
             // Ported verbatim from state.py:179-191.
             let query = format!(
-                "\nmatch\n$m isa {ENTITY_NAME},\n    has migration_app_label $app,\n    has migration_name $name,\n    has migration_applied_at $applied,\n    has migration_checksum $checksum;\nfetch {{\n    \"app\": $app,\n    \"name\": $name,\n    \"applied\": $applied,\n    \"checksum\": $checksum\n}};\n"
+                "\nmatch\n$m isa {APPLIED_ENTITY},\n    has {APP_LABEL} $app,\n    has {NAME} $name,\n    has {APPLIED_AT} $applied,\n    has {CHECKSUM} $checksum;\nfetch {{\n    \"app\": $app,\n    \"name\": $name,\n    \"applied\": $applied,\n    \"checksum\": $checksum\n}};\n"
             );
 
             let ctx = self
@@ -403,23 +388,23 @@ impl MigrationStateStore for TypeDbStateStore {
             self.ensure_schema().await?;
 
             let query = format!(
-                "\nmatch\n$r isa {RUN_ENTITY_NAME},\n    has migration_run_id $run_id,\n    has migration_app_label $app,\n    has migration_name $name,\n    has migration_checksum $checksum,\n    has migration_direction $direction,\n    has migration_status $status,\n    has migration_started_at $started;\nfetch {{\n    \"run_id\": $run_id,\n    \"app\": $app,\n    \"name\": $name,\n    \"checksum\": $checksum,\n    \"direction\": $direction,\n    \"status\": $status,\n    \"started\": $started\n}};\n"
+                "\nmatch\n$r isa {RUN_ENTITY},\n    has {RUN_ID} $run_id,\n    has {APP_LABEL} $app,\n    has {NAME} $name,\n    has {CHECKSUM} $checksum,\n    has {DIRECTION} $direction,\n    has {STATUS} $status,\n    has {STARTED_AT} $started;\nfetch {{\n    \"run_id\": $run_id,\n    \"app\": $app,\n    \"name\": $name,\n    \"checksum\": $checksum,\n    \"direction\": $direction,\n    \"status\": $status,\n    \"started\": $started\n}};\n"
             );
             let mut runs = parse_run_documents(&self.query_documents(&query).await?)?;
 
-            let finished_query = optional_run_field_query("migration_finished_at", "finished");
+            let finished_query = optional_run_field_query(FINISHED_AT, "finished");
             let finished_docs = self.query_documents(&finished_query).await?;
             merge_optional_run_field(&mut runs, &finished_docs, "finished_at", "finished");
 
-            let error_query = optional_run_field_query("migration_error", "error");
+            let error_query = optional_run_field_query(ERROR, "error");
             let error_docs = self.query_documents(&error_query).await?;
             merge_optional_run_field(&mut runs, &error_docs, "error", "error");
 
-            let ip_query = optional_run_field_query("migration_executor_ip", "executor_ip");
+            let ip_query = optional_run_field_query(EXECUTOR_IP, "executor_ip");
             let ip_docs = self.query_documents(&ip_query).await?;
             merge_optional_run_field(&mut runs, &ip_docs, "executor_ip", "executor_ip");
 
-            let mac_query = optional_run_field_query("migration_executor_mac", "executor_mac");
+            let mac_query = optional_run_field_query(EXECUTOR_MAC, "executor_mac");
             let mac_docs = self.query_documents(&mac_query).await?;
             merge_optional_run_field(&mut runs, &mac_docs, "executor_mac", "executor_mac");
 
@@ -450,13 +435,13 @@ impl MigrationStateStore for TypeDbStateStore {
             // This gives the TypeDB store the same dedup semantics the in-memory
             // store has behind the shared seam.
             let delete_existing = format!(
-                "\nmatch\n$m isa {ENTITY_NAME},\n    has migration_id {migration_id};\ndelete $m;\n"
+                "\nmatch\n$m isa {APPLIED_ENTITY},\n    has {MIGRATION_ID} {migration_id};\ndelete $m;\n"
             );
 
             // Field set + storage schema match state.py:253-260. `applied_at` is
             // emitted unquoted (a TypeQL datetime literal); every other field quoted.
             let insert = format!(
-                "\ninsert $m isa {ENTITY_NAME},\n    has migration_id {migration_id},\n    has migration_app_label {app},\n    has migration_name {name},\n    has migration_applied_at {applied_at},\n    has migration_checksum {checksum};\n",
+                "\ninsert $m isa {APPLIED_ENTITY},\n    has {MIGRATION_ID} {migration_id},\n    has {APP_LABEL} {app},\n    has {NAME} {name},\n    has {APPLIED_AT} {applied_at},\n    has {CHECKSUM} {checksum};\n",
             );
 
             let ctx = self
@@ -485,7 +470,7 @@ impl MigrationStateStore for TypeDbStateStore {
             let app_label = typeql_string_literal(app_label);
             let name = typeql_string_literal(name);
             let query = format!(
-                "\nmatch\n$m isa {ENTITY_NAME},\n    has migration_app_label {app_label},\n    has migration_name {name};\ndelete $m;\n"
+                "\nmatch\n$m isa {APPLIED_ENTITY},\n    has {APP_LABEL} {app_label},\n    has {NAME} {name};\ndelete $m;\n"
             );
 
             let ctx = self
@@ -504,9 +489,8 @@ impl MigrationStateStore for TypeDbStateStore {
             self.ensure_schema().await?;
 
             let run_id = typeql_string_literal(&record.run_id);
-            let delete_existing = format!(
-                "\nmatch\n$r isa {RUN_ENTITY_NAME},\n    has migration_run_id {run_id};\ndelete $r;\n"
-            );
+            let delete_existing =
+                format!("\nmatch\n$r isa {RUN_ENTITY},\n    has {RUN_ID} {run_id};\ndelete $r;\n");
             let insert = run_insert_query(&record);
 
             let ctx = self

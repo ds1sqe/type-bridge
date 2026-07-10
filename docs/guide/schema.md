@@ -370,8 +370,8 @@ class MatchResult(Entity):
 For production schema history, use the dedicated migration system documented in
 [Migrations](migrations.md). It covers generated schema migrations,
 `ops.RunPython` data migrations that can use `User.manager(db)`, historical
-snapshot bindings, rollback, sidecar drift checks, and migration state stored in
-TypeDB.
+snapshot bindings, rollback, sidecar drift checks, and migration state backed by
+TypeDB by default or by an injected external ledger for embedding workflows.
 
 ## Complete Schema Workflow
 

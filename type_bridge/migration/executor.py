@@ -17,6 +17,7 @@ from type_bridge.migration.state import (
     MigrationRunRecord,
     MigrationState,
     MigrationStateManager,
+    MigrationStateStore,
 )
 
 if TYPE_CHECKING:
@@ -101,6 +102,8 @@ class MigrationExecutor:
         db: Database,
         migrations_dir: Path,
         dry_run: bool = False,
+        *,
+        state_manager: MigrationStateStore | None = None,
     ):
         """Initialize executor.
 
@@ -108,12 +111,17 @@ class MigrationExecutor:
             db: Database connection
             migrations_dir: Directory containing migration files
             dry_run: If True, preview operations without executing
+            state_manager: Optional externally owned migration-state store. When
+                supplied, Rust migration segments use the state-free executor
+                and never create TypeBridge's ledger schema independently in
+                the target database. The default remains TypeDB-backed.
         """
         self.db = db
         self.migrations_dir = migrations_dir
         self.dry_run = dry_run
         self.loader = MigrationLoader(migrations_dir)
-        self.state_manager = MigrationStateManager(db)
+        self._uses_injected_state_manager = state_manager is not None
+        self.state_manager = MigrationStateManager(db) if state_manager is None else state_manager
 
     def migrate(self, target: str | None = None) -> list[MigrationResult]:
         """Apply pending migrations.
@@ -151,7 +159,7 @@ class MigrationExecutor:
         applied_records = [_applied_record_dict(record) for record in state.applied]
 
         runner = _rust_runtime.migration_runner_for(self.db)
-        rust_results = runner.apply(graph, applied_records, target)
+        rust_results = self._apply_rust_graph(runner, graph, applied_records, target)
 
         checksums = {
             (loaded.migration.app_label, loaded.migration.name): loaded.checksum
@@ -211,7 +219,7 @@ class MigrationExecutor:
                 raise MigrationError("Mixed migration plan has no Rust runner configured")
             state = self.state_manager.load_state()
             applied_records = [_applied_record_dict(record) for record in state.applied]
-            rust_results = runner.apply(graph, applied_records, target)
+            rust_results = self._apply_rust_graph(runner, graph, applied_records, target)
 
             mapped: list[MigrationResult] = []
             for rust_result in rust_results:
@@ -279,6 +287,25 @@ class MigrationExecutor:
             results.extend(run_rust_segment(target))
 
         return results
+
+    def _apply_rust_graph(
+        self,
+        runner: Any,
+        graph: dict[str, Any],
+        applied_records: list[dict[str, str]],
+        target: str | None,
+    ) -> list[dict[str, Any]]:
+        """Execute a Rust migration graph with the selected state ownership.
+
+        The default runner path records attempt logs in TypeDB. An explicitly
+        injected store selects Rust's state-free executor so no hidden
+        ``TypeDbStateStore`` can bootstrap infrastructure in the target
+        database. Applied/unapplied projection writes still flow through
+        ``self.state_manager`` after each successful result.
+        """
+        if getattr(self, "_uses_injected_state_manager", False):
+            return runner.apply_state_free(graph, applied_records, target)
+        return runner.apply(graph, applied_records, target)
 
     def _execution_graph_for_mixed_plan(
         self,

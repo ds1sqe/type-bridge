@@ -111,6 +111,21 @@ def generate_define_block(info: dict[str, Any]) -> str:
     return rust_core().generate_define_block(info)
 
 
+def migration_state_schema() -> dict[str, Any]:
+    """Return the canonical Rust-owned migration-state schema descriptor."""
+    return rust_core().migration_state_schema()
+
+
+def applied_migration_entity_label() -> str:
+    """Return the canonical applied-migration entity label."""
+    return str(rust_core().applied_migration_entity_label())
+
+
+def is_migration_state_type(kind: str, label: str) -> bool:
+    """Return whether a kind-and-label pair belongs to migration state."""
+    return bool(rust_core().is_migration_state_type(kind, label))
+
+
 def normalize_migration_spec(spec: dict[str, Any]) -> dict[str, Any]:
     """Normalize a migration spec dict through Rust serde."""
     return rust_core().normalize_migration_spec(spec)
