@@ -13,9 +13,12 @@ use pyo3::prelude::*;
 use pythonize::{depythonize, pythonize};
 use tokio::runtime::Runtime;
 use type_bridge_migration::{
-    AppliedMigrationRecord, MigrationGraph, MigrationRunRecord, MigrationSpec, MigrationStateStore,
-    TypeDbStateStore, check_checksum_drift, collect_executor_info, execute_plan_with_run_log,
-    load_sidecar, migration_file_checksum, plan, validate_graph,
+    AppliedMigrationRecord, MigrationGraph, MigrationRunRecord, MigrationSpec,
+    MigrationStateSchemaKind, MigrationStateStore, TypeDbStateStore,
+    applied_migration_entity_label as rust_applied_migration_entity_label, check_checksum_drift,
+    collect_executor_info, execute_plan, execute_plan_with_run_log,
+    is_migration_state_type as rust_is_migration_state_type, load_sidecar, migration_file_checksum,
+    migration_state_schema as rust_migration_state_schema, plan, validate_graph,
 };
 
 use crate::orm_runtime::PyRustDatabase;
@@ -102,6 +105,37 @@ fn migration_graph_from_json(py: Python<'_>, json: &str) -> PyResult<PyObject> {
 #[pyfunction]
 fn calculate_migration_file_checksum(content: &str) -> String {
     migration_file_checksum(content)
+}
+
+/// Return TypeBridge's canonical migration-state schema as a `SchemaInfo` dict.
+#[pyfunction]
+fn migration_state_schema(py: Python<'_>) -> PyResult<PyObject> {
+    pythonize(py, rust_migration_state_schema())
+        .map(|object| object.unbind())
+        .map_err(|error| py_value_error(error.to_string()))
+}
+
+/// Return the canonical applied-migration entity label.
+#[pyfunction]
+fn applied_migration_entity_label() -> &'static str {
+    rust_applied_migration_entity_label()
+}
+
+/// Return whether a kind/label pair belongs to the migration-state schema.
+#[pyfunction]
+fn is_migration_state_type(kind: &str, label: &str) -> PyResult<bool> {
+    let kind = match kind {
+        "entity" => MigrationStateSchemaKind::Entity,
+        "relation" => MigrationStateSchemaKind::Relation,
+        "attribute" => MigrationStateSchemaKind::Attribute,
+        "role" => MigrationStateSchemaKind::Role,
+        _ => {
+            return Err(py_value_error(format!(
+                "Invalid migration state schema kind {kind:?}; expected entity, relation, attribute, or role"
+            )));
+        }
+    };
+    Ok(rust_is_migration_state_type(kind, label))
 }
 
 /// Validate a serialized migration graph and return structured errors.
@@ -209,6 +243,35 @@ impl PyMigrationRunner {
                 &executor,
             ))
             .map_err(|error| py_value_error(error.to_string()))?;
+
+        pythonize(py, &results)
+            .map(|obj| obj.unbind())
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
+    /// Plan and execute migrations without reading or writing migration state.
+    ///
+    /// This path opens only the transactions required by the migration steps;
+    /// it never constructs a [`TypeDbStateStore`] or bootstraps TypeBridge's
+    /// state schema. Embedders with an external authoritative ledger use this
+    /// method and persist applied state/run logs through that ledger.
+    #[pyo3(signature = (graph, applied_records = None, target = None))]
+    fn apply_state_free(
+        &self,
+        py: Python<'_>,
+        graph: Bound<'_, PyAny>,
+        applied_records: Option<Bound<'_, PyAny>>,
+        target: Option<&str>,
+    ) -> PyResult<PyObject> {
+        let graph: MigrationGraph = depythonize(&graph)
+            .map_err(|error| py_value_error(format!("Invalid MigrationGraph: {error}")))?;
+        let applied = depythonize_applied_records(applied_records)?;
+
+        let execution_plan =
+            plan(&graph, &applied, target).map_err(|error| py_value_error(error.to_string()))?;
+        let results = self
+            .runtime
+            .block_on(execute_plan(&self.db, execution_plan));
 
         pythonize(py, &results)
             .map(|obj| obj.unbind())
@@ -359,6 +422,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(migration_graph_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(migration_graph_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(calculate_migration_file_checksum, m)?)?;
+    m.add_function(wrap_pyfunction!(migration_state_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(applied_migration_entity_label, m)?)?;
+    m.add_function(wrap_pyfunction!(is_migration_state_type, m)?)?;
     m.add_function(wrap_pyfunction!(validate_migration_graph, m)?)?;
     m.add_function(wrap_pyfunction!(check_migration_drift, m)?)?;
     m.add_function(wrap_pyfunction!(plan_migration_graph, m)?)?;

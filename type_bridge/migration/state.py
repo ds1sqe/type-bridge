@@ -1,7 +1,4 @@
-"""Migration state tracking for TypeDB.
-
-Tracks applied migrations in TypeDB as the sole source of truth.
-"""
+"""Migration-state records, external-store protocol, and TypeDB default backend."""
 
 from __future__ import annotations
 
@@ -10,7 +7,9 @@ import socket
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from type_bridge import _rust_runtime
 
 if TYPE_CHECKING:
     from type_bridge.session import Database
@@ -113,6 +112,49 @@ class MigrationState:
         return [r for r in self.applied if r.app_label == app_label]
 
 
+@runtime_checkable
+class MigrationStateStore(Protocol):
+    """State operations required by :class:`MigrationExecutor`.
+
+    Implement this protocol to keep applied migration state outside the target
+    TypeDB database. Schema bootstrap and run-log reads are intentionally not
+    part of the contract: the default :class:`MigrationStateManager` provides
+    those TypeDB-specific capabilities, while embedding orchestrators may own
+    persistence and execution-attempt logging independently.
+    """
+
+    def load_state(self) -> MigrationState:
+        """Load the applied migration projection used for planning."""
+        ...
+
+    def record_applied(self, app_label: str, name: str, checksum: str) -> None:
+        """Persist one successfully applied migration."""
+        ...
+
+    def record_unapplied(self, app_label: str, name: str) -> None:
+        """Remove one successfully rolled-back migration."""
+        ...
+
+    def record_run_started(
+        self,
+        app_label: str,
+        name: str,
+        checksum: str,
+        direction: str,
+    ) -> MigrationRunRecord:
+        """Record the start of a Python-hosted migration execution."""
+        ...
+
+    def record_run_finished(
+        self,
+        record: MigrationRunRecord,
+        status: str,
+        error: str | None = None,
+    ) -> MigrationRunRecord:
+        """Record the end of a Python-hosted migration execution."""
+        ...
+
+
 class MigrationStateManager:
     """Manages migration state in TypeDB.
 
@@ -132,7 +174,9 @@ class MigrationStateManager:
             manager.record_applied("myapp", "0001_initial", "abc123")
     """
 
-    ENTITY_NAME = "type_bridge_migration"
+    # Compatibility alias for callers that referenced the original manager
+    # constant; its value still comes from the canonical Rust contract.
+    ENTITY_NAME = _rust_runtime.applied_migration_entity_label()
 
     def __init__(self, db: Database):
         """Initialize state manager.

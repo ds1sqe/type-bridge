@@ -15,32 +15,13 @@ from type_bridge.migration.info import SchemaInfo
 from type_bridge.migration.introspection import IntrospectedSchema, SchemaIntrospector
 from type_bridge.migration.loader import MigrationLoader
 from type_bridge.migration.schema_manager import SchemaManager
+from type_bridge.migration.state_schema import without_migration_state_schema
 
 if TYPE_CHECKING:
     from type_bridge.models import Entity, Relation
     from type_bridge.session import Database
 
 logger = logging.getLogger(__name__)
-
-_MIGRATION_STATE_ENTITIES = {
-    "type_bridge_migration",
-    "type_bridge_migration_run",
-}
-_MIGRATION_STATE_ATTRIBUTES = {
-    "migration_id",
-    "migration_app_label",
-    "migration_name",
-    "migration_applied_at",
-    "migration_checksum",
-    "migration_run_id",
-    "migration_direction",
-    "migration_status",
-    "migration_started_at",
-    "migration_finished_at",
-    "migration_error",
-    "migration_executor_ip",
-    "migration_executor_mac",
-}
 
 
 def _add_ownership_operation(
@@ -147,29 +128,6 @@ def _type_ref(value: object) -> str:
 
 def _attribute_ref(value: object) -> str:
     return f"ref.attribute({_attribute_label(value)!r})"
-
-
-def _without_migration_state_schema(schema: IntrospectedSchema) -> IntrospectedSchema:
-    """Remove TypeBridge's migration ledger types from a live schema snapshot."""
-    return IntrospectedSchema(
-        entities={
-            name: entity
-            for name, entity in schema.entities.items()
-            if name not in _MIGRATION_STATE_ENTITIES
-        },
-        relations=dict(schema.relations),
-        attributes={
-            name: attribute
-            for name, attribute in schema.attributes.items()
-            if name not in _MIGRATION_STATE_ATTRIBUTES
-        },
-        ownerships=[
-            ownership
-            for ownership in schema.ownerships
-            if ownership.owner_name not in _MIGRATION_STATE_ENTITIES
-            and ownership.attribute_name not in _MIGRATION_STATE_ATTRIBUTES
-        ],
-    )
 
 
 class MigrationGenerator:
@@ -335,7 +293,7 @@ class MigrationGenerator:
         # still visible to the diff. TypeBridge's own migration state schema is
         # filtered out because it is storage infrastructure, not app schema.
         introspector = SchemaIntrospector(self.db)
-        db_schema = _without_migration_state_schema(introspector.introspect())
+        db_schema = without_migration_state_schema(introspector.introspect())
 
         # Generate operations - this works for both initial and incremental migrations
         # For empty database, all model types will be "new" and get Add operations

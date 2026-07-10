@@ -30,7 +30,8 @@ pub use loader::{load_dir, load_dir_checked, load_sidecar};
 pub use plan::{ExecutionPlan, ExecutionStep, MigrationAction, MigrationExecution, StepKind, plan};
 pub use spec::{MigrationDependencySpec, MigrationGraph, MigrationSpec, OperationSpec};
 pub use state::{
-    InMemoryStateStore, MigrationExecutorInfo, MigrationRunRecord, MigrationStateStore,
-    TypeDbStateStore, collect_executor_info, finished_run_record, migration_timestamp_now,
+    InMemoryStateStore, MigrationExecutorInfo, MigrationRunRecord, MigrationStateSchemaKind,
+    MigrationStateStore, TypeDbStateStore, applied_migration_entity_label, collect_executor_info,
+    finished_run_record, is_migration_state_type, migration_state_schema, migration_timestamp_now,
     started_run_record,
 };

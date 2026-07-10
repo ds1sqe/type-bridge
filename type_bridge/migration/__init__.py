@@ -115,6 +115,14 @@ from type_bridge.migration.state import (
     MigrationRunRecord,
     MigrationState,
     MigrationStateManager,
+    MigrationStateStore,
+)
+from type_bridge.migration.state_schema import (
+    MIGRATION_STATE_SCHEMA,
+    MigrationStateSchema,
+    is_migration_state_type,
+    migration_state_schema,
+    without_migration_state_schema,
 )
 from type_bridge.migration.utils import type_exists
 
@@ -144,8 +152,14 @@ __all__ = [
     # State management
     "MigrationState",
     "MigrationStateManager",
+    "MigrationStateStore",
     "MigrationRecord",
     "MigrationRunRecord",
+    "MigrationStateSchema",
+    "MIGRATION_STATE_SCHEMA",
+    "migration_state_schema",
+    "is_migration_state_type",
+    "without_migration_state_schema",
     # Loader
     "MigrationLoader",
     "LoadedMigration",

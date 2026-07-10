@@ -5,13 +5,22 @@
 //!
 //! - [`memory::InMemoryStateStore`] — insertion-ordered, mutex-backed store
 //!   used for Rust unit tests with no TypeDB connection.
-//! - [`typedb::TypeDbStateStore`] — ports the exact TypeQL from `state.py` over
-//!   the ORM [`Database`][type_bridge_orm::session::Database] seam.
+//! - [`typedb::TypeDbStateStore`] — persists state over the ORM
+//!   [`Database`][type_bridge_orm::session::Database] seam.
+//!
+//! [`schema`] is the public, canonical description of the TypeDB types owned by
+//! the default store. Bootstrap and language bindings both consume that same
+//! [`SchemaInfo`][type_bridge_orm::schema::SchemaInfo].
 
 pub mod memory;
+pub mod schema;
 pub mod typedb;
 
 pub use memory::InMemoryStateStore;
+pub use schema::{
+    MigrationStateSchemaKind, applied_migration_entity_label, is_migration_state_type,
+    migration_state_schema,
+};
 pub use typedb::TypeDbStateStore;
 
 use std::net::UdpSocket;

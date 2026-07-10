@@ -3,7 +3,9 @@
 TypeBridge migrations are ordered Python files that apply schema and data
 changes to a TypeDB database. They are intended for production workflows where
 schema history must be replayable, data backfills must use the ORM, and applied
-state must live in the database.
+state must have one durable source of truth. Standalone TypeBridge stores that
+state in TypeDB by default; embedding orchestrators can inject an externally
+owned ledger instead.
 
 ## Workflow
 
@@ -276,11 +278,13 @@ python -m type_bridge.migration migrate 0001_initial \
 If any operation in the rollback path is irreversible, the executor raises an
 error before pretending the rollback succeeded.
 
-## Migration State In TypeDB
+## Migration State Backends
 
-TypeBridge stores migration state in TypeDB, not in memory or local files. This
-is the database source of truth used by `migrate`, `showmigrations`, and
-checksum drift checks.
+### Default TypeDB-backed state
+
+By default, `MigrationExecutor` constructs a TypeDB-backed
+`MigrationStateManager`. The target database is the source of truth used by
+`migrate`, `showmigrations`, and checksum drift checks.
 
 Two internal entity types are created automatically:
 
@@ -309,6 +313,72 @@ for run in runs:
 Because the state is in TypeDB, a different process can inspect the same
 migration history, and TypeDB Studio can view the internal migration entities
 after the migration tracking schema has been ensured.
+
+The migration CLI uses this default backend. Its `migrate` and
+`showmigrations` commands do not accept an external state store; embedding
+applications should use the programmatic executor API described below.
+
+### External ledgers for embedding orchestrators
+
+An orchestrator that already has an authoritative, project-scoped migration
+ledger can inject an implementation of the `MigrationStateStore` protocol:
+
+```python
+from pathlib import Path
+
+from type_bridge.migration import MigrationExecutor, MigrationStateStore
+
+external_store: MigrationStateStore = project_migration_store
+executor = MigrationExecutor(
+    db,
+    Path("migrations"),
+    state_manager=external_store,
+)
+executor.migrate()
+```
+
+With an injected store, the executor reads and writes migration state through
+that store and does not define TypeBridge migration-ledger types in the target
+database. The target therefore contains only the application ontology and the
+schema changes made by the migrations themselves.
+
+The ownership boundary is deliberate: TypeBridge owns migration specs,
+planning, lowering, checksums, and execution. The embedding orchestrator owns
+applied-state persistence and any external run logging. Keep the default
+TypeDB-backed manager for standalone TypeBridge workflows; inject a store only
+when another system is the authoritative ledger.
+
+### Excluding infrastructure from schema exports
+
+`MIGRATION_STATE_SCHEMA` is the canonical public description of every schema
+object owned by TypeBridge's default ledger. Consumers should use it through
+the public helpers instead of copying a list of reserved labels:
+
+```python
+from type_bridge.migration import (
+    MIGRATION_STATE_SCHEMA,
+    is_migration_state_type,
+    migration_state_schema,
+    without_migration_state_schema,
+)
+
+# Filter a complete result from SchemaIntrospector before snapshotting it.
+application_schema = without_migration_state_schema(introspected_schema)
+
+# Or classify individual objects in another exporter.
+if is_migration_state_type(kind="entity", label=label):
+    continue
+
+# Access value types, ownership annotations, and relation roles when needed.
+full_state_schema = migration_state_schema()
+```
+
+Use `is_migration_state_type` with the object's actual kind (`entity`,
+`relation`, `attribute`, or `role`). Exact kind-and-label matching avoids
+discarding application types that merely resemble migration infrastructure.
+`MIGRATION_STATE_SCHEMA` is the immutable kind-and-label projection used for
+classification. Call `migration_state_schema()` for the full Rust `SchemaInfo`
+contract, including value types, ownership annotations, and relation roles.
 
 ## Sidecars And Hand Editing
 

@@ -74,11 +74,16 @@ available for explicit custom TypeQL, but schema diffs are not flattened to
 
 Existing files in `--migrations-dir` determine the next migration number and
 dependency. The current diff source is the live TypeDB schema, so apply each
-generated migration before generating the next one. See
+generated migration before generating the next one. `MigrationGenerator`
+removes TypeBridge's own ledger types from that live view with the public
+`without_migration_state_schema` helper, backed by the canonical
+`MIGRATION_STATE_SCHEMA` contract. Embedding schema exporters should use the
+same helper, or `is_migration_state_type` for individual objects, rather than
+copying the reserved labels. See
 [`examples/advanced/toml_migration`](../../examples/advanced/toml_migration/)
 for a two-step `schema.toml` example, and see [Migrations](migrations.md) for
 the full migration workflow, snapshot rationale, data migrations, rollback, and
-database-backed migration state.
+migration-state backends.
 
 ### Programmatic Usage
 
