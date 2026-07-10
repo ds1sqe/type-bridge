@@ -4,6 +4,25 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.6] - 2026-07-10
+
+### New Features
+
+- **Expose migration-state schema boundary for external ledgers (#165)** - added a public
+  migration-state schema descriptor and filtering helpers so callers can keep
+  migration execution metadata in an external state store while leaving target
+  application schema management untouched.
+
+- **Pluggable migration state manager (#165)** - `MigrationExecutor` now accepts an
+  optional `state_manager` so external orchestrators can inject their own state
+  persistence backend while retaining the existing default TypeDB-backed behavior.
+
+### Testing & Tooling
+
+- **Integration coverage for external-state migrations (#165)** - added live tests for
+  external ledger execution paths and schema filtering behavior that validate default
+  and injected-state modes across TypeDB live integration.
+
 ## [1.5.5] - 2026-06-30
 
 ### Bug Fixes
