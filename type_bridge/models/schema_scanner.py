@@ -131,34 +131,52 @@ class SchemaScanner:
 
         self.cls.__annotations__ = new_annotations
 
-        # Set explicit defaults for optional and list fields
+        # Replace AttributeFlags sentinels with real constructor defaults.
+        # Flag(...) is a declaration-only marker: it must never survive as a
+        # Pydantic default, or instances construct with the sentinel as value.
         for field_name, attr_info in owned_attrs.items():
             existing_default = self.cls.__dict__.get(field_name, None)
 
-            # List fields with Card(...) need default_factory=list
-            if attr_info.flags.has_explicit_card:
+            # List fields (Card(...) or Ordered) default to an empty list
+            if attr_info.flags.has_explicit_card or attr_info.flags.is_ordered:
                 if isinstance(existing_default, AttributeFlags):
-                    # Replace AttributeFlags with proper Pydantic Field
                     setattr(self.cls, field_name, Field(default_factory=list))
             # Optional single-value fields need default=None
             elif attr_info.flags.card_min == 0:
                 if not isinstance(existing_default, Attribute):
                     setattr(self.cls, field_name, Field(default=None))
+            # Required single-value fields must stay required: drop the
+            # sentinel so Pydantic raises "Field required" on construction
+            elif isinstance(existing_default, AttributeFlags):
+                delattr(self.cls, field_name)
 
-        # Also fix inherited list fields from parent classes
-        # This is needed because __pydantic_init_subclass__ sets FieldDescriptor
-        # on parent class attributes, which Pydantic then inherits as defaults
-
+        # Also fix inherited fields from parent classes. __pydantic_init_subclass__
+        # sets FieldDescriptor on parent class attributes, which Pydantic would
+        # otherwise pick up as the child field's default — making required fields
+        # optional and leaking FieldRef sentinels. Mirror the parent's real
+        # FieldInfo (built before descriptor injection) onto the child instead.
+        # MRO order: the nearest base wins; setattr adds the field to
+        # self.cls.__dict__, so farther bases are skipped by the guard below.
         for base in self.cls.__mro__[1:]:
             if base is base_model_cls or not issubclass(base, base_model_cls):
                 continue
             if hasattr(base, "_owned_attrs"):
-                for field_name, attr_info in base._owned_attrs.items():
-                    if attr_info.flags.has_explicit_card:
-                        # Check if this class doesn't already define this field
-                        if field_name not in self.cls.__dict__:
-                            # Set proper default_factory for inherited list fields
-                            setattr(self.cls, field_name, Field(default_factory=list))
+                for field_name in base._owned_attrs:
+                    if field_name in self.cls.__dict__:
+                        continue
+                    parent_field = base.model_fields.get(field_name)
+                    if parent_field is None:
+                        continue
+                    if parent_field.is_required():
+                        setattr(self.cls, field_name, Field())
+                    elif parent_field.default_factory is not None:
+                        setattr(
+                            self.cls,
+                            field_name,
+                            Field(default_factory=parent_field.default_factory),
+                        )
+                    else:
+                        setattr(self.cls, field_name, Field(default=parent_field.default))
 
         return owned_attrs
 
