@@ -50,6 +50,14 @@ pub struct TomlAttribute {
     /// Explicit case override for bindgen (emitted as `# @case(...)`).
     #[serde(default)]
     pub bindgen_case: Option<String>,
+    /// Optional `@doc("...")` documentation annotation (TypeDB 3.12+).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations (TypeDB 3.12+), keyed by meta key.
+    ///
+    /// Emitted in declaration order; TypeDB allows one value per key.
+    #[serde(default)]
+    pub meta: IndexMap<String, String>,
     /// TypeDB value type, e.g. `"string"` or `"long"`. `None` when `sub` is set.
     #[serde(default)]
     pub value: Option<String>,
@@ -91,6 +99,14 @@ pub struct TomlEntity {
     /// Whether this entity type is abstract.
     #[serde(default, rename = "abstract")]
     pub is_abstract: bool,
+    /// Optional `@doc("...")` documentation annotation (TypeDB 3.12+).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations (TypeDB 3.12+), keyed by meta key.
+    ///
+    /// Emitted in declaration order; TypeDB allows one value per key.
+    #[serde(default)]
+    pub meta: IndexMap<String, String>,
     /// Attribute owns entries (bare names or annotated tables), in declaration order.
     #[serde(default)]
     pub owns: Vec<TomlOwns>,
@@ -134,6 +150,14 @@ pub struct TomlRelation {
     /// Whether this relation type is abstract.
     #[serde(default, rename = "abstract")]
     pub is_abstract: bool,
+    /// Optional `@doc("...")` documentation annotation (TypeDB 3.12+).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations (TypeDB 3.12+), keyed by meta key.
+    ///
+    /// Emitted in declaration order; TypeDB allows one value per key.
+    #[serde(default)]
+    pub meta: IndexMap<String, String>,
     /// Roles this relation relates, in declaration order.
     #[serde(default)]
     pub roles: Vec<TomlRole>,
@@ -179,6 +203,14 @@ pub struct TomlRole {
     /// Whether to emit `@distinct`; requires `ordered = true`.
     #[serde(default)]
     pub distinct: bool,
+    /// Optional `@doc("...")` documentation annotation (TypeDB 3.12+).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations (TypeDB 3.12+), keyed by meta key.
+    ///
+    /// Emitted in declaration order; TypeDB allows one value per key.
+    #[serde(default)]
+    pub meta: IndexMap<String, String>,
 }
 
 /// An `owns` entry on an entity or relation.
@@ -222,6 +254,14 @@ pub struct TomlOwnsAnnotated {
     /// Optional verbatim cardinality string (`"m..n"` / `"m.."`) → `@card(...)`.
     #[serde(default)]
     pub card: Option<String>,
+    /// Optional `@doc("...")` documentation annotation (TypeDB 3.12+).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations (TypeDB 3.12+), keyed by meta key.
+    ///
+    /// Emitted in declaration order; TypeDB allows one value per key.
+    #[serde(default)]
+    pub meta: IndexMap<String, String>,
 }
 
 /// A single function declaration.

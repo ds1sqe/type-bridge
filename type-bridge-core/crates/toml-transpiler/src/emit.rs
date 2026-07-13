@@ -3,6 +3,8 @@
 //! [`emit`] is a total function over the typed model — it never inspects raw
 //! `toml::Value` tables and never calls `.unwrap()` on optional fields.
 
+use indexmap::IndexMap;
+
 use crate::model::{TomlOwns, TomlPlays, TomlSchema};
 
 /// Normalise a `TomlOwns` entry into `(name, key, unique, ordered, distinct, card)`.
@@ -20,14 +22,77 @@ fn owns_parts(entry: &TomlOwns) -> (&str, bool, bool, bool, bool, Option<&str>) 
     }
 }
 
-/// Build a type declaration head that preserves both `@abstract` and `sub`.
-fn type_head(kind: &str, name: &str, is_abstract: bool, parent: Option<&str>) -> String {
+/// Doc/meta of a `TomlOwns` entry (`None`/empty for the bare-name form).
+fn owns_doc_meta(entry: &TomlOwns) -> (Option<&str>, Option<&IndexMap<String, String>>) {
+    match entry {
+        TomlOwns::Name(_) => (None, None),
+        TomlOwns::Annotated(a) => (a.doc.as_deref(), Some(&a.meta)),
+    }
+}
+
+/// Render a TypeQL string literal for `@doc` / `@meta` values, escaping
+/// backslashes, quotes, and control characters the way TypeDB's schema
+/// export renders them (mirrors the ORM emitter's escaping).
+fn escaped_string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Append ` @doc("...")` / ` @meta("k", "v")` tokens (TypeDB 3.12+) to a
+/// clause. Meta entries emit in TOML declaration order. Returns whether
+/// anything was appended (used for `, sub` comma placement in heads).
+fn push_doc_meta(
+    clause: &mut String,
+    doc: Option<&str>,
+    meta: Option<&IndexMap<String, String>>,
+) -> bool {
+    let mut appended = false;
+    if let Some(text) = doc {
+        clause.push_str(&format!(" @doc({})", escaped_string_literal(text)));
+        appended = true;
+    }
+    if let Some(meta) = meta {
+        for (key, value) in meta {
+            clause.push_str(&format!(
+                " @meta({}, {})",
+                escaped_string_literal(key),
+                escaped_string_literal(value)
+            ));
+            appended = true;
+        }
+    }
+    appended
+}
+
+/// Build a type declaration head that preserves `@abstract`, `@doc`/`@meta`,
+/// and `sub`. Any annotation before `sub` switches to the `, sub` comma form.
+fn type_head(
+    kind: &str,
+    name: &str,
+    is_abstract: bool,
+    parent: Option<&str>,
+    doc: Option<&str>,
+    meta: &IndexMap<String, String>,
+) -> String {
     let mut head = format!("{kind} {name}");
     if is_abstract {
         head.push_str(" @abstract");
     }
+    let has_doc_meta = push_doc_meta(&mut head, doc, Some(meta));
     if let Some(parent) = parent {
-        if is_abstract {
+        if is_abstract || has_doc_meta {
             head.push_str(&format!(", sub {parent}"));
         } else {
             head.push_str(&format!(" sub {parent}"));
@@ -86,7 +151,14 @@ pub fn emit(schema: &TomlSchema) -> String {
             out.push_str(&format!("# @case({})\n", case));
         }
 
-        let head = type_head("attribute", name, attr.is_abstract, attr.sub.as_deref());
+        let head = type_head(
+            "attribute",
+            name,
+            attr.is_abstract,
+            attr.sub.as_deref(),
+            attr.doc.as_deref(),
+            &attr.meta,
+        );
 
         // Build the value clause (with optional value-level annotations).
         let value_clause = if let Some(ref vt) = attr.value {
@@ -127,7 +199,14 @@ pub fn emit(schema: &TomlSchema) -> String {
         if let Some(case) = &entity.bindgen_case {
             out.push_str(&format!("# @case({})\n", case));
         }
-        let head = type_head("entity", name, entity.is_abstract, entity.sub.as_deref());
+        let head = type_head(
+            "entity",
+            name,
+            entity.is_abstract,
+            entity.sub.as_deref(),
+            entity.doc.as_deref(),
+            &entity.meta,
+        );
 
         let mut clauses: Vec<String> = Vec::new();
         for entry in &entity.owns {
@@ -148,6 +227,8 @@ pub fn emit(schema: &TomlSchema) -> String {
             if let Some(c) = card {
                 clause.push_str(&format!(" @card({})", c));
             }
+            let (doc, meta) = owns_doc_meta(entry);
+            push_doc_meta(&mut clause, doc, meta);
             clauses.push(clause);
         }
         for p in &entity.plays {
@@ -175,6 +256,8 @@ pub fn emit(schema: &TomlSchema) -> String {
             name,
             relation.is_abstract,
             relation.sub.as_deref(),
+            relation.doc.as_deref(),
+            &relation.meta,
         );
 
         let mut clauses: Vec<String> = Vec::new();
@@ -195,6 +278,7 @@ pub fn emit(schema: &TomlSchema) -> String {
             if let Some(ref card) = role.card {
                 clause.push_str(&format!(" @card({})", card));
             }
+            push_doc_meta(&mut clause, role.doc.as_deref(), Some(&role.meta));
             clauses.push(clause);
         }
         for entry in &relation.owns {
@@ -215,6 +299,8 @@ pub fn emit(schema: &TomlSchema) -> String {
             if let Some(c) = card {
                 clause.push_str(&format!(" @card({})", c));
             }
+            let (doc, meta) = owns_doc_meta(entry);
+            push_doc_meta(&mut clause, doc, meta);
             clauses.push(clause);
         }
         for p in &relation.plays {
@@ -1043,5 +1129,108 @@ owns = [
         let c = result.find("owns isbn @card(0..2)").unwrap();
         let t = result.find("owns title").unwrap();
         assert!(k < c && c < t, "owns order not preserved; got:\n{result}");
+    }
+
+    #[test]
+    fn test_emit_doc_meta_on_type_heads() {
+        let toml_text = r##"
+[attributes.name]
+value = "string"
+doc = "a personal name"
+meta = { pii = "true" }
+
+[entities.person]
+doc = "an individual client"
+meta = { icon = "silhouette.png" }
+owns = ["name"]
+
+[relations.friendship]
+doc = "a mutual bond"
+roles = [{ name = "friend" }]
+"##;
+        let result = crate::toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains(
+                r#"attribute name @doc("a personal name") @meta("pii", "true"), value string;"#
+            ),
+            "attribute head wrong; got:\n{result}"
+        );
+        assert!(
+            result.contains(
+                r#"entity person @doc("an individual client") @meta("icon", "silhouette.png"), owns name;"#
+            ),
+            "entity head wrong; got:\n{result}"
+        );
+        assert!(
+            result.contains(r#"relation friendship @doc("a mutual bond"), relates friend;"#),
+            "relation head wrong; got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn test_emit_doc_meta_head_before_sub_uses_comma() {
+        let toml_text = r##"
+[entities.base]
+abstract = true
+
+[entities.child]
+sub = "base"
+doc = "d"
+"##;
+        let result = crate::toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains(r#"entity child @doc("d"), sub base;"#),
+            "child head wrong; got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn test_emit_doc_meta_on_owns_and_roles() {
+        let toml_text = r##"
+[attributes.name]
+value = "string"
+
+[entities.person]
+owns = [{ attribute = "name", key = true, doc = "full legal name", meta = { column = "name" } }]
+
+[relations.friendship]
+roles = [{ name = "friend", card = "0..2", doc = "one side", meta = { endpoint = "true" } }]
+"##;
+        let result = crate::toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains(r#"owns name @key @doc("full legal name") @meta("column", "name")"#),
+            "owns clause wrong; got:\n{result}"
+        );
+        assert!(
+            result.contains(
+                r#"relates friend @card(0..2) @doc("one side") @meta("endpoint", "true")"#
+            ),
+            "relates clause wrong; got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn test_emit_meta_preserves_declaration_order_and_escapes() {
+        let toml_text = r##"
+[entities.gadget]
+doc = """line1
+line2 with "quotes""""
+meta = { z-key = "1", a-key = "2" }
+"##;
+        let result = crate::toml_to_typeql(toml_text).expect("toml_to_typeql failed");
+        assert!(
+            result.contains(r#"@doc("line1\nline2 with \"quotes\"")"#),
+            "doc escaping wrong; got:\n{result}"
+        );
+        let z = result
+            .find(r#"@meta("z-key", "1")"#)
+            .expect("z-key missing");
+        let a = result
+            .find(r#"@meta("a-key", "2")"#)
+            .expect("a-key missing");
+        assert!(
+            z < a,
+            "meta must keep TOML declaration order; got:\n{result}"
+        );
     }
 }
