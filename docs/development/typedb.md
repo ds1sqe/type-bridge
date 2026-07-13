@@ -38,21 +38,22 @@ driver is refused by a 3.11 server at connect.
 \* 3.7 is protocol-compatible with band 7 but unsupported. The band and acceptance maps
 are declared once in `crates/core`'s version module and consumed by every tier.
 
-### Dual-band runtime
+### Multi-band runtime
 
-TypeBridge's wheel embeds both TypeDB Rust driver lines — band-7 (3.8.1, vendored fork)
-and band-8 (3.11.5, upstream) — and negotiates the connect band from the server's
-accepted-band set at connect time. A 3.12 server is served through its band-8
-acceptance; no band-9 driver needs to be embedded. A single type-bridge release
-therefore serves the full supported window without any user-side configuration.
+TypeBridge's wheel embeds three TypeDB Rust driver lines — band 7 (3.8.1,
+vendored fork), band 8 (3.11.5, upstream), and band 9 (3.12.0, vendored) — and
+negotiates the connect band from the server's accepted-band set at connect time.
+A confirmed 3.12 server upgrades to band 9 so `given` rows are available; band 8
+remains its safe discovery/fallback path. A single TypeBridge release therefore
+serves the full supported window without user-side driver selection.
 
 **This release line** serves TypeDB 3.8 through 3.12:
 
 | Dimension | Supported range | Notes |
 |-----------|-----------------|-------|
-| TypeDB server | 3.8.0–3.12.x | Band-7 (3.8.x, 3.10.x), band-8 (3.11.x), and dual-band (3.12.x) servers; dispatch is automatic |
-| Python `typedb-driver` | `~=3.11` (e.g. 3.11.5) | The `dev` extra pins `~=3.11.5`; the `typedb-driver` extra allows `>=3.8,<3.13`. This is the installed Python driver used for direct driver APIs and tests — it does not control which TypeDB server you can connect to via the ORM |
-| CPython interpreter | 3.12–3.13 | Floor: PEP 695 syntax in the codebase; ceiling tracks the highest CPython the typedb-driver publishes wheels for |
+| TypeDB server | 3.8.0–3.12.x | Band-7 (3.8.x, 3.10.x), band-8 (3.11.x), and band-9-native (3.12.x) servers; 3.12 retains band 8 for discovery/fallback and dispatch is automatic |
+| Python `typedb-driver` | 3.8–3.12 on CPython 3.13; 3.12.0 on CPython 3.14 | The public extra permits supported lines on 3.13 so callers can match the server; its 3.14 branch pins the first line with a compatible native wheel. The development extra uses 3.11.5 on 3.13 for the default test server. This installed driver does not control the ORM's embedded 3.8–3.12 runtime |
+| CPython interpreter | 3.13–3.14 | Floor: defaulted generic parameters used by the typed facade; the abi3 native wheel supports both declared interpreter lines |
 
 ### Feature gates vs. the version window
 
@@ -68,12 +69,14 @@ Current feature gates:
 | Feature | Minimum server | Gated surfaces |
 |---------|----------------|----------------|
 | `@doc`/`@meta` schema annotations | 3.12.0 | `SchemaManager.sync_schema`, migration executor steps |
-| `given`-stage parameterized queries | 3.12.0 | `Database.execute_with_rows`, `TransactionContext.execute_with_rows`; `insert_many` uses it opportunistically |
+| `given`-stage parameterized queries | 3.12.0 | `Database.execute_with_rows`, `TransactionContext.execute_with_rows`; `insert_many` and typed-query predicate transport use it opportunistically |
 
 When the server version is unknown (band-7 gRPC fallback without a
 `server_version=` pin), gated DDL is sent as-is and the server decides;
 given-stage queries are rejected by the runtime when the negotiated driver
-band cannot carry input rows.
+band cannot carry input rows. Typed queries do not require the feature: they
+automatically retain validated inline literal lowering on older bands and use
+one bounded `given` row only when band-9 transport is active.
 
 The band map itself is `{7, 8, 9}` in the default build: band 9 is the
 vendored TypeDB 3.12 driver, and its protocol is the wire path for given
@@ -84,11 +87,21 @@ reported version proves it safe.
 
 ### Update-safety contract
 
-`Database.connect()` raises a human-readable, actionable error when connecting to a server
-outside the supported window (e.g. 3.7.x) or when the installed Python `typedb-driver`
-mismatches the server's band — before any transaction is attempted, never mid-operation.
-The error names the relevant versions and tells you exactly what to do. It never exposes
-raw protocol numbers.
+`Database.connect()` raises a human-readable, actionable error when its embedded
+runtime connects to a server outside the supported window (e.g. 3.7.x), before
+any transaction is attempted and never mid-operation. The optional installed
+Python `typedb-driver` is not involved in this ORM path. When direct driver
+access is requested through `Database.driver`, its separate gate validates the
+installed driver against the server before opening that external connection.
+Both errors name the relevant versions without exposing raw protocol numbers.
+
+The direct Python driver follows its own protocol band. On CPython 3.13 the
+development extra selects driver 3.11.5 for the default TypeDB 3.11.5 server.
+On CPython 3.14 it selects driver 3.12.0, the first line with a CPython 3.14
+native wheel, and direct driver connections must therefore target TypeDB 3.12.
+This interpreter-specific restriction does not apply to `Database.connect()`,
+typed queries, or other ORM operations backed by TypeBridge's embedded Rust
+runtime.
 
 By default, the gate calls `GET :<http_port>/v1/version` on the server's HTTP API port.
 If that endpoint is unreachable and no exact server version was supplied, TypeBridge
@@ -487,8 +500,9 @@ relation friendship sub social-relation,
 ### 7. Key and Unique Annotations
 
 - `@key` implies `@card(1..1)`, never output both
-- `@unique` with default `@card(1..1)`, omit `@card` annotation
-- Only output explicit `@card` when it differs from the implied cardinality
+- `@unique` does not imply cardinality; preserve the independently declared
+  `@card` when a unique ownership is required or multi-valued
+- Bare TypeQL `@unique` retains the server default `@card(0..1)`
 
 ```typeql
 # ✅ CORRECT
@@ -568,16 +582,16 @@ tx.close()  # No commit needed for READ
 Requires `Credentials(username, password)` even for local development:
 
 ```python
-from typedb.driver import TypeDB, Credentials
+from type_bridge import Credentials, TypeDB, create_driver_options
 
 # ✅ With credentials (required)
-driver = TypeDB.core_driver(
-    address="localhost:1729",
-    credentials=Credentials("admin", "password")
+driver = TypeDB.driver(
+    "localhost:1729",
+    Credentials("admin", "password"),
+    create_driver_options(),
 )
 
-# ❌ Without credentials (will fail in 3.x)
-driver = TypeDB.core_driver(address="localhost:1729")
+# Omitting Credentials is invalid in TypeDB 3.x.
 ```
 
 ## TypeDB 3.x Syntax and Behavior Changes
@@ -680,7 +694,8 @@ If migrating from TypeDB 2.x:
 - Ensure correct clause ordering
 
 **Driver changes:**
-- Update `typedb-driver` to the 3.11 line (`~=3.11`)
+- Install `type-bridge[typedb-driver]` and select the driver line matching the
+  target TypeDB server. On CPython 3.14, use driver and server 3.12.
 - Remove session management code
 - Add credentials for authentication
 - Use `transaction.query()` instead of separate query methods
@@ -688,17 +703,18 @@ If migrating from TypeDB 2.x:
 ### Example: Complete TypeDB 3.x Query
 
 ```python
-from typedb.driver import TypeDB, TransactionType, Credentials
+from type_bridge import Credentials, TransactionType, TypeDB, create_driver_options
 
 # Connect with credentials
-driver = TypeDB.core_driver(
-    address="localhost:1729",
-    credentials=Credentials("admin", "password")
+driver = TypeDB.driver(
+    "localhost:1729",
+    Credentials("admin", "password"),
+    create_driver_options(),
 )
 
 # Create/use database
-if not driver.databases().contains("mydb"):
-    driver.databases().create("mydb")
+if not driver.databases.contains("mydb"):
+    driver.databases.create("mydb")
 
 # Query with proper syntax
 tx = driver.transaction("mydb", TransactionType.READ)

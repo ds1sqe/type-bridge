@@ -1,0 +1,7 @@
+{
+  "include": ["../type-check-except/test_typed_query.py"],
+  "extraPaths": ["../../..", "../../../type-bridge-core/python"],
+  "pythonVersion": "3.13",
+  "typeCheckingMode": "standard",
+  "reportMissingModuleSource": "none"
+}

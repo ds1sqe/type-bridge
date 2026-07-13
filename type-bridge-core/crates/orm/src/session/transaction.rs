@@ -1,7 +1,13 @@
 //! Transaction wrapper for TypeDB operations.
 
-use super::backend::{GivenRowsSpec, QueryResult, TransactionOps, TxType};
+use super::backend::{
+    AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
+    TransactionOps, TxType,
+};
 use crate::error::{OrmError, Result};
+use type_bridge_core_lib::ast::{
+    TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
+};
 
 /// A single TypeDB transaction.
 ///
@@ -43,6 +49,62 @@ impl Transaction {
             .as_mut()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
         tx.query_with_rows(typeql, rows).await
+    }
+
+    /// Execute one internal typed selected-row statement with bounded reading.
+    pub(crate) async fn query_typed_bounded(
+        &mut self,
+        query: &TypedFetchRows,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        let tx = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.query_typed_bounded(query, limits, consumer).await
+    }
+
+    /// Execute one internal complete batched selected-thing hydration.
+    pub(crate) async fn hydrate_typed_bounded(
+        &mut self,
+        query: &TypedHydrateThings,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        let tx = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.hydrate_typed_bounded(query, limits, consumer).await
+    }
+
+    /// Execute one internal typed distinct-root stream.
+    pub(crate) async fn query_root_typed_bounded(
+        &mut self,
+        query: &TypedRootScan,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        let tx = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.query_root_typed_bounded(query, limits, consumer).await
+    }
+
+    /// Execute one internal exact batched page re-match/hydration.
+    pub(crate) async fn rematch_page_typed_bounded(
+        &mut self,
+        query: &TypedPageRematch,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        let tx = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.rematch_page_typed_bounded(query, limits, consumer).await
     }
 
     /// Commit this transaction.

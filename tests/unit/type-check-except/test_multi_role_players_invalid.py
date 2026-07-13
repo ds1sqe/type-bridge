@@ -1,7 +1,5 @@
 """Negative type-check scenarios for multi-player roles."""
 
-from typing import Any, cast
-
 import pytest
 from pydantic import ValidationError
 
@@ -29,4 +27,4 @@ def test_multi_role_rejects_invalid_player_type():
         origin: Role[Document | Email] = Role.multi("origin", Document, Email)
 
     with pytest.raises(ValidationError):
-        Trace(origin=cast(Any, Report(name=Name("Report"))))
+        Trace.model_validate({"origin": Report(name=Name("Report"))})

@@ -228,14 +228,11 @@ class Database:
         logger.debug(
             f"Connecting Python TypeDB driver at {self.address} (database: {self.database_name})"
         )
-        credentials = (
-            Credentials(self.username, self.password) if self.username and self.password else None
-        )
-
         is_tls_enabled = self.address.startswith("https://")
         logger.debug(f"TLS enabled: {is_tls_enabled}")
 
         detected_driver = typedb_driver.driver_version()
+        typedb_driver._ensure_driver_interpreter_supported(detected_driver)
         detected_server = (
             self.server_version
             if self.server_version is not None
@@ -250,6 +247,9 @@ class Database:
         logger.debug(f"Version gate passed: driver={detected_driver}, server={detected_server}")
 
         driver_options = create_driver_options(is_tls_enabled=is_tls_enabled)
+        credentials = (
+            Credentials(self.username, self.password) if self.username and self.password else None
+        )
 
         try:
             if credentials:
@@ -449,13 +449,13 @@ class Database:
         rust_database_for(self).check_schema_annotation_support(typeql)
 
     def supports_given_stage(self) -> bool:
-        """Whether the server supports ``given``-stage parameterized queries.
+        """Whether ``given`` rows can execute on the active connection.
 
-        ``True`` on TypeDB 3.12+ servers. ``False`` when the server predates
-        3.12 or its version is unknown (band-7 gRPC fallback) — callers with
-        a per-row fallback should treat both cases the same. Bulk operations
-        such as ``insert_many`` consult this automatically and fall back to
-        per-row queries when it is ``False``.
+        This requires both TypeDB 3.12+ syntax support and a negotiated band-9
+        provider. It remains ``False`` when the server version is unknown or
+        when a 3.12 server stays on the safe band-8 discovery connection after
+        a band-9 upgrade failure. Bulk operations consult this before dispatch
+        and use their per-row fallback when it is ``False``.
         """
         from type_bridge._rust_runtime import rust_database_for
 

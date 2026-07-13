@@ -57,6 +57,8 @@ relation {trace_type}, relates origin @card(0..2), owns {label_attr};
                 ValueType::String,
                 true,
             )],
+            doc: None,
+            meta: Default::default(),
         })
     }
 
@@ -66,6 +68,8 @@ relation {trace_type}, relates origin @card(0..2), owns {label_attr};
             is_abstract: false,
             parent_type: None,
             owned_attributes: vec![attr("subject", &self.subject_attr, ValueType::String, true)],
+            doc: None,
+            meta: Default::default(),
         })
     }
 
@@ -81,6 +85,8 @@ relation {trace_type}, relates origin @card(0..2), owns {label_attr};
                 cardinality: Some((1, Some(2))),
                 ..Default::default()
             }],
+            doc: None,
+            meta: Default::default(),
         })
     }
 }
@@ -140,6 +146,8 @@ relation {origin_type}, relates token, relates issue, owns {confidence_attr} @ca
             is_abstract: true,
             parent_type: None,
             owned_attributes: vec![attr("text", &self.token_text_attr, ValueType::String, true)],
+            doc: None,
+            meta: Default::default(),
         })
     }
 
@@ -157,6 +165,8 @@ relation {origin_type}, relates token, relates issue, owns {confidence_attr} @ca
             is_abstract: false,
             parent_type: Some(self.token_type.clone()),
             owned_attributes: vec![attr("text", &self.token_text_attr, ValueType::String, true)],
+            doc: None,
+            meta: Default::default(),
         })
     }
 
@@ -166,6 +176,8 @@ relation {origin_type}, relates token, relates issue, owns {confidence_attr} @ca
             is_abstract: false,
             parent_type: None,
             owned_attributes: vec![attr("key", &self.issue_key_attr, ValueType::String, true)],
+            doc: None,
+            meta: Default::default(),
         })
     }
 
@@ -194,6 +206,8 @@ relation {origin_type}, relates token, relates issue, owns {confidence_attr} @ca
                     ..Default::default()
                 },
             ],
+            doc: None,
+            meta: Default::default(),
         })
     }
 }

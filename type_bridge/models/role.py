@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, overload
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import CoreSchema
@@ -13,6 +13,8 @@ from type_bridge.validation import validate_type_name as validate_reserved_word
 if TYPE_CHECKING:
     from type_bridge.fields.role import RoleRef
     from type_bridge.models.base import TypeDBType
+
+T_RelationOwner = TypeVar("T_RelationOwner", bound="TypeDBType")
 
 
 class Role[T: "TypeDBType"]:
@@ -194,16 +196,18 @@ class Role[T: "TypeDBType"]:
         self.attr_name = name
 
     @overload
-    def __get__(self, obj: None, objtype: type) -> RoleRef[T]:
+    def __get__(self, obj: None, objtype: type[T_RelationOwner]) -> RoleRef[T, T_RelationOwner]:
         """Get RoleRef when accessed from class (for query building)."""
         ...
 
     @overload
-    def __get__(self, obj: Any, objtype: type) -> T:
+    def __get__(self, obj: Any, objtype: type[T_RelationOwner]) -> T:
         """Get role player entity when accessed from instance."""
         ...
 
-    def __get__(self, obj: Any, objtype: type) -> T | RoleRef[T] | None:
+    def __get__(
+        self, obj: Any, objtype: type[T_RelationOwner]
+    ) -> T | RoleRef[T, T_RelationOwner] | None:
         """Get role player from instance or RoleRef from class.
 
         When accessed from the class (obj is None), returns RoleRef for
@@ -211,13 +215,16 @@ class Role[T: "TypeDBType"]:
         When accessed from an instance, returns the entity playing the role.
         """
         if obj is None:
-            from type_bridge.fields.role import RoleRef
+            from type_bridge.fields.role import RoleRef, _mark_typed_query_role_reference
 
-            return RoleRef(
-                role_name=self.role_name,
-                player_types=self.player_entity_types,
-                cardinality=self.cardinality,
-                plays_cardinality=self.plays_cardinality,
+            return _mark_typed_query_role_reference(
+                RoleRef(
+                    role_name=self.role_name,
+                    player_types=self.player_entity_types,
+                    owner_type=objtype,
+                    cardinality=self.cardinality,
+                    plays_cardinality=self.plays_cardinality,
+                )
             )
         if self.is_relates_only:
             return None

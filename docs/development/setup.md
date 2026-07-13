@@ -22,6 +22,17 @@ uv sync --extra dev
 uv pip install -e ".[dev]"
 ```
 
+When developing from this source tree on CPython 3.14, opt the current PyO3
+release into its forward-compatible abi3 mode during synchronization or any
+manual native build:
+
+```bash
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync --extra dev
+```
+
+The repository check and test scripts set this automatically. Published
+abi3 wheels do not require the variable.
+
 ### Project Dependencies
 
 The project requires:
@@ -32,8 +43,12 @@ The project requires:
 - `typer>=0.15.0`: CLI framework for generator and migration tools
 
 `typedb-driver` is not a default runtime dependency. It is available through
-the `dev` extra (pinned to `~=3.11.5`) and the `typedb-driver` extra for
-integration tests and direct driver calls. The ORM's embedded runtime
+the `dev` and `typedb-driver` extras for integration tests and direct driver
+calls. The development extra selects driver 3.11.5 on CPython 3.13 and driver
+3.12.0 on CPython 3.14. The public extra permits supported 3.8–3.12 driver
+lines on CPython 3.13 so callers can match their server; CPython 3.14 direct
+driver calls require driver and server 3.12.
+The ORM's embedded runtime
 dispatches automatically across the full TypeDB 3.8–3.12 window; this pin
 is for the installed Python driver used by tests and direct driver APIs. See
 the [compatibility table](typedb.md#server-and-driver-compatibility) for the
@@ -58,7 +73,7 @@ Integration tests run against a TypeDB server in the supported window (see [comp
 **`./test.sh` manages the TypeDB container automatically** (isolated by default). Simply run:
 
 ```bash
-./test.sh                      # Full suite, isolated: starts TypeDB, runs tests, tears down
+./test.sh                      # Full source-tree suite; manages TypeDB in isolated mode
 ./test.sh --no-integration     # Offline tiers only (no container)
 ./test.sh -- -v                # Forward extra args (e.g. -v) to pytest
 ```
@@ -183,8 +198,8 @@ USE_DOCKER=false uv run pytest -m integration  # Python integration only
 
 # All tests
 uv run pytest -m ""                       # All Python tests
-./test.sh                                 # Full suite (Rust + Python + Node), isolated
-./scripts/check.sh                        # CI-shaped checks (rust|python|node|all)
+./test.sh                                 # Full source-tree suite, isolated
+./scripts/check.sh                        # Source-tree CI checks (rust|python|node|all)
 ```
 
 When adding new features:
@@ -207,8 +222,13 @@ Before committing changes, ensure:
 Quick command to run all checks:
 
 ```bash
-./scripts/check.sh  # Runs the CI-shaped checks (rust|python|node|all)
+./scripts/check.sh  # Runs source-tree CI checks (rust|python|node|all)
 ```
+
+`test.sh` and `scripts/check.sh` do not build or install Python release
+artifacts and do not claim publication parity. CI and release jobs accept the
+exact built wheels and npm tarball; registry publication depends on the release
+acceptance jobs.
 
 ## Temporary Files Policy
 

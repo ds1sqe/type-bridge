@@ -128,7 +128,7 @@ This enables automatic schema generation without explicit configuration.
 
 ## Modern Python Type Hints
 
-The project follows modern Python typing standards (Python 3.12+):
+The project follows modern Python typing standards (Python 3.13+):
 
 ### 1. PEP 604: Union Type Syntax
 

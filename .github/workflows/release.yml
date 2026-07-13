@@ -47,11 +47,38 @@ jobs:
       - name: Run unit tests
         run: uv run pytest tests/unit/ -v --tb=short
 
-  # Publish Rust crates to crates.io (dependency order):
-  # core-lib → orm-derive → protocol-b7 → driver-b7 → typedb-runtime → orm → server
+  # Bind the release tag to every public manifest and the complete ordered
+  # crates.io publication plan before any registry mutation is allowed.
+  validate-release-identity:
+    name: Validate release identity
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Validate tag and public manifest versions
+        run: |
+          python scripts/ci/validate_release_identity.py \
+            --tag "$GITHUB_REF_NAME" \
+            --workspace type-bridge-core/Cargo.toml \
+            --root-python pyproject.toml \
+            --core-python type-bridge-core/pyproject.toml \
+            --node-package type-bridge-core/crates/node/package.json \
+            --release-workflow .github/workflows/release.yml
+
+  # Publish Rust crates to crates.io only after both immutable Python and Node
+  # release candidates pass acceptance. Publication remains in dependency order:
+  # core-lib → orm-derive → protocol-b7 → driver-b7 → protocol-b9 →
+  # driver-b9 → typedb-runtime → orm → server
   publish-crates:
     name: Publish Rust crates to crates.io
-    needs: test
+    needs: [validate-release-identity, accept-python-artifacts, accept-node-package]
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -121,12 +148,10 @@ jobs:
       - name: Wait for crates.io index
         run: sleep 30
 
-      # Band-7 fork pair published before typedb-runtime: Cargo unifies
-      # semver-compatible 3.x versions, so the forks are republished under
-      # renamed crates; typedb-runtime resolves them from crates.io via
-      # `version = "=3.8.1"`.
-      # Order: core-lib → orm-derive → protocol-b7 → driver-b7 →
-      # typedb-runtime → orm → server.
+      # Vendored protocol/driver pairs publish before typedb-runtime under
+      # their renamed crate identities. Order: core-lib → orm-derive →
+      # protocol-b7 → driver-b7 → protocol-b9 → driver-b9 → typedb-runtime →
+      # orm → server.
       - name: Publish type-bridge-typedb-protocol-b7
         working-directory: type-bridge-core
         env:
@@ -141,6 +166,24 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-driver-b7"
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish type-bridge-typedb-protocol-b9
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-protocol-b9"
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish type-bridge-typedb-driver-b9
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-driver-b9"
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -228,6 +271,7 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: type-bridge-core/dist/*.whl
+          if-no-files-found: error
 
   # Build type-bridge-core sdist (fallback for exotic platforms)
   build-core-sdist:
@@ -250,6 +294,7 @@ jobs:
         with:
           name: core-sdist
           path: type-bridge-core/dist/*.tar.gz
+          if-no-files-found: error
 
   # Build pure-Python type-bridge package
   build-python:
@@ -282,15 +327,187 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: python-dist
-          path: dist/
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
 
-  # Build and pack the @type-bridge/node binding for the GitHub Release. The
-  # registry publish is staged but stays inert until an NPM_TOKEN secret exists,
-  # so tagging a release never fails for a missing token.
-  build-node:
-    name: Build Node binding package
-    needs: test
+  # Validate every immutable Python artifact produced by this workflow before
+  # either distribution can reach PyPI. Archive, inventory, platform-tag,
+  # metadata, and hash checks cover all five core wheels plus both wheel/sdist
+  # pairs. Runnable Linux x86_64 wheels and both sdists also execute in isolated
+  # consumers; the typed probe checks the same wheel pair's PEP 561 surface.
+  accept-python-artifacts:
+    name: Accept Python release artifacts (${{ matrix.python-version }})
+    needs: [build-core-wheels, build-core-sdist, build-python]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13.5", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_PREFERENCE: only-system
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Download all core wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: core-wheels-*
+          path: tmp/release-python-artifacts/core-wheels
+          merge-multiple: true
+
+      - name: Download core sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: core-sdist
+          path: tmp/release-python-artifacts/core-sdist
+
+      - name: Download root Python distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: tmp/release-python-artifacts/root
+
+      - name: Validate exact Python release inventory
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python scripts/ci/validate_python_release_artifacts.py \
+            --core-wheels-dir tmp/release-python-artifacts/core-wheels \
+            --core-sdist-dir tmp/release-python-artifacts/core-sdist \
+            --root-dist-dir tmp/release-python-artifacts/root \
+            --expected-version "$version" \
+            --manifest tmp/release-python-artifacts/manifest.json
+
+      - name: Prepare typed consumer interpreter and Pyright
+        run: |
+          uv venv --python python tmp/release-python-tools
+          uv pip install --python tmp/release-python-tools/bin/python \
+            'pydantic>=2.12.4' 'isodate==0.7.2' 'jinja2>=3.1.0' \
+            'typer>=0.15.0' 'pyright>=1.1.407' 'auditwheel==6.7.0'
+
+      - name: Audit both immutable GNU wheels against manylinux policy
+        run: |
+          tmp/release-python-tools/bin/python \
+            scripts/ci/audit_manylinux_release_wheels.py \
+            --manifest tmp/release-python-artifacts/manifest.json \
+            --core-wheels-dir tmp/release-python-artifacts/core-wheels
+
+      - name: Run isolated Python artifact acceptance
+        run: |
+          mapfile -t core_wheels < <(
+            find tmp/release-python-artifacts/core-wheels -maxdepth 1 -type f \
+              -name 'type_bridge_core-*linux*x86_64.whl' -print
+          )
+          mapfile -t root_wheels < <(
+            find tmp/release-python-artifacts/root -maxdepth 1 -type f \
+              -name 'type_bridge-*.whl' -print
+          )
+          mapfile -t core_sdists < <(
+            find tmp/release-python-artifacts/core-sdist -maxdepth 1 -type f \
+              -name 'type_bridge_core-*.tar.gz' -print
+          )
+          mapfile -t root_sdists < <(
+            find tmp/release-python-artifacts/root -maxdepth 1 -type f \
+              -name 'type_bridge-*.tar.gz' -print
+          )
+          if [[ ${#core_wheels[@]} -ne 1 ]]; then
+            printf 'Expected exactly one Linux x86_64 core wheel, found %s\n' \
+              "${#core_wheels[@]}" >&2
+            exit 1
+          fi
+          if [[ ${#root_wheels[@]} -ne 1 ]]; then
+            printf 'Expected exactly one root Python wheel, found %s\n' \
+              "${#root_wheels[@]}" >&2
+            exit 1
+          fi
+          if [[ ${#core_sdists[@]} -ne 1 ]]; then
+            printf 'Expected exactly one core sdist, found %s\n' \
+              "${#core_sdists[@]}" >&2
+            exit 1
+          fi
+          if [[ ${#root_sdists[@]} -ne 1 ]]; then
+            printf 'Expected exactly one root Python sdist, found %s\n' \
+              "${#root_sdists[@]}" >&2
+            exit 1
+          fi
+
+          python scripts/ci/run_legacy_python_compat.py \
+            --artifact "${core_wheels[0]}" \
+            --artifact "${root_wheels[0]}"
+
+          python scripts/ci/run_legacy_python_compat.py \
+            --artifact "${core_sdists[0]}" \
+            --artifact "${root_sdists[0]}"
+
+          python scripts/ci/run_typed_python_artifact.py \
+            --root-wheel "${root_wheels[0]}" \
+            --core-wheel "${core_wheels[0]}" \
+            --python "$PWD/tmp/release-python-tools/bin/python" \
+            --pyright "$PWD/tmp/release-python-tools/bin/pyright"
+
+          driver_venv="$GITHUB_WORKSPACE/tmp/release-python-driver-smoke"
+          uv venv --python python "$driver_venv"
+          uv pip install --python "$driver_venv/bin/python" \
+            "${root_wheels[0]}[typedb-driver]" \
+            "${core_wheels[0]}"
+          version="${GITHUB_REF_NAME#v}"
+          "$driver_venv/bin/python" -I \
+            tests/compat/typedb_driver_native/probe.py \
+            --expected-version "$version"
+
+  # Build every native target that the public loader advertises. The pack job
+  # fans these immutable, uniquely named outputs into one portable tarball.
+  build-node-native:
+    name: Build Node native module (${{ matrix.target }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64-gnu
+            runner: ubuntu-latest
+            artifact: node-native-linux-x64-gnu
+            filename: type_bridge_node.linux-x64-gnu.node
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            artifact: node-native-linux-arm64-gnu
+            filename: type_bridge_node.linux-arm64-gnu.node
+          - target: darwin-x64
+            runner: macos-15-intel
+            artifact: node-native-darwin-x64
+            filename: type_bridge_node.darwin-x64.node
+          - target: darwin-arm64
+            runner: macos-14
+            artifact: node-native-darwin-arm64
+            filename: type_bridge_node.darwin-arm64.node
+          - target: win32-x64-msvc
+            runner: windows-latest
+            artifact: node-native-win32-x64-msvc
+            filename: type_bridge_node.win32-x64-msvc.node
+          - target: win32-arm64-msvc
+            runner: windows-11-arm
+            artifact: node-native-win32-arm64-msvc
+            filename: type_bridge_node.win32-arm64-msvc.node
     defaults:
       run:
         working-directory: type-bridge-core/crates/node
@@ -307,26 +524,205 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
+      - name: Build native module
+        run: npm run build:native
+
+      - name: Upload immutable native module
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: type-bridge-core/crates/node/${{ matrix.filename }}
+          if-no-files-found: error
+
+  # Run source/declaration gates over the one compiled build, pack exactly once,
+  # and bind the tarball identity to repository metadata and the release tag
+  # before its first upload.
+  pack-node-package:
+    name: Pack Node release candidate
+    needs: build-node-native
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
           cache: npm
           cache-dependency-path: type-bridge-core/crates/node/package-lock.json
-          registry-url: https://registry.npmjs.org
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
 
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Build native module and TypeScript surface
-        run: npm run build
+      - name: Download all immutable native modules
+        uses: actions/download-artifact@v4
+        with:
+          pattern: node-native-*
+          path: type-bridge-core/crates/node
+          merge-multiple: true
 
-      - name: Pack npm tarball
+      - name: Verify exact native fan-in inventory
         run: |
-          mkdir -p dist
-          npm pack --pack-destination dist
+          python "$GITHUB_WORKSPACE/scripts/ci/validate_node_release_package.py" \
+            --native-directory .
 
-      - name: Upload npm tarball artifact
+      - name: Build TypeScript surface once
+        run: npm run build:types
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unified Query contract typecheck
+        run: npm run typecheck:query-contract
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: DTS baseline parity
+        run: npm run test:dts
+
+      - name: Package smoke
+        run: npm run smoke:package
+
+      - name: Pack npm release candidate
+        run: |
+          package_dir="$GITHUB_WORKSPACE/tmp/release-node-package"
+          mkdir -p "$package_dir"
+          npm pack --ignore-scripts --pack-destination "$package_dir"
+
+      - name: Validate npm release identity before upload
+        run: |
+          mapfile -t packages < <(
+            find "$GITHUB_WORKSPACE/tmp/release-node-package" \
+              -maxdepth 1 -type f -name '*.tgz' -print
+          )
+          if [[ ${#packages[@]} -ne 1 ]]; then
+            printf 'Expected exactly one npm release candidate, found %s\n' \
+              "${#packages[@]}" >&2
+            exit 1
+          fi
+          python "$GITHUB_WORKSPACE/scripts/ci/validate_node_release_package.py" \
+            --artifact "${packages[0]}" \
+            --repository-package package.json \
+            --tag "$GITHUB_REF_NAME"
+
+      - name: Upload immutable npm release candidate
         uses: actions/upload-artifact@v4
         with:
           name: node-package
-          path: type-bridge-core/crates/node/dist/*.tgz
+          path: tmp/release-node-package/*.tgz
+          if-no-files-found: error
+
+  # Execute the same immutable tarball on every native target. Linux x64 also
+  # covers the declared Node 18 engine floor; all targets run on Node 20.
+  accept-node-package:
+    name: Accept Node package (${{ matrix.target }}, Node ${{ matrix.node-version }})
+    needs: pack-node-package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64-gnu
+            runner: ubuntu-latest
+            node-version: "18"
+          - target: linux-x64-gnu
+            runner: ubuntu-latest
+            node-version: "20"
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            node-version: "20"
+          - target: darwin-x64
+            runner: macos-15-intel
+            node-version: "20"
+          - target: darwin-arm64
+            runner: macos-14
+            node-version: "20"
+          - target: win32-x64-msvc
+            runner: windows-latest
+            node-version: "20"
+          - target: win32-arm64-msvc
+            runner: windows-11-arm
+            node-version: "20"
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Download immutable npm release candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: node-package
+          path: tmp/release-node-package
+
+      - name: Execute packed Node consumer
+        run: >-
+          npm run smoke:legacy-package -- --artifact-directory
+          "${{ github.workspace }}/tmp/release-node-package"
+
+  # Publish only the accepted tarball. The job stays inert when NPM_TOKEN is
+  # absent, so tagging a release still succeeds without registry credentials.
+  publish-node-npm:
+    name: Publish Node package to npm
+    needs: accept-node-package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Download accepted npm tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: node-package
+          path: dist
+
+      - name: Revalidate accepted npm identity before publish
+        run: |
+          mapfile -t packages < <(
+            find ./dist -maxdepth 1 -type f -name '*.tgz' -print
+          )
+          if [[ ${#packages[@]} -ne 1 ]]; then
+            printf 'Expected exactly one accepted npm tarball, found %s\n' \
+              "${#packages[@]}" >&2
+            exit 1
+          fi
+          python scripts/ci/validate_node_release_package.py \
+            --artifact "${packages[0]}" \
+            --repository-package type-bridge-core/crates/node/package.json \
+            --tag "$GITHUB_REF_NAME"
 
       # secrets are unavailable in step `if:` conditions, so detect the token in a
       # step (via env, never echoed) and gate the publish on this step's output.
@@ -347,23 +743,46 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          package_name="$(node -p "require('./package.json').name")"
-          package_version="$(node -p "require('./package.json').version")"
-          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
-            echo "${package_name}@${package_version} already published; skipping."
+          mapfile -t packages < <(
+            find ./dist -maxdepth 1 -type f -name '*.tgz' -print
+          )
+          if [[ ${#packages[@]} -ne 1 ]]; then
+            printf 'Expected exactly one accepted npm tarball, found %s\n' \
+              "${#packages[@]}" >&2
+            exit 1
+          fi
+          package_name="$(node -p "require('./type-bridge-core/crates/node/package.json').name")"
+          package_version="$(node -p "require('./type-bridge-core/crates/node/package.json').version")"
+          if registry_integrity="$(
+            npm view "${package_name}@${package_version}" dist.integrity 2>/dev/null
+          )"; then
+            python scripts/ci/validate_node_release_package.py \
+              --artifact "${packages[0]}" \
+              --repository-package type-bridge-core/crates/node/package.json \
+              --tag "$GITHUB_REF_NAME" \
+              --registry-integrity "$registry_integrity"
+            echo "${package_name}@${package_version} already published with identical bytes; skipping."
           else
-            npm publish --access public
+            npm publish "${packages[0]}" --access public
           fi
 
   # Publish type-bridge-core to PyPI (must complete before type-bridge)
   publish-core-pypi:
     name: Publish type-bridge-core to PyPI
-    needs: [build-core-wheels, build-core-sdist]
+    needs: [build-core-wheels, build-core-sdist, accept-python-artifacts]
     runs-on: ubuntu-latest
     environment: release
     permissions:
       id-token: write
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
+
       - name: Download core wheel artifacts
         uses: actions/download-artifact@v4
         with:
@@ -380,35 +799,81 @@ jobs:
       - name: List artifacts
         run: ls -la dist/
 
+      - name: Verify idempotent PyPI hashes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python scripts/ci/verify_pypi_release_hashes.py \
+            --project type-bridge-core \
+            --version "$version" \
+            --dist-dir dist
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           skip-existing: true
 
+      - name: Verify published PyPI hashes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python scripts/ci/verify_pypi_release_hashes.py \
+            --project type-bridge-core \
+            --version "$version" \
+            --dist-dir dist \
+            --require-existing \
+            --attempts 6 \
+            --retry-delay-seconds 10
+
   # Publish type-bridge to PyPI (after core is available)
   publish-python-pypi:
     name: Publish type-bridge to PyPI
-    needs: [build-python, publish-core-pypi]
+    needs: [build-python, accept-python-artifacts, publish-core-pypi]
     runs-on: ubuntu-latest
     environment: release
     permissions:
       id-token: write
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: python-dist
           path: dist/
 
+      - name: Verify idempotent PyPI hashes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python scripts/ci/verify_pypi_release_hashes.py \
+            --project type-bridge \
+            --version "$version" \
+            --dist-dir dist
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           skip-existing: true
 
+      - name: Verify published PyPI hashes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python scripts/ci/verify_pypi_release_hashes.py \
+            --project type-bridge \
+            --version "$version" \
+            --dist-dir dist \
+            --require-existing \
+            --attempts 6 \
+            --retry-delay-seconds 10
+
   # Create draft GitHub Release with all artifacts
   github-release:
     name: Create GitHub Release
-    needs: [publish-python-pypi, publish-crates, build-node]
+    needs: [publish-python-pypi, publish-crates, publish-node-npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write

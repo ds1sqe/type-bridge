@@ -1,4 +1,8 @@
 import { loadNative } from "./native.js";
+import {
+  registerRustDatabaseHandle,
+  registerRustTransactionHandle,
+} from "./typed/runtime-handles.js";
 
 export type ValueType =
   | "string"
@@ -772,6 +776,7 @@ export class RustDatabase {
 
   private constructor(native: NativeRustDatabase) {
     this.#native = native;
+    registerRustDatabaseHandle(this, native);
   }
 
   static connect(address: string, database: string, options?: RustDatabaseConnectOptions): RustDatabase;
@@ -842,6 +847,7 @@ export class RustTransactionContext {
 
   constructor(native: NativeRustTransactionContext) {
     this.#native = native;
+    registerRustTransactionHandle(this, native);
   }
 
   query(query: string): unknown[] {

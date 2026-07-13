@@ -21,7 +21,6 @@ from type_bridge._rust_runtime import descriptor_for_model
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 NODE_SNAPSHOT_SCRIPT = Path(__file__).with_name("node_descriptor_snapshot.cjs")
-DEFAULT_NODE_NATIVE = REPO_ROOT / "tmp" / "type_bridge_node.node"
 
 
 def python_descriptor_snapshot() -> dict[str, Any]:
@@ -39,8 +38,6 @@ def node_descriptor_snapshot() -> dict[str, Any]:
         pytest.skip("node is required for the Node descriptor snapshot")
 
     env = os.environ.copy()
-    if "TYPE_BRIDGE_NODE_NATIVE_PATH" not in env and DEFAULT_NODE_NATIVE.exists():
-        env["TYPE_BRIDGE_NODE_NATIVE_PATH"] = str(DEFAULT_NODE_NATIVE)
 
     completed = subprocess.run(
         ["node", str(NODE_SNAPSHOT_SCRIPT)],

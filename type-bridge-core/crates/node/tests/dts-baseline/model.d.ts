@@ -1,6 +1,6 @@
 import type { Attribute } from "./attribute.js";
 import type { ValueType } from "./index.js";
-import type { AttributeSchemaEntry, EntityDescriptor, RelationDescriptor } from "./index.js";
+import type { Annotation, AttributeSchemaEntry, EntityDescriptor, RelationDescriptor } from "./index.js";
 import { type CardSpec, type FlagInput, type ResolvedTypeFlags } from "./flags.js";
 import { type IidBearing } from "./iid.js";
 import { type ManagerConnection, type TypedEntityManager, type TypedRelationManager } from "./manager.js";
@@ -13,7 +13,12 @@ export type AttributeClass = (new (value: never) => Attribute<unknown, string>) 
 type ModelClassLike = (new (values: never) => object) & {
     readonly typeName: string;
 };
+declare const modelClassBrand: unique symbol;
+declare const modelOwnerBrand: unique symbol;
 type ModelToken = string | ModelClassLike;
+type ModelDependencyClass = ModelClassLike & {
+    readonly schema: Record<string, SchemaSpec>;
+};
 /**
  * A model class that also exposes its schema, used as a parent reference.
  * The schema constraint lets `Entity()` / `Relation()` merge parent fields into
@@ -29,6 +34,11 @@ export type ParentModelClass<ParentSchema extends Record<string, SchemaSpec> = R
 export interface ParentOption<ParentSchema extends Record<string, SchemaSpec>> {
     readonly parent: ParentModelClass<ParentSchema>;
 }
+type OwnerBrandedParentOption<ParentSchema extends Record<string, SchemaSpec>, ParentOwners extends string> = Readonly<{
+    parent: ParentModelClass<ParentSchema> & {
+        readonly [modelClassBrand]: ParentOwners;
+    };
+}>;
 /**
  * Merge two schema records: parent fields followed by child-local fields.
  * Child keys shadow parent keys when both declare the same field name.
@@ -56,6 +66,9 @@ export declare class FieldSpec<Attr extends AttributeClass, Optional extends boo
      * when optional, `Attr[]` when required.
      */
     list<const Min extends number, const Max extends number | null>(card: CardSpec<Min, Max>): ListFieldSpec<Attr, Min extends 0 ? true : false>;
+    /** Declare an ordered TypeDB list (`owns attr[]`), optionally with a card. */
+    ordered(): ListFieldSpec<Attr, Optional>;
+    ordered<const Min extends number, const Max extends number | null>(card: CardSpec<Min, Max>): ListFieldSpec<Attr, Min extends 0 ? true : false>;
 }
 /**
  * A declared multi-value (list) owned-attribute field. Produced by
@@ -68,8 +81,8 @@ export declare class FieldSpec<Attr extends AttributeClass, Optional extends boo
 export declare class ListFieldSpec<Attr extends AttributeClass, Optional extends boolean = false> {
     readonly attrType: Attr;
     readonly kind = "list-field";
-    /** Explicit cardinality `[min, max | null]`. Always present for list fields. */
-    readonly card: [number, number | null];
+    /** Explicit cardinality `[min, max | null]`, or null for bare ordered lists. */
+    readonly card: [number, number | null] | null;
     readonly isOptional: Optional;
     /** True when the parent FieldSpec carried the `Ordered` flag. A multi-value
      * `Card` field is a set, not a TypeDB list: only the `Ordered` flag makes
@@ -77,7 +90,15 @@ export declare class ListFieldSpec<Attr extends AttributeClass, Optional extends
     readonly isOrdered: boolean;
     /** True when the parent FieldSpec carried the `Distinct` flag. */
     readonly isDistinct: boolean;
-    constructor(attrType: Attr, cardSpec: CardSpec, isOrdered?: boolean, isDistinct?: boolean);
+    /** TypeDB 3.12+ `@doc("...")` from the parent FieldSpec's flags. */
+    readonly doc: string | null;
+    /** TypeDB 3.12+ `@meta` annotations from the parent FieldSpec's flags. */
+    readonly meta: Record<string, string>;
+    /** Non-cardinality annotations retained from the parent field flags. */
+    readonly annotations: readonly Annotation[];
+    constructor(attrType: Attr, cardSpec: CardSpec | null, isOrdered?: boolean, isDistinct?: boolean, doc?: string | null, meta?: Record<string, string>, annotations?: readonly Annotation[], optional?: Optional | null);
+    /** Add `@distinct` to an ordered list while preserving its value shape. */
+    distinct(): ListFieldSpec<Attr, Optional>;
 }
 /**
  * A declared relation role: its permitted player model(s), optional
@@ -105,7 +126,11 @@ export declare class RoleSpec<Players extends readonly ModelToken[]> {
     readonly ordered: boolean;
     /** When ``true``, emits ``@distinct`` on the relates clause. Requires ``ordered``. */
     readonly distinct: boolean;
-    constructor(players: Players, cardinality?: CardSpec | null, playsCardinality?: CardSpec | null, overrides?: string, isAbstract?: boolean, ordered?: boolean, distinct?: boolean);
+    /** TypeDB 3.12+ `@doc("...")` documentation for the relates clause. */
+    readonly doc: string | null;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations for the relates clause. */
+    readonly meta: Record<string, string>;
+    constructor(players: Players, cardinality?: CardSpec | null, playsCardinality?: CardSpec | null, overrides?: string, isAbstract?: boolean, ordered?: boolean, distinct?: boolean, doc?: string | null, meta?: Record<string, string>);
 }
 export type SchemaSpec = FieldSpec<AttributeClass, boolean> | ListFieldSpec<AttributeClass, boolean> | RoleSpec<readonly ModelToken[]>;
 export type EntitySchema = Record<string, FieldSpec<AttributeClass, boolean> | ListFieldSpec<AttributeClass, boolean>>;
@@ -203,6 +228,22 @@ export type ModelClass<Schema extends Record<string, SchemaSpec>, Descriptor ext
     fromDict(data: InstanceDict<Schema>): ModelInstance<Schema>;
     manager(db: ManagerConnection): Descriptor extends EntityDescriptor ? TypedEntityManager<ModelInstance<Schema>> : TypedRelationManager<ModelInstance<Schema>>;
 };
+type OwnerBrandedModelInstance<Schema extends Record<string, SchemaSpec>, Owners extends string> = ModelInstance<Schema> & {
+    readonly [modelOwnerBrand]: Owners;
+};
+type OwnerBrandedModelClass<Schema extends Record<string, SchemaSpec>, Descriptor extends EntityDescriptor | RelationDescriptor, TypeName extends string = string, Owners extends string = TypeName> = (new (values: ConstructorInput<Schema>) => OwnerBrandedModelInstance<Schema, Owners>) & {
+    readonly typeName: TypeName;
+    readonly [modelClassBrand]: Owners;
+    readonly schema: Schema;
+    readonly flags: ResolvedTypeFlags;
+    descriptor(): Descriptor;
+    fromDict(data: InstanceDict<Schema>): OwnerBrandedModelInstance<Schema, Owners>;
+    manager(db: ManagerConnection): Descriptor extends EntityDescriptor ? TypedEntityManager<OwnerBrandedModelInstance<Schema, Owners>> : TypedRelationManager<OwnerBrandedModelInstance<Schema, Owners>>;
+};
+/** Return the nominal declaring-type lineage carried by a typed model instance. */
+export type ModelOwnerToken<Model> = Model extends {
+    readonly [modelOwnerBrand]: infer Owners extends string;
+} ? Owners : never;
 /** Declare an owned-attribute field on a model schema, with optional flags. */
 export declare function field<Attr extends AttributeClass>(attrType: Attr, ...flags: FlagInput[]): FieldSpec<Attr, false>;
 /**
@@ -227,8 +268,11 @@ export declare function role<const Players extends readonly [ModelToken, ...Mode
  * `owned_attributes` (parent attrs re-listed, then child-local attrs). Inherited
  * fields are accessible on the child instance with the parent's attribute brand.
  */
-export declare function Entity<const Schema extends EntitySchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema): ModelClass<Schema, EntityDescriptor>;
-export declare function Entity<const ParentSchema extends EntitySchema, const Schema extends EntitySchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema, options: ParentOption<ParentSchema>): ModelClass<MergedSchema<ParentSchema, Schema>, EntityDescriptor>;
+export declare function Entity<const TypeName extends string, const Schema extends EntitySchema>(typeNameOrFlags: TypeName, schema: Schema): OwnerBrandedModelClass<Schema, EntityDescriptor, TypeName>;
+export declare function Entity<const Schema extends EntitySchema>(typeNameOrFlags: ResolvedTypeFlags, schema: Schema): OwnerBrandedModelClass<Schema, EntityDescriptor>;
+export declare function Entity<const Schema extends EntitySchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema): OwnerBrandedModelClass<Schema, EntityDescriptor>;
+export declare function Entity<const TypeName extends string, const ParentSchema extends EntitySchema, const ParentOwners extends string, const Schema extends EntitySchema>(typeNameOrFlags: TypeName, schema: Schema, options: OwnerBrandedParentOption<ParentSchema, ParentOwners>): OwnerBrandedModelClass<MergedSchema<ParentSchema, Schema>, EntityDescriptor, TypeName, TypeName | ParentOwners>;
+export declare function Entity<const ParentSchema extends EntitySchema, const Schema extends EntitySchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema, options: ParentOption<ParentSchema>): OwnerBrandedModelClass<MergedSchema<ParentSchema, Schema>, EntityDescriptor>;
 /**
  * Build a hard-typed relation base class. Like `Entity`, but the schema may also
  * contain `role(...)` specs, which are emitted as `roles[*]` in the descriptor.
@@ -240,10 +284,17 @@ export declare function Entity<const ParentSchema extends EntitySchema, const Sc
  * any parent role whose name appears as the `overrides` target of a child role.
  * This mirrors the Python descriptor contract (see `internals.md`, "Descriptor Contract").
  */
-export declare function Relation<const Schema extends RelationSchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema): ModelClass<Schema, RelationDescriptor>;
-export declare function Relation<const ParentSchema extends RelationSchema, const Schema extends RelationSchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema, options: ParentOption<ParentSchema>): ModelClass<MergedSchema<ParentSchema, Schema>, RelationDescriptor>;
+export declare function Relation<const TypeName extends string, const Schema extends RelationSchema>(typeNameOrFlags: TypeName, schema: Schema): OwnerBrandedModelClass<Schema, RelationDescriptor, TypeName>;
+export declare function Relation<const Schema extends RelationSchema>(typeNameOrFlags: ResolvedTypeFlags, schema: Schema): OwnerBrandedModelClass<Schema, RelationDescriptor>;
+export declare function Relation<const Schema extends RelationSchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema): OwnerBrandedModelClass<Schema, RelationDescriptor>;
+export declare function Relation<const TypeName extends string, const ParentSchema extends RelationSchema, const ParentOwners extends string, const Schema extends RelationSchema>(typeNameOrFlags: TypeName, schema: Schema, options: OwnerBrandedParentOption<ParentSchema, ParentOwners>): OwnerBrandedModelClass<MergedSchema<ParentSchema, Schema>, RelationDescriptor, TypeName, TypeName | ParentOwners>;
+export declare function Relation<const ParentSchema extends RelationSchema, const Schema extends RelationSchema>(typeNameOrFlags: string | ResolvedTypeFlags, schema: Schema, options: ParentOption<ParentSchema>): OwnerBrandedModelClass<MergedSchema<ParentSchema, Schema>, RelationDescriptor>;
 type RelatesOnlyRoleOptions = {
     readonly cardinality?: CardSpec | null;
+    /** TypeDB 3.12+ `@doc("...")` documentation for the relates clause. */
+    readonly doc?: string | null;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations for the relates clause. */
+    readonly meta?: Record<string, string>;
     readonly playsCardinality?: never;
     readonly overrides?: string;
     readonly abstract?: boolean;
@@ -252,10 +303,20 @@ type RelatesOnlyRoleOptions = {
 };
 type RoleOptions = {
     readonly cardinality?: CardSpec | null;
+    /** TypeDB 3.12+ `@doc("...")` documentation for the relates clause. */
+    readonly doc?: string | null;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations for the relates clause. */
+    readonly meta?: Record<string, string>;
     readonly playsCardinality?: CardSpec | null;
     readonly overrides?: string;
     readonly abstract?: boolean;
     readonly ordered?: boolean;
     readonly distinct?: boolean;
 };
+/**
+ * @internal Return constructor dependencies needed before registering a model
+ * in an owner-aware query session. The constructors themselves stay private to
+ * the session; raw string-only role targets cannot provide hydration metadata.
+ */
+export declare function modelConstructorDependencies(model: ModelDependencyClass, includeOwnDescendants?: boolean, includeDescendant?: (model: ModelDependencyClass) => boolean): readonly ModelDependencyClass[];
 export type { IidBearing };

@@ -532,7 +532,7 @@ The following cardinality rules apply to attributes on both **entities** and **r
 | `owns attr[]`                  | `list[Type] = Flag(Ordered)`            | Ordered list              |
 | `owns attr[] @distinct`        | `list[Type] = Flag(Ordered, Distinct)`  | Ordered, unique list      |
 | `@key`                         | `Type = Flag(Key)`                      | Key (implies required)    |
-| `@unique`                      | `Type = Flag(Unique)`                   | Unique (implies required) |
+| `@unique`                      | `Type \| None = Flag(Unique)`           | Unique, optional by default |
 
 **Inheritance:** Child types inherit cardinality constraints from parent types. A child can override inherited constraints by redeclaring the attribute with a different `@card`.
 
@@ -828,7 +828,7 @@ BaseDTO
 For each entity `Foo` in your schema:
 
 - `FooOut` - Response DTO with all attributes and a `type` discriminator
-- `FooCreate` - Create payload DTO (required fields from `@key`, `@unique`, or `@card(1)`)
+- `FooCreate` - Create payload DTO (required fields from `@key` or cardinality with a minimum of 1)
 - `FooPatch` - Partial update DTO (all fields optional)
 
 For each relation `Bar` in your schema:
@@ -840,7 +840,7 @@ For each relation `Bar` in your schema:
 
 - **Schema-driven**: All DTOs are generated directly from your TypeDB schema
 - **Inheritance support**: DTO inheritance mirrors your schema's type hierarchy
-- **Required field detection**: Uses `@key`, `@unique`, and `@card` annotations
+- **Required field detection**: Uses `@key` and `@card`; bare `@unique` remains optional
 - **Literal type discriminators**: Each DTO has a `type` field for union discrimination
 - **Pydantic validation**: All DTOs use Pydantic for automatic validation
 - **Discriminated unions**: `EntityOut`, `RelationCreate`, etc. use the `type` field

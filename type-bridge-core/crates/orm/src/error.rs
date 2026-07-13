@@ -5,6 +5,10 @@ use thiserror::Error;
 /// Unified error type for the ORM crate.
 #[derive(Debug, Error)]
 pub enum OrmError {
+    /// Canonical typed match request or result validation failed.
+    #[error(transparent)]
+    Match(#[from] crate::match_request::MatchError),
+
     /// The detected TypeDB driver or server version lies outside the supported
     /// window, or the driver and server speak different protocol bands.
     ///

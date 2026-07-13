@@ -54,7 +54,10 @@ def test_relates_only_roles_emit_empty_player_type_names() -> None:
 
 
 def test_bound_role_class_access_type_stays_precise() -> None:
-    assert_type(RelatesOnlyRelation.actor, RoleRef[RelatesOnlyPerson])
+    assert_type(
+        RelatesOnlyRelation.actor,
+        RoleRef[RelatesOnlyPerson, RelatesOnlyRelation],
+    )
 
 
 def test_relates_only_instance_access_returns_none_and_assignment_is_descriptive() -> None:
@@ -90,7 +93,10 @@ def test_role_surfaces_plays_cardinality() -> None:
 def test_plays_cardinality_preserves_bound_role_type() -> None:
     # plays_cardinality is a runtime-only schema constraint; class-level access
     # must keep the precise RoleRef[player] generic, not widen to Any.
-    assert_type(PlaysCardEmployment.employer, RoleRef[PlaysCardCompany])
+    assert_type(
+        PlaysCardEmployment.employer,
+        RoleRef[PlaysCardCompany, PlaysCardEmployment],
+    )
 
 
 def test_plays_cardinality_on_relates_only_role_is_rejected() -> None:

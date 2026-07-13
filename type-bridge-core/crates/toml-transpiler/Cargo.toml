@@ -6,6 +6,7 @@ description = "TOML schema DSL transpiler producing TypeQL define blocks for typ
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish = false
 
 [lib]
 name = "type_bridge_toml_transpiler"

@@ -80,8 +80,9 @@ class TestServerVersionLive:
         # optional Python typedb-driver package.  The installed Python driver
         # may target a different protocol band from the live test server.
         # ensure_runtime_supported is the full serviceability check: it passes
-        # exactly when some band the server accepts is embedded (a 3.12 server
-        # is served through its band-8 acceptance, not its native band 9).
+        # exactly when some band the server accepts is embedded. A confirmed
+        # 3.12 server normally upgrades from safe band-8 discovery to native
+        # band 9, retaining band 8 only as a compatible fallback.
         version.ensure_runtime_supported(sv)
 
 
@@ -415,23 +416,29 @@ class TestGivenStageLive:
     )
 
     @staticmethod
-    def _live_server_supports_given() -> bool:
+    def _live_server_supports_given_syntax() -> bool:
         from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
         detected = _tdm.server_version(TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT)
         major, minor = (int(part) for part in detected.split(".")[:2])
         return (major, minor) >= (3, 12)
 
-    def test_supports_given_stage_matches_server_line(self, clean_db: Database):
-        """supports_given_stage() agrees with the probed server version."""
-        assert clean_db.supports_given_stage() == self._live_server_supports_given()
+    def test_supports_given_stage_requires_syntax_and_row_transport(self, clean_db: Database):
+        """The live 3.12 leg negotiates B9; older legs cannot advertise given rows."""
+        if self._live_server_supports_given_syntax():
+            assert clean_db.supports_given_stage(), (
+                "the TypeDB 3.12 integration leg must upgrade its validated discovery "
+                "connection to the band-9 row-transport provider"
+            )
+        else:
+            assert not clean_db.supports_given_stage()
 
     def test_execute_with_rows_is_version_adaptive(self, clean_db: Database):
         """3.12+ legs run the pipeline; pre-3.12 legs get the versioned error."""
         import type_bridge_core
 
         rows = [["alice", 28], ["bob", 26], ["carol", 31]]
-        if self._live_server_supports_given():
+        if clean_db.supports_given_stage():
             clean_db.execute_query(self.GIVEN_DDL, transaction_type="schema")
             docs = clean_db.execute_with_rows(
                 self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
@@ -444,7 +451,7 @@ class TestGivenStageLive:
                 transaction_type="read",
             )
             assert {row["n"]["value"] for row in fetched} == {"alice", "bob", "carol"}
-        else:
+        elif not self._live_server_supports_given_syntax():
             with pytest.raises(type_bridge_core.VersionError) as exc_info:
                 clean_db.execute_with_rows(
                     self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
@@ -452,6 +459,53 @@ class TestGivenStageLive:
             message = str(exc_info.value)
             assert "3.12" in message
             assert "given-stage" in message
+        else:
+            with pytest.raises(RuntimeError, match="active band-9 provider"):
+                clean_db.execute_with_rows(
+                    self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
+                )
+
+    @pytest.mark.parametrize(
+        ("column_type", "value", "expected"),
+        [
+            ("integer", True, "exact Python int"),
+            ("boolean", 1, "exact Python bool"),
+            ("double", 1, "exact Python float"),
+            ("string", b"alice", "exact Python str"),
+        ],
+    )
+    def test_execute_with_rows_rejects_primitive_coercions_before_dispatch(
+        self,
+        clean_db: Database,
+        column_type: str,
+        value: object,
+        expected: str,
+    ) -> None:
+        """Given cells have exact public types; Python coercions never reach TypeDB."""
+        with pytest.raises(TypeError, match=expected):
+            clean_db.execute_with_rows(
+                "not dispatched",
+                "read",
+                ["value"],
+                [column_type],
+                [[value]],
+            )
+
+    def test_execute_with_rows_rejects_malformed_temporal_before_wire_io(
+        self, clean_db: Database
+    ) -> None:
+        """The band-9 adapter validates temporal strings before sending a query."""
+        if not clean_db.supports_given_stage():
+            pytest.skip("requires the TypeDB 3.12 band-9 integration leg")
+
+        with pytest.raises(RuntimeError, match="Invalid given date"):
+            clean_db.execute_with_rows(
+                self.GIVEN_PIPELINE,
+                "write",
+                ["n", "a"],
+                ["date", "integer"],
+                [["not-a-date", 1]],
+            )
 
     def test_insert_many_works_on_every_server_leg(self, clean_db: Database):
         """Bulk insert succeeds everywhere: given fast path on 3.12+, per-row below."""

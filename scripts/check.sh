@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Local CI check — mirrors .github/workflows/ci.yml
-# Run from repo root: ./scripts/check.sh [rust|python|all]
+# Local source-tree CI checks. Release-artifact acceptance is workflow-only:
+# this script neither builds/installs Python wheels nor claims publication parity.
+# Run from repo root: ./scripts/check.sh [rust|python|node|all]
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
+
+# PyO3 0.23 predates CPython 3.14, while this extension deliberately targets
+# abi3-py312. Keep source builds usable on both declared interpreter lines,
+# including Python-only checks whose initial `uv run` may rebuild the core.
+export PYO3_USE_ABI3_FORWARD_COMPATIBILITY="${PYO3_USE_ABI3_FORWARD_COMPATIBILITY:-1}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -33,9 +39,6 @@ run_step() {
 run_rust() {
     printf "${BOLD}━━━ Rust ━━━${RESET}\n\n"
 
-    # PyO3 0.23.5 max is Python 3.13; local may be newer
-    export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
-
     run_step "cargo check --all-targets" \
         cargo check --manifest-path type-bridge-core/Cargo.toml --all-targets
 
@@ -62,6 +65,9 @@ run_python() {
     run_step "pyright tests/" \
         uv run pyright tests/
 
+    run_step "typed Query negative Pyright contract" \
+        uv run python tests/contracts/typed_query/python/check_negative.py
+
     run_step "pytest tests/unit/" \
         uv run pytest tests/unit/ -x --tb=short -q
 }
@@ -77,9 +83,11 @@ run_node() {
     run_step "npm ci"                npm ci
     run_step "npm run build"         npm run build
     run_step "npm run typecheck"     npm run typecheck
+    run_step "npm run typecheck:query-contract" npm run typecheck:query-contract
     run_step "npm run test:unit"     npm run test:unit
     run_step "npm run test:dts"      npm run test:dts
     run_step "npm run smoke:package" npm run smoke:package
+    run_step "npm run smoke:legacy-package" npm run smoke:legacy-package
 
     popd >/dev/null
 }

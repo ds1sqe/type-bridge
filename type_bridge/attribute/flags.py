@@ -255,7 +255,8 @@ class AttributeFlags:
     Example:
         class Person(Entity):
             name: Name = Flag(Key)                    # @key (implies @card(1..1))
-            email: Email = Flag(Unique)               # @unique @card(1..1)
+            email: Email = Flag(Unique)               # @unique @card(1..1) from required type
+            alias: Alias | None = Flag(Unique)        # @unique @card(0..1)
             age: Optional[Age]                        # @card(0..1) - no Flag needed
             tags: list[Tag] = Flag(Card(min=2))       # @card(2..)
             jobs: list[Job] = Flag(Card(1, 5))        # @card(1..5)
@@ -286,8 +287,9 @@ class AttributeFlags:
 
         Rules:
         - @key implies @card(1..1), so never output @card with @key
-        - @unique with @card(1..1) is redundant, so omit @card in that case
-        - Otherwise, always output @card if cardinality is specified
+        - @unique constrains distinctness only, so preserve its independent @card
+        - @distinct is emitted only for an ordered ownership (validated by Flag)
+        - Always output non-key @card when cardinality is specified
         - @doc / @meta follow the constraint annotations, matching the
           annotation order of TypeDB's schema export
 
@@ -304,19 +306,17 @@ class AttributeFlags:
             annotations.append("@key")
         if self.is_unique:
             annotations.append("@unique")
+        if self.is_distinct:
+            annotations.append("@distinct")
 
-        # Only output @card if:
-        # 1. Not a @key (since @key always implies @card(1..1))
-        # 2. Not (@unique with default @card(1..1))
+        # @key alone implies @card(1..1). Bare @unique does not imply a
+        # cardinality, so its independently derived/declared card must survive.
         should_output_card = self.card_min is not None or self.card_max is not None
 
         if should_output_card and not self.is_key:
-            # Check if it's @unique with default (1,1) - if so, omit @card
-            is_default_card = self.card_min == 1 and self.card_max == 1
-            if not (self.is_unique and is_default_card):
-                card_annotation = format_card_annotation(self.card_min, self.card_max)
-                if card_annotation:
-                    annotations.append(card_annotation)
+            card_annotation = format_card_annotation(self.card_min, self.card_max)
+            if card_annotation:
+                annotations.append(card_annotation)
 
         annotations.extend(format_doc_meta_annotations(self.doc, self.meta))
         return annotations
@@ -327,7 +327,8 @@ def Flag(*annotations: Any) -> Annotated[Any, AttributeFlags]:
 
     Usage:
         field: Type = Flag(Key)                   # @key (implies @card(1..1))
-        field: Type = Flag(Unique)                # @unique @card(1..1)
+        field: Type = Flag(Unique)                # @unique @card(1..1) from required type
+        field: Type | None = Flag(Unique)         # @unique @card(0..1)
         field: list[Type] = Flag(Card(min=2))     # @card(2..)
         field: list[Type] = Flag(Card(1, 5))      # @card(1..5)
         field: Type = Flag(Key, Unique)           # @key @unique

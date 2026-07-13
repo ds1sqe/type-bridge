@@ -6,6 +6,7 @@ description = "Migration IR and planning substrate for type-bridge"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish = false
 # The CLI bin is declared explicitly below; src/bin/display.rs is a module of
 # that bin, not its own target. Disable bin auto-discovery so it is not built
 # as a second binary.

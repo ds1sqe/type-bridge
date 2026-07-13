@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "labels": {
+    "person_id": "parity-query-person-id",
+    "person_name": "parity-query-person-name",
+    "rank": "parity-query-rank",
+    "specialty": "parity-query-specialty",
+    "company_id": "parity-query-company-id",
+    "company_name": "parity-query-company-name",
+    "employment_code": "parity-query-employment-code",
+    "person": "parity-query-person",
+    "employee": "parity-query-employee",
+    "contractor": "parity-query-contractor",
+    "company": "parity-query-company",
+    "employment": "parity-query-employment"
+  },
+  "expected": {
+    "root_keys": [
+      "alice",
+      "bob"
+    ],
+    "employment_keys": {
+      "alice": [
+        "E-1",
+        "E-2",
+        "E-3"
+      ],
+      "bob": [
+        "E-4"
+      ]
+    },
+    "company_keys": {
+      "alice": [
+        "acme",
+        "zulu"
+      ],
+      "bob": [
+        "acme"
+      ]
+    },
+    "total": 2
+  },
+  "semantic_corpus_projection": {
+    "source_fixture": "identity-main",
+    "distinct_roots": [
+      "person:alice",
+      "person:bob"
+    ],
+    "page_by_person_offset_0_limit_1": {
+      "roots": [
+        "person:alice"
+      ],
+      "offset": 0,
+      "limit": 1,
+      "total": 2
+    },
+    "alice_collect_count": 3,
+    "alice_collect_distinct_count": 2,
+    "count_by_person": 2,
+    "exists_by_person": true
+  }
+}

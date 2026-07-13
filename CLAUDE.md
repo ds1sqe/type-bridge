@@ -15,12 +15,12 @@ This project requires **Python 3.13+**. The package metadata currently allows
 
 ```bash
 # Install dependencies, including dev tools from pyproject.toml
-uv sync --extra dev
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync --extra dev
 
 # Run the default test set; pyproject excludes integration/proxy/benchmark tests
 uv run pytest
 
-# Run the full test suite (Rust + Python + Node, unit + integration).
+# Run the full source-tree test suite (Rust + Python + Node, unit + integration).
 # Isolated by default: brings up its own TypeDB and tears it down. Flags:
 #   --no-integration (offline tiers only) | --proxy | --no-isolated (use a running TypeDB)
 ./test.sh
@@ -31,7 +31,8 @@ uv run ruff format --check .
 uv run pyright type_bridge/
 uv run pyright tests/
 
-# CI-shaped check (rust|python|node|all) — offline gates, mirrors ci.yml
+# Source-tree CI checks (rust|python|node|all). Exact release-artifact
+# acceptance is workflow-only.
 ./scripts/check.sh python
 ```
 

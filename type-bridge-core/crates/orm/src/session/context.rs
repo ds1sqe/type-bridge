@@ -4,8 +4,19 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use super::backend::{GivenRowsSpec, QueryResult, TransactionOps, TxType};
+use super::backend::{
+    AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
+    TransactionOps, TxType,
+};
 use crate::error::{OrmError, Result};
+use crate::match_request::selected_result_executor::SelectedResultExecutor;
+use crate::match_request::{
+    CapabilitySet, MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult,
+};
+use crate::registry::DescriptorRegistry;
+use type_bridge_core_lib::ast::{
+    TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
+};
 
 /// Shared transaction context for grouping multiple operations into
 /// a single database transaction.
@@ -16,13 +27,19 @@ use crate::error::{OrmError, Result};
 pub struct TransactionContext {
     inner: Arc<Mutex<Option<Box<dyn TransactionOps>>>>,
     tx_type: TxType,
+    match_capabilities: CapabilitySet,
 }
 
 impl TransactionContext {
-    pub(crate) fn new(inner: Box<dyn TransactionOps>, tx_type: TxType) -> Self {
+    pub(crate) fn new(
+        inner: Box<dyn TransactionOps>,
+        tx_type: TxType,
+        match_capabilities: CapabilitySet,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Some(inner))),
             tx_type,
+            match_capabilities,
         }
     }
 
@@ -45,6 +62,63 @@ impl TransactionContext {
             .as_mut()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
         tx.query_with_rows(typeql, rows).await
+    }
+
+    /// Execute one internal typed selected-row statement without consuming the
+    /// caller-owned transaction context.
+    pub(crate) async fn query_typed_bounded(
+        &self,
+        query: &TypedFetchRows,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        let mut guard = self.inner.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.query_typed_bounded(query, limits, consumer).await
+    }
+
+    /// Execute one complete batched hydration without consuming this context.
+    pub(crate) async fn hydrate_typed_bounded(
+        &self,
+        query: &TypedHydrateThings,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        let mut guard = self.inner.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.hydrate_typed_bounded(query, limits, consumer).await
+    }
+
+    /// Execute one typed distinct-root stream without consuming this context.
+    pub(crate) async fn query_root_typed_bounded(
+        &self,
+        query: &TypedRootScan,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        let mut guard = self.inner.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.query_root_typed_bounded(query, limits, consumer).await
+    }
+
+    /// Execute one exact batched page re-match without consuming this context.
+    pub(crate) async fn rematch_page_typed_bounded(
+        &self,
+        query: &TypedPageRematch,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        let mut guard = self.inner.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.rematch_page_typed_bounded(query, limits, consumer).await
     }
 
     /// Commit the shared transaction.
@@ -78,6 +152,28 @@ impl TransactionContext {
     pub fn tx_type(&self) -> TxType {
         self.tx_type
     }
+
+    /// Execute one validated selected-row request without consuming this read context.
+    pub async fn execute_match(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+    ) -> Result<ValidatedMatchResult> {
+        self.execute_match_with_limits(registry, validated, MatchExecutionLimits::default())
+            .await
+    }
+
+    /// Execute one validated selected-row request with caller-tightened limits.
+    pub async fn execute_match_with_limits(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+        limits: MatchExecutionLimits,
+    ) -> Result<ValidatedMatchResult> {
+        SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
+            .execute_borrowed(self, validated)
+            .await
+    }
 }
 
 impl Clone for TransactionContext {
@@ -85,6 +181,7 @@ impl Clone for TransactionContext {
         Self {
             inner: Arc::clone(&self.inner),
             tx_type: self.tx_type,
+            match_capabilities: self.match_capabilities.clone(),
         }
     }
 }

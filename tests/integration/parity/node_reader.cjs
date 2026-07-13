@@ -12,7 +12,8 @@ function readRows() {
   const database = process.env.TYPE_BRIDGE_PARITY_DATABASE || process.env.TYPE_BRIDGE_NODE_INTG_DATABASE || "type_bridge_test";
   const username = process.env.TYPEDB_USERNAME || "admin";
   const password = process.env.TYPEDB_PASSWORD || "password";
-  const db = typeBridge.RustDatabase.connect(address, database, { username, password });
+  const httpPort = Number(process.env.TYPEDB_HTTP_PORT || "8000");
+  const db = typeBridge.RustDatabase.connect(address, database, { username, password, httpPort });
 
   const entityDescriptors = [
     descriptors.entities.parityPerson,

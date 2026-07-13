@@ -587,6 +587,9 @@ class TestDeepEntityInheritance:
         class SpecialField(String):
             pass
 
+        class AdminLevel(Integer):
+            pass
+
         # Level 1: Abstract base
         class BaseSubject(Entity):
             flags = TypeFlags(name="base_subject_deep", abstract=True)
@@ -610,10 +613,7 @@ class TestDeepEntityInheritance:
         # Level 4: Admin user (extends InternalUser)
         class AdminUser(InternalUser):
             flags = TypeFlags(name="admin_user_deep")
-            admin_level: Integer | None = None
-
-        class AdminLevel(Integer):
-            pass
+            admin_level: AdminLevel | None = None
 
         schema_manager = SchemaManager(clean_db)
         schema_manager.register(BaseSubject, AbstractUser, InternalUser, ExternalUser, AdminUser)

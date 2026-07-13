@@ -9,7 +9,7 @@
 //! |--------|------|-------------|
 //! | `VersionError` | exception | Raised for window, band-mismatch, probe, and parse failures |
 //! | `min_supported_version` | function | Returns the floor as `"3.8.0"` |
-//! | `max_supported_line` | function | Returns the ceiling line as `"3.11"` |
+//! | `max_supported_line` | function | Returns the ceiling line as `"3.12"` |
 //! | `band` | function | Protocol-band lookup; `None` for unmapped versions |
 //! | `check_supported` | function | Window + band gate (installed driver); raises `VersionError` on failure |
 //! | `check_server_supported` | function | Embedded-runtime gate (band-set membership); raises `VersionError` on failure |
@@ -102,9 +102,10 @@ pub fn check_supported(driver: &str, server: &str) -> PyResult<()> {
 
 /// Return the `typedb-driver` version compiled into the Rust runtime.
 ///
-/// Every TypeBridge transaction executes through the embedded Rust driver,
-/// so its protocol band — not only the installed Python driver's — must
-/// match the server. The connect-time gate checks both.
+/// Every ORM transaction executes through an embedded Rust driver selected
+/// from the server's accepted-band set. This gate is independent of the
+/// optional installed Python driver, which is used only for direct driver
+/// access.
 #[pyfunction]
 pub fn embedded_driver_version() -> &'static str {
     type_bridge_orm::session::real_driver::PINNED_DRIVER_VERSION
@@ -114,10 +115,10 @@ pub fn embedded_driver_version() -> &'static str {
 /// protocol band.
 ///
 /// Returns a Python `dict` mapping `int` band → `str` version for every band
-/// feature compiled into this build.  The default build embeds both bands and
-/// returns `{7: "3.8.1", 8: "3.11.5"}`.  A single-band build returns only the
-/// one entry for its compiled band — the dict is cfg-derived, never hardcoded
-/// (master-plan I6).
+/// feature compiled into this build.  The default build embeds all supported
+/// bands and returns `{7: "3.8.1", 8: "3.11.5", 9: "3.12.0"}`.  A
+/// single-band build returns only the one entry for its compiled band — the
+/// dict is cfg-derived, never hardcoded (master-plan I6).
 ///
 /// Use [`embedded_driver_version`] when only the band-8 pin is needed (back-compat).
 #[pyfunction]
@@ -136,12 +137,13 @@ pub fn embedded_driver_versions(py: Python<'_>) -> PyResult<Py<PyDict>> {
 /// Assert that this build's embedded runtime can serve `server`.
 ///
 /// Uses band-set intersection: the server is accepted when any band it
-/// accepts connections from is compiled into this build.  For the default
-/// build (both bands embedded), any in-window server passes — including a
-/// dual-band 3.12 server, served through its band-8 acceptance.
+/// accepts connections from is compiled into this build. For the default
+/// build (all three bands embedded), any in-window server passes. Confirmed
+/// 3.12 servers normally negotiate native band 9, with band 8 retained for
+/// discovery/fallback.
 ///
 /// The embedded band set is derived from the cfg-gated
-/// `embedded_driver_versions()` — never a hardcoded `[7, 8]` literal
+/// `embedded_driver_versions()` — never a hardcoded `[7, 8, 9]` literal
 /// (master-plan I6).
 ///
 /// # Errors

@@ -1,0 +1,77 @@
+{
+  "fixture_id": "identity-main",
+  "version": 1,
+  "description": "One solution set that distinguishes selected tuples, roots, and collection multiplicity.",
+  "stable_order": {
+    "person": "person-key ascending",
+    "employment": "employment-key ascending",
+    "company": "company-key ascending"
+  },
+  "solutions": [
+    {
+      "solution_id": "s1",
+      "bindings": {
+        "person": "person:alice",
+        "employment": "employment:alice-acme-1",
+        "company": "company:acme",
+        "witness": "skill:rust"
+      },
+      "satisfied_or_branches": ["experienced", "named-alice"]
+    },
+    {
+      "solution_id": "s2",
+      "bindings": {
+        "person": "person:alice",
+        "employment": "employment:alice-acme-1",
+        "company": "company:acme",
+        "witness": "skill:typedb"
+      },
+      "satisfied_or_branches": ["experienced"]
+    },
+    {
+      "solution_id": "s3",
+      "bindings": {
+        "person": "person:alice",
+        "employment": "employment:alice-acme-2",
+        "company": "company:acme",
+        "witness": "skill:python"
+      },
+      "satisfied_or_branches": ["named-alice"]
+    },
+    {
+      "solution_id": "s4",
+      "bindings": {
+        "person": "person:bob",
+        "employment": "employment:bob-beta-1",
+        "company": "company:beta",
+        "witness": "skill:rust"
+      },
+      "satisfied_or_branches": ["experienced"]
+    }
+  ],
+  "expected": {
+    "selected_rows": [
+      ["person:alice", "employment:alice-acme-1", "company:acme"],
+      ["person:alice", "employment:alice-acme-2", "company:acme"],
+      ["person:bob", "employment:bob-beta-1", "company:beta"]
+    ],
+    "distinct_roots": ["person:alice", "person:bob"],
+    "page_by_person_offset_0_limit_1": {
+      "roots": ["person:alice"],
+      "offset": 0,
+      "limit": 1,
+      "total": 2
+    },
+    "alice_collect_employments": [
+      "employment:alice-acme-1",
+      "employment:alice-acme-1",
+      "employment:alice-acme-2"
+    ],
+    "alice_collect_distinct_employments": [
+      "employment:alice-acme-1",
+      "employment:alice-acme-2"
+    ],
+    "count_by_person": 2,
+    "exists_by_person": true
+  }
+}

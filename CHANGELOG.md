@@ -46,26 +46,63 @@ All notable changes to TypeBridge will be documented in this file.
   pipeline runs over many input rows, with the rows passed through the
   driver API instead of interpolated into the query string.
   `Database.execute_with_rows()` / `TransactionContext.execute_with_rows()`
-  expose the raw surface (gated on TypeDB 3.12+ with an actionable
-  versioned error below it; `Database.supports_given_stage()` reports the
+  expose the raw surface (requiring both TypeDB 3.12+ and the negotiated
+  band-9 provider; `Database.supports_given_stage()` reports that effective
   capability), and entity `insert_many()` automatically rides one given
-  pipeline for homogeneous batches on 3.12+ servers — measured ~4x faster
-  than the per-row path at 1000 rows — while degrading transparently to
-  per-row inserts on older servers and heterogeneous batches.
+  pipeline for homogeneous batches when available — measured ~4x faster than
+  the per-row path at 1000 rows — while degrading transparently to per-row
+  inserts on older servers, band-8 fallbacks, and heterogeneous batches.
+
+- **Unified immutable typed queries (#170–#177)** - added additive
+  `type_bridge.typed` and `@type-bridge/node/typed` facades with owner-aware
+  variables, fields, and roles; exact or subtype matching; exact 1–16-slot
+  positional and named output typing; collected pages; and distinct-root
+  page/count/exists operations. Rust owns canonical validation, TypeQL
+  lowering, bounded execution, result identity, and transaction lifecycle. On
+  negotiated band-9 connections, supported predicate values travel separately
+  from TypeQL in one compiler-owned `given` row; older bands retain the
+  validated inline path, and both routes preserve bounded streaming;
+  existing package-root query and manager APIs remain available unchanged.
 
 - **TypeDB 3.12 server support** - the compatibility window now extends to
   3.12.x. Compatibility was measured live: server 3.12 accepts band-8 (3.11)
   drivers, while a 3.12 driver is refused by a 3.11 server, so the version
   gate now models servers as accepting a *set* of protocol bands and
-  negotiates the connect band from that set. A 3.12 server is served by the
-  embedded band-8 driver with no new embedded driver required. Installed
-  Python driver 3.12 (band 9) is dispatched with the band-8 option form and
-  gated correctly against both 3.11 (reject) and 3.12 (accept) servers; the
-  `typedb-driver` extra now allows `<3.13`.
+  negotiates the connect band from that set. The embedded band-9 driver is
+  selected only after a server is confirmed as 3.12; unknown-server fallback
+  starts with band 8 to avoid probing a 3.11 server with the incompatible
+  band-9 client. Installed Python driver 3.12 (band 9) is dispatched with the
+  band-8 option form and gated correctly against both 3.11 (reject) and 3.12
+  (accept) servers; the `typedb-driver` extra now allows `<3.13`.
+
+### Bug Fixes
+
+- **Reliable band-7 fallback on remapped TypeDB endpoints** - when the HTTP
+  version probe is unavailable, a lazy band-8 connection failure now advances
+  to band 7 instead of terminating negotiation early. Rust integration helpers
+  and Node parity consumers also honor the configured HTTP port.
+- **CPython 3.14 direct-driver compatibility** - optional and development
+  dependencies now select TypeDB driver 3.12.0 on CPython 3.14, with native
+  constructor coverage. The CPython 3.13 development environment retains
+  driver 3.11.5 for the default 3.11 server, while its public extra continues
+  to permit driver lines 3.8–3.12. The embedded ORM runtime remains compatible
+  with TypeDB 3.8–3.12 on either interpreter.
 
 ### Testing & Tooling
 
-- **TypeDB 3.12.0 CI legs** - integration, node-integration, and
+- **Typed-query artifact and live parity gates (#170–#177)** - added isolated
+  Python-wheel and packed-npm consumers, positive/negative static contracts,
+  native resource/lifecycle/snapshot regressions, and shared Python/Node live
+  query coverage on the TypeDB 3.8, 3.10, 3.11, and 3.12 server lines.
+- **Release-candidate acceptance (#170–#177)** - each package registry consumes
+  only its accepted immutable candidate; crates.io publication additionally
+  waits for both complete Python archive/metadata/payload validation and exact
+  npm-package acceptance. Exact-wheel runtime and typing consumers run on
+  CPython 3.13 and 3.14, and exact npm-package runtime consumers run on the
+  declared Node 18 and 20 lines. Registry retries accept an existing artifact
+  only when its published hash matches the candidate.
+- **TypeDB 3.12.0 CI legs** - all ordinary Python integration groups (including
+  `session` coverage for `given` negotiation), node-integration, and
   cross-language-parity matrices gained `typedb/typedb:3.12.0` legs (paired
   with Python driver 3.12.0), and the version-gate cells gained a
   `NEG-driver-band9` regression for the asymmetric 3.12-driver /

@@ -477,19 +477,21 @@ class CustomRelationBase(BaseDTO):
         with pytest.raises(ValueError, match="clashes with relation_union_name"):
             render_api_dto(schema)
 
-    def test_unique_attribute_is_required(self) -> None:
-        """Test that @unique attributes are required in Create DTOs."""
+    def test_unique_attribute_is_optional_without_required_cardinality(self) -> None:
+        """Bare @unique retains the default optional cardinality in Create DTOs."""
         schema = parse_tql_schema("""
             define
             entity person,
-                owns email @unique;
+                owns email @unique,
+                owns handle @unique @card(1..1);
             attribute email, value string;
+            attribute handle, value string;
         """)
         source = render_api_dto(schema)
 
-        # In Create, @unique should be required
         create_section = source.split("class PersonCreate")[1].split("class PersonPatch")[0]
-        assert "email: str" in create_section
+        assert "email: Optional[str] = None" in create_section
+        assert "handle: str" in create_section
 
     def test_cardinality_determines_required(self) -> None:
         """Test that cardinality determines if field is required."""

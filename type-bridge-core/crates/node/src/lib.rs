@@ -7,6 +7,15 @@
 // `napi` generates public glue items that do not inherit Rustdoc comments.
 #![allow(missing_docs)]
 
+mod match_runtime;
+
+pub use match_runtime::{
+    NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchOrderHandle, NodeMatchPredicateHandle,
+    NodeMatchQueryHandle, NodeMatchRoleHandle, NodeMatchSelectionHandle, NodeMatchSessionHandle,
+    NodeMatchShapeHandle, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
+    revalidate_match_diagnostic,
+};
+
 use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
@@ -216,12 +225,24 @@ impl Default for NodeDescriptorRegistry {
     }
 }
 
+impl NodeDescriptorRegistry {
+    pub(crate) fn shared_registry(&self) -> Arc<DescriptorRegistry> {
+        Arc::clone(&self.inner)
+    }
+}
+
 /// JavaScript-facing Rust database handle backed by `type_bridge_orm::Database`.
 #[allow(missing_docs)]
 #[napi]
 pub struct NodeRustDatabase {
     db: Arc<type_bridge_orm::Database>,
     runtime: Arc<Runtime>,
+}
+
+impl NodeRustDatabase {
+    pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<Runtime>) {
+        (Arc::clone(&self.db), Arc::clone(&self.runtime))
+    }
 }
 
 #[allow(missing_docs)]
@@ -329,6 +350,12 @@ impl NodeRustDatabase {
 pub struct NodeRustTransactionContext {
     context: TransactionContext,
     runtime: Arc<Runtime>,
+}
+
+impl NodeRustTransactionContext {
+    pub(crate) fn handles(&self) -> (TransactionContext, Arc<Runtime>) {
+        (self.context.clone(), Arc::clone(&self.runtime))
+    }
 }
 
 #[allow(missing_docs)]
@@ -1745,6 +1772,7 @@ fn napi_connect_options(
 
 fn napi_orm_error(error: OrmError) -> napi::Error {
     match error {
+        OrmError::Match(error) => match_runtime::napi_match_error(error),
         OrmError::DescriptorValidation { .. }
         | OrmError::DescriptorConflict { .. }
         | OrmError::InvalidFilter(_)

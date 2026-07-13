@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Full test suite — Rust + Python + Node, unit + integration.
+# Full source-tree test suite — Rust + Python + Node, unit + integration.
 #
-# Reproduces the CI test jobs locally. Behaviour is flag-controlled:
+# Reproduces the CI unit/integration tiers locally. Exact wheel and npm release
+# artifact acceptance remains workflow-only; this script does not build or
+# install publication artifacts. Behaviour is flag-controlled:
 #
-#   ./test.sh                  full test, isolated (default): brings up its own TypeDB,
+#   ./test.sh                  full source-tree test, isolated (default): brings up TypeDB,
 #                              runs every tier, tears the container down on exit
 #   ./test.sh --no-integration unit/offline tiers only (no TypeDB, no container)
 #   ./test.sh --proxy          additionally run the -m proxy suite (proxy stack)
@@ -120,7 +122,7 @@ run_step() {
 }
 
 # ── TypeDB container lifecycle (isolated integration only) ───────────────────
-# One shared TypeDB serves both the Python and Node integration tiers — the CI shape,
+# One shared TypeDB serves the Rust, Python, and Node integration tiers — the CI shape,
 # reproduced locally. The proxy tier (--proxy) owns its own stack via proxy_lifecycle.py.
 compose=""
 typedb_started=0
@@ -226,6 +228,12 @@ if [[ "$integration" == 1 ]]; then
     TYPEDB_PORT="${TYPEDB_PORT:-1730}"
     TYPEDB_HTTP_PORT="${TYPEDB_HTTP_PORT:-8000}"
     TYPEDB_ADDRESS="${TYPEDB_ADDRESS:-localhost:${TYPEDB_PORT}}"
+
+    printf "${BOLD}━━━ Rust (integration) ━━━${RESET}\n\n"
+    run_step "cargo test -p type-bridge-orm --features integration-tests --test integration" \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+        cargo test --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-orm --features integration-tests --test integration -- --nocapture
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
     run_step "pytest -m integration" \

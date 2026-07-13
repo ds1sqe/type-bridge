@@ -19,6 +19,7 @@ TypeBridge provides a Pythonic interface to TypeDB that aligns with TypeDB's typ
 
 - **[CRUD Operations](crud.md)** - Create, read, update, delete with type-safe managers
 - **[Queries](queries.md)** - Query expressions, filtering, aggregations, and pagination
+- **[Immutable Typed Queries](typed-queries.md)** - Multi-model typed matches, pages, counts, and transaction ownership
 - **[Functions](functions.md)** - TypeDB schema-defined functions and FunctionQuery
 - **[Schema Management](schema.md)** - Schema operations and conflict detection
 - **[Migrations](migrations.md)** - Schema history, snapshots, data migrations, and rollback
@@ -96,7 +97,7 @@ class Person(Entity):
 from type_bridge import Flag, Key, Unique, Card
 
 name: Name = Flag(Key)                    # @key (implies @card(1..1))
-email: Email = Flag(Unique)               # @unique (default @card(1..1))
+email: Email = Flag(Unique)               # @unique @card(1..1); type is required
 age: Age | None = None                    # @card(0..1) - PEP 604 syntax
 tags: list[Tag] = Flag(Card(min=2))       # @card(2..) - multi-value
 ```
@@ -195,6 +196,7 @@ entity person,
 - [Cardinality Documentation](cardinality.md)
 - [CRUD Operations Documentation](crud.md)
 - [Queries Documentation](queries.md)
+- [Immutable Typed Queries](typed-queries.md)
 - [Functions Documentation](functions.md)
 - [Schema Management Documentation](schema.md)
 - [Migration Documentation](migrations.md)

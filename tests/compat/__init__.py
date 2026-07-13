@@ -1,0 +1,1 @@
+"""Built-artifact compatibility consumers."""

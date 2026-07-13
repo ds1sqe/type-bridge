@@ -94,6 +94,7 @@ nav:
     - Cardinality & Flags: guide/cardinality.md
     - CRUD Operations: guide/crud.md
     - Queries & Expressions: guide/queries.md
+    - Immutable Typed Queries: guide/typed-queries.md
     - Schema Management: guide/schema.md
     - Migrations: guide/migrations.md
     - Code Generator: guide/generator.md
@@ -111,6 +112,7 @@ nav:
     - TypeDB Concepts: development/typedb.md
     - Abstract Types: development/abstract-types.md
     - Internals: development/internals.md
+    - Unified Typed Query Contract: development/typed-query-contract.md
   - Changelog: changelog.md
 
 extra:

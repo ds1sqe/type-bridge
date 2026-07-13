@@ -47,7 +47,7 @@ def test_flag_annotation():
     assert unique_flag.is_unique is True
     assert unique_flag.to_typeql_annotations() == [
         "@unique"
-    ]  # @unique with default @card(1,1) omits @card
+    ]  # Bare @unique does not imply a cardinality
 
     # Test combined Key + Unique flags
     combined_flag = Flag(Key, Unique)

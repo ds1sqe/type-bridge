@@ -104,6 +104,35 @@ describe("list field descriptor emission", () => {
     assert.equal(tagsAttr.is_optional, false);
   });
 
+  test("list retains Unique before its explicit Card annotation", () => {
+    class AliasAttr extends attr.String("unique-list-alias") {}
+    class UniqueList extends Entity("unique-list", {
+      aliases: field(AliasAttr, Unique).list(Card(0, 3)),
+    }) {}
+
+    const aliases = UniqueList.descriptor().owned_attributes[0];
+    assert.ok(aliases != null);
+    assert.deepEqual(aliases.annotations, ["Unique", { Card: [0, 3] }]);
+    assert.equal(aliases.is_optional, true);
+  });
+
+  test("ordered().distinct() emits a list descriptor without inventing Card", () => {
+    class OrderedAttr extends attr.String("ordered-list-value") {}
+    class OrderedList extends Entity("ordered-list", {
+      values: field(OrderedAttr).optional().ordered().distinct(),
+    }) {}
+
+    const values = OrderedList.descriptor().owned_attributes[0];
+    assert.ok(values != null);
+    assert.deepEqual(values.annotations, ["Distinct"]);
+    assert.equal(values.is_optional, true);
+    assert.equal(values.is_ordered, true);
+    assert.throws(
+      () => field(OrderedAttr).list(Card(0, 3)).distinct(),
+      /requires an ordered list field/,
+    );
+  });
+
   test("single-value field emits NO Card annotation (regression guard)", () => {
     const d = ParityPerson.descriptor();
     const emailAttr = d.owned_attributes.find((a) => a.field_name === "email");

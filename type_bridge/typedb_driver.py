@@ -14,6 +14,7 @@ Example:
 from __future__ import annotations
 
 import importlib.metadata
+import sys
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -78,6 +79,26 @@ def _load_tls_config() -> Any:
     return DriverTlsConfig
 
 
+def _ensure_driver_interpreter_supported(installed: str) -> int | None:
+    """Return the protocol band after rejecting unsafe native-wheel pairs.
+
+    Driver metadata import can succeed even when its bundled native library is
+    incompatible with the running interpreter. Keep this check ahead of every
+    native constructor so a manually installed 3.11 wheel cannot crash
+    CPython 3.14 before TypeBridge can report the supported 3.12 path.
+    """
+    import type_bridge.version as _version  # local import avoids circular dependency
+
+    driver_band = _version.band(installed)
+    if sys.version_info >= (3, 14) and driver_band != 9:
+        raise _version.UnsupportedVersionError(
+            f"Installed typedb-driver {installed!r} has no compatible native wheel "
+            "for CPython 3.14. Install `type-bridge[typedb-driver]` "
+            "(driver 3.12.0) and target TypeDB 3.12."
+        )
+    return driver_band
+
+
 def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
     """Create TypeDB driver options using explicit band-keyed dispatch.
 
@@ -96,10 +117,8 @@ def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
         UnsupportedVersionError: When the installed driver version is outside
             the supported range (no known band).
     """
-    import type_bridge.version as _version  # local import avoids circular dependency
-
     installed = driver_version()
-    b = _version.band(installed)
+    b = _ensure_driver_interpreter_supported(installed)
 
     if b == 7:
         return DriverOptions(is_tls_enabled=is_tls_enabled)
@@ -112,12 +131,24 @@ def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
         )
         return DriverOptions(tls_config)
     else:
+        import type_bridge.version as _version  # local import avoids circular dependency
+
         min_v = _version.min_supported_version()
         max_l = _version.max_supported_line()
+        if sys.version_info >= (3, 14):
+            remediation = (
+                "Install `type-bridge[typedb-driver]` (driver 3.12.0 on "
+                "CPython 3.14) and target TypeDB 3.12."
+            )
+        else:
+            remediation = (
+                "Install `type-bridge[typedb-driver]` and select a driver line "
+                "accepted by the target server."
+            )
         raise _version.UnsupportedVersionError(
             f"Installed typedb-driver {installed!r} has no known protocol band; "
             f"supported driver lines fall in {min_v}–{max_l}.x. "
-            f"Install a supported driver version (e.g. `pip install typedb-driver~=3.10`)."
+            f"{remediation}"
         )
 
 
@@ -134,10 +165,10 @@ def driver_version() -> str:
 def embedded_driver_version() -> str:
     """Return the typedb-driver version compiled into the Rust runtime.
 
-    Every TypeBridge transaction executes through the embedded Rust driver
-    (the Python ORM backend was retired), so the server must be
-    protocol-compatible with this version as well as with the installed
-    Python driver.  Delegates to ``type_bridge_core.embedded_driver_version``.
+    Every ORM transaction executes through the embedded Rust drivers; their
+    accepted-band set is gated independently of the optional installed Python
+    driver. The latter is consulted only for direct ``typedb.driver`` access.
+    Delegates to ``type_bridge_core.embedded_driver_version``.
 
     Returns the band-8 (3.11.x) pin for back-compat.  Use
     :func:`embedded_driver_versions` to get all compiled-in bands.
@@ -149,8 +180,8 @@ def embedded_driver_versions() -> dict[int, str]:
     """Return all driver versions compiled into the Rust runtime, keyed by band.
 
     Delegates to ``type_bridge_core.embedded_driver_versions``.  The default
-    build returns ``{7: "3.8.1", 8: "3.11.5"}``; a single-band build returns
-    only the one entry for its compiled band.
+    build returns ``{7: "3.8.1", 8: "3.11.5", 9: "3.12.0"}``; a
+    single-band build returns only the one entry for its compiled band.
     """
     return _core.embedded_driver_versions()
 

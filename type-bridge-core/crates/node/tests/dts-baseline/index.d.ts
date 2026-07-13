@@ -19,12 +19,20 @@ export interface OwnedAttributeDescriptor {
     regex?: string | null;
     allowed_values?: string[] | null;
     range?: [string | null, string | null] | null;
+    /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+    doc?: string;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+    meta?: Record<string, string>;
 }
 export interface EntityDescriptor {
     type_name: string;
     is_abstract: boolean;
     parent_type: string | null;
     owned_attributes: OwnedAttributeDescriptor[];
+    /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+    doc?: string;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+    meta?: Record<string, string>;
 }
 export interface RoleDescriptor {
     role_name: string;
@@ -42,6 +50,10 @@ export interface RoleDescriptor {
     ordered: boolean;
     /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
     distinct: boolean;
+    /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+    doc?: string;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+    meta?: Record<string, string>;
 }
 export interface RelationDescriptor {
     type_name: string;
@@ -49,6 +61,10 @@ export interface RelationDescriptor {
     parent_type: string | null;
     owned_attributes: OwnedAttributeDescriptor[];
     roles: RoleDescriptor[];
+    /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+    doc?: string;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+    meta?: Record<string, string>;
 }
 export type TypeDescriptor = {
     kind: "entity";
@@ -65,6 +81,10 @@ export interface OwnedAttributeEntry {
      * Instance-level list semantics are engine-unimplemented (REP256); this is a
      * schema-emission marker only. */
     is_ordered: boolean;
+    /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+    doc?: string;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+    meta?: Record<string, string>;
 }
 export interface RoleEntry {
     role_name: string;
@@ -81,6 +101,10 @@ export interface RoleEntry {
     ordered: boolean;
     /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
     distinct: boolean;
+    /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+    doc?: string;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+    meta?: Record<string, string>;
 }
 export interface EntitySchemaEntry {
     type_name: string;
@@ -88,6 +112,10 @@ export interface EntitySchemaEntry {
     parent_type: string | null;
     owned_attributes: OwnedAttributeEntry[];
     plays_cardinalities?: Record<string, [number, number | null]>;
+    /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+    doc?: string;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+    meta?: Record<string, string>;
 }
 export interface RelationSchemaEntry extends EntitySchemaEntry {
     roles: RoleEntry[];
@@ -101,6 +129,10 @@ export interface AttributeSchemaEntry {
     regex?: string | null;
     allowed_values?: string[] | null;
     range?: [string | null, string | null] | null;
+    /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+    doc?: string;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+    meta?: Record<string, string>;
 }
 export interface SchemaInfo {
     entities: Record<string, EntitySchemaEntry>;
@@ -186,7 +218,7 @@ export type RuntimeAttributeValue = {
 };
 export { Attribute, attr, type AttributeBase, type AttributeTypeOptions, type AttributeTypeParent, type ComparableAttributeBase, type NumericAttributeBase, type StringAttributeBase, } from "./attribute.js";
 export { AggregateSpec, BooleanExpr, ComparisonExpr, NotExpr, QueryExpr, SortExpr, TypedGroupByQuery, TypedQuery, TypedQueryError, agg, } from "./query.js";
-export { AttributeFlags, Card, Flag, Key, TypeFlags, TypeNameCase, Unique, formatTypeName, resolveFlags, type AttributeFlagsOptions, type CardSpec, type FlagInput, type FlagSpec, type ResolvedAttributeFlags, type ResolvedTypeFlags, type TypeFlagsOptions, } from "./flags.js";
+export { AttributeFlags, Card, Doc, Flag, Key, Meta, TypeFlags, TypeNameCase, Unique, formatTypeName, resolveFlags, type AttributeFlagsOptions, type CardSpec, type DocSpec, type FlagInput, type FlagSpec, type MetaSpec, type ResolvedAttributeFlags, type ResolvedTypeFlags, type TypeFlagsOptions, } from "./flags.js";
 export { Entity, FieldSpec, ListFieldSpec, Relation, RoleSpec, field, role, type AttributeClass, type EntitySchema, type FieldValue, type IidBearing, type InstanceDict, type InstanceFields, type MergedSchema, type ModelClass, type ModelInstance, type ParentModelClass, type ParentOption, type PlainFieldValue, type RelationSchema, type SchemaSpec, } from "./model.js";
 export { TypedCodecError, attributeToPlain, hydrateAttributeEntries, hydrateAttributes, keyAttributeDescriptor, lowerAttributes, lowerAttributeValue, lowerFilters, plainToAttribute, runtimeAttributeValueFromUnknown, } from "./codec.js";
 export { TypedEntityManager, TypedRelationManager, buildRolePlayers, entityManagerFor, relationManagerFor, type ExactFilters, type ManagerConnection, } from "./manager.js";

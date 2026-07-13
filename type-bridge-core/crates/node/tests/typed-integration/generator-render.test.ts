@@ -54,6 +54,18 @@ const playsCardinalityRelations = fs.readFileSync(
   "utf8",
 );
 
+const orderedSchema = `
+define
+attribute ts-ordered-value, value string;
+entity ts-ordered-owner,
+  owns ts-ordered-value[] @distinct,
+  owns ts-ordered-carded[] @unique @card(0..5) @distinct;
+attribute ts-ordered-carded, value string;
+`;
+const orderedOut = fs.mkdtempSync(path.join(os.tmpdir(), "tsgen-ordered-"));
+generateModels(orderedSchema, orderedOut, { native });
+const orderedEntities = fs.readFileSync(path.join(orderedOut, "entities.ts"), "utf8");
+
 describe("generator render decisions", () => {
   test("attributes map value_type to the correct attr.* kind, class name = toClassName", () => {
     assert.match(attributes, /export class ParityId extends attr\.String\("parity-id"\) \{\}/);
@@ -79,6 +91,17 @@ describe("generator render decisions", () => {
     assert.match(entities, /parity_email: field\(ParityEmail, Unique\)\.optional\(\)/);
     assert.match(entities, /parity_name: field\(ParityName\)\.optional\(\)/);
     assert.match(entities, /parity_tag: field\(ParityTag\)\.list\(Card\(0, 5\)\)/);
+  });
+
+  test("ordered distinct ownership uses the typed list fluent surface", () => {
+    assert.match(
+      orderedEntities,
+      /ts_ordered_value: field\(TsOrderedValue\)\.optional\(\)\.ordered\(\)\.distinct\(\)/,
+    );
+    assert.match(
+      orderedEntities,
+      /ts_ordered_carded: field\(TsOrderedCarded, Unique\)\.ordered\(Card\(0, 5\)\)\.distinct\(\)/,
+    );
   });
 
   test("abstract entity uses TypeFlags; inherited entity carries { parent }", () => {

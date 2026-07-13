@@ -1,5 +1,6 @@
 """Unit tests for FieldDescriptor and FieldRef classes."""
 
+import type_bridge.fields as public_fields
 from type_bridge import Entity, TypeFlags
 from type_bridge.attribute import Boolean, DateTime, Double, Integer, String
 from type_bridge.attribute.decimal import Decimal
@@ -10,6 +11,7 @@ from type_bridge.fields import (
     NumericFieldRef,
     StringFieldRef,
 )
+from type_bridge.fields.role import RoleRef
 
 
 # Test attribute types
@@ -35,6 +37,20 @@ class IsActive(Boolean):
 
 class CreatedAt(DateTime):
     pass
+
+
+def test_legacy_reference_generics_keep_one_parameter_spellings() -> None:
+    """Existing public annotations remain valid alongside owner-aware forms."""
+    assert FieldRef[Name]
+    assert StringFieldRef[Name]
+    assert NumericFieldRef[Age]
+    assert FieldDescriptor[Name]
+    assert RoleRef[Entity]
+
+
+def test_ordered_reference_marker_is_not_a_public_fields_export() -> None:
+    assert "OrderedFieldRef" not in public_fields.__all__
+    assert not hasattr(public_fields, "OrderedFieldRef")
 
 
 class TestFieldDescriptorInit:
@@ -430,23 +446,45 @@ class TestFieldDescriptorInstanceAccess:
 
 
 class TestFieldRefDirectInstantiation:
-    """Tests for direct FieldRef instantiation (edge cases)."""
+    """Tests for direct FieldRef instantiation with an explicit owner."""
 
     def test_field_ref_init(self):
         """FieldRef can be instantiated directly."""
-        ref = FieldRef(field_name="test", attr_type=Age, entity_type=None)
+
+        class TestEntity(Entity):
+            flags = TypeFlags(name="direct_field_ref_owner")
+
+        ref = FieldRef(field_name="test", attr_type=Age, entity_type=TestEntity)
         assert ref.field_name == "test"
         assert ref.attr_type is Age
-        assert ref.entity_type is None
+        assert ref.entity_type is TestEntity
 
     def test_string_field_ref_init(self):
         """StringFieldRef can be instantiated directly."""
-        ref = StringFieldRef(field_name="name", attr_type=Name, entity_type=None)
+
+        class TestEntity(Entity):
+            flags = TypeFlags(name="direct_string_field_ref_owner")
+
+        ref = StringFieldRef(
+            field_name="name",
+            attr_type=Name,
+            entity_type=TestEntity,
+        )
         assert ref.field_name == "name"
         assert ref.attr_type is Name
+        assert ref.entity_type is TestEntity
 
     def test_numeric_field_ref_init(self):
         """NumericFieldRef can be instantiated directly."""
-        ref = NumericFieldRef(field_name="age", attr_type=Age, entity_type=None)
+
+        class TestEntity(Entity):
+            flags = TypeFlags(name="direct_numeric_field_ref_owner")
+
+        ref = NumericFieldRef(
+            field_name="age",
+            attr_type=Age,
+            entity_type=TestEntity,
+        )
         assert ref.field_name == "age"
         assert ref.attr_type is Age
+        assert ref.entity_type is TestEntity

@@ -49,7 +49,10 @@ class Person(Entity):
     tags: list[Tag] = Flag(Card(min=2))      # @card(2..) - two or more
 ```
 
-> **Note**: `list[Type]` represents an **unordered set** in TypeDB. TypeDB has no list type -- order is never preserved.
+> **Note**: This `Flag(Card(...))` form is an **unordered set**;
+> `list[Type]` describes its Python container shape, not an ordering guarantee.
+> For TypeDB 3.12 schemas, use `Flag(Ordered)` to declare ordered `owns attr[]`
+> ownership when order is part of the model.
 
 ## 3. Create Instances
 

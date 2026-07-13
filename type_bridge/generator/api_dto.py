@@ -130,16 +130,13 @@ def _is_required_attribute(attr_name: str, spec: EntitySpec | RelationSpec) -> b
     if attr_name in spec.keys:
         return True
 
-    # @unique implies required
-    if attr_name in spec.uniques:
-        return True
-
     # Check cardinality - required if min >= 1
     if attr_name in spec.cardinalities:
         card = spec.cardinalities[attr_name]
         return card.min >= 1
 
-    # Default: optional (card 0..1)
+    # Bare @unique only constrains distinctness. It retains the default
+    # cardinality (0..1) unless an explicit @card annotation requires a value.
     return False
 
 

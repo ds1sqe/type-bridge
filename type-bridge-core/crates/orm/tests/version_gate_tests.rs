@@ -193,7 +193,8 @@ fn orm_error_band_mismatch_message_preserved() {
         "OrmError message missing server version 3.10.4: {msg}"
     );
 
-    // Remediation text: core says "install a driver matching the server line".
+    // Remediation stays interpreter-neutral while still telling users to
+    // install a compatible driver/server combination.
     assert!(
         msg.contains("install"),
         "OrmError message missing remediation text: {msg}"
@@ -287,6 +288,7 @@ use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps
 struct VersionedBackend {
     inner: common::MockBackend,
     server_version: Option<Version>,
+    supports_given_rows: bool,
 }
 
 impl VersionedBackend {
@@ -294,7 +296,13 @@ impl VersionedBackend {
         Self {
             inner: common::MockBackend::new(vec![]),
             server_version,
+            supports_given_rows: false,
         }
+    }
+
+    fn with_given_rows(mut self) -> Self {
+        self.supports_given_rows = true;
+        self
     }
 }
 
@@ -314,6 +322,10 @@ impl DriverBackend for VersionedBackend {
 
     fn server_version(&self) -> Option<Version> {
         self.server_version
+    }
+
+    fn supports_given_rows(&self) -> bool {
+        self.supports_given_rows
     }
 }
 
@@ -360,6 +372,22 @@ fn annotation_gate_passes_annotated_ddl_on_312_server() {
         "gate-test",
     );
     assert!(db.check_schema_annotation_support(ANNOTATED_DDL).is_ok());
+}
+
+#[test]
+fn given_stage_gate_rejects_312_server_when_provider_remains_band8() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 12, 0)))),
+        "gate-test",
+    );
+    let error = db
+        .check_given_stage_support()
+        .expect_err("band-8 fallback must not advertise given-row transport");
+    assert!(
+        error.to_string().contains("active band-9 provider"),
+        "unexpected error: {error}"
+    );
+    assert!(!db.supports_given_stage());
 }
 
 #[test]
@@ -413,7 +441,7 @@ fn given_stage_gate_rejects_pre_312_server() {
 #[test]
 fn given_stage_gate_passes_on_312_server() {
     let db = Database::with_backend(
-        Box::new(VersionedBackend::new(Some(Version::new(3, 12, 0)))),
+        Box::new(VersionedBackend::new(Some(Version::new(3, 12, 0))).with_given_rows()),
         "gate-test",
     );
     assert!(db.check_given_stage_support().is_ok());
@@ -449,16 +477,14 @@ async fn execute_with_rows_rejects_pre_312_before_opening_transaction() {
 }
 
 #[tokio::test]
-async fn execute_with_rows_unknown_version_reaches_backend_default_error() {
-    // Version unknown → the gate defers; the mock backend's TransactionOps
-    // does not override query_with_rows, so the default trait error fires.
+async fn execute_with_rows_unknown_version_fails_capability_preflight() {
     let db = Database::with_backend(Box::new(VersionedBackend::new(None)), "gate-test");
     let error = db
         .execute_with_rows("given $n: string; insert ...;", TxType::Write, empty_rows())
         .await
         .expect_err("backend without given-stage support must error");
     assert!(
-        error.to_string().contains("not supported by this backend"),
+        error.to_string().contains("server version is unknown"),
         "unexpected error: {error}"
     );
 }

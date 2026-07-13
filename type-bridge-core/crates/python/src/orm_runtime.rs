@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::version::VersionError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use pythonize::{depythonize, pythonize};
 use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
@@ -26,6 +26,13 @@ use type_bridge_orm::{
 #[pyclass]
 pub struct PyDescriptorRegistry {
     inner: Arc<DescriptorRegistry>,
+}
+
+impl PyDescriptorRegistry {
+    /// Clone the shared registry for another native-only PyO3 seam.
+    pub(crate) fn registry_arc(&self) -> Arc<DescriptorRegistry> {
+        Arc::clone(&self.inner)
+    }
 }
 
 #[pymethods]
@@ -105,6 +112,13 @@ impl PyDescriptorRegistry {
 #[derive(Clone)]
 pub struct PyDynamicValue {
     value: AttributeValue,
+}
+
+impl PyDynamicValue {
+    /// Clone the typed value without exposing it as an untyped Python DTO.
+    pub(crate) fn attribute_value(&self) -> AttributeValue {
+        self.value.clone()
+    }
 }
 
 #[pymethods]
@@ -502,9 +516,9 @@ impl PyRustDatabase {
             .map_err(py_orm_error)
     }
 
-    /// Whether the connected server supports given-stage parameterized
-    /// queries (TypeDB 3.12+). `False` when the server predates 3.12 or its
-    /// version is unknown.
+    /// Whether the server and active negotiated provider support given-stage
+    /// parameterized queries. `False` for pre-3.12/unknown servers and when a
+    /// 3.12 connection remains on the band-8 discovery provider.
     fn supports_given_stage(&self) -> bool {
         self.db.supports_given_stage()
     }
@@ -596,6 +610,12 @@ impl PyRustDatabase {
 pub struct PyRustTransactionContext {
     context: TransactionContext,
     runtime: Arc<Runtime>,
+}
+
+impl PyRustTransactionContext {
+    pub(crate) fn handles(&self) -> (TransactionContext, Arc<Runtime>) {
+        (self.context.clone(), Arc::clone(&self.runtime))
+    }
 }
 
 #[pymethods]
@@ -1637,8 +1657,8 @@ fn parse_tx_type(value: &str) -> PyResult<TxType> {
 
 /// Marshal Python given rows into the ORM's [`GivenRowsSpec`].
 ///
-/// `column_types` drives per-cell extraction so an int cell bound to a
-/// `double` column fails loudly instead of being coerced silently.
+/// `column_types` drives exact per-cell extraction so Python's numeric subtype
+/// coercions cannot silently change a TypeQL value category.
 fn given_rows_from_py(
     variables: Vec<String>,
     column_types: &[String],
@@ -1665,10 +1685,14 @@ fn given_rows_from_py(
         }
         let mut cells = Vec::with_capacity(row.len());
         for (cell, column_type) in row.iter().zip(column_types) {
-            cells.push(
-                given_value_from_py(cell, column_type)
-                    .map_err(|error| py_value_error(format!("row {row_index}: {error}")))?,
-            );
+            cells.push(given_value_from_py(cell, column_type).map_err(|error| {
+                let message = format!("row {row_index}: {error}");
+                if error.is_instance_of::<pyo3::exceptions::PyTypeError>(cell.py()) {
+                    py_type_error(message)
+                } else {
+                    py_value_error(message)
+                }
+            })?);
         }
         spec_rows.push(cells);
     }
@@ -1681,14 +1705,26 @@ fn given_rows_from_py(
 /// Extract one given cell according to its declared TypeQL column type.
 fn given_value_from_py(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<GivenValue> {
     Ok(match column_type {
-        "boolean" => GivenValue::Boolean(cell.extract()?),
+        "boolean" => GivenValue::Boolean(
+            cell.downcast_exact::<PyBool>()
+                .map_err(|_| py_type_error("given boolean cells require an exact Python bool"))?
+                .extract()?,
+        ),
         // "long" is the ORM-internal name for the TypeQL "integer" type.
-        "integer" | "long" => GivenValue::Integer(cell.extract()?),
-        "double" => GivenValue::Double(cell.extract()?),
-        "string" => GivenValue::String(cell.extract()?),
-        "date" => GivenValue::Date(cell.extract()?),
-        "datetime" => GivenValue::Datetime(cell.extract()?),
-        "datetime-tz" => GivenValue::DatetimeTz(cell.extract()?),
+        "integer" | "long" => GivenValue::Integer(
+            cell.downcast_exact::<PyInt>()
+                .map_err(|_| py_type_error("given integer cells require an exact Python int"))?
+                .extract()?,
+        ),
+        "double" => GivenValue::Double(
+            cell.downcast_exact::<PyFloat>()
+                .map_err(|_| py_type_error("given double cells require an exact Python float"))?
+                .extract()?,
+        ),
+        "string" => GivenValue::String(exact_given_string(cell, "string")?),
+        "date" => GivenValue::Date(exact_given_string(cell, "date")?),
+        "datetime" => GivenValue::Datetime(exact_given_string(cell, "datetime")?),
+        "datetime-tz" => GivenValue::DatetimeTz(exact_given_string(cell, "datetime-tz")?),
         other => {
             return Err(py_value_error(format!(
                 "Unsupported given column type {other:?}; expected one of string, \
@@ -1696,6 +1732,16 @@ fn given_value_from_py(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<G
             )));
         }
     })
+}
+
+fn exact_given_string(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<String> {
+    cell.downcast_exact::<PyString>()
+        .map_err(|_| {
+            py_type_error(format!(
+                "given {column_type} cells require an exact Python str"
+            ))
+        })?
+        .extract()
 }
 
 fn tx_type_name(tx_type: TxType) -> &'static str {
@@ -1757,4 +1803,120 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = PyDict::new(m.py());
     let _ = PyList::empty(m.py());
     Ok(())
+}
+
+#[cfg(test)]
+mod given_rows_tests {
+    use pyo3::ffi;
+
+    use super::*;
+
+    #[test]
+    fn given_cell_marshalling_requires_exact_python_primitive_types() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let valid = [
+                ("True", "boolean", GivenValue::Boolean(true)),
+                ("42", "integer", GivenValue::Integer(42)),
+                ("1.5", "double", GivenValue::Double(1.5)),
+                ("'hello'", "string", GivenValue::String("hello".into())),
+                (
+                    "'2026-07-13'",
+                    "date",
+                    GivenValue::Date("2026-07-13".into()),
+                ),
+                (
+                    "'2026-07-13T10:30:00'",
+                    "datetime",
+                    GivenValue::Datetime("2026-07-13T10:30:00".into()),
+                ),
+                (
+                    "'2026-07-13T10:30:00+09:00'",
+                    "datetime-tz",
+                    GivenValue::DatetimeTz("2026-07-13T10:30:00+09:00".into()),
+                ),
+            ];
+            for (source, column_type, expected) in valid {
+                let source = std::ffi::CString::new(source).unwrap();
+                let value = py.eval(source.as_c_str(), None, None).unwrap();
+                assert_eq!(given_value_from_py(&value, column_type).unwrap(), expected);
+            }
+
+            for (source, column_type) in [
+                ("True", "integer"),
+                ("1", "boolean"),
+                ("1", "double"),
+                ("1.0", "integer"),
+                ("b'bytes'", "string"),
+                ("object()", "date"),
+            ] {
+                let source = std::ffi::CString::new(source).unwrap();
+                let value = py.eval(source.as_c_str(), None, None).unwrap();
+                assert!(
+                    given_value_from_py(&value, column_type).is_err(),
+                    "{source:?} must not coerce into {column_type}"
+                );
+            }
+
+            let unsupported = py.eval(ffi::c_str!("'value'"), None, None).unwrap();
+            assert!(
+                given_value_from_py(&unsupported, "decimal")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Unsupported given column type")
+            );
+        });
+    }
+
+    #[test]
+    fn given_rows_marshalling_validates_headers_width_and_row_types() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let rows = py
+                .eval(ffi::c_str!("[['Alice', 30], ['Bob', 25]]"), None, None)
+                .unwrap();
+            let spec = given_rows_from_py(
+                vec!["name".into(), "age".into()],
+                &["string".into(), "integer".into()],
+                &rows,
+            )
+            .unwrap();
+            assert_eq!(spec.variables, vec!["name", "age"]);
+            assert_eq!(spec.rows.len(), 2);
+
+            let header_error = given_rows_from_py(
+                vec!["name".into()],
+                &["string".into(), "integer".into()],
+                &rows,
+            )
+            .unwrap_err();
+            assert!(header_error.to_string().contains("same length"));
+
+            let short = py.eval(ffi::c_str!("[['Alice']]"), None, None).unwrap();
+            let width_error = given_rows_from_py(
+                vec!["name".into(), "age".into()],
+                &["string".into(), "integer".into()],
+                &short,
+            )
+            .unwrap_err();
+            assert!(
+                width_error
+                    .to_string()
+                    .contains("row 0 has 1 cells; expected 2")
+            );
+
+            let wrong = py
+                .eval(ffi::c_str!("[['Alice', True]]"), None, None)
+                .unwrap();
+            let type_error = given_rows_from_py(
+                vec!["name".into(), "age".into()],
+                &["string".into(), "integer".into()],
+                &wrong,
+            )
+            .unwrap_err();
+            assert!(type_error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+            assert!(type_error.to_string().contains("row 0"));
+            assert!(type_error.to_string().contains("exact Python int"));
+        });
+    }
 }

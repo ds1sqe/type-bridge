@@ -100,8 +100,11 @@ from type_bridge import Flag, Key, Unique, Card
 # Key attribute (implies @card(1..1))
 field: Type = Flag(Key)
 
-# Unique attribute (default @card(1..1))
-field: Type = Flag(Unique)
+# Unique and optional when absent
+field: Type | None = Flag(Unique)
+
+# Unique and required because the Python type is non-optional
+required_field: Type = Flag(Unique)
 
 # Multi-value with cardinality
 field: list[Type] = Flag(Card(min=1))
@@ -251,18 +254,19 @@ The `Unique` annotation enforces uniqueness without making it a key:
 from type_bridge import Flag, Unique
 
 class Person(Entity):
-    email: Email = Flag(Unique)  # Unique but not the primary key
+    email: Email = Flag(Unique)  # Required by the non-optional type
 ```
 
 **Generated TypeQL**:
 
 ```typeql
 entity person,
-    owns email @unique;
+    owns email @unique @card(1..1);
 ```
 
 **Properties**:
-- Default `@card(1..1)` (exactly one)
+- `@unique` constrains distinctness; it does not imply cardinality
+- `Email` emits `@card(1..1)` while `Email | None` emits `@card(0..1)`
 - Enforces uniqueness across all instances
 - Can have multiple unique attributes per entity
 
@@ -400,7 +404,7 @@ class User(Entity):
     # Key: exactly one, unique
     user_id: UserID = Flag(Key)
 
-    # Unique: exactly one, unique but not key
+    # Required and unique but not key (required because the type is non-optional)
     email: Email = Flag(Unique)
 
     # Required: exactly one
@@ -432,7 +436,7 @@ attribute tag, value string;
 
 entity user,
     owns user_id @key,
-    owns email @unique,
+    owns email @unique @card(1..1),
     owns username @card(1..1),
     owns age @card(0..1),
     owns is_active @card(0..1),
@@ -482,7 +486,7 @@ class Product(Entity):
     # Key: product_id (exactly one, unique)
     product_id: ProductID = Flag(Key)
 
-    # Unique: SKU (exactly one, unique)
+    # Required unique SKU (required because the type is non-optional)
     sku: SKU = Flag(Unique)
 
     # Required: name (exactly one)
@@ -509,7 +513,7 @@ class Product(Entity):
 ```typeql
 entity product,
     owns product_id @key,
-    owns sku @unique,
+    owns sku @unique @card(1..1),
     owns name @card(1..1),
     owns description @card(0..1),
     owns category @card(1..),
@@ -527,7 +531,7 @@ TypeBridge follows these cardinality semantics:
 | `Type` | `@card(1..1)` | Exactly one (required) |
 | `Type \| None` | `@card(0..1)` | Zero or one (optional) |
 | `Flag(Key)` | `@key` | Exactly one, unique (implies `@card(1..1)`) |
-| `Flag(Unique)` | `@unique` | Exactly one, unique (default `@card(1..1)`) |
+| `Flag(Unique)` | `@unique` | Unique when present; the Python type supplies cardinality |
 | `list[Type] = Flag(Card(min=N))` | `@card(N..)` | At least N, unbounded |
 | `list[Type] = Flag(Card(max=N))` | `@card(0..N)` | Zero to N |
 | `list[Type] = Flag(Card(min, max))` | `@card(min..max)` | Min to max |
@@ -594,29 +598,33 @@ Use `Flag(Unique)` for fields that must be unique but aren't the primary key:
 ```python
 class User(Entity):
     user_id: UserID = Flag(Key)       # Primary identifier
-    email: Email = Flag(Unique)       # Secondary identifier
-    username: Username = Flag(Unique) # Secondary identifier
+    email: Email = Flag(Unique)       # Required secondary identifier
+    username: Username | None = Flag(Unique) # Optional secondary identifier
 ```
 
-### 5. Remember: TypeDB Has No Lists - Only Sets
+### 5. Choose Card-based set or ordered-list semantics explicitly
 
-**TypeDB only has sets**. Multi-value attributes are always unordered:
+`list[Type]` describes the Python value shape for both forms. The ownership
+flag determines the TypeDB schema semantics:
 
 ```python
-# Python syntax uses list[Type], but it's a set in TypeDB
 class Person(Entity):
-    tags: list[Tag] = Flag(Card(min=1))  # This is a SET, not a list!
+    # Ordinary owns tag @card(1..): unordered set semantics
+    tags: list[Tag] = Flag(Card(min=1))
 
-# Order is NEVER preserved
-person = manager.get(name="Alice")[0]
-# person.tags order is unpredictable and may change
+    # TypeDB 3.12 owns step[]: ordered schema semantics
+    steps: list[Step] = Flag(Ordered)
 ```
 
 **Key points**:
-- TypeDB has no list type - only unordered sets
-- `list[Type]` is Python syntax only - it's a set underneath
-- Never write code that depends on order
-- Sort in application code if you need ordering temporarily
+
+- `Flag(Card(...))` emits ordinary `owns attr @card(...)`; its values remain an
+  unordered set, so application code must not depend on retrieval order.
+- On TypeDB 3.12, `Flag(Ordered)` emits `owns attr[]` and declares ordered-list
+  schema semantics.
+- Schema-side ordered declarations are supported, but instance-level list
+  insert/read operations remain subject to the
+  [REP256 caveat](attributes.md#list-attributes).
 
 ## Deprecated APIs
 

@@ -295,12 +295,13 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
 /// **installed** single-band Python driver.  The embedded runtime may carry
 /// several protocol bands simultaneously (the default build embeds them all),
 /// so this gate tests **set intersection**: the server is served when any band
-/// it accepts is present in `embedded_bands`.  A dual-band server (3.12
-/// accepts `[9, 8]`) is thus served by a build that embeds only band 8.
+/// it accepts is present in `embedded_bands`. A 3.12 server accepts `[9, 8]`,
+/// so a reduced build embedding only band 8 can still serve it; the default
+/// build embeds band 9 and negotiates that native band first.
 ///
 /// `embedded_bands` is supplied by the caller and is cfg-derived from the
-/// `band7` / `band8` features compiled into that crate — core declares no band
-/// features and never hardcodes the set.
+/// `band7` / `band8` / `band9` features compiled into that crate — core
+/// declares no band features and never hardcodes the set.
 ///
 /// # Errors
 ///
@@ -573,13 +574,15 @@ impl fmt::Display for VersionError {
                 driver_band: _,
                 server_band: _,
             } => {
-                // Derive which line the server is on so the remediation is actionable.
+                // Name the server line without prescribing an interpreter-incompatible
+                // Python wheel; this core diagnostic is shared by every language.
                 let server_line = format!("{}.{}", server.major, server.minor);
                 write!(
                     f,
                     "driver {driver} is not protocol-compatible with server {server}; \
-                     install a driver matching the server line \
-                     (e.g. typedb-driver ~{server_line})"
+                     install a driver line supported by your interpreter and accepted \
+                     by the server (server line {server_line}), or use a compatible \
+                     server/interpreter combination"
                 )
             }
             VersionError::EmbeddedUnavailable { server } => write!(
@@ -765,8 +768,8 @@ mod tests {
     // -- negotiate_server_band -------------------------------------------------
 
     #[test]
-    fn negotiate_3_12_default_build_picks_band8() {
-        // Default build embeds {7, 8}; server 3.12 accepts [9, 8] → band 8.
+    fn negotiate_3_12_without_band9_picks_band8() {
+        // A reduced {7, 8} build uses the server's compatible band-8 fallback.
         assert_eq!(
             negotiate_server_band(&Version::new(3, 12, 0), &[7, 8]),
             Some(8)
@@ -1029,6 +1032,20 @@ mod tests {
             !msg.starts_with("band"),
             "message starts with band number: {msg}"
         );
+    }
+
+    #[test]
+    fn band9_to_band8_mismatch_does_not_prescribe_an_unavailable_driver() {
+        let err = VersionError::BandMismatch {
+            driver: Version::new(3, 12, 0),
+            server: Version::new(3, 11, 5),
+            driver_band: 9,
+            server_band: 8,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("3.12.0") && msg.contains("3.11.5"));
+        assert!(!msg.contains("~3.11"), "unsafe driver prescription: {msg}");
+        assert!(msg.contains("interpreter") && msg.contains("server"));
     }
 
     // -- version_endpoint ----------------------------------------------------
