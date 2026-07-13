@@ -449,7 +449,7 @@ class MigrationExecutor:
         if models:
             self._execute_typeql(_schema_typeql_for_models(models), "schema")
 
-        for operation in getattr(migration, "operations", []):
+        for operation in _normalized_operations(list(getattr(migration, "operations", []))):
             self._execute_operation_forward(operation)
 
     def _execute_migration_reverse(self, migration: object) -> None:
@@ -459,7 +459,7 @@ class MigrationExecutor:
                 f"Migration {getattr(migration, 'name', '<unknown>')} is not reversible"
             )
 
-        operations = list(getattr(migration, "operations", []))
+        operations = _normalized_operations(list(getattr(migration, "operations", [])))
         for operation in reversed(operations):
             self._execute_operation_reverse(operation)
 
@@ -819,8 +819,42 @@ def _typeql_transaction_type(typeql: str) -> str:
     return "write"
 
 
+def _removed_relation_labels(operations: list[ops.Operation]) -> set[str]:
+    return {
+        ops._type_name(operation.relation)
+        for operation in operations
+        if isinstance(operation, ops.RemoveRelation)
+    }
+
+
+def _normalized_operations(operations: list[ops.Operation]) -> list[ops.Operation]:
+    """Drop granular removals shadowed by a whole-relation ``RemoveRelation``.
+
+    Legacy v1.5.x artifacts decomposed whole-relation deletion into
+    ``RemoveRolePlayer``/``RemoveRole``/``RemoveOwnership`` before the final
+    ``RemoveRelation``; committing the last role's removal violates TypeDB's
+    rule that a concrete relation must relate at least one role (#168).
+    ``undefine <relation>`` cascades all of that in one schema transaction,
+    so the shadowed operations are dropped at execution time without touching
+    the artifact or its checksum. Mirrors ``shadowed_by_remove_relation`` in
+    the Rust planner, which normalizes every Rust-planned execution path.
+    """
+    removed = _removed_relation_labels(operations)
+    if not removed:
+        return operations
+
+    def shadowed(operation: ops.Operation) -> bool:
+        if isinstance(operation, (ops.RemoveRole, ops.RemoveRolePlayer)):
+            return ops._type_name(operation.relation) in removed
+        if isinstance(operation, ops.RemoveOwnership):
+            return ops._type_name(operation.owner) in removed
+        return False
+
+    return [operation for operation in operations if not shadowed(operation)]
+
+
 def _preview_python_migration(loaded: LoadedMigration, *, reverse: bool) -> str | None:
-    operations = list(getattr(loaded.migration, "operations", []))
+    operations = _normalized_operations(list(getattr(loaded.migration, "operations", [])))
     if reverse:
         previews: list[str] = []
         for operation in reversed(operations):

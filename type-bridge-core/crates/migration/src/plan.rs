@@ -5,6 +5,8 @@
 //! the executable TypeQL to run.  No database connection, no async, no TypeDB
 //! driver is touched here.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use type_bridge_orm::TxType;
 use type_bridge_orm::schema::info::{
@@ -194,13 +196,51 @@ pub fn plan(
     })
 }
 
+/// Relation labels deleted wholesale by a `RemoveRelation` in this migration.
+fn removed_relation_labels(operations: &[OperationSpec]) -> BTreeSet<&str> {
+    operations
+        .iter()
+        .filter_map(|op| match op {
+            OperationSpec::RemoveRelation { type_name } => Some(type_name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// True when `op` is a relation-scoped granular removal shadowed by a
+/// `RemoveRelation` of the same relation in the same migration.
+///
+/// Legacy v1.5.x artifacts decomposed whole-relation deletion into
+/// `RemoveRolePlayer`/`RemoveRole`/`RemoveOwnership` before the final
+/// `RemoveRelation`. Executed step-per-transaction, committing the last
+/// role's removal violates TypeDB's commit-time rule that a concrete
+/// relation must relate at least one role, stranding the migration after
+/// partial schema changes (#168). `undefine <relation>` already cascades
+/// roles, player capabilities, and ownerships in one schema transaction, so
+/// the shadowed steps are dropped at plan time — the artifact bytes and
+/// checksum are never touched.
+fn shadowed_by_remove_relation(op: &OperationSpec, removed: &BTreeSet<&str>) -> bool {
+    match op {
+        OperationSpec::RemoveRole { relation_type, .. }
+        | OperationSpec::RemoveRolePlayer { relation_type, .. } => {
+            removed.contains(relation_type.as_str())
+        }
+        OperationSpec::RemoveOwnership { owner_type, .. } => removed.contains(owner_type.as_str()),
+        _ => false,
+    }
+}
+
 /// Lower a slice of [`OperationSpec`] into [`ExecutionStep`]s.
 fn assemble_steps(
     operations: &[OperationSpec],
     migration_reversible: bool,
 ) -> crate::Result<Vec<ExecutionStep>> {
+    let removed_relations = removed_relation_labels(operations);
     let mut steps = Vec::with_capacity(operations.len());
     for op in operations {
+        if shadowed_by_remove_relation(op, &removed_relations) {
+            continue;
+        }
         let mut step = match op {
             OperationSpec::RunTypeql { forward, reverse } => {
                 let tx_type = run_typeql_tx_type(forward);
@@ -1317,6 +1357,118 @@ delete $a has email "ops@example.com";"#,
             step.kind,
             StepKind::Schema,
             "missing `kind` field must default to Schema for backward compat"
+        );
+    }
+
+    // ── test: whole-relation removal normalization (#168) ───────────────────
+
+    /// The exact operation shape v1.5.5/v1.5.6 generators authored for a
+    /// whole-relation deletion: granular unwind, then `RemoveRelation`.
+    fn legacy_remove_relation_ops(relation: &str) -> Vec<OperationSpec> {
+        vec![
+            OperationSpec::RemoveRolePlayer {
+                relation_type: relation.to_string(),
+                role_name: "subject".to_string(),
+                player_type_name: "person".to_string(),
+            },
+            OperationSpec::RemoveRole {
+                relation_type: relation.to_string(),
+                role_name: "subject".to_string(),
+            },
+            OperationSpec::RemoveRolePlayer {
+                relation_type: relation.to_string(),
+                role_name: "badge".to_string(),
+                player_type_name: "temporary-badge".to_string(),
+            },
+            OperationSpec::RemoveRole {
+                relation_type: relation.to_string(),
+                role_name: "badge".to_string(),
+            },
+            OperationSpec::RemoveOwnership {
+                owner_type: relation.to_string(),
+                attr_name: "legacy-link-id".to_string(),
+            },
+            OperationSpec::RemoveRelation {
+                type_name: relation.to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn legacy_decomposed_relation_removal_normalizes_to_single_step() {
+        let g = graph(vec![migration(
+            "0005_remove_legacy_link",
+            legacy_remove_relation_ops("legacy-link"),
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+
+        let exec = &result.to_apply[0];
+        assert_eq!(
+            exec.steps.len(),
+            1,
+            "granular removals shadowed by RemoveRelation must be dropped"
+        );
+        assert_eq!(exec.steps[0].forward, "undefine\nlegacy-link;");
+        assert_eq!(exec.steps[0].tx_type, TxType::Schema);
+    }
+
+    #[test]
+    fn surviving_relation_granular_removals_are_kept() {
+        // No RemoveRelation for `employment`: granular ops must lower 1:1.
+        let ops = vec![
+            OperationSpec::RemoveRolePlayer {
+                relation_type: "employment".to_string(),
+                role_name: "employee".to_string(),
+                player_type_name: "contractor".to_string(),
+            },
+            OperationSpec::RemoveRole {
+                relation_type: "employment".to_string(),
+                role_name: "reviewer".to_string(),
+            },
+            OperationSpec::RemoveOwnership {
+                owner_type: "employment".to_string(),
+                attr_name: "note".to_string(),
+            },
+        ];
+        let g = graph(vec![migration("0002_trim_employment", ops, vec![])]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+
+        assert_eq!(result.to_apply[0].steps.len(), 3);
+    }
+
+    #[test]
+    fn normalization_is_scoped_to_the_removed_relation() {
+        // One relation is removed wholesale while another one is trimmed in
+        // the same migration; only ops scoped to the removed relation drop.
+        let mut ops = legacy_remove_relation_ops("legacy-link");
+        ops.push(OperationSpec::RemoveRolePlayer {
+            relation_type: "employment".to_string(),
+            role_name: "employee".to_string(),
+            player_type_name: "contractor".to_string(),
+        });
+        ops.push(OperationSpec::RemoveOwnership {
+            owner_type: "person".to_string(),
+            attr_name: "nickname".to_string(),
+        });
+        let g = graph(vec![migration("0006_mixed_removals", ops, vec![])]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+
+        let forwards: Vec<&str> = result.to_apply[0]
+            .steps
+            .iter()
+            .map(|s| s.forward.as_str())
+            .collect();
+        assert_eq!(
+            forwards,
+            vec![
+                "undefine\nlegacy-link;",
+                "undefine\nplays employment:employee from contractor;",
+                "undefine\nowns nickname from person;",
+            ]
         );
     }
 }

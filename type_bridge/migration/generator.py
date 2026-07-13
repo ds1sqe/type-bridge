@@ -108,13 +108,6 @@ def _attribute_label(value: Any) -> str:
     return str(value.get_attribute_name())
 
 
-def _player_type_label(value: object) -> str:
-    get_type_name = getattr(value, "get_type_name", None)
-    if callable(get_type_name):
-        return str(get_type_name())
-    return str(value)
-
-
 def _type_ref(value: object) -> str:
     from type_bridge.models import Relation
 
@@ -401,25 +394,12 @@ class MigrationGenerator:
                     operations.append(ops.RemoveRolePlayer(relation, role_name, player_type))
 
         for relation_name in rust_diff.get("removed_relations", []):
-            relation_ref = ref.relation(relation_name)
-            if relation := db_schema.relations.get(relation_name):
-                for role in relation.roles.values():
-                    for player_type in role.player_types:
-                        operations.append(
-                            ops.RemoveRolePlayer(
-                                relation_ref,
-                                role.name,
-                                _player_type_label(player_type),
-                            )
-                        )
-                    operations.append(ops.RemoveRole(relation_ref, role.name))
-                for ownership in db_schema.get_ownerships_for(relation_name):
-                    operations.append(
-                        ops.RemoveOwnership(
-                            relation_ref,
-                            ref.attribute(ownership.attribute_name),
-                        )
-                    )
+            # A whole-relation removal must stay a single RemoveRelation.
+            # TypeDB deletes the relation's declared roles, player
+            # capabilities, and ownerships as one schema-transaction cascade,
+            # and rejects any intermediate schema where a concrete relation
+            # relates zero roles - so a granular unwind cannot be committed
+            # step by step (#168).
             operations.append(ops.RemoveRelation(ref.relation(relation_name)))
             logger.debug(f"Will remove relation: {relation_name}")
 
