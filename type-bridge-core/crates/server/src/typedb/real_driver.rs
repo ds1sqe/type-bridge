@@ -2,9 +2,9 @@
 //!
 //! This module is only compiled when the `typedb` feature is enabled.
 
-#[cfg(not(any(feature = "band7", feature = "band8")))]
+#[cfg(not(any(feature = "band7", feature = "band8", feature = "band9")))]
 compile_error!(
-    "type-bridge-server: the `typedb` machinery requires at least one band feature; enable `band7` and/or `band8` (both are default)"
+    "type-bridge-server: the `typedb` machinery requires at least one band feature; enable `band7`, `band8`, and/or `band9` (all are default)"
 );
 
 use type_bridge_typedb_runtime as runtime;

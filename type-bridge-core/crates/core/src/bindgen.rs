@@ -407,7 +407,13 @@ fn doc_meta_flag_args(doc: Option<&str>, meta: &BTreeMap<String, String>) -> Str
         write!(out, ", Doc({})", string_literal(doc)).unwrap();
     }
     for (key, value) in meta {
-        write!(out, ", Meta({}, {})", string_literal(key), string_literal(value)).unwrap();
+        write!(
+            out,
+            ", Meta({}, {})",
+            string_literal(key),
+            string_literal(value)
+        )
+        .unwrap();
     }
     out
 }
@@ -921,12 +927,15 @@ fn render_python_attributes(schema: &TypeSchema, options: &BindgenOptions) -> St
 
 fn render_python_attr_field(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> String {
     let py_name = field_name(&owned.name);
-    let extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
+    let mut extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
     if is_key {
         return format!("{py_name}: attributes.{attr_class} = Flag(Key{extras})");
     }
+    // @unique does not imply required: unlike @key it keeps the default
+    // card(0..1), so it composes with the cardinality handling below as a
+    // plain marker instead of short-circuiting the optionality logic.
     if owned.is_unique {
-        return format!("{py_name}: attributes.{attr_class} = Flag(Unique{extras})");
+        extras = format!(", Unique{extras}");
     }
     if owned.ordered {
         if owned.distinct {
@@ -2303,12 +2312,15 @@ fn render_ts_attributes(schema: &TypeSchema) -> String {
 }
 
 fn ts_field_expr(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> String {
-    let extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
+    let mut extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
     if is_key {
         return format!("field({attr_class}, Key{extras})");
     }
+    // @unique does not imply required: unlike @key it keeps the default
+    // card(0..1), so it composes with the cardinality handling below as a
+    // plain marker instead of short-circuiting the optionality logic.
     if owned.is_unique {
-        return format!("field({attr_class}, Unique{extras})");
+        extras = format!(", Unique{extras}");
     }
     if owned.ordered {
         let base = format!("field({attr_class}{extras}).ordered()");
@@ -2401,7 +2413,12 @@ fn render_ts_entities(schema: &TypeSchema, options: &BindgenOptions) -> String {
     for name in &order {
         let entity = &schema.entities[name];
         let class = class_name(name);
-        let first_arg = ts_type_first_arg(name, entity.is_abstract, entity.doc.as_deref(), &entity.meta);
+        let first_arg = ts_type_first_arg(
+            name,
+            entity.is_abstract,
+            entity.doc.as_deref(),
+            &entity.meta,
+        );
         let third_arg = entity
             .parent
             .as_deref()
@@ -3061,7 +3078,9 @@ relation friendship @doc("Friendship docs."),
         assert!(attributes.contains("doc=\"Name docs.\", meta={\"owner\": \"core\"})"));
         let entities = &python.file("entities.py").unwrap().contents;
         assert!(entities.contains("\"\"\"Party docs.\"\"\""));
-        assert!(entities.contains("abstract=True, doc=\"Party docs.\", meta={\"steward\": \"team\"}"));
+        assert!(
+            entities.contains("abstract=True, doc=\"Party docs.\", meta={\"steward\": \"team\"}")
+        );
         assert!(entities.contains(
             "name: attributes.Name = Flag(Key, Doc(\"Ownership docs.\"), Meta(\"column\", \"name\"))"
         ));
@@ -3083,7 +3102,9 @@ relation friendship @doc("Friendship docs."),
         ));
         assert!(ts_entities.contains("nick: field(Nick, Doc(\"Nick docs.\")).optional()"));
         let ts_relations = &typescript.file("relations.ts").unwrap().contents;
-        assert!(ts_relations.contains("TypeFlags({ name: \"friendship\", doc: \"Friendship docs.\" })"));
+        assert!(
+            ts_relations.contains("TypeFlags({ name: \"friendship\", doc: \"Friendship docs.\" })")
+        );
         assert!(ts_relations.contains("doc: \"Role docs.\", meta: { \"side\": \"a\" }"));
 
         let models = plan.render_rust_models();
@@ -3091,15 +3112,46 @@ relation friendship @doc("Friendship docs."),
         assert!(models.entities_rs.contains(
             "#[entity(name = \"party\", r#abstract, doc = \"Party docs.\", meta(\"steward\", \"team\"))]"
         ));
-        assert!(models.entities_rs.contains(
-            "#[field(key, doc = \"Ownership docs.\", meta(\"column\", \"name\"))]"
-        ));
-        assert!(models.relations_rs.contains(
-            "#[relation(name = \"friendship\", doc = \"Friendship docs.\")]"
-        ));
-        assert!(models.relations_rs.contains(
-            "doc = \"Role docs.\", meta(\"side\", \"a\"))]"
-        ));
+        assert!(
+            models
+                .entities_rs
+                .contains("#[field(key, doc = \"Ownership docs.\", meta(\"column\", \"name\"))]")
+        );
+        assert!(
+            models
+                .relations_rs
+                .contains("#[relation(name = \"friendship\", doc = \"Friendship docs.\")]")
+        );
+        assert!(
+            models
+                .relations_rs
+                .contains("doc = \"Role docs.\", meta(\"side\", \"a\"))]")
+        );
+    }
+
+    #[test]
+    fn unique_ownership_respects_cardinality() {
+        let schema_text = r#"define
+attribute email, value string;
+attribute handle, value string;
+attribute alias, value string;
+entity person,
+    owns email @unique,
+    owns handle @unique @card(1..1),
+    owns alias @unique @card(0..3);"#;
+        let plan = BindgenPlan::from_typeql(schema_text).unwrap();
+
+        let python = plan.render(TargetLanguage::Python, &BindgenOptions::default());
+        let entities = &python.file("entities.py").unwrap().contents;
+        assert!(entities.contains("email: attributes.Email | None = Flag(Unique)"));
+        assert!(entities.contains("handle: attributes.Handle = Flag(Unique)"));
+        assert!(entities.contains("alias: list[attributes.Alias] = Flag(Card(0, 3), Unique)"));
+
+        let typescript = plan.render(TargetLanguage::TypeScript, &BindgenOptions::default());
+        let ts_entities = &typescript.file("entities.ts").unwrap().contents;
+        assert!(ts_entities.contains("email: field(Email, Unique).optional()"));
+        assert!(ts_entities.contains("handle: field(Handle, Unique),"));
+        assert!(ts_entities.contains("alias: field(Alias, Unique).list(Card(0, 3))"));
     }
 
     #[test]

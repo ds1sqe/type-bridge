@@ -34,6 +34,25 @@ All notable changes to TypeBridge will be documented in this file.
   syntax error. `Database.check_schema_annotation_support()` exposes the
   check directly.
 
+- **Band-9 embedded driver (#169)** - the TypeDB 3.12 Rust driver ships
+  vendored as `type-bridge-typedb-driver-b9` alongside the band-7 fork and
+  the crates.io band-8 driver, so 3.12 connections negotiate the native
+  band-9 protocol automatically. Live measurement surfaced a hazard: a
+  band-9 connection attempt crashes a 3.11 server, so the gRPC fallback
+  discovers unknown servers through band 8 and upgrades to band 9 only
+  after the reported version proves it safe.
+
+- **`given`-stage parameterized queries (#169)** - one compiled TypeQL
+  pipeline runs over many input rows, with the rows passed through the
+  driver API instead of interpolated into the query string.
+  `Database.execute_with_rows()` / `TransactionContext.execute_with_rows()`
+  expose the raw surface (gated on TypeDB 3.12+ with an actionable
+  versioned error below it; `Database.supports_given_stage()` reports the
+  capability), and entity `insert_many()` automatically rides one given
+  pipeline for homogeneous batches on 3.12+ servers — measured ~4x faster
+  than the per-row path at 1000 rows — while degrading transparently to
+  per-row inserts on older servers and heterogeneous batches.
+
 - **TypeDB 3.12 server support** - the compatibility window now extends to
   3.12.x. Compatibility was measured live: server 3.12 accepts band-8 (3.11)
   drivers, while a 3.12 driver is refused by a 3.11 server, so the version

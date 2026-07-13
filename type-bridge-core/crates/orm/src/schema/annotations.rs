@@ -237,7 +237,8 @@ pub fn diff_annotation_tokens(
             None => diff.added.push((*new_token).clone()),
             Some(old_token) => {
                 if old_token.render() != new_token.render() {
-                    diff.changed.push(((*old_token).clone(), (*new_token).clone()));
+                    diff.changed
+                        .push(((*old_token).clone(), (*new_token).clone()));
                 }
             }
         }
@@ -314,10 +315,7 @@ mod tests {
 
     #[test]
     fn constraint_part_drops_doc_meta() {
-        assert_eq!(
-            constraint_part(r#"@key @doc("x") @meta("k", "v")"#),
-            "@key"
-        );
+        assert_eq!(constraint_part(r#"@key @doc("x") @meta("k", "v")"#), "@key");
         assert_eq!(constraint_part(r#"@doc("x")"#), "");
     }
 

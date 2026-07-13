@@ -68,9 +68,19 @@ Current feature gates:
 | Feature | Minimum server | Gated surfaces |
 |---------|----------------|----------------|
 | `@doc`/`@meta` schema annotations | 3.12.0 | `SchemaManager.sync_schema`, migration executor steps |
+| `given`-stage parameterized queries | 3.12.0 | `Database.execute_with_rows`, `TransactionContext.execute_with_rows`; `insert_many` uses it opportunistically |
 
 When the server version is unknown (band-7 gRPC fallback without a
-`server_version=` pin), gated DDL is sent as-is and the server decides.
+`server_version=` pin), gated DDL is sent as-is and the server decides;
+given-stage queries are rejected by the runtime when the negotiated driver
+band cannot carry input rows.
+
+The band map itself is `{7, 8, 9}` in the default build: band 9 is the
+vendored TypeDB 3.12 driver, and its protocol is the wire path for given
+rows. One measured hazard shapes the connect design: a band-9 connection
+attempt crashes a 3.11 server outright, so the gRPC fallback discovers
+unknown servers through band 8 and upgrades to band 9 only after the
+reported version proves it safe.
 
 ### Update-safety contract
 

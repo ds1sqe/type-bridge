@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use super::backend::{DriverBackend, QueryResult, TxType};
+use super::backend::{DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use super::context::TransactionContext;
 use super::transaction::Transaction;
 use crate::error::Result;
@@ -149,6 +149,36 @@ impl Database {
         Ok(())
     }
 
+    /// Whether the connected server supports `given`-stage parameterized
+    /// queries (TypeDB 3.12+).
+    ///
+    /// `false` when the server predates 3.12 or its version is unknown
+    /// (band-7 gRPC fallback) — callers with a per-row fallback should use
+    /// it in both cases.
+    pub fn supports_given_stage(&self) -> bool {
+        use type_bridge_core_lib::version::{Feature, check_feature_supported};
+
+        self.server_version()
+            .is_some_and(|server| check_feature_supported(Feature::GivenStage, &server).is_ok())
+    }
+
+    /// Version-gate a `given`-stage query.
+    ///
+    /// When the detected server version predates 3.12, fail with an
+    /// actionable versioned error instead of a server-side parse error.
+    /// When the server version is unknown, the query is allowed through and
+    /// the runtime rejects it only if the negotiated driver band cannot
+    /// carry given rows.
+    pub fn check_given_stage_support(&self) -> Result<()> {
+        use type_bridge_core_lib::version::{Feature, check_feature_supported};
+
+        if let Some(server) = self.server_version() {
+            check_feature_supported(Feature::GivenStage, &server)
+                .map_err(crate::error::OrmError::UnsupportedVersion)?;
+        }
+        Ok(())
+    }
+
     /// Return whether this database exists on the connected TypeDB server.
     pub async fn database_exists(&self) -> Result<bool> {
         self.backend.database_exists(&self.database_name).await
@@ -191,6 +221,31 @@ impl Database {
             .open_transaction(&self.database_name, tx_type)
             .await?;
         let result = tx.query(typeql).await?;
+        if matches!(tx_type, TxType::Write | TxType::Schema) {
+            tx.commit().await?;
+        }
+        Ok(result)
+    }
+
+    /// Execute a `given`-stage TypeQL query over input rows, auto-managing
+    /// the transaction lifecycle.
+    ///
+    /// One compiled pipeline runs over every input row; rows travel through
+    /// the driver API, never the query string. Version-gated via
+    /// [`Self::check_given_stage_support`] before any transaction is opened.
+    #[tracing::instrument(skip(self, typeql, rows), fields(db = %self.database_name))]
+    pub async fn execute_with_rows(
+        &self,
+        typeql: &str,
+        tx_type: TxType,
+        rows: GivenRowsSpec,
+    ) -> Result<QueryResult> {
+        self.check_given_stage_support()?;
+        let mut tx = self
+            .backend
+            .open_transaction(&self.database_name, tx_type)
+            .await?;
+        let result = tx.query_with_rows(typeql, rows).await?;
         if matches!(tx_type, TxType::Write | TxType::Schema) {
             tx.commit().await?;
         }

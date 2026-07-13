@@ -12,7 +12,9 @@
 
 use type_bridge_core_lib::version::{self as core_version, VersionError};
 use type_bridge_orm::error::OrmError;
-use type_bridge_orm::session::real_driver::{PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B7};
+use type_bridge_orm::session::real_driver::{
+    PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B7, PINNED_DRIVER_VERSION_B9,
+};
 
 // ── 1. Cargo.lock pin assertion ──────────────────────────────────────────────
 
@@ -114,6 +116,53 @@ fn cargo_lock_pin_b7() {
         Some(7),
         "pinned band-7 fork {PINNED_DRIVER_VERSION_B7} is no longer in band 7; \
          update PINNED_DRIVER_VERSION_B7 and review the compatibility window"
+    );
+}
+
+/// Assert that `PINNED_DRIVER_VERSION_B9` matches the
+/// `type-bridge-typedb-driver-b9` entry in `Cargo.lock`, and that the pinned
+/// fork version falls in the expected protocol band (9).
+///
+/// If this test breaks after a fork refresh, update `PINNED_DRIVER_VERSION_B9`
+/// in `crates/typedb-runtime/src/lib.rs` to the new value.
+#[test]
+fn cargo_lock_pin_b9() {
+    let lock_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock");
+    let lock_contents =
+        std::fs::read_to_string(lock_path).expect("Cargo.lock not found relative to crate root");
+
+    // Find the type-bridge-typedb-driver-b9 package block and extract its version.
+    let lock_version = lock_contents
+        .split("[[package]]")
+        .find(|block| block.contains("name = \"type-bridge-typedb-driver-b9\""))
+        .and_then(|block| {
+            block
+                .lines()
+                .find(|l| l.trim_start().starts_with("version = "))
+        })
+        .and_then(|line| {
+            let start = line.find('"')? + 1;
+            let end = line.rfind('"')?;
+            Some(&line[start..end])
+        })
+        .expect("could not parse type-bridge-typedb-driver-b9 version from Cargo.lock");
+
+    assert_eq!(
+        lock_version, PINNED_DRIVER_VERSION_B9,
+        "PINNED_DRIVER_VERSION_B9 ({PINNED_DRIVER_VERSION_B9}) does not match \
+         Cargo.lock type-bridge-typedb-driver-b9 version ({lock_version}); \
+         update the constant in crates/typedb-runtime/src/lib.rs"
+    );
+
+    // Assert the band-9 fork is in band 9.
+    let pinned: core_version::Version = PINNED_DRIVER_VERSION_B9
+        .parse()
+        .expect("PINNED_DRIVER_VERSION_B9 must be a valid version string");
+    assert_eq!(
+        core_version::band(&pinned),
+        Some(9),
+        "pinned band-9 fork {PINNED_DRIVER_VERSION_B9} is no longer in band 9; \
+         update PINNED_DRIVER_VERSION_B9 and review the compatibility window"
     );
 }
 
@@ -226,7 +275,6 @@ fn connect_options_default_equals_ssot() {
     assert!(!opts.tls, "ConnectOptions::default().tls must be false");
 }
 
-
 // ── Schema-annotation feature gate (TypeDB 3.12+) ────────────────────
 
 mod common;
@@ -282,7 +330,10 @@ fn annotation_gate_rejects_annotated_ddl_on_pre_312_server() {
         .check_schema_annotation_support(ANNOTATED_DDL)
         .expect_err("pre-3.12 server must reject annotated DDL");
     let message = error.to_string();
-    assert!(message.contains("3.12"), "message must name 3.12: {message}");
+    assert!(
+        message.contains("3.12"),
+        "message must name 3.12: {message}"
+    );
     assert!(
         message.contains("3.11.5"),
         "message must name the detected server: {message}"
@@ -322,4 +373,92 @@ fn annotation_gate_defers_to_server_when_version_unknown() {
 fn mock_backend_reports_no_server_version_by_default() {
     let backend = common::MockBackend::new(vec![]);
     assert_eq!(backend.server_version(), None);
+}
+
+// ── Given-stage feature gate (TypeDB 3.12+) ──────────────────────────
+
+use type_bridge_orm::{GivenRowsSpec, TxType};
+
+fn empty_rows() -> GivenRowsSpec {
+    GivenRowsSpec {
+        variables: vec!["n".to_string()],
+        rows: vec![],
+    }
+}
+
+#[test]
+fn given_stage_gate_rejects_pre_312_server() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        "gate-test",
+    );
+    let error = db
+        .check_given_stage_support()
+        .expect_err("pre-3.12 server must reject given-stage queries");
+    let message = error.to_string();
+    assert!(
+        message.contains("3.12"),
+        "message must name 3.12: {message}"
+    );
+    assert!(
+        message.contains("3.11.5"),
+        "message must name the detected server: {message}"
+    );
+    assert!(
+        message.contains("given-stage"),
+        "message must name the feature: {message}"
+    );
+}
+
+#[test]
+fn given_stage_gate_passes_on_312_server() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 12, 0)))),
+        "gate-test",
+    );
+    assert!(db.check_given_stage_support().is_ok());
+    assert!(db.supports_given_stage());
+}
+
+#[test]
+fn supports_given_stage_is_false_pre_312_and_when_unknown() {
+    let pre = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        "gate-test",
+    );
+    assert!(!pre.supports_given_stage());
+
+    let unknown = Database::with_backend(Box::new(VersionedBackend::new(None)), "gate-test");
+    assert!(!unknown.supports_given_stage());
+}
+
+#[tokio::test]
+async fn execute_with_rows_rejects_pre_312_before_opening_transaction() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        "gate-test",
+    );
+    let error = db
+        .execute_with_rows("given $n: string; insert ...;", TxType::Write, empty_rows())
+        .await
+        .expect_err("pre-3.12 server must reject execute_with_rows");
+    assert!(
+        matches!(error, OrmError::UnsupportedVersion(_)),
+        "expected UnsupportedVersion, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn execute_with_rows_unknown_version_reaches_backend_default_error() {
+    // Version unknown → the gate defers; the mock backend's TransactionOps
+    // does not override query_with_rows, so the default trait error fires.
+    let db = Database::with_backend(Box::new(VersionedBackend::new(None)), "gate-test");
+    let error = db
+        .execute_with_rows("given $n: string; insert ...;", TxType::Write, empty_rows())
+        .await
+        .expect_err("backend without given-stage support must error");
+    assert!(
+        error.to_string().contains("not supported by this backend"),
+        "unexpected error: {error}"
+    );
 }

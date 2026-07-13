@@ -448,6 +448,56 @@ class Database:
 
         rust_database_for(self).check_schema_annotation_support(typeql)
 
+    def supports_given_stage(self) -> bool:
+        """Whether the server supports ``given``-stage parameterized queries.
+
+        ``True`` on TypeDB 3.12+ servers. ``False`` when the server predates
+        3.12 or its version is unknown (band-7 gRPC fallback) — callers with
+        a per-row fallback should treat both cases the same. Bulk operations
+        such as ``insert_many`` consult this automatically and fall back to
+        per-row queries when it is ``False``.
+        """
+        from type_bridge._rust_runtime import rust_database_for
+
+        return rust_database_for(self).supports_given_stage()
+
+    def execute_with_rows(
+        self,
+        query: str,
+        transaction_type: str,
+        variables: list[str],
+        column_types: list[str],
+        rows: list[list[Any]],
+    ) -> list[dict[str, Any]]:
+        """Execute a ``given``-stage TypeQL query over input rows.
+
+        One compiled pipeline runs over every input row; the rows travel
+        through the driver API instead of being interpolated into the query
+        string, so user-supplied values never touch TypeQL text. Requires a
+        TypeDB 3.12+ server; on older servers this raises the versioned
+        error from the feature gate.
+
+        Args:
+            query: TypeQL starting with a ``given`` stage, e.g.
+                ``given $n: string; insert $p isa person, has name == $n;``
+            transaction_type: "read", "write", or "schema"
+            variables: given variable names without the ``$`` sigil,
+                in column order
+            column_types: TypeQL value type names aligned with ``variables``
+                ("string", "integer", "double", "boolean", "date",
+                "datetime", "datetime-tz")
+            rows: input rows, each a list of primitives in column order
+                (temporal values as ISO-8601 strings)
+
+        Returns:
+            List of result dictionaries (one per pipeline output row).
+        """
+        from type_bridge._rust_runtime import rust_database_for
+
+        return rust_database_for(self).execute_with_rows(
+            query, transaction_type, variables, column_types, rows
+        )
+
     def get_schema(self) -> str:
         """Get the schema definition for this database."""
         logger.debug(f"Fetching schema for database: {self.database_name}")
@@ -689,6 +739,22 @@ class TransactionContext:
         if self._rust_tx is not None:
             return self._rust_tx.execute(query)
         return self.transaction.execute(query)
+
+    def execute_with_rows(
+        self,
+        query: str,
+        variables: list[str],
+        column_types: list[str],
+        rows: list[list[Any]],
+    ) -> list[dict[str, Any]]:
+        """Execute a ``given``-stage query with input rows in this transaction.
+
+        See :meth:`Database.execute_with_rows` for the argument contract.
+        Requires the Rust backend on a TypeDB 3.12+ connection.
+        """
+        if self._rust_tx is None:
+            raise RuntimeError("execute_with_rows requires an open Rust-backend transaction")
+        return self._rust_tx.execute_with_rows(query, variables, column_types, rows)
 
     def commit(self) -> None:
         """Commit the active transaction."""

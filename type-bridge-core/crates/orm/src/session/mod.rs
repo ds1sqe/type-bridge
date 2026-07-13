@@ -12,7 +12,7 @@ pub mod transaction;
 #[cfg(feature = "typedb")]
 pub mod real_driver;
 
-pub use backend::TxType;
+pub use backend::{GivenRowsSpec, GivenValue, TxType};
 pub use context::TransactionContext;
 pub use database::Database;
 pub use transaction::Transaction;

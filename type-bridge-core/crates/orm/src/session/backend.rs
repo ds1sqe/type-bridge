@@ -35,6 +35,41 @@ pub enum TxType {
     Schema,
 }
 
+/// A single value bound to a `given` variable.
+///
+/// Temporal variants carry ISO-8601 text; the real backend parses them when
+/// lowering onto the driver, mirroring how [`QueryResult`] renders temporal
+/// values back to strings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum GivenValue {
+    /// TypeQL `boolean`.
+    Boolean(bool),
+    /// TypeQL `integer`.
+    Integer(i64),
+    /// TypeQL `double`.
+    Double(f64),
+    /// TypeQL `string`.
+    String(String),
+    /// TypeQL `date`, ISO-8601 (`YYYY-MM-DD`).
+    Date(String),
+    /// TypeQL `datetime`, ISO-8601 without offset.
+    Datetime(String),
+    /// TypeQL `datetime-tz`, RFC 3339 with offset.
+    DatetimeTz(String),
+}
+
+/// Input rows for a `given`-stage query: a variable header plus value rows.
+///
+/// Every row must have exactly one entry per header variable, in header
+/// order. Rows travel through the driver API, never the query string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GivenRowsSpec {
+    /// Variable names, without the `$` sigil, in column order.
+    pub variables: Vec<String>,
+    /// Value rows; each inner vec is one input row in header order.
+    pub rows: Vec<Vec<GivenValue>>,
+}
+
 /// Abstraction over a TypeDB transaction.
 ///
 /// Implementations handle query execution and transaction lifecycle.
@@ -43,6 +78,24 @@ pub enum TxType {
 pub trait TransactionOps: Send {
     /// Execute a TypeQL query string.
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>>;
+
+    /// Execute a TypeQL query with `given`-stage input rows.
+    ///
+    /// Rows travel through the driver API, not the query string. Defaults to
+    /// an error for backends without given-stage support (mocks, pre-band-9
+    /// drivers); the real backend overrides this on band-9 connections.
+    fn query_with_rows(
+        &mut self,
+        typeql: &str,
+        rows: GivenRowsSpec,
+    ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        let _ = (typeql, rows);
+        Box::pin(async move {
+            Err(OrmError::QueryExecution(
+                "given-stage parameterized queries are not supported by this backend".into(),
+            ))
+        })
+    }
 
     /// Commit this transaction. Only meaningful for write/schema transactions.
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;

@@ -946,6 +946,41 @@ Each helper returns an `ArithmeticExpr` which implements the standard `Expressio
 | `mod`  | `%`      | `mod("x", 2)`       |
 | `pow_` | `^`      | `pow_("base", 3)`   |
 
+## Given-Stage Parameterized Queries (TypeDB 3.12+)
+
+TypeQL's `given` stage runs **one compiled pipeline over many input rows**,
+with the rows passed through the driver API instead of interpolated into the
+query string — the first injection-safe parameter mechanism in TypeQL.
+`Database.execute_with_rows()` exposes it directly:
+
+```python
+docs = db.execute_with_rows(
+    'given $n: string, $a: integer;\n'
+    'insert $p isa person, has name == $n, has age == $a;\n'
+    'fetch { "iid": iid($p), "name": $n };',
+    "write",
+    ["n", "a"],                      # given variables, no "$" sigil
+    ["string", "integer"],           # TypeQL value types per column
+    [["Alice", 30], ["Bob", 25]],    # one list per input row
+)
+```
+
+`TransactionContext.execute_with_rows(query, variables, column_types, rows)`
+is the same call inside an open transaction. Supported column types are
+`string`, `integer`, `double`, `boolean`, `date`, `datetime`, and
+`datetime-tz` (temporal values as ISO-8601 strings).
+
+Requirements and fallbacks:
+
+- Requires a TypeDB 3.12+ server; on older servers the call raises the
+  versioned error from the feature gate (naming the detected server and the
+  required 3.12 line) before anything reaches the server.
+- `db.supports_given_stage()` reports whether the connection can take this
+  path — `False` on pre-3.12 servers and when the server version is unknown.
+- Bulk ORM operations (`insert_many()` on entities) use this mechanism
+  automatically on 3.12+ and fall back to per-row queries elsewhere; see
+  [CRUD Operations](crud.md#given-stage-fast-path-typedb-312).
+
 ## See Also
 
 - [CRUD Operations](crud.md) - Basic CRUD operations

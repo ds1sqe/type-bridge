@@ -16,12 +16,13 @@ name = "type-bridge-codegen"
 path = "src/bin/codegen.rs"
 
 [features]
-default = ["band7", "band8"]
+default = ["band7", "band8", "band9"]
 typedb = ["dep:type-bridge-typedb-runtime"]
 band7 = ["typedb", "type-bridge-typedb-runtime/band7"]
 band8 = ["typedb", "type-bridge-typedb-runtime/band8"]
+band9 = ["typedb", "type-bridge-typedb-runtime/band9"]
 derive = ["dep:type-bridge-orm-derive"]
-integration-tests = ["derive", "band7", "band8"]
+integration-tests = ["derive", "band7", "band8", "band9"]
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "1.5.7" }
