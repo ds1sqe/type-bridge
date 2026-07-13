@@ -54,6 +54,24 @@ therefore serves the full supported window without any user-side configuration.
 | Python `typedb-driver` | `~=3.11` (e.g. 3.11.5) | The `dev` extra pins `~=3.11.5`; the `typedb-driver` extra allows `>=3.8,<3.13`. This is the installed Python driver used for direct driver APIs and tests — it does not control which TypeDB server you can connect to via the ORM |
 | CPython interpreter | 3.12–3.13 | Floor: PEP 695 syntax in the codebase; ceiling tracks the highest CPython the typedb-driver publishes wheels for |
 
+### Feature gates vs. the version window
+
+The support window says which servers TypeBridge *connects to*; individual
+TypeDB features can still require a newer server within that window. Feature
+requirements are declared in `crates/core`'s version module (`Feature`) and
+checked client-side against the server version detected at connect time, so
+a feature used against a too-old server fails with a versioned TypeBridge
+error naming both versions — never a server-side syntax error.
+
+Current feature gates:
+
+| Feature | Minimum server | Gated surfaces |
+|---------|----------------|----------------|
+| `@doc`/`@meta` schema annotations | 3.12.0 | `SchemaManager.sync_schema`, migration executor steps |
+
+When the server version is unknown (band-7 gRPC fallback without a
+`server_version=` pin), gated DDL is sent as-is and the server decides.
+
 ### Update-safety contract
 
 `Database.connect()` raises a human-readable, actionable error when connecting to a server

@@ -6,6 +6,34 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### New Features
 
+- **`@doc`/`@meta` schema annotations (#169)** - TypeDB 3.12's schema
+  documentation and metadata annotations are declarable from all three model
+  surfaces: `TypeFlags(doc=..., meta=...)` / `AttributeFlags(doc=..., meta=...)`
+  and the `Flag(Doc(...), Meta(...))` ownership markers in Python, with
+  matching TypeScript typed-layer and Rust static-model options, plus
+  role-level `doc=`/`meta=` on `Role(...)`. Annotations are emitted in schema
+  define lowering, round-trip through the generator with three-target surface
+  parity, and are carried by schema export/introspection.
+
+- **Annotation-aware migrations (#169)** - `makemigrations` detects
+  `@doc`/`@meta` additions, value changes, and removals on types, ownerships,
+  and roles, authoring new `ModifyTypeAnnotations` / `ModifyRoleAnnotations`
+  operations with reverse steps. Annotation transitions lower to
+  per-annotation schema steps (grouped `define`/`undefine` blocks, one
+  `redefine` per value change; removals first) — this also fixes
+  `ModifyOwnership` transitions involving parameterless annotations
+  (`@key`/`@unique`), which the old blanket-`redefine` lowering rejected
+  live (REX28). Annotation-only changes classify as metadata-safe.
+
+- **Version gate for schema annotations (#169)** - the server version
+  detected by the connect-time gate is retained and exposed as
+  `Database.detected_server_version()`. Schema-apply seams
+  (`SchemaManager.sync_schema`, the migration executor) check annotated DDL
+  against it before sending: annotated schemas bound for a pre-3.12 server
+  fail client-side with an actionable versioned error instead of a server
+  syntax error. `Database.check_schema_annotation_support()` exposes the
+  check directly.
+
 - **TypeDB 3.12 server support** - the compatibility window now extends to
   3.12.x. Compatibility was measured live: server 3.12 accepts band-8 (3.11)
   drivers, while a 3.12 driver is refused by a 3.11 server, so the version

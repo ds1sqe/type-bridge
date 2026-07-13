@@ -458,6 +458,26 @@ class UserEmail(String):
 - `TypeNameCase.SNAKE_CASE` - snake_case conversion
 - `TypeNameCase.KEBAB_CASE` - kebab-case conversion
 
+### Documentation and Metadata (@doc/@meta)
+
+TypeDB 3.12+ supports schema-level documentation and metadata annotations
+on the attribute type:
+
+```python
+class Email(String):
+    flags = AttributeFlags(
+        name="email",
+        doc="A contact email address.",
+        meta={"pii": "true"},
+    )
+
+# TypeDB: attribute email @doc("A contact email address.") @meta("pii", "true"), value string;
+```
+
+Annotations require a TypeDB 3.12+ server: schema application is
+version-gated and raises a versioned error against older servers (see the
+[schema guide](schema.md#schema-annotations-and-server-versions)).
+
 ### Priority Order
 
 When determining the attribute type name, TypeBridge uses this priority:
