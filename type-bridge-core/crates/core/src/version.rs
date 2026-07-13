@@ -339,6 +339,54 @@ pub fn check_server_supported(server: &Version, embedded_bands: &[u8]) -> Result
 }
 
 // ---------------------------------------------------------------------------
+// Feature gate (server capabilities by version line)
+// ---------------------------------------------------------------------------
+
+/// Server capabilities that only exist from a certain TypeDB version line.
+///
+/// Used to fail fast with an actionable versioned error instead of letting an
+/// older server produce a syntax error for TypeQL it cannot parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feature {
+    /// `@doc("...")` / `@meta("key", "value")` schema annotations (TypeDB 3.12+).
+    SchemaAnnotations,
+}
+
+impl Feature {
+    /// Human-readable feature name for error messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Feature::SchemaAnnotations => "schema annotations (@doc/@meta)",
+        }
+    }
+
+    /// The minimum server version that supports this feature.
+    pub fn minimum_version(self) -> Version {
+        match self {
+            Feature::SchemaAnnotations => Version::new(3, 12, 0),
+        }
+    }
+}
+
+/// Check that `server` supports `feature`.
+///
+/// # Errors
+///
+/// Returns [`VersionError::FeatureUnsupported`] when the server predates the
+/// feature's minimum version line.
+pub fn check_feature_supported(feature: Feature, server: &Version) -> Result<(), VersionError> {
+    let required = feature.minimum_version();
+    if (server.major, server.minor) < (required.major, required.minor) {
+        return Err(VersionError::FeatureUnsupported {
+            feature: feature.name(),
+            server: *server,
+            required,
+        });
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // HTTP probe helpers (pure / unit-testable)
 // ---------------------------------------------------------------------------
 
@@ -477,6 +525,15 @@ pub enum VersionError {
     Probe(String),
     /// A version string could not be parsed.
     Parse(String),
+    /// The server is in-window but predates a feature the schema requires.
+    FeatureUnsupported {
+        /// Human-readable feature name.
+        feature: &'static str,
+        /// The detected server version.
+        server: Version,
+        /// The minimum server version that supports the feature.
+        required: Version,
+    },
 }
 
 /// Human-readable window string used consistently in error messages.
@@ -513,6 +570,19 @@ impl fmt::Display for VersionError {
             ),
             VersionError::Probe(msg) => write!(f, "version probe failed: {msg}"),
             VersionError::Parse(msg) => write!(f, "version parse error: {msg}"),
+            VersionError::FeatureUnsupported {
+                feature,
+                server,
+                required,
+            } => {
+                let required_line = format!("{}.{}", required.major, required.minor);
+                write!(
+                    f,
+                    "{feature} require TypeDB {required_line} or newer; detected server \
+                     {server} — upgrade the server to the {required_line} line or remove \
+                     the annotations from the schema"
+                )
+            }
         }
     }
 }
@@ -1015,5 +1085,36 @@ mod tests {
     fn parse_response_bad_version_string() {
         let json = r#"{"version":"latest"}"#;
         assert!(parse_version_response(json).is_err());
+    }
+
+    // -- feature gate ----------------------------------------------------------
+
+    #[test]
+    fn feature_gate_rejects_pre_312_server() {
+        let server = Version::new(3, 11, 5);
+        let err = check_feature_supported(Feature::SchemaAnnotations, &server).unwrap_err();
+        match &err {
+            VersionError::FeatureUnsupported {
+                feature,
+                server,
+                required,
+            } => {
+                assert_eq!(*feature, "schema annotations (@doc/@meta)");
+                assert_eq!(*server, Version::new(3, 11, 5));
+                assert_eq!(*required, Version::new(3, 12, 0));
+            }
+            other => panic!("expected FeatureUnsupported, got {other:?}"),
+        }
+        let message = err.to_string();
+        assert!(message.contains("3.12"));
+        assert!(message.contains("3.11.5"));
+        assert!(message.contains("upgrade the server"));
+    }
+
+    #[test]
+    fn feature_gate_accepts_312_and_newer() {
+        assert!(check_feature_supported(Feature::SchemaAnnotations, &Version::new(3, 12, 0)).is_ok());
+        assert!(check_feature_supported(Feature::SchemaAnnotations, &Version::new(3, 12, 7)).is_ok());
+        assert!(check_feature_supported(Feature::SchemaAnnotations, &Version::new(4, 0, 0)).is_ok());
     }
 }

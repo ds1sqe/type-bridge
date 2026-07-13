@@ -424,6 +424,30 @@ class Database:
             logger.debug(f"Query returned {len(results)} results")
             return results
 
+    def detected_server_version(self) -> str | None:
+        """The server version detected by the connect-time version gate.
+
+        Returns the version string (e.g. ``"3.12.0"``) when known. ``None``
+        only when the connection was established through the band-7 gRPC
+        fallback, where the server cannot report its version — supply
+        ``server_version=`` at construction for strict validation there.
+        """
+        from type_bridge._rust_runtime import rust_database_for
+
+        return rust_database_for(self).server_version()
+
+    def check_schema_annotation_support(self, typeql: str) -> None:
+        """Version-gate schema DDL that uses ``@doc``/``@meta`` annotations.
+
+        Raises the versioned error when the TypeQL uses schema annotations
+        (TypeDB 3.12+) and the detected server version predates 3.12. When
+        the server version is unknown, the DDL is sent as-is and the server
+        decides.
+        """
+        from type_bridge._rust_runtime import rust_database_for
+
+        rust_database_for(self).check_schema_annotation_support(typeql)
+
     def get_schema(self) -> str:
         """Get the schema definition for this database."""
         logger.debug(f"Fetching schema for database: {self.database_name}")

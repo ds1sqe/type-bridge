@@ -147,6 +147,35 @@ pub fn constraint_part(flags: &str) -> String {
         .join(" ")
 }
 
+/// Whether the TypeQL text contains a `@doc(`/`@meta(` schema annotation
+/// (TypeDB 3.12+) outside of string literals.
+///
+/// Used by the version gate to refuse sending annotation-bearing schema DDL
+/// to pre-3.12 servers, which would reject it with a syntax error.
+pub fn typeql_uses_schema_annotations(typeql: &str) -> bool {
+    let bytes = typeql.as_bytes();
+    let mut in_string = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if in_string => {
+                // Skip the escaped byte inside a string literal.
+                i += 1;
+            }
+            b'"' => in_string = !in_string,
+            b'@' if !in_string => {
+                let rest = &typeql[i..];
+                if rest.starts_with("@doc(") || rest.starts_with("@meta(") {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Render a TypeQL string literal, escaping backslash, quote, `\n`, `\t`,
 /// and `\r` — the escape set mirrored by the server's schema export.
 pub fn escaped_string_literal(value: &str) -> String {
@@ -315,5 +344,21 @@ mod tests {
     fn identical_strings_diff_empty() {
         let tokens = split_annotation_tokens(r#"@unique @doc("same")"#);
         assert!(diff_annotation_tokens(&tokens, &tokens).is_empty());
+    }
+
+    #[test]
+    fn typeql_annotation_scan_ignores_string_literals() {
+        assert!(typeql_uses_schema_annotations(
+            "define\nentity person @doc(\"docs\");"
+        ));
+        assert!(typeql_uses_schema_annotations(
+            "define\nperson owns name @meta(\"k\", \"v\");"
+        ));
+        assert!(!typeql_uses_schema_annotations(
+            "define\nattribute note, value string @values(\"use @doc(x) here\");"
+        ));
+        assert!(!typeql_uses_schema_annotations(
+            "define\nentity person, owns name @key;"
+        ));
     }
 }

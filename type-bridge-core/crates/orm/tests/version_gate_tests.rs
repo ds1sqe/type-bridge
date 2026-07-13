@@ -225,3 +225,101 @@ fn connect_options_default_equals_ssot() {
     );
     assert!(!opts.tls, "ConnectOptions::default().tls must be false");
 }
+
+
+// ── Schema-annotation feature gate (TypeDB 3.12+) ────────────────────
+
+mod common;
+
+use type_bridge_core_lib::version::Version;
+use type_bridge_orm::Database;
+use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps};
+
+/// Mock backend that reports a fixed detected server version.
+struct VersionedBackend {
+    inner: common::MockBackend,
+    server_version: Option<Version>,
+}
+
+impl VersionedBackend {
+    fn new(server_version: Option<Version>) -> Self {
+        Self {
+            inner: common::MockBackend::new(vec![]),
+            server_version,
+        }
+    }
+}
+
+impl DriverBackend for VersionedBackend {
+    fn open_transaction(
+        &self,
+        database: &str,
+        tx_type: type_bridge_orm::TxType,
+    ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, type_bridge_orm::OrmError>>
+    {
+        self.inner.open_transaction(database, tx_type)
+    }
+
+    fn is_open(&self) -> bool {
+        true
+    }
+
+    fn server_version(&self) -> Option<Version> {
+        self.server_version
+    }
+}
+
+const ANNOTATED_DDL: &str = "define\nentity person @doc(\"A person.\"), owns name @key;";
+const PLAIN_DDL: &str = "define\nentity person, owns name @key;";
+
+#[test]
+fn annotation_gate_rejects_annotated_ddl_on_pre_312_server() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        "gate-test",
+    );
+    let error = db
+        .check_schema_annotation_support(ANNOTATED_DDL)
+        .expect_err("pre-3.12 server must reject annotated DDL");
+    let message = error.to_string();
+    assert!(message.contains("3.12"), "message must name 3.12: {message}");
+    assert!(
+        message.contains("3.11.5"),
+        "message must name the detected server: {message}"
+    );
+    assert!(
+        message.contains("schema annotations"),
+        "message must name the feature: {message}"
+    );
+}
+
+#[test]
+fn annotation_gate_passes_plain_ddl_on_pre_312_server() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        "gate-test",
+    );
+    assert!(db.check_schema_annotation_support(PLAIN_DDL).is_ok());
+}
+
+#[test]
+fn annotation_gate_passes_annotated_ddl_on_312_server() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 12, 0)))),
+        "gate-test",
+    );
+    assert!(db.check_schema_annotation_support(ANNOTATED_DDL).is_ok());
+}
+
+#[test]
+fn annotation_gate_defers_to_server_when_version_unknown() {
+    // Band-7 gRPC fallback: version undetectable; the DDL is sent as-is.
+    let db = Database::with_backend(Box::new(VersionedBackend::new(None)), "gate-test");
+    assert!(db.check_schema_annotation_support(ANNOTATED_DDL).is_ok());
+}
+
+#[test]
+fn mock_backend_reports_no_server_version_by_default() {
+    let backend = common::MockBackend::new(vec![]);
+    assert_eq!(backend.server_version(), None);
+}

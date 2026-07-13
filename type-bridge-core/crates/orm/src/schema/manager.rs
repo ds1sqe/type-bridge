@@ -362,6 +362,7 @@ impl<'db> SchemaManager<'db> {
         let typeql = self
             .generate_schema()
             .map_err(crate::error::OrmError::Schema)?;
+        self.db.check_schema_annotation_support(&typeql)?;
         tracing::debug!(typeql = %typeql, "Syncing schema to database");
         self.db.execute_raw(&typeql, TxType::Schema).await?;
         Ok(())

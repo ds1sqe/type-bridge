@@ -561,6 +561,36 @@ impl SchemaInfo {
     pub fn compare(&self, other: &SchemaInfo) -> SchemaDiff {
         SchemaDiff::compute(self, other)
     }
+
+    /// Whether any type, ownership, or role in this schema declares a
+    /// `@doc`/`@meta` annotation (TypeDB 3.12+).
+    ///
+    /// Used by the version gate: schemas that use annotations must not be
+    /// sent to pre-3.12 servers, which would reject them with a syntax error.
+    pub fn uses_schema_annotations(&self) -> bool {
+        let owned_uses = |owned: &[OwnedAttributeEntry]| {
+            owned
+                .iter()
+                .any(|attr| attr.doc.is_some() || !attr.meta.is_empty())
+        };
+        self.attributes
+            .values()
+            .any(|attr| attr.doc.is_some() || !attr.meta.is_empty())
+            || self.entities.values().any(|entity| {
+                entity.doc.is_some()
+                    || !entity.meta.is_empty()
+                    || owned_uses(&entity.owned_attributes)
+            })
+            || self.relations.values().any(|relation| {
+                relation.doc.is_some()
+                    || !relation.meta.is_empty()
+                    || owned_uses(&relation.owned_attributes)
+                    || relation
+                        .roles
+                        .iter()
+                        .any(|role| role.doc.is_some() || !role.meta.is_empty())
+            })
+    }
 }
 
 fn owned_attribute_entries_from_typeql(

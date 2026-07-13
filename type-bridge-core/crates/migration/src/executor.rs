@@ -185,6 +185,20 @@ pub async fn execute_migration(db: &Database, migration: &MigrationExecution) ->
             }
         };
 
+        // Version-gate annotation-bearing schema DDL before opening a
+        // transaction: pre-3.12 servers reject @doc/@meta with a syntax
+        // error; the gate produces an actionable versioned error instead.
+        if let Err(e) = db.check_schema_annotation_support(typeql) {
+            return MigrationResult {
+                app_label: migration.app_label.clone(),
+                name: migration.name.clone(),
+                action: migration.action,
+                success: false,
+                error: Some(e.to_string()),
+                backfill: None,
+            };
+        }
+
         // Open a transaction for this step.
         let ctx = match db.transaction_context(step.tx_type).await {
             Ok(ctx) => ctx,

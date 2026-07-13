@@ -69,6 +69,15 @@ pub trait DriverBackend: Send + Sync {
     /// Check if the underlying connection is still alive.
     fn is_open(&self) -> bool;
 
+    /// The server version detected at connect time, when the backend knows it.
+    ///
+    /// Defaults to `None` for backends without a version gate (mocks, embedded
+    /// test backends). The real TypeDB backend reports the version the connect
+    /// gate detected; it is `None` only on the band-7 gRPC fallback.
+    fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+        None
+    }
+
     /// Check whether a database exists, when the backend supports database
     /// lifecycle operations.
     fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {

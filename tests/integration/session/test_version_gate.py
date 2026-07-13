@@ -300,3 +300,75 @@ class TestGateNonDefaultHttpPort:
         db.connect()
         assert getattr(db, "_rust_backend_database", None) is not None
         db.close()
+
+
+@pytest.mark.integration
+@pytest.mark.order(4123)
+class TestSchemaAnnotationGateLive:
+    """@doc/@meta schema-annotation feature gate against the live server.
+
+    Version-adaptive: on a 3.12+ leg the gate passes and the annotated
+    define round-trips through the exported schema; on a pre-3.12 leg the
+    gate raises the versioned error BEFORE any DDL reaches the server.
+    """
+
+    ANNOTATED_DDL = 'define\nentity vg_annotated_ent @doc("Gated entity.");'
+
+    @staticmethod
+    def _live_server_supports_annotations() -> bool:
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
+
+        detected = _tdm.server_version(TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT)
+        major, minor = (int(part) for part in detected.split(".")[:2])
+        return (major, minor) >= (3, 12)
+
+    def test_detected_server_version_matches_http_probe(self, clean_db: Database):
+        """The retained connect-time version equals the HTTP probe's answer."""
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
+
+        probed = _tdm.server_version(TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT)
+        assert clean_db.detected_server_version() == probed
+
+    def test_plain_ddl_passes_the_gate_on_every_server(self, clean_db: Database):
+        """DDL without @doc/@meta is never gated, regardless of server version."""
+        clean_db.check_schema_annotation_support("define\nentity vg_plain_ent;")
+
+    def test_annotated_ddl_gate_is_version_adaptive(self, clean_db: Database):
+        """3.12+ legs apply annotated DDL; pre-3.12 legs get the versioned error."""
+        import type_bridge_core
+
+        if self._live_server_supports_annotations():
+            clean_db.check_schema_annotation_support(self.ANNOTATED_DDL)
+            clean_db.execute_query(self.ANNOTATED_DDL, transaction_type="schema")
+            schema = clean_db.get_schema()
+            assert "vg_annotated_ent" in schema
+            assert '@doc("Gated entity.")' in schema
+        else:
+            with pytest.raises(type_bridge_core.VersionError) as exc_info:
+                clean_db.check_schema_annotation_support(self.ANNOTATED_DDL)
+            message = str(exc_info.value)
+            assert "3.12" in message
+            assert "@doc/@meta" in message
+            # The gate fired client-side: the entity never reached the server.
+            assert "vg_annotated_ent" not in clean_db.get_schema()
+
+    def test_sync_schema_rejects_annotated_models_on_pre_312(self, clean_db: Database):
+        """SchemaManager.sync_schema fires the gate before the apply transaction."""
+        import type_bridge_core
+
+        from type_bridge import Entity, TypeFlags
+        from type_bridge.migration.schema_manager import SchemaManager
+
+        class VgGatedPerson(Entity):
+            flags = TypeFlags(name="vg-gated-person", doc="A gated person.")
+
+        manager = SchemaManager(clean_db)
+        manager.register(VgGatedPerson)
+
+        if self._live_server_supports_annotations():
+            manager.sync_schema(skip_if_exists=True)
+            assert '@doc("A gated person.")' in clean_db.get_schema()
+        else:
+            with pytest.raises(type_bridge_core.VersionError):
+                manager.sync_schema(skip_if_exists=True)
+            assert "vg-gated-person" not in clean_db.get_schema()

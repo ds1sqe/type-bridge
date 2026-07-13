@@ -234,6 +234,10 @@ class SchemaManager:
         # Generate and apply schema
         schema = self.generate_schema()
 
+        # Version-gate @doc/@meta annotations (TypeDB 3.12+) before sending:
+        # a pre-3.12 server would reject them with a syntax error.
+        self.db.check_schema_annotation_support(schema)
+
         logger.debug("Applying schema to database")
         with self.db.transaction("schema") as tx:
             tx.execute(schema)

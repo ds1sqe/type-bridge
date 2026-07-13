@@ -909,3 +909,80 @@ class TestHttpPortBoundaries:
 
         with pytest.raises(OverflowError):
             typedb_driver.server_version("localhost:1729", http_port=70000)
+
+
+class TestSchemaAnnotationGate:
+    """The @doc/@meta schema-annotation feature gate (TypeDB 3.12+).
+
+    `Database.detected_server_version()` surfaces the connect-time detected
+    version; `check_schema_annotation_support()` rejects annotated DDL bound
+    for a pre-3.12 server before it is sent; `SchemaManager.sync_schema`
+    invokes that gate before opening the apply transaction.
+    """
+
+    def _database_with_rust_stub(self, monkeypatch, stub):
+        import type_bridge._rust_runtime as rust_mod
+        from type_bridge import session as session_mod
+
+        monkeypatch.setattr(rust_mod, "rust_database_for", lambda _conn: stub)
+        return session_mod.Database(address="localhost:1729", database="gate_unit")
+
+    def test_detected_server_version_delegates_to_rust_handle(self, monkeypatch):
+        stub = MagicMock()
+        stub.server_version.return_value = "3.12.0"
+        db = self._database_with_rust_stub(monkeypatch, stub)
+
+        assert db.detected_server_version() == "3.12.0"
+
+    def test_detected_server_version_unknown_returns_none(self, monkeypatch):
+        """Band-7 gRPC fallback connections cannot report a server version."""
+        stub = MagicMock()
+        stub.server_version.return_value = None
+        db = self._database_with_rust_stub(monkeypatch, stub)
+
+        assert db.detected_server_version() is None
+
+    def test_check_schema_annotation_support_propagates_versioned_error(self, monkeypatch):
+        stub = MagicMock()
+        stub.check_schema_annotation_support.side_effect = type_bridge_core.VersionError(
+            "schema annotations (@doc/@meta) require TypeDB 3.12 or newer; detected server 3.11.5"
+        )
+        db = self._database_with_rust_stub(monkeypatch, stub)
+
+        with pytest.raises(type_bridge_core.VersionError, match="3.12 or newer"):
+            db.check_schema_annotation_support('define\nentity person @doc("A person.");')
+        stub.check_schema_annotation_support.assert_called_once()
+
+    def test_sync_schema_gates_annotations_before_apply(self, monkeypatch):
+        """The gate must fire on the generated TypeQL before any transaction."""
+        from type_bridge.migration.schema_manager import SchemaManager
+
+        db = MagicMock()
+        manager = SchemaManager(db)
+        schema_text = 'define\nentity gate-person @doc("Gated.");'
+        monkeypatch.setattr(manager, "generate_schema", lambda: schema_text)
+        monkeypatch.setattr(manager, "has_existing_schema", lambda: False)
+
+        manager.sync_schema()
+
+        db.check_schema_annotation_support.assert_called_once_with(schema_text)
+        gate_index = [name for name, *_ in db.mock_calls].index("check_schema_annotation_support")
+        tx_index = [name for name, *_ in db.mock_calls].index("transaction")
+        assert gate_index < tx_index
+
+    def test_sync_schema_does_not_apply_when_gate_rejects(self, monkeypatch):
+        from type_bridge.migration.schema_manager import SchemaManager
+
+        db = MagicMock()
+        db.check_schema_annotation_support.side_effect = type_bridge_core.VersionError(
+            "schema annotations (@doc/@meta) require TypeDB 3.12 or newer"
+        )
+        manager = SchemaManager(db)
+        monkeypatch.setattr(
+            manager, "generate_schema", lambda: 'define\nentity gate-person @doc("Gated.");'
+        )
+        monkeypatch.setattr(manager, "has_existing_schema", lambda: False)
+
+        with pytest.raises(type_bridge_core.VersionError):
+            manager.sync_schema()
+        db.transaction.assert_not_called()
