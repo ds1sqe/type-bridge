@@ -29,6 +29,10 @@ export interface OwnedAttributeDescriptor {
   regex?: string | null;
   allowed_values?: string[] | null;
   range?: [string | null, string | null] | null;
+  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+  doc?: string;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+  meta?: Record<string, string>;
 }
 
 export interface EntityDescriptor {
@@ -36,6 +40,10 @@ export interface EntityDescriptor {
   is_abstract: boolean;
   parent_type: string | null;
   owned_attributes: OwnedAttributeDescriptor[];
+  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+  doc?: string;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+  meta?: Record<string, string>;
 }
 
 export interface RoleDescriptor {
@@ -54,6 +62,10 @@ export interface RoleDescriptor {
   ordered: boolean;
   /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
   distinct: boolean;
+  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+  doc?: string;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+  meta?: Record<string, string>;
 }
 
 export interface RelationDescriptor {
@@ -62,6 +74,10 @@ export interface RelationDescriptor {
   parent_type: string | null;
   owned_attributes: OwnedAttributeDescriptor[];
   roles: RoleDescriptor[];
+  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+  doc?: string;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+  meta?: Record<string, string>;
 }
 
 export type TypeDescriptor =
@@ -76,6 +92,10 @@ export interface OwnedAttributeEntry {
    * Instance-level list semantics are engine-unimplemented (REP256); this is a
    * schema-emission marker only. */
   is_ordered: boolean;
+  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+  doc?: string;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+  meta?: Record<string, string>;
 }
 
 export interface RoleEntry {
@@ -93,6 +113,10 @@ export interface RoleEntry {
   ordered: boolean;
   /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
   distinct: boolean;
+  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+  doc?: string;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+  meta?: Record<string, string>;
 }
 
 export interface EntitySchemaEntry {
@@ -101,6 +125,10 @@ export interface EntitySchemaEntry {
   parent_type: string | null;
   owned_attributes: OwnedAttributeEntry[];
   plays_cardinalities?: Record<string, [number, number | null]>;
+  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+  doc?: string;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+  meta?: Record<string, string>;
 }
 
 export interface RelationSchemaEntry extends EntitySchemaEntry {
@@ -116,6 +144,10 @@ export interface AttributeSchemaEntry {
   regex?: string | null;
   allowed_values?: string[] | null;
   range?: [string | null, string | null] | null;
+  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
+  doc?: string;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
+  meta?: Record<string, string>;
 }
 
 export interface SchemaInfo {
@@ -209,8 +241,10 @@ export {
 export {
   AttributeFlags,
   Card,
+  Doc,
   Flag,
   Key,
+  Meta,
   TypeFlags,
   TypeNameCase,
   Unique,
@@ -218,8 +252,10 @@ export {
   resolveFlags,
   type AttributeFlagsOptions,
   type CardSpec,
+  type DocSpec,
   type FlagInput,
   type FlagSpec,
+  type MetaSpec,
   type ResolvedAttributeFlags,
   type ResolvedTypeFlags,
   type TypeFlagsOptions,
