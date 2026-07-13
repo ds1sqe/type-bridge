@@ -90,6 +90,290 @@ class Operation(ABC):
         """
         return self.to_rollback_typeql() is not None
 
+    def to_typeql_steps(self) -> list[str]:
+        """Forward TypeQL, one query per step.
+
+        TypeDB executes one define/redefine/undefine block per query, so
+        operations that mix verbs (annotation changes) override this to
+        return several steps. The default wraps ``to_typeql()``.
+        """
+        typeql = self.to_typeql()
+        return [typeql] if typeql.strip() else []
+
+    def to_rollback_typeql_steps(self) -> list[str] | None:
+        """Rollback TypeQL, one query per step, or None if irreversible."""
+        typeql = self.to_rollback_typeql()
+        if typeql is None:
+            return None
+        return [typeql] if typeql.strip() else []
+
+
+def _subject_type_name(value: object) -> str:
+    """Resolve a type name from an entity/relation model, attribute class, or ref."""
+    get_type_name = getattr(value, "get_type_name", None)
+    if get_type_name is not None:
+        return str(get_type_name())
+    return _attribute_name(value)
+
+
+def _split_annotation_tokens(flags: str) -> list[tuple[str, str | None]]:
+    """Split a flag string like ``@key @card(1..5) @doc("...")`` into
+    ``(name, args)`` tokens. Escape-aware: parentheses inside double-quoted
+    string literals do not terminate an argument list. Mirrors the Rust
+    ``annotations::split_annotation_tokens``."""
+    tokens: list[tuple[str, str | None]] = []
+    i = 0
+    length = len(flags)
+    while i < length:
+        if flags[i] != "@":
+            i += 1
+            continue
+        i += 1
+        name_start = i
+        while i < length and (flags[i].isalnum() or flags[i] == "_"):
+            i += 1
+        if i == name_start:
+            continue
+        name = flags[name_start:i]
+        args: str | None = None
+        if i < length and flags[i] == "(":
+            i += 1
+            args_start = i
+            depth = 1
+            in_string = False
+            while i < length:
+                ch = flags[i]
+                if in_string and ch == "\\":
+                    i += 2
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                elif ch == "(" and not in_string:
+                    depth += 1
+                elif ch == ")" and not in_string:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            args = flags[args_start : min(i, length)]
+            if i < length:
+                i += 1
+        tokens.append((name, args))
+    return tokens
+
+
+def _first_string_literal(args: str) -> str | None:
+    """Extract the first double-quoted string literal from an argument list,
+    unescaped."""
+    start = args.find('"')
+    if start < 0:
+        return None
+    out: list[str] = []
+    i = start + 1
+    while i < len(args):
+        ch = args[i]
+        if ch == '"':
+            return "".join(out)
+        if ch == "\\" and i + 1 < len(args):
+            follower = args[i + 1]
+            out.append({"n": "\n", "t": "\t", "r": "\r"}.get(follower, follower))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return None
+
+
+def _token_identity(name: str, args: str | None) -> str:
+    """Change-grouping identity: ``@meta`` is keyed per meta key; everything
+    else is at most one per subject."""
+    if name == "meta" and args is not None:
+        key = _first_string_literal(args)
+        if key is not None:
+            return f"meta:{key}"
+    return name
+
+
+def _render_token(name: str, args: str | None) -> str:
+    return f"@{name}({args})" if args is not None else f"@{name}"
+
+
+def _undefine_token_ref(name: str, args: str | None) -> str:
+    """The ``@...`` reference used in ``undefine <ref> from <subject>``:
+    ``@meta`` must be keyed; every other annotation undefines by bare name."""
+    from type_bridge.typeql.annotations import escape_annotation_string
+
+    if name == "meta" and args is not None:
+        key = _first_string_literal(args)
+        if key is not None:
+            return f"@meta({escape_annotation_string(key)})"
+    return f"@{name}"
+
+
+def _annotation_change_steps(
+    subject: str,
+    old_tokens: list[tuple[str, str | None]],
+    new_tokens: list[tuple[str, str | None]],
+) -> tuple[list[str], list[str]]:
+    """Lower an annotation-set change on ``subject`` to (forward, rollback) steps.
+
+    TypeDB 3.12 semantics: removals must use ``undefine`` (one block for all,
+    ``@meta`` keyed), value changes must use ``redefine`` (exactly one element
+    per query; parameterless annotations can never be redefined), and
+    additions must use ``define`` (one block for all). Removals run first —
+    adding ``@key`` while a conflicting explicit ``@card`` is still declared
+    fails schema validation. Mirrors the Rust planner's
+    ``annotation_token_steps``.
+    """
+    old_map = {_token_identity(name, args): (name, args) for name, args in old_tokens}
+    new_map = {_token_identity(name, args): (name, args) for name, args in new_tokens}
+
+    added = [new_map[key] for key in sorted(new_map) if key not in old_map]
+    removed = [old_map[key] for key in sorted(old_map) if key not in new_map]
+    changed = [
+        (old_map[key], new_map[key])
+        for key in sorted(old_map)
+        if key in new_map and _render_token(*old_map[key]) != _render_token(*new_map[key])
+    ]
+
+    forward: list[str] = []
+    if removed:
+        forward.append(
+            "undefine\n"
+            + "\n".join(f"{_undefine_token_ref(*token)} from {subject};" for token in removed)
+        )
+    for _, new_token in changed:
+        forward.append(f"redefine\n{subject} {_render_token(*new_token)};")
+    if added:
+        forward.append(
+            "define\n" + "\n".join(f"{subject} {_render_token(*token)};" for token in added)
+        )
+
+    # Rollback steps are listed in rollback execution order: each forward
+    # step mirrored, walked back-to-front.
+    rollback: list[str] = []
+    if added:
+        rollback.append(
+            "undefine\n"
+            + "\n".join(f"{_undefine_token_ref(*token)} from {subject};" for token in added)
+        )
+    for old_token, _ in reversed(changed):
+        rollback.append(f"redefine\n{subject} {_render_token(*old_token)};")
+    if removed:
+        rollback.append(
+            "define\n" + "\n".join(f"{subject} {_render_token(*token)};" for token in removed)
+        )
+    return forward, rollback
+
+
+def _doc_meta_tokens(doc: str | None, meta: dict[str, str]) -> list[tuple[str, str | None]]:
+    """Build the @doc/@meta token list for one side of an annotation change."""
+    from type_bridge.typeql.annotations import escape_annotation_string
+
+    tokens: list[tuple[str, str | None]] = []
+    if doc is not None:
+        tokens.append(("doc", escape_annotation_string(doc)))
+    for key in sorted(meta):
+        tokens.append(
+            ("meta", f"{escape_annotation_string(key)}, {escape_annotation_string(meta[key])}")
+        )
+    return tokens
+
+
+def _doc_meta_annotation_steps(
+    subject: str,
+    old_doc: str | None,
+    new_doc: str | None,
+    old_meta: dict[str, str],
+    new_meta: dict[str, str],
+) -> tuple[list[str], list[str]]:
+    """Lower a @doc/@meta change on ``subject`` to (forward, rollback) steps."""
+    return _annotation_change_steps(
+        subject,
+        _doc_meta_tokens(old_doc, old_meta),
+        _doc_meta_tokens(new_doc, new_meta),
+    )
+
+
+@dataclass
+class ModifyTypeAnnotations(Operation):
+    """Modify @doc/@meta annotations on an entity, relation, or attribute type.
+
+    TypeDB 3.12+. Annotation-only schema changes are metadata-safe: they never
+    touch instance data.
+
+    Example:
+        ops.ModifyTypeAnnotations(
+            Person,
+            old_doc=None,
+            new_doc="A person known to the system.",
+        )
+    """
+
+    subject: TypeLike | AttributeLike
+    old_doc: str | None = None
+    new_doc: str | None = None
+    old_meta: dict[str, str] = field(default_factory=dict)
+    new_meta: dict[str, str] = field(default_factory=dict)
+
+    def _steps(self) -> tuple[list[str], list[str]]:
+        return _doc_meta_annotation_steps(
+            _subject_type_name(self.subject),
+            self.old_doc,
+            self.new_doc,
+            self.old_meta,
+            self.new_meta,
+        )
+
+    def to_typeql(self) -> str:
+        return "\n\n".join(self._steps()[0])
+
+    def to_rollback_typeql(self) -> str | None:
+        return "\n\n".join(self._steps()[1])
+
+    def to_typeql_steps(self) -> list[str]:
+        return self._steps()[0]
+
+    def to_rollback_typeql_steps(self) -> list[str] | None:
+        return self._steps()[1]
+
+
+@dataclass
+class ModifyRoleAnnotations(Operation):
+    """Modify @doc/@meta annotations on a relation role (TypeDB 3.12+).
+
+    Example:
+        ops.ModifyRoleAnnotations(
+            Employment, "employee",
+            new_doc="The employed party.",
+        )
+    """
+
+    relation: TypeLike
+    role_name: str
+    old_doc: str | None = None
+    new_doc: str | None = None
+    old_meta: dict[str, str] = field(default_factory=dict)
+    new_meta: dict[str, str] = field(default_factory=dict)
+
+    def _steps(self) -> tuple[list[str], list[str]]:
+        subject = f"{_type_name(self.relation)} relates {self.role_name}"
+        return _doc_meta_annotation_steps(
+            subject, self.old_doc, self.new_doc, self.old_meta, self.new_meta
+        )
+
+    def to_typeql(self) -> str:
+        return "\n\n".join(self._steps()[0])
+
+    def to_rollback_typeql(self) -> str | None:
+        return "\n\n".join(self._steps()[1])
+
+    def to_typeql_steps(self) -> list[str]:
+        return self._steps()[0]
+
+    def to_rollback_typeql_steps(self) -> list[str] | None:
+        return self._steps()[1]
+
 
 # --- Attribute Operations ---
 
@@ -251,12 +535,10 @@ class ModifyOwnership(Operation):
 
     TypeDB can only ``redefine`` parameterized annotations (``@card``);
     parameterless ones (``@key``, ``@unique``, ``@distinct``) must be
-    added with ``define`` and removed with ``undefine``. A transition that
-    both adds and removes annotation kinds therefore needs two schema
-    queries and cannot be expressed by this single operation in the
-    direct-execution path — split it into two ``ModifyOwnership`` steps
-    (first drop the old kinds, then add the new ones). The planner-backed
-    execution path decomposes such transitions automatically.
+    added with ``define`` and removed with ``undefine``. The operation
+    decomposes the transition into per-annotation schema steps (one
+    query each) via ``to_typeql_steps()``; both the direct-execution
+    path and the planner-backed path run those steps in order.
 
     Example:
         ops.ModifyOwnership(
@@ -271,48 +553,25 @@ class ModifyOwnership(Operation):
     old_annotations: str
     new_annotations: str
 
-    @staticmethod
-    def _annotation_kinds(annotations: str) -> dict[str, str]:
-        """Map annotation kind (``@card``) to its full token (``@card(0..1)``)."""
-        return {token.split("(", 1)[0]: token for token in annotations.split()}
-
-    def _transition_typeql(self, old_annotations: str, new_annotations: str) -> str:
-        owner_name = _type_name(self.owner)
-        attr_name = _attribute_name(self.attribute)
-        old_kinds = self._annotation_kinds(old_annotations)
-        new_kinds = self._annotation_kinds(new_annotations)
-
-        removed = [kind for kind in old_kinds if kind not in new_kinds]
-        changed = [
-            token for kind, token in new_kinds.items() if old_kinds.get(kind, token) != token
-        ]
-        added = [token for kind, token in new_kinds.items() if kind not in old_kinds]
-
-        categories = [bool(removed), bool(changed), bool(added)]
-        if sum(categories) > 1:
-            raise NotImplementedError(
-                f"ModifyOwnership of {owner_name} owns {attr_name} transitions "
-                f"{old_annotations!r} -> {new_annotations!r}, which needs more than one "
-                "schema query; split it into two ModifyOwnership operations (drop the "
-                "old annotation kinds first, then add the new ones)"
-            )
-        if removed:
-            lines = "\n".join(f"{kind} from {owner_name} owns {attr_name};" for kind in removed)
-            return f"undefine\n{lines}"
-        if changed:
-            return f"redefine\n{owner_name} owns {attr_name} {' '.join(changed)};"
-        if added:
-            return f"define\n{owner_name} owns {attr_name} {' '.join(added)};"
-        raise NotImplementedError(
-            f"ModifyOwnership of {owner_name} owns {attr_name} does not change the "
-            f"annotations ({old_annotations!r})"
+    def _steps(self) -> tuple[list[str], list[str]]:
+        subject = f"{_type_name(self.owner)} owns {_attribute_name(self.attribute)}"
+        return _annotation_change_steps(
+            subject,
+            _split_annotation_tokens(self.old_annotations),
+            _split_annotation_tokens(self.new_annotations),
         )
 
     def to_typeql(self) -> str:
-        return self._transition_typeql(self.old_annotations, self.new_annotations)
+        return "\n\n".join(self._steps()[0])
 
     def to_rollback_typeql(self) -> str | None:
-        return self._transition_typeql(self.new_annotations, self.old_annotations)
+        return "\n\n".join(self._steps()[1])
+
+    def to_typeql_steps(self) -> list[str]:
+        return self._steps()[0]
+
+    def to_rollback_typeql_steps(self) -> list[str] | None:
+        return self._steps()[1]
 
 
 # --- Relation Operations ---

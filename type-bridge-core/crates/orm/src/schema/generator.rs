@@ -64,7 +64,7 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
     let attr_names: BTreeSet<&str> = info.attributes.keys().map(|s| s.as_str()).collect();
     for attr_name in &attr_names {
         let attr = &info.attributes[*attr_name];
-        lines.push(build_attribute_definition(attr));
+        lines.push(build_attribute_definition(attr, true));
     }
     if !attr_names.is_empty() {
         lines.push(String::new());
@@ -299,10 +299,20 @@ pub fn card_annotation(min: u32, max: Option<u32>) -> String {
 /// Shared with the migration authoring core, which embeds the definition
 /// under an explicit `define`/`redefine` keyword for attribute type changes.
 pub fn attribute_definition(attr: &AttributeSchemaEntry) -> String {
-    build_attribute_definition(attr)
+    build_attribute_definition(attr, true)
 }
 
-fn build_attribute_definition(attr: &AttributeSchemaEntry) -> String {
+/// Render one attribute type definition statement with `@doc`/`@meta` head
+/// annotations omitted.
+///
+/// Head annotations are rejected inside `redefine` and collide (DEX16)
+/// inside `define` when already present, so attribute type *changes* embed
+/// this form and lower annotation changes to dedicated steps.
+pub fn attribute_constraint_definition(attr: &AttributeSchemaEntry) -> String {
+    build_attribute_definition(attr, false)
+}
+
+fn build_attribute_definition(attr: &AttributeSchemaEntry, include_doc_meta: bool) -> String {
     let mut definition = format!("attribute {}", attr.attr_name);
 
     if attr.is_abstract {
@@ -311,7 +321,8 @@ fn build_attribute_definition(attr: &AttributeSchemaEntry) -> String {
     if attr.is_independent {
         definition.push_str(" @independent");
     }
-    let has_doc_meta = push_doc_meta(&mut definition, attr.doc.as_deref(), &attr.meta);
+    let has_doc_meta =
+        include_doc_meta && push_doc_meta(&mut definition, attr.doc.as_deref(), &attr.meta);
 
     if let Some(ref parent) = attr.parent_type {
         if attr.is_abstract || attr.is_independent || has_doc_meta {

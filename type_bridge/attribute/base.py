@@ -231,7 +231,7 @@ class Attribute(ABC):
         return cls._supertype
 
     @classmethod
-    def to_schema_definition(cls) -> str:
+    def to_schema_definition(cls, *, include_doc_meta: bool = True) -> str:
         """Generate TypeQL schema definition for this attribute.
 
         Includes support for TypeDB annotations:
@@ -240,6 +240,12 @@ class Attribute(ABC):
         - @range(min..max) from range_constraint ClassVar (after value type)
         - @regex("pattern") from regex ClassVar (after value type)
         - @values("a", "b", ...) from allowed_values ClassVar (after value type)
+
+        Args:
+            include_doc_meta: Emit @doc/@meta head annotations. Migration
+                redefine payloads pass False — TypeDB rejects head
+                annotations in redefine; annotation changes lower to
+                dedicated define/redefine/undefine steps instead.
 
         Returns:
             TypeQL schema definition string
@@ -257,13 +263,14 @@ class Attribute(ABC):
             abstract=cls.abstract,
             independent=cls.independent,
         )
-        flags = getattr(cls, "flags", None)
-        type_annotations.extend(
-            format_doc_meta_annotations(
-                getattr(flags, "doc", None),
-                dict(getattr(flags, "meta", {}) or {}),
+        if include_doc_meta:
+            flags = getattr(cls, "flags", None)
+            type_annotations.extend(
+                format_doc_meta_annotations(
+                    getattr(flags, "doc", None),
+                    dict(getattr(flags, "meta", {}) or {}),
+                )
             )
-        )
 
         # Build definition: attribute name [@abstract] [@independent], [sub parent,] value type;
         if type_annotations:

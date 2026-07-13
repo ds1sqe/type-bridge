@@ -228,6 +228,12 @@ impl<'a> SymbolResolver<'a> {
                     self.record(side, owner);
                 }
             }
+            OperationSpec::ModifyTypeAnnotations { type_name, .. } => {
+                self.record(side, type_name);
+            }
+            OperationSpec::ModifyRoleAnnotations { relation_type, .. } => {
+                self.record(side, relation_type);
+            }
             OperationSpec::DefineSchema { .. }
             | OperationSpec::RunTypeql { .. }
             | OperationSpec::RenameAttribute { .. } => {}
@@ -280,6 +286,17 @@ impl<'a> SymbolResolver<'a> {
             Kind::Attribute => "ref.attribute",
         };
         format!("{constructor}({})", py_repr(label))
+    }
+
+    /// Kind of an annotation-subject label (entity, relation, or attribute):
+    /// what the side's schema says, falling back to the other side.
+    fn subject_kind(&self, side: Side, label: &str) -> Option<Kind> {
+        let other = match side {
+            Side::Pre => Side::Post,
+            Side::Post => Side::Pre,
+        };
+        self.kind_in(side, label)
+            .or_else(|| self.kind_in(other, label))
     }
 
     /// Fallback kind for an owner label: prefer what the side's schema says,
@@ -437,6 +454,41 @@ fn render_operation(op: &OperationSpec, resolver: &SymbolResolver<'_>) -> crate:
             resolver.reference(side, relation_type, Kind::Relation),
             py_repr(role_name),
             py_repr(player_type_name)
+        ),
+        OperationSpec::ModifyTypeAnnotations {
+            type_name,
+            old_doc,
+            new_doc,
+            old_meta,
+            new_meta,
+        } => {
+            let fallback = resolver
+                .subject_kind(side, type_name)
+                .unwrap_or(Kind::Entity);
+            format!(
+                "ops.ModifyTypeAnnotations({}, old_doc={}, new_doc={}, old_meta={}, new_meta={})",
+                resolver.reference(side, type_name, fallback),
+                py_repr_opt(old_doc.as_deref()),
+                py_repr_opt(new_doc.as_deref()),
+                py_repr_dict(old_meta),
+                py_repr_dict(new_meta)
+            )
+        }
+        OperationSpec::ModifyRoleAnnotations {
+            relation_type,
+            role_name,
+            old_doc,
+            new_doc,
+            old_meta,
+            new_meta,
+        } => format!(
+            "ops.ModifyRoleAnnotations({}, {}, old_doc={}, new_doc={}, old_meta={}, new_meta={})",
+            resolver.reference(side, relation_type, Kind::Relation),
+            py_repr(role_name),
+            py_repr_opt(old_doc.as_deref()),
+            py_repr_opt(new_doc.as_deref()),
+            py_repr_dict(old_meta),
+            py_repr_dict(new_meta)
         ),
         OperationSpec::RunTypeql { forward, reverse } => match reverse {
             Some(reverse) => format!(
@@ -609,6 +661,21 @@ fn py_repr_list(items: &[String]) -> String {
     format!("[{}]", parts.join(", "))
 }
 
+fn py_repr_opt(text: Option<&str>) -> String {
+    match text {
+        Some(text) => py_repr(text),
+        None => "None".to_string(),
+    }
+}
+
+fn py_repr_dict(map: &BTreeMap<String, String>) -> String {
+    let parts: Vec<String> = map
+        .iter()
+        .map(|(key, value)| format!("{}: {}", py_repr(key), py_repr(value)))
+        .collect();
+    format!("{{{}}}", parts.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -627,6 +694,8 @@ mod tests {
             parent_type: None,
             owned_attributes,
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: BTreeMap::new(),
         }
     }
 
@@ -636,6 +705,8 @@ mod tests {
             value_type: ValueType::String,
             annotations: vec![Annotation::Card(0, Some(1))],
             is_ordered: false,
+            doc: None,
+            meta: BTreeMap::new(),
         }
     }
 
@@ -867,6 +938,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: std::collections::BTreeMap::new(),
+                doc: None,
+                meta: std::collections::BTreeMap::new(),
             },
         );
         let operations = vec![OperationSpec::CopyAttribute {

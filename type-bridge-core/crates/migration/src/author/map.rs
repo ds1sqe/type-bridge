@@ -25,8 +25,10 @@
 
 use std::collections::BTreeSet;
 
+use std::collections::BTreeMap;
+
 use type_bridge_orm::schema::diff::{AttributeTypeChanges, SchemaDiff};
-use type_bridge_orm::schema::generator::{attribute_definition, card_annotation};
+use type_bridge_orm::schema::generator::{attribute_constraint_definition, card_annotation};
 use type_bridge_orm::schema::info::{OwnedAttributeEntry, SchemaInfo};
 
 use crate::error::MigrationError;
@@ -79,11 +81,21 @@ pub fn map_schema_diff(
             .attributes
             .get(attr_name)
             .ok_or_else(|| missing("modified attribute", attr_name, "target"))?;
-        let keyword = attribute_change_keyword(changes);
-        operations.push(OperationSpec::RunTypeql {
-            forward: format!("{keyword}\n{}", attribute_definition(attribute)),
-            reverse: None,
-        });
+        if !changes.is_annotation_only() {
+            let keyword = attribute_change_keyword(changes);
+            // @doc/@meta head annotations are rejected inside redefine and
+            // collide (DEX16) inside define; annotation changes lower to a
+            // dedicated ModifyTypeAnnotations below.
+            operations.push(OperationSpec::RunTypeql {
+                forward: format!("{keyword}\n{}", attribute_constraint_definition(attribute)),
+                reverse: None,
+            });
+        }
+        if let Some(op) =
+            type_annotation_change(attr_name, &changes.doc_changed, &changes.meta_changed)
+        {
+            operations.push(op);
+        }
     }
 
     for entity_name in &diff.added_entities {
@@ -139,6 +151,11 @@ pub fn map_schema_diff(
                 old_annotations: old_annotations.clone(),
                 new_annotations: new_annotations.clone(),
             });
+        }
+        if let Some(op) =
+            type_annotation_change(entity_name, &changes.doc_changed, &changes.meta_changed)
+        {
+            operations.push(op);
         }
         push_header_changes(
             &mut operations,
@@ -224,6 +241,23 @@ pub fn map_schema_diff(
                 cardinality_change.old_cardinality,
                 cardinality_change.new_cardinality,
             )?);
+        }
+        for annotation_change in &changes.modified_role_annotations {
+            let (old_doc, new_doc) = annotation_change.doc_changed.clone().unwrap_or_default();
+            let (old_meta, new_meta) = annotation_change.meta_changed.clone().unwrap_or_default();
+            operations.push(OperationSpec::ModifyRoleAnnotations {
+                relation_type: relation_name.clone(),
+                role_name: annotation_change.role_name.clone(),
+                old_doc,
+                new_doc,
+                old_meta,
+                new_meta,
+            });
+        }
+        if let Some(op) =
+            type_annotation_change(relation_name, &changes.doc_changed, &changes.meta_changed)
+        {
+            operations.push(op);
         }
         push_header_changes(
             &mut operations,
@@ -408,6 +442,8 @@ fn expand_attribute_renames(
                     value_type: new_attribute.value_type,
                     annotations: vec![],
                     is_ordered: false,
+                    doc: None,
+                    meta: BTreeMap::new(),
                 },
             });
         }
@@ -539,6 +575,36 @@ fn validate_rename(
         });
     }
     Ok(())
+}
+
+/// `@meta` annotations keyed by meta key (mirrors `diff.rs`).
+type MetaMap = BTreeMap<String, String>;
+
+/// An optional `@doc` transition as `(old, new)` (mirrors `diff.rs`).
+type DocChange = Option<(Option<String>, Option<String>)>;
+
+/// An optional `@meta` transition as `(old, new)` (mirrors `diff.rs`).
+type MetaChange = Option<(MetaMap, MetaMap)>;
+
+/// Build a `ModifyTypeAnnotations` op from a type's `@doc`/`@meta` diff
+/// fields, or `None` when neither changed.
+fn type_annotation_change(
+    type_name: &str,
+    doc_changed: &DocChange,
+    meta_changed: &MetaChange,
+) -> Option<OperationSpec> {
+    if doc_changed.is_none() && meta_changed.is_none() {
+        return None;
+    }
+    let (old_doc, new_doc) = doc_changed.clone().unwrap_or_default();
+    let (old_meta, new_meta) = meta_changed.clone().unwrap_or_default();
+    Some(OperationSpec::ModifyTypeAnnotations {
+        type_name: type_name.to_string(),
+        old_doc,
+        new_doc,
+        old_meta,
+        new_meta,
+    })
 }
 
 fn missing(what: &str, name: &str, schema: &str) -> MigrationError {
@@ -689,6 +755,8 @@ mod tests {
             value_type: ValueType::String,
             annotations,
             is_ordered: false,
+            doc: None,
+            meta: BTreeMap::new(),
         }
     }
 
@@ -699,6 +767,8 @@ mod tests {
             parent_type: None,
             owned_attributes,
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: BTreeMap::new(),
         }
     }
 
@@ -711,6 +781,8 @@ mod tests {
             is_abstract: false,
             ordered: false,
             distinct: false,
+            doc: None,
+            meta: BTreeMap::new(),
         }
     }
 
@@ -726,6 +798,8 @@ mod tests {
             owned_attributes,
             roles,
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: BTreeMap::new(),
         }
     }
 
@@ -775,6 +849,8 @@ mod tests {
             OperationSpec::RunTypeql { .. } => "run_typeql",
             OperationSpec::RenameAttribute { .. } => "rename_attribute",
             OperationSpec::CopyAttribute { .. } => "copy_attribute",
+            OperationSpec::ModifyTypeAnnotations { .. } => "modify_type_annotations",
+            OperationSpec::ModifyRoleAnnotations { .. } => "modify_role_annotations",
         }
     }
 

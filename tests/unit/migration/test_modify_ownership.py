@@ -8,8 +8,6 @@ with ``undefine``. The historical blanket ``redefine`` lowering failed live
 
 from __future__ import annotations
 
-import pytest
-
 from type_bridge import Entity, Flag, Key, String, TypeFlags
 from type_bridge.attribute import AttributeFlags
 from type_bridge.migration import operations as ops
@@ -47,22 +45,27 @@ def test_removing_a_parameterless_annotation_lowers_to_undefine() -> None:
     assert op.to_rollback_typeql() == "define\nmo-person owns mo-nickname @unique;"
 
 
-def test_mixed_transition_refuses_single_query_lowering() -> None:
+def test_mixed_transition_decomposes_into_per_annotation_steps() -> None:
     """@card(0..1) -> @key removes one kind and adds another: two schema
-    queries. The direct-execution path cannot run both from one operation,
-    so it fails loudly with split guidance (the planner path decomposes it
-    automatically)."""
+    queries. Removal runs first — defining @key while the conflicting
+    explicit @card is still declared fails schema validation."""
     op = ops.ModifyOwnership(
         MoPerson,
         MoNickname,
         old_annotations="@card(0..1)",
         new_annotations="@key",
     )
-    with pytest.raises(NotImplementedError, match="split it into two ModifyOwnership"):
-        op.to_typeql()
+    assert op.to_typeql_steps() == [
+        "undefine\n@card from mo-person owns mo-nickname;",
+        "define\nmo-person owns mo-nickname @key;",
+    ]
+    assert op.to_rollback_typeql_steps() == [
+        "undefine\n@key from mo-person owns mo-nickname;",
+        "define\nmo-person owns mo-nickname @card(0..1);",
+    ]
 
 
-def test_no_op_transition_is_rejected() -> None:
+def test_no_op_transition_lowers_to_no_steps() -> None:
     op = ops.ModifyOwnership(MoPerson, MoNickname, old_annotations="@key", new_annotations="@key")
-    with pytest.raises(NotImplementedError, match="does not change"):
-        op.to_typeql()
+    assert op.to_typeql_steps() == []
+    assert op.to_rollback_typeql_steps() == []

@@ -259,6 +259,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: BTreeMap::new(),
             },
         );
 

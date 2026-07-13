@@ -96,20 +96,7 @@ pub(crate) fn append_doc_meta_annotations(
 /// Distinct from the `@regex` emission path, which preserves user escape
 /// sequences verbatim and must not be double-escaped.
 pub(crate) fn escaped_string_literal(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
+    super::annotations::escaped_string_literal(value)
 }
 
 /// Metadata for one role in a relation.

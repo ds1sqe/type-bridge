@@ -118,6 +118,22 @@ def _requires_rust_extension() -> None:
         ),
         (ops.RunTypeQL("define attribute lower-nick, value string;"), "run_typeql"),
         (ops.RenameAttribute("lower-name", "lower-full-name", "string"), "rename_attribute"),
+        (
+            ops.ModifyTypeAnnotations(
+                LowerPerson,
+                new_doc="A person.",
+                new_meta={"owner": "core"},
+            ),
+            "modify_type_annotations",
+        ),
+        (
+            ops.ModifyRoleAnnotations(
+                LowerEmployment,
+                "employee",
+                new_doc="The employed party.",
+            ),
+            "modify_role_annotations",
+        ),
     ],
 )
 def test_every_current_operation_lowers_to_rust_normalized_spec(
@@ -658,3 +674,67 @@ def test_schema_diff_self_is_empty() -> None:
     diff = schema.compare(schema)
 
     assert not diff.has_changes()
+
+
+def test_modify_type_annotations_lowers_full_payload() -> None:
+    spec = lower_operation(
+        ops.ModifyTypeAnnotations(
+            LowerPerson,
+            old_doc="old",
+            new_doc="new",
+            old_meta={"gone": "1"},
+            new_meta={"added": "2"},
+        )
+    )
+    assert spec["kind"] == "modify_type_annotations"
+    assert spec["type_name"] == "lower-person"
+    assert spec["old_doc"] == "old"
+    assert spec["new_doc"] == "new"
+    assert spec["old_meta"] == {"gone": "1"}
+    assert spec["new_meta"] == {"added": "2"}
+
+
+def test_modify_type_annotations_accepts_attribute_subject() -> None:
+    spec = lower_operation(ops.ModifyTypeAnnotations(LowerAge, new_doc="An age."))
+    assert spec["kind"] == "modify_type_annotations"
+    assert spec["type_name"] == "lower-age"
+
+
+def test_modify_role_annotations_lowers_relation_and_role() -> None:
+    spec = lower_operation(ops.ModifyRoleAnnotations(LowerEmployment, "employee", new_doc="doc"))
+    assert spec["kind"] == "modify_role_annotations"
+    assert spec["relation_type"] == "lower-employment"
+    assert spec["role_name"] == "employee"
+
+
+def test_annotation_operations_emit_stepwise_typeql() -> None:
+    operation = ops.ModifyTypeAnnotations(
+        LowerPerson,
+        old_doc="old doc",
+        new_doc="new doc",
+        old_meta={"gone": "1"},
+        new_meta={"added": "2"},
+    )
+    assert operation.to_typeql_steps() == [
+        'undefine\n@meta("gone") from lower-person;',
+        'redefine\nlower-person @doc("new doc");',
+        'define\nlower-person @meta("added", "2");',
+    ]
+    assert operation.to_rollback_typeql_steps() == [
+        'undefine\n@meta("added") from lower-person;',
+        'redefine\nlower-person @doc("old doc");',
+        'define\nlower-person @meta("gone", "1");',
+    ]
+    assert operation.reversible
+
+
+def test_role_annotation_operation_uses_relates_subject() -> None:
+    operation = ops.ModifyRoleAnnotations(
+        LowerEmployment, "employee", new_doc="The employed party."
+    )
+    assert operation.to_typeql_steps() == [
+        'define\nlower-employment relates employee @doc("The employed party.");',
+    ]
+    assert operation.to_rollback_typeql_steps() == [
+        "undefine\n@doc from lower-employment relates employee;",
+    ]
