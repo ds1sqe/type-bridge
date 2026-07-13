@@ -96,9 +96,7 @@ class TestLegacyLowering:
         assert schema.startswith(
             'entity doc_person @doc("an individual client") @meta("icon", "silhouette.png")'
         )
-        assert (
-            '    owns person_name @key @doc("full legal name") @meta("column", "name")' in schema
-        )
+        assert '    owns person_name @key @doc("full legal name") @meta("column", "name")' in schema
 
     def test_relation_definition_carries_doc_meta(self) -> None:
         schema = DocFriendship.to_schema_definition()
@@ -132,12 +130,8 @@ class TestRustLowering:
 
     def test_define_block_carries_capability_annotations(self) -> None:
         typeql = self._schema_info().to_typeql()
-        assert (
-            '    owns person_name @key @doc("full legal name") @meta("column", "name")' in typeql
-        )
-        assert (
-            '    relates friend @doc("one side of the bond") @meta("endpoint", "true")' in typeql
-        )
+        assert '    owns person_name @key @doc("full legal name") @meta("column", "name")' in typeql
+        assert '    relates friend @doc("one side of the bond") @meta("endpoint", "true")' in typeql
 
     def test_define_block_round_trips_through_introspection_parser(self) -> None:
         """Emitted define text parses back into an identical annotated schema."""

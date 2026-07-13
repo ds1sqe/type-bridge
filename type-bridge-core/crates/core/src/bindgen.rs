@@ -398,6 +398,40 @@ fn card_is_multi(cardinality: &Cardinality) -> bool {
     cardinality.max.is_none_or(|max| max > 1)
 }
 
+/// Render `, Doc("...")`, `, Meta("k", "v")` marker arguments for a `Flag(...)`
+/// (Python) or `field(...)` (TypeScript) call. Both surfaces share the marker
+/// syntax. Returns an empty string when the ownership carries no annotations.
+fn doc_meta_flag_args(doc: Option<&str>, meta: &BTreeMap<String, String>) -> String {
+    let mut out = String::new();
+    if let Some(doc) = doc {
+        write!(out, ", Doc({})", string_literal(doc)).unwrap();
+    }
+    for (key, value) in meta {
+        write!(out, ", Meta({}, {})", string_literal(key), string_literal(value)).unwrap();
+    }
+    out
+}
+
+/// Render a Python dict literal `{"key": "value", ...}` for `meta=` kwargs.
+fn py_meta_literal(meta: &BTreeMap<String, String>) -> String {
+    let entries = meta
+        .iter()
+        .map(|(key, value)| format!("{}: {}", string_literal(key), string_literal(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{entries}}}")
+}
+
+/// Render a TypeScript object literal `{ "key": "value", ... }` for `meta:` options.
+fn ts_meta_literal(meta: &BTreeMap<String, String>) -> String {
+    let entries = meta
+        .iter()
+        .map(|(key, value)| format!("{}: {}", string_literal(key), string_literal(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{ {entries} }}")
+}
+
 fn card_expr(cardinality: &Cardinality) -> String {
     match cardinality.max {
         Some(max) => format!("Card({}, {})", cardinality.min, max),
@@ -810,7 +844,10 @@ fn render_python_attributes(schema: &TypeSchema, options: &BindgenOptions) -> St
             .unwrap_or_else(|| {
                 python_value_base(resolved_attr_value_type(schema, name)).to_string()
             });
-        let doc = docstring(&options.python_metadata.attribute_annotations, name)
+        let doc = attr
+            .doc
+            .clone()
+            .or_else(|| docstring(&options.python_metadata.attribute_annotations, name))
             .unwrap_or_else(|| format!("Attribute for `{name}`."));
 
         writeln!(out, "class {class}({base}):").unwrap();
@@ -826,6 +863,12 @@ fn render_python_attributes(schema: &TypeSchema, options: &BindgenOptions) -> St
         }
         if !flags.iter().any(|f| f.starts_with("name=")) {
             flags.insert(0, format!("name={}", string_literal(name)));
+        }
+        if let Some(doc_text) = attr.doc.as_deref() {
+            flags.push(format!("doc={}", string_literal(doc_text)));
+        }
+        if !attr.meta.is_empty() {
+            flags.push(format!("meta={}", py_meta_literal(&attr.meta)));
         }
         let flags_str = if flags.is_empty() {
             String::new()
@@ -876,47 +919,52 @@ fn render_python_attributes(schema: &TypeSchema, options: &BindgenOptions) -> St
     out
 }
 
-fn render_python_attr_field(
-    attr_name: &str,
-    attr_class: &str,
-    is_key: bool,
-    is_unique: bool,
-    cardinality: Option<&Cardinality>,
-    ordered: bool,
-    distinct: bool,
-) -> String {
-    let py_name = field_name(attr_name);
+fn render_python_attr_field(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> String {
+    let py_name = field_name(&owned.name);
+    let extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
     if is_key {
-        return format!("{py_name}: attributes.{attr_class} = Flag(Key)");
+        return format!("{py_name}: attributes.{attr_class} = Flag(Key{extras})");
     }
-    if is_unique {
-        return format!("{py_name}: attributes.{attr_class} = Flag(Unique)");
+    if owned.is_unique {
+        return format!("{py_name}: attributes.{attr_class} = Flag(Unique{extras})");
     }
-    if ordered {
-        if distinct {
-            return format!("{py_name}: list[attributes.{attr_class}] = Flag(Ordered, Distinct)");
+    if owned.ordered {
+        if owned.distinct {
+            return format!(
+                "{py_name}: list[attributes.{attr_class}] = Flag(Ordered, Distinct{extras})"
+            );
         }
-        return format!("{py_name}: list[attributes.{attr_class}] = Flag(Ordered)");
+        return format!("{py_name}: list[attributes.{attr_class}] = Flag(Ordered{extras})");
     }
-    match cardinality {
-        None => format!("{py_name}: attributes.{attr_class} | None = None"),
-        Some(cardinality) if card_is_optional_single(cardinality) => {
-            format!("{py_name}: attributes.{attr_class} | None = None")
-        }
+    // For single-valued ownerships the optionality lives in the type annotation;
+    // a Flag(...) default is only emitted when annotation markers require one.
+    let bare_extras = extras.trim_start_matches(", ");
+    match owned.cardinality.as_ref() {
         Some(cardinality) if card_is_multi(cardinality) => match cardinality.max {
             Some(max) => format!(
-                "{py_name}: list[attributes.{attr_class}] = Flag(Card({}, {}))",
+                "{py_name}: list[attributes.{attr_class}] = Flag(Card({}, {}){extras})",
                 cardinality.min, max
             ),
             None => format!(
-                "{py_name}: list[attributes.{attr_class}] = Flag(Card(min={}))",
+                "{py_name}: list[attributes.{attr_class}] = Flag(Card(min={}){extras})",
                 cardinality.min
             ),
         },
         Some(cardinality) if card_is_required_single(cardinality) => {
-            format!("{py_name}: attributes.{attr_class}")
+            if extras.is_empty() {
+                format!("{py_name}: attributes.{attr_class}")
+            } else {
+                format!("{py_name}: attributes.{attr_class} = Flag({bare_extras})")
+            }
         }
-        _ => format!("{py_name}: attributes.{attr_class} | None = None"),
+        // None or @card(0..1): optional single value.
+        _ => {
+            if extras.is_empty() {
+                format!("{py_name}: attributes.{attr_class} | None = None")
+            } else {
+                format!("{py_name}: attributes.{attr_class} | None = Flag({bare_extras})")
+            }
+        }
     }
 }
 
@@ -941,6 +989,14 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
         .entities
         .values()
         .any(|entity| entity.owns.iter().any(|owned| owned.distinct));
+    let needs_doc = schema
+        .entities
+        .values()
+        .any(|entity| entity.owns.iter().any(|owned| owned.doc.is_some()));
+    let needs_meta = schema
+        .entities
+        .values()
+        .any(|entity| entity.owns.iter().any(|owned| !owned.meta.is_empty()));
 
     let mut imports = vec![
         "Entity",
@@ -955,6 +1011,12 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
     }
     if needs_distinct {
         imports.push("Distinct");
+    }
+    if needs_doc {
+        imports.push("Doc");
+    }
+    if needs_meta {
+        imports.push("Meta");
     }
     if needs_ordered {
         imports.push("Ordered");
@@ -982,7 +1044,10 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
             .filter(|parent| schema.entities.contains_key(*parent))
             .map(class_name)
             .unwrap_or_else(|| "Entity".to_string());
-        let doc = docstring(&options.python_metadata.entity_annotations, name)
+        let doc = entity
+            .doc
+            .clone()
+            .or_else(|| docstring(&options.python_metadata.entity_annotations, name))
             .unwrap_or_else(|| format!("Entity generated from `{name}`."));
         let mut flags = Vec::new();
         if let Some(case) = python_type_name_case(
@@ -999,6 +1064,12 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
         }
         if entity.is_abstract {
             flags.push("abstract=True".to_string());
+        }
+        if let Some(doc_text) = entity.doc.as_deref() {
+            flags.push(format!("doc={}", string_literal(doc_text)));
+        }
+        if !entity.meta.is_empty() {
+            flags.push(format!("meta={}", py_meta_literal(&entity.meta)));
         }
 
         writeln!(out, "class {class}({base}):").unwrap();
@@ -1032,15 +1103,7 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
                 continue;
             }
             let is_key = owned.is_key || implicit_keys.contains(owned.name.as_str());
-            let field = render_python_attr_field(
-                &owned.name,
-                &class_name(&owned.name),
-                is_key,
-                owned.is_unique,
-                owned.cardinality.as_ref(),
-                owned.ordered,
-                owned.distinct,
-            );
+            let field = render_python_attr_field(owned, &class_name(&owned.name), is_key);
             writeln!(out, "    {field}").unwrap();
         }
 
@@ -1114,6 +1177,12 @@ fn render_python_role_field(
     if role.distinct {
         args.push(", distinct=True".to_string());
     }
+    if let Some(doc_text) = role.doc.as_deref() {
+        args.push(format!(", doc={}", string_literal(doc_text)));
+    }
+    if !role.meta.is_empty() {
+        args.push(format!(", meta={}", py_meta_literal(&role.meta)));
+    }
     let args = args.join("");
 
     if player_classes.len() == 1 {
@@ -1183,12 +1252,20 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
         relation.roles.iter().any(|role| role.distinct)
             || relation.owns.iter().any(|owned| owned.distinct)
     });
+    let needs_doc = schema
+        .relations
+        .values()
+        .any(|relation| relation.owns.iter().any(|owned| owned.doc.is_some()));
+    let needs_meta = schema
+        .relations
+        .values()
+        .any(|relation| relation.owns.iter().any(|owned| !owned.meta.is_empty()));
 
     let mut imports = vec!["Relation", "Role", "TypeFlags", "TypeNameCase"];
     if needs_card {
         imports.insert(0, "Card");
     }
-    if needs_key || needs_unique || needs_card || needs_ordered {
+    if needs_key || needs_unique || needs_card || needs_ordered || needs_doc || needs_meta {
         imports.insert(0, "Flag");
     }
     if needs_key {
@@ -1199,6 +1276,12 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
     }
     if needs_distinct {
         imports.push("Distinct");
+    }
+    if needs_doc {
+        imports.push("Doc");
+    }
+    if needs_meta {
+        imports.push("Meta");
     }
     if needs_ordered {
         imports.push("Ordered");
@@ -1239,7 +1322,10 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
             .filter(|parent| schema.relations.contains_key(*parent))
             .map(class_name)
             .unwrap_or_else(|| "Relation".to_string());
-        let doc = docstring(&options.python_metadata.relation_annotations, name)
+        let doc = relation
+            .doc
+            .clone()
+            .or_else(|| docstring(&options.python_metadata.relation_annotations, name))
             .unwrap_or_else(|| format!("Relation generated from `{name}`."));
         let mut flags = Vec::new();
         if let Some(case) = python_type_name_case(
@@ -1257,6 +1343,12 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
         if relation.is_abstract {
             flags.push("abstract=True".to_string());
         }
+        if let Some(doc_text) = relation.doc.as_deref() {
+            flags.push(format!("doc={}", string_literal(doc_text)));
+        }
+        if !relation.meta.is_empty() {
+            flags.push(format!("meta={}", py_meta_literal(&relation.meta)));
+        }
 
         writeln!(out, "class {class}({base}):").unwrap();
         writeln!(out, "    \"\"\"{doc}\"\"\"").unwrap();
@@ -1271,15 +1363,7 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
                 continue;
             }
             let is_key = owned.is_key || implicit_keys.contains(owned.name.as_str());
-            let field = render_python_attr_field(
-                &owned.name,
-                &class_name(&owned.name),
-                is_key,
-                owned.is_unique,
-                owned.cardinality.as_ref(),
-                owned.ordered,
-                owned.distinct,
-            );
+            let field = render_python_attr_field(owned, &class_name(&owned.name), is_key);
             writeln!(out, "    {field}").unwrap();
         }
 
@@ -2195,6 +2279,12 @@ fn render_ts_attributes(schema: &TypeSchema) -> String {
                     .unwrap_or_else(|| "null".to_string())
             ));
         }
+        if let Some(doc_text) = attr.doc.as_deref() {
+            options.push(format!("doc: {}", string_literal(doc_text)));
+        }
+        if !attr.meta.is_empty() {
+            options.push(format!("meta: {}", ts_meta_literal(&attr.meta)));
+        }
         let options = if options.is_empty() {
             String::new()
         } else {
@@ -2213,14 +2303,15 @@ fn render_ts_attributes(schema: &TypeSchema) -> String {
 }
 
 fn ts_field_expr(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> String {
+    let extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
     if is_key {
-        return format!("field({attr_class}, Key)");
+        return format!("field({attr_class}, Key{extras})");
     }
     if owned.is_unique {
-        return format!("field({attr_class}, Unique)");
+        return format!("field({attr_class}, Unique{extras})");
     }
     if owned.ordered {
-        let base = format!("field({attr_class}).ordered()");
+        let base = format!("field({attr_class}{extras}).ordered()");
         return if owned.distinct {
             format!("{base}.distinct()")
         } else {
@@ -2228,17 +2319,20 @@ fn ts_field_expr(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> Stri
         };
     }
     match owned.cardinality.as_ref() {
-        None => format!("field({attr_class}).optional()"),
+        None => format!("field({attr_class}{extras}).optional()"),
         Some(cardinality) if card_is_optional_single(cardinality) => {
-            format!("field({attr_class}).optional()")
+            format!("field({attr_class}{extras}).optional()")
         }
         Some(cardinality) if card_is_multi(cardinality) => {
-            format!("field({attr_class}).list({})", ts_card_expr(cardinality))
+            format!(
+                "field({attr_class}{extras}).list({})",
+                ts_card_expr(cardinality)
+            )
         }
         Some(cardinality) if card_is_required_single(cardinality) => {
-            format!("field({attr_class})")
+            format!("field({attr_class}{extras})")
         }
-        _ => format!("field({attr_class}).optional()"),
+        _ => format!("field({attr_class}{extras}).optional()"),
     }
 }
 
@@ -2255,7 +2349,7 @@ fn render_ts_entities(schema: &TypeSchema, options: &BindgenOptions) -> String {
     for name in &order {
         let entity = &schema.entities[name];
         let parent_owns = direct_parent_owns(schema, entity.parent.as_ref(), false);
-        if entity.is_abstract {
+        if entity.is_abstract || entity.doc.is_some() || !entity.meta.is_empty() {
             factory_imports.insert("TypeFlags");
         }
         for owned in &entity.owns {
@@ -2277,6 +2371,12 @@ fn render_ts_entities(schema: &TypeSchema, options: &BindgenOptions) -> String {
             }
             if owned.distinct {
                 factory_imports.insert("Distinct");
+            }
+            if owned.doc.is_some() {
+                factory_imports.insert("Doc");
+            }
+            if !owned.meta.is_empty() {
+                factory_imports.insert("Meta");
             }
         }
     }
@@ -2301,14 +2401,7 @@ fn render_ts_entities(schema: &TypeSchema, options: &BindgenOptions) -> String {
     for name in &order {
         let entity = &schema.entities[name];
         let class = class_name(name);
-        let first_arg = if entity.is_abstract {
-            format!(
-                "TypeFlags({{ name: {}, abstract: true }})",
-                string_literal(name)
-            )
-        } else {
-            string_literal(name)
-        };
+        let first_arg = ts_type_first_arg(name, entity.is_abstract, entity.doc.as_deref(), &entity.meta);
         let third_arg = entity
             .parent
             .as_deref()
@@ -2349,6 +2442,31 @@ fn render_ts_entities(schema: &TypeSchema, options: &BindgenOptions) -> String {
     out
 }
 
+/// Render the first `Entity(...)`/`Relation(...)` argument: a plain name
+/// literal, or a `TypeFlags({...})` call when the type carries flags or
+/// doc/meta annotations.
+fn ts_type_first_arg(
+    name: &str,
+    is_abstract: bool,
+    doc: Option<&str>,
+    meta: &BTreeMap<String, String>,
+) -> String {
+    if !is_abstract && doc.is_none() && meta.is_empty() {
+        return string_literal(name);
+    }
+    let mut opts = vec![format!("name: {}", string_literal(name))];
+    if is_abstract {
+        opts.push("abstract: true".to_string());
+    }
+    if let Some(doc) = doc {
+        opts.push(format!("doc: {}", string_literal(doc)));
+    }
+    if !meta.is_empty() {
+        opts.push(format!("meta: {}", ts_meta_literal(meta)));
+    }
+    format!("TypeFlags({{ {} }})", opts.join(", "))
+}
+
 fn ts_role_call(
     player_classes: &[String],
     role: &RoleSpec,
@@ -2375,6 +2493,12 @@ fn ts_role_call(
     if role.distinct {
         options.push("distinct: true".to_string());
     }
+    if let Some(doc_text) = role.doc.as_deref() {
+        options.push(format!("doc: {}", string_literal(doc_text)));
+    }
+    if !role.meta.is_empty() {
+        options.push(format!("meta: {}", ts_meta_literal(&role.meta)));
+    }
     let option_arg = if options.is_empty() {
         String::new()
     } else {
@@ -2396,7 +2520,7 @@ fn render_ts_relations(schema: &TypeSchema, options: &BindgenOptions) -> String 
 
     for name in &order {
         let relation = &schema.relations[name];
-        if relation.is_abstract {
+        if relation.is_abstract || relation.doc.is_some() || !relation.meta.is_empty() {
             factory_imports.insert("TypeFlags");
         }
         let parent_owns = direct_parent_owns(schema, relation.parent.as_ref(), true);
@@ -2419,6 +2543,12 @@ fn render_ts_relations(schema: &TypeSchema, options: &BindgenOptions) -> String 
             }
             if owned.distinct {
                 factory_imports.insert("Distinct");
+            }
+            if owned.doc.is_some() {
+                factory_imports.insert("Doc");
+            }
+            if !owned.meta.is_empty() {
+                factory_imports.insert("Meta");
             }
         }
         let parent_roles = direct_parent_roles(schema, relation.parent.as_ref());
@@ -2480,14 +2610,12 @@ fn render_ts_relations(schema: &TypeSchema, options: &BindgenOptions) -> String 
     for name in &order {
         let relation = &schema.relations[name];
         let class = class_name(name);
-        let first_arg = if relation.is_abstract {
-            format!(
-                "TypeFlags({{ name: {}, abstract: true }})",
-                string_literal(name)
-            )
-        } else {
-            string_literal(name)
-        };
+        let first_arg = ts_type_first_arg(
+            name,
+            relation.is_abstract,
+            relation.doc.as_deref(),
+            &relation.meta,
+        );
         let third_arg = relation
             .parent
             .as_deref()
@@ -2649,12 +2777,15 @@ fn render_rust_entity(
     if let Some(parent) = entity.parent.as_deref() {
         parts.push(format!("extends = {}", string_literal(parent)));
     }
+    push_rust_doc_meta_parts(&mut parts, entity.doc.as_deref(), &entity.meta);
+    rust_doc_comment(out, entity.doc.as_deref(), "");
     writeln!(out, "#[derive({derive}, Debug)]").unwrap();
     writeln!(out, "#[entity({})]", parts.join(", ")).unwrap();
     writeln!(out, "pub struct {} {{", rust_pascal_case(&entity.name)).unwrap();
     writeln!(out, "    pub iid: Option<String>,").unwrap();
     for owned in ordered_owned_attributes(&entity.owns, &entity.owns_order) {
         let attr_type = rust_pascal_case(&owned.name);
+        rust_doc_comment(out, owned.doc.as_deref(), "    ");
         if let Some(field_attr) = rust_field_attribute(owned) {
             writeln!(out, "    {field_attr}").unwrap();
         }
@@ -2712,6 +2843,8 @@ fn render_rust_relation(
     if let Some(parent) = relation.parent.as_deref() {
         parts.push(format!("extends = {}", string_literal(parent)));
     }
+    push_rust_doc_meta_parts(&mut parts, relation.doc.as_deref(), &relation.meta);
+    rust_doc_comment(out, relation.doc.as_deref(), "");
     writeln!(out, "#[derive({derive}, Debug)]").unwrap();
     writeln!(out, "#[relation({})]", parts.join(", ")).unwrap();
     writeln!(out, "pub struct {} {{", rust_pascal_case(&relation.name)).unwrap();
@@ -2721,18 +2854,19 @@ fn render_rust_relation(
     for role in &relation.roles {
         let player_type = resolve_rust_role_player(schema, &relation.name, &role.name);
         let role_field = unique_role_field(&role.name, &mut seen);
-        writeln!(
-            out,
-            "    #[role(name = {}, player_type = {})]",
-            string_literal(&role.name),
-            string_literal(&player_type)
-        )
-        .unwrap();
+        let mut role_parts = vec![
+            format!("name = {}", string_literal(&role.name)),
+            format!("player_type = {}", string_literal(&player_type)),
+        ];
+        push_rust_doc_meta_parts(&mut role_parts, role.doc.as_deref(), &role.meta);
+        rust_doc_comment(out, role.doc.as_deref(), "    ");
+        writeln!(out, "    #[role({})]", role_parts.join(", ")).unwrap();
         writeln!(out, "    pub {role_field}: {role_type},").unwrap();
     }
 
     for owned in ordered_owned_attributes(&relation.owns, &relation.owns_order) {
         let attr_type = rust_pascal_case(&owned.name);
+        rust_doc_comment(out, owned.doc.as_deref(), "    ");
         if let Some(field_attr) = rust_field_attribute(owned) {
             writeln!(out, "    {field_attr}").unwrap();
         }
@@ -2761,7 +2895,41 @@ fn rust_field_attribute(owned: &OwnedAttribute) -> Option<String> {
             parts.push(format!("card_max = {max}"));
         }
     }
+    push_rust_doc_meta_parts(&mut parts, owned.doc.as_deref(), &owned.meta);
     (!parts.is_empty()).then(|| format!("#[field({})]", parts.join(", ")))
+}
+
+/// Append `doc = "..."` and repeatable `meta("key", "value")` derive-attribute
+/// parts, matching the `#[entity]`/`#[relation]`/`#[role]`/`#[field]` grammar.
+fn push_rust_doc_meta_parts(
+    parts: &mut Vec<String>,
+    doc: Option<&str>,
+    meta: &BTreeMap<String, String>,
+) {
+    if let Some(doc) = doc {
+        parts.push(format!("doc = {}", string_literal(doc)));
+    }
+    for (key, value) in meta {
+        parts.push(format!(
+            "meta({}, {})",
+            string_literal(key),
+            string_literal(value)
+        ));
+    }
+}
+
+/// Write `/// ...` doc-comment lines for a `@doc` annotation, one per line of
+/// the annotation text, at the given indentation.
+fn rust_doc_comment(out: &mut String, doc: Option<&str>, indent: &str) {
+    if let Some(doc) = doc {
+        for line in doc.lines() {
+            if line.is_empty() {
+                writeln!(out, "{indent}///").unwrap();
+            } else {
+                writeln!(out, "{indent}/// {line}").unwrap();
+            }
+        }
+    }
 }
 
 fn rust_field_type(attr_type: &str, owned: &OwnedAttribute) -> String {
@@ -2872,6 +3040,66 @@ relation friendship, relates friend @card(1..2);"
                 .contains("#[entity(name = \"party\", r#abstract)]")
         );
         assert!(models.relations_rs.contains("player_type = \"person\""));
+    }
+
+    #[test]
+    fn doc_meta_annotations_render_on_all_targets() {
+        let schema_text = r#"define
+attribute name @doc("Name docs.") @meta("owner", "core"), value string;
+attribute nick, value string;
+entity party @abstract @doc("Party docs.") @meta("steward", "team"),
+    owns name @key @doc("Ownership docs.") @meta("column", "name"),
+    owns nick @card(0..1) @doc("Nick docs.");
+entity person sub party, plays friendship:friend;
+relation friendship @doc("Friendship docs."),
+    relates friend @card(1..2) @doc("Role docs.") @meta("side", "a");"#;
+        let plan = BindgenPlan::from_typeql(schema_text).unwrap();
+
+        let python = plan.render(TargetLanguage::Python, &BindgenOptions::default());
+        let attributes = &python.file("attributes.py").unwrap().contents;
+        assert!(attributes.contains("\"\"\"Name docs.\"\"\""));
+        assert!(attributes.contains("doc=\"Name docs.\", meta={\"owner\": \"core\"})"));
+        let entities = &python.file("entities.py").unwrap().contents;
+        assert!(entities.contains("\"\"\"Party docs.\"\"\""));
+        assert!(entities.contains("abstract=True, doc=\"Party docs.\", meta={\"steward\": \"team\"}"));
+        assert!(entities.contains(
+            "name: attributes.Name = Flag(Key, Doc(\"Ownership docs.\"), Meta(\"column\", \"name\"))"
+        ));
+        assert!(entities.contains("nick: attributes.Nick | None = Flag(Doc(\"Nick docs.\"))"));
+        let relations = &python.file("relations.py").unwrap().contents;
+        assert!(relations.contains("\"\"\"Friendship docs.\"\"\""));
+        assert!(relations.contains("doc=\"Friendship docs.\""));
+        assert!(relations.contains("doc=\"Role docs.\", meta={\"side\": \"a\"}"));
+
+        let typescript = plan.render(TargetLanguage::TypeScript, &BindgenOptions::default());
+        let ts_attributes = &typescript.file("attributes.ts").unwrap().contents;
+        assert!(ts_attributes.contains("doc: \"Name docs.\", meta: { \"owner\": \"core\" }"));
+        let ts_entities = &typescript.file("entities.ts").unwrap().contents;
+        assert!(ts_entities.contains(
+            "TypeFlags({ name: \"party\", abstract: true, doc: \"Party docs.\", meta: { \"steward\": \"team\" } })"
+        ));
+        assert!(ts_entities.contains(
+            "name: field(Name, Key, Doc(\"Ownership docs.\"), Meta(\"column\", \"name\"))"
+        ));
+        assert!(ts_entities.contains("nick: field(Nick, Doc(\"Nick docs.\")).optional()"));
+        let ts_relations = &typescript.file("relations.ts").unwrap().contents;
+        assert!(ts_relations.contains("TypeFlags({ name: \"friendship\", doc: \"Friendship docs.\" })"));
+        assert!(ts_relations.contains("doc: \"Role docs.\", meta: { \"side\": \"a\" }"));
+
+        let models = plan.render_rust_models();
+        assert!(models.entities_rs.contains("/// Party docs."));
+        assert!(models.entities_rs.contains(
+            "#[entity(name = \"party\", r#abstract, doc = \"Party docs.\", meta(\"steward\", \"team\"))]"
+        ));
+        assert!(models.entities_rs.contains(
+            "#[field(key, doc = \"Ownership docs.\", meta(\"column\", \"name\"))]"
+        ));
+        assert!(models.relations_rs.contains(
+            "#[relation(name = \"friendship\", doc = \"Friendship docs.\")]"
+        ));
+        assert!(models.relations_rs.contains(
+            "doc = \"Role docs.\", meta(\"side\", \"a\"))]"
+        ));
     }
 
     #[test]

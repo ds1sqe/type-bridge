@@ -1,0 +1,32 @@
+[attributes.name]
+value = "string"
+doc = "A display name."
+meta = { owner = "core-team" }
+
+[attributes.nickname]
+value = "string"
+
+[attributes.tag]
+value = "string"
+
+[entities.party]
+abstract = true
+doc = "Abstract base for all parties."
+meta = { steward = "platform", audience = "internal" }
+owns = [
+    { attribute = "name", key = true, doc = "Primary display name.", meta = { column = "name" } },
+]
+
+[entities.person]
+sub = "party"
+owns = [
+    { attribute = "nickname", card = "0..1", doc = "Informal name." },
+    { attribute = "tag", card = "0..5", meta = { kind = "label" } },
+]
+plays = [{ relation = "friendship", role = "friend" }]
+
+[relations.friendship]
+doc = "A mutual bond between persons."
+roles = [
+    { name = "friend", card = "1..2", doc = "One side of the bond.", meta = { symmetric = "true" } },
+]

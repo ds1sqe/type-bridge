@@ -101,6 +101,49 @@ class TestGenerateModels:
             assert "class Customer" in entities_code
             assert "case=TypeNameCase.CLASS_NAME" in entities_code
 
+    def test_doc_meta_annotations_survive_generation(self) -> None:
+        """@doc/@meta from the TOML fixture reach the generated Python surface
+        and re-emit through the imported models' schema definitions."""
+        import importlib
+        import sys
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "doc_meta_models"
+            generate_models(FIXTURES_DIR / "doc_meta.toml", output, copy_schema=False)
+
+            entities_code = (output / "entities.py").read_text()
+            assert 'doc="Abstract base for all parties."' in entities_code
+            assert 'meta={"audience": "internal", "steward": "platform"}' in entities_code
+            assert 'Flag(Key, Doc("Primary display name."), Meta("column", "name"))' in (
+                entities_code
+            )
+            assert 'nickname: attributes.Nickname | None = Flag(Doc("Informal name."))' in (
+                entities_code
+            )
+            relations_code = (output / "relations.py").read_text()
+            assert 'doc="One side of the bond.", meta={"symmetric": "true"}' in relations_code
+            attributes_code = (output / "attributes.py").read_text()
+            assert '"""A display name."""' in attributes_code
+            assert 'doc="A display name.", meta={"owner": "core-team"}' in attributes_code
+
+            sys.path.insert(0, tmpdir)
+            try:
+                entities = importlib.import_module("doc_meta_models.entities")
+                relations = importlib.import_module("doc_meta_models.relations")
+                party_schema = entities.Party.to_schema_definition()
+                assert '@doc("Abstract base for all parties.")' in party_schema
+                assert '@meta("steward", "platform")' in party_schema
+                assert 'owns name @key @doc("Primary display name.")' in party_schema
+                friendship_schema = relations.Friendship.to_schema_definition()
+                assert '@doc("A mutual bond between persons.")' in friendship_schema
+                assert '@doc("One side of the bond.") @meta("symmetric", "true")' in (
+                    friendship_schema
+                )
+            finally:
+                sys.path.remove(tmpdir)
+                for key in [key for key in sys.modules if key.startswith("doc_meta_models")]:
+                    del sys.modules[key]
+
     def test_generates_from_file(self) -> None:
         """Generate from a schema file path."""
         if not BOOKSTORE_SCHEMA.exists():
