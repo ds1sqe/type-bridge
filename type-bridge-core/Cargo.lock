@@ -2726,6 +2726,7 @@ dependencies = [
 name = "type-bridge-typedb-runtime"
 version = "1.5.7"
 dependencies = [
+ "chrono",
  "futures",
  "serde",
  "serde_json",

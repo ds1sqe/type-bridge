@@ -374,3 +374,91 @@ fn mock_backend_reports_no_server_version_by_default() {
     let backend = common::MockBackend::new(vec![]);
     assert_eq!(backend.server_version(), None);
 }
+
+// ── Given-stage feature gate (TypeDB 3.12+) ──────────────────────────
+
+use type_bridge_orm::{GivenRowsSpec, TxType};
+
+fn empty_rows() -> GivenRowsSpec {
+    GivenRowsSpec {
+        variables: vec!["n".to_string()],
+        rows: vec![],
+    }
+}
+
+#[test]
+fn given_stage_gate_rejects_pre_312_server() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        "gate-test",
+    );
+    let error = db
+        .check_given_stage_support()
+        .expect_err("pre-3.12 server must reject given-stage queries");
+    let message = error.to_string();
+    assert!(
+        message.contains("3.12"),
+        "message must name 3.12: {message}"
+    );
+    assert!(
+        message.contains("3.11.5"),
+        "message must name the detected server: {message}"
+    );
+    assert!(
+        message.contains("given-stage"),
+        "message must name the feature: {message}"
+    );
+}
+
+#[test]
+fn given_stage_gate_passes_on_312_server() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 12, 0)))),
+        "gate-test",
+    );
+    assert!(db.check_given_stage_support().is_ok());
+    assert!(db.supports_given_stage());
+}
+
+#[test]
+fn supports_given_stage_is_false_pre_312_and_when_unknown() {
+    let pre = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        "gate-test",
+    );
+    assert!(!pre.supports_given_stage());
+
+    let unknown = Database::with_backend(Box::new(VersionedBackend::new(None)), "gate-test");
+    assert!(!unknown.supports_given_stage());
+}
+
+#[tokio::test]
+async fn execute_with_rows_rejects_pre_312_before_opening_transaction() {
+    let db = Database::with_backend(
+        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        "gate-test",
+    );
+    let error = db
+        .execute_with_rows("given $n: string; insert ...;", TxType::Write, empty_rows())
+        .await
+        .expect_err("pre-3.12 server must reject execute_with_rows");
+    assert!(
+        matches!(error, OrmError::UnsupportedVersion(_)),
+        "expected UnsupportedVersion, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn execute_with_rows_unknown_version_reaches_backend_default_error() {
+    // Version unknown → the gate defers; the mock backend's TransactionOps
+    // does not override query_with_rows, so the default trait error fires.
+    let db = Database::with_backend(Box::new(VersionedBackend::new(None)), "gate-test");
+    let error = db
+        .execute_with_rows("given $n: string; insert ...;", TxType::Write, empty_rows())
+        .await
+        .expect_err("backend without given-stage support must error");
+    assert!(
+        error.to_string().contains("not supported by this backend"),
+        "unexpected error: {error}"
+    );
+}

@@ -14,7 +14,9 @@ pub use runtime::{
     embedded_driver_versions,
 };
 
-use super::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType};
+use super::backend::{
+    BoxFuture, DriverBackend, GivenRowsSpec, GivenValue, QueryResult, TransactionOps, TxType,
+};
 use crate::error::OrmError;
 
 /// Real TypeDB backend wrapping the shared runtime.
@@ -136,6 +138,22 @@ impl TransactionOps for RealTransaction {
         })
     }
 
+    fn query_with_rows(
+        &mut self,
+        typeql: &str,
+        rows: GivenRowsSpec,
+    ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        let typeql = typeql.to_string();
+        let rows = runtime_given_rows(rows);
+        Box::pin(async move {
+            self.inner
+                .query_with_rows(&typeql, rows)
+                .await
+                .map(query_result)
+                .map_err(OrmError::from)
+        })
+    }
+
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
         Box::pin(async move { self.inner.commit().await.map_err(OrmError::from) })
     }
@@ -154,6 +172,29 @@ fn runtime_tx_type(tx_type: TxType) -> runtime::TxType {
         TxType::Read => runtime::TxType::Read,
         TxType::Write => runtime::TxType::Write,
         TxType::Schema => runtime::TxType::Schema,
+    }
+}
+
+fn runtime_given_rows(spec: GivenRowsSpec) -> runtime::GivenRowsSpec {
+    runtime::GivenRowsSpec {
+        variables: spec.variables,
+        rows: spec
+            .rows
+            .into_iter()
+            .map(|row| row.into_iter().map(runtime_given_value).collect())
+            .collect(),
+    }
+}
+
+fn runtime_given_value(value: GivenValue) -> runtime::GivenValue {
+    match value {
+        GivenValue::Boolean(b) => runtime::GivenValue::Boolean(b),
+        GivenValue::Integer(i) => runtime::GivenValue::Integer(i),
+        GivenValue::Double(d) => runtime::GivenValue::Double(d),
+        GivenValue::String(s) => runtime::GivenValue::String(s),
+        GivenValue::Date(s) => runtime::GivenValue::Date(s),
+        GivenValue::Datetime(s) => runtime::GivenValue::Datetime(s),
+        GivenValue::DatetimeTz(s) => runtime::GivenValue::DatetimeTz(s),
     }
 }
 

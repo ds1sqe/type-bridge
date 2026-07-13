@@ -91,6 +91,41 @@ pub enum TxType {
     Schema,
 }
 
+/// A single value bound to a `given` variable, band-agnostic and serializable.
+///
+/// Temporal variants carry ISO-8601 text and are parsed when lowering onto
+/// the band-9 driver — symmetric with [`QueryResult`], which renders temporal
+/// values back to strings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum GivenValue {
+    /// TypeQL `boolean`.
+    Boolean(bool),
+    /// TypeQL `integer`.
+    Integer(i64),
+    /// TypeQL `double`.
+    Double(f64),
+    /// TypeQL `string`.
+    String(String),
+    /// TypeQL `date`, ISO-8601 (`YYYY-MM-DD`).
+    Date(String),
+    /// TypeQL `datetime`, ISO-8601 without offset.
+    Datetime(String),
+    /// TypeQL `datetime-tz`, RFC 3339 with offset.
+    DatetimeTz(String),
+}
+
+/// Input rows for a `given`-stage query: a variable header plus value rows.
+///
+/// Every row must have exactly one entry per header variable, in header
+/// order. Rows travel through the driver API, never the query string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GivenRowsSpec {
+    /// Variable names, without the `$` sigil, in column order.
+    pub variables: Vec<String>,
+    /// Value rows; each inner vec is one input row in header order.
+    pub rows: Vec<Vec<GivenValue>>,
+}
+
 /// The compile-pinned `typedb-driver` crate version resolved in `Cargo.lock`.
 ///
 /// This constant records the exact driver version this runtime crate was built
@@ -914,6 +949,49 @@ impl RuntimeTransaction {
         })
     }
 
+    /// Execute TypeQL with `given`-stage input rows within this transaction.
+    ///
+    /// Rows travel through the driver API, not the query string, so this
+    /// path is only available on the band-9 (TypeDB 3.12+) driver. On a
+    /// band-7 or band-8 connection this returns an actionable error —
+    /// callers that can fall back to per-row queries should consult the
+    /// detected server version before choosing this path.
+    pub fn query_with_rows(
+        &mut self,
+        typeql: &str,
+        rows: GivenRowsSpec,
+    ) -> BoxFuture<'_, Result<QueryResult>> {
+        let tql = typeql.to_string();
+        Box::pin(async move {
+            match &self.inner {
+                #[cfg(feature = "band7")]
+                RuntimeTransactionInner::B7(_) => Err(RuntimeError::QueryExecution(
+                    "given-stage parameterized queries require the band-9 driver \
+                     (TypeDB 3.12+); this connection negotiated band 7"
+                        .into(),
+                )),
+                #[cfg(feature = "band8")]
+                RuntimeTransactionInner::B8(_) => Err(RuntimeError::QueryExecution(
+                    "given-stage parameterized queries require the band-9 driver \
+                     (TypeDB 3.12+); this connection negotiated band 8"
+                        .into(),
+                )),
+                #[cfg(feature = "band9")]
+                RuntimeTransactionInner::B9(opt) => {
+                    let tx = opt.as_ref().ok_or_else(|| {
+                        RuntimeError::Transaction("Transaction already consumed".into())
+                    })?;
+                    let given_rows = given_rows_b9(rows)?;
+                    let answer = tx
+                        .query_with_rows(&tql, given_rows)
+                        .await
+                        .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))?;
+                    convert_answer_b9(answer).await
+                }
+            }
+        })
+    }
+
     /// Commit this transaction.
     pub fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
         // Take ownership out of the Option so the async block can move the
@@ -1170,6 +1248,61 @@ fn value_to_json_b8(value: &typedb_driver::concept::Value) -> serde_json::Value 
         return serde_json::Value::String(dur.to_string());
     }
     serde_json::Value::String(value.to_string())
+}
+
+/// Lower a portable [`GivenRowsSpec`] onto the band-9 driver's `GivenRows`.
+///
+/// Fails when a row's width does not match the header or a temporal string
+/// does not parse — both are caller mistakes reported before any wire I/O.
+#[cfg(feature = "band9")]
+fn given_rows_b9(spec: GivenRowsSpec) -> Result<type_bridge_typedb_driver_b9::given::GivenRows> {
+    use type_bridge_typedb_driver_b9::given::GivenRows;
+
+    let mut given = GivenRows::new(spec.variables, spec.rows.len());
+    for row in spec.rows {
+        let entries = row
+            .into_iter()
+            .map(given_entry_b9)
+            .collect::<Result<Vec<_>>>()?;
+        given
+            .push_row(entries)
+            .map_err(|e| RuntimeError::QueryExecution(format!("Invalid given row: {e}")))?;
+    }
+    Ok(given)
+}
+
+/// Convert one portable [`GivenValue`] to a band-9 driver row entry.
+#[cfg(feature = "band9")]
+fn given_entry_b9(value: GivenValue) -> Result<type_bridge_typedb_driver_b9::given::GivenRowEntry> {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime};
+    use type_bridge_typedb_driver_b9::concept::value::TimeZone as B9TimeZone;
+    use type_bridge_typedb_driver_b9::given::GivenRowEntry;
+
+    Ok(match value {
+        GivenValue::Boolean(b) => GivenRowEntry::from(b),
+        GivenValue::Integer(i) => GivenRowEntry::from(i),
+        GivenValue::Double(d) => GivenRowEntry::from(d),
+        GivenValue::String(s) => GivenRowEntry::from(s),
+        GivenValue::Date(s) => {
+            let date = s.parse::<NaiveDate>().map_err(|e| {
+                RuntimeError::QueryExecution(format!("Invalid given date {s:?}: {e}"))
+            })?;
+            GivenRowEntry::from(date)
+        }
+        GivenValue::Datetime(s) => {
+            let dt = s.parse::<NaiveDateTime>().map_err(|e| {
+                RuntimeError::QueryExecution(format!("Invalid given datetime {s:?}: {e}"))
+            })?;
+            GivenRowEntry::from(dt)
+        }
+        GivenValue::DatetimeTz(s) => {
+            let dt = DateTime::parse_from_rfc3339(&s).map_err(|e| {
+                RuntimeError::QueryExecution(format!("Invalid given datetime-tz {s:?}: {e}"))
+            })?;
+            let offset = *dt.offset();
+            GivenRowEntry::from(dt.with_timezone(&B9TimeZone::Fixed(offset)))
+        }
+    })
 }
 
 /// Convert a band-9 [`B9QueryAnswer`] into the runtime's [`QueryResult`].
@@ -1512,6 +1645,66 @@ mod tests {
             "pinned band-7 fork version {PINNED_DRIVER_VERSION_B7} left protocol band 7; \
              review the gate expectations before accepting the bump"
         );
+    }
+
+    /// Portable given-rows lower onto the band-9 driver structures, including
+    /// temporal string parsing; malformed rows fail before any wire I/O.
+    #[cfg(feature = "band9")]
+    #[test]
+    fn given_rows_lowering() {
+        let spec = GivenRowsSpec {
+            variables: vec!["n".into(), "a".into()],
+            rows: vec![
+                vec![GivenValue::String("alice".into()), GivenValue::Integer(28)],
+                vec![GivenValue::String("bob".into()), GivenValue::Integer(26)],
+            ],
+        };
+        let rows = given_rows_b9(spec).expect("valid spec must lower");
+        let (header, rows) = rows.into_parts();
+        assert_eq!(header.width(), 2);
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn given_rows_lowering_rejects_width_mismatch() {
+        let spec = GivenRowsSpec {
+            variables: vec!["n".into(), "a".into()],
+            rows: vec![vec![GivenValue::String("alice".into())]],
+        };
+        let err = given_rows_b9(spec).expect_err("short row must be rejected");
+        assert!(matches!(err, RuntimeError::QueryExecution(_)), "{err}");
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn given_entry_temporal_parsing() {
+        for value in [
+            GivenValue::Date("2026-07-13".into()),
+            GivenValue::Datetime("2026-07-13T10:30:00".into()),
+            GivenValue::DatetimeTz("2026-07-13T10:30:00+09:00".into()),
+            GivenValue::Boolean(true),
+            GivenValue::Double(1.5),
+        ] {
+            given_entry_b9(value.clone()).unwrap_or_else(|e| panic!("{value:?} must convert: {e}"));
+        }
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn given_entry_rejects_malformed_temporal() {
+        for value in [
+            GivenValue::Date("not-a-date".into()),
+            GivenValue::Datetime("2026-13-45T99:00:00".into()),
+            GivenValue::DatetimeTz("2026-07-13 10:30".into()),
+        ] {
+            let err = given_entry_b9(value.clone())
+                .expect_err("malformed temporal string must be rejected");
+            assert!(
+                err.to_string().contains("Invalid given"),
+                "{value:?}: {err}"
+            );
+        }
     }
 
     #[test]

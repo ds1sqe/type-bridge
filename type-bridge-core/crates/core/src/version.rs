@@ -350,6 +350,8 @@ pub fn check_server_supported(server: &Version, embedded_bands: &[u8]) -> Result
 pub enum Feature {
     /// `@doc("...")` / `@meta("key", "value")` schema annotations (TypeDB 3.12+).
     SchemaAnnotations,
+    /// `given` stage: parameterized multi-row query input (TypeDB 3.12+).
+    GivenStage,
 }
 
 impl Feature {
@@ -357,6 +359,7 @@ impl Feature {
     pub fn name(self) -> &'static str {
         match self {
             Feature::SchemaAnnotations => "schema annotations (@doc/@meta)",
+            Feature::GivenStage => "given-stage parameterized queries",
         }
     }
 
@@ -364,6 +367,7 @@ impl Feature {
     pub fn minimum_version(self) -> Version {
         match self {
             Feature::SchemaAnnotations => Version::new(3, 12, 0),
+            Feature::GivenStage => Version::new(3, 12, 0),
         }
     }
 }

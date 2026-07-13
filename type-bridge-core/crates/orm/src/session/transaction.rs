@@ -1,6 +1,6 @@
 //! Transaction wrapper for TypeDB operations.
 
-use super::backend::{QueryResult, TransactionOps, TxType};
+use super::backend::{GivenRowsSpec, QueryResult, TransactionOps, TxType};
 use crate::error::{OrmError, Result};
 
 /// A single TypeDB transaction.
@@ -27,6 +27,22 @@ impl Transaction {
             .as_mut()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
         tx.query(typeql).await
+    }
+
+    /// Execute a TypeQL query with `given`-stage input rows.
+    ///
+    /// Requires a band-9 (TypeDB 3.12+) connection; see
+    /// [`Database::check_given_stage_support`](super::database::Database::check_given_stage_support).
+    pub async fn query_with_rows(
+        &mut self,
+        typeql: &str,
+        rows: GivenRowsSpec,
+    ) -> Result<QueryResult> {
+        let tx = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.query_with_rows(typeql, rows).await
     }
 
     /// Commit this transaction.
