@@ -74,4 +74,23 @@ pub enum MigrationError {
         /// Human-readable error message describing the failure.
         message: String,
     },
+    /// A detected schema change has no canonical authoring lowering.
+    ///
+    /// The canonical mapper must never silently discard a `SchemaDiff` field
+    /// (#166); a change it cannot express as a typed operation or canonical
+    /// `RunTypeql` is surfaced as this error instead.
+    #[error("unsupported schema change on {type_name}: {change}")]
+    UnsupportedChange {
+        /// The schema type the change applies to.
+        type_name: String,
+        /// Description of the unrepresentable change.
+        change: String,
+    },
+    /// Authoring inputs are inconsistent (e.g. the diff references a type
+    /// that is absent from the schema it was computed from).
+    #[error("inconsistent authoring input: {message}")]
+    AuthoringInput {
+        /// Human-readable error message.
+        message: String,
+    },
 }

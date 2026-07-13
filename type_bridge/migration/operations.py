@@ -249,6 +249,15 @@ class RemoveOwnership(Operation):
 class ModifyOwnership(Operation):
     """Modify ownership annotations (cardinality, key, unique).
 
+    TypeDB can only ``redefine`` parameterized annotations (``@card``);
+    parameterless ones (``@key``, ``@unique``, ``@distinct``) must be
+    added with ``define`` and removed with ``undefine``. A transition that
+    both adds and removes annotation kinds therefore needs two schema
+    queries and cannot be expressed by this single operation in the
+    direct-execution path — split it into two ``ModifyOwnership`` steps
+    (first drop the old kinds, then add the new ones). The planner-backed
+    execution path decomposes such transitions automatically.
+
     Example:
         ops.ModifyOwnership(
             Person, Phone,
@@ -262,16 +271,48 @@ class ModifyOwnership(Operation):
     old_annotations: str
     new_annotations: str
 
-    def to_typeql(self) -> str:
+    @staticmethod
+    def _annotation_kinds(annotations: str) -> dict[str, str]:
+        """Map annotation kind (``@card``) to its full token (``@card(0..1)``)."""
+        return {token.split("(", 1)[0]: token for token in annotations.split()}
+
+    def _transition_typeql(self, old_annotations: str, new_annotations: str) -> str:
         owner_name = _type_name(self.owner)
         attr_name = _attribute_name(self.attribute)
-        # TypeDB 3.x uses redefine for modifications
-        return f"redefine\n{owner_name} owns {attr_name} {self.new_annotations};"
+        old_kinds = self._annotation_kinds(old_annotations)
+        new_kinds = self._annotation_kinds(new_annotations)
+
+        removed = [kind for kind in old_kinds if kind not in new_kinds]
+        changed = [
+            token for kind, token in new_kinds.items() if old_kinds.get(kind, token) != token
+        ]
+        added = [token for kind, token in new_kinds.items() if kind not in old_kinds]
+
+        categories = [bool(removed), bool(changed), bool(added)]
+        if sum(categories) > 1:
+            raise NotImplementedError(
+                f"ModifyOwnership of {owner_name} owns {attr_name} transitions "
+                f"{old_annotations!r} -> {new_annotations!r}, which needs more than one "
+                "schema query; split it into two ModifyOwnership operations (drop the "
+                "old annotation kinds first, then add the new ones)"
+            )
+        if removed:
+            lines = "\n".join(f"{kind} from {owner_name} owns {attr_name};" for kind in removed)
+            return f"undefine\n{lines}"
+        if changed:
+            return f"redefine\n{owner_name} owns {attr_name} {' '.join(changed)};"
+        if added:
+            return f"define\n{owner_name} owns {attr_name} {' '.join(added)};"
+        raise NotImplementedError(
+            f"ModifyOwnership of {owner_name} owns {attr_name} does not change the "
+            f"annotations ({old_annotations!r})"
+        )
+
+    def to_typeql(self) -> str:
+        return self._transition_typeql(self.old_annotations, self.new_annotations)
 
     def to_rollback_typeql(self) -> str | None:
-        owner_name = _type_name(self.owner)
-        attr_name = _attribute_name(self.attribute)
-        return f"redefine\n{owner_name} owns {attr_name} {self.old_annotations};"
+        return self._transition_typeql(self.new_annotations, self.old_annotations)
 
 
 # --- Relation Operations ---
@@ -518,17 +559,18 @@ class RunPython(Operation):
 
 @dataclass
 class RenameAttribute(Operation):
-    """Rename an attribute type.
+    """Rename an attribute type — placeholder without an executable lowering.
 
-    WARNING: This is a complex operation that requires both schema
-    and data migration. Consider using RunTypeQL for full control.
+    A real rename is a staged multi-step change (define new attribute,
+    plain ownerships, data backfill, annotation tightening, old-value
+    cleanup, removal) that needs the full owner list from a schema. This
+    single operation cannot carry that, so it has no executable TypeQL and
+    the migration planner refuses to lower it.
 
-    This operation:
-    1. Creates new attribute type
-    2. Migrates data from old to new
-    3. Removes old attribute type
-
-    Note: Rollback is not supported for this operation.
+    Use ``author_migration(..., attribute_renames=[(old, new)])`` to author
+    the staged expansion from two schemas, or spell out the primitive
+    operations (``AddAttribute``, ``AddOwnership``, ``CopyAttribute``,
+    ``RunTypeQL``, ``RemoveOwnership``, ``RemoveAttribute``) by hand.
     """
 
     old_name: str
@@ -536,24 +578,15 @@ class RenameAttribute(Operation):
     value_type: str
 
     def to_typeql(self) -> str:
-        # This is a complex multi-step operation
-        # For simplicity, we generate the TypeQL that would need to be executed
-        # In practice, the executor would need to handle this specially
-        lines = [
-            "# Step 1: Create new attribute",
-            "define",
-            f"attribute {self.new_name}, value {self.value_type};",
-            "",
-            "# Step 2: Migrate ownership (manual step required)",
-            f"# For each type that owns {self.old_name}, add: <type> owns {self.new_name};",
-            "",
-            "# Step 3: Migrate data (manual step required)",
-            f"# match $x has {self.old_name} $v; insert $x has {self.new_name} $v;",
-            "",
-            "# Step 4: Remove old attribute (after data migration)",
-            f"# undefine attribute {self.old_name};",
-        ]
-        return "\n".join(lines)
+        # Historically this emitted the define plus comment-guide lines;
+        # executing that silently created the new attribute and skipped the
+        # data migration entirely. Failing loudly is the only safe lowering.
+        raise NotImplementedError(
+            f"RenameAttribute({self.old_name!r} -> {self.new_name!r}) has no executable "
+            "TypeQL lowering; author the rename via "
+            "author_migration(..., attribute_renames=[(old, new)]) or use the primitive "
+            "operations explicitly"
+        )
 
     def to_rollback_typeql(self) -> str | None:
         # Rename operations are not easily reversible

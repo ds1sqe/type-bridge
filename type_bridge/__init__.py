@@ -53,7 +53,7 @@ from type_bridge.query import Query, QueryBuilder
 from type_bridge.session import Connection, Database, TransactionContext
 from type_bridge.typedb_driver import Credentials, TransactionType, TypeDB, create_driver_options
 
-__version__ = "1.5.6"
+__version__ = "1.5.7"
 
 __all__ = [
     # Database and session

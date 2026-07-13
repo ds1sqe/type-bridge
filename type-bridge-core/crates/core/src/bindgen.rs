@@ -247,6 +247,15 @@ pub fn generate_json_from_typeql(
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/// Convert a schema label into the Python class name bindgen emits for it
+/// (e.g. `rm-legacy-link` -> `RmLegacyLink`).
+///
+/// Public so migration authoring can reference generated snapshot symbols by
+/// the exact names bindgen will produce for the same schema.
+pub fn python_class_name(label: &str) -> String {
+    class_name(label)
+}
+
 fn class_name(label: &str) -> String {
     label
         .replace('_', "-")

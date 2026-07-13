@@ -380,6 +380,97 @@ discarding application types that merely resemble migration infrastructure.
 classification. Call `migration_state_schema()` for the full Rust `SchemaInfo`
 contract, including value types, ownership annotations, and relation roles.
 
+## Offline Authoring (No Database Connection)
+
+`author_migration` authors the complete checked artifact set — the reviewable
+`.py`, the executable `.json` sidecar, and the immutable `snapshots/vNNNN/`
+files — from two serialized `SchemaInfo` dictionaries. It needs no TypeDB
+connection, no `Database`, no model registry, and no generated application
+package. The live `makemigrations` flow delegates to the same Rust core, so
+live and offline authoring produce identical artifacts for identical inputs.
+
+The intended embedder flow pairs offline authoring with an external migration
+ledger (see Migration State Backends): a remote orchestrator owns the
+authoritative applied-migration state and the application schema, and the
+authoring process runs where TypeDB is unreachable.
+
+```python
+from type_bridge.migration import author_migration
+
+# 1. Retrieve the authoritative base schema from the remote service as a
+#    serialized SchemaInfo (the state-schema boundary from v1.5.6).
+base = remote_service.fetch_application_schema()
+
+# 2. Compile the local declaration into a target SchemaInfo.
+target = local_schema_info.to_rust_schema_info()
+
+# 3. Author the next migration entirely offline.
+authored = author_migration(
+    base,
+    target,
+    app_label="migrations",
+    name="0003_add_assignment",
+    dependencies=[("migrations", "0002_add_team")],
+    snapshot_version="v0003",
+    previous_snapshot_version="v0002",
+    before_schema=[
+        {
+            "kind": "run_typeql",
+            "forward": "match $x isa legacy-link; delete $x;",
+        }
+    ],
+)
+
+if authored is not None:
+    # Inspect in memory: authored.python_source, authored.spec,
+    # authored.files - or persist through the validated writer.
+    authored.write_to(migrations_dir)
+```
+
+Notes:
+
+- `author_migration` returns `None` when the diff is empty and no explicit
+  operations were supplied.
+- `before_schema`/`after_schema` place explicit portable operations around
+  the generated schema change set (destructive cleanup before removals,
+  backfills after additions). `run_typeql` carries forward/reverse TypeQL
+  verbatim; `copy_attribute` takes the structured form below and authoring
+  synthesizes its backfill TypeQL and renders a faithful
+  `ops.CopyAttribute(...)`:
+
+  ```python
+  after_schema=[
+      {
+          "kind": "copy_attribute",
+          "owner": "person",
+          "source": "legacy-name",
+          "dest": "display-name",
+          # Optional extra match constraint; the terminating ';' is added.
+          "filter": "$x has age $a",
+      }
+  ]
+  ```
+- `attribute_renames=[("legacy-name", "display-name")]` declares that an
+  attribute present in `base` continues as a new name in `target`. Without
+  the directive that diff maps to an independent remove+add, which destroys
+  the data; with it, authoring emits a staged, data-preserving expansion
+  (define the new attribute, plain ownerships, backfill, annotation
+  tightening, old-value cleanup, removal). The old-value cleanup step is
+  irreversible. The non-executable `ops.RenameAttribute` placeholder is not
+  accepted here — pass the directive instead.
+- Pass a fixed `generated_at` to make the output byte-deterministic;
+  otherwise the current time is stamped.
+- `write_to` is all-or-nothing: existing artifacts must be byte-identical
+  (append-only snapshots) or the whole write is rejected before any file is
+  touched. Pass `on_existing="fail"` to reject any pre-existing artifact.
+- A schema change the canonical mapper cannot express raises an explicit
+  unsupported-change error instead of silently dropping the change.
+
+The same core is available to Rust embedders as
+`type_bridge_migration::author::author_migration`, which returns the artifact
+files in memory alongside `write_authored_migration` for validated
+persistence.
+
 ## Sidecars And Hand Editing
 
 Generated migrations have a `.json` sidecar. Do not hand-edit a sidecar-backed
