@@ -112,6 +112,7 @@ fn operations_from(ops: Option<Bound<'_, PyAny>>, argument: &str) -> PyResult<Ve
     previous_snapshot_version = None,
     before_schema = None,
     after_schema = None,
+    attribute_renames = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn author_migration(
@@ -127,6 +128,7 @@ fn author_migration(
     previous_snapshot_version: Option<String>,
     before_schema: Option<Bound<'_, PyAny>>,
     after_schema: Option<Bound<'_, PyAny>>,
+    attribute_renames: Option<Vec<(String, String)>>,
 ) -> PyResult<Option<PyAuthoredMigration>> {
     let base: SchemaInfo = depythonize(&base)
         .map_err(|error| py_value_error(format!("Invalid base SchemaInfo: {error}")))?;
@@ -152,6 +154,7 @@ fn author_migration(
             before_schema: operations_from(before_schema, "before_schema")?,
             after_schema: operations_from(after_schema, "after_schema")?,
         },
+        attribute_renames: attribute_renames.unwrap_or_default(),
     };
 
     let authored =

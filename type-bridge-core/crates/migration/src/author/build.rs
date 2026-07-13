@@ -98,6 +98,10 @@ pub struct AuthorMigrationRequest {
     pub snapshot: SnapshotContext,
     /// Explicit positioned operations.
     pub extra_operations: PositionedOperations,
+    /// `(old_name, new_name)` attribute-rename directives: each replaces
+    /// the diff's independent remove+add of that pair with a
+    /// data-preserving staged expansion.
+    pub attribute_renames: Vec<(String, String)>,
 }
 
 /// Author the complete artifact set for one migration, in memory.
@@ -117,7 +121,12 @@ pub fn author_migration(
     validate_stem(&request.metadata.name)?;
 
     let diff = SchemaDiff::compute(&request.base, &request.target);
-    let schema_operations = map_schema_diff(&request.base, &request.target, &diff)?;
+    let schema_operations = map_schema_diff(
+        &request.base,
+        &request.target,
+        &diff,
+        &request.attribute_renames,
+    )?;
 
     if schema_operations.is_empty()
         && request.extra_operations.before_schema.is_empty()
@@ -131,9 +140,15 @@ pub fn author_migration(
             + schema_operations.len()
             + request.extra_operations.after_schema.len(),
     );
-    operations.extend(request.extra_operations.before_schema.iter().cloned());
+    // Normalization fills structured copy_attribute forms with their
+    // synthesized TypeQL so the sidecar always carries executable strings.
+    for op in &request.extra_operations.before_schema {
+        operations.push(op.clone().normalized()?);
+    }
     operations.extend(schema_operations);
-    operations.extend(request.extra_operations.after_schema.iter().cloned());
+    for op in &request.extra_operations.after_schema {
+        operations.push(op.clone().normalized()?);
+    }
 
     let python_source = render_migration_python(&PythonRenderRequest {
         operations: &operations,
@@ -277,6 +292,7 @@ mod tests {
                 previous_version: None,
             },
             extra_operations: PositionedOperations::default(),
+            attribute_renames: vec![],
         }
     }
 
@@ -383,6 +399,134 @@ mod tests {
             kinds,
             vec!["run_typeql", "add_attribute", "add_entity", "run_typeql"]
         );
+    }
+
+    #[test]
+    fn structured_copy_attribute_is_normalized_into_the_sidecar() {
+        let mut req = request(SchemaInfo::default(), person_schema());
+        req.metadata.name = "0002_backfill_names".to_string();
+        req.extra_operations
+            .after_schema
+            .push(OperationSpec::CopyAttribute {
+                owner: Some("person".to_string()),
+                source: Some("legacy-name".to_string()),
+                dest: Some("name".to_string()),
+                filter: None,
+                forward: None,
+                reverse: None,
+            });
+
+        let authored = author_migration(&req)
+            .expect("authoring should succeed")
+            .expect("changes must author");
+
+        assert!(
+            authored
+                .python_source
+                .contains("ops.CopyAttribute(Person, source='legacy-name', dest='name'),")
+        );
+        let copy = authored
+            .spec
+            .operations
+            .last()
+            .expect("operations must not be empty");
+        let OperationSpec::CopyAttribute {
+            forward, reverse, ..
+        } = copy
+        else {
+            panic!("last operation must be the copy_attribute");
+        };
+        assert_eq!(
+            forward.as_deref(),
+            Some(
+                "match\n  $x isa person, has legacy-name $v;\n  not { $x has name $d; };\ninsert\n  $x has name == $v;"
+            )
+        );
+        assert_eq!(
+            reverse.as_deref(),
+            Some("match $x isa person, has name $v;\ndelete $v of $x;")
+        );
+    }
+
+    #[test]
+    fn attribute_rename_authors_the_staged_expansion() {
+        let mut base = SchemaInfo::default();
+        base.attributes.insert(
+            "legacy-name".to_string(),
+            AttributeSchemaEntry::new("legacy-name", ValueType::String),
+        );
+        base.entities.insert(
+            "person".to_string(),
+            EntitySchemaEntry {
+                type_name: "person".to_string(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![type_bridge_orm::schema::info::OwnedAttributeEntry {
+                    attr_name: "legacy-name".to_string(),
+                    value_type: ValueType::String,
+                    annotations: vec![type_bridge_orm::Annotation::Key],
+                    is_ordered: false,
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+        let mut target = SchemaInfo::default();
+        target.attributes.insert(
+            "display-name".to_string(),
+            AttributeSchemaEntry::new("display-name", ValueType::String),
+        );
+        target.entities.insert(
+            "person".to_string(),
+            EntitySchemaEntry {
+                type_name: "person".to_string(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![type_bridge_orm::schema::info::OwnedAttributeEntry {
+                    attr_name: "display-name".to_string(),
+                    value_type: ValueType::String,
+                    annotations: vec![type_bridge_orm::Annotation::Key],
+                    is_ordered: false,
+                }],
+                plays_cardinalities: BTreeMap::new(),
+            },
+        );
+
+        let mut req = request(base, target);
+        req.metadata.name = "0002_rename_name".to_string();
+        req.attribute_renames = vec![("legacy-name".to_string(), "display-name".to_string())];
+
+        let authored = author_migration(&req)
+            .expect("authoring should succeed")
+            .expect("changes must author");
+
+        let kinds: Vec<String> = authored
+            .spec
+            .operations
+            .iter()
+            .map(|op| {
+                serde_json::to_value(op).expect("op serializes")["kind"]
+                    .as_str()
+                    .expect("kind present")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "add_attribute",
+                "add_ownership",
+                "copy_attribute",
+                "modify_ownership", // tighten the new ownership
+                "modify_ownership", // loosen the old ownership pre-delete
+                "run_typeql",
+                "remove_ownership",
+                "remove_attribute",
+            ]
+        );
+        // The .py shows the reviewable primitive recipe, not an opaque
+        // rename marker.
+        assert!(authored.python_source.contains("ops.CopyAttribute("));
+        assert!(!authored.python_source.contains("ops.RenameAttribute("));
     }
 
     #[test]

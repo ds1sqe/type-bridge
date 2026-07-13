@@ -278,6 +278,7 @@ mod tests {
                 previous_version: None,
             },
             extra_operations: PositionedOperations::default(),
+            attribute_renames: vec![],
         })
         .expect("authoring should succeed")
         .expect("changes must author");

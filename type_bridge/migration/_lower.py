@@ -226,11 +226,16 @@ def _operation_spec(operation: ops.Operation) -> dict[str, Any]:
             "value_type": operation.value_type,
         }
     if isinstance(operation, ops.CopyAttribute):
-        # The sidecar IR carries the backfill TypeQL (not the structured fields)
-        # so the Rust executor runs the carried strings — a single TypeQL source
-        # shared with the .py authoring form (invariant 2).
+        # The executor runs the carried TypeQL (invariant 2: a single TypeQL
+        # source); the structured fields ride along so the op stays portable
+        # through the offline authoring surface, whose Rust synthesis is
+        # pinned byte-identical to `to_typeql()` by a parity test.
         return {
             "kind": "copy_attribute",
+            "owner": _type_name(operation.owner),
+            "source": operation.source,
+            "dest": operation.dest,
+            "filter": operation.filter,
             "forward": operation.to_typeql(),
             "reverse": operation.to_rollback_typeql(),
         }

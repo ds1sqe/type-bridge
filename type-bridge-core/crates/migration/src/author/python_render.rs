@@ -45,7 +45,7 @@ pub struct PythonRenderRequest<'a> {
 ///
 /// [`MigrationError::UnsupportedChange`] when the operation list contains a
 /// variant that has no faithful `.py` authoring form (`DefineSchema`,
-/// lowered `CopyAttribute`).
+/// TypeQL-only `CopyAttribute`, `RenameAttribute`).
 pub fn render_migration_python(request: &PythonRenderRequest<'_>) -> crate::Result<String> {
     let resolver = SymbolResolver::new(request);
     let description = describe_operations(request.operations);
@@ -133,12 +133,15 @@ impl<'a> SymbolResolver<'a> {
 
     fn side_of(op: &OperationSpec) -> Side {
         match op {
+            // Backfills run against the post-change schema (the destination
+            // ownership exists only there), so the owner resolves post-side.
             OperationSpec::AddAttribute { .. }
             | OperationSpec::AddEntity { .. }
             | OperationSpec::AddRelation { .. }
             | OperationSpec::AddOwnership { .. }
             | OperationSpec::AddRole { .. }
-            | OperationSpec::AddRolePlayer { .. } => Side::Post,
+            | OperationSpec::AddRolePlayer { .. }
+            | OperationSpec::CopyAttribute { .. } => Side::Post,
             _ => Side::Pre,
         }
     }
@@ -220,10 +223,14 @@ impl<'a> SymbolResolver<'a> {
             | OperationSpec::RemoveRolePlayer { relation_type, .. } => {
                 self.record(side, relation_type);
             }
+            OperationSpec::CopyAttribute { owner, .. } => {
+                if let Some(owner) = owner {
+                    self.record(side, owner);
+                }
+            }
             OperationSpec::DefineSchema { .. }
             | OperationSpec::RunTypeql { .. }
-            | OperationSpec::RenameAttribute { .. }
-            | OperationSpec::CopyAttribute { .. } => {}
+            | OperationSpec::RenameAttribute { .. } => {}
         }
     }
 
@@ -439,25 +446,46 @@ fn render_operation(op: &OperationSpec, resolver: &SymbolResolver<'_>) -> crate:
             ),
             None => format!("ops.RunTypeQL(forward={})", py_repr(forward)),
         },
-        OperationSpec::RenameAttribute {
-            old_name,
-            new_name,
-            value_type,
-        } => format!(
-            "ops.RenameAttribute({}, {}, {})",
-            py_repr(old_name),
-            py_repr(new_name),
-            py_repr(value_type)
-        ),
-        // A lowered CopyAttribute carries only its forward/reverse TypeQL, so
-        // it cannot round-trip to a faithful `ops.CopyAttribute(...)` source
-        // form, and rendering it as RunTypeQL would change its execution step
-        // kind (backfill vs plain write). DefineSchema is a model-initial
-        // construct that never flows through authoring.
+        // `ops.RenameAttribute` is a non-executable placeholder (the planner
+        // refuses to lower it), so rendering it would author an artifact that
+        // can never run. Renames are authored as `attribute_renames`
+        // directives, which expand into executable primitives.
+        OperationSpec::RenameAttribute { .. } => {
+            return Err(crate::error::MigrationError::UnsupportedChange {
+                type_name: "<operations>".to_string(),
+                change: "rename_attribute has no executable lowering; pass the rename as an \
+                         attribute_renames directive instead"
+                    .to_string(),
+            });
+        }
+        OperationSpec::CopyAttribute {
+            owner: Some(owner),
+            source: Some(source),
+            dest: Some(dest),
+            filter,
+            ..
+        } => {
+            let mut parts = vec![
+                resolver.reference(side, owner, resolver.owner_kind(side, owner)),
+                format!("source={}", py_repr(source)),
+                format!("dest={}", py_repr(dest)),
+            ];
+            if let Some(filter) = filter {
+                parts.push(format!("filter={}", py_repr(filter)));
+            }
+            format!("ops.CopyAttribute({})", parts.join(", "))
+        }
+        // A TypeQL-only CopyAttribute cannot round-trip to a faithful
+        // `ops.CopyAttribute(...)` source form, and rendering it as RunTypeQL
+        // would change its execution step kind (backfill vs plain write).
+        // DefineSchema is a model-initial construct that never flows through
+        // authoring.
         OperationSpec::CopyAttribute { .. } => {
             return Err(crate::error::MigrationError::UnsupportedChange {
                 type_name: "<operations>".to_string(),
-                change: "lowered copy_attribute has no .py authoring form".to_string(),
+                change: "lowered copy_attribute has no .py authoring form; \
+                         provide the structured owner/source/dest fields"
+                    .to_string(),
             });
         }
         OperationSpec::DefineSchema { .. } => {
@@ -829,9 +857,85 @@ mod tests {
     }
 
     #[test]
+    fn structured_copy_attribute_renders_faithful_source() {
+        let mut target = SchemaInfo::default();
+        target.entities.insert(
+            "person".to_string(),
+            type_bridge_orm::schema::info::EntitySchemaEntry {
+                type_name: "person".to_string(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: std::collections::BTreeMap::new(),
+            },
+        );
+        let operations = vec![OperationSpec::CopyAttribute {
+            owner: Some("person".to_string()),
+            source: Some("legacy-name".to_string()),
+            dest: Some("display-name".to_string()),
+            filter: Some("$x has age $a;".to_string()),
+            forward: None,
+            reverse: None,
+        }];
+
+        let rendered = render_migration_python(&PythonRenderRequest {
+            operations: &operations,
+            app_label: "migrations",
+            name: "backfill",
+            dependencies: &[],
+            generated_at: "t",
+            pre_version: None,
+            post_version: "v0002",
+            base: &SchemaInfo::default(),
+            target: &target,
+        })
+        .expect("render should succeed");
+
+        // The owner resolves to the post-side snapshot symbol; source/dest
+        // stay plain labels because the Python op takes them as strings.
+        assert!(rendered.contains(
+            "ops.CopyAttribute(Person, source='legacy-name', dest='display-name', filter='$x has age $a;'),"
+        ));
+        assert!(rendered.contains("from migrations.snapshots.v0002 import Person"));
+    }
+
+    #[test]
+    fn structured_copy_attribute_falls_back_to_ref_for_unknown_owner() {
+        let operations = vec![OperationSpec::CopyAttribute {
+            owner: Some("person".to_string()),
+            source: Some("legacy-name".to_string()),
+            dest: Some("display-name".to_string()),
+            filter: None,
+            forward: None,
+            reverse: None,
+        }];
+
+        let rendered = render_migration_python(&PythonRenderRequest {
+            operations: &operations,
+            app_label: "migrations",
+            name: "backfill",
+            dependencies: &[],
+            generated_at: "t",
+            pre_version: None,
+            post_version: "v0002",
+            base: &SchemaInfo::default(),
+            target: &SchemaInfo::default(),
+        })
+        .expect("render should succeed");
+
+        assert!(rendered.contains(
+            "ops.CopyAttribute(ref.entity('person'), source='legacy-name', dest='display-name'),"
+        ));
+    }
+
+    #[test]
     fn lowered_copy_attribute_is_rejected() {
         let operations = vec![OperationSpec::CopyAttribute {
-            forward: "match ...".to_string(),
+            owner: None,
+            source: None,
+            dest: None,
+            filter: None,
+            forward: Some("match ...".to_string()),
             reverse: None,
         }];
 

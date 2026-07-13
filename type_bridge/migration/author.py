@@ -85,6 +85,7 @@ def author_migration(
     previous_snapshot_version: str | None = None,
     before_schema: list[dict[str, Any]] | None = None,
     after_schema: list[dict[str, Any]] | None = None,
+    attribute_renames: list[tuple[str, str]] | None = None,
     generated_at: str | None = None,
 ) -> AuthoredMigration | None:
     """Author the complete migration artifact set from serialized schemas.
@@ -102,6 +103,11 @@ def author_migration(
             change set (e.g. destructive data cleanup).
         after_schema: Serialized operations executed after the schema
             change set (e.g. backfills).
+        attribute_renames: ``(old_name, new_name)`` attribute-rename
+            directives. Each replaces the diff's independent remove+add of
+            that pair with a data-preserving staged expansion (define new,
+            plain ownerships, backfill, annotation tightening, old-value
+            cleanup, removal). The old-value cleanup step is irreversible.
         generated_at: Explicit timestamp text for the generated ``.py``
             docstring. Defaults to now; pass a fixed value for
             byte-deterministic output.
@@ -127,6 +133,7 @@ def author_migration(
         previous_snapshot_version=previous_snapshot_version,
         before_schema=before_schema,
         after_schema=after_schema,
+        attribute_renames=list(attribute_renames or []),
     )
     if inner is None:
         return None

@@ -5,7 +5,7 @@
 //! the executable TypeQL to run.  No database connection, no async, no TypeDB
 //! driver is touched here.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use type_bridge_orm::TxType;
@@ -17,7 +17,7 @@ use type_bridge_orm::schema::info::{
 use crate::checksum::check_checksum_drift;
 use crate::error::MigrationError;
 use crate::graph::{AppliedMigrationRecord, validate_graph};
-use crate::spec::{MigrationGraph, OperationSpec};
+use crate::spec::{MigrationGraph, OperationSpec, copy_attribute_typeql};
 
 /// The kind of execution step, controlling how the executor dispatches it.
 ///
@@ -313,10 +313,20 @@ fn assemble_steps(
                 attr_name,
                 old_annotations,
                 new_annotations,
-            } => schema_step(
-                redefine_ownership(owner_type, attr_name, new_annotations),
-                Some(redefine_ownership(owner_type, attr_name, old_annotations)),
-            ),
+            } => {
+                // Parameterless annotations (@key, @unique, @distinct) can
+                // never be redefined (REX28), so the transition decomposes
+                // into per-category steps instead of one blanket redefine.
+                let mut modify_steps =
+                    modify_ownership_steps(owner_type, attr_name, old_annotations, new_annotations);
+                if !migration_reversible {
+                    for modify_step in &mut modify_steps {
+                        modify_step.reverse = None;
+                    }
+                }
+                steps.extend(modify_steps);
+                continue;
+            }
             OperationSpec::AddRole {
                 relation_type,
                 role,
@@ -352,16 +362,17 @@ fn assemble_steps(
                     player_type_name,
                 )),
             ),
-            OperationSpec::CopyAttribute { forward, reverse } => {
-                // The backfill TypeQL is carried verbatim from the frozen
-                // `CopyAttribute.to_typeql()` (invariant 2: no re-synthesis here).
-                // `backfill.rs` composes its count queries from this `forward`
-                // text's match clause.
+            copy @ OperationSpec::CopyAttribute { .. } => {
+                // Carried TypeQL (the frozen `CopyAttribute.to_typeql()` output)
+                // executes verbatim; the structured portable form synthesizes the
+                // identical template. `backfill.rs` composes its count queries
+                // from this `forward` text's match clause.
+                let (forward, reverse) = copy_attribute_typeql(copy)?;
                 ExecutionStep {
                     tx_type: TxType::Write,
                     kind: StepKind::Backfill,
-                    forward: forward.clone(),
-                    reverse: reverse.clone(),
+                    forward,
+                    reverse,
                 }
             }
             other @ OperationSpec::RenameAttribute { .. } => {
@@ -478,12 +489,101 @@ fn undefine_ownership(owner_type: &str, attr_name: &str) -> String {
     )
 }
 
-fn redefine_ownership(owner_type: &str, attr_name: &str, annotations: &str) -> String {
-    let suffix = annotation_suffix(annotations);
-    typeql_block(
-        "redefine",
-        vec![format!("{owner_type} owns {attr_name}{suffix};")],
-    )
+/// Kind key of one annotation token (`"@card(0..1)"` -> `"@card"`).
+fn annotation_kind(token: &str) -> &str {
+    token.split('(').next().unwrap_or(token)
+}
+
+/// Lower an ownership-annotation transition into per-category schema steps.
+///
+/// TypeDB cannot `redefine` a parameterless annotation (REX28), so the
+/// transition decomposes into: undefine removed kinds, redefine changed
+/// parameterized kinds, define added kinds. Removals run first — adding
+/// `@key` while a conflicting explicit `@card` is still declared fails
+/// schema validation. Identical annotation sets lower to no steps.
+fn modify_ownership_steps(
+    owner_type: &str,
+    attr_name: &str,
+    old_annotations: &str,
+    new_annotations: &str,
+) -> Vec<ExecutionStep> {
+    let old_tokens: BTreeMap<&str, &str> = old_annotations
+        .split_whitespace()
+        .map(|token| (annotation_kind(token), token))
+        .collect();
+    let new_tokens: BTreeMap<&str, &str> = new_annotations
+        .split_whitespace()
+        .map(|token| (annotation_kind(token), token))
+        .collect();
+    let mut steps = Vec::new();
+
+    let removed: Vec<(&str, &str)> = old_tokens
+        .iter()
+        .filter(|(kind, _)| !new_tokens.contains_key(*kind))
+        .map(|(kind, token)| (*kind, *token))
+        .collect();
+    if !removed.is_empty() {
+        let lines: Vec<String> = removed
+            .iter()
+            .map(|(kind, _)| format!("{kind} from {owner_type} owns {attr_name};"))
+            .collect();
+        let tokens: Vec<&str> = removed.iter().map(|(_, token)| *token).collect();
+        steps.push(schema_step(
+            typeql_block("undefine", lines),
+            Some(typeql_block(
+                "define",
+                vec![format!(
+                    "{owner_type} owns {attr_name} {};",
+                    tokens.join(" ")
+                )],
+            )),
+        ));
+    }
+
+    for (kind, new_token) in &new_tokens {
+        if let Some(old_token) = old_tokens.get(kind)
+            && old_token != new_token
+        {
+            steps.push(schema_step(
+                typeql_block(
+                    "redefine",
+                    vec![format!("{owner_type} owns {attr_name} {new_token};")],
+                ),
+                Some(typeql_block(
+                    "redefine",
+                    vec![format!("{owner_type} owns {attr_name} {old_token};")],
+                )),
+            ));
+        }
+    }
+
+    let added: Vec<&str> = new_tokens
+        .iter()
+        .filter(|(kind, _)| !old_tokens.contains_key(*kind))
+        .map(|(_, token)| *token)
+        .collect();
+    if !added.is_empty() {
+        let lines: Vec<String> = added
+            .iter()
+            .map(|token| {
+                format!(
+                    "{} from {owner_type} owns {attr_name};",
+                    annotation_kind(token)
+                )
+            })
+            .collect();
+        steps.push(schema_step(
+            typeql_block(
+                "define",
+                vec![format!(
+                    "{owner_type} owns {attr_name} {};",
+                    added.join(" ")
+                )],
+            ),
+            Some(typeql_block("undefine", lines)),
+        ));
+    }
+    steps
 }
 
 fn owned_attribute_type_ref(attribute: &OwnedAttributeEntry) -> String {
@@ -1086,6 +1186,75 @@ delete $a has email "ops@example.com";"#,
     }
 
     #[test]
+    fn modify_ownership_decomposes_parameterless_transitions() {
+        // @key can never be redefined (REX28): swapping @card(0..1) for
+        // @key must lower to an undefine step followed by a define step,
+        // removals first (defining @key beside a conflicting explicit
+        // @card fails schema validation).
+        let g = graph(vec![migration(
+            "0002_key",
+            vec![OperationSpec::ModifyOwnership {
+                owner_type: "person".to_string(),
+                attr_name: "nickname".to_string(),
+                old_annotations: "@card(0..1)".to_string(),
+                new_annotations: "@key".to_string(),
+            }],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[0].forward,
+            "undefine\n@card from person owns nickname;"
+        );
+        assert_eq!(
+            steps[0].reverse.as_deref(),
+            Some("define\nperson owns nickname @card(0..1);")
+        );
+        assert_eq!(steps[1].forward, "define\nperson owns nickname @key;");
+        assert_eq!(
+            steps[1].reverse.as_deref(),
+            Some("undefine\n@key from person owns nickname;")
+        );
+    }
+
+    #[test]
+    fn modify_ownership_from_plain_defines_and_identical_sets_lower_to_nothing() {
+        let g = graph(vec![migration(
+            "0002_tighten",
+            vec![
+                OperationSpec::ModifyOwnership {
+                    owner_type: "person".to_string(),
+                    attr_name: "nickname".to_string(),
+                    old_annotations: String::new(),
+                    new_annotations: "@key".to_string(),
+                },
+                OperationSpec::ModifyOwnership {
+                    owner_type: "person".to_string(),
+                    attr_name: "email".to_string(),
+                    old_annotations: "@unique".to_string(),
+                    new_annotations: "@unique".to_string(),
+                },
+            ],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+
+        // The no-op transition contributes zero steps.
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].forward, "define\nperson owns nickname @key;");
+        assert_eq!(
+            steps[0].reverse.as_deref(),
+            Some("undefine\n@key from person owns nickname;")
+        );
+    }
+
+    #[test]
     fn typed_role_operations_lower_to_schema_steps() {
         let role = RoleEntry {
             role_name: "reviewer".to_string(),
@@ -1315,7 +1484,11 @@ delete $a has email "ops@example.com";"#,
         let g = graph(vec![migration(
             "0002_backfill",
             vec![OperationSpec::CopyAttribute {
-                forward: forward.to_string(),
+                owner: None,
+                source: None,
+                dest: None,
+                filter: None,
+                forward: Some(forward.to_string()),
                 reverse: Some(reverse.to_string()),
             }],
             vec![],
@@ -1343,6 +1516,39 @@ delete $a has email "ops@example.com";"#,
             step.reverse.as_deref(),
             Some(reverse),
             "reverse must be carried verbatim"
+        );
+    }
+
+    #[test]
+    fn structured_copy_attribute_lowers_to_the_same_backfill_step() {
+        // The structured portable form synthesizes the exact TypeQL the
+        // carried form would have contained.
+        let g = graph(vec![migration(
+            "0002_backfill",
+            vec![OperationSpec::CopyAttribute {
+                owner: Some("person".to_string()),
+                source: Some("old-name".to_string()),
+                dest: Some("new-name".to_string()),
+                filter: None,
+                forward: None,
+                reverse: None,
+            }],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+
+        let step = &result.to_apply[0].steps[0];
+        assert_eq!(step.tx_type, TxType::Write);
+        assert_eq!(step.kind, StepKind::Backfill);
+        assert_eq!(
+            step.forward,
+            "match\n  $x isa person, has old-name $v;\n  \
+             not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;"
+        );
+        assert_eq!(
+            step.reverse.as_deref(),
+            Some("match $x isa person, has new-name $v;\ndelete $v of $x;")
         );
     }
 

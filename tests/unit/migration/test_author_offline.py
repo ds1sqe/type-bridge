@@ -46,6 +46,24 @@ class AoLegacyLink(Relation):
     link_id: AoLinkId = Flag(Key)
 
 
+class AoLegacyTag(String):
+    flags = AttributeFlags(name="ao-legacy-tag")
+
+
+class AoTag(String):
+    flags = AttributeFlags(name="ao-tag")
+
+
+class AoItemV1(Entity):
+    flags = TypeFlags(name="ao-item")
+    tag: AoLegacyTag = Flag(Key)
+
+
+class AoItemV2(Entity):
+    flags = TypeFlags(name="ao-item")
+    tag: AoTag = Flag(Key)
+
+
 @pytest.fixture(autouse=True)
 def _requires_rust_extension() -> None:
     pytest.importorskip("type_bridge_core")
@@ -221,7 +239,120 @@ def test_whole_relation_removal_stays_single_operation() -> None:
     assert kinds == ["remove_relation", "remove_attribute"]
 
 
+def test_structured_copy_attribute_authors_portably() -> None:
+    """A structured copy_attribute dict renders a faithful ops.CopyAttribute
+    and its sidecar TypeQL is byte-identical to the frozen Python lowering.
+
+    This is the parity pin for the Rust synthesis: if either template
+    drifts, this test fails.
+    """
+    from type_bridge.migration import operations as ops
+
+    authored = _author(
+        _v1(),
+        _v2(),
+        after_schema=[
+            {
+                "kind": "copy_attribute",
+                "owner": "ao-person",
+                "source": "ao-name",
+                "dest": "ao-link-id",
+                "filter": None,
+            }
+        ],
+    )
+
+    assert authored is not None
+    assert (
+        "ops.CopyAttribute(AoPerson, source='ao-name', dest='ao-link-id')" in authored.python_source
+    )
+
+    python_op = ops.CopyAttribute(owner=AoPerson, source="ao-name", dest="ao-link-id")
+    copy = authored.spec["operations"][-1]
+    assert copy["kind"] == "copy_attribute"
+    assert copy["forward"] == python_op.to_typeql()
+    assert copy["reverse"] == python_op.to_rollback_typeql()
+
+
+def test_incomplete_copy_attribute_is_rejected() -> None:
+    with pytest.raises(ValueError, match="owner/source/dest"):
+        _author(
+            _v1(),
+            _v2(),
+            after_schema=[{"kind": "copy_attribute", "owner": "ao-person"}],
+        )
+
+
+def _item_schema(version: type) -> SchemaInfo:
+    info = SchemaInfo()
+    info.entities = [version]
+    info.attribute_classes = {AoLegacyTag if version is AoItemV1 else AoTag}
+    return info
+
+
+def test_attribute_rename_authors_the_staged_expansion() -> None:
+    """A rename directive replaces the diff's remove+add with the staged
+    data-preserving primitive sequence."""
+    authored = _author(
+        _item_schema(AoItemV1),
+        _item_schema(AoItemV2),
+        name="0002_rename_tag",
+        attribute_renames=[("ao-legacy-tag", "ao-tag")],
+    )
+
+    assert authored is not None
+    kinds = [op["kind"] for op in authored.spec["operations"]]
+    assert kinds == [
+        "add_attribute",  # ao-tag with the target definition
+        "add_ownership",  # ao-item owns ao-tag — plain, staged
+        "copy_attribute",  # backfill ao-legacy-tag -> ao-tag
+        "modify_ownership",  # tighten to @key after the backfill
+        "modify_ownership",  # loosen @key on ao-legacy-tag pre-delete
+        "run_typeql",  # delete ao-legacy-tag instances (irreversible)
+        "remove_ownership",  # detach the emptied ownership
+        "remove_attribute",  # undefine ao-legacy-tag
+    ]
+
+    # The .py is the reviewable primitive recipe, not an opaque marker.
+    assert "ops.CopyAttribute(AoItem, source='ao-legacy-tag', dest='ao-tag')" in (
+        authored.python_source
+    )
+    assert "ops.RenameAttribute" not in authored.python_source
+
+    # Without the directive the same schemas map to a data-destroying
+    # remove+add.
+    plain = _author(_item_schema(AoItemV1), _item_schema(AoItemV2), name="0002_rename_tag")
+    assert plain is not None
+    assert [op["kind"] for op in plain.spec["operations"]] == [
+        "add_attribute",
+        "add_ownership",
+        "remove_ownership",
+        "remove_attribute",
+    ]
+
+
+def test_inconsistent_rename_directive_is_rejected() -> None:
+    with pytest.raises(ValueError, match="does not exist in the base schema"):
+        _author(
+            _item_schema(AoItemV1),
+            _item_schema(AoItemV2),
+            attribute_renames=[("ghost", "ao-tag")],
+        )
+
+
+def test_rename_attribute_placeholder_refuses_to_execute() -> None:
+    """The historical placeholder half-executed (defined the new attribute,
+    swallowed the data migration in comments); it must fail loudly now."""
+    from type_bridge.migration import operations as ops
+
+    op = ops.RenameAttribute("ao-legacy-tag", "ao-tag", "string")
+    with pytest.raises(NotImplementedError, match="attribute_renames"):
+        op.to_typeql()
+
+
 def test_unsupported_operations_error_instead_of_dropping() -> None:
+    # The TypeQL-only lowered form cannot round-trip to a faithful
+    # ops.CopyAttribute(...); only the structured form is authorable.
     with pytest.raises(ValueError, match="no .py authoring form"):
         _author(
             _v1(),

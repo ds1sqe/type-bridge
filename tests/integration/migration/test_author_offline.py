@@ -48,6 +48,24 @@ class OiLegacyLink(Relation):
     link_id: OiLinkId = Flag(Key)
 
 
+class OiLegacyTag(String):
+    flags = AttributeFlags(name="oi-legacy-tag")
+
+
+class OiTag(String):
+    flags = AttributeFlags(name="oi-tag")
+
+
+class OiItemV1(Entity):
+    flags = TypeFlags(name="oi-item")
+    tag: OiLegacyTag = Flag(Key)
+
+
+class OiItemV2(Entity):
+    flags = TypeFlags(name="oi-item")
+    tag: OiTag = Flag(Key)
+
+
 V1_MODELS = [OiPerson, OiBadge]
 V2_MODELS = [OiPerson, OiBadge, OiLegacyLink]
 
@@ -139,3 +157,88 @@ def test_live_and_offline_authoring_produce_identical_artifacts(clean_db, tmp_pa
     for relative_path, contents in offline.files:
         if relative_path.startswith("snapshots/v0002/"):
             assert (live_dir / relative_path).read_bytes() == contents, relative_path
+
+
+def _item_schema(item: type[Entity]) -> dict:
+    info = SchemaInfo()
+    info.entities = [item]
+    info.attribute_classes = {OiLegacyTag if item is OiItemV1 else OiTag}
+    return info.to_rust_schema_info()
+
+
+def _item_tags(db) -> set[str]:
+    rows = db.execute_query(
+        'match $x isa oi-item, has oi-tag $v;\nfetch { "tag": $v };',
+        transaction_type="read",
+    )
+    tags = set()
+    for row in rows or []:
+        value = row["tag"]
+        tags.add(value["value"] if isinstance(value, dict) and "value" in value else value)
+    return tags
+
+
+@pytest.mark.integration
+@pytest.mark.order(337)
+def test_attribute_rename_preserves_data_through_the_staged_expansion(clean_db, tmp_path: Path):
+    """The rename directive's staged expansion executes end-to-end: plain
+    ownership, backfill, @key tightening after the data exists, old-value
+    cleanup, and old-attribute removal — with every value preserved."""
+    migrations_dir = tmp_path / "migrations"
+
+    initial = author_migration(
+        SchemaInfo().to_rust_schema_info(),
+        _item_schema(OiItemV1),
+        app_label="migrations",
+        name="0001_initial",
+        snapshot_version="v0001",
+        generated_at="2026-07-13T00:00:00+00:00",
+    )
+    assert initial is not None
+    initial.write_to(migrations_dir)
+    executor = MigrationExecutor(clean_db, migrations_dir)
+    assert all(result.success for result in executor.migrate())
+
+    for tag in ("alpha", "beta"):
+        clean_db.execute_query(
+            f'insert $x isa oi-item, has oi-legacy-tag "{tag}";',
+            transaction_type="write",
+        )
+
+    rename = author_migration(
+        _item_schema(OiItemV1),
+        _item_schema(OiItemV2),
+        app_label="migrations",
+        name="0002_rename_tag",
+        dependencies=[("migrations", "0001_initial")],
+        snapshot_version="v0002",
+        previous_snapshot_version="v0001",
+        attribute_renames=[("oi-legacy-tag", "oi-tag")],
+        generated_at="2026-07-13T00:00:00+00:00",
+    )
+    assert rename is not None
+    rename.write_to(migrations_dir)
+
+    results = executor.migrate()
+    assert all(result.success for result in results)
+
+    assert _item_tags(clean_db) == {"alpha", "beta"}
+    schema = SchemaIntrospector(clean_db).introspect()
+    assert "oi-legacy-tag" not in schema.get_attribute_names()
+    assert "oi-tag" in schema.get_attribute_names()
+    assert {o.attribute_name for o in schema.get_ownerships_for("oi-item")} == {"oi-tag"}
+
+    # The database now matches the target exactly — @key tightening
+    # included: authoring against the introspected schema finds no diff.
+    introspected = without_migration_state_schema(schema).to_rust_schema_info()
+    assert (
+        author_migration(
+            introspected,
+            _item_schema(OiItemV2),
+            app_label="migrations",
+            name="0003_noop",
+            snapshot_version="v0003",
+            generated_at="2026-07-13T00:00:00+00:00",
+        )
+        is None
+    )

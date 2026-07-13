@@ -433,7 +433,31 @@ Notes:
   operations were supplied.
 - `before_schema`/`after_schema` place explicit portable operations around
   the generated schema change set (destructive cleanup before removals,
-  backfills after additions).
+  backfills after additions). `run_typeql` carries forward/reverse TypeQL
+  verbatim; `copy_attribute` takes the structured form below and authoring
+  synthesizes its backfill TypeQL and renders a faithful
+  `ops.CopyAttribute(...)`:
+
+  ```python
+  after_schema=[
+      {
+          "kind": "copy_attribute",
+          "owner": "person",
+          "source": "legacy-name",
+          "dest": "display-name",
+          # Optional extra match constraint; the terminating ';' is added.
+          "filter": "$x has age $a",
+      }
+  ]
+  ```
+- `attribute_renames=[("legacy-name", "display-name")]` declares that an
+  attribute present in `base` continues as a new name in `target`. Without
+  the directive that diff maps to an independent remove+add, which destroys
+  the data; with it, authoring emits a staged, data-preserving expansion
+  (define the new attribute, plain ownerships, backfill, annotation
+  tightening, old-value cleanup, removal). The old-value cleanup step is
+  irreversible. The non-executable `ops.RenameAttribute` placeholder is not
+  accepted here — pass the directive instead.
 - Pass a fixed `generated_at` to make the output byte-deterministic;
   otherwise the current time is stamped.
 - `write_to` is all-or-nothing: existing artifacts must be byte-identical

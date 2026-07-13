@@ -162,17 +162,120 @@ pub enum OperationSpec {
     /// This is a DML (write-typed) backfill operation — it inserts attribute values, not
     /// schema.  The forward TypeQL is an insert-if-absent backfill; the reverse deletes the
     /// destination attribute.
+    ///
+    /// Two wire forms exist. The lowered form carries only `forward`/`reverse`
+    /// TypeQL (what `.py` execution lowers to); the structured form carries
+    /// `owner`/`source`/`dest`(/`filter`) and lets the authoring core
+    /// synthesize the TypeQL via [`copy_attribute_typeql`] and render a
+    /// faithful `ops.CopyAttribute(...)` in the generated `.py`. Sidecars
+    /// written by the authoring core always carry the synthesized strings, so
+    /// the executor keeps running carried TypeQL.
     CopyAttribute {
-        /// Forward backfill TypeQL, carried verbatim from the frozen
-        /// `CopyAttribute.to_typeql()`. The executor runs this string and derives
-        /// counts from its match clause; it is never re-synthesized in Rust
-        /// (invariant 2: a single TypeQL source).
-        forward: String,
+        /// Owner type label (structured portable form).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<String>,
+        /// Source attribute label (structured portable form).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        /// Destination attribute label (structured portable form).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dest: Option<String>,
+        /// Optional extra match constraint line (structured portable form).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        /// Forward backfill TypeQL. Absent only in the structured form before
+        /// normalization; the executor derives its count queries from this
+        /// string's match clause.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forward: Option<String>,
         /// Reverse (rollback) TypeQL from `to_rollback_typeql()`, or `None` when
         /// the migration is irreversible.
         #[serde(default)]
         reverse: Option<String>,
     },
+}
+
+/// Resolve the executable forward/reverse TypeQL of a `copy_attribute` op.
+///
+/// Carried TypeQL wins when present (it is the frozen Python
+/// `CopyAttribute.to_typeql()` output); otherwise the structured
+/// `owner`/`source`/`dest` fields synthesize it. The synthesis is pinned
+/// byte-identical to the Python template by a parity test on the Python side.
+///
+/// # Errors
+///
+/// [`crate::error::MigrationError::AuthoringInput`] when neither the carried
+/// TypeQL nor the complete structured form is present.
+pub fn copy_attribute_typeql(op: &OperationSpec) -> crate::Result<(String, Option<String>)> {
+    let OperationSpec::CopyAttribute {
+        owner,
+        source,
+        dest,
+        filter,
+        forward,
+        reverse,
+    } = op
+    else {
+        return Err(crate::error::MigrationError::AuthoringInput {
+            message: "copy_attribute_typeql called on a non-copy_attribute operation".to_string(),
+        });
+    };
+    if let Some(forward) = forward {
+        return Ok((forward.clone(), reverse.clone()));
+    }
+    let (Some(owner), Some(source), Some(dest)) = (owner, source, dest) else {
+        return Err(crate::error::MigrationError::AuthoringInput {
+            message: "copy_attribute requires either forward TypeQL or the structured \
+                      owner/source/dest fields"
+                .to_string(),
+        });
+    };
+    let filter_line = match filter {
+        Some(filter) => format!("\n  {filter};"),
+        None => String::new(),
+    };
+    let synthesized_forward = format!(
+        "match\n  $x isa {owner}, has {source} $v;\n  not {{ $x has {dest} $d; }};{filter_line}\ninsert\n  $x has {dest} == $v;"
+    );
+    let synthesized_reverse = format!("match $x isa {owner}, has {dest} $v;\ndelete $v of $x;");
+    Ok((
+        synthesized_forward,
+        Some(reverse.clone().unwrap_or(synthesized_reverse)),
+    ))
+}
+
+impl OperationSpec {
+    /// Return the operation with any structured `copy_attribute` filled in
+    /// with its synthesized executable TypeQL. Other variants pass through.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::MigrationError::AuthoringInput`] when a
+    /// `copy_attribute` carries neither TypeQL nor the structured fields.
+    pub fn normalized(self) -> crate::Result<OperationSpec> {
+        if !matches!(self, OperationSpec::CopyAttribute { .. }) {
+            return Ok(self);
+        }
+        let (forward, reverse) = copy_attribute_typeql(&self)?;
+        let OperationSpec::CopyAttribute {
+            owner,
+            source,
+            dest,
+            filter,
+            ..
+        } = self
+        else {
+            unreachable!("guarded by the matches! check above");
+        };
+        Ok(OperationSpec::CopyAttribute {
+            owner,
+            source,
+            dest,
+            filter,
+            forward: Some(forward),
+            reverse,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -253,12 +356,34 @@ mod tests {
         assert_eq!(parsed, operation);
     }
 
+    fn lowered_copy_attribute(forward: &str, reverse: Option<&str>) -> OperationSpec {
+        OperationSpec::CopyAttribute {
+            owner: None,
+            source: None,
+            dest: None,
+            filter: None,
+            forward: Some(forward.to_string()),
+            reverse: reverse.map(str::to_string),
+        }
+    }
+
+    fn structured_copy_attribute(filter: Option<&str>) -> OperationSpec {
+        OperationSpec::CopyAttribute {
+            owner: Some("person".to_string()),
+            source: Some("old-name".to_string()),
+            dest: Some("new-name".to_string()),
+            filter: filter.map(str::to_string),
+            forward: None,
+            reverse: None,
+        }
+    }
+
     #[test]
     fn copy_attribute_operation_round_trips_json() {
-        let operation = OperationSpec::CopyAttribute {
-            forward: "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;".to_string(),
-            reverse: Some("match $x isa person, has new-name $v;\ndelete $v of $x;".to_string()),
-        };
+        let operation = lowered_copy_attribute(
+            "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;",
+            Some("match $x isa person, has new-name $v;\ndelete $v of $x;"),
+        );
 
         let json = serde_json::to_value(&operation).unwrap();
         assert_eq!(json["kind"], "copy_attribute");
@@ -268,6 +393,9 @@ mod tests {
                 .unwrap()
                 .contains("has new-name == $v")
         );
+        // Absent structured fields stay off the wire so the lowered form
+        // serializes exactly as it did before the structured form existed.
+        assert!(json.get("owner").is_none());
 
         let parsed: OperationSpec = serde_json::from_value(json).unwrap();
         assert_eq!(parsed, operation);
@@ -275,10 +403,10 @@ mod tests {
 
     #[test]
     fn copy_attribute_without_reverse_round_trips_json() {
-        let operation = OperationSpec::CopyAttribute {
-            forward: "match\n  $x isa company, has legacy-id $v;\n  not { $x has new-id $d; };\ninsert\n  $x has new-id == $v;".to_string(),
-            reverse: None,
-        };
+        let operation = lowered_copy_attribute(
+            "match\n  $x isa company, has legacy-id $v;\n  not { $x has new-id $d; };\ninsert\n  $x has new-id == $v;",
+            None,
+        );
 
         let json = serde_json::to_value(&operation).unwrap();
         assert_eq!(json["kind"], "copy_attribute");
@@ -286,6 +414,112 @@ mod tests {
 
         let parsed: OperationSpec = serde_json::from_value(json).unwrap();
         assert_eq!(parsed, operation);
+    }
+
+    #[test]
+    fn legacy_copy_attribute_sidecar_json_still_parses() {
+        // Sidecars written before the structured form carry only the TypeQL.
+        let json = r#"{"kind":"copy_attribute","forward":"match ...;","reverse":null}"#;
+
+        let parsed: OperationSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed, lowered_copy_attribute("match ...;", None));
+    }
+
+    #[test]
+    fn structured_copy_attribute_round_trips_json() {
+        let operation = structured_copy_attribute(Some("$x has age $a;"));
+
+        let json = serde_json::to_value(&operation).unwrap();
+        assert_eq!(json["kind"], "copy_attribute");
+        assert_eq!(json["owner"], "person");
+        assert!(json.get("forward").is_none());
+
+        let parsed: OperationSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, operation);
+    }
+
+    #[test]
+    fn structured_copy_attribute_synthesizes_python_shaped_typeql() {
+        let (forward, reverse) = copy_attribute_typeql(&structured_copy_attribute(None)).unwrap();
+
+        assert_eq!(
+            forward,
+            "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;"
+        );
+        assert_eq!(
+            reverse.as_deref(),
+            Some("match $x isa person, has new-name $v;\ndelete $v of $x;")
+        );
+    }
+
+    #[test]
+    fn structured_copy_attribute_synthesizes_filter_line() {
+        // The template appends the terminating `;`, mirroring the Python
+        // `CopyAttribute.to_typeql()` filter line.
+        let (forward, _) =
+            copy_attribute_typeql(&structured_copy_attribute(Some("$x has age $a"))).unwrap();
+
+        assert_eq!(
+            forward,
+            "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\n  $x has age $a;\ninsert\n  $x has new-name == $v;"
+        );
+    }
+
+    #[test]
+    fn carried_typeql_wins_over_structured_fields() {
+        let operation = OperationSpec::CopyAttribute {
+            owner: Some("person".to_string()),
+            source: Some("old-name".to_string()),
+            dest: Some("new-name".to_string()),
+            filter: None,
+            forward: Some("match carried;".to_string()),
+            reverse: Some("match carried-reverse;".to_string()),
+        };
+
+        let (forward, reverse) = copy_attribute_typeql(&operation).unwrap();
+        assert_eq!(forward, "match carried;");
+        assert_eq!(reverse.as_deref(), Some("match carried-reverse;"));
+    }
+
+    #[test]
+    fn copy_attribute_without_typeql_or_fields_is_rejected() {
+        let operation = OperationSpec::CopyAttribute {
+            owner: Some("person".to_string()),
+            source: None,
+            dest: Some("new-name".to_string()),
+            filter: None,
+            forward: None,
+            reverse: None,
+        };
+
+        let error = copy_attribute_typeql(&operation).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::error::MigrationError::AuthoringInput { .. }
+        ));
+    }
+
+    #[test]
+    fn normalized_fills_structured_copy_attribute_and_passes_others_through() {
+        let normalized = structured_copy_attribute(None).normalized().unwrap();
+        let OperationSpec::CopyAttribute {
+            owner,
+            forward,
+            reverse,
+            ..
+        } = &normalized
+        else {
+            panic!("normalized must stay a copy_attribute");
+        };
+        assert_eq!(owner.as_deref(), Some("person"));
+        assert!(forward.as_deref().unwrap().contains("has new-name == $v"));
+        assert!(reverse.as_deref().unwrap().contains("delete $v of $x"));
+
+        let passthrough = OperationSpec::RunTypeql {
+            forward: "match $x isa person;".to_string(),
+            reverse: None,
+        };
+        assert_eq!(passthrough.clone().normalized().unwrap(), passthrough);
     }
 
     #[test]

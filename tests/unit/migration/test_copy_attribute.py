@@ -109,14 +109,19 @@ def test_copy_attribute_lowers_to_copy_attribute_ir() -> None:
     spec = _operation_spec(op)
 
     assert spec["kind"] == "copy_attribute"
-    # The IR carries the forward/reverse TypeQL from to_typeql(), not fields.
+    # The executor runs the carried forward/reverse TypeQL from to_typeql();
+    # the structured fields ride along for the offline authoring surface.
     assert spec["forward"] == op.to_typeql()
     assert spec["reverse"] == op.to_rollback_typeql()
     assert "has new-name == $v" in spec["forward"]
+    assert spec["owner"] == CopyAttrPerson.get_type_name()
+    assert spec["source"] == "old-name"
+    assert spec["dest"] == "new-name"
+    assert spec["filter"] is None
 
 
 def test_copy_attribute_with_filter_carries_filter_in_forward() -> None:
-    """The filter is embedded in the carried forward TypeQL, not a separate field."""
+    """The filter is embedded in the carried forward TypeQL and as a field."""
     from type_bridge.migration._lower import _operation_spec
 
     op = ops.CopyAttribute(
@@ -129,6 +134,7 @@ def test_copy_attribute_with_filter_carries_filter_in_forward() -> None:
 
     assert spec["kind"] == "copy_attribute"
     assert "$x has copy-age $a;" in spec["forward"]
+    assert spec["filter"] == "$x has copy-age $a;"
 
 
 # ── Lowering: execution path (lower_execution_migration) ──────────────────────
