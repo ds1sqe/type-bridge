@@ -1,7 +1,7 @@
 """Flag system for TypeDB attribute annotations."""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Annotated, Any, TypeVar
 
@@ -15,6 +15,39 @@ type Unique[T] = Annotated[T, "unique"]
 type Ordered[T] = Annotated[T, "ordered"]
 # Distinct marker type — requires the Ordered marker; emits `@distinct` on the owns clause
 type Distinct[T] = Annotated[T, "distinct"]
+
+
+class Doc:
+    """Documentation marker for the TypeDB 3.12+ ``@doc("...")`` annotation.
+
+    Use with ``Flag(Doc("..."))`` on an ownership, or pass ``doc="..."`` to
+    ``TypeFlags`` / ``AttributeFlags`` for type-level documentation.
+
+    Example:
+        class Person(Entity):
+            name: Name = Flag(Key, Doc("full legal name"))
+    """
+
+    def __init__(self, text: str):
+        self.text = text
+
+
+class Meta:
+    """Metadata marker for the TypeDB 3.12+ ``@meta("key", "value")`` annotation.
+
+    TypeDB stores at most one value per key per subject; both key and value
+    must be strings. Use with ``Flag(Meta("key", "value"))`` on an ownership,
+    or pass ``meta={"key": "value"}`` to ``TypeFlags`` / ``AttributeFlags``
+    for type-level metadata.
+
+    Example:
+        class Person(Entity):
+            name: Name = Flag(Meta("column", "name"))
+    """
+
+    def __init__(self, key: str, value: str):
+        self.key = key
+        self.value = value
 
 
 class TypeNameCase(Enum):
@@ -123,6 +156,8 @@ class TypeFlags:
     abstract: bool = False
     base: bool = False
     case: TypeNameCase = TypeNameCase.CLASS_NAME
+    doc: str | None = None
+    meta: dict[str, str] = field(default_factory=dict)
 
     def __init__(
         self,
@@ -130,6 +165,8 @@ class TypeFlags:
         abstract: bool = False,
         base: bool = False,
         case: TypeNameCase = TypeNameCase.CLASS_NAME,
+        doc: str | None = None,
+        meta: dict[str, str] | None = None,
     ):
         """Initialize TypeFlags.
 
@@ -138,11 +175,15 @@ class TypeFlags:
             abstract: Whether this is an abstract type
             base: Whether this is a Python base class that should not appear in TypeDB schema
             case: Case formatting for auto-generated type names (default: CLASS_NAME)
+            doc: TypeDB 3.12+ ``@doc("...")`` documentation for the type
+            meta: TypeDB 3.12+ ``@meta("key", "value")`` annotations, one value per key
         """
         self.name = name
         self.abstract = abstract
         self.base = base
         self.case = case
+        self.doc = doc
+        self.meta = dict(meta) if meta else {}
 
 
 class Card:
@@ -237,6 +278,8 @@ class AttributeFlags:
     has_explicit_card: bool = False  # Track if Card(...) was explicitly used
     name: str | None = None  # Override attribute type name explicitly
     case: "TypeNameCase | None" = None  # Case formatting for type name
+    doc: str | None = None  # TypeDB 3.12+ @doc("...") annotation
+    meta: dict[str, str] = field(default_factory=dict)  # TypeDB 3.12+ @meta annotations
 
     def to_typeql_annotations(self) -> list[str]:
         """Convert to TypeQL annotations like @key, @card(0..5).
@@ -245,11 +288,16 @@ class AttributeFlags:
         - @key implies @card(1..1), so never output @card with @key
         - @unique with @card(1..1) is redundant, so omit @card in that case
         - Otherwise, always output @card if cardinality is specified
+        - @doc / @meta follow the constraint annotations, matching the
+          annotation order of TypeDB's schema export
 
         Returns:
             List of TypeQL annotation strings
         """
-        from type_bridge.typeql.annotations import format_card_annotation
+        from type_bridge.typeql.annotations import (
+            format_card_annotation,
+            format_doc_meta_annotations,
+        )
 
         annotations = []
         if self.is_key:
@@ -270,6 +318,7 @@ class AttributeFlags:
                 if card_annotation:
                     annotations.append(card_annotation)
 
+        annotations.extend(format_doc_meta_annotations(self.doc, self.meta))
         return annotations
 
 
@@ -320,6 +369,10 @@ def Flag(*annotations: Any) -> Annotated[Any, AttributeFlags]:
             flags.card_max = ann.max
             flags.has_explicit_card = True
             has_card = True
+        elif isinstance(ann, Doc):
+            flags.doc = ann.text
+        elif isinstance(ann, Meta):
+            flags.meta[ann.key] = ann.value
 
     # Distinct requires Ordered: the TypeDB list form (`owns attr[]`) is the
     # only form the engine accepts @distinct on.

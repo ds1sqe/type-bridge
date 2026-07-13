@@ -436,6 +436,16 @@ class TypeDBType(BaseModel, ABC):
         return cls._flags.abstract
 
     @classmethod
+    def get_doc(cls) -> str | None:
+        """Get the TypeDB 3.12+ ``@doc`` annotation text for this type, if any."""
+        return cls._flags.doc
+
+    @classmethod
+    def get_meta(cls) -> dict[str, str]:
+        """Get the TypeDB 3.12+ ``@meta`` annotations for this type, keyed by meta key."""
+        return dict(cls._flags.meta)
+
+    @classmethod
     def is_base(cls) -> bool:
         """Check if this is a Python base class (not in TypeDB schema)."""
         return cls._flags.base

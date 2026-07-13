@@ -244,7 +244,10 @@ class Attribute(ABC):
         Returns:
             TypeQL schema definition string
         """
-        from type_bridge.typeql.annotations import format_type_annotations
+        from type_bridge.typeql.annotations import (
+            format_doc_meta_annotations,
+            format_type_annotations,
+        )
 
         attr_name = cls.get_attribute_name()
         value_type = cls.get_value_type()
@@ -253,6 +256,13 @@ class Attribute(ABC):
         type_annotations = format_type_annotations(
             abstract=cls.abstract,
             independent=cls.independent,
+        )
+        flags = getattr(cls, "flags", None)
+        type_annotations.extend(
+            format_doc_meta_annotations(
+                getattr(flags, "doc", None),
+                dict(getattr(flags, "meta", {}) or {}),
+            )
         )
 
         # Build definition: attribute name [@abstract] [@independent], [sub parent,] value type;

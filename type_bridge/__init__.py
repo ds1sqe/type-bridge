@@ -10,11 +10,13 @@ from type_bridge.attribute import (
     DateTimeTZ,
     Decimal,
     Distinct,
+    Doc,
     Double,
     Duration,
     Flag,
     Integer,
     Key,
+    Meta,
     Ordered,
     String,
     TypeFlags,
@@ -88,6 +90,8 @@ __all__ = [
     "Unique",
     "Ordered",
     "Distinct",
+    "Doc",
+    "Meta",
     # Cardinality types
     "Card",
     # Entity/Relation flags

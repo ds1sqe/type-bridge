@@ -355,6 +355,7 @@ class Relation(TypeDBType):
         """
         from type_bridge.typeql.annotations import (
             format_card_annotation,
+            format_doc_meta_annotations,
             format_type_annotations,
         )
 
@@ -369,6 +370,7 @@ class Relation(TypeDBType):
         # TypeDB 3.x syntax: relation name @abstract, sub parent,
         supertype = cls.get_supertype()
         type_annotations = format_type_annotations(abstract=cls.is_abstract())
+        type_annotations.extend(format_doc_meta_annotations(cls.get_doc(), cls.get_meta()))
 
         relation_def = f"relation {type_name}"
         if type_annotations:
@@ -386,6 +388,8 @@ class Relation(TypeDBType):
                 card_annotation = format_card_annotation(role.cardinality.min, role.cardinality.max)
                 if card_annotation:
                     role_def += f" {card_annotation}"
+            for annotation in format_doc_meta_annotations(role.doc, role.meta):
+                role_def += f" {annotation}"
             lines.append(role_def)
 
         # Add attribute ownerships using shared helper
