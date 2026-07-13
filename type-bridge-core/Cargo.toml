@@ -12,6 +12,8 @@ members = [
     "crates/toml-transpiler",
     "vendor/typedb-protocol-b7",
     "vendor/typedb-driver-b7",
+    "vendor/typedb-protocol-b9",
+    "vendor/typedb-driver-b9",
 ]
 
 [workspace.package]
