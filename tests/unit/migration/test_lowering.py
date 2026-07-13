@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # pyright: reportMissingImports=false
-import importlib
 import sys
 from pathlib import Path
 from typing import ClassVar
@@ -22,6 +21,7 @@ from type_bridge import (
 )
 from type_bridge.attribute import AttributeFlags
 from type_bridge.generator import generate_models
+from type_bridge.migration import author_migration
 from type_bridge.migration import operations as ops
 from type_bridge.migration._lower import (
     _schema_info_for_models,
@@ -31,7 +31,6 @@ from type_bridge.migration._lower import (
     lower_operation,
 )
 from type_bridge.migration.base import Migration
-from type_bridge.migration.generator import MigrationGenerator
 from type_bridge.migration.info import SchemaInfo
 from type_bridge.migration.introspection import (
     IntrospectedAttribute,
@@ -63,6 +62,13 @@ class LowerPerson(Entity):
     flags = TypeFlags(name="lower-person")
 
     name: LowerName = Flag(Key)
+
+
+class LowerPersonWithAge(Entity):
+    flags = TypeFlags(name="lower-person")
+
+    name: LowerName = Flag(Key)
+    age: LowerAge | None = None
 
 
 class LowerCompany(Entity):
@@ -169,62 +175,90 @@ def test_schema_bearing_operations_lower_to_typed_payloads() -> None:
     }
 
 
-def test_generator_renders_typed_operation_source() -> None:
-    generator = MigrationGenerator.__new__(MigrationGenerator)
-
-    rendered = generator._render_operations(
-        [
-            ops.AddAttribute(LowerAge),
-            ops.AddEntity(LowerPerson),
-            ops.AddOwnership(LowerPerson, LowerAge, optional=True),
-            ops.RunTypeQL(
-                forward="define attribute lower-nick, value string;",
-                reverse="undefine attribute lower-nick;",
-            ),
-        ]
-    )
-
-    assert "ops.AddAttribute(ref.attribute('lower-age'))" in rendered
-    assert "ops.AddEntity(ref.entity('lower-person'))" in rendered
-    assert (
-        "ops.AddOwnership(ref.entity('lower-person'), ref.attribute('lower-age'), optional=True)"
-        in rendered
-    )
-    assert "ops.RunTypeQL(" in rendered
+def _lower_offline_base() -> SchemaInfo:
+    base = SchemaInfo()
+    base.entities = [LowerPerson]
+    base.attribute_classes = {LowerName}
+    return base
 
 
-def test_generator_sidecar_preserves_typed_operation_specs(tmp_path: Path) -> None:
-    generator = MigrationGenerator.__new__(MigrationGenerator)
-    generator.migrations_dir = tmp_path
-    py_path = tmp_path / "0001_initial.py"
-    py_path.write_text("# generated migration\n")
+def _lower_offline_target() -> SchemaInfo:
+    target = SchemaInfo()
+    target.entities = [LowerPersonWithAge]
+    target.attribute_classes = {LowerName, LowerAge}
+    return target
 
-    generator._write_sidecar(
-        py_path,
-        [
-            ops.AddAttribute(LowerAge),
-            ops.AddEntity(LowerPerson),
-            ops.AddOwnership(LowerPerson, LowerAge, optional=True),
-            ops.RunTypeQL(
-                forward="define attribute lower-nick, value string;",
-                reverse="undefine attribute lower-nick;",
-            ),
+
+def test_offline_author_renders_typed_operation_source() -> None:
+    authored = author_migration(
+        _lower_offline_base().to_rust_schema_info(),
+        _lower_offline_target().to_rust_schema_info(),
+        app_label="migrations",
+        name="0002_add_age",
+        dependencies=[("migrations", "0001_initial")],
+        snapshot_version="v0002",
+        previous_snapshot_version="v0001",
+        generated_at="t",
+        before_schema=[
+            {
+                "kind": "run_typeql",
+                "forward": "define attribute lower-nick, value string;",
+                "reverse": "undefine attribute lower-nick;",
+            }
         ],
-        dependencies=[],
-        migration_name="0001_initial",
     )
 
-    sidecar = _rust_runtime.migration_spec_from_json(py_path.with_suffix(".json").read_text())
+    assert authored is not None
+    source = authored.python_source
+    assert "ops.AddAttribute(LowerAge)" in source
+    assert "ops.AddOwnership(LowerPerson, LowerAge, optional=True)" in source
+    assert (
+        "ops.RunTypeQL(forward='define attribute lower-nick, value string;',"
+        " reverse='undefine attribute lower-nick;')"
+    ) in source
+    assert "from migrations.snapshots.v0002 import LowerAge, LowerPerson" in source
 
-    assert [operation["kind"] for operation in sidecar["operations"]] == [
+
+def test_offline_author_sidecar_preserves_typed_operation_specs(tmp_path: Path) -> None:
+    authored = author_migration(
+        _lower_offline_base().to_rust_schema_info(),
+        _lower_offline_target().to_rust_schema_info(),
+        app_label="migrations",
+        name="0002_add_age",
+        dependencies=[("migrations", "0001_initial")],
+        snapshot_version="v0002",
+        previous_snapshot_version="v0001",
+        generated_at="t",
+        after_schema=[
+            {
+                "kind": "run_typeql",
+                "forward": "define attribute lower-nick, value string;",
+                "reverse": "undefine attribute lower-nick;",
+            }
+        ],
+    )
+
+    assert authored is not None
+    assert [operation["kind"] for operation in authored.spec["operations"]] == [
         "add_attribute",
-        "add_entity",
         "add_ownership",
         "run_typeql",
     ]
-    assert sidecar["operations"][0]["attribute"]["attr_name"] == "lower-age"
-    assert sidecar["operations"][1]["entity"]["type_name"] == "lower-person"
-    assert sidecar["operations"][2]["owner_type"] == "lower-person"
+    assert authored.spec["operations"][0]["attribute"]["attr_name"] == "lower-age"
+    assert authored.spec["operations"][1]["owner_type"] == "lower-person"
+
+    authored.write_to(tmp_path / "migrations")
+    sidecar = _rust_runtime.migration_spec_from_json(
+        (tmp_path / "migrations" / "0002_add_age.json").read_text()
+    )
+
+    assert [operation["kind"] for operation in sidecar["operations"]] == [
+        "add_attribute",
+        "add_ownership",
+        "run_typeql",
+    ]
+    assert isinstance(sidecar["checksum"], str)
+    assert sidecar["checksum"]
 
 
 def test_bindgen_package_renders_migration_refs_without_model_imports(tmp_path: Path) -> None:
@@ -247,37 +281,27 @@ owns = [
     package_dir = tmp_path / "generated_models"
     generate_models(schema_path, package_dir)
 
+    migrations_dir = tmp_path / "migrations"
     sys.path.insert(0, str(tmp_path))
     try:
         models = ModelRegistry.discover("generated_models", register=False)
-        package = importlib.import_module("generated_models")
-        email = next(
-            attribute
-            for attribute in package.ATTRIBUTES
-            if attribute.get_attribute_name() == "email"
-        )
-        customer = models[0]
-        generator = MigrationGenerator.__new__(MigrationGenerator)
-        operations = [ops.AddAttribute(email), ops.AddOwnership(customer, email, optional=True)]
-        operations_code = generator._render_operations(operations)
-        imports_code = generator._generate_operations_imports(operations)
-        assert "generated_models" not in imports_code
-        assert "ref" in imports_code
-        migrations_dir = tmp_path / "migrations"
-        migrations_dir.mkdir()
-        migration_file = migrations_dir / "0001_add_email.py"
-        migration_file.write_text(
-            generator._render_migration(
-                class_name="AddEmailMigration",
-                dependencies=[],
-                operations_code=operations_code,
-                models_code="",
-                imports_code=imports_code,
-                description="add email",
-            )
-        )
+        schema_mgr = SchemaManager(None)  # type: ignore[arg-type]
+        schema_mgr.register(*models)
+        model_info = schema_mgr.collect_schema_info()
 
-        loaded = MigrationLoader(migrations_dir).discover()[0]
+        base = model_info.to_rust_schema_info()
+        target = SchemaInfo().to_rust_schema_info()
+        authored = author_migration(
+            base,
+            target,
+            app_label="migrations",
+            name="0001_drop_all",
+            snapshot_version="v0001",
+            generated_at="t",
+        )
+        assert authored is not None
+        assert "generated_models" not in authored.python_source
+        authored.write_to(migrations_dir)
     finally:
         sys.path.remove(str(tmp_path))
         ModelRegistry.clear()
@@ -285,12 +309,27 @@ owns = [
             if module_name == "generated_models" or module_name.startswith("generated_models."):
                 del sys.modules[module_name]
 
-    add_attribute = loaded.migration.operations[0]
-    add_ownership = loaded.migration.operations[1]
-    assert isinstance(add_attribute, ops.AddAttribute)
-    assert isinstance(add_ownership, ops.AddOwnership)
-    assert add_attribute.attribute.get_attribute_name() == "email"
-    assert add_ownership.owner.get_type_name() == "customer"
+    # Load only after generated_models is purged: the rendered migration must
+    # resolve through ref.* literals, never through model imports. Drop the
+    # sidecar so the loader execs the .py instead of short-circuiting through
+    # the spec - the .py's standalone importability is exactly what this test
+    # proves.
+    (migrations_dir / "0001_drop_all.json").unlink()
+    loaded = MigrationLoader(migrations_dir).discover()[0]
+    remove_entities = [
+        operation
+        for operation in loaded.migration.operations
+        if isinstance(operation, ops.RemoveEntity)
+    ]
+    remove_attributes = [
+        operation
+        for operation in loaded.migration.operations
+        if isinstance(operation, ops.RemoveAttribute)
+    ]
+    assert any(operation.entity.get_type_name() == "customer" for operation in remove_entities)
+    assert any(
+        operation.attribute.get_attribute_name() == "email" for operation in remove_attributes
+    )
 
 
 def test_bindgen_optional_cardinality_survives_generated_diff(tmp_path: Path) -> None:
@@ -337,10 +376,21 @@ owns = [
             ],
         )
 
-        generator = MigrationGenerator.__new__(MigrationGenerator)
-        operations = generator._introspected_to_operations(current_schema, model_info)
-        add_ownership = next(op for op in operations if isinstance(op, ops.AddOwnership))
-        rendered = generator._render_operations([add_ownership])
+        authored = author_migration(
+            current_schema.to_rust_schema_info(),
+            model_info.to_rust_schema_info(),
+            app_label="migrations",
+            name="0002_add_email",
+            snapshot_version="v0002",
+            previous_snapshot_version="v0001",
+            generated_at="t",
+        )
+        assert authored is not None
+        add_ownership = next(
+            operation
+            for operation in authored.spec["operations"]
+            if operation["kind"] == "add_ownership"
+        )
     finally:
         sys.path.remove(str(tmp_path))
         ModelRegistry.clear()
@@ -348,12 +398,9 @@ owns = [
             if module_name == "generated_models" or module_name.startswith("generated_models."):
                 del sys.modules[module_name]
 
-    assert add_ownership.attribute.get_attribute_name() == "email"
-    assert add_ownership.optional is True
-    assert (
-        "ops.AddOwnership(ref.entity('customer'), ref.attribute('email'), optional=True)"
-        in rendered
-    )
+    assert add_ownership["attribute"]["attr_name"] == "email"
+    assert add_ownership["attribute"]["annotations"] == [{"Card": (0, 1)}]
+    assert "optional=True" in authored.python_source
 
 
 def test_generator_emits_ref_based_top_level_removals() -> None:
@@ -383,18 +430,22 @@ def test_generator_emits_ref_based_top_level_removals() -> None:
             )
         ],
     )
-    target = SchemaInfo()
+    authored = author_migration(
+        db_schema.to_rust_schema_info(),
+        SchemaInfo().to_rust_schema_info(),
+        app_label="migrations",
+        name="0002_removals",
+        snapshot_version="v0002",
+        generated_at="t",
+    )
 
-    generator = MigrationGenerator.__new__(MigrationGenerator)
-    operations = generator._introspected_to_operations(db_schema, target)
-    rendered = generator._render_operations(operations)
-
-    assert any(isinstance(operation, ops.RemoveRelation) for operation in operations)
-    assert any(isinstance(operation, ops.RemoveEntity) for operation in operations)
-    assert any(isinstance(operation, ops.RemoveAttribute) for operation in operations)
-    assert "ops.RemoveRelation(ref.relation('removed-membership'))" in rendered
-    assert "ops.RemoveEntity(ref.entity('removed-user'))" in rendered
-    assert "ops.RemoveAttribute(ref.attribute('removed-email'))" in rendered
+    assert authored is not None
+    kinds = {operation["kind"] for operation in authored.spec["operations"]}
+    assert {"remove_relation", "remove_entity", "remove_attribute"} <= kinds
+    source = authored.python_source
+    assert "ops.RemoveRelation(ref.relation('removed-membership'))" in source
+    assert "ops.RemoveEntity(ref.entity('removed-user'))" in source
+    assert "ops.RemoveAttribute(ref.attribute('removed-email'))" in source
 
 
 def test_model_based_migration_lowers_to_define_schema() -> None:

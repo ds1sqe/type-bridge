@@ -276,10 +276,20 @@ fn typedb_value_type(value_type: &ValueType) -> &'static str {
     }
 }
 
-fn card_annotation(min: u32, max: Option<u32>) -> String {
+/// Render a `@card(min..max)` annotation; unbounded max renders as `@card(min..)`.
+pub fn card_annotation(min: u32, max: Option<u32>) -> String {
     // TypeDB 3.x spells an unbounded upper bound as `@card(min..)`; `*` is rejected.
     let max_str = max.map(|value| value.to_string()).unwrap_or_default();
     format!("@card({min}..{max_str})")
+}
+
+/// Render one attribute type definition statement (no `define` keyword),
+/// e.g. `attribute email, value string;`.
+///
+/// Shared with the migration authoring core, which embeds the definition
+/// under an explicit `define`/`redefine` keyword for attribute type changes.
+pub fn attribute_definition(attr: &AttributeSchemaEntry) -> String {
+    build_attribute_definition(attr)
 }
 
 fn build_attribute_definition(attr: &AttributeSchemaEntry) -> String {

@@ -67,6 +67,7 @@ CLI Usage:
 """
 
 from type_bridge.migration import operations, ref
+from type_bridge.migration.author import AuthoredMigration, author_migration
 from type_bridge.migration.base import Migration, MigrationDependency
 from type_bridge.migration.breaking import (
     BreakingChangeAnalyzer,
@@ -166,6 +167,9 @@ __all__ = [
     "MigrationLoadError",
     # Generator
     "MigrationGenerator",
+    # Offline authoring
+    "AuthoredMigration",
+    "author_migration",
     # Model registry
     "ModelRegistry",
     # Schema info

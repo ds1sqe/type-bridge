@@ -15,10 +15,9 @@ import pytest
 
 from type_bridge import Entity, Relation, Role, String, TypeFlags
 from type_bridge.attribute import AttributeFlags
+from type_bridge.migration import author_migration, ref
 from type_bridge.migration import operations as ops
-from type_bridge.migration import ref
 from type_bridge.migration.executor import _normalized_operations
-from type_bridge.migration.generator import MigrationGenerator
 from type_bridge.migration.info import SchemaInfo
 from type_bridge.migration.introspection import (
     IntrospectedAttribute,
@@ -110,17 +109,26 @@ def _target(
     return info
 
 
-def _operations(base: IntrospectedSchema, target: SchemaInfo) -> list[ops.Operation]:
-    generator = MigrationGenerator.__new__(MigrationGenerator)
-    return generator._introspected_to_operations(base, target)
+def _operations(base: IntrospectedSchema, target: SchemaInfo) -> list[dict]:
+    """Author offline through the canonical Rust core; return spec operations."""
+    authored = author_migration(
+        base.to_rust_schema_info(),
+        target.to_rust_schema_info(),
+        app_label="migrations",
+        name="0002_change",
+        dependencies=[("migrations", "0001_initial")],
+        snapshot_version="v0002",
+        previous_snapshot_version="v0001",
+        generated_at="2026-07-13T00:00:00+00:00",
+    )
+    return [] if authored is None else list(authored.spec["operations"])
 
 
-def _relation_scoped_granular(operations: list[ops.Operation]) -> list[ops.Operation]:
-    return [
-        operation
-        for operation in operations
-        if isinstance(operation, (ops.RemoveRole, ops.RemoveRolePlayer, ops.RemoveOwnership))
-    ]
+def _kinds(operations: list[dict]) -> list[str]:
+    return [operation["kind"] for operation in operations]
+
+
+_RELATION_SCOPED_GRANULAR = {"remove_role", "remove_role_player", "remove_ownership"}
 
 
 def test_removed_relation_maps_to_single_remove_relation() -> None:
@@ -132,10 +140,8 @@ def test_removed_relation_maps_to_single_remove_relation() -> None:
 
     operations = _operations(base, target)
 
-    assert len(operations) == 1
-    (removal,) = operations
-    assert isinstance(removal, ops.RemoveRelation)
-    assert removal.relation.get_type_name() == "rr-link"
+    assert _kinds(operations) == ["remove_relation"]
+    assert operations[0]["type_name"] == "rr-link"
 
 
 def test_removed_abstract_relation_maps_to_single_remove_relation() -> None:
@@ -147,7 +153,7 @@ def test_removed_abstract_relation_maps_to_single_remove_relation() -> None:
 
     operations = _operations(base, target)
 
-    assert [type(operation) for operation in operations] == [ops.RemoveRelation]
+    assert _kinds(operations) == ["remove_relation"]
 
 
 def test_removed_relation_and_attribute_keep_independent_remove_attribute() -> None:
@@ -156,13 +162,8 @@ def test_removed_relation_and_attribute_keep_independent_remove_attribute() -> N
 
     operations = _operations(base, target)
 
-    assert [type(operation) for operation in operations] == [
-        ops.RemoveRelation,
-        ops.RemoveAttribute,
-    ]
-    remove_attribute = operations[1]
-    assert isinstance(remove_attribute, ops.RemoveAttribute)
-    assert remove_attribute.attribute.get_attribute_name() == "rr-link-id"
+    assert _kinds(operations) == ["remove_relation", "remove_attribute"]
+    assert operations[1]["attr_name"] == "rr-link-id"
 
 
 def test_surviving_relation_role_removal_stays_granular() -> None:
@@ -182,10 +183,8 @@ def test_surviving_relation_role_removal_stays_granular() -> None:
 
     operations = _operations(base, target)
 
-    assert [type(operation) for operation in operations] == [ops.RemoveRole]
-    remove_role = operations[0]
-    assert isinstance(remove_role, ops.RemoveRole)
-    assert remove_role.role_name == "reviewer"
+    assert _kinds(operations) == ["remove_role"]
+    assert operations[0]["role_name"] == "reviewer"
 
 
 def test_surviving_relation_player_removal_stays_granular() -> None:
@@ -209,11 +208,9 @@ def test_surviving_relation_player_removal_stays_granular() -> None:
 
     operations = _operations(base, target)
 
-    assert [type(operation) for operation in operations] == [ops.RemoveRolePlayer]
-    remove_player = operations[0]
-    assert isinstance(remove_player, ops.RemoveRolePlayer)
-    assert remove_player.role_name == "worker"
-    assert remove_player.player_type == "rr-badge"
+    assert _kinds(operations) == ["remove_role_player"]
+    assert operations[0]["role_name"] == "worker"
+    assert operations[0]["player_type_name"] == "rr-badge"
 
 
 def test_surviving_relation_ownership_removal_stays_granular() -> None:
@@ -236,7 +233,7 @@ def test_surviving_relation_ownership_removal_stays_granular() -> None:
 
     operations = _operations(base, target)
 
-    assert [type(operation) for operation in operations] == [ops.RemoveOwnership]
+    assert _kinds(operations) == ["remove_ownership"]
 
 
 def test_wholesale_and_granular_mappings_stay_independent() -> None:
@@ -260,14 +257,12 @@ def test_wholesale_and_granular_mappings_stay_independent() -> None:
 
     operations = _operations(base, target)
 
-    removals = [op for op in operations if isinstance(op, ops.RemoveRelation)]
-    assert [removal.relation.get_type_name() for removal in removals] == ["rr-link"]
+    removals = [op for op in operations if op["kind"] == "remove_relation"]
+    assert [removal["type_name"] for removal in removals] == ["rr-link"]
 
-    granular = _relation_scoped_granular(operations)
-    assert [type(operation) for operation in granular] == [ops.RemoveRole]
-    remove_role = granular[0]
-    assert isinstance(remove_role, ops.RemoveRole)
-    assert remove_role.relation.get_type_name() == "rr-employ"
+    granular = [op for op in operations if op["kind"] in _RELATION_SCOPED_GRANULAR]
+    assert _kinds(granular) == ["remove_role"]
+    assert granular[0]["relation_type"] == "rr-employ"
 
 
 # ── executor normalization of legacy v1.5.5/v1.5.6 artifacts ────────────────

@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+pub mod author;
 pub mod backfill;
 pub mod checksum;
 pub mod error;
@@ -19,6 +20,7 @@ pub mod state;
 #[cfg(test)]
 pub(crate) mod testing;
 
+pub use author::map_schema_diff;
 pub use backfill::{BackfillResult, execute_backfill};
 pub use checksum::{
     ChecksumDrift, check_checksum_drift, checksum_drift_errors, migration_file_checksum,

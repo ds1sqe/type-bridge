@@ -10,8 +10,7 @@ from type_bridge._rust_runtime import (
     schema_diff_is_breaking,
 )
 from type_bridge.attribute import AttributeFlags
-from type_bridge.migration import operations as ops
-from type_bridge.migration.generator import MigrationGenerator
+from type_bridge.migration import author_migration
 from type_bridge.migration.info import SchemaInfo
 from type_bridge.migration.introspection import (
     IntrospectedAttribute,
@@ -210,16 +209,23 @@ def test_autogenerate_emits_redefine_for_attribute_type_annotation_changes() -> 
     target.entities = [DiffEmailChangePersonV2]
     target.attribute_classes = {DiffEmailConstrained}
 
-    generator = MigrationGenerator.__new__(MigrationGenerator)
-    operations = generator._introspected_to_operations(db_schema, target)
+    authored = author_migration(
+        db_schema.to_rust_schema_info(),
+        target.to_rust_schema_info(),
+        app_label="migrations",
+        name="0002_constrain",
+        snapshot_version="v0002",
+        generated_at="t",
+    )
 
+    assert authored is not None
     define_ops = [
         operation
-        for operation in operations
-        if isinstance(operation, ops.RunTypeQL) and operation.forward.startswith("define\n")
+        for operation in authored.spec["operations"]
+        if operation["kind"] == "run_typeql" and operation["forward"].startswith("define\n")
     ]
     assert len(define_ops) == 1
-    assert define_ops[0].forward == (
+    assert define_ops[0]["forward"] == (
         'define\nattribute diff-email-change, value string @regex("^[a-z]+$");'
     )
 

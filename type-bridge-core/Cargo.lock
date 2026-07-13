@@ -2579,6 +2579,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "type-bridge-core-lib",
  "type-bridge-orm",
  "uuid",
 ]

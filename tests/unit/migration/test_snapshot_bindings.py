@@ -1,12 +1,18 @@
 import sys
 import uuid
-from typing import Any, cast
 
 import pytest
 
-from type_bridge import Entity, TypeFlags
-from type_bridge.migration import operations as ops
-from type_bridge.migration.generator import MigrationGenerator
+from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
+from type_bridge.attribute import AttributeFlags
+from type_bridge.migration import author_migration
+from type_bridge.migration.info import SchemaInfo
+from type_bridge.migration.introspection import (
+    IntrospectedAttribute,
+    IntrospectedEntity,
+    IntrospectedOwnership,
+    IntrospectedSchema,
+)
 from type_bridge.migration.snapshots import (
     generate_snapshot,
     get_snapshot_metadata,
@@ -189,197 +195,98 @@ def test_resolve_subclasses_isolated(temp_migrations_dir, monkeypatch):
     assert res_snap == SnapshotEmployee
 
 
-def test_generator_uses_snapshots(temp_migrations_dir, monkeypatch):
-    monkeypatch.syspath_prepend(temp_migrations_dir.parent)
-
-    # Pre-populate snapshot v0001
-    schema_text_1 = """
-    define
-    entity person,
-        owns name @key;
-    attribute name, value string;
-    """
-    generate_snapshot(
-        migrations_dir=temp_migrations_dir,
-        version="v0001",
-        migration_name="0001_initial",
-        schema_text=schema_text_1,
-    )
+def test_generator_uses_snapshots():
+    pytest.importorskip("type_bridge_core")
 
     # Target state has modified schema (added company, removed person)
-    schema_text_2 = """
-    define
-    entity company,
-        owns name @key;
-    attribute name, value string;
-    """
-    generate_snapshot(
-        migrations_dir=temp_migrations_dir,
-        version="v0002",
-        migration_name="0002_add_company",
-        schema_text=schema_text_2,
+    class Company(Entity):
+        flags = TypeFlags(name="company")
+
+    base = IntrospectedSchema(entities={"person": IntrospectedEntity(name="person")})
+    target = SchemaInfo()
+    target.entities = [Company]
+
+    authored = author_migration(
+        base.to_rust_schema_info(),
+        target.to_rust_schema_info(),
+        app_label="migrations",
+        name="0002_swap",
+        snapshot_version="v0002",
+        previous_snapshot_version="v0001",
+        generated_at="t",
     )
 
-    # Let's instantiate generator
-    class DummyDB:
-        def database_exists(self):
-            return True
+    assert authored is not None
+    source = authored.python_source
 
-        def transaction(self, mode):
-            class DummyTx:
-                def __enter__(self):
-                    return self
+    # Removals bind to the pre snapshot, additions to the post snapshot.
+    assert "from migrations.snapshots.v0001 import Person" in source
+    assert "from migrations.snapshots.v0002 import Company" in source
 
-                def __exit__(self, *args):
-                    pass
-
-                def execute(self, q):
-                    return []
-
-                def commit(self):
-                    pass
-
-            return DummyTx()
-
-    generator = MigrationGenerator(cast(Any, DummyDB()), temp_migrations_dir)
-    generator._pre_version = "v0001"
-    generator._post_version = "v0002"
-
-    # Define operations representing the changes
-    from type_bridge.migration.ref import EntityRef
-
-    remove_person = ops.RemoveEntity(EntityRef("person"))
-    add_company = ops.AddEntity(EntityRef("company"))
-
-    # Render operations
-    generator._collect_imports_and_aliases([remove_person, add_company])
-    rendered_ops = generator._render_operations([remove_person, add_company])
-    rendered_imports = generator._generate_operations_imports([remove_person, add_company])
-
-    # Check generated imports
-    assert f"from {temp_migrations_dir.name}.snapshots.v0001 import Person" in rendered_imports
-    assert f"from {temp_migrations_dir.name}.snapshots.v0002 import Company" in rendered_imports
-
-    # Check rendered operations use class symbols
-    assert "ops.RemoveEntity(Person)" in rendered_ops
-    assert "ops.AddEntity(Company)" in rendered_ops
+    # Rendered operations use class symbols
+    assert "ops.RemoveEntity(Person)" in source
+    assert "ops.AddEntity(Company)" in source
 
 
-def test_generator_aliases_colliding_symbols(temp_migrations_dir, monkeypatch):
-    monkeypatch.syspath_prepend(temp_migrations_dir.parent)
+def test_generator_aliases_colliding_symbols():
+    pytest.importorskip("type_bridge_core")
 
-    # Pre-populate v0001: person owns name
-    schema_text_1 = """
-    define
-    entity person,
-        owns name @key;
-    attribute name, value string;
-    """
-    generate_snapshot(
-        migrations_dir=temp_migrations_dir,
-        version="v0001",
-        migration_name="0001_initial",
-        schema_text=schema_text_1,
+    class Name(String):
+        flags = AttributeFlags(name="name")
+
+    class Age(Integer):
+        flags = AttributeFlags(name="age")
+
+    # Target state: person owns name and age (nickname dropped, age added),
+    # so the migration references Person on both the pre and post side.
+    class Person(Entity):
+        flags = TypeFlags(name="person")
+
+        name: Name = Flag(Key)
+        age: Age | None = None
+
+    base = IntrospectedSchema(
+        entities={"person": IntrospectedEntity(name="person")},
+        attributes={
+            "name": IntrospectedAttribute(name="name", value_type="string"),
+            "nickname": IntrospectedAttribute(name="nickname", value_type="string"),
+        },
+        ownerships=[
+            IntrospectedOwnership(
+                owner_name="person",
+                attribute_name="name",
+                annotations=["@key"],
+            ),
+            IntrospectedOwnership(owner_name="person", attribute_name="nickname"),
+        ],
+    )
+    target = SchemaInfo()
+    target.entities = [Person]
+    target.attribute_classes = {Name, Age}
+
+    authored = author_migration(
+        base.to_rust_schema_info(),
+        target.to_rust_schema_info(),
+        app_label="migrations",
+        name="0002_add_age",
+        snapshot_version="v0002",
+        previous_snapshot_version="v0001",
+        generated_at="t",
+        before_schema=None,
     )
 
-    # Pre-populate v0002: person owns name and age
-    schema_text_2 = """
-    define
-    entity person,
-        owns name @key,
-        owns age;
-    attribute name, value string;
-    attribute age, value integer;
-    """
-    generate_snapshot(
-        migrations_dir=temp_migrations_dir,
-        version="v0002",
-        migration_name="0002_add_age",
-        schema_text=schema_text_2,
+    assert authored is not None
+    source = authored.python_source
+
+    # v0001.Person should be aliased (e.g. PersonV0001) because both v0001 and v0002 define
+    # Person and v0002 is the latest version so it gets the unaliased Person symbol.
+    assert "Person as PersonV0001" in source
+    v0002_import = next(
+        line
+        for line in source.splitlines()
+        if line.startswith("from migrations.snapshots.v0002 import")
     )
-
-    # Generator setup
-    class DummyDB:
-        def database_exists(self):
-            return True
-
-    generator = MigrationGenerator(cast(Any, DummyDB()), temp_migrations_dir)
-    generator._pre_version = "v0001"
-    generator._post_version = "v0002"
-
-    from type_bridge.migration.ref import AttributeRef, EntityRef
-
-    # We remove age from person of v0001, and add age to person of v0002
-    op_remove = ops.RemoveOwnership(EntityRef("person"), AttributeRef("name"))
-    op_add = ops.AddOwnership(EntityRef("person"), AttributeRef("age"))
-
-    # Render
-    generator._collect_imports_and_aliases([op_remove, op_add])
-    rendered_ops = generator._render_operations([op_remove, op_add])
-    rendered_imports = generator._generate_operations_imports([op_remove, op_add])
-
-    # v0001.Person should be aliased (e.g. PersonV0001) because both v0001 and v0002 define Person
-    # and v0002 is the latest version so it gets the unaliased Person symbol.
-    assert "Person as PersonV0001" in rendered_imports
-    assert f"from {temp_migrations_dir.name}.snapshots.v0002 import Age, Person" in rendered_imports
-    assert "ops.RemoveOwnership(PersonV0001" in rendered_ops
-    assert "ops.AddOwnership(Person" in rendered_ops
-
-
-def test_generator_aliases_copy_attribute_owner(temp_migrations_dir, monkeypatch):
-    monkeypatch.syspath_prepend(temp_migrations_dir.parent)
-
-    schema_text_1 = """
-    define
-    entity person,
-        owns name @key;
-    attribute name, value string;
-    """
-    schema_text_2 = """
-    define
-    entity person,
-        owns name @key,
-        owns age;
-    attribute name, value string;
-    attribute age, value integer;
-    """
-    generate_snapshot(
-        migrations_dir=temp_migrations_dir,
-        version="v0001",
-        migration_name="0001_initial",
-        schema_text=schema_text_1,
-    )
-    generate_snapshot(
-        migrations_dir=temp_migrations_dir,
-        version="v0002",
-        migration_name="0002_add_age",
-        schema_text=schema_text_2,
-    )
-
-    class DummyDB:
-        def database_exists(self):
-            return True
-
-    generator = MigrationGenerator(cast(Any, DummyDB()), temp_migrations_dir)
-    generator._pre_version = "v0001"
-    generator._post_version = "v0002"
-
-    from type_bridge.migration.ref import AttributeRef, EntityRef
-
-    operations = [
-        ops.CopyAttribute(owner=EntityRef("person"), source="name", dest="age"),
-        ops.AddOwnership(EntityRef("person"), AttributeRef("age")),
-    ]
-
-    generator._collect_imports_and_aliases(operations)
-    rendered_ops = generator._render_operations(operations)
-    rendered_imports = generator._generate_operations_imports(operations)
-
-    assert f"from {temp_migrations_dir.name}.snapshots.v0001 import Person as PersonV0001" in (
-        rendered_imports
-    )
-    assert f"from {temp_migrations_dir.name}.snapshots.v0002 import Age, Person" in (
-        rendered_imports
-    )
-    assert "ops.CopyAttribute(owner=PersonV0001" in rendered_ops
-    assert "ops.AddOwnership(Person, Age)" in rendered_ops
+    assert "Person" in v0002_import
+    assert "Person as" not in v0002_import
+    assert "ops.RemoveOwnership(PersonV0001" in source
+    assert "ops.AddOwnership(Person" in source

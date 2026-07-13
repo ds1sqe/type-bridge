@@ -14,6 +14,7 @@
 #![warn(missing_docs)]
 
 pub mod ast;
+pub mod author;
 pub mod migration_runtime;
 pub mod orm;
 pub mod orm_runtime;
@@ -677,6 +678,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<orm::CrudQueryBuilder>()?;
     orm_runtime::register(m)?;
     migration_runtime::register(m)?;
+    author::register(m)?;
     schema::register(m)?;
     version::register(m)?;
 

@@ -20,6 +20,7 @@ name = "type-bridge-migration"
 path = "src/bin/type_bridge_migration.rs"
 
 [dependencies]
+type-bridge-core-lib = { path = "../core", version = "1.5.7" }
 type-bridge-orm = { path = "../orm", version = "1.5.7", default-features = false, features = ["band7", "band8"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
