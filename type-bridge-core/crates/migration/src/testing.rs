@@ -76,6 +76,10 @@ pub struct MockMigrationBackend {
     /// Scripted per-query responses consumed in order (used by `with_responses`).
     /// When present, `fail_on_query_index` is ignored.
     scripted_responses: Option<Arc<Mutex<Vec<QueryResult>>>>,
+    /// Global commit counter shared across all spawned transactions.
+    commit_count: Arc<Mutex<usize>>,
+    /// If `Some(n)`, the n-th commit returns an ambiguous driver error.
+    fail_on_commit_index: Option<usize>,
 }
 
 impl MockMigrationBackend {
@@ -91,6 +95,8 @@ impl MockMigrationBackend {
             query_count: Arc::new(Mutex::new(0)),
             fail_on_query_index,
             scripted_responses: None,
+            commit_count: Arc::new(Mutex::new(0)),
+            fail_on_commit_index: None,
         };
         (backend, log)
     }
@@ -107,7 +113,16 @@ impl MockMigrationBackend {
             query_count: Arc::new(Mutex::new(0)),
             fail_on_query_index: None,
             scripted_responses: Some(Arc::new(Mutex::new(responses))),
+            commit_count: Arc::new(Mutex::new(0)),
+            fail_on_commit_index: None,
         };
+        (backend, log)
+    }
+
+    /// Create a backend whose selected commit returns an ambiguous error.
+    pub fn with_commit_failure(fail_on_commit_index: usize) -> (Self, EventLog) {
+        let (mut backend, log) = Self::new(None);
+        backend.fail_on_commit_index = Some(fail_on_commit_index);
         (backend, log)
     }
 }
@@ -123,6 +138,8 @@ impl DriverBackend for MockMigrationBackend {
         let query_count = Arc::clone(&self.query_count);
         let fail_on = self.fail_on_query_index;
         let scripted = self.scripted_responses.as_ref().map(Arc::clone);
+        let commit_count = Arc::clone(&self.commit_count);
+        let fail_on_commit_index = self.fail_on_commit_index;
         Box::pin(async move {
             let tx: Box<dyn TransactionOps> = Box::new(MockMigrationTransaction {
                 tx_type,
@@ -130,6 +147,8 @@ impl DriverBackend for MockMigrationBackend {
                 query_count,
                 fail_on,
                 scripted_responses: scripted,
+                commit_count,
+                fail_on_commit_index,
             });
             Ok(tx)
         })
@@ -149,6 +168,8 @@ struct MockMigrationTransaction {
     fail_on: Option<usize>,
     /// When present, each query consumes the next scripted response.
     scripted_responses: Option<Arc<Mutex<Vec<QueryResult>>>>,
+    commit_count: Arc<Mutex<usize>>,
+    fail_on_commit_index: Option<usize>,
 }
 
 impl TransactionOps for MockMigrationTransaction {
@@ -198,7 +219,22 @@ impl TransactionOps for MockMigrationTransaction {
 
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
         self.log.lock().unwrap().push(MockEvent::Commit);
-        Box::pin(async { Ok(()) })
+        let index = {
+            let mut count = self.commit_count.lock().unwrap();
+            let index = *count;
+            *count += 1;
+            index
+        };
+        let fail = self.fail_on_commit_index == Some(index);
+        Box::pin(async move {
+            if fail {
+                Err(OrmError::Transaction(
+                    "injected ambiguous commit response for testing".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        })
     }
 
     fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {

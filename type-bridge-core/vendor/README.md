@@ -1,21 +1,23 @@
 # Vendored crates
 
 This directory holds renamed republications of upstream TypeDB crates that
-let the band-7 (TypeDB 3.8–3.10) and band-8 (TypeDB 3.11) driver stacks
-coexist in one build. Cargo unifies semver-compatible versions of a package,
-so `typedb-driver` 3.8.1 cannot live alongside 3.11.5 (both major 3) under
-its upstream name; a renamed copy is outside the unification set. The
-band-8 line is NOT vendored — it stays on the upstream crates.io
-`typedb-driver`.
+let the band-7 (TypeDB 3.8–3.10), band-8 (TypeDB 3.11), and band-9
+(TypeDB 3.12) driver stacks coexist in one build. Cargo unifies
+semver-compatible versions of a package, so `typedb-driver` 3.8.1 and
+3.12.0 cannot live alongside 3.11.5 (all major 3) under the upstream name;
+a renamed copy is outside the unification set. The band-8 line is NOT
+vendored — it stays on the upstream crates.io `typedb-driver`.
 
 | Vendored crate | Upstream package | Upstream version | License |
 |---|---|---|---|
 | `type-bridge-typedb-protocol-b7` | `typedb-protocol` | 3.7.0 | MPL-2.0 |
 | `type-bridge-typedb-driver-b7` | `typedb-driver` | 3.8.1 | Apache-2.0 |
+| `type-bridge-typedb-protocol-b9` | `typedb-protocol` | 3.12.0 | MPL-2.0 |
+| `type-bridge-typedb-driver-b9` | `typedb-driver` | 3.12.0 | Apache-2.0 |
 
 ## Provenance
 
-Both trees were extracted from the published crates.io packages (the
+All trees were extracted from the published crates.io packages (the
 canonical source — exactly what cargo resolves):
 
 ```
@@ -23,6 +25,10 @@ https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.7.0.crate
   sha256: 0062374abd0c14afa55e5b1d8e095ac110830da29943ad43f6c6b5d5912a811f
 https://static.crates.io/crates/typedb-driver/typedb-driver-3.8.1.crate
   sha256: bf5f617f8d670dd75dc752ae6f42e2bf28ca612ab4feae353c2c89d052adfab0
+https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.12.0.crate
+  sha256: 01f6b7eb813a853349ff22f385c120c61d04d4648318c92072e7e04dd81cdc3f
+https://static.crates.io/crates/typedb-driver/typedb-driver-3.12.0.crate
+  sha256: 566a2e346560f2aee266ecf831862a0240d02d64bf824660f601fd14e1a49a51
 ```
 
 Each crate's upstream `LICENSE` and `README.md` are preserved verbatim.
@@ -32,11 +38,11 @@ construction); the driver crate is Apache-2.0.
 
 ## Exact edits applied
 
-`src/` is byte-identical to upstream in both crates. Only `Cargo.toml`
-differs, in these ways and no others:
+`src/` is byte-identical to upstream in every vendored crate. Only
+`Cargo.toml` differs, in these ways and no others:
 
-Both crates:
-- `name =` renamed (`-b7` suffix, `type-bridge-` namespace prefix);
+All crates:
+- `name =` renamed (band suffix `-b7`/`-b9`, `type-bridge-` namespace prefix);
   `version =` mirrors upstream.
 - `description`/`repository` updated to reflect the republication
   (`homepage` keeps the upstream link); the upstream manifests' invalid
@@ -49,14 +55,16 @@ Both crates:
   snippets that were never compiled as doctests (upstream builds with
   Bazel); they fail as Rust doctests, so the target is disabled.
 
-Driver crate only:
-- The `typedb-protocol` dependency is repointed at the vendored protocol
-  fork via a `package =` rename alias (in-source
-  `use typedb_protocol::...` imports resolve unchanged):
+Driver crates only:
+- The `typedb-protocol` dependency is repointed at the same-band vendored
+  protocol fork via a `package =` rename alias (in-source
+  `use typedb_protocol::...` imports resolve unchanged), e.g.
   `typedb-protocol = { package = "type-bridge-typedb-protocol-b7", path = "../typedb-protocol-b7", version = "=3.7.0" }`
 - `[dev-dependencies] rand = "0.8", serde_json = "1"` restored: upstream's
   generated manifest omits dev-dependencies, so the published crate cannot
   compile its own `#[cfg(test)]` code.
+- b9 only: `deprecated = "allow"` added to `[lints.rust]` — upstream
+  3.12.0 still imports `chrono::Date`, deprecated in chrono 0.4.23.
 
 `rustfmt.toml` at the workspace root ignores `vendor/` so `cargo fmt
 --check` does not demand reformatting of upstream source.

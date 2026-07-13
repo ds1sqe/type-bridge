@@ -18,6 +18,7 @@
 //! `forward` text is the single source of truth for the query shape.
 
 use type_bridge_orm::Database;
+use type_bridge_orm::session::TransactionContext;
 use type_bridge_orm::session::backend::QueryResult;
 
 use crate::error::MigrationError;
@@ -47,6 +48,15 @@ pub struct BackfillResult {
     pub conflicts: u64,
 }
 
+/// Prepared backfill whose write query has succeeded but is not yet committed.
+///
+/// Kept crate-private so the recovery executor can durably emit its
+/// before-commit event in the only safe gap between query success and commit.
+pub(crate) struct PreparedBackfill {
+    pub(crate) transaction: TransactionContext,
+    pub(crate) result: BackfillResult,
+}
+
 /// Execute a backfill [`ExecutionStep`] against `db`, deriving and returning
 /// matched/inserted/skipped counts.
 ///
@@ -69,6 +79,23 @@ pub async fn execute_backfill(
     step: &ExecutionStep,
     step_index: usize,
 ) -> Result<BackfillResult, MigrationError> {
+    let prepared = prepare_backfill(db, step, step_index).await?;
+    prepared
+        .transaction
+        .commit()
+        .await
+        .map_err(|e| MigrationError::BackfillQuery {
+            message: format!("backfill step {step_index}: backfill write commit failed: {e}"),
+        })?;
+    Ok(prepared.result)
+}
+
+/// Execute the read counts and write query for a backfill without committing.
+pub(crate) async fn prepare_backfill(
+    db: &Database,
+    step: &ExecutionStep,
+    step_index: usize,
+) -> Result<PreparedBackfill, MigrationError> {
     // ── Decompose the carried forward text ──────────────────────────────────
     //
     // The planner writes CopyAttribute steps in the form:
@@ -137,33 +164,31 @@ pub async fn execute_backfill(
         extract_count(result, step_index, "total")?
     };
 
-    // ── Run the backfill write (Write tx) ───────────────────────────────────
-    {
-        let ctx = db.transaction_context(TxType::Write).await.map_err(|e| {
-            MigrationError::BackfillQuery {
+    // ── Prepare the backfill write (Write tx, deliberately uncommitted) ─────
+    let transaction =
+        db.transaction_context(TxType::Write)
+            .await
+            .map_err(|e| MigrationError::BackfillQuery {
                 message: format!("backfill step {step_index}: failed to open write tx: {e}"),
-            }
-        })?;
-        ctx.query(&step.forward)
-            .await
-            .map_err(|e| MigrationError::BackfillQuery {
-                message: format!("backfill step {step_index}: backfill write query failed: {e}"),
             })?;
-        ctx.commit()
-            .await
-            .map_err(|e| MigrationError::BackfillQuery {
-                message: format!("backfill step {step_index}: backfill write commit failed: {e}"),
-            })?;
+    if let Err(error) = transaction.query(&step.forward).await {
+        let _ = transaction.rollback().await;
+        return Err(MigrationError::BackfillQuery {
+            message: format!("backfill step {step_index}: backfill write query failed: {error}"),
+        });
     }
 
     let skipped = matched.saturating_sub(inserted);
 
-    Ok(BackfillResult {
-        step_index,
-        matched,
-        inserted,
-        skipped,
-        conflicts: 0,
+    Ok(PreparedBackfill {
+        transaction,
+        result: BackfillResult {
+            step_index,
+            matched,
+            inserted,
+            skipped,
+            conflicts: 0,
+        },
     })
 }
 
@@ -249,6 +274,7 @@ mod tests {
         ExecutionStep {
             tx_type: TxType::Write,
             kind: StepKind::Backfill,
+            operation_kind: crate::plan::OperationKind::CopyAttribute,
             forward: "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;".to_string(),
             reverse: Some("match $x isa person, has new-name $v;\ndelete $v of $x;".to_string()),
         }
