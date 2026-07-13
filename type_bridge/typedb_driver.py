@@ -68,10 +68,10 @@ def raise_missing_typedb_driver() -> None:
 
 
 def _load_tls_config() -> Any:
-    """Import and return ``DriverTlsConfig`` from the band-8 typedb driver.
+    """Import and return ``DriverTlsConfig`` from a band-8+ typedb driver.
 
     Isolated so tests can patch ``type_bridge.typedb_driver._load_tls_config``
-    without needing the real band-8 driver installed.
+    without needing a real band-8/band-9 driver installed.
     """
     from typedb.driver import DriverTlsConfig  # type: ignore[attr-defined]
 
@@ -83,8 +83,8 @@ def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
 
     The same band map that drives the version gate drives option construction:
     band-7 drivers (3.8/3.10) use the keyword form
-    ``DriverOptions(is_tls_enabled=…)``; band-8 drivers (3.11) use the
-    positional ``DriverOptions(tls_config)`` form.
+    ``DriverOptions(is_tls_enabled=…)``; band-8 (3.11) and band-9 (3.12)
+    drivers use the positional ``DriverOptions(tls_config)`` form.
 
     Args:
         is_tls_enabled: Whether to enable TLS for the driver connection.
@@ -103,7 +103,7 @@ def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
 
     if b == 7:
         return DriverOptions(is_tls_enabled=is_tls_enabled)
-    elif b == 8:
+    elif b in (8, 9):
         driver_tls_config = _load_tls_config()
         tls_config = (
             driver_tls_config.enabled_with_native_root_ca()

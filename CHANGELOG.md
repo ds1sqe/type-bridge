@@ -4,6 +4,26 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### New Features
+
+- **TypeDB 3.12 server support** - the compatibility window now extends to
+  3.12.x. Compatibility was measured live: server 3.12 accepts band-8 (3.11)
+  drivers, while a 3.12 driver is refused by a 3.11 server, so the version
+  gate now models servers as accepting a *set* of protocol bands and
+  negotiates the connect band from that set. A 3.12 server is served by the
+  embedded band-8 driver with no new embedded driver required. Installed
+  Python driver 3.12 (band 9) is dispatched with the band-8 option form and
+  gated correctly against both 3.11 (reject) and 3.12 (accept) servers; the
+  `typedb-driver` extra now allows `<3.13`.
+
+### Testing & Tooling
+
+- **TypeDB 3.12.0 CI legs** - integration, node-integration, and
+  cross-language-parity matrices gained `typedb/typedb:3.12.0` legs (paired
+  with Python driver 3.12.0), and the version-gate cells gained a
+  `NEG-driver-band9` regression for the asymmetric 3.12-driver /
+  3.11-server rejection.
+
 ## [1.5.6] - 2026-07-10
 
 ### New Features

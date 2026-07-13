@@ -378,12 +378,15 @@ jobs:
     strategy:
       matrix:
         test-group: [crud, queries, schema, expressions, migration]
-        # Fan across all three server lines: band-7 (3.8.3, 3.10.4) and band-8
-        # (3.11.5). Keep in sync with compose default and version SSOT in crates/core.
+        # Fan across all four server lines: band-7 (3.8.3, 3.10.4), band-8
+        # (3.11.5), and the dual-band 3.12 line (accepts bands 9 and 8; served
+        # by the embedded band-8 driver). Keep in sync with compose default and
+        # version SSOT in crates/core.
         typedb-server:
           - "typedb/typedb:3.8.3"
           - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
+          - "typedb/typedb:3.12.0"
         include:
           # Band-7 legs pair the band-7 installed Python driver — a band-7 user
           # has this driver installed, and the gate must not spuriously fire.
@@ -393,6 +396,10 @@ jobs:
             python-driver: "3.10.0"
           - typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.11.5"
+          # The 3.12 leg pairs the band-9 installed driver a 3.12 user has;
+          # server 3.12 accepts it natively.
+          - typedb-server: "typedb/typedb:3.12.0"
+            python-driver: "3.12.0"
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
@@ -473,18 +480,22 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Fan across band-7 (3.8.3) and band-8 (3.11.5) — two representative
-        # lines, per I5. 3.10.4 is redundant for a parity proof.
+        # Fan across one representative line per protocol band, per I5:
+        # band-7 (3.8.3), band-8 (3.11.5), and the dual-band 3.12 line.
+        # 3.10.4 is redundant for a parity proof.
         # Keep in sync with compose + the version SSOT.
         typedb-server:
           - "typedb/typedb:3.8.3"
           - "typedb/typedb:3.11.5"
+          - "typedb/typedb:3.12.0"
         include:
           # Band-7 leg pairs the band-7 installed Python driver.
           - typedb-server: "typedb/typedb:3.8.3"
             python-driver: "3.10.0"
           - typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.11.5"
+          - typedb-server: "typedb/typedb:3.12.0"
+            python-driver: "3.12.0"
 
     services:
       typedb:
@@ -615,13 +626,14 @@ jobs:
         working-directory: type-bridge-core/crates/node
     strategy:
       matrix:
-        # Fan across all three server lines: band-7 (3.8.3, 3.10.4) and band-8
-        # (3.11.5). No python-driver pairing needed — Node reaches TypeDB only
-        # through the embedded Rust orm seam.
+        # Fan across all four server lines: band-7 (3.8.3, 3.10.4), band-8
+        # (3.11.5), and the dual-band 3.12 line. No python-driver pairing
+        # needed — Node reaches TypeDB only through the embedded Rust orm seam.
         typedb-server:
           - "typedb/typedb:3.8.3"
           - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
+          - "typedb/typedb:3.12.0"
 
     services:
       typedb:
@@ -701,6 +713,8 @@ jobs:
   #   POS-grpc-fallback-band7: wrong HTTP port tries band 8, then connects through band 7.
   #   NEG-window: Database.connect() rejects unsupported servers.
   #   NEG-driver: Database.driver rejects incompatible installed Python drivers.
+  #   NEG-driver-band9: the asymmetric 3.12 pair — a band-9 driver against a
+  #     3.11 server is rejected, while band-8 against 3.12 is served.
   # The band-7 servers (3.8.3, 3.10.4) are now SERVED: normal operation is
   # proven green by the test-integration and node-integration legs, while the
   # gRPC-only fallback is covered here as an explicit positive cell. Cell
@@ -733,6 +747,15 @@ jobs:
           - cell: NEG-driver
             typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.10.0"
+            probe: driver
+            http-port: 8000
+            expect: installed
+          # Asymmetric band acceptance (measured live): a band-9 (3.12) driver
+          # is refused by a 3.11 server even though the reverse pair —
+          # band-8 driver against a 3.12 server — is served.
+          - cell: NEG-driver-band9
+            typedb-server: "typedb/typedb:3.11.5"
+            python-driver: "3.12.0"
             probe: driver
             http-port: 8000
             expect: installed

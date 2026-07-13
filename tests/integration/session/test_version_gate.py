@@ -78,8 +78,10 @@ class TestServerVersionLive:
         # TypeBridge's default backend uses embedded Rust drivers, not the
         # optional Python typedb-driver package.  The installed Python driver
         # may target a different protocol band from the live test server.
+        # ensure_runtime_supported is the full serviceability check: it passes
+        # exactly when some band the server accepts is embedded (a 3.12 server
+        # is served through its band-8 acceptance, not its native band 9).
         version.ensure_runtime_supported(sv)
-        assert version.band(sv) in _tdm.embedded_driver_versions()
 
 
 # ---------------------------------------------------------------------------
@@ -88,16 +90,27 @@ class TestServerVersionLive:
 
 
 def _mismatched_driver_version(server: str) -> str:
-    """Pick an installed-driver version from the opposite protocol band.
+    """Pick an installed-driver version the live server rejects.
 
     The embedded runtime now serves every in-window server, so the only
     in-window rejection left is the installed-driver band mismatch.  The
-    mismatching driver must be chosen relative to the live server's band
-    for the cell to fire on every server line.
+    mismatching driver is chosen by asking the gate itself: the first
+    in-window driver line check_supported rejects for this server.  This
+    stays correct as the band map grows (e.g. server 3.12 accepts both its
+    native band 9 and band 8, so only a band-7 driver mismatches it).
     """
     import type_bridge_core
 
-    return "3.10.0" if type_bridge_core.band(server) == 8 else "3.11.5"
+    candidate_lines = ("3.10.0", "3.11.5", "3.12.0")
+    for candidate in candidate_lines:
+        try:
+            type_bridge_core.check_supported(candidate, server)
+        except type_bridge_core.VersionError:
+            return candidate
+    raise AssertionError(
+        f"no in-window driver line mismatches server {server!r}; "
+        f"extend candidate_lines to cover its band map entry"
+    )
 
 
 @pytest.mark.integration

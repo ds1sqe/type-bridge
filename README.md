@@ -374,7 +374,7 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 ## Requirements
 
 - Python 3.12–3.13
-- TypeDB 3.8.0–3.11.x server (see the [compatibility table](docs/development/typedb.md#server-and-driver-compatibility) for the full support window; band-7 and band-8 servers are all served by one artifact)
+- TypeDB 3.8.0–3.12.x server (see the [compatibility table](docs/development/typedb.md#server-and-driver-compatibility) for the full support window; band-7, band-8, and dual-band 3.12 servers are all served by one artifact)
 - type-bridge-core>=1.5.7
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
@@ -383,7 +383,7 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 
 `typedb-driver` (`~=3.11`) is required only for direct Python driver APIs and
 development/integration tests; install via `uv sync --extra dev` or `pip install type-bridge[typedb-driver]`.
-The ORM's embedded runtime handles band-7 and band-8 servers automatically — no extra install for 3.8.x/3.10.x deployments.
+The ORM's embedded runtime handles band-7, band-8, and dual-band 3.12 servers automatically — no extra install for 3.8.x/3.10.x/3.12.x deployments.
 
 ## Release Notes
 

@@ -97,9 +97,10 @@ class TestDefaultBandCoherence:
 
         1. Every live matrix contains the band-8 embedded image (typedb/typedb:3.11.5).
            No default-band literal may silently diverge from the embedded pin.
-        2. Every other server image in those matrices is on a band-7 line (3.8.x or
-           3.10.x) — confirmed via the version SSOT, not a hardcoded list.  Adding a
-           band-7 patch bump won't break this test.
+        2. Every other server image in those matrices is served by the embedded
+           runtime — confirmed via the version SSOT (check_server_supported), not a
+           hardcoded list.  Band-7 lines (3.8.x, 3.10.x) and the dual-band 3.12.x
+           line all qualify; a typo'd or dropped line fails.
         3. The version-gate-cells matrix may contain served band-7 servers only
            as explicit positive gRPC fallback cells.  They must not reappear as
            rejection cells, because band-7 servers are now served by the embedded
@@ -143,15 +144,18 @@ class TestDefaultBandCoherence:
                 f"in matrix images {images!r}; flip the live matrix to include it"
             )
 
-            # Every non-band-8 image must be on a recognized band-7 line.
+            # Every non-band-8 image must be a server the embedded runtime
+            # serves (SSOT decision, covers band-7 lines and dual-band 3.12.x).
             for ver in images:
                 if ver == band8_pin:
                     continue  # band-8: already checked above
-                ver_band = type_bridge_core.band(ver)
-                assert ver_band == 7, (
-                    f"ci.yml job '{job}': image typedb/typedb:{ver!r} resolves to "
-                    f"band {ver_band!r}, expected band 7 (the non-band-8 served lines)"
-                )
+                try:
+                    type_bridge_core.check_server_supported(ver)
+                except type_bridge_core.VersionError as exc:
+                    raise AssertionError(
+                        f"ci.yml job '{job}': image typedb/typedb:{ver!r} is not "
+                        f"served by the embedded runtime: {exc}"
+                    ) from exc
 
         # --- Gate cells: served band-7 servers are only positive fallback cells ---
         gate_block = _job_block(gate_job)

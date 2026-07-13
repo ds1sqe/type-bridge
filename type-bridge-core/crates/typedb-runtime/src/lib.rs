@@ -223,16 +223,19 @@ where
 }
 
 fn validate_server_band(server_version: &core_version::Version) -> Result<u8> {
-    // Embedded-runtime gate: accept the server when it is in-window and its
-    // band is one this build embedded.  Unlike the installed-driver gate
-    // (check_supported, band equality), the embedded runtime carries every
-    // compiled-in band, so a band-7 server is now served, not rejected.  After
-    // this passes, band(&server_version) is guaranteed ∈ EMBEDDED_BANDS.
+    // Embedded-runtime gate: accept the server when it is in-window and any
+    // band it accepts is one this build embedded.  Unlike the installed-driver
+    // gate (check_supported), the embedded runtime carries every compiled-in
+    // band, so a band-7 server is served, and a dual-band 3.12 server is
+    // served through its band-8 acceptance.  After this passes, negotiation
+    // over EMBEDDED_BANDS is guaranteed to yield a band.
     core_version::check_server_supported(server_version, EMBEDDED_BANDS)
         .map_err(RuntimeError::UnsupportedVersion)?;
 
-    Ok(core_version::band(server_version)
-        .expect("check_server_supported accepted a server without a mapped band"))
+    Ok(
+        core_version::negotiate_server_band(server_version, EMBEDDED_BANDS)
+            .expect("check_server_supported accepted a server with no negotiable band"),
+    )
 }
 
 async fn driver_for_server_version(

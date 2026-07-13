@@ -34,7 +34,7 @@ The project requires:
 `typedb-driver` is not a default runtime dependency. It is available through
 the `dev` extra (pinned to `~=3.11.5`) and the `typedb-driver` extra for
 integration tests and direct driver calls. The ORM's embedded runtime
-dispatches automatically across the full TypeDB 3.8–3.11 window; this pin
+dispatches automatically across the full TypeDB 3.8–3.12 window; this pin
 is for the installed Python driver used by tests and direct driver APIs. See
 the [compatibility table](typedb.md#server-and-driver-compatibility) for the
 full support window.
