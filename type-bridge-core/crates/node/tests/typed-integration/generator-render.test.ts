@@ -75,7 +75,8 @@ describe("generator render decisions", () => {
   });
 
   test("flags: Key, Unique, optional, and multi-value list are emitted correctly", () => {
-    assert.match(entities, /parity_email: field\(ParityEmail, Unique\)/);
+    // @unique keeps the default card(0..1): the field stays optional.
+    assert.match(entities, /parity_email: field\(ParityEmail, Unique\)\.optional\(\)/);
     assert.match(entities, /parity_name: field\(ParityName\)\.optional\(\)/);
     assert.match(entities, /parity_tag: field\(ParityTag\)\.list\(Card\(0, 5\)\)/);
   });

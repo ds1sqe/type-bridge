@@ -927,12 +927,15 @@ fn render_python_attributes(schema: &TypeSchema, options: &BindgenOptions) -> St
 
 fn render_python_attr_field(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> String {
     let py_name = field_name(&owned.name);
-    let extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
+    let mut extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
     if is_key {
         return format!("{py_name}: attributes.{attr_class} = Flag(Key{extras})");
     }
+    // @unique does not imply required: unlike @key it keeps the default
+    // card(0..1), so it composes with the cardinality handling below as a
+    // plain marker instead of short-circuiting the optionality logic.
     if owned.is_unique {
-        return format!("{py_name}: attributes.{attr_class} = Flag(Unique{extras})");
+        extras = format!(", Unique{extras}");
     }
     if owned.ordered {
         if owned.distinct {
@@ -2309,12 +2312,15 @@ fn render_ts_attributes(schema: &TypeSchema) -> String {
 }
 
 fn ts_field_expr(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> String {
-    let extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
+    let mut extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
     if is_key {
         return format!("field({attr_class}, Key{extras})");
     }
+    // @unique does not imply required: unlike @key it keeps the default
+    // card(0..1), so it composes with the cardinality handling below as a
+    // plain marker instead of short-circuiting the optionality logic.
     if owned.is_unique {
-        return format!("field({attr_class}, Unique{extras})");
+        extras = format!(", Unique{extras}");
     }
     if owned.ordered {
         let base = format!("field({attr_class}{extras}).ordered()");
@@ -3121,6 +3127,31 @@ relation friendship @doc("Friendship docs."),
                 .relations_rs
                 .contains("doc = \"Role docs.\", meta(\"side\", \"a\"))]")
         );
+    }
+
+    #[test]
+    fn unique_ownership_respects_cardinality() {
+        let schema_text = r#"define
+attribute email, value string;
+attribute handle, value string;
+attribute alias, value string;
+entity person,
+    owns email @unique,
+    owns handle @unique @card(1..1),
+    owns alias @unique @card(0..3);"#;
+        let plan = BindgenPlan::from_typeql(schema_text).unwrap();
+
+        let python = plan.render(TargetLanguage::Python, &BindgenOptions::default());
+        let entities = &python.file("entities.py").unwrap().contents;
+        assert!(entities.contains("email: attributes.Email | None = Flag(Unique)"));
+        assert!(entities.contains("handle: attributes.Handle = Flag(Unique)"));
+        assert!(entities.contains("alias: list[attributes.Alias] = Flag(Card(0, 3), Unique)"));
+
+        let typescript = plan.render(TargetLanguage::TypeScript, &BindgenOptions::default());
+        let ts_entities = &typescript.file("entities.ts").unwrap().contents;
+        assert!(ts_entities.contains("email: field(Email, Unique).optional()"));
+        assert!(ts_entities.contains("handle: field(Handle, Unique),"));
+        assert!(ts_entities.contains("alias: field(Alias, Unique).list(Card(0, 3))"));
     }
 
     #[test]
