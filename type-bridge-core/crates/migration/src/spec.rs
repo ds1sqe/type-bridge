@@ -306,8 +306,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema
@@ -333,6 +337,8 @@ mod tests {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Key],
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             },
         };
 

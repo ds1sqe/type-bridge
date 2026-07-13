@@ -185,6 +185,16 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
                     clause.push(' ');
                     clause.push_str(&card_annotation(min, max));
                 }
+                let mut doc_meta = Vec::new();
+                super::info::append_doc_meta_annotations(
+                    &mut doc_meta,
+                    role.doc.as_deref(),
+                    &role.meta,
+                );
+                for token in doc_meta {
+                    clause.push(' ');
+                    clause.push_str(&token);
+                }
                 parts.push(clause);
             }
             for player_type_name in &role.player_type_names {
@@ -301,9 +311,10 @@ fn build_attribute_definition(attr: &AttributeSchemaEntry) -> String {
     if attr.is_independent {
         definition.push_str(" @independent");
     }
+    let has_doc_meta = push_doc_meta(&mut definition, attr.doc.as_deref(), &attr.meta);
 
     if let Some(ref parent) = attr.parent_type {
-        if attr.is_abstract || attr.is_independent {
+        if attr.is_abstract || attr.is_independent || has_doc_meta {
             definition.push_str(&format!(", sub {parent}"));
         } else {
             definition.push_str(&format!(" sub {parent}"));
@@ -337,14 +348,29 @@ fn annotation_string_literal(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\\\""))
 }
 
-/// Build the entity header line: `entity <name> [@abstract] [sub <parent>]`.
+/// Append `@doc`/`@meta` annotation tokens to a header or definition line.
+/// Returns whether anything was appended (callers use this for `, sub` comma
+/// placement, mirroring the `@abstract` rule).
+fn push_doc_meta(line: &mut String, doc: Option<&str>, meta: &BTreeMap<String, String>) -> bool {
+    let mut tokens = Vec::new();
+    super::info::append_doc_meta_annotations(&mut tokens, doc, meta);
+    let appended = !tokens.is_empty();
+    for token in tokens {
+        line.push(' ');
+        line.push_str(&token);
+    }
+    appended
+}
+
+/// Build the entity header line: `entity <name> [@abstract] [@doc/@meta] [sub <parent>]`.
 fn build_entity_header(entity: &EntitySchemaEntry) -> String {
     let mut header = format!("entity {}", entity.type_name);
     if entity.is_abstract {
         header.push_str(" @abstract");
     }
+    let has_doc_meta = push_doc_meta(&mut header, entity.doc.as_deref(), &entity.meta);
     if let Some(ref parent) = entity.parent_type {
-        if entity.is_abstract {
+        if entity.is_abstract || has_doc_meta {
             header.push_str(&format!(", sub {parent}"));
         } else {
             header.push_str(&format!(" sub {parent}"));
@@ -353,14 +379,15 @@ fn build_entity_header(entity: &EntitySchemaEntry) -> String {
     header
 }
 
-/// Build the relation header line: `relation <name> [@abstract] [sub <parent>]`.
+/// Build the relation header line: `relation <name> [@abstract] [@doc/@meta] [sub <parent>]`.
 fn build_relation_header(relation: &RelationSchemaEntry) -> String {
     let mut header = format!("relation {}", relation.type_name);
     if relation.is_abstract {
         header.push_str(" @abstract");
     }
+    let has_doc_meta = push_doc_meta(&mut header, relation.doc.as_deref(), &relation.meta);
     if let Some(ref parent) = relation.parent_type {
-        if relation.is_abstract {
+        if relation.is_abstract || has_doc_meta {
             header.push_str(&format!(", sub {parent}"));
         } else {
             header.push_str(&format!(" sub {parent}"));
@@ -502,8 +529,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -527,15 +558,21 @@ mod tests {
                         value_type: ValueType::String,
                         annotations: vec![Annotation::Key],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttributeEntry {
                         attr_name: "age".into(),
                         value_type: ValueType::Long,
                         annotations: vec![],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -558,6 +595,8 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 roles: vec![
                     RoleEntry {
@@ -574,6 +613,8 @@ mod tests {
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -600,8 +641,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Card(2, Some(5))],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -623,8 +668,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Unique],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -646,8 +695,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -673,8 +726,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.entities.insert(
@@ -689,15 +746,21 @@ mod tests {
                         value_type: ValueType::String,
                         annotations: vec![Annotation::Key],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttributeEntry {
                         attr_name: "breed".into(),
                         value_type: ValueType::String,
                         annotations: vec![],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -719,6 +782,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.entities.insert(
@@ -729,6 +794,8 @@ mod tests {
                 parent_type: Some("animal".into()),
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -751,6 +818,8 @@ mod tests {
                 parent_type: Some("mammal".into()),
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.entities.insert(
@@ -761,6 +830,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -787,8 +858,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.entities.insert(
@@ -803,15 +878,21 @@ mod tests {
                         value_type: ValueType::String,
                         annotations: vec![Annotation::Key],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttributeEntry {
                         attr_name: "breed".into(),
                         value_type: ValueType::String,
                         annotations: vec![],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -849,6 +930,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -871,6 +954,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -886,6 +971,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -908,6 +995,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -919,6 +1008,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -951,6 +1042,8 @@ mod tests {
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -968,6 +1061,8 @@ mod tests {
                 is_abstract: false,
                 parent_type: None,
                 owned_attributes: vec![],
+                doc: None,
+                meta: Default::default(),
             }),
             TypeDescriptor::Relation(RelationDescriptor {
                 type_name: "rel".into(),
@@ -988,6 +1083,8 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                doc: None,
+                meta: Default::default(),
             }),
         ];
         let info = SchemaInfo::from_descriptors(&descriptors);
@@ -1008,6 +1105,8 @@ mod tests {
                 is_abstract: false,
                 parent_type: None,
                 owned_attributes: vec![],
+                doc: None,
+                meta: Default::default(),
             }),
             TypeDescriptor::Relation(RelationDescriptor {
                 type_name: "rel".into(),
@@ -1028,6 +1127,8 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                doc: None,
+                meta: Default::default(),
             }),
         ];
         let info = SchemaInfo::from_descriptors(&descriptors);
@@ -1057,6 +1158,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: plays_cards,
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -1072,6 +1175,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1095,6 +1200,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -1110,6 +1217,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1138,6 +1247,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: plays_cards,
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -1154,6 +1265,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1188,6 +1301,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -1199,6 +1314,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![],
                 plays_cardinalities: plays_cards,
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1224,6 +1341,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: plays_cards,
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -1239,6 +1358,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1265,6 +1386,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: plays_cards,
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -1287,6 +1410,8 @@ mod tests {
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1345,6 +1470,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -1370,6 +1497,8 @@ mod tests {
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1409,6 +1538,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1437,6 +1568,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         // Child relation specializing the role.
@@ -1465,6 +1598,8 @@ mod tests {
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1495,6 +1630,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -1519,6 +1656,8 @@ mod tests {
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1563,8 +1702,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![],
                     is_ordered: true,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1590,8 +1733,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Distinct, Annotation::Card(0, Some(3))],
                     is_ordered: true,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1620,6 +1767,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1649,6 +1798,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1686,15 +1837,21 @@ mod tests {
                         value_type: ValueType::String,
                         annotations: vec![Annotation::Distinct, Annotation::Card(0, Some(3))],
                         is_ordered: true,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttributeEntry {
                         attr_name: "plain".into(),
                         value_type: ValueType::String,
                         annotations: vec![],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1753,6 +1910,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1842,7 +2001,11 @@ mod tests {
                     annotations: vec![Annotation::Distinct],
                     is_optional: false,
                     is_ordered: true,
+                    doc: None,
+                    meta: Default::default(),
                 }],
+                doc: None,
+                meta: Default::default(),
             }),
             TypeDescriptor::Relation(RelationDescriptor {
                 type_name: "feed".into(),
@@ -1856,6 +2019,8 @@ mod tests {
                     distinct: true,
                     ..Default::default()
                 }],
+                doc: None,
+                meta: Default::default(),
             }),
         ];
 
@@ -1873,5 +2038,174 @@ mod tests {
         let member = &feed.roles[0];
         assert!(member.ordered, "member role must be ordered in IR");
         assert!(member.distinct, "member role must be distinct in IR");
+    }
+
+    #[test]
+    fn generates_doc_meta_on_entity_header() {
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
+                doc: Some("an individual client".into()),
+                meta: BTreeMap::from([("icon".to_string(), "silhouette.png".to_string())]),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(result.contains(
+            "entity person @doc(\"an individual client\") @meta(\"icon\", \"silhouette.png\");"
+        ));
+    }
+
+    #[test]
+    fn generates_doc_meta_header_before_sub_with_comma() {
+        // Annotated headers use the same `, sub` comma rule as @abstract.
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "base".into(),
+            EntitySchemaEntry {
+                type_name: "base".into(),
+                is_abstract: true,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: BTreeMap::new(),
+            },
+        );
+        info.entities.insert(
+            "child".into(),
+            EntitySchemaEntry {
+                type_name: "child".into(),
+                is_abstract: false,
+                parent_type: Some("base".into()),
+                owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
+                doc: Some("d".into()),
+                meta: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(result.contains("entity child @doc(\"d\"), sub base;"));
+    }
+
+    #[test]
+    fn generates_doc_meta_on_attribute_definition() {
+        let mut info = SchemaInfo::default();
+        let mut attr = AttributeSchemaEntry::new("name", ValueType::String);
+        attr.doc = Some("a personal name".into());
+        attr.meta.insert("pii".into(), "true".into());
+        info.attributes.insert("name".into(), attr);
+
+        let result = generate_define_block(&info);
+        assert!(result.contains(
+            "attribute name @doc(\"a personal name\") @meta(\"pii\", \"true\"), value string;"
+        ));
+    }
+
+    #[test]
+    fn generates_doc_meta_on_owns_after_constraints() {
+        let mut info = SchemaInfo::default();
+        info.attributes.insert(
+            "name".into(),
+            AttributeSchemaEntry::new("name", ValueType::String),
+        );
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "name".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Key],
+                    is_ordered: false,
+                    doc: Some("full legal name".into()),
+                    meta: BTreeMap::from([("column".to_string(), "name".to_string())]),
+                }],
+                plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(
+            result.contains(
+                "    owns name @key @doc(\"full legal name\") @meta(\"column\", \"name\");"
+            )
+        );
+    }
+
+    #[test]
+    fn generates_doc_meta_on_relates_after_card() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "friendship".into(),
+            RelationSchemaEntry {
+                type_name: "friendship".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![super::super::info::RoleEntry {
+                    role_name: "friend".into(),
+                    player_type_names: vec![],
+                    cardinality: Some((0, Some(2))),
+                    overrides: None,
+                    is_abstract: false,
+                    ordered: false,
+                    distinct: false,
+                    doc: Some("one side of the bond".into()),
+                    meta: BTreeMap::from([("endpoint".to_string(), "true".to_string())]),
+                }],
+                plays_cardinalities: BTreeMap::new(),
+                doc: Some("a mutual bond".into()),
+                meta: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        assert!(result.contains("relation friendship @doc(\"a mutual bond\"),"));
+        assert!(result.contains(
+            "    relates friend @card(0..2) @doc(\"one side of the bond\") @meta(\"endpoint\", \"true\");"
+        ));
+    }
+
+    #[test]
+    fn doc_escapes_round_trip_through_emission() {
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "escbox".into(),
+            EntitySchemaEntry {
+                type_name: "escbox".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
+                doc: Some("line1\nline2 with \"quotes\" and back\\slash".into()),
+                meta: BTreeMap::new(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+        // Emitted exactly as TypeDB's export renders escapes.
+        assert!(result.contains(
+            "entity escbox @doc(\"line1\\nline2 with \\\"quotes\\\" and back\\\\slash\");"
+        ));
+    }
+
+    #[test]
+    fn from_typeql_to_define_round_trips_annotations() {
+        let source = "define\n\nattribute name @doc(\"a personal name\") @meta(\"pii\", \"true\"), value string;\n\nentity person @doc(\"an individual\"),\n    owns name @key @doc(\"full name\") @meta(\"column\", \"name\");\n";
+        let info = SchemaInfo::from_typeql(source).expect("parse");
+        let regenerated = generate_define_block(&info);
+        assert_eq!(regenerated.trim(), source.trim());
     }
 }

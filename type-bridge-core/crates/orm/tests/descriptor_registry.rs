@@ -12,6 +12,8 @@ fn attr(name: &str, value_type: ValueType) -> OwnedAttributeDescriptor {
         annotations: vec![],
         is_optional: false,
         is_ordered: false,
+        doc: None,
+        meta: Default::default(),
     }
 }
 
@@ -28,6 +30,8 @@ fn person_descriptor() -> EntityDescriptor {
                 annotations: vec![Annotation::Key],
                 is_optional: false,
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             },
             OwnedAttributeDescriptor {
                 field_name: "email".into(),
@@ -36,8 +40,12 @@ fn person_descriptor() -> EntityDescriptor {
                 annotations: vec![Annotation::Unique, Annotation::Card(0, Some(1))],
                 is_optional: true,
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             },
         ],
+        doc: None,
+        meta: Default::default(),
     }
 }
 
@@ -53,6 +61,8 @@ fn employment_descriptor() -> RelationDescriptor {
             annotations: vec![],
             is_optional: true,
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         }],
         roles: vec![
             RoleDescriptor {
@@ -68,6 +78,8 @@ fn employment_descriptor() -> RelationDescriptor {
                 ..Default::default()
             },
         ],
+        doc: None,
+        meta: Default::default(),
     }
 }
 
@@ -88,6 +100,8 @@ fn descriptor_serde_roundtrips_all_value_types() {
             attr("decimal-value", ValueType::Decimal),
             attr("duration-value", ValueType::Duration),
         ],
+        doc: None,
+        meta: Default::default(),
     };
 
     let json = serde_json::to_string(&descriptor).unwrap();
@@ -167,6 +181,8 @@ fn registry_rejects_duplicate_attributes_and_roles() {
         annotations: vec![],
         is_optional: false,
         is_ordered: false,
+        doc: None,
+        meta: Default::default(),
     });
     assert!(matches!(
         registry.register_entity(entity).unwrap_err(),

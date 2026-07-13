@@ -55,6 +55,8 @@ impl<'db> SchemaManager<'db> {
                     value_type: a.value_type,
                     annotations: a.annotations.to_vec(),
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }
             })
             .collect();
@@ -67,6 +69,8 @@ impl<'db> SchemaManager<'db> {
                 parent_type: E::PARENT_TYPE.map(String::from),
                 owned_attributes: owned_entries,
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
     }
@@ -87,6 +91,8 @@ impl<'db> SchemaManager<'db> {
                     value_type: a.value_type,
                     annotations: a.annotations.to_vec(),
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }
             })
             .collect();
@@ -109,6 +115,8 @@ impl<'db> SchemaManager<'db> {
                 owned_attributes: owned_entries,
                 roles,
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
     }
@@ -212,6 +220,8 @@ impl<'db> SchemaManager<'db> {
                             parent_type: None,
                             owned_attributes: owned,
                             plays_cardinalities: BTreeMap::new(),
+                            doc: None,
+                            meta: Default::default(),
                         },
                     );
                 }
@@ -241,6 +251,8 @@ impl<'db> SchemaManager<'db> {
                             owned_attributes: owned,
                             roles,
                             plays_cardinalities: BTreeMap::new(),
+                            doc: None,
+                            meta: Default::default(),
                         },
                     );
                 }
@@ -276,6 +288,8 @@ impl<'db> SchemaManager<'db> {
                         value_type,
                         annotations: vec![],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     });
                 }
             }

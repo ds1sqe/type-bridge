@@ -98,15 +98,21 @@ fn make_small_schema_info() -> SchemaInfo {
                         value_type: ValueType::String,
                         annotations: vec![],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttributeEntry {
                         attr_name: "age".to_string(),
                         value_type: ValueType::Long,
                         annotations: vec![],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 plays_cardinalities: std::collections::BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
     }
@@ -125,6 +131,8 @@ fn make_small_schema_info() -> SchemaInfo {
                     ..Default::default()
                 }],
                 plays_cardinalities: std::collections::BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
     }
@@ -145,6 +153,8 @@ fn make_large_schema_info() -> SchemaInfo {
                 },
                 annotations: vec![],
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             })
             .collect();
         info.entities.insert(
@@ -159,6 +169,8 @@ fn make_large_schema_info() -> SchemaInfo {
                 },
                 owned_attributes: attrs,
                 plays_cardinalities: std::collections::BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
     }
@@ -184,6 +196,8 @@ fn make_large_schema_info() -> SchemaInfo {
                     },
                 ],
                 plays_cardinalities: std::collections::BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
     }

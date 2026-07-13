@@ -180,6 +180,8 @@ fn build_migration_state_schema() -> SchemaInfo {
                 parent_type: None,
                 owned_attributes,
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         )
     })
@@ -202,6 +204,8 @@ fn owned_attribute(label: &str, value_type: ValueType, is_key: bool) -> OwnedAtt
             Vec::new()
         },
         is_ordered: false,
+        doc: None,
+        meta: Default::default(),
     }
 }
 

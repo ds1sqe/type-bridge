@@ -34,6 +34,12 @@ pub struct OwnedAttributeDescriptor {
     /// when this is `true`.
     #[serde(default)]
     pub is_ordered: bool,
+    /// Optional `@doc("...")` documentation annotation on the ownership (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the ownership, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub meta: std::collections::BTreeMap<String, String>,
 }
 
 impl OwnedAttributeDescriptor {
@@ -106,6 +112,12 @@ pub struct RoleDescriptor {
     /// constraining how many players may fill the role per relation instance.
     #[serde(default)]
     pub plays_cardinality: Option<(u32, Option<u32>)>,
+    /// Optional `@doc("...")` documentation annotation on the role (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the role, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub meta: std::collections::BTreeMap<String, String>,
 }
 
 /// Runtime descriptor for an entity type.
@@ -119,6 +131,12 @@ pub struct EntityDescriptor {
     pub parent_type: Option<String>,
     /// Attributes owned by this entity.
     pub owned_attributes: Vec<OwnedAttributeDescriptor>,
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the type, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub meta: std::collections::BTreeMap<String, String>,
 }
 
 impl EntityDescriptor {
@@ -158,6 +176,12 @@ pub struct RelationDescriptor {
     /// roles are excluded while plain-inherited ones are flattened in —
     /// mirroring how `owned_attributes` flattens inherited attributes.
     pub roles: Vec<RoleDescriptor>,
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the type, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub meta: std::collections::BTreeMap<String, String>,
 }
 
 impl RelationDescriptor {

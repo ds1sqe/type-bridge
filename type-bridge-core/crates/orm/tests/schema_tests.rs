@@ -380,8 +380,12 @@ fn generate_schema_with_cardinality() {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Card(2, Some(5))],
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             }],
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         },
     );
 
@@ -490,15 +494,21 @@ fn schema_diff_detects_removed_attribute() {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 },
                 OwnedAttributeEntry {
                     attr_name: "age".into(),
                     value_type: ValueType::Long,
                     annotations: vec![],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 },
             ],
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         },
     );
 
@@ -515,8 +525,12 @@ fn schema_diff_detects_removed_attribute() {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Key],
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             }],
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         },
     );
 

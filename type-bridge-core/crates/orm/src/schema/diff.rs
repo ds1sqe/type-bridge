@@ -867,6 +867,8 @@ mod tests {
             value_type: vt,
             annotations,
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -877,6 +879,8 @@ mod tests {
             parent_type: None,
             owned_attributes: attrs,
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -912,6 +916,8 @@ mod tests {
                 })
                 .collect(),
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -1155,6 +1161,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1181,6 +1189,8 @@ mod tests {
                 parent_type: Some("animal".into()),
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1210,6 +1220,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1262,6 +1274,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 

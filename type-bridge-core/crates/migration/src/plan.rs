@@ -757,8 +757,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         OperationSpec::DefineSchema { schema }
@@ -774,6 +778,8 @@ mod tests {
             value_type,
             annotations,
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -784,6 +790,8 @@ mod tests {
             parent_type: None,
             owned_attributes: vec![owned_attr("name", ValueType::String, vec![Annotation::Key])],
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -801,8 +809,12 @@ mod tests {
                 is_abstract: false,
                 ordered: false,
                 distinct: false,
+                doc: None,
+                meta: Default::default(),
             }],
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -1264,6 +1276,8 @@ delete $a has email "ops@example.com";"#,
             is_abstract: false,
             ordered: false,
             distinct: false,
+            doc: None,
+            meta: Default::default(),
         };
         let g = graph(vec![migration(
             "0001_roles",
