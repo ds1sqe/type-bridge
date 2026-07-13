@@ -1774,6 +1774,8 @@ mod schema_validation_tests {
                 allowed_values: None,
                 range_min: None,
                 range_max: None,
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.attributes.insert(
@@ -1788,6 +1790,8 @@ mod schema_validation_tests {
                 allowed_values: None,
                 range_min: None,
                 range_max: None,
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.attributes.insert(
@@ -1802,6 +1806,8 @@ mod schema_validation_tests {
                 allowed_values: None,
                 range_min: None,
                 range_max: None,
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.attributes.insert(
@@ -1816,6 +1822,8 @@ mod schema_validation_tests {
                 allowed_values: None,
                 range_min: None,
                 range_max: None,
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.attributes.insert(
@@ -1830,6 +1838,8 @@ mod schema_validation_tests {
                 allowed_values: None,
                 range_min: None,
                 range_max: None,
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1849,6 +1859,8 @@ mod schema_validation_tests {
                         cardinality: None,
                         ordered: false,
                         distinct: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttribute {
                         name: "age".into(),
@@ -1859,6 +1871,8 @@ mod schema_validation_tests {
                         cardinality: None,
                         ordered: false,
                         distinct: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttribute {
                         name: "email".into(),
@@ -1869,13 +1883,19 @@ mod schema_validation_tests {
                         cardinality: None,
                         ordered: false,
                         distinct: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 owns_order: vec!["name".into(), "age".into(), "email".into()],
                 plays: vec![PlayedRole {
                     role_ref: "employment:employee".into(),
                     cardinality: None,
+                    doc: None,
+                    meta: Default::default(),
                 }],
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.entities.insert(
@@ -1895,6 +1915,8 @@ mod schema_validation_tests {
                         cardinality: None,
                         ordered: false,
                         distinct: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttribute {
                         name: "age".into(),
@@ -1905,6 +1927,8 @@ mod schema_validation_tests {
                         cardinality: None,
                         ordered: false,
                         distinct: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttribute {
                         name: "email".into(),
@@ -1915,6 +1939,8 @@ mod schema_validation_tests {
                         cardinality: None,
                         ordered: false,
                         distinct: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttribute {
                         name: "salary".into(),
@@ -1925,13 +1951,19 @@ mod schema_validation_tests {
                         cardinality: None,
                         ordered: false,
                         distinct: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 owns_order: vec!["name".into(), "age".into(), "email".into(), "salary".into()],
                 plays: vec![PlayedRole {
                     role_ref: "employment:employee".into(),
                     cardinality: None,
+                    doc: None,
+                    meta: Default::default(),
                 }],
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.entities.insert(
@@ -1949,12 +1981,18 @@ mod schema_validation_tests {
                     cardinality: None,
                     ordered: false,
                     distinct: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns_order: vec!["name".into()],
                 plays: vec![PlayedRole {
                     role_ref: "employment:employer".into(),
                     cardinality: None,
+                    doc: None,
+                    meta: Default::default(),
                 }],
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.entities.insert(
@@ -1972,9 +2010,13 @@ mod schema_validation_tests {
                     cardinality: None,
                     ordered: false,
                     distinct: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns_order: vec!["name".into()],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1992,6 +2034,8 @@ mod schema_validation_tests {
                         distinct: false,
                         ordered: false,
                         is_abstract: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     RoleSpec {
                         name: "employer".into(),
@@ -2000,11 +2044,15 @@ mod schema_validation_tests {
                         distinct: false,
                         ordered: false,
                         is_abstract: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 owns: vec![],
                 owns_order: vec![],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.relations.insert(
@@ -2020,10 +2068,14 @@ mod schema_validation_tests {
                     distinct: false,
                     ordered: false,
                     is_abstract: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns: vec![],
                 owns_order: vec![],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -2047,6 +2099,8 @@ mod schema_validation_tests {
                         }),
                         ordered: false,
                         distinct: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     OwnedAttribute {
                         name: "score".into(),
@@ -2060,10 +2114,14 @@ mod schema_validation_tests {
                         }),
                         ordered: false,
                         distinct: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 owns_order: vec!["name".into(), "score".into()],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
 

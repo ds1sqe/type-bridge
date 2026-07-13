@@ -127,6 +127,14 @@ pub struct OwnedAttribute {
     /// Whether this ownership is annotated with `@distinct`, requiring unique attribute values.
     #[serde(default)]
     pub distinct: bool,
+    /// Optional `@doc("...")` documentation annotation on the ownership (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the ownership, keyed by meta key (TypeDB 3.12+).
+    ///
+    /// TypeDB enforces at most one value per key per subject.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +149,12 @@ pub struct PlayedRole {
     pub role_ref: String,
     /// Optional `@card(min..max)` cardinality constraint on playing this role.
     pub cardinality: Option<Cardinality>,
+    /// Optional `@doc("...")` documentation annotation on the plays clause (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the plays clause, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +190,12 @@ pub struct RoleSpec {
     /// can make it playable.
     #[serde(default)]
     pub is_abstract: bool,
+    /// Optional `@doc("...")` documentation annotation on the role (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the role, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +227,12 @@ pub struct AttributeType {
     pub range_min: Option<String>,
     /// Optional upper bound of a `@range` constraint (inclusive), as a string literal.
     pub range_max: Option<String>,
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the type, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +323,12 @@ pub struct EntityType {
     pub owns_order: Vec<String>,
     /// Roles this entity type can play (includes inherited roles after resolution).
     pub plays: Vec<PlayedRole>,
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the type, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +357,12 @@ pub struct RelationType {
     pub owns_order: Vec<String>,
     /// Roles this relation type can play (includes inherited roles after resolution).
     pub plays: Vec<PlayedRole>,
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the type, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -917,6 +955,8 @@ mod tests {
                 allowed_values: None,
                 range_min: None,
                 range_max: None,
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.entities.insert(
@@ -934,9 +974,13 @@ mod tests {
                     cardinality: None,
                     ordered: false,
                     distinct: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -958,6 +1002,8 @@ mod tests {
                 owns: vec![],
                 owns_order: vec![],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.entities.insert(
@@ -969,6 +1015,8 @@ mod tests {
                 owns: vec![],
                 owns_order: vec![],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -989,6 +1037,8 @@ mod tests {
             cardinality: None,
             ordered: false,
             distinct: false,
+            doc: None,
+            meta: Default::default(),
         };
         schema.entities.insert(
             "person".to_string(),
@@ -999,6 +1049,8 @@ mod tests {
                 owns: vec![name_attr],
                 owns_order: vec!["name".to_string()],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1029,12 +1081,18 @@ mod tests {
                     cardinality: None,
                     ordered: false,
                     distinct: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![PlayedRole {
                     role_ref: "friendship:friend".to_string(),
                     cardinality: None,
+                    doc: None,
+                    meta: Default::default(),
                 }],
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.entities.insert(
@@ -1052,9 +1110,13 @@ mod tests {
                     cardinality: None,
                     ordered: false,
                     distinct: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns_order: vec!["employee-id".to_string()],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1083,6 +1145,8 @@ mod tests {
                         distinct: false,
                         ordered: false,
                         is_abstract: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                     RoleSpec {
                         name: "work".to_string(),
@@ -1091,11 +1155,15 @@ mod tests {
                         distinct: false,
                         ordered: false,
                         is_abstract: false,
+                        doc: None,
+                        meta: Default::default(),
                     },
                 ],
                 owns: vec![],
                 owns_order: vec![],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.relations.insert(
@@ -1111,10 +1179,14 @@ mod tests {
                     distinct: false,
                     ordered: false,
                     is_abstract: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns: vec![],
                 owns_order: vec![],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1141,6 +1213,8 @@ mod tests {
                 owns: vec![],
                 owns_order: vec![],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema.entities.insert(
@@ -1152,6 +1226,8 @@ mod tests {
                 owns: vec![],
                 owns_order: vec![],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1250,9 +1326,13 @@ mod tests {
                     cardinality: None,
                     ordered: false,
                     distinct: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
         let result = schema.validate();
@@ -1283,9 +1363,13 @@ mod tests {
                     cardinality: None,
                     ordered: false,
                     distinct: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
         let result = schema.validate();
@@ -1316,9 +1400,13 @@ mod tests {
                     cardinality: None,
                     ordered: false,
                     distinct: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 owns_order: vec!["name".to_string()],
                 plays: vec![],
+                doc: None,
+                meta: Default::default(),
             },
         );
         assert!(schema.validate().is_ok());
