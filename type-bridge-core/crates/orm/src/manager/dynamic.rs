@@ -9,8 +9,9 @@ use crate::dynamic::{
 };
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
-use crate::session::backend::{QueryResult, TxType};
+use crate::session::backend::{GivenRowsSpec, GivenValue, QueryResult, TxType};
 use crate::session::{Database, TransactionContext};
+use crate::value::AttributeValue;
 
 use super::hydration::{extract_count, hydrate_dynamic_entity, hydrate_dynamic_relation};
 use super::query_builder;
@@ -264,6 +265,25 @@ impl<'db> DynamicEntityManager<'db> {
     ) -> Result<Vec<String>> {
         if items.is_empty() {
             return Ok(vec![]);
+        }
+
+        // Given-stage fast path (TypeDB 3.12+): one compiled insert pipeline
+        // over all rows, values passed through the driver API instead of
+        // being interpolated per row. Requires a homogeneous batch; anything
+        // else falls through to the per-row path below.
+        if matches!(operation, DynamicWriteOperation::Insert)
+            && let DynamicExecutionTarget::Database(db) = &self.target
+            && db.supports_given_stage()
+            && let Some((typeql, rows)) = given_entity_insert(&self.descriptor, items, "$e")
+        {
+            tracing::debug!(
+                typeql = %typeql,
+                entity_type = %self.descriptor.type_name,
+                rows = items.len(),
+                "DYNAMIC GIVEN INSERT MANY"
+            );
+            let result = db.execute_with_rows(&typeql, TxType::Write, rows).await?;
+            return extract_insert_iids(&self.descriptor.type_name, result, items.len());
         }
 
         match &self.target {
@@ -714,6 +734,176 @@ fn ensure_transaction_can_execute(active: TxType, required: TxType) -> Result<()
     }
 }
 
+/// Build the `given`-stage bulk insert for a homogeneous entity batch.
+///
+/// Returns `None` when the batch cannot ride one compiled pipeline, so the
+/// caller falls back to per-row inserts:
+/// - an item binds an attribute the descriptor does not know,
+/// - items bind different attribute sets (optional attributes present on
+///   some rows only), or repeat an attribute within one row,
+/// - a column's value type varies across rows, or
+/// - a value type has no given-row representation (decimal, duration).
+fn given_entity_insert(
+    descriptor: &EntityDescriptor,
+    items: &[DynamicAttributeMap],
+    var: &str,
+) -> Option<(String, GivenRowsSpec)> {
+    let first = items.first()?;
+    if first.is_empty() {
+        return None;
+    }
+
+    // Column layout comes from the first item: resolved TypeDB attribute
+    // names, the given type of each column, and one given variable each.
+    let mut columns: Vec<(String, &'static str)> = Vec::with_capacity(first.len());
+    for (name, value) in first {
+        let attr = descriptor.attribute(name)?;
+        let type_name = given_type_name(value)?;
+        if columns
+            .iter()
+            .any(|(existing, _)| *existing == attr.attr_name)
+        {
+            return None;
+        }
+        columns.push((attr.attr_name.clone(), type_name));
+    }
+
+    let mut rows = Vec::with_capacity(items.len());
+    for (row_index, item) in items.iter().enumerate() {
+        if item.len() != columns.len() {
+            return None;
+        }
+        let mut row: Vec<Option<GivenValue>> = vec![None; columns.len()];
+        for (name, value) in item {
+            let attr = descriptor.attribute(name)?;
+            let index = columns
+                .iter()
+                .position(|(attr_name, _)| *attr_name == attr.attr_name)?;
+            if row[index].is_some() || given_type_name(value)? != columns[index].1 {
+                return None;
+            }
+            row[index] = Some(given_value(value)?);
+        }
+        let mut row = row.into_iter().collect::<Option<Vec<_>>>()?;
+        // Synthetic trailing column: the input row index, fetched back so
+        // IIDs correlate to input rows explicitly instead of relying on
+        // pipeline stream order.
+        row.push(GivenValue::Integer(row_index as i64));
+        rows.push(row);
+    }
+
+    let mut variables: Vec<String> = (0..columns.len()).map(|i| format!("g{i}")).collect();
+    let given_header = columns
+        .iter()
+        .zip(&variables)
+        .map(|((_, type_name), variable)| format!("${variable}: {type_name}"))
+        .chain(std::iter::once("$g_row: integer".to_string()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let has_clauses = columns
+        .iter()
+        .zip(&variables)
+        .map(|((attr_name, _), variable)| format!("has {attr_name} == ${variable}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    variables.push("g_row".to_string());
+    let typeql = format!(
+        "given {given_header};\ninsert {var} isa {}, {has_clauses};\nfetch {{ \"iid\": iid({var}), \"row\": $g_row }};",
+        descriptor.type_name,
+    );
+
+    Some((typeql, GivenRowsSpec { variables, rows }))
+}
+
+/// The TypeQL value type name for a `given` header column, or `None` when
+/// the value has no given-row representation.
+fn given_type_name(value: &AttributeValue) -> Option<&'static str> {
+    Some(match value {
+        AttributeValue::String(_) => "string",
+        AttributeValue::Long(_) => "integer",
+        AttributeValue::Double(_) => "double",
+        AttributeValue::Boolean(_) => "boolean",
+        AttributeValue::Date(_) => "date",
+        AttributeValue::DateTime(_) => "datetime",
+        AttributeValue::DateTimeTZ(_) => "datetime-tz",
+        AttributeValue::Decimal(_) | AttributeValue::Duration(_) => return None,
+    })
+}
+
+/// Convert an attribute value into its given-row form, or `None` when the
+/// value type has no given-row representation.
+fn given_value(value: &AttributeValue) -> Option<GivenValue> {
+    Some(match value {
+        AttributeValue::String(s) => GivenValue::String(s.clone()),
+        AttributeValue::Long(n) => GivenValue::Integer(*n),
+        AttributeValue::Double(d) => GivenValue::Double(*d),
+        AttributeValue::Boolean(b) => GivenValue::Boolean(*b),
+        AttributeValue::Date(s) => GivenValue::Date(s.clone()),
+        AttributeValue::DateTime(s) => GivenValue::Datetime(s.clone()),
+        AttributeValue::DateTimeTZ(s) => GivenValue::DatetimeTz(s.clone()),
+        AttributeValue::Decimal(_) | AttributeValue::Duration(_) => return None,
+    })
+}
+
+/// Extract one IID per input row from a bulk insert + fetch result.
+///
+/// Each document carries the fetched-back input row index (`"row"`), so
+/// IIDs are placed by explicit correlation rather than stream order.
+fn extract_insert_iids(
+    type_name: &str,
+    result: QueryResult,
+    expected: usize,
+) -> Result<Vec<String>> {
+    let hydration_error = |message: String| OrmError::Hydration {
+        type_name: type_name.to_string(),
+        message,
+    };
+    match result {
+        QueryResult::Documents(docs) => {
+            if docs.len() != expected {
+                return Err(hydration_error(format!(
+                    "Bulk insert returned {} documents for {expected} input rows",
+                    docs.len()
+                )));
+            }
+            let mut iids: Vec<Option<String>> = vec![None; expected];
+            for doc in &docs {
+                let obj = doc.as_object().ok_or_else(|| {
+                    hydration_error("Expected JSON object from insert+fetch".into())
+                })?;
+                let iid = super::hydration::extract_scalar_string(obj, "iid")
+                    .ok_or_else(|| hydration_error("No IID in bulk insert response".into()))?;
+                let row_index = obj
+                    .get("row")
+                    .and_then(serde_json::Value::as_f64)
+                    .map(|row| row as usize)
+                    .ok_or_else(|| {
+                        hydration_error("No row index in bulk insert response".into())
+                    })?;
+                let slot = iids.get_mut(row_index).ok_or_else(|| {
+                    hydration_error(format!(
+                        "Bulk insert row index {row_index} out of range for {expected} input rows"
+                    ))
+                })?;
+                if slot.replace(iid).is_some() {
+                    return Err(hydration_error(format!(
+                        "Bulk insert returned row index {row_index} twice"
+                    )));
+                }
+            }
+            iids.into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| hydration_error("Bulk insert response missing rows".into()))
+        }
+        QueryResult::Ok => Err(hydration_error(
+            "Expected Documents from bulk insert+fetch, got Ok".into(),
+        )),
+        QueryResult::Rows(_) => Err(hydration_error(
+            "Expected Documents from bulk insert+fetch, got Rows".into(),
+        )),
+    }
+}
+
 fn extract_insert_iid(type_name: &str, result: QueryResult) -> Result<String> {
     match result {
         QueryResult::Documents(docs) => {
@@ -760,5 +950,168 @@ fn extract_rows(
             type_name: type_name.to_string(),
             message: "Expected Rows from reduce query, got Documents".into(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attribute::ValueType;
+    use crate::descriptor::OwnedAttributeDescriptor;
+
+    fn attribute(
+        field_name: &str,
+        attr_name: &str,
+        value_type: ValueType,
+    ) -> OwnedAttributeDescriptor {
+        OwnedAttributeDescriptor {
+            field_name: field_name.to_string(),
+            attr_name: attr_name.to_string(),
+            value_type,
+            annotations: vec![],
+            is_optional: false,
+            is_ordered: false,
+            doc: None,
+            meta: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn person_descriptor() -> EntityDescriptor {
+        EntityDescriptor {
+            type_name: "person".to_string(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![
+                attribute("name", "name", ValueType::String),
+                attribute("age", "age", ValueType::Long),
+            ],
+            doc: None,
+            meta: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn item(pairs: &[(&str, AttributeValue)]) -> DynamicAttributeMap {
+        pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn given_insert_builds_typed_header_and_rows() {
+        let descriptor = person_descriptor();
+        let items = vec![
+            item(&[
+                ("name", AttributeValue::String("alice".into())),
+                ("age", AttributeValue::Long(28)),
+            ]),
+            item(&[
+                ("age", AttributeValue::Long(26)),
+                ("name", AttributeValue::String("bob".into())),
+            ]),
+        ];
+
+        let (typeql, spec) =
+            given_entity_insert(&descriptor, &items, "$e").expect("homogeneous batch");
+
+        assert_eq!(
+            typeql,
+            "given $g0: string, $g1: integer, $g_row: integer;\n\
+             insert $e isa person, has name == $g0, has age == $g1;\n\
+             fetch { \"iid\": iid($e), \"row\": $g_row };"
+        );
+        assert_eq!(
+            spec.variables,
+            vec!["g0".to_string(), "g1".to_string(), "g_row".to_string()]
+        );
+        // The second item binds in a different order; the row is normalized
+        // to the first item's column layout, with the trailing row index.
+        assert_eq!(
+            spec.rows,
+            vec![
+                vec![
+                    GivenValue::String("alice".into()),
+                    GivenValue::Integer(28),
+                    GivenValue::Integer(0),
+                ],
+                vec![
+                    GivenValue::String("bob".into()),
+                    GivenValue::Integer(26),
+                    GivenValue::Integer(1),
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn given_insert_resolves_field_names_to_attr_names() {
+        let mut descriptor = person_descriptor();
+        descriptor.owned_attributes[0] =
+            attribute("display_name", "display-name", ValueType::String);
+        let items = vec![item(&[(
+            "display_name",
+            AttributeValue::String("alice".into()),
+        )])];
+
+        let (typeql, _) = given_entity_insert(&descriptor, &items, "$e").expect("resolvable");
+        assert!(
+            typeql.contains("has display-name == $g0"),
+            "field name must resolve to the TypeDB attribute name: {typeql}"
+        );
+    }
+
+    #[test]
+    fn given_insert_rejects_heterogeneous_attribute_sets() {
+        let descriptor = person_descriptor();
+        let items = vec![
+            item(&[
+                ("name", AttributeValue::String("alice".into())),
+                ("age", AttributeValue::Long(28)),
+            ]),
+            item(&[("name", AttributeValue::String("bob".into()))]),
+        ];
+        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
+    }
+
+    #[test]
+    fn given_insert_rejects_mixed_value_types_per_column() {
+        let descriptor = person_descriptor();
+        let items = vec![
+            item(&[("age", AttributeValue::Long(28))]),
+            item(&[("age", AttributeValue::Double(26.5))]),
+        ];
+        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
+    }
+
+    #[test]
+    fn given_insert_rejects_unrepresentable_value_types() {
+        let mut descriptor = person_descriptor();
+        descriptor.owned_attributes[0] = attribute("price", "price", ValueType::Decimal);
+        let items = vec![item(&[("price", AttributeValue::Decimal("1.50".into()))])];
+        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
+    }
+
+    #[test]
+    fn given_insert_rejects_repeated_attribute_within_row() {
+        let descriptor = person_descriptor();
+        let items = vec![item(&[
+            ("name", AttributeValue::String("alice".into())),
+            ("name", AttributeValue::String("also-alice".into())),
+        ])];
+        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
+    }
+
+    #[test]
+    fn given_insert_rejects_unknown_attribute() {
+        let descriptor = person_descriptor();
+        let items = vec![item(&[("nickname", AttributeValue::String("al".into()))])];
+        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
+    }
+
+    #[test]
+    fn given_insert_rejects_empty_first_item() {
+        let descriptor = person_descriptor();
+        let items = vec![item(&[])];
+        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
     }
 }

@@ -198,6 +198,11 @@ pub fn band(v: &Version) -> Option<u8> {
 /// per-version band cannot express that, so servers carry an accepted *set*
 /// and drivers keep their single native [`band`].
 ///
+/// HAZARD (measured live on 3.11.5): a band-9 connection attempt does not
+/// just fail against a 3.11 server — it crashes the server process.  Never
+/// probe band 9 against a server of unknown version; discover through
+/// band 8 first (the embedded runtime's gRPC fallback does exactly that).
+///
 /// Measured live (see [`band`] for the measurement grid):
 ///
 /// | Server line | Accepts |
@@ -370,6 +375,14 @@ impl Feature {
             Feature::GivenStage => Version::new(3, 12, 0),
         }
     }
+
+    /// Feature-specific remediation for the versioned error message.
+    pub fn remediation(self) -> &'static str {
+        match self {
+            Feature::SchemaAnnotations => "remove the annotations from the schema",
+            Feature::GivenStage => "use per-row queries instead",
+        }
+    }
 }
 
 /// Check that `server` supports `feature`.
@@ -385,6 +398,7 @@ pub fn check_feature_supported(feature: Feature, server: &Version) -> Result<(),
             feature: feature.name(),
             server: *server,
             required,
+            remediation: feature.remediation(),
         });
     }
     Ok(())
@@ -537,6 +551,8 @@ pub enum VersionError {
         server: Version,
         /// The minimum server version that supports the feature.
         required: Version,
+        /// Feature-specific remediation appended to the error message.
+        remediation: &'static str,
     },
 }
 
@@ -578,13 +594,14 @@ impl fmt::Display for VersionError {
                 feature,
                 server,
                 required,
+                remediation,
             } => {
                 let required_line = format!("{}.{}", required.major, required.minor);
                 write!(
                     f,
                     "{feature} require TypeDB {required_line} or newer; detected server \
-                     {server} — upgrade the server to the {required_line} line or remove \
-                     the annotations from the schema"
+                     {server} — upgrade the server to the {required_line} line or \
+                     {remediation}"
                 )
             }
         }
@@ -1102,10 +1119,12 @@ mod tests {
                 feature,
                 server,
                 required,
+                remediation,
             } => {
                 assert_eq!(*feature, "schema annotations (@doc/@meta)");
                 assert_eq!(*server, Version::new(3, 11, 5));
                 assert_eq!(*required, Version::new(3, 12, 0));
+                assert_eq!(*remediation, "remove the annotations from the schema");
             }
             other => panic!("expected FeatureUnsupported, got {other:?}"),
         }

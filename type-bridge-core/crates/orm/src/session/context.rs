@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use super::backend::{QueryResult, TransactionOps, TxType};
+use super::backend::{GivenRowsSpec, QueryResult, TransactionOps, TxType};
 use crate::error::{OrmError, Result};
 
 /// Shared transaction context for grouping multiple operations into
@@ -33,6 +33,18 @@ impl TransactionContext {
             .as_mut()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
         tx.query(typeql).await
+    }
+
+    /// Execute a `given`-stage query with input rows on the shared transaction.
+    ///
+    /// Requires a band-9 (TypeDB 3.12+) connection; see
+    /// [`Database::check_given_stage_support`](super::database::Database::check_given_stage_support).
+    pub async fn query_with_rows(&self, typeql: &str, rows: GivenRowsSpec) -> Result<QueryResult> {
+        let mut guard = self.inner.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.query_with_rows(typeql, rows).await
     }
 
     /// Commit the shared transaction.

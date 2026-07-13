@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 
 import type_bridge.typedb_driver as _tdm
-from type_bridge import version
+from type_bridge import Entity, Flag, Integer, String, TypeFlags, Unique, version
+from type_bridge.attribute import AttributeFlags
 from type_bridge.session import Database
 
 # ---------------------------------------------------------------------------
@@ -372,3 +373,107 @@ class TestSchemaAnnotationGateLive:
             with pytest.raises(type_bridge_core.VersionError):
                 manager.sync_schema(skip_if_exists=True)
             assert "vg-gated-person" not in clean_db.get_schema()
+
+
+# Module level so `from __future__ import annotations` string hints resolve
+# during model scanning (method-local classes cannot be resolved by
+# get_type_hints).
+class VgGivenBulkName(String):
+    flags = AttributeFlags(name="vg-given-bulk-name")
+
+
+class VgGivenBulkAge(Integer):
+    flags = AttributeFlags(name="vg-given-bulk-age")
+
+
+class VgGivenBulkPerson(Entity):
+    flags = TypeFlags(name="vg-given-bulk-person")
+    name: VgGivenBulkName = Flag(Unique)
+    age: VgGivenBulkAge
+
+
+@pytest.mark.integration
+@pytest.mark.order(4124)
+class TestGivenStageLive:
+    """given-stage parameterized queries against the live server.
+
+    Version-adaptive: on a 3.12+ leg one compiled pipeline runs over the
+    input rows through the driver API; on a pre-3.12 leg the raw surface
+    raises the versioned error and bulk operations fall back to per-row
+    queries with identical results.
+    """
+
+    GIVEN_DDL = (
+        "define entity vg-given-person, owns vg-given-name @key, owns vg-given-age;"
+        " attribute vg-given-name, value string;"
+        " attribute vg-given-age, value integer;"
+    )
+    GIVEN_PIPELINE = (
+        "given $n: string, $a: integer;\n"
+        "insert $p isa vg-given-person, has vg-given-name == $n, has vg-given-age == $a;\n"
+        'fetch { "iid": iid($p), "name": $n };'
+    )
+
+    @staticmethod
+    def _live_server_supports_given() -> bool:
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
+
+        detected = _tdm.server_version(TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT)
+        major, minor = (int(part) for part in detected.split(".")[:2])
+        return (major, minor) >= (3, 12)
+
+    def test_supports_given_stage_matches_server_line(self, clean_db: Database):
+        """supports_given_stage() agrees with the probed server version."""
+        assert clean_db.supports_given_stage() == self._live_server_supports_given()
+
+    def test_execute_with_rows_is_version_adaptive(self, clean_db: Database):
+        """3.12+ legs run the pipeline; pre-3.12 legs get the versioned error."""
+        import type_bridge_core
+
+        rows = [["alice", 28], ["bob", 26], ["carol", 31]]
+        if self._live_server_supports_given():
+            clean_db.execute_query(self.GIVEN_DDL, transaction_type="schema")
+            docs = clean_db.execute_with_rows(
+                self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
+            )
+            assert len(docs) == len(rows)
+            assert {doc["name"] for doc in docs} == {"alice", "bob", "carol"}
+            assert all(doc["iid"] for doc in docs)
+            fetched = clean_db.execute_query(
+                "match $p isa vg-given-person, has vg-given-name $n; select $n;",
+                transaction_type="read",
+            )
+            assert {row["n"]["value"] for row in fetched} == {"alice", "bob", "carol"}
+        else:
+            with pytest.raises(type_bridge_core.VersionError) as exc_info:
+                clean_db.execute_with_rows(
+                    self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
+                )
+            message = str(exc_info.value)
+            assert "3.12" in message
+            assert "given-stage" in message
+
+    def test_insert_many_works_on_every_server_leg(self, clean_db: Database):
+        """Bulk insert succeeds everywhere: given fast path on 3.12+, per-row below."""
+        from type_bridge.migration import SchemaManager
+
+        manager = SchemaManager(clean_db)
+        manager.register(VgGivenBulkPerson)
+        manager.sync_schema()
+
+        people = [
+            VgGivenBulkPerson(name=VgGivenBulkName(f"bulk-{i}"), age=VgGivenBulkAge(20 + i))
+            for i in range(5)
+        ]
+        inserted = VgGivenBulkPerson.manager(clean_db).insert_many(people)
+
+        iids = [getattr(person, "_iid", None) for person in inserted]
+        assert all(iids)
+        assert len(set(iids)) == len(people)
+
+        fetched = sorted(
+            VgGivenBulkPerson.manager(clean_db).all(), key=lambda person: person.age.value
+        )
+        assert [(person.name.value, person.age.value) for person in fetched] == [
+            (f"bulk-{i}", 20 + i) for i in range(5)
+        ]

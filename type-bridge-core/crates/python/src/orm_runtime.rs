@@ -17,8 +17,9 @@ use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
     DynamicEntityManager, DynamicEntityRow, DynamicExpr, DynamicRelationManager,
-    DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, EntityDescriptor, Filter, OrmError,
-    RelationDescriptor, SchemaInfo, SortDir, TransactionContext, TxType, ValueType,
+    DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, EntityDescriptor, Filter,
+    GivenRowsSpec, GivenValue, OrmError, RelationDescriptor, SchemaInfo, SortDir,
+    TransactionContext, TxType, ValueType,
 };
 
 /// Python-facing descriptor registry wrapper.
@@ -501,6 +502,40 @@ impl PyRustDatabase {
             .map_err(py_orm_error)
     }
 
+    /// Whether the connected server supports given-stage parameterized
+    /// queries (TypeDB 3.12+). `False` when the server predates 3.12 or its
+    /// version is unknown.
+    fn supports_given_stage(&self) -> bool {
+        self.db.supports_given_stage()
+    }
+
+    /// Execute a `given`-stage TypeQL query over input rows, auto-managing
+    /// the transaction lifecycle.
+    ///
+    /// `variables` are the given variable names without the `$` sigil;
+    /// `column_types` are TypeQL value type names (`string`, `integer`,
+    /// `double`, `boolean`, `date`, `datetime`, `datetime-tz`) aligned with
+    /// `variables`; `rows` is a list of rows, each a list of primitives in
+    /// column order (temporal values as ISO-8601 strings).
+    #[pyo3(signature = (query, transaction_type, variables, column_types, rows))]
+    fn execute_with_rows(
+        &self,
+        py: Python<'_>,
+        query: &str,
+        transaction_type: &str,
+        variables: Vec<String>,
+        column_types: Vec<String>,
+        rows: Bound<'_, PyAny>,
+    ) -> PyResult<PyObject> {
+        let tx_type = parse_tx_type(transaction_type)?;
+        let spec = given_rows_from_py(variables, &column_types, &rows)?;
+        let result = self
+            .runtime
+            .block_on(self.db.execute_with_rows(query, tx_type, spec))
+            .map_err(py_orm_error)?;
+        query_result_to_py(py, result)
+    }
+
     /// Return whether the configured database exists.
     fn database_exists(&self) -> PyResult<bool> {
         self.runtime
@@ -570,6 +605,26 @@ impl PyRustTransactionContext {
         let result = self
             .runtime
             .block_on(self.context.query(query))
+            .map_err(py_orm_error)?;
+        query_result_to_py(py, result)
+    }
+
+    /// Execute a `given`-stage TypeQL query with input rows in this Rust
+    /// transaction. See `RustDatabase.execute_with_rows` for the argument
+    /// contract; requires a band-9 (TypeDB 3.12+) connection.
+    #[pyo3(signature = (query, variables, column_types, rows))]
+    fn execute_with_rows(
+        &self,
+        py: Python<'_>,
+        query: &str,
+        variables: Vec<String>,
+        column_types: Vec<String>,
+        rows: Bound<'_, PyAny>,
+    ) -> PyResult<PyObject> {
+        let spec = given_rows_from_py(variables, &column_types, &rows)?;
+        let result = self
+            .runtime
+            .block_on(self.context.query_with_rows(query, spec))
             .map_err(py_orm_error)?;
         query_result_to_py(py, result)
     }
@@ -1578,6 +1633,69 @@ fn parse_tx_type(value: &str) -> PyResult<TxType> {
             "transaction_type must be 'read', 'write', or 'schema', got {other:?}"
         ))),
     }
+}
+
+/// Marshal Python given rows into the ORM's [`GivenRowsSpec`].
+///
+/// `column_types` drives per-cell extraction so an int cell bound to a
+/// `double` column fails loudly instead of being coerced silently.
+fn given_rows_from_py(
+    variables: Vec<String>,
+    column_types: &[String],
+    rows: &Bound<'_, PyAny>,
+) -> PyResult<GivenRowsSpec> {
+    if variables.len() != column_types.len() {
+        return Err(py_value_error(format!(
+            "variables ({}) and column_types ({}) must have the same length",
+            variables.len(),
+            column_types.len()
+        )));
+    }
+    let rows: Vec<Vec<Bound<'_, PyAny>>> = rows
+        .extract()
+        .map_err(|error| py_value_error(format!("rows must be a sequence of rows: {error}")))?;
+    let mut spec_rows = Vec::with_capacity(rows.len());
+    for (row_index, row) in rows.iter().enumerate() {
+        if row.len() != column_types.len() {
+            return Err(py_value_error(format!(
+                "row {row_index} has {} cells; expected {} (one per variable)",
+                row.len(),
+                column_types.len()
+            )));
+        }
+        let mut cells = Vec::with_capacity(row.len());
+        for (cell, column_type) in row.iter().zip(column_types) {
+            cells.push(
+                given_value_from_py(cell, column_type)
+                    .map_err(|error| py_value_error(format!("row {row_index}: {error}")))?,
+            );
+        }
+        spec_rows.push(cells);
+    }
+    Ok(GivenRowsSpec {
+        variables,
+        rows: spec_rows,
+    })
+}
+
+/// Extract one given cell according to its declared TypeQL column type.
+fn given_value_from_py(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<GivenValue> {
+    Ok(match column_type {
+        "boolean" => GivenValue::Boolean(cell.extract()?),
+        // "long" is the ORM-internal name for the TypeQL "integer" type.
+        "integer" | "long" => GivenValue::Integer(cell.extract()?),
+        "double" => GivenValue::Double(cell.extract()?),
+        "string" => GivenValue::String(cell.extract()?),
+        "date" => GivenValue::Date(cell.extract()?),
+        "datetime" => GivenValue::Datetime(cell.extract()?),
+        "datetime-tz" => GivenValue::DatetimeTz(cell.extract()?),
+        other => {
+            return Err(py_value_error(format!(
+                "Unsupported given column type {other:?}; expected one of string, \
+                 integer, double, boolean, date, datetime, datetime-tz"
+            )));
+        }
+    })
 }
 
 fn tx_type_name(tx_type: TxType) -> &'static str {

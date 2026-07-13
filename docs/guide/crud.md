@@ -139,6 +139,22 @@ person_manager.insert_many(persons)
 
 Both `insert()` and `insert_many()` run in a single write transaction when a transaction/context is provided to the manager. Without one, each call opens exactly one write transaction (no per-entity commits).
 
+#### Given-Stage Fast Path (TypeDB 3.12+)
+
+Against a TypeDB 3.12+ server, `insert_many()` for entities automatically
+runs as **one compiled `given`-stage pipeline** over the whole batch: the
+values travel through the driver API instead of being interpolated into
+per-row TypeQL strings, removing both the per-row query-compilation
+overhead and the string-interpolation surface.
+
+The fast path engages when the batch is homogeneous — every instance binds
+the same attribute set with matching value types. Batches with optional
+attributes present on only some instances, decimal/duration values, or
+transaction-bound managers use the per-row path instead, with identical
+results. On servers older than 3.12 the per-row path is always used; no
+code changes are needed either way. Check `db.supports_given_stage()` to
+see which path a connection takes.
+
 **Note on special characters**: TypeBridge automatically escapes special characters in string attributes (quotes, backslashes) when generating TypeQL queries. You don't need to manually escape values - just pass them as normal Python strings.
 
 ## PUT Operations (Idempotent Insert)
