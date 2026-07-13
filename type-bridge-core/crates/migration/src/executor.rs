@@ -271,6 +271,7 @@ mod tests {
         ExecutionStep {
             tx_type: TxType::Schema,
             kind: crate::plan::StepKind::Schema,
+            operation_kind: crate::plan::OperationKind::RunTypeql,
             forward: forward.to_string(),
             reverse: reverse.map(str::to_string),
         }

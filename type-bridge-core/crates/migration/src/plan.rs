@@ -39,6 +39,108 @@ pub enum StepKind {
     Backfill,
 }
 
+/// Authored operation kind from which an execution step was lowered.
+///
+/// This discriminant is carried separately from [`StepKind`]: `StepKind`
+/// controls transaction dispatch, while `OperationKind` preserves the stable
+/// artifact-level operation identity used by per-step recovery.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    /// Arbitrary authored TypeQL.
+    #[default]
+    RunTypeql,
+    /// Define a complete initial schema.
+    DefineSchema,
+    /// Add an attribute type.
+    AddAttribute,
+    /// Remove an attribute type.
+    RemoveAttribute,
+    /// Add an entity type.
+    AddEntity,
+    /// Remove an entity type.
+    RemoveEntity,
+    /// Add a relation type.
+    AddRelation,
+    /// Remove a relation type.
+    RemoveRelation,
+    /// Add an ownership capability.
+    AddOwnership,
+    /// Remove an ownership capability.
+    RemoveOwnership,
+    /// Modify ownership annotations.
+    ModifyOwnership,
+    /// Modify type annotations.
+    ModifyTypeAnnotations,
+    /// Modify role annotations.
+    ModifyRoleAnnotations,
+    /// Add a relation role.
+    AddRole,
+    /// Remove a relation role.
+    RemoveRole,
+    /// Add a role player capability.
+    AddRolePlayer,
+    /// Remove a role player capability.
+    RemoveRolePlayer,
+    /// Rename an attribute type.
+    RenameAttribute,
+    /// Copy attribute values as a backfill.
+    CopyAttribute,
+}
+
+impl OperationKind {
+    /// Stable snake-case token used in deterministic step identities.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RunTypeql => "run_typeql",
+            Self::DefineSchema => "define_schema",
+            Self::AddAttribute => "add_attribute",
+            Self::RemoveAttribute => "remove_attribute",
+            Self::AddEntity => "add_entity",
+            Self::RemoveEntity => "remove_entity",
+            Self::AddRelation => "add_relation",
+            Self::RemoveRelation => "remove_relation",
+            Self::AddOwnership => "add_ownership",
+            Self::RemoveOwnership => "remove_ownership",
+            Self::ModifyOwnership => "modify_ownership",
+            Self::ModifyTypeAnnotations => "modify_type_annotations",
+            Self::ModifyRoleAnnotations => "modify_role_annotations",
+            Self::AddRole => "add_role",
+            Self::RemoveRole => "remove_role",
+            Self::AddRolePlayer => "add_role_player",
+            Self::RemoveRolePlayer => "remove_role_player",
+            Self::RenameAttribute => "rename_attribute",
+            Self::CopyAttribute => "copy_attribute",
+        }
+    }
+
+    fn from_spec(operation: &OperationSpec) -> Self {
+        match operation {
+            OperationSpec::RunTypeql { .. } => Self::RunTypeql,
+            OperationSpec::DefineSchema { .. } => Self::DefineSchema,
+            OperationSpec::AddAttribute { .. } => Self::AddAttribute,
+            OperationSpec::RemoveAttribute { .. } => Self::RemoveAttribute,
+            OperationSpec::AddEntity { .. } => Self::AddEntity,
+            OperationSpec::RemoveEntity { .. } => Self::RemoveEntity,
+            OperationSpec::AddRelation { .. } => Self::AddRelation,
+            OperationSpec::RemoveRelation { .. } => Self::RemoveRelation,
+            OperationSpec::AddOwnership { .. } => Self::AddOwnership,
+            OperationSpec::RemoveOwnership { .. } => Self::RemoveOwnership,
+            OperationSpec::ModifyOwnership { .. } => Self::ModifyOwnership,
+            OperationSpec::ModifyTypeAnnotations { .. } => Self::ModifyTypeAnnotations,
+            OperationSpec::ModifyRoleAnnotations { .. } => Self::ModifyRoleAnnotations,
+            OperationSpec::AddRole { .. } => Self::AddRole,
+            OperationSpec::RemoveRole { .. } => Self::RemoveRole,
+            OperationSpec::AddRolePlayer { .. } => Self::AddRolePlayer,
+            OperationSpec::RemoveRolePlayer { .. } => Self::RemoveRolePlayer,
+            OperationSpec::RenameAttribute { .. } => Self::RenameAttribute,
+            OperationSpec::CopyAttribute { .. } => Self::CopyAttribute,
+        }
+    }
+}
+
 /// One executable step within a migration.
 ///
 /// Carries the transaction type and the forward (and optional reverse) TypeQL.
@@ -53,6 +155,12 @@ pub struct ExecutionStep {
     /// of steps persisted before this field was introduced.
     #[serde(default)]
     pub kind: StepKind,
+    /// Artifact operation kind that produced this step.
+    ///
+    /// Defaults to [`OperationKind::RunTypeql`] when deserializing legacy
+    /// persisted plans that predate per-step recovery metadata.
+    #[serde(default)]
+    pub operation_kind: OperationKind,
     /// Forward (apply) TypeQL text.
     pub forward: String,
     /// Reverse (rollback) TypeQL text, or `None` when the step is
@@ -254,6 +362,7 @@ fn assemble_steps(
                     } else {
                         StepKind::Schema
                     },
+                    operation_kind: OperationKind::RunTypeql,
                     forward: forward.clone(),
                     reverse: reverse.clone(),
                 }]
@@ -271,6 +380,7 @@ fn assemble_steps(
                 vec![ExecutionStep {
                     tx_type: TxType::Schema,
                     kind: StepKind::Schema,
+                    operation_kind: OperationKind::DefineSchema,
                     forward,
                     // Model-initial migrations are non-reversible.
                     reverse: None,
@@ -394,6 +504,7 @@ fn assemble_steps(
                 vec![ExecutionStep {
                     tx_type: TxType::Write,
                     kind: StepKind::Backfill,
+                    operation_kind: OperationKind::CopyAttribute,
                     forward,
                     reverse,
                 }]
@@ -408,6 +519,10 @@ fn assemble_steps(
             for step in &mut op_steps {
                 step.reverse = None;
             }
+        }
+        let operation_kind = OperationKind::from_spec(op);
+        for step in &mut op_steps {
+            step.operation_kind = operation_kind;
         }
         steps.append(&mut op_steps);
     }
@@ -446,7 +561,10 @@ fn annotation_token_steps(subject: &str, diff: &AnnotationTokenDiff) -> Vec<Exec
     }
     for (old_token, new_token) in &diff.changed {
         steps.push(schema_step(
-            typeql_block("redefine", vec![format!("{subject} {};", new_token.render())]),
+            typeql_block(
+                "redefine",
+                vec![format!("{subject} {};", new_token.render())],
+            ),
             Some(typeql_block(
                 "redefine",
                 vec![format!("{subject} {};", old_token.render())],
@@ -509,6 +627,7 @@ fn schema_step(forward: String, reverse: Option<String>) -> ExecutionStep {
     ExecutionStep {
         tx_type: TxType::Schema,
         kind: StepKind::Schema,
+        operation_kind: OperationKind::RunTypeql,
         forward,
         reverse,
     }
@@ -1599,6 +1718,7 @@ delete $a has email "ops@example.com";"#,
             StepKind::Schema,
             "missing `kind` field must default to Schema for backward compat"
         );
+        assert_eq!(step.operation_kind, OperationKind::RunTypeql);
     }
 
     // ── test: whole-relation removal normalization (#168) ───────────────────

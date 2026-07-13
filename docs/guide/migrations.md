@@ -348,6 +348,53 @@ applied-state persistence and any external run logging. Keep the default
 TypeDB-backed manager for standalone TypeBridge workflows; inject a store only
 when another system is the authoritative ledger.
 
+The Python `MigrationExecutor` integration remains migration-level. If its
+result or the subsequent external state write is uncertain, record that
+migration attempt as indeterminate and do not retry it automatically. Use the
+Rust per-step boundary below when the embedder needs proven checkpoint resume.
+
+#### Crash-safe per-step recovery (Rust embedders)
+
+An external migration-level record is not atomic with TypeDB. TypeDB commits
+each lowered step independently, so retrying a whole pending migration after a
+timeout can replay steps that already committed. This is unsafe for arbitrary
+`RunTypeQL` data writes.
+
+Rust embedders should use the recovery boundary when they need resumable
+execution:
+
+1. Call `type_bridge_migration::plan_recovery(...)`. It performs the normal
+   graph and checksum checks and returns a `CheckedExecutionPlan` whose entire
+   ordered step sequence is available before mutation. Each step has a
+   versioned `ExecutionStepId` derived from the artifact checksum, migration
+   identity, direction, ordered index, and operation kind.
+2. Persist the intended attempt and checked step IDs in the external ledger.
+3. Implement `StepRecoveryController`. Its `classify` method must return:
+   `Pending` only when non-commit is proven or a named idempotency strategy
+   makes replay safe; `Applied` when durable evidence or TypeDB inspection
+   proves the step committed; and `Indeterminate` otherwise.
+4. Call `execute_recovery_plan(...)`. The executor skips `Applied`, executes
+   only explicitly `Pending`, and stops immediately on `Indeterminate`.
+
+The controller receives the target `Database` and complete checked step, so it
+can inspect schema operations or run an operation-specific reconciliation
+query. `PendingProof::IdempotentReplay` names the caller-owned contract used to
+retry an idempotent backfill or data operation. TypeBridge does not assume raw
+`RunTypeQL` is idempotent.
+
+The executor emits typed `BeforeCommit`, `Committed`,
+`FailedBeforeCommit`, and `UnknownCommitOutcome` events. A commit error is
+always returned as an indeterminate outcome because a lost response does not
+prove that TypeDB rolled back. Similarly, failure to durably record the
+`Committed` event stops execution as indeterminate.
+
+These callbacks provide a recovery protocol, not a distributed transaction.
+A process can still disappear after the TypeDB commit and before the external
+ledger records `Committed`. On restart, a durable `BeforeCommit` without a
+provable outcome must remain indeterminate until an operator or an
+operation-specific reconciler supplies evidence. TypeBridge's reserved
+migration-state schema is not created or required by this API.
+
 ### Excluding infrastructure from schema exports
 
 `MIGRATION_STATE_SCHEMA` is the canonical public description of every schema

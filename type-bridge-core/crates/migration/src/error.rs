@@ -74,6 +74,21 @@ pub enum MigrationError {
         /// Human-readable error message describing the failure.
         message: String,
     },
+    /// An executable migration has no checked artifact checksum, so stable
+    /// recovery step identities cannot be constructed.
+    #[error("migration {app_label}.{name} has no checked checksum for recovery execution")]
+    MissingRecoveryChecksum {
+        /// Application or migration package label.
+        app_label: String,
+        /// Migration file stem.
+        name: String,
+    },
+    /// An external per-step recovery controller failed.
+    #[error("migration recovery controller error: {message}")]
+    Recovery {
+        /// Human-readable controller failure.
+        message: String,
+    },
     /// A detected schema change has no canonical authoring lowering.
     ///
     /// The canonical mapper must never silently discard a `SchemaDiff` field

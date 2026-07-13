@@ -14,6 +14,7 @@ pub mod executor;
 pub mod graph;
 pub mod loader;
 pub mod plan;
+pub mod recovery;
 pub mod spec;
 pub mod state;
 
@@ -29,7 +30,18 @@ pub use error::{MigrationError, Result};
 pub use executor::{MigrationResult, execute_migration, execute_plan, execute_plan_with_run_log};
 pub use graph::{AppliedMigrationRecord, MigrationValidationError, ValidationCode, validate_graph};
 pub use loader::{load_dir, load_dir_checked, load_sidecar};
-pub use plan::{ExecutionPlan, ExecutionStep, MigrationAction, MigrationExecution, StepKind, plan};
+pub use plan::{
+    ExecutionPlan, ExecutionStep, MigrationAction, MigrationExecution, OperationKind, StepKind,
+    plan,
+};
+pub use recovery::{
+    CheckedExecutionPlan, CheckedExecutionStep, CheckedMigrationExecution,
+    CheckedMigrationIdentity, ExecutionStepId, PendingProof, RecoveryExecutionResult,
+    RecoveryFuture, RecoveryMigrationResult, RecoveryMigrationStatus, RecoveryPlanStatus,
+    StepExecutionOutcome, StepExecutionResult, StepRecoveryController, StepRecoveryDecision,
+    StepRecoveryEvent, StepRecoveryEventKind, execute_recovery_plan, plan_recovery,
+    prepare_recovery_plan,
+};
 pub use spec::{MigrationDependencySpec, MigrationGraph, MigrationSpec, OperationSpec};
 pub use state::{
     InMemoryStateStore, MigrationExecutorInfo, MigrationRunRecord, MigrationStateSchemaKind,
