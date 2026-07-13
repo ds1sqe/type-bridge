@@ -1125,11 +1125,15 @@ mod tests {
                     attr_name: "name",
                     value_type: ValueType::String,
                     annotations: &[Annotation::Key],
+                    doc: None,
+                    meta: &[],
                 },
                 OwnedAttributeInfo {
                     attr_name: "age",
                     value_type: ValueType::Long,
                     annotations: &[],
+                    doc: None,
+                    meta: &[],
                 },
             ]
         }
@@ -1269,6 +1273,8 @@ mod tests {
                     attr_name: "name",
                     value_type: ValueType::String,
                     annotations: &[Annotation::Key],
+                    doc: None,
+                    meta: &[],
                 }]
             }
             fn iid(&self) -> Option<&str> {

@@ -31,6 +31,8 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     let type_name = entity_attrs.name;
     let is_abstract = entity_attrs.is_abstract;
     let parent_type = entity_attrs.parent_type;
+    let type_doc = entity_attrs.doc;
+    let type_meta = entity_attrs.meta;
 
     // Separate iid field from attribute fields
     let mut has_iid = false;
@@ -58,6 +60,8 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
             is_unique: field_attrs.is_unique,
             card_min: field_attrs.card_min,
             card_max: field_attrs.card_max,
+            doc: field_attrs.doc,
+            meta: field_attrs.meta,
             _custom_name: field_attrs.custom_name,
         });
     }
@@ -73,11 +77,14 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     let owned_attrs = attr_fields.iter().map(|f| {
         let ty = &f.inner_ty;
         let annots_tokens = build_annotations(f.is_key, f.is_unique, f.card_min, f.card_max);
+        let (doc_tokens, meta_tokens) = doc_meta_literal_tokens(&f.doc, &f.meta);
         quote! {
             type_bridge_orm::OwnedAttributeInfo {
                 attr_name: <#ty as type_bridge_orm::TypeBridgeAttribute>::ATTR_NAME,
                 value_type: <#ty as type_bridge_orm::TypeBridgeAttribute>::VALUE_TYPE_ENUM,
                 annotations: #annots_tokens,
+                doc: #doc_tokens,
+                meta: #meta_tokens,
             }
         }
     });
@@ -173,6 +180,19 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
         None => quote! {},
     };
 
+    let doc_tokens = match &type_doc {
+        Some(text) => quote! { const DOC: Option<&'static str> = Some(#text); },
+        None => quote! {},
+    };
+    let meta_tokens = if type_meta.is_empty() {
+        quote! {}
+    } else {
+        let pairs = type_meta
+            .iter()
+            .map(|(key, value)| quote! { (#key, #value) });
+        quote! { const META: &'static [(&'static str, &'static str)] = &[ #(#pairs),* ]; }
+    };
+
     // Generate XxxFields struct for type-safe field references
     let fields_struct_name = syn::Ident::new(&format!("{}Fields", name), name.span());
     let fields_struct_fields = attr_fields.iter().map(|f| {
@@ -211,6 +231,8 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
             const TYPE_NAME: &'static str = #type_name;
             #is_abstract_tokens
             #parent_type_tokens
+            #doc_tokens
+            #meta_tokens
 
             fn owned_attributes() -> &'static [type_bridge_orm::OwnedAttributeInfo] {
                 static ATTRS: [type_bridge_orm::OwnedAttributeInfo; #n_attrs] = [
@@ -254,6 +276,8 @@ struct EntityField {
     is_unique: bool,
     card_min: Option<u32>,
     card_max: Option<Option<u32>>,
+    doc: Option<String>,
+    meta: Vec<(String, String)>,
     _custom_name: Option<String>,
 }
 
@@ -262,6 +286,8 @@ struct FieldAttrs {
     is_unique: bool,
     card_min: Option<u32>,
     card_max: Option<Option<u32>>,
+    doc: Option<String>,
+    meta: Vec<(String, String)>,
     custom_name: Option<String>,
 }
 
@@ -269,6 +295,8 @@ struct EntityAttrs {
     name: String,
     is_abstract: bool,
     parent_type: Option<String>,
+    doc: Option<String>,
+    meta: Vec<(String, String)>,
 }
 
 /// Parse `#[entity(name = "...", abstract, extends = "...")]` from struct attributes.
@@ -280,6 +308,8 @@ fn parse_entity_attrs(attrs: &[syn::Attribute]) -> syn::Result<EntityAttrs> {
         let mut entity_name: Option<String> = None;
         let mut is_abstract = false;
         let mut parent_type: Option<String> = None;
+        let mut doc: Option<String> = None;
+        let mut meta_pairs: Vec<(String, String)> = Vec::new();
 
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
@@ -293,8 +323,20 @@ fn parse_entity_attrs(attrs: &[syn::Attribute]) -> syn::Result<EntityAttrs> {
                 let value: LitStr = meta.value()?.parse()?;
                 parent_type = Some(value.value());
                 Ok(())
+            } else if meta.path.is_ident("doc") {
+                let value: LitStr = meta.value()?.parse()?;
+                doc = Some(value.value());
+                Ok(())
+            } else if meta.path.is_ident("meta") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let key: LitStr = content.parse()?;
+                content.parse::<syn::Token![,]>()?;
+                let value: LitStr = content.parse()?;
+                meta_pairs.push((key.value(), value.value()));
+                Ok(())
             } else {
-                Err(meta.error("expected `name`, `abstract`, or `extends`"))
+                Err(meta.error("expected `name`, `abstract`, `extends`, `doc`, or `meta`"))
             }
         })?;
 
@@ -303,6 +345,8 @@ fn parse_entity_attrs(attrs: &[syn::Attribute]) -> syn::Result<EntityAttrs> {
                 name,
                 is_abstract,
                 parent_type,
+                doc,
+                meta: meta_pairs,
             });
         }
     }
@@ -319,6 +363,8 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
     let mut is_unique = false;
     let mut card_min: Option<u32> = None;
     let mut card_max: Option<Option<u32>> = None;
+    let mut doc: Option<String> = None;
+    let mut meta_pairs: Vec<(String, String)> = Vec::new();
     let mut custom_name: Option<String> = None;
 
     for attr in attrs {
@@ -344,8 +390,22 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
                 let value: syn::LitInt = meta.value()?.parse()?;
                 card_max = Some(Some(value.base10_parse()?));
                 Ok(())
+            } else if meta.path.is_ident("doc") {
+                let value: LitStr = meta.value()?.parse()?;
+                doc = Some(value.value());
+                Ok(())
+            } else if meta.path.is_ident("meta") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let key: LitStr = content.parse()?;
+                content.parse::<syn::Token![,]>()?;
+                let value: LitStr = content.parse()?;
+                meta_pairs.push((key.value(), value.value()));
+                Ok(())
             } else {
-                Err(meta.error("expected `key`, `unique`, `name`, `card_min`, or `card_max`"))
+                Err(meta.error(
+                    "expected `key`, `unique`, `name`, `card_min`, `card_max`, `doc`, or `meta`",
+                ))
             }
         })?;
     }
@@ -360,8 +420,24 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
         is_unique,
         card_min,
         card_max,
+        doc,
+        meta: meta_pairs,
         custom_name,
     })
+}
+
+/// Build the `doc` / `meta` field tokens for a static info-struct literal.
+fn doc_meta_literal_tokens(
+    doc: &Option<String>,
+    meta: &[(String, String)],
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let doc_tokens = match doc {
+        Some(text) => quote! { Some(#text) },
+        None => quote! { None },
+    };
+    let pairs = meta.iter().map(|(key, value)| quote! { (#key, #value) });
+    let meta_tokens = quote! { &[ #(#pairs),* ] };
+    (doc_tokens, meta_tokens)
 }
 
 /// Build annotation tokens from field flags.

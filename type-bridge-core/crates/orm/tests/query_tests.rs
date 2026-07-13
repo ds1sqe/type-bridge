@@ -26,11 +26,15 @@ impl TypeBridgeEntity for Person {
                 attr_name: "name",
                 value_type: ValueType::String,
                 annotations: &[Annotation::Key],
+                doc: None,
+                meta: &[],
             },
             OwnedAttributeInfo {
                 attr_name: "age",
                 value_type: ValueType::Long,
                 annotations: &[],
+                doc: None,
+                meta: &[],
             },
         ]
     }
@@ -88,6 +92,8 @@ impl TypeBridgeRelation for Friendship {
             attr_name: "since",
             value_type: ValueType::String,
             annotations: &[],
+            doc: None,
+            meta: &[],
         }]
     }
 
@@ -96,10 +102,14 @@ impl TypeBridgeRelation for Friendship {
             RoleInfo {
                 role_name: "friend",
                 player_type_name: "person",
+                doc: None,
+                meta: &[],
             },
             RoleInfo {
                 role_name: "friend",
                 player_type_name: "person",
+                doc: None,
+                meta: &[],
             },
         ]
     }

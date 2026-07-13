@@ -35,6 +35,11 @@ pub struct OwnedAttributeInfo {
     pub value_type: ValueType,
     /// Ownership annotations (e.g. `@key`, `@unique`, `@card`).
     pub annotations: &'static [Annotation],
+    /// Optional `@doc("...")` documentation annotation on the ownership (TypeDB 3.12+).
+    pub doc: Option<&'static str>,
+    /// `@meta("key", "value")` annotations on the ownership (TypeDB 3.12+),
+    /// as key/value pairs. TypeDB allows one value per key per subject.
+    pub meta: &'static [(&'static str, &'static str)],
 }
 
 impl OwnedAttributeInfo {
@@ -88,6 +93,13 @@ pub trait TypeBridgeEntity: Sized + Send + Sync + 'static {
 
     /// The parent type name if this entity extends another entity type (`sub` in TypeQL).
     const PARENT_TYPE: Option<&'static str> = None;
+
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    const DOC: Option<&'static str> = None;
+
+    /// `@meta("key", "value")` annotations on the type (TypeDB 3.12+), as
+    /// key/value pairs. TypeDB allows one value per key per subject.
+    const META: &'static [(&'static str, &'static str)] = &[];
 
     /// Static metadata for all owned attributes in declaration order.
     fn owned_attributes() -> &'static [OwnedAttributeInfo];

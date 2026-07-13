@@ -16,6 +16,11 @@ pub struct RoleInfo {
     pub role_name: &'static str,
     /// The entity type that plays this role (e.g. `"person"`, `"company"`).
     pub player_type_name: &'static str,
+    /// Optional `@doc("...")` documentation annotation on the role (TypeDB 3.12+).
+    pub doc: Option<&'static str>,
+    /// `@meta("key", "value")` annotations on the role (TypeDB 3.12+),
+    /// as key/value pairs. TypeDB allows one value per key per subject.
+    pub meta: &'static [(&'static str, &'static str)],
 }
 
 /// A reference to a role player for use in relation insert/match operations.
@@ -88,6 +93,13 @@ pub trait TypeBridgeRelation: Sized + Send + Sync + 'static {
 
     /// The parent type name if this relation extends another relation type (`sub` in TypeQL).
     const PARENT_TYPE: Option<&'static str> = None;
+
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    const DOC: Option<&'static str> = None;
+
+    /// `@meta("key", "value")` annotations on the type (TypeDB 3.12+), as
+    /// key/value pairs. TypeDB allows one value per key per subject.
+    const META: &'static [(&'static str, &'static str)] = &[];
 
     /// Static metadata for all owned attributes in declaration order.
     fn owned_attributes() -> &'static [OwnedAttributeInfo];

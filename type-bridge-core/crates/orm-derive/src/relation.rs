@@ -31,6 +31,8 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     let type_name = relation_attrs.name;
     let is_abstract = relation_attrs.is_abstract;
     let parent_type = relation_attrs.parent_type;
+    let type_doc = relation_attrs.doc;
+    let type_meta = relation_attrs.meta;
 
     // Separate fields into iid, roles, and attributes
     let mut has_iid = false;
@@ -54,6 +56,8 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
                 ident: ident.clone(),
                 role_name: role_attrs.role_name,
                 player_type: role_attrs.player_type,
+                doc: role_attrs.doc,
+                meta: role_attrs.meta,
             });
             continue;
         }
@@ -70,6 +74,8 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
             is_unique: field_attrs.is_unique,
             card_min: field_attrs.card_min,
             card_max: field_attrs.card_max,
+            doc: field_attrs.doc,
+            meta: field_attrs.meta,
         });
     }
 
@@ -91,11 +97,14 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     let owned_attrs = attr_fields.iter().map(|f| {
         let ty = &f.inner_ty;
         let annots_tokens = build_annotations(f.is_key, f.is_unique, f.card_min, f.card_max);
+        let (doc_tokens, meta_tokens) = doc_meta_literal_tokens(&f.doc, &f.meta);
         quote! {
             type_bridge_orm::OwnedAttributeInfo {
                 attr_name: <#ty as type_bridge_orm::TypeBridgeAttribute>::ATTR_NAME,
                 value_type: <#ty as type_bridge_orm::TypeBridgeAttribute>::VALUE_TYPE_ENUM,
                 annotations: #annots_tokens,
+                doc: #doc_tokens,
+                meta: #meta_tokens,
             }
         }
     });
@@ -105,10 +114,13 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     let role_infos = role_fields.iter().map(|r| {
         let role_name = &r.role_name;
         let player_type = &r.player_type;
+        let (doc_tokens, meta_tokens) = doc_meta_literal_tokens(&r.doc, &r.meta);
         quote! {
             type_bridge_orm::RoleInfo {
                 role_name: #role_name,
                 player_type_name: #player_type,
+                doc: #doc_tokens,
+                meta: #meta_tokens,
             }
         }
     });
@@ -227,6 +239,19 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
         None => quote! {},
     };
 
+    let doc_tokens = match &type_doc {
+        Some(text) => quote! { const DOC: Option<&'static str> = Some(#text); },
+        None => quote! {},
+    };
+    let meta_tokens = if type_meta.is_empty() {
+        quote! {}
+    } else {
+        let pairs = type_meta
+            .iter()
+            .map(|(key, value)| quote! { (#key, #value) });
+        quote! { const META: &'static [(&'static str, &'static str)] = &[ #(#pairs),* ]; }
+    };
+
     // Generate XxxFields struct for type-safe field references (attribute + role fields)
     let fields_struct_name = syn::Ident::new(&format!("{}Fields", name), name.span());
     let fields_struct_attr_fields = attr_fields.iter().map(|f| {
@@ -280,6 +305,8 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
             const TYPE_NAME: &'static str = #type_name;
             #is_abstract_tokens
             #parent_type_tokens
+            #doc_tokens
+            #meta_tokens
 
             fn owned_attributes() -> &'static [type_bridge_orm::OwnedAttributeInfo] {
                 static ATTRS: [type_bridge_orm::OwnedAttributeInfo; #n_attrs] = [
@@ -331,6 +358,8 @@ struct RoleField {
     ident: syn::Ident,
     role_name: String,
     player_type: String,
+    doc: Option<String>,
+    meta: Vec<(String, String)>,
 }
 
 struct AttrField {
@@ -341,11 +370,15 @@ struct AttrField {
     is_unique: bool,
     card_min: Option<u32>,
     card_max: Option<Option<u32>>,
+    doc: Option<String>,
+    meta: Vec<(String, String)>,
 }
 
 struct RoleAttrs {
     role_name: String,
     player_type: String,
+    doc: Option<String>,
+    meta: Vec<(String, String)>,
 }
 
 struct FieldAttrs {
@@ -353,12 +386,16 @@ struct FieldAttrs {
     is_unique: bool,
     card_min: Option<u32>,
     card_max: Option<Option<u32>>,
+    doc: Option<String>,
+    meta: Vec<(String, String)>,
 }
 
 struct RelationDeriveAttrs {
     name: String,
     is_abstract: bool,
     parent_type: Option<String>,
+    doc: Option<String>,
+    meta: Vec<(String, String)>,
 }
 
 /// Parse `#[relation(name = "...", abstract, extends = "...")]` from struct attributes.
@@ -370,6 +407,8 @@ fn parse_relation_attrs(attrs: &[syn::Attribute]) -> syn::Result<RelationDeriveA
         let mut relation_name: Option<String> = None;
         let mut is_abstract = false;
         let mut parent_type: Option<String> = None;
+        let mut doc: Option<String> = None;
+        let mut meta_pairs: Vec<(String, String)> = Vec::new();
 
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
@@ -383,8 +422,20 @@ fn parse_relation_attrs(attrs: &[syn::Attribute]) -> syn::Result<RelationDeriveA
                 let value: LitStr = meta.value()?.parse()?;
                 parent_type = Some(value.value());
                 Ok(())
+            } else if meta.path.is_ident("doc") {
+                let value: LitStr = meta.value()?.parse()?;
+                doc = Some(value.value());
+                Ok(())
+            } else if meta.path.is_ident("meta") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let key: LitStr = content.parse()?;
+                content.parse::<syn::Token![,]>()?;
+                let value: LitStr = content.parse()?;
+                meta_pairs.push((key.value(), value.value()));
+                Ok(())
             } else {
-                Err(meta.error("expected `name`, `abstract`, or `extends`"))
+                Err(meta.error("expected `name`, `abstract`, `extends`, `doc`, or `meta`"))
             }
         })?;
 
@@ -393,6 +444,8 @@ fn parse_relation_attrs(attrs: &[syn::Attribute]) -> syn::Result<RelationDeriveA
                 name,
                 is_abstract,
                 parent_type,
+                doc,
+                meta: meta_pairs,
             });
         }
     }
@@ -411,6 +464,8 @@ fn parse_role_attrs(attrs: &[syn::Attribute]) -> syn::Result<Option<RoleAttrs>> 
         }
         let mut role_name: Option<String> = None;
         let mut player_type: Option<String> = None;
+        let mut doc: Option<String> = None;
+        let mut meta_pairs: Vec<(String, String)> = Vec::new();
 
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
@@ -421,8 +476,20 @@ fn parse_role_attrs(attrs: &[syn::Attribute]) -> syn::Result<Option<RoleAttrs>> 
                 let value: LitStr = meta.value()?.parse()?;
                 player_type = Some(value.value());
                 Ok(())
+            } else if meta.path.is_ident("doc") {
+                let value: LitStr = meta.value()?.parse()?;
+                doc = Some(value.value());
+                Ok(())
+            } else if meta.path.is_ident("meta") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let key: LitStr = content.parse()?;
+                content.parse::<syn::Token![,]>()?;
+                let value: LitStr = content.parse()?;
+                meta_pairs.push((key.value(), value.value()));
+                Ok(())
             } else {
-                Err(meta.error("expected `name` or `player_type`"))
+                Err(meta.error("expected `name`, `player_type`, `doc`, or `meta`"))
             }
         })?;
 
@@ -435,6 +502,8 @@ fn parse_role_attrs(attrs: &[syn::Attribute]) -> syn::Result<Option<RoleAttrs>> 
         return Ok(Some(RoleAttrs {
             role_name,
             player_type,
+            doc,
+            meta: meta_pairs,
         }));
     }
     Ok(None)
@@ -447,6 +516,8 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
     let mut is_unique = false;
     let mut card_min: Option<u32> = None;
     let mut card_max: Option<Option<u32>> = None;
+    let mut doc: Option<String> = None;
+    let mut meta_pairs: Vec<(String, String)> = Vec::new();
 
     for attr in attrs {
         if !attr.path().is_ident("field") {
@@ -467,8 +538,21 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
                 let value: syn::LitInt = meta.value()?.parse()?;
                 card_max = Some(Some(value.base10_parse()?));
                 Ok(())
+            } else if meta.path.is_ident("doc") {
+                let value: LitStr = meta.value()?.parse()?;
+                doc = Some(value.value());
+                Ok(())
+            } else if meta.path.is_ident("meta") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let key: LitStr = content.parse()?;
+                content.parse::<syn::Token![,]>()?;
+                let value: LitStr = content.parse()?;
+                meta_pairs.push((key.value(), value.value()));
+                Ok(())
             } else {
-                Err(meta.error("expected `key`, `unique`, `card_min`, or `card_max`"))
+                Err(meta
+                    .error("expected `key`, `unique`, `card_min`, `card_max`, `doc`, or `meta`"))
             }
         })?;
     }
@@ -483,7 +567,23 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
         is_unique,
         card_min,
         card_max,
+        doc,
+        meta: meta_pairs,
     })
+}
+
+/// Build the `doc` / `meta` field tokens for a static info-struct literal.
+fn doc_meta_literal_tokens(
+    doc: &Option<String>,
+    meta: &[(String, String)],
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let doc_tokens = match doc {
+        Some(text) => quote! { Some(#text) },
+        None => quote! { None },
+    };
+    let pairs = meta.iter().map(|(key, value)| quote! { (#key, #value) });
+    let meta_tokens = quote! { &[ #(#pairs),* ] };
+    (doc_tokens, meta_tokens)
 }
 
 /// Build annotation tokens from field flags.
