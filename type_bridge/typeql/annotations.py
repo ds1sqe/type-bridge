@@ -66,3 +66,49 @@ def format_type_annotations(
     if independent:
         annotations.append("@independent")
     return annotations
+
+
+def escape_annotation_string(value: str) -> str:
+    """Render a TypeQL string literal for ``@doc`` / ``@meta`` values.
+
+    Escapes backslashes, quotes, and control characters exactly the way
+    TypeDB's schema export renders them, mirroring the Rust core's
+    ``escaped_string_literal`` so both lowering paths emit identical text.
+
+    Examples:
+        >>> escape_annotation_string('plain')
+        '"plain"'
+        >>> escape_annotation_string('line1\\nline2')
+        '"line1\\\\nline2"'
+    """
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+        .replace("\r", "\\r")
+    )
+    return f'"{escaped}"'
+
+
+def format_doc_meta_annotations(doc: str | None, meta: dict[str, str]) -> list[str]:
+    """Format TypeDB 3.12+ ``@doc`` / ``@meta`` annotations.
+
+    Emits ``@doc`` before ``@meta`` with meta keys sorted, matching the
+    canonical annotation order of TypeDB's schema export (and the Rust
+    core's ``append_doc_meta_annotations``).
+
+    Examples:
+        >>> format_doc_meta_annotations("a person", {"icon": "p.png"})
+        ['@doc("a person")', '@meta("icon", "p.png")']
+        >>> format_doc_meta_annotations(None, {})
+        []
+    """
+    annotations = []
+    if doc is not None:
+        annotations.append(f"@doc({escape_annotation_string(doc)})")
+    for key in sorted(meta):
+        annotations.append(
+            f"@meta({escape_annotation_string(key)}, {escape_annotation_string(meta[key])})"
+        )
+    return annotations

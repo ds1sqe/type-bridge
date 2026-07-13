@@ -122,6 +122,33 @@ impl Database {
         self.backend.is_open()
     }
 
+    /// The server version detected at connect time, when known.
+    ///
+    /// `None` for backends without a version gate and on the band-7 gRPC
+    /// fallback, where the server cannot report its version.
+    pub fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+        self.backend.server_version()
+    }
+
+    /// Version-gate schema DDL that uses `@doc`/`@meta` annotations.
+    ///
+    /// When the TypeQL uses schema annotations (TypeDB 3.12+) and the detected
+    /// server version predates 3.12, fail with an actionable versioned error
+    /// instead of letting the server produce a syntax error. When the server
+    /// version is unknown (band-7 gRPC fallback without `server_version=`),
+    /// the DDL is sent as-is and the server decides.
+    pub fn check_schema_annotation_support(&self, typeql: &str) -> Result<()> {
+        use type_bridge_core_lib::version::{Feature, check_feature_supported};
+
+        if let Some(server) = self.server_version()
+            && crate::schema::annotations::typeql_uses_schema_annotations(typeql)
+        {
+            check_feature_supported(Feature::SchemaAnnotations, &server)
+                .map_err(crate::error::OrmError::UnsupportedVersion)?;
+        }
+        Ok(())
+    }
+
     /// Return whether this database exists on the connected TypeDB server.
     pub async fn database_exists(&self) -> Result<bool> {
         self.backend.database_exists(&self.database_name).await

@@ -208,6 +208,7 @@ The generator supports the full TypeDB 3.0 schema syntax:
 | Role overrides (`as`)       | ✓      |
 | `relates ... as ...`        | ✓      |
 | `@abstract` on relates      | ✓      |
+| `@doc` / `@meta` (3.12+)    | ✓      |
 | Functions (`fun`)           | ✓      |
 | Structs (`struct`)          | ✓      |
 | `#` and `//` comments       | ✓      |
@@ -432,6 +433,33 @@ class Address:
 ```
 
 ### Additional Annotations
+
+#### `@doc` / `@meta` - Documentation and Metadata (TypeDB 3.12+)
+
+Schema annotations round-trip through the generator on all three targets
+(Python, TypeScript, Rust):
+
+```typeql
+attribute email @doc("A contact email address.") @meta("pii", "true"), value string;
+entity person @doc("A person known to the system."),
+    owns email @key @doc("Primary contact address.");
+relation employment,
+    relates employee @doc("The employed party.");
+```
+
+**Generated (Python):**
+
+```python
+class Email(String):
+    flags = AttributeFlags(name="email", doc="A contact email address.", meta={"pii": "true"})
+
+class Person(Entity):
+    flags = TypeFlags(name="person", doc="A person known to the system.")
+    email: Email = Flag(Key, Doc("Primary contact address."))
+```
+
+Regenerating models from an annotated schema and re-emitting the schema
+produces byte-identical annotations (surface parity across targets).
 
 #### `@cascade` - Cascading Deletes
 

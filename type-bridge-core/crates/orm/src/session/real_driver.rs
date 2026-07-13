@@ -74,6 +74,10 @@ impl DriverBackend for RealBackend {
         self.inner.is_open()
     }
 
+    fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+        self.inner.server_version()
+    }
+
     fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
         let database = database.to_string();
         Box::pin(async move {

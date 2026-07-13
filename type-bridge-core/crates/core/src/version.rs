@@ -10,24 +10,26 @@
 //! | Item | Role |
 //! |------|------|
 //! | [`MIN_SUPPORTED`] | Floor of the support window (`3.8.0`) |
-//! | [`MAX_SUPPORTED_LINE`] | Ceiling of the support window as `(major, minor)` (`3.11`) |
+//! | [`MAX_SUPPORTED_LINE`] | Ceiling of the support window as `(major, minor)` (`3.12`) |
 //! | [`window_contains`] | Range predicate combining both bounds |
-//! | [`band`] | Protocol-band lookup (data; measured against live servers) |
-//! | [`check_supported`] | Installed-driver gate: window + band-equality check |
-//! | [`check_server_supported`] | Embedded-runtime gate: window + band ∈ embedded set |
+//! | [`band`] | Band a driver natively speaks (data; measured against live servers) |
+//! | [`server_accepted_bands`] | Bands a server accepts connections from (data; measured) |
+//! | [`negotiate_server_band`] | Pick the embedded band to connect a server with |
+//! | [`check_supported`] | Installed-driver gate: window + driver band ∈ server's accepted set |
+//! | [`check_server_supported`] | Embedded-runtime gate: window + accepted ∩ embedded ≠ ∅ |
 //! | [`server_version`] | HTTP probe → `GET /v1/version` |
 //! | [`VersionError`] | Typed error for all failure modes |
 //!
 //! ## Two gates, two questions
 //!
 //! [`check_supported`] answers *"is the **installed** single-band Python driver
-//! protocol-compatible with this server?"* — it compares the one driver band the
-//! user has installed against the server's band.
+//! protocol-compatible with this server?"* — it tests whether the server accepts
+//! the one driver band the user has installed ([`server_accepted_bands`]).
 //!
 //! [`check_server_supported`] answers *"does **this build** of type-bridge embed a
 //! driver that can serve this server?"* — the embedded runtime can carry several
-//! bands at once (the default build embeds them all), so it tests band-set
-//! membership rather than equality.
+//! bands at once (the default build embeds them all), so it tests whether the
+//! server's accepted band set intersects the embedded set.
 
 use std::fmt;
 use std::str::FromStr;
@@ -130,9 +132,9 @@ pub const MIN_SUPPORTED: Version = Version::new(3, 8, 0);
 
 /// Ceiling of the TypeDB support window as `(major, minor)`, inclusive.
 ///
-/// Any patch release on this line is in-window (`3.11.0`, `3.11.5`, …).
-/// The first version on the **next** minor (`3.12.0`) is out of window.
-pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 11);
+/// Any patch release on this line is in-window (`3.12.0`, `3.12.1`, …).
+/// The first version on the **next** minor (`3.13.0`) is out of window.
+pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 12);
 
 // ---------------------------------------------------------------------------
 // Window predicate
@@ -142,7 +144,7 @@ pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 11);
 ///
 /// A version is in-window when:
 /// - `v >= MIN_SUPPORTED` (i.e. at least `3.8.0`), **and**
-/// - `(v.major, v.minor) <= MAX_SUPPORTED_LINE` (i.e. at most `3.11.x`).
+/// - `(v.major, v.minor) <= MAX_SUPPORTED_LINE` (i.e. at most `3.12.x`).
 pub fn window_contains(v: &Version) -> bool {
     *v >= MIN_SUPPORTED && (v.major, v.minor) <= MAX_SUPPORTED_LINE
 }
@@ -151,23 +153,27 @@ pub fn window_contains(v: &Version) -> bool {
 // Protocol band map (SSOT — measured live)
 // ---------------------------------------------------------------------------
 
-/// Return the protocol band for a TypeDB version, or `None` if unmapped.
+/// Return the protocol band a TypeDB version **natively speaks**, or `None`
+/// if unmapped.
 ///
-/// The band encodes which gRPC protocol revision a given driver/server speaks.
-/// Cross-band connections always fail at the TypeDB level; this map lets the
-/// gate detect the mismatch **before** attempting a connection.
+/// The band encodes which gRPC protocol revision a driver of this version
+/// speaks — a driver connects successfully only to servers that accept its
+/// band (see [`server_accepted_bands`]).  This map lets the gate detect the
+/// mismatch **before** attempting a connection.
 ///
-/// Measured by connecting every driver line (3.7.0, 3.8.1, 3.10.0, 3.11.5)
-/// against every server line (3.7.3, 3.8.3, 3.10.4, 3.11.5):
+/// Measured by connecting every driver line (3.7.0, 3.8.1, 3.10.0, 3.11.5,
+/// 3.12.0) against every server line (3.7.3, 3.8.3, 3.10.4, 3.11.5, 3.12.0):
 ///
 /// | Minor line | Band |
 /// |-----------|------|
 /// | 3.7, 3.8, 3.10 | `7` (protocol 7) |
 /// | 3.11 | `8` (protocol 8) |
-/// | anything else (incl. 3.9, 3.12, 2.x) | `None` |
+/// | 3.12 | `9` (protocol 3.12.0-rc0) |
+/// | anything else (incl. 3.9, 3.13, 2.x) | `None` |
 ///
-/// When TypeDB ships a new minor line, add an entry here — that is the only
-/// change required for the gate to cover the new version.
+/// When TypeDB ships a new minor line, measure it live and extend **both**
+/// this map and [`server_accepted_bands`] — together they are the only data
+/// the gate needs to cover the new version.
 pub fn band(v: &Version) -> Option<u8> {
     // Major must be 3; 2.x and other majors are not mapped.
     if v.major != 3 {
@@ -176,9 +182,54 @@ pub fn band(v: &Version) -> Option<u8> {
     match v.minor {
         7 | 8 | 10 => Some(7),
         11 => Some(8),
-        // 3.9 was never released; 3.12+ not yet mapped.
+        12 => Some(9),
+        // 3.9 was never released; 3.13+ not yet mapped.
         _ => None,
     }
+}
+
+/// Return the protocol bands a TypeDB **server** of this version accepts
+/// connections from, native band first.  Empty for unmapped versions.
+///
+/// Band acceptance is asymmetric starting with 3.12: server 3.12 retains
+/// backward compatibility with band-8 drivers (a 3.11.5 driver completes a
+/// full round trip against a 3.12.0 server), while a 3.12 driver's native
+/// band-9 protocol is rejected by a 3.11 server at connect.  A single
+/// per-version band cannot express that, so servers carry an accepted *set*
+/// and drivers keep their single native [`band`].
+///
+/// Measured live (see [`band`] for the measurement grid):
+///
+/// | Server line | Accepts |
+/// |-------------|---------|
+/// | 3.7, 3.8, 3.10 | `[7]` |
+/// | 3.11 | `[8]` |
+/// | 3.12 | `[9, 8]` |
+/// | anything else | `[]` |
+pub fn server_accepted_bands(v: &Version) -> &'static [u8] {
+    if v.major != 3 {
+        return &[];
+    }
+    match v.minor {
+        7 | 8 | 10 => &[7],
+        11 => &[8],
+        12 => &[9, 8],
+        _ => &[],
+    }
+}
+
+/// Pick the band an embedded runtime should use to connect to `server`.
+///
+/// Returns the first band in the server's accepted set (native band first,
+/// so a build embedding the server's native driver prefers it) that is also
+/// in `embedded_bands`, or `None` when the server is unmapped or no embedded
+/// driver can serve it.  [`check_server_supported`] is the gate; this is the
+/// selection that follows a passing gate.
+pub fn negotiate_server_band(server: &Version, embedded_bands: &[u8]) -> Option<u8> {
+    server_accepted_bands(server)
+        .iter()
+        .copied()
+        .find(|b| embedded_bands.contains(b))
 }
 
 // ---------------------------------------------------------------------------
@@ -190,13 +241,18 @@ pub fn band(v: &Version) -> Option<u8> {
 /// Both conditions must hold simultaneously:
 ///
 /// 1. Each endpoint is within the support window (`window_contains`).
-/// 2. Both endpoints speak the same protocol band (`band(driver) == band(server)`).
+/// 2. The server accepts the driver's native protocol band
+///    (`band(driver) ∈ server_accepted_bands(server)`).
+///
+/// The membership test (rather than band equality) carries the measured
+/// asymmetry: driver 3.11 ↔ server 3.12 is compatible, driver 3.12 ↔
+/// server 3.11 is not.
 ///
 /// # Errors
 ///
 /// Returns [`VersionError::Unsupported`] when either endpoint lies outside the
 /// window, or [`VersionError::BandMismatch`] when the endpoints are in-window
-/// but belong to different protocol bands.
+/// but the server does not accept the driver's band.
 pub fn check_supported(driver: &Version, server: &Version) -> Result<(), VersionError> {
     // Window check — each endpoint independently.
     if !window_contains(driver) {
@@ -212,25 +268,17 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
         });
     }
 
-    // Band-equality check.
+    // Acceptance check: the server must accept the driver's native band.
     let driver_band = band(driver);
-    let server_band = band(server);
-
-    match (driver_band, server_band) {
-        (Some(db), Some(sb)) if db == sb => Ok(()),
-        (Some(db), Some(sb)) => Err(VersionError::BandMismatch {
-            driver: *driver,
-            server: *server,
-            driver_band: db,
-            server_band: sb,
-        }),
-        // Both in-window but not in the band map — should not occur for any
-        // currently-published TypeDB version; treat as mismatch to fail safe.
+    match driver_band {
+        Some(db) if server_accepted_bands(server).contains(&db) => Ok(()),
+        // In-window but rejected (or unmapped — should not occur for any
+        // currently-published TypeDB version; fail safe as a mismatch).
         _ => Err(VersionError::BandMismatch {
             driver: *driver,
             server: *server,
             driver_band: driver_band.unwrap_or(0),
-            server_band: server_band.unwrap_or(0),
+            server_band: band(server).unwrap_or(0),
         }),
     }
 }
@@ -241,8 +289,9 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
 /// binding) uses, as opposed to [`check_supported`], which gates an externally
 /// **installed** single-band Python driver.  The embedded runtime may carry
 /// several protocol bands simultaneously (the default build embeds them all),
-/// so this gate tests **band-set membership** instead of band equality: the
-/// server is served when its band is present in `embedded_bands`.
+/// so this gate tests **set intersection**: the server is served when any band
+/// it accepts is present in `embedded_bands`.  A dual-band server (3.12
+/// accepts `[9, 8]`) is thus served by a build that embeds only band 8.
 ///
 /// `embedded_bands` is supplied by the caller and is cfg-derived from the
 /// `band7` / `band8` features compiled into that crate — core declares no band
@@ -251,14 +300,14 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
 /// # Errors
 ///
 /// - [`VersionError::Unsupported`] when `server` lies outside the support
-///   window (below-window `3.7`, above-window `3.12`) **or** is in-window but
-///   has no mapped band (e.g. a future `3.9` line, only reachable if the window
-///   ever widens past the band map).  This path names no band — it is the same
-///   window-class rejection an out-of-range server gets today.
-/// - [`VersionError::EmbeddedUnavailable`] when `server` is in-window with a
-///   mapped band that this build did **not** compile in.  Reachable only in a
-///   non-default single-band build; the default build embeds every band, so an
-///   in-window server is always served.
+///   window (below-window `3.7`, above-window `3.13`) **or** is in-window but
+///   has no accepted bands (e.g. a future `3.9` line, only reachable if the
+///   window ever widens past the band map).  This path names no band — it is
+///   the same window-class rejection an out-of-range server gets today.
+/// - [`VersionError::EmbeddedUnavailable`] when `server` is in-window with
+///   accepted bands, none of which this build compiled in.  Reachable only in
+///   a non-default single-band build; the default build embeds every band an
+///   in-window server accepts, so such a server is always served.
 pub fn check_server_supported(server: &Version, embedded_bands: &[u8]) -> Result<(), VersionError> {
     // Window check first — identical class to check_supported's server arm, so
     // below/above-window servers fail with the existing window message.
@@ -269,19 +318,72 @@ pub fn check_server_supported(server: &Version, embedded_bands: &[u8]) -> Result
         });
     }
 
-    match band(server) {
+    let accepted = server_accepted_bands(server);
+    if accepted.is_empty() {
         // In-window but unmapped minor: defensive, only reachable if the window
         // widens past the band map (today the map covers the whole window).
         // Reject with the window class — naming a band here would be a lie, as
         // there is no band to name.
-        None => Err(VersionError::Unsupported {
+        return Err(VersionError::Unsupported {
             component: "server",
             found: *server,
-        }),
-        Some(b) if embedded_bands.contains(&b) => Ok(()),
-        // In-window, mapped, but this build did not embed the matching driver.
-        Some(_) => Err(VersionError::EmbeddedUnavailable { server: *server }),
+        });
     }
+
+    if accepted.iter().any(|b| embedded_bands.contains(b)) {
+        Ok(())
+    } else {
+        // In-window, mapped, but this build embeds no driver the server accepts.
+        Err(VersionError::EmbeddedUnavailable { server: *server })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Feature gate (server capabilities by version line)
+// ---------------------------------------------------------------------------
+
+/// Server capabilities that only exist from a certain TypeDB version line.
+///
+/// Used to fail fast with an actionable versioned error instead of letting an
+/// older server produce a syntax error for TypeQL it cannot parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feature {
+    /// `@doc("...")` / `@meta("key", "value")` schema annotations (TypeDB 3.12+).
+    SchemaAnnotations,
+}
+
+impl Feature {
+    /// Human-readable feature name for error messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Feature::SchemaAnnotations => "schema annotations (@doc/@meta)",
+        }
+    }
+
+    /// The minimum server version that supports this feature.
+    pub fn minimum_version(self) -> Version {
+        match self {
+            Feature::SchemaAnnotations => Version::new(3, 12, 0),
+        }
+    }
+}
+
+/// Check that `server` supports `feature`.
+///
+/// # Errors
+///
+/// Returns [`VersionError::FeatureUnsupported`] when the server predates the
+/// feature's minimum version line.
+pub fn check_feature_supported(feature: Feature, server: &Version) -> Result<(), VersionError> {
+    let required = feature.minimum_version();
+    if (server.major, server.minor) < (required.major, required.minor) {
+        return Err(VersionError::FeatureUnsupported {
+            feature: feature.name(),
+            server: *server,
+            required,
+        });
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -423,10 +525,19 @@ pub enum VersionError {
     Probe(String),
     /// A version string could not be parsed.
     Parse(String),
+    /// The server is in-window but predates a feature the schema requires.
+    FeatureUnsupported {
+        /// Human-readable feature name.
+        feature: &'static str,
+        /// The detected server version.
+        server: Version,
+        /// The minimum server version that supports the feature.
+        required: Version,
+    },
 }
 
 /// Human-readable window string used consistently in error messages.
-const WINDOW_HUMAN: &str = "3.8.0–3.11.x";
+const WINDOW_HUMAN: &str = "3.8.0–3.12.x";
 
 impl fmt::Display for VersionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -459,6 +570,19 @@ impl fmt::Display for VersionError {
             ),
             VersionError::Probe(msg) => write!(f, "version probe failed: {msg}"),
             VersionError::Parse(msg) => write!(f, "version parse error: {msg}"),
+            VersionError::FeatureUnsupported {
+                feature,
+                server,
+                required,
+            } => {
+                let required_line = format!("{}.{}", required.major, required.minor);
+                write!(
+                    f,
+                    "{feature} require TypeDB {required_line} or newer; detected server \
+                     {server} — upgrade the server to the {required_line} line or remove \
+                     the annotations from the schema"
+                )
+            }
         }
     }
 }
@@ -534,8 +658,13 @@ mod tests {
     }
 
     #[test]
-    fn window_rejects_3_12_0() {
-        assert!(!window_contains(&Version::new(3, 12, 0)));
+    fn window_accepts_3_12_0() {
+        assert!(window_contains(&Version::new(3, 12, 0)));
+    }
+
+    #[test]
+    fn window_rejects_3_13_0() {
+        assert!(!window_contains(&Version::new(3, 13, 0)));
     }
 
     #[test]
@@ -572,13 +701,69 @@ mod tests {
     }
 
     #[test]
-    fn band_3_12_is_none() {
-        assert_eq!(band(&Version::new(3, 12, 0)), None);
+    fn band_3_12_is_9() {
+        assert_eq!(band(&Version::new(3, 12, 0)), Some(9));
+    }
+
+    #[test]
+    fn band_3_13_is_none() {
+        assert_eq!(band(&Version::new(3, 13, 0)), None);
     }
 
     #[test]
     fn band_2_x_is_none() {
         assert_eq!(band(&Version::new(2, 28, 0)), None);
+    }
+
+    // -- server_accepted_bands -------------------------------------------------
+
+    #[test]
+    fn server_accepts_band7_lines() {
+        assert_eq!(server_accepted_bands(&Version::new(3, 8, 3)), &[7]);
+        assert_eq!(server_accepted_bands(&Version::new(3, 10, 4)), &[7]);
+    }
+
+    #[test]
+    fn server_3_11_accepts_band8_only() {
+        assert_eq!(server_accepted_bands(&Version::new(3, 11, 5)), &[8]);
+    }
+
+    #[test]
+    fn server_3_12_accepts_bands_9_and_8_native_first() {
+        // Measured: server 3.12.0 completes full round trips with both a
+        // 3.12.0 (band-9) and a 3.11.5 (band-8) driver.
+        assert_eq!(server_accepted_bands(&Version::new(3, 12, 0)), &[9, 8]);
+    }
+
+    #[test]
+    fn server_unmapped_accepts_nothing() {
+        assert!(server_accepted_bands(&Version::new(3, 13, 0)).is_empty());
+        assert!(server_accepted_bands(&Version::new(2, 28, 0)).is_empty());
+    }
+
+    // -- negotiate_server_band -------------------------------------------------
+
+    #[test]
+    fn negotiate_3_12_default_build_picks_band8() {
+        // Default build embeds {7, 8}; server 3.12 accepts [9, 8] → band 8.
+        assert_eq!(
+            negotiate_server_band(&Version::new(3, 12, 0), &[7, 8]),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn negotiate_prefers_native_band_when_embedded() {
+        // A build embedding band 9 connects to a 3.12 server natively.
+        assert_eq!(
+            negotiate_server_band(&Version::new(3, 12, 0), &[8, 9]),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn negotiate_none_when_no_overlap() {
+        assert_eq!(negotiate_server_band(&Version::new(3, 11, 5), &[7]), None);
     }
 
     // -- check_supported -----------------------------------------------------
@@ -609,6 +794,28 @@ mod tests {
     fn check_driver_3100_server_3115_reject_band_mismatch() {
         // Band A driver vs Band B server.
         let err = check_supported(&Version::new(3, 10, 0), &Version::new(3, 11, 5)).unwrap_err();
+        assert!(
+            matches!(err, VersionError::BandMismatch { .. }),
+            "expected BandMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_driver_3115_server_3120_accept() {
+        // Measured: server 3.12 retains band-8 compatibility.
+        assert!(check_supported(&Version::new(3, 11, 5), &Version::new(3, 12, 0)).is_ok());
+    }
+
+    #[test]
+    fn check_driver_3120_server_3120_accept() {
+        assert!(check_supported(&Version::new(3, 12, 0), &Version::new(3, 12, 0)).is_ok());
+    }
+
+    #[test]
+    fn check_driver_3120_server_3115_reject_band_mismatch() {
+        // Measured: a band-9 driver is rejected by a 3.11 server at connect —
+        // the asymmetric direction the accepted-set model exists for.
+        let err = check_supported(&Version::new(3, 12, 0), &Version::new(3, 11, 5)).unwrap_err();
         assert!(
             matches!(err, VersionError::BandMismatch { .. }),
             "expected BandMismatch, got {err:?}"
@@ -681,9 +888,26 @@ mod tests {
     }
 
     #[test]
-    fn server_3120_reject_window() {
+    fn server_3120_both_bands_accept() {
+        // Dual-band server: accepts [9, 8]; the default build's band-8 driver
+        // serves it (measured live).
+        assert!(check_server_supported(&Version::new(3, 12, 0), &[7, 8]).is_ok());
+    }
+
+    #[test]
+    fn server_3120_band7_only_unavailable() {
+        // Server 3.12 accepts [9, 8]; a band-7-only build embeds neither.
+        let err = check_server_supported(&Version::new(3, 12, 0), &[7]).unwrap_err();
+        assert!(
+            matches!(err, VersionError::EmbeddedUnavailable { .. }),
+            "expected EmbeddedUnavailable, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn server_3130_reject_window() {
         // Above the ceiling — window class.
-        let err = check_server_supported(&Version::new(3, 12, 0), &[7, 8]).unwrap_err();
+        let err = check_server_supported(&Version::new(3, 13, 0), &[7, 8]).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -760,7 +984,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("2.28.0"), "missing detected version: {msg}");
         assert!(msg.contains("3.8.0"), "missing window floor: {msg}");
-        assert!(msg.contains("3.11.x"), "missing window ceiling: {msg}");
+        assert!(msg.contains("3.12.x"), "missing window ceiling: {msg}");
     }
 
     #[test]
@@ -861,5 +1085,36 @@ mod tests {
     fn parse_response_bad_version_string() {
         let json = r#"{"version":"latest"}"#;
         assert!(parse_version_response(json).is_err());
+    }
+
+    // -- feature gate ----------------------------------------------------------
+
+    #[test]
+    fn feature_gate_rejects_pre_312_server() {
+        let server = Version::new(3, 11, 5);
+        let err = check_feature_supported(Feature::SchemaAnnotations, &server).unwrap_err();
+        match &err {
+            VersionError::FeatureUnsupported {
+                feature,
+                server,
+                required,
+            } => {
+                assert_eq!(*feature, "schema annotations (@doc/@meta)");
+                assert_eq!(*server, Version::new(3, 11, 5));
+                assert_eq!(*required, Version::new(3, 12, 0));
+            }
+            other => panic!("expected FeatureUnsupported, got {other:?}"),
+        }
+        let message = err.to_string();
+        assert!(message.contains("3.12"));
+        assert!(message.contains("3.11.5"));
+        assert!(message.contains("upgrade the server"));
+    }
+
+    #[test]
+    fn feature_gate_accepts_312_and_newer() {
+        assert!(check_feature_supported(Feature::SchemaAnnotations, &Version::new(3, 12, 0)).is_ok());
+        assert!(check_feature_supported(Feature::SchemaAnnotations, &Version::new(3, 12, 7)).is_ok());
+        assert!(check_feature_supported(Feature::SchemaAnnotations, &Version::new(4, 0, 0)).is_ok());
     }
 }

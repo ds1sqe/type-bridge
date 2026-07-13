@@ -175,6 +175,12 @@ pub(crate) enum DriverHandle {
 /// Real TypeDB backend wrapping a band-tagged [`DriverHandle`].
 pub struct TypeDBRuntime {
     driver: DriverHandle,
+    /// The server version the connect gate detected, when it could.
+    ///
+    /// `Some` on the exact-version, HTTP-probe, and band-8 gRPC-fallback
+    /// paths; `None` only on the band-7 gRPC fallback, where the server
+    /// does not report its version.
+    server_version: Option<core_version::Version>,
 }
 
 /// Version-gated [`DriverHandle`] constructor with an injectable probe.
@@ -192,7 +198,7 @@ pub(crate) async fn gated_driver_with_probe<F>(
     password: &str,
     options: ConnectOptions,
     probe: F,
-) -> Result<DriverHandle>
+) -> Result<(DriverHandle, Option<core_version::Version>)>
 where
     F: FnOnce(
             &str,
@@ -203,7 +209,8 @@ where
         + 'static,
 {
     if let Some(server_version) = options.server_version {
-        return driver_for_server_version(address, username, password, server_version).await;
+        let driver = driver_for_server_version(address, username, password, server_version).await?;
+        return Ok((driver, Some(server_version)));
     }
 
     // Probe the server version over HTTP (blocking I/O; offload to a dedicated
@@ -216,23 +223,28 @@ where
         .map_err(|e| RuntimeError::Connection(format!("Version probe task panicked: {e}")))?
     {
         Ok(server_version) => {
-            driver_for_server_version(address, username, password, server_version).await
+            let driver =
+                driver_for_server_version(address, username, password, server_version).await?;
+            Ok((driver, Some(server_version)))
         }
         Err(http_error) => grpc_fallback_driver(address, username, password, http_error).await,
     }
 }
 
 fn validate_server_band(server_version: &core_version::Version) -> Result<u8> {
-    // Embedded-runtime gate: accept the server when it is in-window and its
-    // band is one this build embedded.  Unlike the installed-driver gate
-    // (check_supported, band equality), the embedded runtime carries every
-    // compiled-in band, so a band-7 server is now served, not rejected.  After
-    // this passes, band(&server_version) is guaranteed ∈ EMBEDDED_BANDS.
+    // Embedded-runtime gate: accept the server when it is in-window and any
+    // band it accepts is one this build embedded.  Unlike the installed-driver
+    // gate (check_supported), the embedded runtime carries every compiled-in
+    // band, so a band-7 server is served, and a dual-band 3.12 server is
+    // served through its band-8 acceptance.  After this passes, negotiation
+    // over EMBEDDED_BANDS is guaranteed to yield a band.
     core_version::check_server_supported(server_version, EMBEDDED_BANDS)
         .map_err(RuntimeError::UnsupportedVersion)?;
 
-    Ok(core_version::band(server_version)
-        .expect("check_server_supported accepted a server without a mapped band"))
+    Ok(
+        core_version::negotiate_server_band(server_version, EMBEDDED_BANDS)
+            .expect("check_server_supported accepted a server with no negotiable band"),
+    )
 }
 
 async fn driver_for_server_version(
@@ -308,7 +320,7 @@ async fn grpc_fallback_driver(
     username: &str,
     password: &str,
     http_error: core_version::VersionError,
-) -> Result<DriverHandle> {
+) -> Result<(DriverHandle, Option<core_version::Version>)> {
     let mut failures = vec![format!("HTTP version probe failed: {http_error}")];
 
     #[cfg(feature = "band8")]
@@ -337,7 +349,7 @@ async fn grpc_fallback_driver(
                     server_version = %server_version,
                     "Connected through gRPC band-8 fallback after HTTP version probe failed"
                 );
-                return Ok(DriverHandle::B8(driver));
+                return Ok((DriverHandle::B8(driver), Some(server_version)));
             }
             Err(error) => failures.push(format!("band-8 gRPC attempt failed: {error}")),
         }
@@ -356,7 +368,7 @@ async fn grpc_fallback_driver(
                      exact server version is unavailable on band 7, so use server_version=... \
                      for strict gRPC-only version validation"
                 );
-                return Ok(DriverHandle::B7(driver));
+                return Ok((DriverHandle::B7(driver), None));
             }
             Err(error) => failures.push(format!("band-7 gRPC attempt failed: {error}")),
         }
@@ -382,7 +394,7 @@ async fn gated_driver(
     username: &str,
     password: &str,
     options: ConnectOptions,
-) -> Result<DriverHandle> {
+) -> Result<(DriverHandle, Option<core_version::Version>)> {
     gated_driver_with_probe(
         address,
         username,
@@ -406,9 +418,20 @@ impl TypeDBRuntime {
         password: &str,
         options: ConnectOptions,
     ) -> Result<Self> {
-        let driver = gated_driver(address, username, password, options).await?;
+        let (driver, server_version) = gated_driver(address, username, password, options).await?;
         tracing::info!(address, "Connected to TypeDB");
-        Ok(Self { driver })
+        Ok(Self {
+            driver,
+            server_version,
+        })
+    }
+
+    /// The server version detected by the connect gate, when known.
+    ///
+    /// `None` only when the connection was established through the band-7
+    /// gRPC fallback, which cannot report the server version.
+    pub fn server_version(&self) -> Option<core_version::Version> {
+        self.server_version
     }
 }
 
@@ -429,7 +452,7 @@ pub async fn ensure_database_exists(
     password: &str,
     options: ConnectOptions,
 ) -> Result<()> {
-    let driver = gated_driver(address, username, password, options).await?;
+    let (driver, _server_version) = gated_driver(address, username, password, options).await?;
 
     match driver {
         #[cfg(feature = "band7")]

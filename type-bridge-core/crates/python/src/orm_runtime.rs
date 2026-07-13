@@ -483,6 +483,24 @@ impl PyRustDatabase {
         self.db.is_connected()
     }
 
+    /// The server version detected at connect time, when known.
+    ///
+    /// `None` only when the connection was established through the band-7
+    /// gRPC fallback, where the server cannot report its version.
+    fn server_version(&self) -> Option<String> {
+        self.db.server_version().map(|version| version.to_string())
+    }
+
+    /// Version-gate schema DDL that uses `@doc`/`@meta` annotations.
+    ///
+    /// Raises the versioned error when the TypeQL uses schema annotations
+    /// (TypeDB 3.12+) and the detected server version predates 3.12.
+    fn check_schema_annotation_support(&self, typeql: &str) -> PyResult<()> {
+        self.db
+            .check_schema_annotation_support(typeql)
+            .map_err(py_orm_error)
+    }
+
     /// Return whether the configured database exists.
     fn database_exists(&self) -> PyResult<bool> {
         self.runtime

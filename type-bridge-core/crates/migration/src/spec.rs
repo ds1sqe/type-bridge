@@ -108,6 +108,43 @@ pub enum OperationSpec {
         /// New annotations as authored by Python.
         new_annotations: String,
     },
+    /// Modify `@doc`/`@meta` annotations on an entity, relation, or attribute
+    /// type (TypeDB 3.12+).
+    ModifyTypeAnnotations {
+        /// Type name (entity, relation, or attribute type).
+        type_name: String,
+        /// Previous `@doc` value.
+        #[serde(default)]
+        old_doc: Option<String>,
+        /// New `@doc` value.
+        #[serde(default)]
+        new_doc: Option<String>,
+        /// Previous `@meta` annotations, keyed by meta key.
+        #[serde(default)]
+        old_meta: std::collections::BTreeMap<String, String>,
+        /// New `@meta` annotations, keyed by meta key.
+        #[serde(default)]
+        new_meta: std::collections::BTreeMap<String, String>,
+    },
+    /// Modify `@doc`/`@meta` annotations on a relation role (TypeDB 3.12+).
+    ModifyRoleAnnotations {
+        /// Relation type name.
+        relation_type: String,
+        /// Role name.
+        role_name: String,
+        /// Previous `@doc` value.
+        #[serde(default)]
+        old_doc: Option<String>,
+        /// New `@doc` value.
+        #[serde(default)]
+        new_doc: Option<String>,
+        /// Previous `@meta` annotations, keyed by meta key.
+        #[serde(default)]
+        old_meta: std::collections::BTreeMap<String, String>,
+        /// New `@meta` annotations, keyed by meta key.
+        #[serde(default)]
+        new_meta: std::collections::BTreeMap<String, String>,
+    },
     /// Add a role to a relation.
     AddRole {
         /// Relation type name.
@@ -306,8 +343,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         schema
@@ -333,6 +374,8 @@ mod tests {
                 value_type: ValueType::String,
                 annotations: vec![Annotation::Key],
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             },
         };
 
@@ -557,5 +600,41 @@ mod tests {
         assert_eq!(parsed.migrations[0].name, "0001_initial");
         assert_eq!(parsed.migrations[1].name, "0002_custom");
         assert_eq!(parsed, graph);
+    }
+
+    #[test]
+    fn annotation_operations_round_trip_json() {
+        let operations = vec![
+            OperationSpec::ModifyTypeAnnotations {
+                type_name: "person".to_string(),
+                old_doc: None,
+                new_doc: Some("A person.".to_string()),
+                old_meta: BTreeMap::new(),
+                new_meta: BTreeMap::from([("owner".to_string(), "core".to_string())]),
+            },
+            OperationSpec::ModifyRoleAnnotations {
+                relation_type: "employment".to_string(),
+                role_name: "employee".to_string(),
+                old_doc: Some("old".to_string()),
+                new_doc: None,
+                old_meta: BTreeMap::new(),
+                new_meta: BTreeMap::new(),
+            },
+        ];
+        for operation in operations {
+            let json = serde_json::to_string(&operation).expect("serialize");
+            let back: OperationSpec = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, operation);
+        }
+        // Kind tags follow the snake_case convention of the frozen surface.
+        let json = serde_json::to_string(&OperationSpec::ModifyTypeAnnotations {
+            type_name: "person".to_string(),
+            old_doc: None,
+            new_doc: None,
+            old_meta: BTreeMap::new(),
+            new_meta: BTreeMap::new(),
+        })
+        .expect("serialize");
+        assert!(json.contains("\"kind\":\"modify_type_annotations\""));
     }
 }

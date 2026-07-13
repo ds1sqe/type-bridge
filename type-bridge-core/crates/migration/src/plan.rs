@@ -5,10 +5,13 @@
 //! the executable TypeQL to run.  No database connection, no async, no TypeDB
 //! driver is touched here.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use type_bridge_orm::TxType;
+use type_bridge_orm::schema::annotations::{
+    AnnotationToken, AnnotationTokenDiff, diff_annotation_tokens, split_annotation_tokens,
+};
 use type_bridge_orm::schema::info::{
     AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry, RoleEntry,
     SchemaInfo,
@@ -241,10 +244,10 @@ fn assemble_steps(
         if shadowed_by_remove_relation(op, &removed_relations) {
             continue;
         }
-        let mut step = match op {
+        let mut op_steps: Vec<ExecutionStep> = match op {
             OperationSpec::RunTypeql { forward, reverse } => {
                 let tx_type = run_typeql_tx_type(forward);
-                ExecutionStep {
+                vec![ExecutionStep {
                     tx_type,
                     kind: if tx_type == TxType::Write {
                         StepKind::Write
@@ -253,7 +256,7 @@ fn assemble_steps(
                     },
                     forward: forward.clone(),
                     reverse: reverse.clone(),
-                }
+                }]
             }
             OperationSpec::DefineSchema { schema } => {
                 // Route through the existing canonical Rust generator
@@ -265,115 +268,135 @@ fn assemble_steps(
                     .map_err(|e| MigrationError::SchemaGeneration {
                         message: e.to_string(),
                     })?;
-                ExecutionStep {
+                vec![ExecutionStep {
                     tx_type: TxType::Schema,
                     kind: StepKind::Schema,
                     forward,
                     // Model-initial migrations are non-reversible.
                     reverse: None,
-                }
+                }]
             }
-            OperationSpec::AddAttribute { attribute } => schema_step(
+            OperationSpec::AddAttribute { attribute } => vec![schema_step(
                 define_attribute(attribute)?,
                 Some(undefine_attribute(&attribute.attr_name)),
-            ),
+            )],
             OperationSpec::RemoveAttribute { attr_name } => {
-                schema_step(undefine_attribute(attr_name), None)
+                vec![schema_step(undefine_attribute(attr_name), None)]
             }
-            OperationSpec::AddEntity { entity } => schema_step(
+            OperationSpec::AddEntity { entity } => vec![schema_step(
                 define_entity(entity)?,
                 Some(undefine_entity(&entity.type_name)),
-            ),
+            )],
             OperationSpec::RemoveEntity { type_name } => {
-                schema_step(undefine_entity(type_name), None)
+                vec![schema_step(undefine_entity(type_name), None)]
             }
-            OperationSpec::AddRelation { relation } => schema_step(
+            OperationSpec::AddRelation { relation } => vec![schema_step(
                 define_relation(relation)?,
                 Some(undefine_relation_with_players(relation)),
-            ),
+            )],
             OperationSpec::RemoveRelation { type_name } => {
-                schema_step(undefine_relation(type_name), None)
+                vec![schema_step(undefine_relation(type_name), None)]
             }
             OperationSpec::AddOwnership {
                 owner_type,
                 attribute,
-            } => schema_step(
+            } => vec![schema_step(
                 define_ownership(owner_type, attribute),
                 Some(undefine_ownership(
                     owner_type,
                     &owned_attribute_type_ref(attribute),
                 )),
-            ),
+            )],
             OperationSpec::RemoveOwnership {
                 owner_type,
                 attr_name,
-            } => schema_step(undefine_ownership(owner_type, attr_name), None),
+            } => vec![schema_step(undefine_ownership(owner_type, attr_name), None)],
             OperationSpec::ModifyOwnership {
                 owner_type,
                 attr_name,
                 old_annotations,
                 new_annotations,
-            } => {
-                // Parameterless annotations (@key, @unique, @distinct) can
-                // never be redefined (REX28), so the transition decomposes
-                // into per-category steps instead of one blanket redefine.
-                let mut modify_steps =
-                    modify_ownership_steps(owner_type, attr_name, old_annotations, new_annotations);
-                if !migration_reversible {
-                    for modify_step in &mut modify_steps {
-                        modify_step.reverse = None;
-                    }
-                }
-                steps.extend(modify_steps);
-                continue;
-            }
+            } => annotation_token_steps(
+                &format!("{owner_type} owns {attr_name}"),
+                &diff_annotation_tokens(
+                    &split_annotation_tokens(old_annotations),
+                    &split_annotation_tokens(new_annotations),
+                ),
+            ),
+            OperationSpec::ModifyTypeAnnotations {
+                type_name,
+                old_doc,
+                new_doc,
+                old_meta,
+                new_meta,
+            } => annotation_token_steps(
+                type_name,
+                &diff_annotation_tokens(
+                    &doc_meta_tokens(old_doc.as_deref(), old_meta),
+                    &doc_meta_tokens(new_doc.as_deref(), new_meta),
+                ),
+            ),
+            OperationSpec::ModifyRoleAnnotations {
+                relation_type,
+                role_name,
+                old_doc,
+                new_doc,
+                old_meta,
+                new_meta,
+            } => annotation_token_steps(
+                &format!("{relation_type} relates {role_name}"),
+                &diff_annotation_tokens(
+                    &doc_meta_tokens(old_doc.as_deref(), old_meta),
+                    &doc_meta_tokens(new_doc.as_deref(), new_meta),
+                ),
+            ),
             OperationSpec::AddRole {
                 relation_type,
                 role,
-            } => schema_step(
+            } => vec![schema_step(
                 define_role(relation_type, role),
                 Some(undefine_role_with_players(relation_type, role)),
-            ),
+            )],
             OperationSpec::RemoveRole {
                 relation_type,
                 role_name,
-            } => schema_step(undefine_role(relation_type, role_name), None),
+            } => vec![schema_step(undefine_role(relation_type, role_name), None)],
             OperationSpec::AddRolePlayer {
                 relation_type,
                 role_name,
                 player_type_name,
-            } => schema_step(
+            } => vec![schema_step(
                 define_role_player(relation_type, role_name, player_type_name),
                 Some(undefine_role_player(
                     relation_type,
                     role_name,
                     player_type_name,
                 )),
-            ),
+            )],
             OperationSpec::RemoveRolePlayer {
                 relation_type,
                 role_name,
                 player_type_name,
-            } => schema_step(
+            } => vec![schema_step(
                 undefine_role_player(relation_type, role_name, player_type_name),
                 Some(define_role_player(
                     relation_type,
                     role_name,
                     player_type_name,
                 )),
-            ),
+            )],
             copy @ OperationSpec::CopyAttribute { .. } => {
                 // Carried TypeQL (the frozen `CopyAttribute.to_typeql()` output)
                 // executes verbatim; the structured portable form synthesizes the
                 // identical template. `backfill.rs` composes its count queries
                 // from this `forward` text's match clause.
                 let (forward, reverse) = copy_attribute_typeql(copy)?;
-                ExecutionStep {
+                vec![ExecutionStep {
                     tx_type: TxType::Write,
                     kind: StepKind::Backfill,
                     forward,
                     reverse,
-                }
+                }]
             }
             other @ OperationSpec::RenameAttribute { .. } => {
                 return Err(MigrationError::UnloweredOperation {
@@ -382,11 +405,104 @@ fn assemble_steps(
             }
         };
         if !migration_reversible {
-            step.reverse = None;
+            for step in &mut op_steps {
+                step.reverse = None;
+            }
         }
-        steps.push(step);
+        steps.append(&mut op_steps);
     }
     Ok(steps)
+}
+
+/// Lower an annotation-set change on `subject` into execution steps.
+///
+/// TypeDB 3.12 semantics (verified live): `define`/`undefine` blocks accept
+/// multiple statements per query, while `redefine` mutates exactly one schema
+/// element per query; parameterless annotations (`@key`, `@unique`,
+/// `@distinct`) can only be defined or undefined, never redefined. Removals
+/// therefore group into one `undefine` step, additions into one `define`
+/// step, and each value change becomes its own `redefine` step. Removals run
+/// first — adding `@key` while a conflicting explicit `@card` is still
+/// declared fails schema validation. Reverse steps restore the prior state
+/// with the mirrored verb.
+fn annotation_token_steps(subject: &str, diff: &AnnotationTokenDiff) -> Vec<ExecutionStep> {
+    let mut steps = Vec::new();
+    if !diff.removed.is_empty() {
+        let forward = typeql_block(
+            "undefine",
+            diff.removed
+                .iter()
+                .map(|token| format!("{} from {subject};", undefine_annotation_ref(token)))
+                .collect(),
+        );
+        let reverse = typeql_block(
+            "define",
+            diff.removed
+                .iter()
+                .map(|token| format!("{subject} {};", token.render()))
+                .collect(),
+        );
+        steps.push(schema_step(forward, Some(reverse)));
+    }
+    for (old_token, new_token) in &diff.changed {
+        steps.push(schema_step(
+            typeql_block("redefine", vec![format!("{subject} {};", new_token.render())]),
+            Some(typeql_block(
+                "redefine",
+                vec![format!("{subject} {};", old_token.render())],
+            )),
+        ));
+    }
+    if !diff.added.is_empty() {
+        let forward = typeql_block(
+            "define",
+            diff.added
+                .iter()
+                .map(|token| format!("{subject} {};", token.render()))
+                .collect(),
+        );
+        let reverse = typeql_block(
+            "undefine",
+            diff.added
+                .iter()
+                .map(|token| format!("{} from {subject};", undefine_annotation_ref(token)))
+                .collect(),
+        );
+        steps.push(schema_step(forward, Some(reverse)));
+    }
+    steps
+}
+
+/// The `@...` reference used in `undefine <ref> from <subject>`.
+///
+/// `@meta` must use the keyed form `@meta("key")`; every other annotation
+/// (parameterless or parameterized) undefines by bare name.
+fn undefine_annotation_ref(token: &AnnotationToken) -> String {
+    if token.name == "meta"
+        && let Some(key) = token.meta_key()
+    {
+        return format!(
+            "@meta({})",
+            type_bridge_orm::schema::annotations::escaped_string_literal(&key)
+        );
+    }
+    format!("@{}", token.name)
+}
+
+/// Build the `@doc`/`@meta` token list for one side of a type or role
+/// annotation change.
+fn doc_meta_tokens(
+    doc: Option<&str>,
+    meta: &std::collections::BTreeMap<String, String>,
+) -> Vec<AnnotationToken> {
+    let mut tokens = Vec::new();
+    if let Some(doc) = doc {
+        tokens.push(AnnotationToken::doc(doc));
+    }
+    for (key, value) in meta {
+        tokens.push(AnnotationToken::meta(key, value));
+    }
+    tokens
 }
 
 fn schema_step(forward: String, reverse: Option<String>) -> ExecutionStep {
@@ -487,103 +603,6 @@ fn undefine_ownership(owner_type: &str, attr_name: &str) -> String {
         "undefine",
         vec![format!("owns {attr_name} from {owner_type};")],
     )
-}
-
-/// Kind key of one annotation token (`"@card(0..1)"` -> `"@card"`).
-fn annotation_kind(token: &str) -> &str {
-    token.split('(').next().unwrap_or(token)
-}
-
-/// Lower an ownership-annotation transition into per-category schema steps.
-///
-/// TypeDB cannot `redefine` a parameterless annotation (REX28), so the
-/// transition decomposes into: undefine removed kinds, redefine changed
-/// parameterized kinds, define added kinds. Removals run first — adding
-/// `@key` while a conflicting explicit `@card` is still declared fails
-/// schema validation. Identical annotation sets lower to no steps.
-fn modify_ownership_steps(
-    owner_type: &str,
-    attr_name: &str,
-    old_annotations: &str,
-    new_annotations: &str,
-) -> Vec<ExecutionStep> {
-    let old_tokens: BTreeMap<&str, &str> = old_annotations
-        .split_whitespace()
-        .map(|token| (annotation_kind(token), token))
-        .collect();
-    let new_tokens: BTreeMap<&str, &str> = new_annotations
-        .split_whitespace()
-        .map(|token| (annotation_kind(token), token))
-        .collect();
-    let mut steps = Vec::new();
-
-    let removed: Vec<(&str, &str)> = old_tokens
-        .iter()
-        .filter(|(kind, _)| !new_tokens.contains_key(*kind))
-        .map(|(kind, token)| (*kind, *token))
-        .collect();
-    if !removed.is_empty() {
-        let lines: Vec<String> = removed
-            .iter()
-            .map(|(kind, _)| format!("{kind} from {owner_type} owns {attr_name};"))
-            .collect();
-        let tokens: Vec<&str> = removed.iter().map(|(_, token)| *token).collect();
-        steps.push(schema_step(
-            typeql_block("undefine", lines),
-            Some(typeql_block(
-                "define",
-                vec![format!(
-                    "{owner_type} owns {attr_name} {};",
-                    tokens.join(" ")
-                )],
-            )),
-        ));
-    }
-
-    for (kind, new_token) in &new_tokens {
-        if let Some(old_token) = old_tokens.get(kind)
-            && old_token != new_token
-        {
-            steps.push(schema_step(
-                typeql_block(
-                    "redefine",
-                    vec![format!("{owner_type} owns {attr_name} {new_token};")],
-                ),
-                Some(typeql_block(
-                    "redefine",
-                    vec![format!("{owner_type} owns {attr_name} {old_token};")],
-                )),
-            ));
-        }
-    }
-
-    let added: Vec<&str> = new_tokens
-        .iter()
-        .filter(|(kind, _)| !old_tokens.contains_key(*kind))
-        .map(|(_, token)| *token)
-        .collect();
-    if !added.is_empty() {
-        let lines: Vec<String> = added
-            .iter()
-            .map(|token| {
-                format!(
-                    "{} from {owner_type} owns {attr_name};",
-                    annotation_kind(token)
-                )
-            })
-            .collect();
-        steps.push(schema_step(
-            typeql_block(
-                "define",
-                vec![format!(
-                    "{owner_type} owns {attr_name} {};",
-                    added.join(" ")
-                )],
-            ),
-            Some(typeql_block("undefine", lines)),
-        ));
-    }
-    steps
 }
 
 fn owned_attribute_type_ref(attribute: &OwnedAttributeEntry) -> String {
@@ -708,6 +727,8 @@ fn op_kind_name(op: &OperationSpec) -> &'static str {
         OperationSpec::AddOwnership { .. } => "AddOwnership",
         OperationSpec::RemoveOwnership { .. } => "RemoveOwnership",
         OperationSpec::ModifyOwnership { .. } => "ModifyOwnership",
+        OperationSpec::ModifyTypeAnnotations { .. } => "ModifyTypeAnnotations",
+        OperationSpec::ModifyRoleAnnotations { .. } => "ModifyRoleAnnotations",
         OperationSpec::AddRole { .. } => "AddRole",
         OperationSpec::RemoveRole { .. } => "RemoveRole",
         OperationSpec::AddRolePlayer { .. } => "AddRolePlayer",
@@ -757,8 +778,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         OperationSpec::DefineSchema { schema }
@@ -774,6 +799,8 @@ mod tests {
             value_type,
             annotations,
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -784,6 +811,8 @@ mod tests {
             parent_type: None,
             owned_attributes: vec![owned_attr("name", ValueType::String, vec![Annotation::Key])],
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -801,8 +830,12 @@ mod tests {
                 is_abstract: false,
                 ordered: false,
                 distinct: false,
+                doc: None,
+                meta: Default::default(),
             }],
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -1264,6 +1297,8 @@ delete $a has email "ops@example.com";"#,
             is_abstract: false,
             ordered: false,
             distinct: false,
+            doc: None,
+            meta: Default::default(),
         };
         let g = graph(vec![migration(
             "0001_roles",
@@ -1675,6 +1710,133 @@ delete $a has email "ops@example.com";"#,
                 "undefine\nplays employment:employee from contractor;",
                 "undefine\nowns nickname from person;",
             ]
+        );
+    }
+
+    #[test]
+    fn modify_ownership_lowers_per_annotation_steps() {
+        // Mixed add/update/remove including parameterless @key/@unique, which
+        // can never be redefined (REX28) — they must go through define/undefine.
+        let g = graph(vec![migration(
+            "0001_annotations",
+            vec![OperationSpec::ModifyOwnership {
+                owner_type: "person".to_string(),
+                attr_name: "name".to_string(),
+                old_annotations: "@key @doc(\"old doc\") @meta(\"x\", \"1\")".to_string(),
+                new_annotations: "@unique @doc(\"new doc\") @meta(\"y\", \"2\")".to_string(),
+            }],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+        assert_eq!(steps.len(), 3);
+
+        // Removals run first: adding @unique while the conflicting @key is
+        // still declared would fail schema validation.
+        assert_eq!(
+            steps[0].forward,
+            "undefine\n@key from person owns name;\n@meta(\"x\") from person owns name;"
+        );
+        assert_eq!(
+            steps[0].reverse.as_deref(),
+            Some("define\nperson owns name @key;\nperson owns name @meta(\"x\", \"1\");")
+        );
+        assert_eq!(
+            steps[1].forward,
+            "redefine\nperson owns name @doc(\"new doc\");"
+        );
+        assert_eq!(
+            steps[1].reverse.as_deref(),
+            Some("redefine\nperson owns name @doc(\"old doc\");")
+        );
+        assert_eq!(
+            steps[2].forward,
+            "define\nperson owns name @meta(\"y\", \"2\");\nperson owns name @unique;"
+        );
+        assert_eq!(
+            steps[2].reverse.as_deref(),
+            Some("undefine\n@meta(\"y\") from person owns name;\n@unique from person owns name;")
+        );
+        // added order: "meta:y" < "unique" in identity order.
+    }
+
+    #[test]
+    fn modify_ownership_with_identical_annotations_lowers_to_no_steps() {
+        let g = graph(vec![migration(
+            "0001_noop",
+            vec![OperationSpec::ModifyOwnership {
+                owner_type: "person".to_string(),
+                attr_name: "name".to_string(),
+                old_annotations: "@key @doc(\"same\")".to_string(),
+                new_annotations: "@key @doc(\"same\")".to_string(),
+            }],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        assert!(result.to_apply[0].steps.is_empty());
+    }
+
+    #[test]
+    fn modify_type_annotations_lowers_add_update_remove() {
+        let g = graph(vec![migration(
+            "0001_type_annotations",
+            vec![OperationSpec::ModifyTypeAnnotations {
+                type_name: "person".to_string(),
+                old_doc: Some("old type doc".to_string()),
+                new_doc: Some("new type doc".to_string()),
+                old_meta: BTreeMap::from([("gone".to_string(), "1".to_string())]),
+                new_meta: BTreeMap::from([("added".to_string(), "2".to_string())]),
+            }],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].forward, "undefine\n@meta(\"gone\") from person;");
+        assert_eq!(
+            steps[0].reverse.as_deref(),
+            Some("define\nperson @meta(\"gone\", \"1\");")
+        );
+        assert_eq!(steps[1].forward, "redefine\nperson @doc(\"new type doc\");");
+        assert_eq!(
+            steps[1].reverse.as_deref(),
+            Some("redefine\nperson @doc(\"old type doc\");")
+        );
+        assert_eq!(steps[2].forward, "define\nperson @meta(\"added\", \"2\");");
+        assert_eq!(
+            steps[2].reverse.as_deref(),
+            Some("undefine\n@meta(\"added\") from person;")
+        );
+    }
+
+    #[test]
+    fn modify_role_annotations_lowers_on_relates_subject() {
+        let g = graph(vec![migration(
+            "0001_role_annotations",
+            vec![OperationSpec::ModifyRoleAnnotations {
+                relation_type: "employment".to_string(),
+                role_name: "employee".to_string(),
+                old_doc: None,
+                new_doc: Some("The employed party.".to_string()),
+                old_meta: BTreeMap::new(),
+                new_meta: BTreeMap::new(),
+            }],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].forward,
+            "define\nemployment relates employee @doc(\"The employed party.\");"
+        );
+        assert_eq!(
+            steps[0].reverse.as_deref(),
+            Some("undefine\n@doc from employment relates employee;")
         );
     }
 }

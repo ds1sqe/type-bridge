@@ -37,6 +37,7 @@ TOML_FIXTURES = [
     REPO_ROOT / "tests" / "unit" / "generator" / "fixtures" / "annotations_inheritance.toml",
     REPO_ROOT / "tests" / "unit" / "generator" / "fixtures" / "attributes_owns.toml",
     REPO_ROOT / "tests" / "unit" / "generator" / "fixtures" / "bookstore_corpus.toml",
+    REPO_ROOT / "tests" / "unit" / "generator" / "fixtures" / "doc_meta.toml",
     REPO_ROOT / "tests" / "unit" / "generator" / "fixtures" / "functions_structs.toml",
     REPO_ROOT / "tests" / "unit" / "generator" / "fixtures" / "relations_roles.toml",
     REPO_ROOT / "tests" / "unit" / "generator" / "fixtures" / "role_cardinality.toml",

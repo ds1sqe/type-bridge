@@ -6,9 +6,11 @@ import { describe, test } from "node:test";
 import {
   Card,
   DescriptorRegistry,
+  Doc,
   Entity,
   Flag,
   Key,
+  Meta,
   Relation,
   TypeFlags,
   TypeNameCase,
@@ -180,6 +182,8 @@ describe("typed attribute and flag layer", () => {
       cardinality: [1, 1],
       isOrdered: false,
       isDistinct: false,
+      doc: null,
+      meta: {},
     });
     assert.deepEqual(resolveFlags([Flag(Card(1, 5))]), {
       kind: "flag",
@@ -187,6 +191,8 @@ describe("typed attribute and flag layer", () => {
       cardinality: [1, 5],
       isOrdered: false,
       isDistinct: false,
+      doc: null,
+      meta: {},
     });
     assert.deepEqual(resolveFlags([Flag(Card(0))]), {
       kind: "flag",
@@ -194,6 +200,8 @@ describe("typed attribute and flag layer", () => {
       cardinality: [0, null],
       isOrdered: false,
       isDistinct: false,
+      doc: null,
+      meta: {},
     });
     assert.deepEqual(resolveFlags([Unique]), {
       kind: "flag",
@@ -201,6 +209,8 @@ describe("typed attribute and flag layer", () => {
       cardinality: null,
       isOrdered: false,
       isDistinct: false,
+      doc: null,
+      meta: {},
     });
   });
 
@@ -275,6 +285,69 @@ describe("typed attribute and flag layer", () => {
       value_type: "long",
       range: ["1", "5"],
     });
+  });
+
+  test("Doc and Meta annotations flow into descriptor JSON", () => {
+    class TsDocCode extends attr.String("ts-doc-code", {
+      doc: "Attribute-level documentation.",
+      meta: { owner: "platform" },
+    }) {}
+    class TsDocTag extends attr.String("ts-doc-tag") {}
+    class TsDocEntity extends Entity(
+      TypeFlags({
+        name: "ts-doc-entity",
+        doc: "Entity-level documentation.",
+        meta: { steward: "core-team" },
+      }),
+      {
+        code: field(TsDocCode, Key, Doc("Ownership doc."), Meta("sensitivity", "low")),
+        tags: field(TsDocTag, Flag(Doc("List ownership doc."), Meta("kind", "tag"))).list(
+          Card(0, 5),
+        ),
+      },
+    ) {}
+
+    const descriptor = TsDocEntity.descriptor();
+    assert.equal(descriptor.doc, "Entity-level documentation.");
+    assert.deepEqual(descriptor.meta, { steward: "core-team" });
+
+    const codeEntry = descriptor.owned_attributes.find((a) => a.field_name === "code");
+    assert.equal(codeEntry?.doc, "Ownership doc.");
+    assert.deepEqual(codeEntry?.meta, { sensitivity: "low" });
+
+    const tagsEntry = descriptor.owned_attributes.find((a) => a.field_name === "tags");
+    assert.equal(tagsEntry?.doc, "List ownership doc.");
+    assert.deepEqual(tagsEntry?.meta, { kind: "tag" });
+
+    const attrSchema = TsDocCode.attributeSchemaEntries.find(
+      (entry) => entry.attr_name === "ts-doc-code",
+    );
+    assert.equal(attrSchema?.doc, "Attribute-level documentation.");
+    assert.deepEqual(attrSchema?.meta, { owner: "platform" });
+
+    class TsDocRelation extends Relation(
+      TypeFlags({ name: "ts-doc-rel", doc: "Relation doc." }),
+      {
+        subject: role(TsDocEntity, {
+          cardinality: Card(1, 1),
+          doc: "Role doc.",
+          meta: { direction: "outbound" },
+        }),
+        object: role(TsDocEntity, { cardinality: Card(1, 1) }),
+      },
+    ) {}
+
+    const relDescriptor = TsDocRelation.descriptor() as RelationDescriptor;
+    assert.equal(relDescriptor.doc, "Relation doc.");
+    assert.equal(relDescriptor.meta, undefined);
+
+    const subjectRole = relDescriptor.roles.find((r) => r.role_name === "subject");
+    assert.equal(subjectRole?.doc, "Role doc.");
+    assert.deepEqual(subjectRole?.meta, { direction: "outbound" });
+
+    const objectRole = relDescriptor.roles.find((r) => r.role_name === "object");
+    assert.equal(objectRole?.doc, undefined);
+    assert.equal(objectRole?.meta, undefined);
   });
 });
 
@@ -688,6 +761,8 @@ type EntityDescriptor = {
   is_abstract: boolean;
   parent_type: string | null;
   owned_attributes: OwnedAttributeDescriptor[];
+  doc?: string;
+  meta?: Record<string, string>;
 };
 type RelationDescriptor = EntityDescriptor & { roles: RoleDescriptor[] };
 type OwnedAttributeDescriptor = {
@@ -697,6 +772,8 @@ type OwnedAttributeDescriptor = {
   annotations: Annotation[];
   is_optional: boolean;
   is_ordered: boolean;
+  doc?: string;
+  meta?: Record<string, string>;
 };
 type RoleDescriptor = {
   role_name: string;
@@ -707,6 +784,8 @@ type RoleDescriptor = {
   is_abstract: boolean;
   ordered: boolean;
   distinct: boolean;
+  doc?: string;
+  meta?: Record<string, string>;
 };
 type SchemaValueType = SchemaInfo["attributes"][string]["value_type"];
 

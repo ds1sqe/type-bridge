@@ -50,7 +50,7 @@ pub fn min_supported_version() -> String {
     core_version::MIN_SUPPORTED.to_string()
 }
 
-/// Return the maximum supported TypeDB line as `"major.minor"` (e.g. `"3.11"`).
+/// Return the maximum supported TypeDB line as `"major.minor"` (e.g. `"3.12"`).
 ///
 /// Any patch release on this line is in-window; the next minor is not.
 #[pyfunction]
@@ -135,19 +135,21 @@ pub fn embedded_driver_versions(py: Python<'_>) -> PyResult<Py<PyDict>> {
 
 /// Assert that this build's embedded runtime can serve `server`.
 ///
-/// Uses band-set membership (not band equality): the server is accepted when
-/// its protocol band is among the bands compiled into this build.  For the
-/// default build (both bands embedded), any in-window server passes.
+/// Uses band-set intersection: the server is accepted when any band it
+/// accepts connections from is compiled into this build.  For the default
+/// build (both bands embedded), any in-window server passes — including a
+/// dual-band 3.12 server, served through its band-8 acceptance.
 ///
-/// The band set is derived from the cfg-gated `embedded_driver_versions()` —
-/// never a hardcoded `[7, 8]` literal (master-plan I6).
+/// The embedded band set is derived from the cfg-gated
+/// `embedded_driver_versions()` — never a hardcoded `[7, 8]` literal
+/// (master-plan I6).
 ///
 /// # Errors
 ///
 /// Raises `VersionError` when:
 /// - `server` cannot be parsed.
 /// - `server` is outside the support window (`Unsupported`).
-/// - `server` is in-window but its band is not compiled into this build
+/// - `server` is in-window but no band it accepts is compiled into this build
 ///   (`EmbeddedUnavailable` — only reachable in non-default single-band builds).
 #[pyfunction]
 pub fn check_server_supported(server: &str) -> PyResult<()> {

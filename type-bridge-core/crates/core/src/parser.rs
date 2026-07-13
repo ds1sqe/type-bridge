@@ -2,6 +2,8 @@
 //!
 //! Converts TypeQL schema text into [`TypeSchema`](crate::schema::TypeSchema) structs.
 
+use std::collections::BTreeMap;
+
 use winnow::combinator::{alt, delimited, opt, repeat, separated};
 use winnow::error::ContextError;
 use winnow::prelude::*;
@@ -74,6 +76,10 @@ fn parse_schema(input: &mut &str) -> PResult<TypeSchema> {
                         if entity.is_abstract {
                             existing.is_abstract = true;
                         }
+                        if entity.doc.is_some() {
+                            existing.doc = entity.doc;
+                        }
+                        existing.meta.extend(entity.meta);
                         for own in entity.owns {
                             if !existing.owns.iter().any(|o| o.name == own.name) {
                                 existing.owns.push(own);
@@ -103,6 +109,10 @@ fn parse_schema(input: &mut &str) -> PResult<TypeSchema> {
                         if relation.is_abstract {
                             existing.is_abstract = true;
                         }
+                        if relation.doc.is_some() {
+                            existing.doc = relation.doc;
+                        }
+                        existing.meta.extend(relation.meta);
                         for own in relation.owns {
                             if !existing.owns.iter().any(|o| o.name == own.name) {
                                 existing.owns.push(own);
@@ -166,6 +176,8 @@ fn parse_schema(input: &mut &str) -> PResult<TypeSchema> {
                 owns: Vec::new(),
                 owns_order: Vec::new(),
                 plays: vec![plays.played],
+                doc: None,
+                meta: Default::default(),
             };
             schema.entities.insert(plays.player, entity);
         }
@@ -244,6 +256,8 @@ fn parse_attribute_def(input: &mut &str) -> PResult<AttributeType> {
         allowed_values: None,
         range_min: None,
         range_max: None,
+        doc: None,
+        meta: Default::default(),
     };
 
     loop {
@@ -276,6 +290,16 @@ fn parse_attribute_opt<'a>(input: &mut &'a str, attr: &mut AttributeType) -> PRe
         |i: &mut &'a str| {
             literal("@independent").parse_next(i)?;
             attr.is_independent = true;
+            Ok(())
+        },
+        |i: &mut &'a str| {
+            let text = parse_doc_annotation(i)?;
+            attr.doc = Some(text);
+            Ok(())
+        },
+        |i: &mut &'a str| {
+            let (key, value) = parse_meta_annotation(i)?;
+            attr.meta.insert(key, value);
             Ok(())
         },
         |i: &mut &'a str| {
@@ -340,6 +364,8 @@ fn parse_entity_def(input: &mut &str) -> PResult<EntityType> {
         owns: Vec::new(),
         owns_order: Vec::new(),
         plays: Vec::new(),
+        doc: None,
+        meta: Default::default(),
     };
 
     loop {
@@ -367,6 +393,16 @@ fn parse_entity_clause<'a>(input: &mut &'a str, entity: &mut EntityType) -> PRes
         |i: &mut &'a str| {
             literal("@abstract").parse_next(i)?;
             entity.is_abstract = true;
+            Ok(())
+        },
+        |i: &mut &'a str| {
+            let text = parse_doc_annotation(i)?;
+            entity.doc = Some(text);
+            Ok(())
+        },
+        |i: &mut &'a str| {
+            let (key, value) = parse_meta_annotation(i)?;
+            entity.meta.insert(key, value);
             Ok(())
         },
         |i: &mut &'a str| {
@@ -401,6 +437,8 @@ fn parse_relation_def(input: &mut &str) -> PResult<RelationType> {
         owns: Vec::new(),
         owns_order: Vec::new(),
         plays: Vec::new(),
+        doc: None,
+        meta: Default::default(),
     };
 
     loop {
@@ -428,6 +466,16 @@ fn parse_relation_clause<'a>(input: &mut &'a str, relation: &mut RelationType) -
         |i: &mut &'a str| {
             literal("@abstract").parse_next(i)?;
             relation.is_abstract = true;
+            Ok(())
+        },
+        |i: &mut &'a str| {
+            let text = parse_doc_annotation(i)?;
+            relation.doc = Some(text);
+            Ok(())
+        },
+        |i: &mut &'a str| {
+            let (key, value) = parse_meta_annotation(i)?;
+            relation.meta.insert(key, value);
             Ok(())
         },
         |i: &mut &'a str| {
@@ -473,6 +521,8 @@ fn parse_owns_statement(input: &mut &str) -> PResult<OwnedAttribute> {
         cardinality: None,
         ordered,
         distinct: false,
+        doc: None,
+        meta: Default::default(),
     };
 
     loop {
@@ -510,6 +560,16 @@ fn parse_owns_statement(input: &mut &str) -> PResult<OwnedAttribute> {
                 owned.cardinality = Some(card);
                 Ok(())
             },
+            |i: &mut &str| {
+                let text = parse_doc_annotation(i)?;
+                owned.doc = Some(text);
+                Ok(())
+            },
+            |i: &mut &str| {
+                let (key, value) = parse_meta_annotation(i)?;
+                owned.meta.insert(key, value);
+                Ok(())
+            },
         )))
         .parse_next(input)?;
         if parsed.is_none() {
@@ -531,13 +591,40 @@ fn parse_plays_statement(input: &mut &str) -> PResult<PlayedRole> {
 
     let role_ref = format!("{}:{}", relation, role);
 
-    ws_comments(input);
-    let cardinality = opt(parse_card_annotation).parse_next(input)?;
-
-    Ok(PlayedRole {
+    let mut played = PlayedRole {
         role_ref,
-        cardinality,
-    })
+        cardinality: None,
+        doc: None,
+        meta: BTreeMap::new(),
+    };
+
+    // Parse optional annotations: @card(...), @doc(...), @meta(...) in any order.
+    loop {
+        ws_comments(input);
+        let parsed = opt(alt((
+            |i: &mut &str| {
+                let card = parse_card_annotation(i)?;
+                played.cardinality = Some(card);
+                Ok(())
+            },
+            |i: &mut &str| {
+                let text = parse_doc_annotation(i)?;
+                played.doc = Some(text);
+                Ok(())
+            },
+            |i: &mut &str| {
+                let (key, value) = parse_meta_annotation(i)?;
+                played.meta.insert(key, value);
+                Ok(())
+            },
+        )))
+        .parse_next(input)?;
+        if parsed.is_none() {
+            break;
+        }
+    }
+
+    Ok(played)
 }
 
 fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
@@ -557,6 +644,8 @@ fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
         distinct: false,
         ordered,
         is_abstract: false,
+        doc: None,
+        meta: Default::default(),
     };
 
     // Parse optional "as <parent_role>" — the override comes after the `[]` marker.
@@ -586,6 +675,16 @@ fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
                 role.cardinality = Some(card);
                 Ok(())
             },
+            |i: &mut &str| {
+                let text = parse_doc_annotation(i)?;
+                role.doc = Some(text);
+                Ok(())
+            },
+            |i: &mut &str| {
+                let (key, value) = parse_meta_annotation(i)?;
+                role.meta.insert(key, value);
+                Ok(())
+            },
         )))
         .parse_next(input)?;
         if parsed.is_none() {
@@ -599,6 +698,33 @@ fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
 // ---------------------------------------------------------------------------
 // Annotation parsers
 // ---------------------------------------------------------------------------
+
+/// Parse a `@doc("...")` annotation (TypeDB 3.12+), returning the doc text.
+fn parse_doc_annotation(input: &mut &str) -> PResult<String> {
+    literal("@doc").parse_next(input)?;
+    ws_comments(input);
+    literal("(").parse_next(input)?;
+    let text = string_literal(input)?;
+    ws_comments(input);
+    literal(")").parse_next(input)?;
+    Ok(text)
+}
+
+/// Parse a `@meta("key", "value")` annotation (TypeDB 3.12+), returning the pair.
+///
+/// TypeDB requires both key and value to be quoted string literals.
+fn parse_meta_annotation(input: &mut &str) -> PResult<(String, String)> {
+    literal("@meta").parse_next(input)?;
+    ws_comments(input);
+    literal("(").parse_next(input)?;
+    let key = string_literal(input)?;
+    ws_comments(input);
+    literal(",").parse_next(input)?;
+    let value = string_literal(input)?;
+    ws_comments(input);
+    literal(")").parse_next(input)?;
+    Ok((key, value))
+}
 
 fn parse_card_annotation(input: &mut &str) -> PResult<Cardinality> {
     literal("@card").parse_next(input)?;
@@ -1953,5 +2079,154 @@ entity person
         let person = schema.entities.get("person").unwrap();
         assert_eq!(person.plays.len(), 1);
         assert_eq!(person.plays[0].role_ref, "friendship:friend");
+    }
+
+    // -----------------------------------------------------------------------
+    // @doc / @meta annotations (TypeDB 3.12+)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_doc_meta_on_type_headers() {
+        let schema = parse_typeql(
+            r#"define
+attribute name @doc("a personal name") @meta("pii", "true"), value string;
+entity person @doc("an individual client") @meta("icon", "silhouette.png"),
+  owns name;
+relation friendship @doc("a mutual bond") @meta("color", "blue"),
+  relates friend;
+"#,
+        )
+        .unwrap();
+        let attr = schema.attributes.get("name").unwrap();
+        assert_eq!(attr.doc.as_deref(), Some("a personal name"));
+        assert_eq!(attr.meta.get("pii").map(String::as_str), Some("true"));
+        let person = schema.entities.get("person").unwrap();
+        assert_eq!(person.doc.as_deref(), Some("an individual client"));
+        assert_eq!(
+            person.meta.get("icon").map(String::as_str),
+            Some("silhouette.png")
+        );
+        let friendship = schema.relations.get("friendship").unwrap();
+        assert_eq!(friendship.doc.as_deref(), Some("a mutual bond"));
+        assert_eq!(
+            friendship.meta.get("color").map(String::as_str),
+            Some("blue")
+        );
+    }
+
+    #[test]
+    fn test_doc_meta_on_capabilities() {
+        let schema = parse_typeql(
+            r#"define
+attribute name, value string;
+entity person,
+  owns name @key @doc("full legal name") @meta("column", "name"),
+  plays friendship:friend @doc("participation") @meta("edge", "true");
+relation friendship,
+  relates friend @card(0..2) @doc("one side of the bond") @meta("endpoint", "true");
+"#,
+        )
+        .unwrap();
+        let person = schema.entities.get("person").unwrap();
+        let owns = &person.owns[0];
+        assert!(owns.is_key);
+        assert_eq!(owns.doc.as_deref(), Some("full legal name"));
+        assert_eq!(owns.meta.get("column").map(String::as_str), Some("name"));
+        let plays = &person.plays[0];
+        assert_eq!(plays.doc.as_deref(), Some("participation"));
+        assert_eq!(plays.meta.get("edge").map(String::as_str), Some("true"));
+        let friendship = schema.relations.get("friendship").unwrap();
+        let role = &friendship.roles[0];
+        assert_eq!(
+            role.cardinality,
+            Some(Cardinality {
+                min: 0,
+                max: Some(2)
+            })
+        );
+        assert_eq!(role.doc.as_deref(), Some("one side of the bond"));
+        assert_eq!(role.meta.get("endpoint").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn test_doc_meta_any_order_with_constraints() {
+        // Annotations may appear in any order relative to @key/@card.
+        let schema = parse_typeql(
+            r#"define
+attribute name, value string;
+entity person,
+  owns name @doc("d") @key @meta("k", "v") @card(1..1);
+"#,
+        )
+        .unwrap();
+        let owns = &schema.entities.get("person").unwrap().owns[0];
+        assert!(owns.is_key);
+        assert_eq!(owns.doc.as_deref(), Some("d"));
+        assert_eq!(owns.meta.get("k").map(String::as_str), Some("v"));
+        assert_eq!(
+            owns.cardinality,
+            Some(Cardinality {
+                min: 1,
+                max: Some(1)
+            })
+        );
+    }
+
+    #[test]
+    fn test_multiple_meta_keys() {
+        let schema =
+            parse_typeql("define\nentity gadget @meta(\"k1\", \"v1\") @meta(\"k2\", \"v2\");\n")
+                .unwrap();
+        let gadget = schema.entities.get("gadget").unwrap();
+        assert_eq!(gadget.meta.len(), 2);
+        assert_eq!(gadget.meta.get("k1").map(String::as_str), Some("v1"));
+        assert_eq!(gadget.meta.get("k2").map(String::as_str), Some("v2"));
+    }
+
+    #[test]
+    fn test_doc_with_escapes() {
+        // Matches the exact escape rendering of the TypeDB 3.12 schema export.
+        let schema =
+            parse_typeql("define\nentity escbox @doc(\"line1\\nline2 with \\\"quotes\\\"\");\n")
+                .unwrap();
+        let escbox = schema.entities.get("escbox").unwrap();
+        assert_eq!(escbox.doc.as_deref(), Some("line1\nline2 with \"quotes\""));
+    }
+
+    #[test]
+    fn test_doc_meta_live_312_export_shape() {
+        // Exact shape captured from `databases.get(db).schema()` on TypeDB 3.12.0
+        // (see tmp/probe-312-annotations.md): annotated attribute header with the
+        // value clause on its own line, and capability annotations after @card.
+        let schema = parse_typeql(
+            "define\n\nattribute name @doc(\"a personal name\") @meta(\"pii\", \"true\"),\n value string;\nattribute nickname,\n value string;\nentity person,\n  owns name @meta(\"column\", \"name\"),\n  owns nickname,\n  plays friendship:friend @doc(\"participation in friendship\") @meta(\"edge\", \"true\");\nrelation friendship @doc(\"a mutual bond\") @meta(\"color\", \"blue\"),\n  relates friend @card(0..2) @doc(\"one side of the bond\") @meta(\"endpoint\", \"true\");\n",
+        )
+        .unwrap();
+        assert_eq!(
+            schema.attributes.get("name").unwrap().doc.as_deref(),
+            Some("a personal name")
+        );
+        let person = schema.entities.get("person").unwrap();
+        assert!(person.doc.is_none());
+        assert_eq!(
+            person.owns[0].meta.get("column").map(String::as_str),
+            Some("name")
+        );
+        let friendship = schema.relations.get("friendship").unwrap();
+        assert_eq!(
+            friendship.roles[0].doc.as_deref(),
+            Some("one side of the bond")
+        );
+    }
+
+    #[test]
+    fn test_doc_meta_split_definition_merge() {
+        let schema = parse_typeql(
+            "define\nentity person @meta(\"k1\", \"v1\");\nentity person @doc(\"d\") @meta(\"k2\", \"v2\");\n",
+        )
+        .unwrap();
+        let person = schema.entities.get("person").unwrap();
+        assert_eq!(person.doc.as_deref(), Some("d"));
+        assert_eq!(person.meta.len(), 2);
     }
 }

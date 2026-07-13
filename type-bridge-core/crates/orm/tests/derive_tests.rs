@@ -4,6 +4,8 @@
 
 use type_bridge_orm::*;
 
+mod common;
+
 // ── Attribute derive tests ───────────────────────────────────────────
 
 #[derive(DeriveAttribute, Debug, Clone, PartialEq)]
@@ -874,4 +876,88 @@ fn relation_fields_employer_role_ref() {
         }
         _ => panic!("expected RolePlayer"),
     }
+}
+
+// ── @doc/@meta derive tests (TypeDB 3.12+) ──────────────────────────
+
+#[derive(DeriveAttribute, Debug, Clone, PartialEq)]
+#[attribute(name = "nickname", value_type = "string")]
+struct Nickname(pub String);
+
+#[derive(DeriveEntity, Debug)]
+#[entity(
+    name = "documented-person",
+    doc = "an individual client",
+    meta("icon", "silhouette.png"),
+    meta("owner", "crm-team")
+)]
+struct DocumentedPerson {
+    iid: Option<String>,
+    #[field(key, doc = "full legal name", meta("column", "name"))]
+    name: Name,
+    nickname: Option<Nickname>,
+}
+
+#[derive(DeriveRelation, Debug)]
+#[relation(name = "documented-bond", doc = "a mutual bond")]
+struct DocumentedBond {
+    iid: Option<String>,
+    #[role(
+        name = "friend",
+        player_type = "documented-person",
+        doc = "one side",
+        meta("endpoint", "true")
+    )]
+    friend: RolePlayerRef,
+}
+
+#[test]
+fn entity_derive_doc_meta_consts() {
+    assert_eq!(DocumentedPerson::DOC, Some("an individual client"));
+    assert_eq!(
+        DocumentedPerson::META,
+        &[("icon", "silhouette.png"), ("owner", "crm-team")]
+    );
+    let owned = DocumentedPerson::owned_attributes();
+    assert_eq!(owned[0].doc, Some("full legal name"));
+    assert_eq!(owned[0].meta, &[("column", "name")]);
+    assert_eq!(owned[1].doc, None);
+    assert!(owned[1].meta.is_empty());
+}
+
+#[test]
+fn relation_derive_doc_meta() {
+    assert_eq!(DocumentedBond::DOC, Some("a mutual bond"));
+    assert!(DocumentedBond::META.is_empty());
+    let roles = DocumentedBond::role_info();
+    assert_eq!(roles[0].doc, Some("one side"));
+    assert_eq!(roles[0].meta, &[("endpoint", "true")]);
+}
+
+#[test]
+fn derive_doc_meta_reaches_define_block() {
+    let backend = common::MockBackend::new(vec![]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut manager = SchemaManager::new(&db);
+    manager.register_entity::<DocumentedPerson>();
+    manager.register_relation::<DocumentedBond>();
+    let typeql = manager.schema_info().to_typeql().expect("to_typeql");
+    assert!(
+        typeql.contains(
+            "entity documented-person @doc(\"an individual client\") @meta(\"icon\", \"silhouette.png\") @meta(\"owner\", \"crm-team\"),"
+        ),
+        "entity header missing annotations:\n{typeql}"
+    );
+    assert!(
+        typeql.contains("owns name @key @doc(\"full legal name\") @meta(\"column\", \"name\")"),
+        "owns clause missing annotations:\n{typeql}"
+    );
+    assert!(
+        typeql.contains("relation documented-bond @doc(\"a mutual bond\"),"),
+        "relation header missing doc:\n{typeql}"
+    );
+    assert!(
+        typeql.contains("relates friend @doc(\"one side\") @meta(\"endpoint\", \"true\")"),
+        "relates clause missing annotations:\n{typeql}"
+    );
 }

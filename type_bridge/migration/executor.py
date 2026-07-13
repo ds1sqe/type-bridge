@@ -468,8 +468,7 @@ class MigrationExecutor:
             operation.run(self.db)
             return
 
-        typeql = operation.to_typeql()
-        if typeql.strip():
+        for typeql in operation.to_typeql_steps():
             self._execute_typeql(typeql, _typeql_transaction_type(typeql))
 
     def _execute_operation_reverse(self, operation: ops.Operation) -> None:
@@ -477,10 +476,10 @@ class MigrationExecutor:
             operation.rollback(self.db)
             return
 
-        typeql = operation.to_rollback_typeql()
-        if typeql is None:
+        steps = operation.to_rollback_typeql_steps()
+        if steps is None:
             raise MigrationError(f"Operation {type(operation).__name__} is not reversible")
-        if typeql.strip():
+        for typeql in steps:
             self._execute_typeql(typeql, _typeql_transaction_type(typeql))
 
     def _execute_typeql(self, typeql: str, transaction_type: str) -> None:

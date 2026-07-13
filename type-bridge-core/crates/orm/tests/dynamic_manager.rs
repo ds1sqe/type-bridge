@@ -22,6 +22,8 @@ fn person_descriptor() -> EntityDescriptor {
                 annotations: vec![Annotation::Key],
                 is_optional: false,
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             },
             OwnedAttributeDescriptor {
                 field_name: "age".into(),
@@ -30,8 +32,12 @@ fn person_descriptor() -> EntityDescriptor {
                 annotations: vec![],
                 is_optional: false,
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             },
         ],
+        doc: None,
+        meta: Default::default(),
     }
 }
 
@@ -47,6 +53,8 @@ fn employment_descriptor() -> RelationDescriptor {
             annotations: vec![],
             is_optional: true,
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         }],
         roles: vec![
             RoleDescriptor {
@@ -60,6 +68,8 @@ fn employment_descriptor() -> RelationDescriptor {
                 ..Default::default()
             },
         ],
+        doc: None,
+        meta: Default::default(),
     }
 }
 
@@ -72,6 +82,8 @@ fn tagged_employment_descriptor() -> RelationDescriptor {
         annotations: vec![Annotation::Card(0, Some(4))],
         is_optional: true,
         is_ordered: false,
+        doc: None,
+        meta: Default::default(),
     });
     descriptor
 }
@@ -129,6 +141,8 @@ fn tagged_person_descriptor() -> EntityDescriptor {
         annotations: vec![Annotation::Card(0, Some(4))],
         is_optional: true,
         is_ordered: false,
+        doc: None,
+        meta: Default::default(),
     });
     descriptor
 }
@@ -142,6 +156,8 @@ fn scored_person_descriptor() -> EntityDescriptor {
         annotations: vec![Annotation::Card(1, Some(4))],
         is_optional: false,
         is_ordered: false,
+        doc: None,
+        meta: Default::default(),
     });
     descriptor
 }

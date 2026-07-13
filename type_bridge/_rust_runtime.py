@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
@@ -25,6 +26,8 @@ class _RoleMetadata:
     is_abstract: bool = False
     ordered: bool = False
     distinct: bool = False
+    doc: str | None = None
+    meta: dict[str, str] = dataclass_field(default_factory=dict)
 
 
 PYTHON_TO_RUST_VALUE_TYPE = {
@@ -232,30 +235,40 @@ def _register_or_project_descriptor(
 
 def entity_descriptor(model_cls: type[TypeDBType]) -> dict[str, Any]:
     """Build an entity descriptor dict from Python class metadata."""
-    return {
+    descriptor: dict[str, Any] = {
         "type_name": model_cls.get_type_name(),
         "is_abstract": model_cls.is_abstract(),
         "parent_type": model_cls.get_supertype(),
         "owned_attributes": attribute_descriptors(model_cls),
     }
+    doc = model_cls.get_doc()
+    if doc is not None:
+        descriptor["doc"] = doc
+    meta = model_cls.get_meta()
+    if meta:
+        descriptor["meta"] = meta
+    return descriptor
 
 
 def relation_descriptor(model_cls: type[Relation]) -> dict[str, Any]:
     """Build a relation descriptor dict from Python class metadata."""
     roles = []
     for role in _effective_roles(model_cls):
-        roles.append(
-            {
-                "role_name": role.role_name,
-                "player_type_names": [typ.get_type_name() for typ in role.player_types],
-                "cardinality": cardinality_tuple(role.cardinality),
-                "plays_cardinality": cardinality_tuple(role.plays_cardinality),
-                "overrides": role.overrides,
-                "is_abstract": role.is_abstract,
-                "ordered": role.ordered,
-                "distinct": role.distinct,
-            }
-        )
+        role_descriptor: dict[str, Any] = {
+            "role_name": role.role_name,
+            "player_type_names": [typ.get_type_name() for typ in role.player_types],
+            "cardinality": cardinality_tuple(role.cardinality),
+            "plays_cardinality": cardinality_tuple(role.plays_cardinality),
+            "overrides": role.overrides,
+            "is_abstract": role.is_abstract,
+            "ordered": role.ordered,
+            "distinct": role.distinct,
+        }
+        if role.doc is not None:
+            role_descriptor["doc"] = role.doc
+        if role.meta:
+            role_descriptor["meta"] = role.meta
+        roles.append(role_descriptor)
 
     descriptor = entity_descriptor(model_cls)
     descriptor["roles"] = roles
@@ -281,6 +294,8 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
                 is_abstract=role.is_abstract,
                 ordered=role.ordered,
                 distinct=role.distinct,
+                doc=role.doc,
+                meta=dict(role.meta),
             )
             for role in own_role_map.values()
         ]
@@ -309,6 +324,8 @@ def _own_roles_for_class(cls: type[Relation]) -> list[_RoleMetadata]:
                 is_abstract=is_abstract,
                 ordered=getattr(default, "ordered", False),
                 distinct=getattr(default, "distinct", False),
+                doc=getattr(default, "doc", None),
+                meta=dict(getattr(default, "meta", {}) or {}),
             )
         )
     return fallback
@@ -355,16 +372,19 @@ def attribute_descriptors(model_cls: type[TypeDBType]) -> list[dict[str, Any]]:
     descriptors = []
     for field_name, attr_info in model_cls.get_all_attributes().items():
         attr_entry = attribute_schema_entry(attr_info.typ)
-        descriptors.append(
-            {
-                "field_name": field_name,
-                "attr_name": attr_entry["attr_name"],
-                "value_type": attr_entry["value_type"],
-                "annotations": _annotations(attr_info.flags),
-                "is_optional": _is_optional(attr_info.flags),
-                "is_ordered": attr_info.flags.is_ordered,
-            }
-        )
+        descriptor: dict[str, Any] = {
+            "field_name": field_name,
+            "attr_name": attr_entry["attr_name"],
+            "value_type": attr_entry["value_type"],
+            "annotations": _annotations(attr_info.flags),
+            "is_optional": _is_optional(attr_info.flags),
+            "is_ordered": attr_info.flags.is_ordered,
+        }
+        if attr_info.flags.doc is not None:
+            descriptor["doc"] = attr_info.flags.doc
+        if attr_info.flags.meta:
+            descriptor["meta"] = dict(attr_info.flags.meta)
+        descriptors.append(descriptor)
     return descriptors
 
 
@@ -395,6 +415,14 @@ def attribute_schema_entry(attr_cls: type[Any]) -> dict[str, Any]:
     if range_constraint is not None:
         range_min, range_max = range_constraint
         entry["range"] = [_range_bound(range_min), _range_bound(range_max)]
+
+    flags = getattr(attr_cls, "flags", None)
+    doc = getattr(flags, "doc", None)
+    if doc is not None:
+        entry["doc"] = doc
+    meta = getattr(flags, "meta", None)
+    if meta:
+        entry["meta"] = dict(meta)
 
     return entry
 

@@ -201,6 +201,36 @@ class UserAccount(Entity):
     flags = TypeFlags(case="kebab-case")  # Type name: "user-account"
 ```
 
+### Documentation and Metadata (@doc/@meta)
+
+TypeDB 3.12+ supports schema-level documentation and metadata annotations.
+Declare them on the type through `TypeFlags`:
+
+```python
+class Person(Entity):
+    flags = TypeFlags(
+        name="person",
+        doc="A person known to the system.",
+        meta={"owner": "core-team", "since": "2026-01"},
+    )
+```
+
+**Generated TypeQL**:
+
+```typeql
+entity person @doc("A person known to the system.")
+    @meta("owner", "core-team") @meta("since", "2026-01");
+```
+
+TypeDB stores at most one value per `@meta` key per subject; keys and
+values are strings. Ownership-level `@doc`/`@meta` are declared with the
+`Doc`/`Meta` flag markers — see the
+[cardinality and flags guide](cardinality.md#documentation-and-metadata-annotations).
+
+Annotations require a TypeDB 3.12+ server: schema application is
+version-gated and raises a versioned error against older servers (see the
+[schema guide](schema.md#schema-annotations-and-server-versions)).
+
 ### Implicit TypeFlags
 
 For simple entities, `TypeFlags` is automatically created if not specified:

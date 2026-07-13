@@ -64,7 +64,7 @@ docs = [
     "mkdocs-section-index>=0.3",
 ]
 typedb-driver = [
-    "typedb-driver>=3.8,<3.12",
+    "typedb-driver>=3.8,<3.13",
 ]
 
 [tool.ty.environment]

@@ -85,6 +85,10 @@ export interface AttributeTypeOptions {
   readonly regex?: string | null;
   readonly values?: readonly string[] | null;
   readonly range?: readonly [string | null, string | null] | null;
+  /** TypeDB 3.12+ `@doc("...")` documentation for the attribute type. */
+  readonly doc?: string;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, one value per key. */
+  readonly meta?: Record<string, string>;
 }
 
 /**
@@ -226,6 +230,12 @@ function buildAttributeSchema(
   }
   if (options.range !== undefined) {
     entry.range = options.range == null ? null : [options.range[0], options.range[1]];
+  }
+  if (options.doc !== undefined) {
+    entry.doc = options.doc;
+  }
+  if (options.meta !== undefined && Object.keys(options.meta).length > 0) {
+    entry.meta = { ...options.meta };
   }
   return entry;
 }

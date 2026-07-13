@@ -18,6 +18,8 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
                 },
                 annotations: vec![],
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             })
             .collect();
 
@@ -35,6 +37,8 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
                 parent_type: None,
                 owned_attributes: attrs,
                 plays_cardinalities: std::collections::BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
     }
@@ -66,6 +70,8 @@ fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
                     },
                 ],
                 plays_cardinalities: std::collections::BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
     }

@@ -291,6 +291,37 @@ class Employment(Relation):
 - Custom `name` - Override type name
 - Custom `case` - Non-default case formatting
 
+### Documentation and Metadata (@doc/@meta)
+
+TypeDB 3.12+ supports schema-level documentation and metadata annotations
+on the relation type and on each role:
+
+```python
+class Employment(Relation):
+    flags = TypeFlags(
+        name="employment",
+        doc="Employment of a person by a company.",
+        meta={"owner": "hr"},
+    )
+
+    employee: Role[Person] = Role(
+        "employee", Person, doc="The employed party.", meta={"side": "a"}
+    )
+    employer: Role[Company] = Role("employer", Company)
+```
+
+**Generated TypeQL**:
+
+```typeql
+relation employment @doc("Employment of a person by a company.") @meta("owner", "hr"),
+    relates employee @doc("The employed party.") @meta("side", "a"),
+    relates employer;
+```
+
+Annotations require a TypeDB 3.12+ server: schema application is
+version-gated and raises a versioned error against older servers (see the
+[schema guide](schema.md#schema-annotations-and-server-versions)).
+
 ## Relation with Attributes
 
 Relations can own attributes just like entities:

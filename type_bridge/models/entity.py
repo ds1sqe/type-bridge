@@ -109,7 +109,10 @@ class Entity(TypeDBType):
         Returns:
             TypeQL schema definition string, or None if this is a base class
         """
-        from type_bridge.typeql.annotations import format_type_annotations
+        from type_bridge.typeql.annotations import (
+            format_doc_meta_annotations,
+            format_type_annotations,
+        )
 
         # Base classes don't appear in TypeDB schema
         if cls.is_base():
@@ -122,6 +125,7 @@ class Entity(TypeDBType):
         # TypeDB 3.x syntax: entity name @abstract, sub parent,
         supertype = cls.get_supertype()
         type_annotations = format_type_annotations(abstract=cls.is_abstract())
+        type_annotations.extend(format_doc_meta_annotations(cls.get_doc(), cls.get_meta()))
 
         entity_def = f"entity {type_name}"
         if type_annotations:

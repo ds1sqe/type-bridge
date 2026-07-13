@@ -266,6 +266,35 @@ entity person,
 - Enforces uniqueness across all instances
 - Can have multiple unique attributes per entity
 
+### Documentation and Metadata Annotations
+
+The `Doc` and `Meta` markers declare TypeDB 3.12+ `@doc`/`@meta`
+annotations on an ownership:
+
+```python
+from type_bridge import Doc, Flag, Key, Meta
+
+class Person(Entity):
+    name: Name = Flag(Key, Doc("Full legal name."), Meta("column", "name"))
+    nickname: Nick | None = Flag(Doc("Preferred short name."))
+```
+
+**Generated TypeQL**:
+
+```typeql
+entity person,
+    owns name @key @doc("Full legal name.") @meta("column", "name"),
+    owns nickname @card(0..1) @doc("Preferred short name.");
+```
+
+TypeDB stores at most one value per `@meta` key per subject. Type-level
+annotations use `TypeFlags(doc=..., meta=...)` /
+`AttributeFlags(doc=..., meta=...)` instead — see the
+[entities](entities.md#documentation-and-metadata-docmeta) and
+[attributes](attributes.md#documentation-and-metadata-docmeta) guides.
+Annotated schemas require a TypeDB 3.12+ server (see the
+[schema guide](schema.md#schema-annotations-and-server-versions)).
+
 ### Combining Key/Unique with Card
 
 ```python

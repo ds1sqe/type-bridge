@@ -32,7 +32,7 @@ class TestImportSmoke:
 
     def test_max_supported_line(self):
         """max_supported_line() re-export must return the known window ceiling line."""
-        assert version.max_supported_line() == "3.11"
+        assert version.max_supported_line() == "3.12"
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +50,10 @@ class TestBandReexport:
     def test_band_8(self):
         """3.11.5 belongs to band 8."""
         assert version.band("3.11.5") == 8
+
+    def test_band_9(self):
+        """3.12.0 belongs to band 9."""
+        assert version.band("3.12.0") == 9
 
     def test_band_unmapped_returns_none(self):
         """3.9.0 is not in a known band; core returns None."""
@@ -78,13 +82,13 @@ class TestEnsureSupportedWindowBoundaries:
         version.ensure_supported("3.8.1", "3.8.0")
 
     def test_top_line_accepted(self):
-        """Driver 3.11.5 and server 3.11.5 are both band-8 at the ceiling — must accept."""
-        version.ensure_supported("3.11.5", "3.11.5")
+        """Driver 3.12.0 and server 3.12.0 are both band-9 at the ceiling — must accept."""
+        version.ensure_supported("3.12.0", "3.12.0")
 
     def test_above_ceiling_raises(self):
-        """Server 3.12.0 is above the 3.11 ceiling line — must reject."""
+        """Server 3.13.0 is above the 3.12 ceiling line — must reject."""
         with pytest.raises(version.UnsupportedVersionError):
-            version.ensure_supported("3.11.5", "3.12.0")
+            version.ensure_supported("3.12.0", "3.13.0")
 
     def test_ancient_version_raises(self):
         """Server 2.9.0 is a TypeDB 2.x version far below the floor — must reject."""
@@ -117,6 +121,23 @@ class TestEnsureSupportedBandBoundaries:
         """Driver 3.10.0 (band-7) × server 3.11.5 (band-8) — cross-band, must reject."""
         with pytest.raises(version.UnsupportedVersionError):
             version.ensure_supported("3.10.0", "3.11.5")
+
+    def test_driver_11_server_12_accepted(self):
+        """Driver 3.11.5 (band-8) × server 3.12.0 (accepts 9 and 8) — must accept.
+
+        Measured live: server 3.12 retains backward compatibility with
+        band-8 drivers.
+        """
+        version.ensure_supported("3.11.5", "3.12.0")
+
+    def test_driver_12_server_11_raises(self):
+        """Driver 3.12.0 (band-9) × server 3.11.5 (accepts 8 only) — must reject.
+
+        Measured live: the asymmetric direction — a band-9 driver is refused
+        by a 3.11 server at connect.
+        """
+        with pytest.raises(version.UnsupportedVersionError):
+            version.ensure_supported("3.12.0", "3.11.5")
 
 
 # ---------------------------------------------------------------------------
@@ -368,25 +389,45 @@ class TestCreateDriverOptionsBand8:
         assert kwargs == {}, "Expected no keyword arguments for band-8 DriverOptions"
 
 
+class TestCreateDriverOptionsBand9:
+    """Band-9 driver (3.12.x) uses the same DriverOptions(tls_config) form as band 8."""
+
+    def test_band9_tls_off_calls_disabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Band-9, TLS off: DriverTlsConfig.disabled() is used, positionally."""
+        disabled_sentinel = object()
+        tls_cls = MagicMock()
+        tls_cls.enabled_with_native_root_ca = MagicMock(return_value=object())
+        tls_cls.disabled = MagicMock(return_value=disabled_sentinel)
+        mock_opts = MagicMock()
+
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.12.0")
+        monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", mock_opts)
+        monkeypatch.setattr(_typedb_driver_mod, "_load_tls_config", lambda: tls_cls)
+
+        _typedb_driver_mod.create_driver_options(is_tls_enabled=False)
+        tls_cls.disabled.assert_called_once()
+        mock_opts.assert_called_once_with(disabled_sentinel)
+
+
 class TestCreateDriverOptionsBandNone:
     """Unknown band raises UnsupportedVersionError naming the installed version."""
 
     def test_unknown_band_raises(self, monkeypatch: pytest.MonkeyPatch):
-        """driver_version 3.12.0 maps to band None → UnsupportedVersionError."""
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.12.0")
+        """driver_version 3.13.0 maps to band None → UnsupportedVersionError."""
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.13.0")
         with pytest.raises(version.UnsupportedVersionError):
             _typedb_driver_mod.create_driver_options()
 
     def test_unknown_band_message_contains_version(self, monkeypatch: pytest.MonkeyPatch):
         """UnsupportedVersionError message must name the rejected version."""
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.12.0")
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.13.0")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
             _typedb_driver_mod.create_driver_options()
-        assert "3.12.0" in str(exc_info.value)
+        assert "3.13.0" in str(exc_info.value)
 
     def test_unknown_band_message_no_band_numbers(self, monkeypatch: pytest.MonkeyPatch):
         """UnsupportedVersionError message must not expose raw band numbers."""
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.12.0")
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.13.0")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
             _typedb_driver_mod.create_driver_options()
         msg = str(exc_info.value)
@@ -700,12 +741,16 @@ class TestEnsureRuntimeSupported:
         assert "band 8" not in msg
         assert "0.0.0" not in msg
 
+    def test_dual_band_server_passes(self):
+        """Server 3.12.0 (accepts bands 9 and 8) is served via the embedded band-8 driver."""
+        version.ensure_runtime_supported("3.12.0")
+
     def test_above_window_raises_with_embedded_framing(self):
-        """Server above the window (3.12.0) raises with wheel-appropriate framing."""
+        """Server above the window (3.13.0) raises with wheel-appropriate framing."""
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
-            version.ensure_runtime_supported("3.12.0")
+            version.ensure_runtime_supported("3.13.0")
         msg = str(exc_info.value)
-        assert "3.12.0" in msg
+        assert "3.13.0" in msg
         assert "3.8" in msg
         assert "band 7" not in msg
         assert "band 8" not in msg
@@ -864,3 +909,80 @@ class TestHttpPortBoundaries:
 
         with pytest.raises(OverflowError):
             typedb_driver.server_version("localhost:1729", http_port=70000)
+
+
+class TestSchemaAnnotationGate:
+    """The @doc/@meta schema-annotation feature gate (TypeDB 3.12+).
+
+    `Database.detected_server_version()` surfaces the connect-time detected
+    version; `check_schema_annotation_support()` rejects annotated DDL bound
+    for a pre-3.12 server before it is sent; `SchemaManager.sync_schema`
+    invokes that gate before opening the apply transaction.
+    """
+
+    def _database_with_rust_stub(self, monkeypatch, stub):
+        import type_bridge._rust_runtime as rust_mod
+        from type_bridge import session as session_mod
+
+        monkeypatch.setattr(rust_mod, "rust_database_for", lambda _conn: stub)
+        return session_mod.Database(address="localhost:1729", database="gate_unit")
+
+    def test_detected_server_version_delegates_to_rust_handle(self, monkeypatch):
+        stub = MagicMock()
+        stub.server_version.return_value = "3.12.0"
+        db = self._database_with_rust_stub(monkeypatch, stub)
+
+        assert db.detected_server_version() == "3.12.0"
+
+    def test_detected_server_version_unknown_returns_none(self, monkeypatch):
+        """Band-7 gRPC fallback connections cannot report a server version."""
+        stub = MagicMock()
+        stub.server_version.return_value = None
+        db = self._database_with_rust_stub(monkeypatch, stub)
+
+        assert db.detected_server_version() is None
+
+    def test_check_schema_annotation_support_propagates_versioned_error(self, monkeypatch):
+        stub = MagicMock()
+        stub.check_schema_annotation_support.side_effect = type_bridge_core.VersionError(
+            "schema annotations (@doc/@meta) require TypeDB 3.12 or newer; detected server 3.11.5"
+        )
+        db = self._database_with_rust_stub(monkeypatch, stub)
+
+        with pytest.raises(type_bridge_core.VersionError, match="3.12 or newer"):
+            db.check_schema_annotation_support('define\nentity person @doc("A person.");')
+        stub.check_schema_annotation_support.assert_called_once()
+
+    def test_sync_schema_gates_annotations_before_apply(self, monkeypatch):
+        """The gate must fire on the generated TypeQL before any transaction."""
+        from type_bridge.migration.schema_manager import SchemaManager
+
+        db = MagicMock()
+        manager = SchemaManager(db)
+        schema_text = 'define\nentity gate-person @doc("Gated.");'
+        monkeypatch.setattr(manager, "generate_schema", lambda: schema_text)
+        monkeypatch.setattr(manager, "has_existing_schema", lambda: False)
+
+        manager.sync_schema()
+
+        db.check_schema_annotation_support.assert_called_once_with(schema_text)
+        gate_index = [name for name, *_ in db.mock_calls].index("check_schema_annotation_support")
+        tx_index = [name for name, *_ in db.mock_calls].index("transaction")
+        assert gate_index < tx_index
+
+    def test_sync_schema_does_not_apply_when_gate_rejects(self, monkeypatch):
+        from type_bridge.migration.schema_manager import SchemaManager
+
+        db = MagicMock()
+        db.check_schema_annotation_support.side_effect = type_bridge_core.VersionError(
+            "schema annotations (@doc/@meta) require TypeDB 3.12 or newer"
+        )
+        manager = SchemaManager(db)
+        monkeypatch.setattr(
+            manager, "generate_schema", lambda: 'define\nentity gate-person @doc("Gated.");'
+        )
+        monkeypatch.setattr(manager, "has_existing_schema", lambda: False)
+
+        with pytest.raises(type_bridge_core.VersionError):
+            manager.sync_schema()
+        db.transaction.assert_not_called()

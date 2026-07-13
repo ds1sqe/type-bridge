@@ -118,6 +118,32 @@ schema_manager.sync_schema()  # ✅ Success
 schema_manager.sync_schema()  # ✅ Success if compatible
 ```
 
+### Schema Annotations and Server Versions
+
+`@doc`/`@meta` schema annotations require a TypeDB **3.12+** server. Before
+sending schema DDL, `sync_schema()` (and the migration executor) check the
+server version detected at connect time and raise a versioned error when
+annotated DDL targets an older server:
+
+```text
+VersionError: schema annotations (@doc/@meta) require TypeDB 3.12 or newer;
+detected server 3.11.5 — upgrade the server to the 3.12 line or remove the
+annotations from the schema
+```
+
+The check fires client-side, so no partial DDL reaches the server. Two
+`Database` helpers expose the gate directly:
+
+```python
+db.detected_server_version()             # e.g. "3.12.0"; None when unknown
+db.check_schema_annotation_support(ddl)  # raises on annotated DDL vs pre-3.12
+```
+
+`detected_server_version()` returns `None` only for connections established
+through the band-7 gRPC fallback, where the server cannot report its
+version; there the DDL is sent as-is and the server decides. Pass
+`server_version=` to `Database` to pin the version explicitly in that case.
+
 ## Conflict Detection
 
 SchemaManager automatically detects breaking changes and prevents data loss:

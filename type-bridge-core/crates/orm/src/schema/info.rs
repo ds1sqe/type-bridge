@@ -32,12 +32,21 @@ pub struct OwnedAttributeEntry {
     /// is a schema-emission marker only.
     #[serde(default)]
     pub is_ordered: bool,
+    /// Optional `@doc("...")` documentation annotation on the ownership (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the ownership, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 impl OwnedAttributeEntry {
     /// Format the annotation flags as a TypeQL annotation string.
     ///
-    /// Returns strings like `"@key"`, `"@unique"`, `"@distinct"`, `"@card(2..5)"`.
+    /// Returns strings like `"@key"`, `"@unique"`, `"@distinct"`, `"@card(2..5)"`,
+    /// followed by `@doc("...")` and `@meta("key", "value")` when present —
+    /// matching the annotation order of TypeDB's schema export (constraints
+    /// first, then doc, then meta).
     pub fn flags_string(&self) -> String {
         let mut parts = Vec::new();
         for ann in &self.annotations {
@@ -55,8 +64,39 @@ impl OwnedAttributeEntry {
                 }
             }
         }
+        append_doc_meta_annotations(&mut parts, self.doc.as_deref(), &self.meta);
         parts.join(" ")
     }
+}
+
+/// Append `@doc("...")` / `@meta("key", "value")` annotation tokens in the
+/// canonical order of TypeDB's schema export (doc before meta, meta sorted
+/// by key). Values are escaped for TypeQL string-literal emission.
+pub(crate) fn append_doc_meta_annotations(
+    parts: &mut Vec<String>,
+    doc: Option<&str>,
+    meta: &BTreeMap<String, String>,
+) {
+    if let Some(text) = doc {
+        parts.push(format!("@doc({})", escaped_string_literal(text)));
+    }
+    for (key, value) in meta {
+        parts.push(format!(
+            "@meta({}, {})",
+            escaped_string_literal(key),
+            escaped_string_literal(value)
+        ));
+    }
+}
+
+/// Render a TypeQL string literal for `@doc` / `@meta` values, escaping
+/// backslashes, quotes, and control characters the way TypeDB's schema
+/// export renders them (so parse -> emit round-trips byte-identically).
+///
+/// Distinct from the `@regex` emission path, which preserves user escape
+/// sequences verbatim and must not be double-escaped.
+pub(crate) fn escaped_string_literal(value: &str) -> String {
+    super::annotations::escaped_string_literal(value)
 }
 
 /// Metadata for one role in a relation.
@@ -85,6 +125,12 @@ pub struct RoleEntry {
     /// Valid only when `ordered` is `true`.
     #[serde(default)]
     pub distinct: bool,
+    /// Optional `@doc("...")` documentation annotation on the role (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the role, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 /// Schema entry for an entity type.
@@ -105,6 +151,12 @@ pub struct EntitySchemaEntry {
     /// `PlayedRole.cardinality`; empty when no plays-card is declared.
     #[serde(default)]
     pub plays_cardinalities: BTreeMap<String, (u32, Option<u32>)>,
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the type, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 /// Schema entry for a relation type.
@@ -127,6 +179,12 @@ pub struct RelationSchemaEntry {
     /// `PlayedRole.cardinality`; empty when no plays-card is declared.
     #[serde(default)]
     pub plays_cardinalities: BTreeMap<String, (u32, Option<u32>)>,
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the type, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 /// Metadata for a standalone attribute type.
@@ -154,6 +212,12 @@ pub struct AttributeSchemaEntry {
     /// Optional `@range` bounds. `None` bound means open-ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<(Option<String>, Option<String>)>,
+    /// Optional `@doc("...")` documentation annotation on the type (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// `@meta("key", "value")` annotations on the type, keyed by meta key (TypeDB 3.12+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
 }
 
 impl AttributeSchemaEntry {
@@ -168,6 +232,8 @@ impl AttributeSchemaEntry {
             regex: None,
             allowed_values: None,
             range: None,
+            doc: None,
+            meta: BTreeMap::new(),
         }
     }
 }
@@ -225,6 +291,8 @@ impl SchemaInfo {
                         (None, None) => None,
                         (min, max) => Some((min.clone(), max.clone())),
                     },
+                    doc: attr.doc.clone(),
+                    meta: attr.meta.clone(),
                 },
             );
         }
@@ -247,6 +315,8 @@ impl SchemaInfo {
                         &info.attributes,
                     ),
                     plays_cardinalities,
+                    doc: entity.doc.clone(),
+                    meta: entity.meta.clone(),
                 },
             );
         }
@@ -268,6 +338,8 @@ impl SchemaInfo {
                         is_abstract: role.is_abstract,
                         ordered: role.ordered,
                         distinct: role.distinct,
+                        doc: role.doc.clone(),
+                        meta: role.meta.clone(),
                     }
                 })
                 .collect();
@@ -286,6 +358,8 @@ impl SchemaInfo {
                     ),
                     roles,
                     plays_cardinalities,
+                    doc: relation.doc.clone(),
+                    meta: relation.meta.clone(),
                 },
             );
         }
@@ -329,6 +403,8 @@ impl SchemaInfo {
                             parent_type: entity.parent_type.clone(),
                             owned_attributes: owned_attribute_entries(&entity.owned_attributes),
                             plays_cardinalities: BTreeMap::new(),
+                            doc: entity.doc.clone(),
+                            meta: entity.meta.clone(),
                         },
                     );
                 }
@@ -345,6 +421,8 @@ impl SchemaInfo {
                             is_abstract: role.is_abstract,
                             ordered: role.ordered,
                             distinct: role.distinct,
+                            doc: role.doc.clone(),
+                            meta: role.meta.clone(),
                         })
                         .collect();
 
@@ -357,6 +435,8 @@ impl SchemaInfo {
                             owned_attributes: owned_attribute_entries(&relation.owned_attributes),
                             roles,
                             plays_cardinalities: BTreeMap::new(),
+                            doc: relation.doc.clone(),
+                            meta: relation.meta.clone(),
                         },
                     );
                 }
@@ -481,6 +561,36 @@ impl SchemaInfo {
     pub fn compare(&self, other: &SchemaInfo) -> SchemaDiff {
         SchemaDiff::compute(self, other)
     }
+
+    /// Whether any type, ownership, or role in this schema declares a
+    /// `@doc`/`@meta` annotation (TypeDB 3.12+).
+    ///
+    /// Used by the version gate: schemas that use annotations must not be
+    /// sent to pre-3.12 servers, which would reject them with a syntax error.
+    pub fn uses_schema_annotations(&self) -> bool {
+        let owned_uses = |owned: &[OwnedAttributeEntry]| {
+            owned
+                .iter()
+                .any(|attr| attr.doc.is_some() || !attr.meta.is_empty())
+        };
+        self.attributes
+            .values()
+            .any(|attr| attr.doc.is_some() || !attr.meta.is_empty())
+            || self.entities.values().any(|entity| {
+                entity.doc.is_some()
+                    || !entity.meta.is_empty()
+                    || owned_uses(&entity.owned_attributes)
+            })
+            || self.relations.values().any(|relation| {
+                relation.doc.is_some()
+                    || !relation.meta.is_empty()
+                    || owned_uses(&relation.owned_attributes)
+                    || relation
+                        .roles
+                        .iter()
+                        .any(|role| role.doc.is_some() || !role.meta.is_empty())
+            })
+    }
 }
 
 fn owned_attribute_entries_from_typeql(
@@ -497,6 +607,8 @@ fn owned_attribute_entries_from_typeql(
                 .unwrap_or(ValueType::String),
             annotations: annotations_from_typeql(attr),
             is_ordered: attr.ordered,
+            doc: attr.doc.clone(),
+            meta: attr.meta.clone(),
         })
         .collect()
 }
@@ -601,6 +713,8 @@ fn owned_attribute_entries(attributes: &[OwnedAttributeDescriptor]) -> Vec<Owned
                 value_type: attr.value_type,
                 annotations: attr.annotations.clone(),
                 is_ordered: attr.is_ordered,
+                doc: attr.doc.clone(),
+                meta: attr.meta.clone(),
             }
         })
         .collect()
@@ -640,6 +754,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         assert!(info.get_entity_by_name("person").is_some());
@@ -658,6 +774,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         assert!(info.get_relation_by_name("employment").is_some());
@@ -684,6 +802,8 @@ mod tests {
             value_type: ValueType::String,
             annotations: vec![Annotation::Key],
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         };
         assert_eq!(entry.flags_string(), "@key");
     }
@@ -695,6 +815,8 @@ mod tests {
             value_type: ValueType::String,
             annotations: vec![Annotation::Card(2, Some(5))],
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         };
         assert_eq!(entry.flags_string(), "@card(2..5)");
     }
@@ -706,6 +828,8 @@ mod tests {
             value_type: ValueType::String,
             annotations: vec![Annotation::Card(0, None)],
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         };
         assert_eq!(entry.flags_string(), "@card(0..)");
     }
@@ -717,6 +841,8 @@ mod tests {
             value_type: ValueType::String,
             annotations: vec![Annotation::Unique, Annotation::Card(1, Some(3))],
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         };
         assert_eq!(entry.flags_string(), "@unique @card(1..3)");
     }
@@ -735,8 +861,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.relations.insert(
@@ -755,6 +885,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
         info.attributes.insert(
@@ -787,7 +919,11 @@ mod tests {
                     annotations: vec![Annotation::Key],
                     is_optional: false,
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
+                doc: None,
+                meta: Default::default(),
             }),
             TypeDescriptor::Relation(RelationDescriptor {
                 type_name: "employment".into(),
@@ -800,6 +936,8 @@ mod tests {
                     annotations: vec![],
                     is_optional: false,
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 roles: vec![RoleDescriptor {
                     role_name: "participant".into(),
@@ -810,7 +948,11 @@ mod tests {
                     ordered: false,
                     distinct: false,
                     plays_cardinality: None,
+                    doc: None,
+                    meta: Default::default(),
                 }],
+                doc: None,
+                meta: Default::default(),
             }),
         ];
 
@@ -829,8 +971,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             })
         );
         assert_eq!(
@@ -844,6 +990,8 @@ mod tests {
                     value_type: ValueType::Date,
                     annotations: vec![],
                     is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
                 }],
                 roles: vec![RoleEntry {
                     role_name: "participant".into(),
@@ -853,8 +1001,12 @@ mod tests {
                     is_abstract: false,
                     ordered: false,
                     distinct: false,
+                    doc: None,
+                    meta: Default::default(),
                 },],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             })
         );
         assert_eq!(
@@ -880,7 +1032,11 @@ mod tests {
                 annotations: vec![Annotation::Card(0, Some(1))],
                 is_optional: true,
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             }],
+            doc: None,
+            meta: Default::default(),
         })];
 
         let info = SchemaInfo::from_descriptors(&descriptors);
@@ -1066,6 +1222,8 @@ entity holder, plays owns-one:slot @card(0..1);
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: cards.clone(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1113,6 +1271,8 @@ entity holder, plays owns-one:slot @card(0..1);
             is_abstract: false,
             parent_type: None,
             owned_attributes: vec![],
+            doc: None,
+            meta: Default::default(),
         })
     }
 
@@ -1123,6 +1283,8 @@ entity holder, plays owns-one:slot @card(0..1);
             parent_type: None,
             owned_attributes: vec![],
             roles,
+            doc: None,
+            meta: Default::default(),
         })
     }
 
@@ -1282,6 +1444,8 @@ entity holder, plays owns-one:slot @card(0..1);
                     plays_cardinality: Some((1, Some(2))),
                     ..Default::default()
                 }],
+                doc: None,
+                meta: Default::default(),
             }),
         ];
 
@@ -1310,6 +1474,8 @@ entity holder, plays owns-one:slot @card(0..1);
                 is_abstract: true,
                 parent_type: None,
                 owned_attributes: vec![],
+                doc: None,
+                meta: Default::default(),
             }),
             TypeDescriptor::Entity(EntityDescriptor {
                 type_name: "child".into(),
@@ -1317,6 +1483,8 @@ entity holder, plays owns-one:slot @card(0..1);
                 // "root" is registered — must be preserved.
                 parent_type: Some("root".into()),
                 owned_attributes: vec![],
+                doc: None,
+                meta: Default::default(),
             }),
             TypeDescriptor::Entity(EntityDescriptor {
                 type_name: "orphan".into(),
@@ -1324,6 +1492,8 @@ entity holder, plays owns-one:slot @card(0..1);
                 // "thing" is not in the snapshot — must be nulled.
                 parent_type: Some("thing".into()),
                 owned_attributes: vec![],
+                doc: None,
+                meta: Default::default(),
             }),
         ];
 

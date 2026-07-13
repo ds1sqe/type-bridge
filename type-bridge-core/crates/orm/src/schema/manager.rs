@@ -11,6 +11,14 @@ use crate::session::backend::TxType;
 use super::error::SchemaError;
 use super::info::*;
 
+/// Convert a static `(&str, &str)` meta slice into the owned map the schema IR uses.
+fn meta_map(pairs: &[(&'static str, &'static str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
 /// Manages schema registration, generation, and synchronization.
 ///
 /// # Example
@@ -55,6 +63,8 @@ impl<'db> SchemaManager<'db> {
                     value_type: a.value_type,
                     annotations: a.annotations.to_vec(),
                     is_ordered: false,
+                    doc: a.doc.map(String::from),
+                    meta: meta_map(a.meta),
                 }
             })
             .collect();
@@ -67,6 +77,8 @@ impl<'db> SchemaManager<'db> {
                 parent_type: E::PARENT_TYPE.map(String::from),
                 owned_attributes: owned_entries,
                 plays_cardinalities: BTreeMap::new(),
+                doc: E::DOC.map(String::from),
+                meta: meta_map(E::META),
             },
         );
     }
@@ -87,6 +99,8 @@ impl<'db> SchemaManager<'db> {
                     value_type: a.value_type,
                     annotations: a.annotations.to_vec(),
                     is_ordered: false,
+                    doc: a.doc.map(String::from),
+                    meta: meta_map(a.meta),
                 }
             })
             .collect();
@@ -96,6 +110,8 @@ impl<'db> SchemaManager<'db> {
             .map(|r| RoleEntry {
                 role_name: r.role_name.to_string(),
                 player_type_names: vec![r.player_type_name.to_string()],
+                doc: r.doc.map(String::from),
+                meta: meta_map(r.meta),
                 ..Default::default()
             })
             .collect();
@@ -109,6 +125,8 @@ impl<'db> SchemaManager<'db> {
                 owned_attributes: owned_entries,
                 roles,
                 plays_cardinalities: BTreeMap::new(),
+                doc: R::DOC.map(String::from),
+                meta: meta_map(R::META),
             },
         );
     }
@@ -212,6 +230,8 @@ impl<'db> SchemaManager<'db> {
                             parent_type: None,
                             owned_attributes: owned,
                             plays_cardinalities: BTreeMap::new(),
+                            doc: None,
+                            meta: Default::default(),
                         },
                     );
                 }
@@ -241,6 +261,8 @@ impl<'db> SchemaManager<'db> {
                             owned_attributes: owned,
                             roles,
                             plays_cardinalities: BTreeMap::new(),
+                            doc: None,
+                            meta: Default::default(),
                         },
                     );
                 }
@@ -276,6 +298,8 @@ impl<'db> SchemaManager<'db> {
                         value_type,
                         annotations: vec![],
                         is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
                     });
                 }
             }
@@ -338,6 +362,7 @@ impl<'db> SchemaManager<'db> {
         let typeql = self
             .generate_schema()
             .map_err(crate::error::OrmError::Schema)?;
+        self.db.check_schema_annotation_support(&typeql)?;
         tracing::debug!(typeql = %typeql, "Syncing schema to database");
         self.db.execute_raw(&typeql, TxType::Schema).await?;
         Ok(())

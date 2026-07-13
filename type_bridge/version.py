@@ -64,8 +64,9 @@ def ensure_runtime_supported(server: str) -> None:
     """Assert the embedded Rust runtime can serve the detected server.
 
     Every TypeBridge transaction executes through the Rust runtime's own
-    typedb-driver, and the default build embeds drivers for the full supported
-    window (3.8–3.11).  Core makes the decision using band-set membership —
+    typedb-driver, and the default build embeds drivers covering the full
+    supported window (3.8–3.12; a 3.12 server is served through its band-8
+    acceptance).  Core makes the decision using band-set intersection —
     the band set is derived from the compiled features in the Rust runtime
     (``check_server_supported`` reads them directly), so any in-window server
     is accepted by the default build.  This wrapper only reframes the failure

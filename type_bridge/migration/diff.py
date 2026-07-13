@@ -72,16 +72,33 @@ class RoleCardinalityChange:
 
 
 @dataclass
+class RoleAnnotationChange:
+    """Represents a change in a role's @doc/@meta annotations (TypeDB 3.12+)."""
+
+    role_name: str
+    doc_changed: tuple[str | None, str | None] | None = None
+    meta_changed: tuple[dict[str, str], dict[str, str]] | None = None
+
+
+@dataclass
 class EntityChanges:
     """Represents changes to an entity type."""
 
     added_attributes: list[str] = field(default_factory=list)
     removed_attributes: list[str] = field(default_factory=list)
     modified_attributes: list[AttributeFlagChange] = field(default_factory=list)
+    doc_changed: tuple[str | None, str | None] | None = None
+    meta_changed: tuple[dict[str, str], dict[str, str]] | None = None
 
     def has_changes(self) -> bool:
         """Check if there are any changes."""
-        return bool(self.added_attributes or self.removed_attributes or self.modified_attributes)
+        return bool(
+            self.added_attributes
+            or self.removed_attributes
+            or self.modified_attributes
+            or self.doc_changed
+            or self.meta_changed
+        )
 
 
 @dataclass
@@ -99,9 +116,12 @@ class RelationChanges:
     removed_roles: list[str] = field(default_factory=list)
     modified_role_players: list[RolePlayerChange] = field(default_factory=list)
     modified_role_cardinality: list[RoleCardinalityChange] = field(default_factory=list)
+    modified_role_annotations: list[RoleAnnotationChange] = field(default_factory=list)
     added_attributes: list[str] = field(default_factory=list)
     removed_attributes: list[str] = field(default_factory=list)
     modified_attributes: list[AttributeFlagChange] = field(default_factory=list)
+    doc_changed: tuple[str | None, str | None] | None = None
+    meta_changed: tuple[dict[str, str], dict[str, str]] | None = None
 
     def has_changes(self) -> bool:
         """Check if there are any changes."""
@@ -110,9 +130,12 @@ class RelationChanges:
             or self.removed_roles
             or self.modified_role_players
             or self.modified_role_cardinality
+            or self.modified_role_annotations
             or self.added_attributes
             or self.removed_attributes
             or self.modified_attributes
+            or self.doc_changed
+            or self.meta_changed
         )
 
 
@@ -372,7 +395,23 @@ def _entity_changes_from_rust(changes: dict[str, Any]) -> EntityChanges:
             AttributeFlagChange(name=name, old_flags=old_flags, new_flags=new_flags)
             for name, old_flags, new_flags in changes.get("modified_attributes", [])
         ],
+        doc_changed=_doc_changed_from_rust(changes.get("doc_changed")),
+        meta_changed=_meta_changed_from_rust(changes.get("meta_changed")),
     )
+
+
+def _doc_changed_from_rust(value: Any) -> tuple[str | None, str | None] | None:
+    if value is None:
+        return None
+    old, new = value
+    return (old, new)
+
+
+def _meta_changed_from_rust(value: Any) -> tuple[dict[str, str], dict[str, str]] | None:
+    if value is None:
+        return None
+    old, new = value
+    return (dict(old), dict(new))
 
 
 def _relation_changes_from_rust(changes: dict[str, Any]) -> RelationChanges:
@@ -401,6 +440,16 @@ def _relation_changes_from_rust(changes: dict[str, Any]) -> RelationChanges:
             AttributeFlagChange(name=name, old_flags=old_flags, new_flags=new_flags)
             for name, old_flags, new_flags in changes.get("modified_attributes", [])
         ],
+        modified_role_annotations=[
+            RoleAnnotationChange(
+                role_name=change["role_name"],
+                doc_changed=_doc_changed_from_rust(change.get("doc_changed")),
+                meta_changed=_meta_changed_from_rust(change.get("meta_changed")),
+            )
+            for change in changes.get("modified_role_annotations", [])
+        ],
+        doc_changed=_doc_changed_from_rust(changes.get("doc_changed")),
+        meta_changed=_meta_changed_from_rust(changes.get("meta_changed")),
     )
 
 
@@ -414,6 +463,8 @@ def _entity_changes_to_rust(changes: EntityChanges) -> dict[str, Any]:
         ],
         "abstract_changed": None,
         "parent_changed": None,
+        "doc_changed": changes.doc_changed,
+        "meta_changed": changes.meta_changed,
     }
 
 
@@ -443,8 +494,18 @@ def _relation_changes_to_rust(changes: RelationChanges) -> dict[str, Any]:
             }
             for change in changes.modified_role_cardinality
         ],
+        "modified_role_annotations": [
+            {
+                "role_name": change.role_name,
+                "doc_changed": change.doc_changed,
+                "meta_changed": change.meta_changed,
+            }
+            for change in changes.modified_role_annotations
+        ],
         "abstract_changed": None,
         "parent_changed": None,
+        "doc_changed": changes.doc_changed,
+        "meta_changed": changes.meta_changed,
     }
 
 
@@ -458,6 +519,8 @@ def _attribute_type_changed_fields(changes: dict[str, Any]) -> list[str]:
         ("regex_changed", "regex"),
         ("allowed_values_changed", "values"),
         ("range_changed", "range"),
+        ("doc_changed", "doc"),
+        ("meta_changed", "meta"),
     ):
         if changes.get(key) is not None:
             names.append(label)

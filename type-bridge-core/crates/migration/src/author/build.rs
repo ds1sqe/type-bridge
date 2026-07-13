@@ -270,6 +270,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: BTreeMap::new(),
             },
         );
         info
@@ -466,8 +468,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![type_bridge_orm::Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: BTreeMap::new(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: BTreeMap::new(),
             },
         );
         let mut target = SchemaInfo::default();
@@ -486,8 +492,12 @@ mod tests {
                     value_type: ValueType::String,
                     annotations: vec![type_bridge_orm::Annotation::Key],
                     is_ordered: false,
+                    doc: None,
+                    meta: BTreeMap::new(),
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: BTreeMap::new(),
             },
         );
 

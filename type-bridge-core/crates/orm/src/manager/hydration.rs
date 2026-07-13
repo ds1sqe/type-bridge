@@ -572,7 +572,11 @@ mod tests {
                 annotations: vec![],
                 is_optional: false,
                 is_ordered: false,
+                doc: None,
+                meta: Default::default(),
             }],
+            doc: None,
+            meta: Default::default(),
         };
         let doc = serde_json::json!({
             "_iid": "0x123",

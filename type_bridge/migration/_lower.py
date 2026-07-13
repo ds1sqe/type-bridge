@@ -171,6 +171,25 @@ def _operation_spec(operation: ops.Operation) -> dict[str, Any]:
             "old_annotations": operation.old_annotations,
             "new_annotations": operation.new_annotations,
         }
+    if isinstance(operation, ops.ModifyTypeAnnotations):
+        return {
+            "kind": "modify_type_annotations",
+            "type_name": _subject_name(operation.subject),
+            "old_doc": operation.old_doc,
+            "new_doc": operation.new_doc,
+            "old_meta": dict(operation.old_meta),
+            "new_meta": dict(operation.new_meta),
+        }
+    if isinstance(operation, ops.ModifyRoleAnnotations):
+        return {
+            "kind": "modify_role_annotations",
+            "relation_type": _type_name(operation.relation),
+            "role_name": operation.role_name,
+            "old_doc": operation.old_doc,
+            "new_doc": operation.new_doc,
+            "old_meta": dict(operation.old_meta),
+            "new_meta": dict(operation.new_meta),
+        }
     if isinstance(operation, ops.AddRelation):
         relation = _model_class(operation.relation)
         return {
@@ -292,6 +311,13 @@ def _attribute_class(value: object) -> type[Any]:
             "when no sidecar execution spec is present"
         )
     return value
+
+
+def _subject_name(value: object) -> str:
+    """Resolve a type name from an entity/relation model, attribute class, or ref."""
+    if getattr(value, "get_type_name", None) is not None:
+        return _type_name(value)
+    return _attribute_name(value)
 
 
 def _type_name(value: object) -> str:

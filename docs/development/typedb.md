@@ -15,38 +15,62 @@ This guide covers TypeDB-specific concepts, driver API, TypeQL syntax, and integ
 
 ### Support window
 
-TypeBridge supports TypeDB servers in the **3.8.x through 3.11.x** range. There is no
+TypeBridge supports TypeDB servers in the **3.8.x through 3.12.x** range. There is no
 published 3.9 line (TypeDB skipped it); verified available tags are `3.8.3`, `3.10.4`,
-and `3.11.5`. Server `3.7.x` is protocol-compatible with band 7 (see below) but falls
-below the declared floor and is not supported.
+`3.11.5`, and `3.12.0`. Server `3.7.x` is protocol-compatible with band 7 (see below)
+but falls below the declared floor and is not supported.
 
 ### Protocol bands
 
-TypeDB uses a protocol-band model. Compatibility is measured between driver and server
-within a band; cross-band connections always fail at connect time.
+TypeDB uses a protocol-band model. A driver natively speaks exactly one band; a server
+accepts a *set* of bands, and a connection succeeds only when the server accepts the
+driver's band. Through 3.11 every server accepted exactly its own band, so cross-band
+connections always failed. Starting with 3.12 acceptance is asymmetric (measured live):
+server 3.12 retains backward compatibility with band-8 drivers, while a band-9 (3.12)
+driver is refused by a 3.11 server at connect.
 
-| Band | Server / driver versions | Intra-band interop |
-|------|--------------------------|--------------------|
-| 7    | 3.7\*, 3.8, 3.10         | Full (3.7 is below the support floor) |
-| 8    | 3.11                     | Full |
+| Band | Driver versions | Servers accepting it |
+|------|-----------------|----------------------|
+| 7    | 3.7\*, 3.8, 3.10 | 3.7\*, 3.8, 3.10 |
+| 8    | 3.11            | 3.11, 3.12 |
+| 9    | 3.12            | 3.12 |
 
-\* 3.7 is protocol-compatible with band 7 but unsupported. The band map is declared once
-in `crates/core`'s version module and consumed by every tier.
+\* 3.7 is protocol-compatible with band 7 but unsupported. The band and acceptance maps
+are declared once in `crates/core`'s version module and consumed by every tier.
 
 ### Dual-band runtime
 
 TypeBridge's wheel embeds both TypeDB Rust driver lines — band-7 (3.8.1, vendored fork)
-and band-8 (3.11.5, upstream) — and dispatches to the correct driver at connect time based
-on the server's protocol band. A single type-bridge release therefore serves the full
-supported window without any user-side configuration.
+and band-8 (3.11.5, upstream) — and negotiates the connect band from the server's
+accepted-band set at connect time. A 3.12 server is served through its band-8
+acceptance; no band-9 driver needs to be embedded. A single type-bridge release
+therefore serves the full supported window without any user-side configuration.
 
-**This release line** serves TypeDB 3.8 through 3.11:
+**This release line** serves TypeDB 3.8 through 3.12:
 
 | Dimension | Supported range | Notes |
 |-----------|-----------------|-------|
-| TypeDB server | 3.8.0–3.11.x | Band-7 (3.8.x, 3.10.x) and band-8 (3.11.x); dispatch is automatic |
-| Python `typedb-driver` | `~=3.11` (e.g. 3.11.5) | The `dev` extra pins `~=3.11.5`; the `typedb-driver` extra allows `>=3.8,<3.12`. This is the installed Python driver used for direct driver APIs and tests — it does not control which TypeDB server you can connect to via the ORM |
+| TypeDB server | 3.8.0–3.12.x | Band-7 (3.8.x, 3.10.x), band-8 (3.11.x), and dual-band (3.12.x) servers; dispatch is automatic |
+| Python `typedb-driver` | `~=3.11` (e.g. 3.11.5) | The `dev` extra pins `~=3.11.5`; the `typedb-driver` extra allows `>=3.8,<3.13`. This is the installed Python driver used for direct driver APIs and tests — it does not control which TypeDB server you can connect to via the ORM |
 | CPython interpreter | 3.12–3.13 | Floor: PEP 695 syntax in the codebase; ceiling tracks the highest CPython the typedb-driver publishes wheels for |
+
+### Feature gates vs. the version window
+
+The support window says which servers TypeBridge *connects to*; individual
+TypeDB features can still require a newer server within that window. Feature
+requirements are declared in `crates/core`'s version module (`Feature`) and
+checked client-side against the server version detected at connect time, so
+a feature used against a too-old server fails with a versioned TypeBridge
+error naming both versions — never a server-side syntax error.
+
+Current feature gates:
+
+| Feature | Minimum server | Gated surfaces |
+|---------|----------------|----------------|
+| `@doc`/`@meta` schema annotations | 3.12.0 | `SchemaManager.sync_schema`, migration executor steps |
+
+When the server version is unknown (band-7 gRPC fallback without a
+`server_version=` pin), gated DDL is sent as-is and the server decides.
 
 ### Update-safety contract
 

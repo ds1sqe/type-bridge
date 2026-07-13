@@ -29,6 +29,8 @@ class IntrospectedAttribute:
     regex: str | None = None
     allowed_values: list[str] | None = None
     range: list[str | None] | tuple[str | None, str | None] | None = None
+    doc: str | None = None
+    meta: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -41,6 +43,8 @@ class IntrospectedOwnership:
     # older/hand-built paths may still deliver legacy strings (@key, @unique, @card).
     # Both forms are accepted so downstream comparison is form-agnostic.
     annotations: list[object] = field(default_factory=list)
+    doc: str | None = None
+    meta: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -50,6 +54,8 @@ class IntrospectedRole:
     name: str
     player_types: list[str] = field(default_factory=list)
     cardinality: object | None = None
+    doc: str | None = None
+    meta: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -60,6 +66,8 @@ class IntrospectedRelation:
     roles: dict[str, IntrospectedRole] = field(default_factory=dict)
     supertype: str | None = None
     is_abstract: bool = False
+    doc: str | None = None
+    meta: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -69,6 +77,8 @@ class IntrospectedEntity:
     name: str
     supertype: str | None = None
     is_abstract: bool = False
+    doc: str | None = None
+    meta: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -126,6 +136,8 @@ class IntrospectedSchema:
                 if attr.get("allowed_values") is not None
                 else None,
                 range=attr.get("range"),
+                doc=attr.get("doc"),
+                meta=dict(attr.get("meta", {}) or {}),
             )
 
         for entity_name, entity in info.get("entities", {}).items():
@@ -133,6 +145,8 @@ class IntrospectedSchema:
                 name=entity_name,
                 supertype=entity.get("parent_type"),
                 is_abstract=bool(entity.get("is_abstract", False)),
+                doc=entity.get("doc"),
+                meta=dict(entity.get("meta", {}) or {}),
             )
             schema._add_ownerships_from_rust_entry(entity_name, entity)
 
@@ -141,6 +155,8 @@ class IntrospectedSchema:
                 name=relation_name,
                 supertype=relation.get("parent_type"),
                 is_abstract=bool(relation.get("is_abstract", False)),
+                doc=relation.get("doc"),
+                meta=dict(relation.get("meta", {}) or {}),
             )
             for role in relation.get("roles", []):
                 role_name = role["role_name"]
@@ -148,6 +164,8 @@ class IntrospectedSchema:
                     name=role_name,
                     player_types=list(role.get("player_type_names", [])),
                     cardinality=role.get("cardinality"),
+                    doc=role.get("doc"),
+                    meta=dict(role.get("meta", {}) or {}),
                 )
             schema._add_ownerships_from_rust_entry(relation_name, relation)
 
@@ -160,6 +178,8 @@ class IntrospectedSchema:
                     owner_name=owner_name,
                     attribute_name=attr["attr_name"],
                     annotations=list(attr.get("annotations", [])),
+                    doc=attr.get("doc"),
+                    meta=dict(attr.get("meta", {}) or {}),
                 )
             )
 
@@ -185,6 +205,7 @@ class IntrospectedSchema:
                 "parent_type": entity.supertype,
                 "owned_attributes": self._owned_attributes_for(entity_name, info),
             }
+            _add_doc_meta(info["entities"][entity_name], entity.doc, entity.meta)
 
         for relation_name, relation in self.relations.items():
             if relation_name == "relation":
@@ -194,17 +215,9 @@ class IntrospectedSchema:
                 "is_abstract": relation.is_abstract,
                 "parent_type": relation.supertype,
                 "owned_attributes": self._owned_attributes_for(relation_name, info),
-                "roles": [
-                    {
-                        "role_name": role.name,
-                        "player_type_names": [
-                            _player_type_name(player) for player in role.player_types
-                        ],
-                        "cardinality": role.cardinality,
-                    }
-                    for role in relation.roles.values()
-                ],
+                "roles": [_role_entry_to_rust(role) for role in relation.roles.values()],
             }
+            _add_doc_meta(info["relations"][relation_name], relation.doc, relation.meta)
 
         return info
 
@@ -219,13 +232,13 @@ class IntrospectedSchema:
             )
             if attr is not None:
                 _add_attribute_metadata(info["attributes"][ownership.attribute_name], attr)
-            attrs.append(
-                {
-                    "attr_name": ownership.attribute_name,
-                    "value_type": value_type,
-                    "annotations": [_rust_annotation(ann) for ann in ownership.annotations],
-                }
-            )
+            owned_entry = {
+                "attr_name": ownership.attribute_name,
+                "value_type": value_type,
+                "annotations": [_rust_annotation(ann) for ann in ownership.annotations],
+            }
+            _add_doc_meta(owned_entry, ownership.doc, ownership.meta)
+            attrs.append(owned_entry)
         return attrs
 
 
@@ -244,6 +257,24 @@ def _rust_value_type(value_type: str) -> str:
     }.get(value_type, "string")
 
 
+def _add_doc_meta(entry: dict, doc: str | None, meta: dict[str, str]) -> None:
+    """Copy @doc/@meta (TypeDB 3.12+) into a Rust SchemaInfo entry when set."""
+    if doc is not None:
+        entry["doc"] = doc
+    if meta:
+        entry["meta"] = dict(meta)
+
+
+def _role_entry_to_rust(role: IntrospectedRole) -> dict:
+    entry = {
+        "role_name": role.name,
+        "player_type_names": [_player_type_name(player) for player in role.player_types],
+        "cardinality": role.cardinality,
+    }
+    _add_doc_meta(entry, role.doc, role.meta)
+    return entry
+
+
 def _add_attribute_metadata(entry: dict, attr: IntrospectedAttribute) -> None:
     if attr.parent_type is not None:
         entry["parent_type"] = attr.parent_type
@@ -255,6 +286,7 @@ def _add_attribute_metadata(entry: dict, attr: IntrospectedAttribute) -> None:
         entry["regex"] = attr.regex
     if attr.allowed_values is not None:
         entry["allowed_values"] = list(attr.allowed_values)
+    _add_doc_meta(entry, attr.doc, attr.meta)
     if attr.range is not None:
         bounds = list(attr.range)
         if len(bounds) == 2:

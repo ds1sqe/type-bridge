@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::attribute::ValueType;
 
+use super::annotations;
 use super::info::{AttributeSchemaEntry, OwnedAttributeEntry, SchemaInfo};
 
 /// Severity assigned to a schema change.
@@ -31,6 +32,15 @@ pub struct ClassifiedChange {
     pub recommendation: String,
 }
 
+/// A `@meta` annotation map, keyed by meta key.
+type MetaMap = BTreeMap<String, String>;
+
+/// An `@doc` change as `(old, new)`, each side optional.
+type DocChange = Option<(Option<String>, Option<String>)>;
+
+/// A `@meta` map change as `(old, new)`.
+type MetaChange = Option<(MetaMap, MetaMap)>;
+
 /// Changes detected for an entity type.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EntityChanges {
@@ -44,6 +54,12 @@ pub struct EntityChanges {
     pub abstract_changed: Option<(bool, bool)>,
     /// Parent type changed: (old, new).
     pub parent_changed: Option<(Option<String>, Option<String>)>,
+    /// Type-level `@doc` annotation changed: (old, new). TypeDB 3.12+.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_changed: DocChange,
+    /// Type-level `@meta` annotations changed: (old, new). TypeDB 3.12+.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_changed: MetaChange,
 }
 
 /// Changes detected for a relation type.
@@ -63,10 +79,19 @@ pub struct RelationChanges {
     pub modified_role_players: Vec<RolePlayerChange>,
     /// Cardinality changed on existing roles.
     pub modified_role_cardinality: Vec<RoleCardinalityChange>,
+    /// `@doc`/`@meta` changed on existing roles. TypeDB 3.12+.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modified_role_annotations: Vec<RoleAnnotationChange>,
     /// Abstract flag changed: (old, new).
     pub abstract_changed: Option<(bool, bool)>,
     /// Parent type changed: (old, new).
     pub parent_changed: Option<(Option<String>, Option<String>)>,
+    /// Type-level `@doc` annotation changed: (old, new). TypeDB 3.12+.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_changed: DocChange,
+    /// Type-level `@meta` annotations changed: (old, new). TypeDB 3.12+.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_changed: MetaChange,
 }
 
 /// An optional list-of-strings constraint value (absent when unconstrained).
@@ -95,6 +120,12 @@ pub struct AttributeTypeChanges {
     pub allowed_values_changed: Option<(OptStringList, OptStringList)>,
     /// Range constraint changed: (old, new).
     pub range_changed: Option<(OptRange, OptRange)>,
+    /// Type-level `@doc` annotation changed: (old, new). TypeDB 3.12+.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_changed: DocChange,
+    /// Type-level `@meta` annotations changed: (old, new). TypeDB 3.12+.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_changed: MetaChange,
 }
 
 impl AttributeTypeChanges {
@@ -106,6 +137,20 @@ impl AttributeTypeChanges {
             || self.regex_changed.is_some()
             || self.allowed_values_changed.is_some()
             || self.range_changed.is_some()
+            || self.doc_changed.is_some()
+            || self.meta_changed.is_some()
+    }
+
+    /// Whether the only changes are `@doc`/`@meta` annotations.
+    pub fn is_annotation_only(&self) -> bool {
+        self.has_changes()
+            && self.value_type_changed.is_none()
+            && self.parent_changed.is_none()
+            && self.abstract_changed.is_none()
+            && self.independent_changed.is_none()
+            && self.regex_changed.is_none()
+            && self.allowed_values_changed.is_none()
+            && self.range_changed.is_none()
     }
 }
 
@@ -118,6 +163,19 @@ pub struct RolePlayerChange {
     pub added_player_types: Vec<String>,
     /// Player types removed in the new schema.
     pub removed_player_types: Vec<String>,
+}
+
+/// Change in one role's `@doc`/`@meta` annotations. TypeDB 3.12+.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleAnnotationChange {
+    /// Role name.
+    pub role_name: String,
+    /// `@doc` annotation changed: (old, new).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_changed: DocChange,
+    /// `@meta` annotations changed: (old, new).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_changed: MetaChange,
 }
 
 /// Change in one role's cardinality.
@@ -240,6 +298,13 @@ impl SchemaDiff {
                     "Review type hierarchy changes for compatibility",
                 ));
             }
+            if entity_changes.doc_changed.is_some() || entity_changes.meta_changed.is_some() {
+                changes.push(classified(
+                    ChangeCategory::Safe,
+                    format!("Modify doc/meta annotations for entity '{entity}'"),
+                    "No action needed - documentation metadata only",
+                ));
+            }
         }
 
         for relation in &self.added_relations {
@@ -302,6 +367,16 @@ impl SchemaDiff {
             for cardinality_change in &relation_changes.modified_role_cardinality {
                 changes.extend(classify_cardinality_change(relation, cardinality_change));
             }
+            for annotation_change in &relation_changes.modified_role_annotations {
+                changes.push(classified(
+                    ChangeCategory::Safe,
+                    format!(
+                        "Modify doc/meta annotations for role '{}' in relation '{relation}'",
+                        annotation_change.role_name
+                    ),
+                    "No action needed - documentation metadata only",
+                ));
+            }
             for attr_name in &relation_changes.added_attributes {
                 changes.push(classified(
                     ChangeCategory::Warning,
@@ -344,6 +419,13 @@ impl SchemaDiff {
                     "Review relation hierarchy changes for compatibility",
                 ));
             }
+            if relation_changes.doc_changed.is_some() || relation_changes.meta_changed.is_some() {
+                changes.push(classified(
+                    ChangeCategory::Safe,
+                    format!("Modify doc/meta annotations for relation '{relation}'"),
+                    "No action needed - documentation metadata only",
+                ));
+            }
         }
 
         for attr in &self.added_attributes {
@@ -361,14 +443,22 @@ impl SchemaDiff {
             ));
         }
         for (attr, attr_changes) in &self.modified_attributes {
-            changes.push(classified(
-                ChangeCategory::Breaking,
-                format!(
-                    "Modify attribute type '{attr}': {}",
-                    attribute_type_change_summary(attr_changes)
-                ),
-                "Review existing data before changing attribute type constraints",
-            ));
+            if attr_changes.is_annotation_only() {
+                changes.push(classified(
+                    ChangeCategory::Safe,
+                    format!("Modify doc/meta annotations for attribute type '{attr}'"),
+                    "No action needed - documentation metadata only",
+                ));
+            } else {
+                changes.push(classified(
+                    ChangeCategory::Breaking,
+                    format!(
+                        "Modify attribute type '{attr}': {}",
+                        attribute_type_change_summary(attr_changes)
+                    ),
+                    "Review existing data before changing attribute type constraints",
+                ));
+            }
         }
 
         changes
@@ -401,6 +491,12 @@ impl SchemaDiff {
             }
             for (attr, old, new) in &changes.modified_attributes {
                 lines.push(format!("~ entity {name}: ~ owns {attr} ({old} -> {new})"));
+            }
+            if changes.doc_changed.is_some() {
+                lines.push(format!("~ entity {name}: doc"));
+            }
+            if changes.meta_changed.is_some() {
+                lines.push(format!("~ entity {name}: meta"));
             }
         }
 
@@ -449,11 +545,31 @@ impl SchemaDiff {
                     cardinality_change.new_cardinality
                 ));
             }
+            for annotation_change in &changes.modified_role_annotations {
+                let mut parts = Vec::new();
+                if annotation_change.doc_changed.is_some() {
+                    parts.push("doc");
+                }
+                if annotation_change.meta_changed.is_some() {
+                    parts.push("meta");
+                }
+                lines.push(format!(
+                    "~ relation {name}: ~ role {} {}",
+                    annotation_change.role_name,
+                    parts.join(", ")
+                ));
+            }
             for attr in &changes.added_attributes {
                 lines.push(format!("~ relation {name}: + owns {attr}"));
             }
             for attr in &changes.removed_attributes {
                 lines.push(format!("~ relation {name}: - owns {attr}"));
+            }
+            if changes.doc_changed.is_some() {
+                lines.push(format!("~ relation {name}: doc"));
+            }
+            if changes.meta_changed.is_some() {
+                lines.push(format!("~ relation {name}: meta"));
             }
         }
 
@@ -504,12 +620,16 @@ impl SchemaDiff {
                     changes.parent_changed =
                         Some((old_entry.parent_type.clone(), new_entry.parent_type.clone()));
                 }
+                changes.doc_changed = doc_change(&old_entry.doc, &new_entry.doc);
+                changes.meta_changed = meta_change(&old_entry.meta, &new_entry.meta);
 
                 if !changes.added_attributes.is_empty()
                     || !changes.removed_attributes.is_empty()
                     || !changes.modified_attributes.is_empty()
                     || changes.abstract_changed.is_some()
                     || changes.parent_changed.is_some()
+                    || changes.doc_changed.is_some()
+                    || changes.meta_changed.is_some()
                 {
                     diff.modified_entities.insert(name.clone(), changes);
                 }
@@ -547,6 +667,7 @@ impl SchemaDiff {
                 let mut removed_roles = Vec::new();
                 let mut modified_role_players = Vec::new();
                 let mut modified_role_cardinality = Vec::new();
+                let mut modified_role_annotations = Vec::new();
 
                 for role in new_roles.keys() {
                     if !old_roles.contains_key(role) {
@@ -595,6 +716,16 @@ impl SchemaDiff {
                                 new_cardinality: new_role.cardinality,
                             });
                         }
+
+                        let role_doc_changed = doc_change(&old_role.doc, &new_role.doc);
+                        let role_meta_changed = meta_change(&old_role.meta, &new_role.meta);
+                        if role_doc_changed.is_some() || role_meta_changed.is_some() {
+                            modified_role_annotations.push(RoleAnnotationChange {
+                                role_name: (*role_name).to_string(),
+                                doc_changed: role_doc_changed,
+                                meta_changed: role_meta_changed,
+                            });
+                        }
                     }
                 }
 
@@ -608,6 +739,8 @@ impl SchemaDiff {
                 } else {
                     None
                 };
+                let doc_changed = doc_change(&old_entry.doc, &new_entry.doc);
+                let meta_changed = meta_change(&old_entry.meta, &new_entry.meta);
 
                 if !attr_changes.added_attributes.is_empty()
                     || !attr_changes.removed_attributes.is_empty()
@@ -616,8 +749,11 @@ impl SchemaDiff {
                     || !removed_roles.is_empty()
                     || !modified_role_players.is_empty()
                     || !modified_role_cardinality.is_empty()
+                    || !modified_role_annotations.is_empty()
                     || abstract_changed.is_some()
                     || parent_changed.is_some()
+                    || doc_changed.is_some()
+                    || meta_changed.is_some()
                 {
                     diff.modified_relations.insert(
                         name.clone(),
@@ -629,8 +765,11 @@ impl SchemaDiff {
                             removed_roles,
                             modified_role_players,
                             modified_role_cardinality,
+                            modified_role_annotations,
                             abstract_changed,
                             parent_changed,
+                            doc_changed,
+                            meta_changed,
                         },
                     );
                 }
@@ -684,6 +823,12 @@ fn attribute_type_change_summary(changes: &AttributeTypeChanges) -> String {
     if changes.range_changed.is_some() {
         parts.push("range");
     }
+    if changes.doc_changed.is_some() {
+        parts.push("doc");
+    }
+    if changes.meta_changed.is_some() {
+        parts.push("meta");
+    }
     parts.join(", ")
 }
 
@@ -704,6 +849,10 @@ fn option_label(value: &Option<String>) -> &str {
 }
 
 fn classify_attribute_flag_change(old_flags: &str, new_flags: &str) -> ChangeCategory {
+    // A change that only touches @doc/@meta is metadata-only.
+    if annotations::constraint_part(old_flags) == annotations::constraint_part(new_flags) {
+        return ChangeCategory::Safe;
+    }
     let added_key = !old_flags.contains("@key") && new_flags.contains("@key");
     let added_unique = !old_flags.contains("@unique") && new_flags.contains("@unique");
     if added_key || added_unique {
@@ -808,8 +957,20 @@ fn diff_attribute_type(
     if old_entry.range != new_entry.range {
         changes.range_changed = Some((old_entry.range.clone(), new_entry.range.clone()));
     }
+    changes.doc_changed = doc_change(&old_entry.doc, &new_entry.doc);
+    changes.meta_changed = meta_change(&old_entry.meta, &new_entry.meta);
 
     changes
+}
+
+/// Produce an `@doc` change pair when the values differ.
+fn doc_change(old: &Option<String>, new: &Option<String>) -> DocChange {
+    (old != new).then(|| (old.clone(), new.clone()))
+}
+
+/// Produce a `@meta` change pair when the maps differ.
+fn meta_change(old: &MetaMap, new: &MetaMap) -> MetaChange {
+    (old != new).then(|| (old.clone(), new.clone()))
 }
 
 /// Compare two lists of owned attributes and produce entity-level changes.
@@ -867,6 +1028,8 @@ mod tests {
             value_type: vt,
             annotations,
             is_ordered: false,
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -877,6 +1040,8 @@ mod tests {
             parent_type: None,
             owned_attributes: attrs,
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -912,6 +1077,8 @@ mod tests {
                 })
                 .collect(),
             plays_cardinalities: BTreeMap::new(),
+            doc: None,
+            meta: Default::default(),
         }
     }
 
@@ -1155,6 +1322,8 @@ mod tests {
                 parent_type: None,
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1181,6 +1350,8 @@ mod tests {
                 parent_type: Some("animal".into()),
                 owned_attributes: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1210,6 +1381,8 @@ mod tests {
                 owned_attributes: vec![],
                 roles: vec![],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1262,6 +1435,8 @@ mod tests {
                     ..Default::default()
                 }],
                 plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
             },
         );
 
@@ -1366,6 +1541,8 @@ mod tests {
                     ],
                     abstract_changed: None,
                     parent_changed: None,
+                    doc_changed: None,
+                    meta_changed: None,
                 },
             )]),
             modified_relations: BTreeMap::from([(
@@ -1397,8 +1574,11 @@ mod tests {
                         "@card(0..1)".into(),
                         "@card(1..1)".into(),
                     )],
+                    modified_role_annotations: vec![],
                     abstract_changed: None,
                     parent_changed: None,
+                    doc_changed: None,
+                    meta_changed: None,
                 },
             )]),
             modified_attributes: BTreeMap::from([(
@@ -1465,5 +1645,134 @@ mod tests {
                     && change.description.contains("Relax cardinality"))
         );
         assert!(diff.has_breaking_changes());
+    }
+
+    fn meta(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn detect_entity_doc_meta_changes_as_safe() {
+        let mut old = SchemaInfo::default();
+        old.entities
+            .insert("person".into(), make_entity("person", vec![]));
+
+        let mut new = SchemaInfo::default();
+        let mut person = make_entity("person", vec![]);
+        person.doc = Some("A person.".into());
+        person.meta = meta(&[("owner", "core")]);
+        new.entities.insert("person".into(), person);
+
+        let diff = SchemaDiff::compute(&old, &new);
+        let changes = diff.modified_entities.get("person").unwrap();
+        assert_eq!(changes.doc_changed, Some((None, Some("A person.".into()))));
+        assert_eq!(
+            changes.meta_changed,
+            Some((meta(&[]), meta(&[("owner", "core")])))
+        );
+        assert!(!diff.has_breaking_changes());
+        assert!(diff.classify().iter().all(|c| c.category == ChangeCategory::Safe));
+        assert!(diff.summary().contains("~ entity person: doc"));
+        assert!(diff.summary().contains("~ entity person: meta"));
+    }
+
+    #[test]
+    fn detect_relation_and_role_doc_meta_changes_as_safe() {
+        let mut old = SchemaInfo::default();
+        old.relations.insert(
+            "employment".into(),
+            make_relation("employment", vec![], vec![("employee", "person")]),
+        );
+
+        let mut new = SchemaInfo::default();
+        let mut relation = make_relation("employment", vec![], vec![("employee", "person")]);
+        relation.doc = Some("Employment relation.".into());
+        relation.roles[0].doc = Some("The employed party.".into());
+        relation.roles[0].meta = meta(&[("side", "a")]);
+        new.relations.insert("employment".into(), relation);
+
+        let diff = SchemaDiff::compute(&old, &new);
+        let changes = diff.modified_relations.get("employment").unwrap();
+        assert_eq!(
+            changes.doc_changed,
+            Some((None, Some("Employment relation.".into())))
+        );
+        assert_eq!(
+            changes.modified_role_annotations,
+            vec![RoleAnnotationChange {
+                role_name: "employee".into(),
+                doc_changed: Some((None, Some("The employed party.".into()))),
+                meta_changed: Some((meta(&[]), meta(&[("side", "a")]))),
+            }]
+        );
+        assert!(!diff.has_breaking_changes());
+        assert!(diff.summary().contains("~ relation employment: ~ role employee doc, meta"));
+    }
+
+    #[test]
+    fn detect_attribute_type_doc_meta_changes_as_annotation_only() {
+        let mut old = SchemaInfo::default();
+        old.attributes.insert(
+            "name".into(),
+            AttributeSchemaEntry::new("name", ValueType::String),
+        );
+
+        let mut new = SchemaInfo::default();
+        let mut entry = AttributeSchemaEntry::new("name", ValueType::String);
+        entry.doc = Some("A name.".into());
+        new.attributes.insert("name".into(), entry);
+
+        let diff = SchemaDiff::compute(&old, &new);
+        let changes = diff.modified_attributes.get("name").unwrap();
+        assert!(changes.is_annotation_only());
+        assert_eq!(changes.doc_changed, Some((None, Some("A name.".into()))));
+        assert!(!diff.has_breaking_changes());
+        assert!(diff.summary().contains("~ attribute name: doc"));
+    }
+
+    #[test]
+    fn ownership_doc_meta_changes_ride_flag_string_triples() {
+        let mut old_attr = make_attr("name", ValueType::String, vec![Annotation::Key]);
+        old_attr.doc = Some("old ownership doc".into());
+        let mut new_attr = make_attr("name", ValueType::String, vec![Annotation::Key]);
+        new_attr.doc = Some("new ownership doc".into());
+        new_attr.meta = meta(&[("column", "name")]);
+
+        let mut old = SchemaInfo::default();
+        old.entities
+            .insert("person".into(), make_entity("person", vec![old_attr]));
+        let mut new = SchemaInfo::default();
+        new.entities
+            .insert("person".into(), make_entity("person", vec![new_attr]));
+
+        let diff = SchemaDiff::compute(&old, &new);
+        let changes = diff.modified_entities.get("person").unwrap();
+        assert_eq!(changes.modified_attributes.len(), 1);
+        let (attr_name, old_flags, new_flags) = &changes.modified_attributes[0];
+        assert_eq!(attr_name, "name");
+        assert!(old_flags.contains("@doc(\"old ownership doc\")"));
+        assert!(new_flags.contains("@doc(\"new ownership doc\")"));
+        assert!(new_flags.contains("@meta(\"column\", \"name\")"));
+        // A doc/meta-only flag change is metadata-only: Safe, not Warning.
+        assert!(!diff.has_breaking_changes());
+        assert!(diff.classify().iter().all(|c| c.category == ChangeCategory::Safe));
+    }
+
+    #[test]
+    fn constraint_flag_change_with_doc_still_warns() {
+        assert_eq!(
+            classify_attribute_flag_change(
+                "@card(0..1) @doc(\"same\")",
+                "@card(1..1) @doc(\"same\")"
+            ),
+            ChangeCategory::Warning
+        );
+        assert_eq!(
+            classify_attribute_flag_change("@card(0..1)", "@card(0..1) @doc(\"added\")"),
+            ChangeCategory::Safe
+        );
     }
 }

@@ -16,6 +16,10 @@ export interface TypeFlagsOptions {
   abstract?: boolean;
   base?: boolean;
   case?: TypeNameCase;
+  /** TypeDB 3.12+ `@doc("...")` documentation for the type. */
+  doc?: string | null;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, one value per key. */
+  meta?: Record<string, string>;
 }
 
 export interface ResolvedTypeFlags {
@@ -23,16 +27,24 @@ export interface ResolvedTypeFlags {
   readonly abstract: boolean;
   readonly base: boolean;
   readonly case: TypeNameCase;
+  readonly doc: string | null;
+  readonly meta: Record<string, string>;
 }
 
 export interface AttributeFlagsOptions {
   name?: string | null;
   case?: TypeNameCase | null;
+  /** TypeDB 3.12+ `@doc("...")` documentation for the attribute type. */
+  doc?: string | null;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations, one value per key. */
+  meta?: Record<string, string>;
 }
 
 export interface ResolvedAttributeFlags {
   readonly name: string | null;
   readonly case: TypeNameCase | null;
+  readonly doc: string | null;
+  readonly meta: Record<string, string>;
 }
 
 export interface CardSpec<Min extends number = number, Max extends number | null = number | null> {
@@ -47,6 +59,10 @@ export interface FlagSpec {
   readonly cardinality: [number, number | null] | null;
   readonly isOrdered: boolean;
   readonly isDistinct: boolean;
+  /** TypeDB 3.12+ `@doc("...")` documentation for the ownership. */
+  readonly doc: string | null;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations for the ownership. */
+  readonly meta: Record<string, string>;
 }
 
 /** Marks a field as the type's key attribute (implies cardinality `[1, 1]`). */
@@ -58,7 +74,38 @@ export const Ordered = "Ordered";
 /** Emits `@distinct` on the owns clause. Requires `Ordered`. Schema-only. */
 export const Distinct = "Distinct";
 
-export type FlagInput = typeof Key | typeof Unique | typeof Ordered | typeof Distinct | CardSpec | FlagSpec;
+/** TypeDB 3.12+ `@doc("...")` marker for one ownership. */
+export interface DocSpec {
+  readonly kind: "doc";
+  readonly text: string;
+}
+
+/** TypeDB 3.12+ `@meta("key", "value")` marker for one ownership. */
+export interface MetaSpec {
+  readonly kind: "meta";
+  readonly key: string;
+  readonly value: string;
+}
+
+/** Documentation marker for the TypeDB 3.12+ `@doc("...")` ownership annotation. */
+export function Doc(text: string): DocSpec {
+  return { kind: "doc", text };
+}
+
+/** Metadata marker for the TypeDB 3.12+ `@meta("key", "value")` ownership annotation. */
+export function Meta(key: string, value: string): MetaSpec {
+  return { kind: "meta", key, value };
+}
+
+export type FlagInput =
+  | typeof Key
+  | typeof Unique
+  | typeof Ordered
+  | typeof Distinct
+  | CardSpec
+  | FlagSpec
+  | DocSpec
+  | MetaSpec;
 
 /** Type-level config for an `Entity`/`Relation` (explicit name, abstract, base, case). */
 export function TypeFlags(options: TypeFlagsOptions = {}): ResolvedTypeFlags {
@@ -67,6 +114,8 @@ export function TypeFlags(options: TypeFlagsOptions = {}): ResolvedTypeFlags {
     abstract: options.abstract ?? false,
     base: options.base ?? false,
     case: options.case ?? TypeNameCase.CLASS_NAME,
+    doc: options.doc ?? null,
+    meta: { ...(options.meta ?? {}) },
   };
 }
 
@@ -75,6 +124,8 @@ export function AttributeFlags(options: AttributeFlagsOptions = {}): ResolvedAtt
   return {
     name: options.name ?? null,
     case: options.case ?? null,
+    doc: options.doc ?? null,
+    meta: { ...(options.meta ?? {}) },
   };
 }
 
@@ -104,6 +155,8 @@ export function resolveFlags(flags: readonly FlagInput[]): FlagSpec {
   let cardinality: [number, number | null] | null = null;
   let isOrdered = false;
   let isDistinct = false;
+  let doc: string | null = null;
+  const meta: Record<string, string> = {};
 
   for (const flag of flags) {
     if (isFlagSpec(flag)) {
@@ -111,6 +164,16 @@ export function resolveFlags(flags: readonly FlagInput[]): FlagSpec {
       cardinality = flag.cardinality ?? cardinality;
       isOrdered = isOrdered || flag.isOrdered;
       isDistinct = isDistinct || flag.isDistinct;
+      doc = flag.doc ?? doc;
+      Object.assign(meta, flag.meta);
+      continue;
+    }
+    if (isDocSpec(flag)) {
+      doc = flag.text;
+      continue;
+    }
+    if (isMetaSpec(flag)) {
+      meta[flag.key] = flag.value;
       continue;
     }
     if (flag === Key) {
@@ -143,7 +206,7 @@ export function resolveFlags(flags: readonly FlagInput[]): FlagSpec {
     );
   }
 
-  return { kind: "flag", annotations, cardinality, isOrdered, isDistinct };
+  return { kind: "flag", annotations, cardinality, isOrdered, isDistinct, doc, meta };
 }
 
 /** Convert a model class name to its TypeDB type name under the given case. */
@@ -162,6 +225,14 @@ function toSnakeCase(name: string): string {
     .replace(/(.)([A-Z][a-z]+)/g, "$1_$2")
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toLowerCase();
+}
+
+function isDocSpec(flag: FlagInput): flag is DocSpec {
+  return typeof flag === "object" && flag !== null && (flag as DocSpec).kind === "doc";
+}
+
+function isMetaSpec(flag: FlagInput): flag is MetaSpec {
+  return typeof flag === "object" && flag !== null && (flag as MetaSpec).kind === "meta";
 }
 
 function isCardSpec(flag: FlagInput): flag is CardSpec {

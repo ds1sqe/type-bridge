@@ -44,6 +44,8 @@ class Role[T: "TypeDBType"]:
         abstract: bool = False,
         ordered: bool = False,
         distinct: bool = False,
+        doc: str | None = None,
+        meta: dict[str, str] | None = None,
     ):
         """Initialize a role.
 
@@ -70,6 +72,9 @@ class Role[T: "TypeDBType"]:
                 by the engine.
             distinct: When ``True``, emits ``@distinct`` on the relates clause. Requires
                 ``ordered=True``; raises ``ValueError`` otherwise.
+            doc: TypeDB 3.12+ ``@doc("...")`` documentation emitted on the relates clause.
+            meta: TypeDB 3.12+ ``@meta("key", "value")`` annotations emitted on the
+                relates clause, one value per key.
 
         Raises:
             ReservedWordError: If role_name is a TypeQL reserved word
@@ -93,6 +98,8 @@ class Role[T: "TypeDBType"]:
         self.is_abstract = abstract
         self.ordered = ordered
         self.distinct = distinct
+        self.doc = doc
+        self.meta: dict[str, str] = dict(meta) if meta else {}
         unique_types: list[type[T]] = []
         if player_type is None:
             if additional_player_types:

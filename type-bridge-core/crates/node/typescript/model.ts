@@ -107,6 +107,8 @@ export class FieldSpec<Attr extends AttributeClass, Optional extends boolean = f
       card,
       this.flags.isOrdered,
       this.flags.isDistinct,
+      this.flags.doc,
+      this.flags.meta,
     ) as ListFieldSpec<Attr, Min extends 0 ? true : false>;
   }
 }
@@ -130,12 +132,18 @@ export class ListFieldSpec<Attr extends AttributeClass, Optional extends boolean
   readonly isOrdered: boolean;
   /** True when the parent FieldSpec carried the `Distinct` flag. */
   readonly isDistinct: boolean;
+  /** TypeDB 3.12+ `@doc("...")` from the parent FieldSpec's flags. */
+  readonly doc: string | null;
+  /** TypeDB 3.12+ `@meta` annotations from the parent FieldSpec's flags. */
+  readonly meta: Record<string, string>;
 
   constructor(
     readonly attrType: Attr,
     cardSpec: CardSpec,
     isOrdered = false,
     isDistinct = false,
+    doc: string | null = null,
+    meta: Record<string, string> = {},
   ) {
     this.card = [cardSpec.min, cardSpec.max];
     // A list field is optional when the minimum cardinality is 0, mirroring the
@@ -143,6 +151,8 @@ export class ListFieldSpec<Attr extends AttributeClass, Optional extends boolean
     this.isOptional = (cardSpec.min === 0) as Optional;
     this.isOrdered = isOrdered;
     this.isDistinct = isDistinct;
+    this.doc = doc;
+    this.meta = { ...meta };
   }
 }
 
@@ -171,6 +181,10 @@ export class RoleSpec<Players extends readonly ModelToken[]> {
   readonly ordered: boolean;
   /** When ``true``, emits ``@distinct`` on the relates clause. Requires ``ordered``. */
   readonly distinct: boolean;
+  /** TypeDB 3.12+ `@doc("...")` documentation for the relates clause. */
+  readonly doc: string | null;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations for the relates clause. */
+  readonly meta: Record<string, string>;
 
   constructor(
     readonly players: Players,
@@ -180,6 +194,8 @@ export class RoleSpec<Players extends readonly ModelToken[]> {
     isAbstract?: boolean,
     ordered?: boolean,
     distinct?: boolean,
+    doc?: string | null,
+    meta?: Record<string, string>,
   ) {
     if (playsCardinality != null && players.length === 0) {
       throw new TypeError("playsCardinality requires at least one role player");
@@ -196,6 +212,8 @@ export class RoleSpec<Players extends readonly ModelToken[]> {
     this.isAbstract = isAbstract ?? false;
     this.ordered = ordered ?? false;
     this.distinct = distinct ?? false;
+    this.doc = doc ?? null;
+    this.meta = { ...(meta ?? {}) };
   }
 }
 
@@ -386,8 +404,8 @@ export function role<const Players extends readonly [ModelToken, ...ModelToken[]
 export function role<const Players extends readonly ModelToken[]>(
   ...playersAndOptions: RoleArguments<Players>
 ): RoleSpec<Players> {
-  const { players, cardinality, playsCardinality, overrides, isAbstract, ordered, distinct } = splitRoleArguments(playersAndOptions);
-  return new RoleSpec(players as Players, cardinality, playsCardinality, overrides, isAbstract, ordered, distinct);
+  const { players, cardinality, playsCardinality, overrides, isAbstract, ordered, distinct, doc, meta } = splitRoleArguments(playersAndOptions);
+  return new RoleSpec(players as Players, cardinality, playsCardinality, overrides, isAbstract, ordered, distinct, doc, meta);
 }
 
 /**
@@ -460,6 +478,10 @@ export function Relation<
 
 type RelatesOnlyRoleOptions = {
   readonly cardinality?: CardSpec | null;
+  /** TypeDB 3.12+ `@doc("...")` documentation for the relates clause. */
+  readonly doc?: string | null;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations for the relates clause. */
+  readonly meta?: Record<string, string>;
   readonly playsCardinality?: never;
   readonly overrides?: string;
   readonly abstract?: boolean;
@@ -468,6 +490,10 @@ type RelatesOnlyRoleOptions = {
 };
 type RoleOptions = {
   readonly cardinality?: CardSpec | null;
+  /** TypeDB 3.12+ `@doc("...")` documentation for the relates clause. */
+  readonly doc?: string | null;
+  /** TypeDB 3.12+ `@meta("key", "value")` annotations for the relates clause. */
+  readonly meta?: Record<string, string>;
   readonly playsCardinality?: CardSpec | null;
   readonly overrides?: string;
   readonly abstract?: boolean;
@@ -615,6 +641,12 @@ function createModelClass(
         // descriptors.json `parity-person` is the reference.
         owned_attributes: ownedAttributes(parentSchema, schema),
       };
+      if (flags.doc != null) {
+        descriptor.doc = flags.doc;
+      }
+      if (Object.keys(flags.meta).length > 0) {
+        descriptor.meta = { ...flags.meta };
+      }
       attachAttributeSchemaMetadata(descriptor, parentSchema, schema);
 
       if (kind === "entity") {
@@ -707,7 +739,7 @@ function ownedAttributeEntry(
     if (spec.isDistinct) {
       annotations.push("Distinct");
     }
-    return {
+    const entry: OwnedAttributeDescriptor = {
       field_name: fieldName,
       attr_name: spec.attrType.attrName,
       value_type: spec.attrType.valueType,
@@ -715,9 +747,16 @@ function ownedAttributeEntry(
       is_optional: spec.isOptional,
       is_ordered: spec.isOrdered,
     };
+    if (spec.doc != null) {
+      entry.doc = spec.doc;
+    }
+    if (Object.keys(spec.meta).length > 0) {
+      entry.meta = { ...spec.meta };
+    }
+    return entry;
   }
   if (spec instanceof FieldSpec) {
-    return {
+    const entry: OwnedAttributeDescriptor = {
       field_name: fieldName,
       attr_name: spec.attrType.attrName,
       value_type: spec.attrType.valueType,
@@ -725,6 +764,13 @@ function ownedAttributeEntry(
       is_optional: spec.isOptional,
       is_ordered: spec.flags.isOrdered,
     };
+    if (spec.flags.doc != null) {
+      entry.doc = spec.flags.doc;
+    }
+    if (Object.keys(spec.flags.meta).length > 0) {
+      entry.meta = { ...spec.flags.meta };
+    }
+    return entry;
   }
   // RoleSpec — not an attribute descriptor.
   return null;
@@ -809,7 +855,7 @@ function roleDescriptors(
   // Child-local roles follow in declaration order.
   for (const [roleName, spec] of Object.entries(childSchema)) {
     if (!(spec instanceof RoleSpec)) continue;
-    descriptors.push({
+    const roleDescriptor: RoleDescriptor = {
       role_name: roleName,
       player_type_names: spec.players.map(typeNameFor),
       cardinality: spec.cardinality,
@@ -818,7 +864,14 @@ function roleDescriptors(
       is_abstract: spec.isAbstract,
       ordered: spec.ordered,
       distinct: spec.distinct,
-    });
+    };
+    if (spec.doc != null) {
+      roleDescriptor.doc = spec.doc;
+    }
+    if (Object.keys(spec.meta).length > 0) {
+      roleDescriptor.meta = { ...spec.meta };
+    }
+    descriptors.push(roleDescriptor);
   }
 
   return descriptors;
@@ -844,9 +897,11 @@ function splitRoleArguments(args: readonly unknown[]): {
   isAbstract: boolean;
   ordered: boolean;
   distinct: boolean;
+  doc: string | null;
+  meta: Record<string, string>;
 } {
   if (args.length === 0) {
-    return { players: [], cardinality: null, playsCardinality: null, overrides: undefined, isAbstract: false, ordered: false, distinct: false };
+    return { players: [], cardinality: null, playsCardinality: null, overrides: undefined, isAbstract: false, ordered: false, distinct: false, doc: null, meta: {} };
   }
 
   const maybeOptions = args[args.length - 1];
@@ -859,6 +914,8 @@ function splitRoleArguments(args: readonly unknown[]): {
       isAbstract: maybeOptions.abstract ?? false,
       ordered: maybeOptions.ordered ?? false,
       distinct: maybeOptions.distinct ?? false,
+      doc: maybeOptions.doc ?? null,
+      meta: { ...(maybeOptions.meta ?? {}) },
     };
   }
 
@@ -870,6 +927,8 @@ function splitRoleArguments(args: readonly unknown[]): {
     isAbstract: false,
     ordered: false,
     distinct: false,
+    doc: null,
+    meta: {},
   };
 }
 
@@ -881,7 +940,7 @@ function isRoleOptions(value: unknown): value is RoleOptions {
   return (
     typeof value === "object" &&
     value !== null &&
-    ("cardinality" in value || "playsCardinality" in value || "overrides" in value || "abstract" in value || "ordered" in value || "distinct" in value) &&
+    ("cardinality" in value || "playsCardinality" in value || "overrides" in value || "abstract" in value || "ordered" in value || "distinct" in value || "doc" in value || "meta" in value) &&
     !(value instanceof FieldSpec) &&
     !(value instanceof RoleSpec)
   );

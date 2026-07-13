@@ -1966,6 +1966,8 @@ mod tests {
                 role("participant", None),
                 role("observer", Some((0, Some(5)))),
             ],
+            doc: None,
+            meta: Default::default(),
         }
     }
 

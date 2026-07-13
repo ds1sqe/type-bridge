@@ -1,5 +1,6 @@
 //! Schema management: registration, generation, diffing, and synchronization.
 
+pub mod annotations;
 pub mod diff;
 pub mod error;
 pub mod generator;
