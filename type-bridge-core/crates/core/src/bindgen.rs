@@ -407,7 +407,13 @@ fn doc_meta_flag_args(doc: Option<&str>, meta: &BTreeMap<String, String>) -> Str
         write!(out, ", Doc({})", string_literal(doc)).unwrap();
     }
     for (key, value) in meta {
-        write!(out, ", Meta({}, {})", string_literal(key), string_literal(value)).unwrap();
+        write!(
+            out,
+            ", Meta({}, {})",
+            string_literal(key),
+            string_literal(value)
+        )
+        .unwrap();
     }
     out
 }
@@ -2401,7 +2407,12 @@ fn render_ts_entities(schema: &TypeSchema, options: &BindgenOptions) -> String {
     for name in &order {
         let entity = &schema.entities[name];
         let class = class_name(name);
-        let first_arg = ts_type_first_arg(name, entity.is_abstract, entity.doc.as_deref(), &entity.meta);
+        let first_arg = ts_type_first_arg(
+            name,
+            entity.is_abstract,
+            entity.doc.as_deref(),
+            &entity.meta,
+        );
         let third_arg = entity
             .parent
             .as_deref()
@@ -3061,7 +3072,9 @@ relation friendship @doc("Friendship docs."),
         assert!(attributes.contains("doc=\"Name docs.\", meta={\"owner\": \"core\"})"));
         let entities = &python.file("entities.py").unwrap().contents;
         assert!(entities.contains("\"\"\"Party docs.\"\"\""));
-        assert!(entities.contains("abstract=True, doc=\"Party docs.\", meta={\"steward\": \"team\"}"));
+        assert!(
+            entities.contains("abstract=True, doc=\"Party docs.\", meta={\"steward\": \"team\"}")
+        );
         assert!(entities.contains(
             "name: attributes.Name = Flag(Key, Doc(\"Ownership docs.\"), Meta(\"column\", \"name\"))"
         ));
@@ -3083,7 +3096,9 @@ relation friendship @doc("Friendship docs."),
         ));
         assert!(ts_entities.contains("nick: field(Nick, Doc(\"Nick docs.\")).optional()"));
         let ts_relations = &typescript.file("relations.ts").unwrap().contents;
-        assert!(ts_relations.contains("TypeFlags({ name: \"friendship\", doc: \"Friendship docs.\" })"));
+        assert!(
+            ts_relations.contains("TypeFlags({ name: \"friendship\", doc: \"Friendship docs.\" })")
+        );
         assert!(ts_relations.contains("doc: \"Role docs.\", meta: { \"side\": \"a\" }"));
 
         let models = plan.render_rust_models();
@@ -3091,15 +3106,21 @@ relation friendship @doc("Friendship docs."),
         assert!(models.entities_rs.contains(
             "#[entity(name = \"party\", r#abstract, doc = \"Party docs.\", meta(\"steward\", \"team\"))]"
         ));
-        assert!(models.entities_rs.contains(
-            "#[field(key, doc = \"Ownership docs.\", meta(\"column\", \"name\"))]"
-        ));
-        assert!(models.relations_rs.contains(
-            "#[relation(name = \"friendship\", doc = \"Friendship docs.\")]"
-        ));
-        assert!(models.relations_rs.contains(
-            "doc = \"Role docs.\", meta(\"side\", \"a\"))]"
-        ));
+        assert!(
+            models
+                .entities_rs
+                .contains("#[field(key, doc = \"Ownership docs.\", meta(\"column\", \"name\"))]")
+        );
+        assert!(
+            models
+                .relations_rs
+                .contains("#[relation(name = \"friendship\", doc = \"Friendship docs.\")]")
+        );
+        assert!(
+            models
+                .relations_rs
+                .contains("doc = \"Role docs.\", meta(\"side\", \"a\"))]")
+        );
     }
 
     #[test]

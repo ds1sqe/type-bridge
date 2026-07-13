@@ -1674,7 +1674,11 @@ mod tests {
             Some((meta(&[]), meta(&[("owner", "core")])))
         );
         assert!(!diff.has_breaking_changes());
-        assert!(diff.classify().iter().all(|c| c.category == ChangeCategory::Safe));
+        assert!(
+            diff.classify()
+                .iter()
+                .all(|c| c.category == ChangeCategory::Safe)
+        );
         assert!(diff.summary().contains("~ entity person: doc"));
         assert!(diff.summary().contains("~ entity person: meta"));
     }
@@ -1709,7 +1713,10 @@ mod tests {
             }]
         );
         assert!(!diff.has_breaking_changes());
-        assert!(diff.summary().contains("~ relation employment: ~ role employee doc, meta"));
+        assert!(
+            diff.summary()
+                .contains("~ relation employment: ~ role employee doc, meta")
+        );
     }
 
     #[test]
@@ -1758,7 +1765,11 @@ mod tests {
         assert!(new_flags.contains("@meta(\"column\", \"name\")"));
         // A doc/meta-only flag change is metadata-only: Safe, not Warning.
         assert!(!diff.has_breaking_changes());
-        assert!(diff.classify().iter().all(|c| c.category == ChangeCategory::Safe));
+        assert!(
+            diff.classify()
+                .iter()
+                .all(|c| c.category == ChangeCategory::Safe)
+        );
     }
 
     #[test]

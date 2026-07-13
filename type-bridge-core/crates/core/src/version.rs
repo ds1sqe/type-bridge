@@ -1113,8 +1113,14 @@ mod tests {
 
     #[test]
     fn feature_gate_accepts_312_and_newer() {
-        assert!(check_feature_supported(Feature::SchemaAnnotations, &Version::new(3, 12, 0)).is_ok());
-        assert!(check_feature_supported(Feature::SchemaAnnotations, &Version::new(3, 12, 7)).is_ok());
-        assert!(check_feature_supported(Feature::SchemaAnnotations, &Version::new(4, 0, 0)).is_ok());
+        assert!(
+            check_feature_supported(Feature::SchemaAnnotations, &Version::new(3, 12, 0)).is_ok()
+        );
+        assert!(
+            check_feature_supported(Feature::SchemaAnnotations, &Version::new(3, 12, 7)).is_ok()
+        );
+        assert!(
+            check_feature_supported(Feature::SchemaAnnotations, &Version::new(4, 0, 0)).is_ok()
+        );
     }
 }
