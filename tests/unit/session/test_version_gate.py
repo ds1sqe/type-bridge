@@ -19,6 +19,13 @@ import type_bridge.typedb_driver as _typedb_driver_mod
 from type_bridge import version
 from type_bridge.typedb_driver import driver_version, server_version
 
+
+@pytest.fixture
+def _python313_driver_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run legacy-driver scenarios on an interpreter that supports their wheels."""
+    monkeypatch.setattr(_typedb_driver_mod.sys, "version_info", (3, 13, 0))
+
+
 # ---------------------------------------------------------------------------
 # Import smoke — assert the re-exported constants have their expected values.
 # ---------------------------------------------------------------------------
@@ -300,6 +307,7 @@ class TestServerVersionDelegation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_python313_driver_runtime")
 class TestCreateDriverOptionsBand7:
     """Band-7 driver (3.10.x) uses DriverOptions(is_tls_enabled=...) keyword form."""
 
@@ -332,6 +340,7 @@ class TestCreateDriverOptionsBand7:
         assert result is sentinel
 
 
+@pytest.mark.usefixtures("_python313_driver_runtime")
 class TestCreateDriverOptionsBand8:
     """Band-8 driver (3.11.x) uses DriverOptions(tls_config) positional form."""
 
@@ -471,6 +480,7 @@ class TestCreateDriverOptionsBandNone:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_python313_driver_runtime")
 class TestPythonDriverVersionGate:
     """Direct Python driver access must call the gate before TypeDB.driver()."""
 
@@ -675,6 +685,7 @@ class TestPythonDriverVersionGate:
         assert "0.0.0" not in msg
 
 
+@pytest.mark.usefixtures("_python313_driver_runtime")
 class TestConnectHttpPortForwarding:
     """Database paths must forward http_port to their version probes."""
 
