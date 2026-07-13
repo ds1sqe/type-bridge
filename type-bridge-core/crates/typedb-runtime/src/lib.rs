@@ -400,42 +400,11 @@ async fn grpc_fallback_driver(
 ) -> Result<(DriverHandle, Option<core_version::Version>)> {
     let mut failures = vec![format!("HTTP version probe failed: {http_error}")];
 
-    #[cfg(feature = "band9")]
-    {
-        match connect_band9_driver(address, username, password).await {
-            Ok(driver) => {
-                let reported = driver.server_version().await.map_err(|e| {
-                    RuntimeError::Connection(format!(
-                        "Band-9 gRPC version validation failed after connect to {address}: {e}"
-                    ))
-                })?;
-                let server_version = reported
-                    .version()
-                    .parse::<core_version::Version>()
-                    .map_err(RuntimeError::UnsupportedVersion)?;
-                validate_server_band(&server_version)?;
-                if !core_version::server_accepted_bands(&server_version).contains(&9) {
-                    return Err(RuntimeError::UnsupportedVersion(
-                        core_version::VersionError::Probe(format!(
-                            "band-9 gRPC connection reported server version {server_version}, \
-                             which does not accept band 9"
-                        )),
-                    ));
-                }
-                tracing::debug!(
-                    address,
-                    server_version = %server_version,
-                    "Connected through gRPC band-9 fallback after HTTP version probe failed"
-                );
-                return Ok((DriverHandle::B9(driver), Some(server_version)));
-            }
-            Err(error) => failures.push(format!("band-9 gRPC attempt failed: {error}")),
-        }
-    }
-
-    #[cfg(not(feature = "band9"))]
-    failures.push("band-9 gRPC attempt skipped: band9 feature is not compiled in".to_string());
-
+    // Band 9 is deliberately NOT probed blindly: a band-9 connection attempt
+    // against a 3.11 server crashes the server outright (measured live on
+    // 3.11.5).  The fallback therefore discovers the server through band 8 —
+    // accepted by every band-{8,9} server — and only upgrades to the native
+    // band-9 protocol once the reported version proves the server accepts it.
     #[cfg(feature = "band8")]
     {
         match connect_band8_driver(address, username, password).await {
@@ -451,9 +420,9 @@ async fn grpc_fallback_driver(
                     .map_err(RuntimeError::UnsupportedVersion)?;
                 // Window + embedded-band gate, then confirm the server accepts
                 // band 8.  The acceptance check (not negotiate == 8): a 3.12
-                // server reached here negotiates its native band 9 when band9
-                // is embedded, but this band-8 connection is still legitimate
-                // through the server's band-8 backward acceptance.
+                // server negotiates its native band 9 when band9 is embedded,
+                // but this band-8 connection is still legitimate through the
+                // server's band-8 backward acceptance.
                 validate_server_band(&server_version)?;
                 if !core_version::server_accepted_bands(&server_version).contains(&8) {
                     return Err(RuntimeError::UnsupportedVersion(
@@ -462,6 +431,29 @@ async fn grpc_fallback_driver(
                              which does not accept band 8"
                         )),
                     ));
+                }
+                // Prefer the server's native band when this build embeds it:
+                // with the version now known, a band-9 connect is safe.
+                #[cfg(feature = "band9")]
+                if core_version::negotiate_server_band(&server_version, EMBEDDED_BANDS) == Some(9) {
+                    match connect_band9_driver(address, username, password).await {
+                        Ok(b9_driver) => {
+                            tracing::debug!(
+                                address,
+                                server_version = %server_version,
+                                "Connected through gRPC band-8 fallback, upgraded to native band 9"
+                            );
+                            return Ok((DriverHandle::B9(b9_driver), Some(server_version)));
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                address,
+                                server_version = %server_version,
+                                %error,
+                                "Band-9 upgrade failed after band-8 fallback; staying on band 8"
+                            );
+                        }
+                    }
                 }
                 tracing::debug!(
                     address,
@@ -1490,9 +1482,11 @@ mod tests {
             Err(RuntimeError::UnsupportedVersion(err)) => {
                 let msg = err.to_string();
                 assert!(msg.contains("HTTP endpoint unavailable"), "{msg}");
-                assert!(msg.contains("band-9 gRPC attempt failed"), "{msg}");
                 assert!(msg.contains("band-8 gRPC attempt failed"), "{msg}");
                 assert!(msg.contains("band-7 gRPC attempt failed"), "{msg}");
+                // Band 9 must never be probed blindly: a band-9 connect
+                // attempt crashes a 3.11 server (see grpc_fallback_driver).
+                assert!(!msg.contains("band-9 gRPC attempt"), "{msg}");
             }
             Err(other) => panic!("expected aggregated version-probe failure, got {other}"),
             Ok(_) => panic!("expected aggregated version-probe failure, got successful connection"),
