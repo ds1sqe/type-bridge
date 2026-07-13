@@ -17,10 +17,11 @@ path = "src/main.rs"
 required-features = ["typedb", "axum-transport"]
 
 [features]
-default = ["band7", "band8", "axum-transport"]
+default = ["band7", "band8", "band9", "axum-transport"]
 typedb = ["dep:type-bridge-typedb-runtime"]
 band7 = ["typedb", "type-bridge-typedb-runtime/band7"]
 band8 = ["typedb", "type-bridge-typedb-runtime/band8"]
+band9 = ["typedb", "type-bridge-typedb-runtime/band9"]
 axum-transport = ["dep:axum", "dep:tower-http"]
 test-helpers = []
 

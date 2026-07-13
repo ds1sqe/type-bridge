@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "1.5.7" }
-type-bridge-orm = { path = "../orm", version = "1.5.7", default-features = false, features = ["band7", "band8"] }
+type-bridge-orm = { path = "../orm", version = "1.5.7", default-features = false, features = ["band7", "band8", "band9"] }
 napi = { version = "2", features = ["napi4"] }
 napi-derive = "2"
 serde = { version = "1.0", features = ["derive"] }

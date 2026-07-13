@@ -12,9 +12,10 @@ name = "type_bridge_typedb_runtime"
 path = "src/lib.rs"
 
 [features]
-default = ["band7", "band8"]
+default = ["band7", "band8", "band9"]
 band7 = ["dep:type-bridge-typedb-driver-b7"]
 band8 = ["dep:typedb-driver"]
+band9 = ["dep:type-bridge-typedb-driver-b9"]
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "1.5.7" }
@@ -26,6 +27,7 @@ tracing = "0.1"
 futures = "0.3"
 typedb-driver = { version = "3", optional = true }
 type-bridge-typedb-driver-b7 = { path = "../../vendor/typedb-driver-b7", version = "=3.8.1", optional = true }
+type-bridge-typedb-driver-b9 = { path = "../../vendor/typedb-driver-b9", version = "=3.12.0", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

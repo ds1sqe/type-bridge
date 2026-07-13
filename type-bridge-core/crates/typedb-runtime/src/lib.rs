@@ -4,9 +4,9 @@
 //! can share version gating, gRPC fallback, database lifecycle, transactions,
 //! and JSON conversion without depending on each other.
 
-#[cfg(not(any(feature = "band7", feature = "band8")))]
+#[cfg(not(any(feature = "band7", feature = "band8", feature = "band9")))]
 compile_error!(
-    "type-bridge-typedb-runtime requires at least one band feature; enable `band7` and/or `band8` (both are default)"
+    "type-bridge-typedb-runtime requires at least one band feature; enable `band7`, `band8`, and/or `band9` (all are default)"
 );
 
 use std::future::Future;
@@ -31,6 +31,15 @@ use type_bridge_typedb_driver_b7::answer::QueryAnswer as B7QueryAnswer;
 use type_bridge_typedb_driver_b7::{
     Credentials as B7Credentials, DriverOptions as B7DriverOptions,
     TransactionType as B7TransactionType, TypeDBDriver as B7Driver,
+};
+
+#[cfg(feature = "band9")]
+use type_bridge_typedb_driver_b9::answer::QueryAnswer as B9QueryAnswer;
+#[cfg(feature = "band9")]
+use type_bridge_typedb_driver_b9::{
+    Addresses as B9Addresses, Credentials as B9Credentials, DriverOptions as B9DriverOptions,
+    DriverTlsConfig as B9DriverTlsConfig, TransactionType as B9TransactionType,
+    TypeDBDriver as B9Driver,
 };
 
 /// Boxed future returned by async runtime methods.
@@ -103,6 +112,15 @@ pub const PINNED_DRIVER_VERSION: &str = "3.11.5";
 /// catch any divergence.
 pub const PINNED_DRIVER_VERSION_B7: &str = "3.8.1";
 
+/// The compile-pinned version of the vendored band-9 driver fork
+/// (`type-bridge-typedb-driver-b9`) this runtime crate was built against.
+///
+/// Mirrors [`PINNED_DRIVER_VERSION`] for the band-8 upstream driver.  When
+/// the band-9 fork is refreshed, update this constant to match the new
+/// `Cargo.lock` entry — the `tests::cargo_lock_pin_b9` test will
+/// catch any divergence.
+pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.0";
+
 /// Protocol bands this build embeds a driver for, derived from the compiled-in
 /// band features.  This is the `embedded_bands` argument to
 /// [`core_version::check_server_supported`] — the embedded-runtime gate accepts
@@ -110,20 +128,22 @@ pub const PINNED_DRIVER_VERSION_B7: &str = "3.8.1";
 ///
 /// Each element is individually cfg-gated so the set reflects exactly the bands
 /// the build can construct; there is no hardcoded band-set literal (master-plan
-/// I6).  The default build compiles both, so the set is `{7, 8}`.
+/// I6).  The default build compiles all three, so the set is `{7, 8, 9}`.
 const EMBEDDED_BANDS: &[u8] = &[
     #[cfg(feature = "band7")]
     7,
     #[cfg(feature = "band8")]
     8,
+    #[cfg(feature = "band9")]
+    9,
 ];
 
 /// Return the driver versions compiled into this build, keyed by protocol band.
 ///
 /// Each entry is `(band, version_string)` and is individually cfg-gated so only
 /// compiled-in bands appear in the slice (master-plan I6 — no hardcoded
-/// band-set literal).  The default build embeds both bands and returns
-/// `[(7, "3.8.1"), (8, "3.11.5")]`.
+/// band-set literal).  The default build embeds all three bands and returns
+/// `[(7, "3.8.1"), (8, "3.11.5"), (9, "3.12.0")]`.
 ///
 /// This is the Rust-side source of truth for the Python `embedded_driver_versions()`
 /// binding — `crates/python/src/version.rs` wraps this function and exposes it
@@ -134,6 +154,8 @@ pub fn embedded_driver_versions() -> &'static [(u8, &'static str)] {
         (7, PINNED_DRIVER_VERSION_B7),
         #[cfg(feature = "band8")]
         (8, PINNED_DRIVER_VERSION),
+        #[cfg(feature = "band9")]
+        (9, PINNED_DRIVER_VERSION_B9),
     ]
 }
 
@@ -170,6 +192,8 @@ pub(crate) enum DriverHandle {
     B7(B7Driver),
     #[cfg(feature = "band8")]
     B8(B8Driver),
+    #[cfg(feature = "band9")]
+    B9(B9Driver),
 }
 
 /// Real TypeDB backend wrapping a band-tagged [`DriverHandle`].
@@ -269,23 +293,26 @@ async fn driver_for_server_version(
             .map(DriverHandle::B7);
     }
 
-    // Every band that is not 7 is band 8 here: the gate already rejected any
-    // band outside EMBEDDED_BANDS, so a non-band-7 server is necessarily a
-    // band-8 server this build embedded.
     #[cfg(feature = "band8")]
-    {
-        connect_band8_driver(address, username, password)
+    if band == 8 {
+        return connect_band8_driver(address, username, password)
             .await
-            .map(DriverHandle::B8)
+            .map(DriverHandle::B8);
     }
 
-    // Unreachable by invariant: with band8 compiled out, EMBEDDED_BANDS cannot
-    // contain 8, so check_server_supported already rejected every non-band-7
-    // server above.  The arm exists only to keep the cfg-complementary tail
-    // total; it is never entered.
-    #[cfg(not(feature = "band8"))]
+    #[cfg(feature = "band9")]
+    if band == 9 {
+        return connect_band9_driver(address, username, password)
+            .await
+            .map(DriverHandle::B9);
+    }
+
+    // Unreachable by invariant: the gate already rejected any server whose
+    // accepted-band set does not intersect EMBEDDED_BANDS, and negotiation
+    // only yields embedded bands, each of which returned above.  The arm
+    // exists only to keep the tail total; it is never entered.
     Err(RuntimeError::Connection(format!(
-        "No compiled driver band supports the detected server band ({band:?})"
+        "No compiled driver band supports the negotiated server band ({band})"
     )))
 }
 
@@ -315,6 +342,21 @@ async fn connect_band8_driver(address: &str, username: &str, password: &str) -> 
     .map_err(|e| RuntimeError::Connection(format!("Failed to connect to {address}: {e}")))
 }
 
+#[cfg(feature = "band9")]
+async fn connect_band9_driver(address: &str, username: &str, password: &str) -> Result<B9Driver> {
+    // Same construction shape as band 8; TLS disabled explicitly for the
+    // same reason (`DriverTlsConfig::default()` would enable it).
+    let addresses = B9Addresses::try_from_address_str(address)
+        .map_err(|e| RuntimeError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
+    B9Driver::new(
+        addresses,
+        B9Credentials::new(username, password),
+        B9DriverOptions::new(B9DriverTlsConfig::disabled()),
+    )
+    .await
+    .map_err(|e| RuntimeError::Connection(format!("Failed to connect to {address}: {e}")))
+}
+
 async fn grpc_fallback_driver(
     address: &str,
     username: &str,
@@ -322,6 +364,42 @@ async fn grpc_fallback_driver(
     http_error: core_version::VersionError,
 ) -> Result<(DriverHandle, Option<core_version::Version>)> {
     let mut failures = vec![format!("HTTP version probe failed: {http_error}")];
+
+    #[cfg(feature = "band9")]
+    {
+        match connect_band9_driver(address, username, password).await {
+            Ok(driver) => {
+                let reported = driver.server_version().await.map_err(|e| {
+                    RuntimeError::Connection(format!(
+                        "Band-9 gRPC version validation failed after connect to {address}: {e}"
+                    ))
+                })?;
+                let server_version = reported
+                    .version()
+                    .parse::<core_version::Version>()
+                    .map_err(RuntimeError::UnsupportedVersion)?;
+                validate_server_band(&server_version)?;
+                if !core_version::server_accepted_bands(&server_version).contains(&9) {
+                    return Err(RuntimeError::UnsupportedVersion(
+                        core_version::VersionError::Probe(format!(
+                            "band-9 gRPC connection reported server version {server_version}, \
+                             which does not accept band 9"
+                        )),
+                    ));
+                }
+                tracing::debug!(
+                    address,
+                    server_version = %server_version,
+                    "Connected through gRPC band-9 fallback after HTTP version probe failed"
+                );
+                return Ok((DriverHandle::B9(driver), Some(server_version)));
+            }
+            Err(error) => failures.push(format!("band-9 gRPC attempt failed: {error}")),
+        }
+    }
+
+    #[cfg(not(feature = "band9"))]
+    failures.push("band-9 gRPC attempt skipped: band9 feature is not compiled in".to_string());
 
     #[cfg(feature = "band8")]
     {
@@ -336,11 +414,17 @@ async fn grpc_fallback_driver(
                     .version()
                     .parse::<core_version::Version>()
                     .map_err(RuntimeError::UnsupportedVersion)?;
-                let band = validate_server_band(&server_version)?;
-                if band != 8 {
+                // Window + embedded-band gate, then confirm the server accepts
+                // band 8.  The acceptance check (not negotiate == 8): a 3.12
+                // server reached here negotiates its native band 9 when band9
+                // is embedded, but this band-8 connection is still legitimate
+                // through the server's band-8 backward acceptance.
+                validate_server_band(&server_version)?;
+                if !core_version::server_accepted_bands(&server_version).contains(&8) {
                     return Err(RuntimeError::UnsupportedVersion(
                         core_version::VersionError::Probe(format!(
-                            "band-8 gRPC connection reported non-band-8 server version {server_version}"
+                            "band-8 gRPC connection reported server version {server_version}, \
+                             which does not accept band 8"
                         )),
                     ));
                 }
@@ -481,6 +565,19 @@ pub async fn ensure_database_exists(
                 })?;
             }
         }
+        #[cfg(feature = "band9")]
+        DriverHandle::B9(d) => {
+            let databases = d.databases();
+            let exists = databases
+                .contains(database)
+                .await
+                .map_err(|e| RuntimeError::Connection(format!("Database lookup failed: {e}")))?;
+            if !exists {
+                databases.create(database).await.map_err(|e| {
+                    RuntimeError::Connection(format!("Database create failed: {e}"))
+                })?;
+            }
+        }
     }
 
     Ok(())
@@ -524,6 +621,20 @@ impl TypeDBRuntime {
                         inner: RuntimeTransactionInner::B8(Some(transaction)),
                     })
                 }
+                #[cfg(feature = "band9")]
+                DriverHandle::B9(d) => {
+                    let typedb_tx_type = match tx_type {
+                        TxType::Read => B9TransactionType::Read,
+                        TxType::Write => B9TransactionType::Write,
+                        TxType::Schema => B9TransactionType::Schema,
+                    };
+                    let transaction = d.transaction(&db, typedb_tx_type).await.map_err(|e| {
+                        RuntimeError::Transaction(format!("Failed to open transaction: {e}"))
+                    })?;
+                    Ok(RuntimeTransaction {
+                        inner: RuntimeTransactionInner::B9(Some(transaction)),
+                    })
+                }
             }
         })
     }
@@ -535,6 +646,8 @@ impl TypeDBRuntime {
             DriverHandle::B7(d) => d.is_open(),
             #[cfg(feature = "band8")]
             DriverHandle::B8(d) => d.is_open(),
+            #[cfg(feature = "band9")]
+            DriverHandle::B9(d) => d.is_open(),
         }
     }
 
@@ -551,6 +664,12 @@ impl TypeDBRuntime {
                 }
                 #[cfg(feature = "band8")]
                 DriverHandle::B8(d) => {
+                    d.databases().contains(database).await.map_err(|e| {
+                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                    })
+                }
+                #[cfg(feature = "band9")]
+                DriverHandle::B9(d) => {
                     d.databases().contains(database).await.map_err(|e| {
                         RuntimeError::Connection(format!("Database lookup failed: {e}"))
                     })
@@ -576,6 +695,12 @@ impl TypeDBRuntime {
                         RuntimeError::Connection(format!("Database create failed: {e}"))
                     })
                 }
+                #[cfg(feature = "band9")]
+                DriverHandle::B9(d) => {
+                    d.databases().create(database).await.map_err(|e| {
+                        RuntimeError::Connection(format!("Database create failed: {e}"))
+                    })
+                }
             }
         })
     }
@@ -596,6 +721,15 @@ impl TypeDBRuntime {
                 }
                 #[cfg(feature = "band8")]
                 DriverHandle::B8(d) => {
+                    let db = d.databases().get(database).await.map_err(|e| {
+                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                    })?;
+                    db.delete().await.map_err(|e| {
+                        RuntimeError::Connection(format!("Database delete failed: {e}"))
+                    })
+                }
+                #[cfg(feature = "band9")]
+                DriverHandle::B9(d) => {
                     let db = d.databases().get(database).await.map_err(|e| {
                         RuntimeError::Connection(format!("Database lookup failed: {e}"))
                     })?;
@@ -630,6 +764,15 @@ impl TypeDBRuntime {
                         .await
                         .map_err(|e| RuntimeError::Connection(format!("Schema export failed: {e}")))
                 }
+                #[cfg(feature = "band9")]
+                DriverHandle::B9(d) => {
+                    let db = d.databases().get(&database).await.map_err(|e| {
+                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                    })?;
+                    db.schema()
+                        .await
+                        .map_err(|e| RuntimeError::Connection(format!("Schema export failed: {e}")))
+                }
             }
         })
     }
@@ -645,6 +788,8 @@ enum RuntimeTransactionInner {
     B7(Option<type_bridge_typedb_driver_b7::Transaction>),
     #[cfg(feature = "band8")]
     B8(Option<typedb_driver::Transaction>),
+    #[cfg(feature = "band9")]
+    B9(Option<type_bridge_typedb_driver_b9::Transaction>),
 }
 
 /// Open TypeDB transaction owned by the shared runtime.
@@ -754,6 +899,17 @@ impl RuntimeTransaction {
                         }
                     }
                 }
+                #[cfg(feature = "band9")]
+                RuntimeTransactionInner::B9(opt) => {
+                    let tx = opt.as_ref().ok_or_else(|| {
+                        RuntimeError::Transaction("Transaction already consumed".into())
+                    })?;
+                    let answer = tx
+                        .query(&tql)
+                        .await
+                        .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))?;
+                    convert_answer_b9(answer).await
+                }
             }
         })
     }
@@ -777,6 +933,18 @@ impl RuntimeTransaction {
             }
             #[cfg(feature = "band8")]
             RuntimeTransactionInner::B8(opt) => {
+                let tx = opt.take();
+                Box::pin(async move {
+                    let t = tx.ok_or_else(|| {
+                        RuntimeError::Transaction("Transaction already consumed".into())
+                    })?;
+                    t.commit()
+                        .await
+                        .map_err(|e| RuntimeError::Transaction(format!("Commit failed: {e}")))
+                })
+            }
+            #[cfg(feature = "band9")]
+            RuntimeTransactionInner::B9(opt) => {
                 let tx = opt.take();
                 Box::pin(async move {
                     let t = tx.ok_or_else(|| {
@@ -820,6 +988,18 @@ impl RuntimeTransaction {
                         .map_err(|e| RuntimeError::Transaction(format!("Rollback failed: {e}")))
                 })
             }
+            #[cfg(feature = "band9")]
+            RuntimeTransactionInner::B9(opt) => {
+                let tx = opt.take();
+                Box::pin(async move {
+                    let t = tx.ok_or_else(|| {
+                        RuntimeError::Transaction("Transaction already consumed".into())
+                    })?;
+                    t.rollback()
+                        .await
+                        .map_err(|e| RuntimeError::Transaction(format!("Rollback failed: {e}")))
+                })
+            }
         }
     }
 
@@ -840,6 +1020,18 @@ impl RuntimeTransaction {
             }
             #[cfg(feature = "band8")]
             RuntimeTransactionInner::B8(opt) => {
+                let tx = opt.take();
+                Box::pin(async move {
+                    let Some(t) = tx else {
+                        return Ok(());
+                    };
+                    t.close()
+                        .await
+                        .map_err(|e| RuntimeError::Transaction(format!("Close failed: {e}")))
+                })
+            }
+            #[cfg(feature = "band9")]
+            RuntimeTransactionInner::B9(opt) => {
                 let tx = opt.take();
                 Box::pin(async move {
                     let Some(t) = tx else {
@@ -980,6 +1172,115 @@ fn value_to_json_b8(value: &typedb_driver::concept::Value) -> serde_json::Value 
     serde_json::Value::String(value.to_string())
 }
 
+/// Convert a band-9 [`B9QueryAnswer`] into the runtime's [`QueryResult`].
+///
+/// Shared by the plain `query` arm and the given-stage `query_with_rows`
+/// path — both produce the same driver answer type.
+#[cfg(feature = "band9")]
+async fn convert_answer_b9(answer: B9QueryAnswer) -> Result<QueryResult> {
+    match answer {
+        B9QueryAnswer::Ok(_) => Ok(QueryResult::Ok),
+        B9QueryAnswer::ConceptRowStream(_, stream) => {
+            let rows: Vec<_> = stream
+                .try_collect()
+                .await
+                .map_err(|e| RuntimeError::QueryExecution(format!("Row collect: {e}")))?;
+            let json_rows = rows
+                .iter()
+                .map(|row| {
+                    let mut obj = serde_json::Map::new();
+                    for (i, col) in row.get_column_names().iter().enumerate() {
+                        let value = row
+                            .row
+                            .get(i)
+                            .and_then(|c| c.as_ref())
+                            .map(concept_to_json_b9)
+                            .unwrap_or(serde_json::Value::Null);
+                        obj.insert(col.clone(), value);
+                    }
+                    serde_json::Value::Object(obj)
+                })
+                .collect();
+            Ok(QueryResult::Rows(json_rows))
+        }
+        B9QueryAnswer::ConceptDocumentStream(_, stream) => {
+            let docs: Vec<_> = stream
+                .try_collect()
+                .await
+                .map_err(|e| RuntimeError::QueryExecution(format!("Doc collect: {e}")))?;
+            let json_docs = docs
+                .into_iter()
+                .map(|doc| serde_json::to_value(doc.into_json()).unwrap_or(serde_json::Value::Null))
+                .collect();
+            Ok(QueryResult::Documents(json_docs))
+        }
+    }
+}
+
+/// Convert a band-9 TypeDB concept to a JSON value.
+///
+/// Output shape is identical to [`concept_to_json_b8`] for all common concepts.
+#[cfg(feature = "band9")]
+fn concept_to_json_b9(
+    concept: &type_bridge_typedb_driver_b9::concept::Concept,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "category".into(),
+        serde_json::Value::String(concept.get_category().name().into()),
+    );
+    obj.insert(
+        "label".into(),
+        serde_json::Value::String(concept.get_label().into()),
+    );
+    if let Some(iid) = concept.try_get_iid() {
+        obj.insert("iid".into(), serde_json::Value::String(iid.to_string()));
+    }
+    if let Some(value) = concept.try_get_value() {
+        obj.insert("value".into(), value_to_json_b9(value));
+    }
+    if let Some(vt) = concept.try_get_value_type() {
+        obj.insert(
+            "value_type".into(),
+            serde_json::Value::String(vt.name().into()),
+        );
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// Convert a band-9 TypeDB value to a JSON value.
+#[cfg(feature = "band9")]
+fn value_to_json_b9(value: &type_bridge_typedb_driver_b9::concept::Value) -> serde_json::Value {
+    if let Some(b) = value.get_boolean() {
+        return serde_json::Value::Bool(b);
+    }
+    if let Some(i) = value.get_integer() {
+        return serde_json::json!(i);
+    }
+    if let Some(d) = value.get_double() {
+        return serde_json::json!(d);
+    }
+    if let Some(s) = value.get_string() {
+        return serde_json::Value::String(s.to_string());
+    }
+    if let Some(date) = value.get_date() {
+        return serde_json::Value::String(date.to_string());
+    }
+    if let Some(dt) = value.get_datetime() {
+        return serde_json::Value::String(dt.to_string());
+    }
+    if let Some(dt_tz) = value.get_datetime_tz() {
+        return serde_json::Value::String(dt_tz.to_string());
+    }
+    if let Some(dec) = value.get_decimal() {
+        return serde_json::Value::String(dec.to_string());
+    }
+    if let Some(dur) = value.get_duration() {
+        return serde_json::Value::String(dur.to_string());
+    }
+    serde_json::Value::String(value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1056,6 +1357,7 @@ mod tests {
             Err(RuntimeError::UnsupportedVersion(err)) => {
                 let msg = err.to_string();
                 assert!(msg.contains("HTTP endpoint unavailable"), "{msg}");
+                assert!(msg.contains("band-9 gRPC attempt failed"), "{msg}");
                 assert!(msg.contains("band-8 gRPC attempt failed"), "{msg}");
                 assert!(msg.contains("band-7 gRPC attempt failed"), "{msg}");
             }
@@ -1208,6 +1510,42 @@ mod tests {
             core_version::band(&pinned),
             Some(7),
             "pinned band-7 fork version {PINNED_DRIVER_VERSION_B7} left protocol band 7; \
+             review the gate expectations before accepting the bump"
+        );
+    }
+
+    #[test]
+    fn cargo_lock_pin_b9() {
+        let lock_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock");
+        let lock_contents = std::fs::read_to_string(lock_path)
+            .expect("Cargo.lock not found relative to crate root");
+
+        let lock_version = lock_contents
+            .split("[[package]]")
+            .find(|block| block.contains("name = \"type-bridge-typedb-driver-b9\""))
+            .and_then(|block| {
+                block
+                    .lines()
+                    .find(|line| line.trim_start().starts_with("version = "))
+            })
+            .and_then(|line| {
+                let start = line.find('"')? + 1;
+                let end = line.rfind('"')?;
+                Some(&line[start..end])
+            })
+            .expect("type-bridge-typedb-driver-b9 entry not found in Cargo.lock");
+
+        assert_eq!(
+            lock_version, PINNED_DRIVER_VERSION_B9,
+            "Cargo.lock resolves type-bridge-typedb-driver-b9 {lock_version} but \
+             PINNED_DRIVER_VERSION_B9 is {PINNED_DRIVER_VERSION_B9}; update the runtime constant"
+        );
+
+        let pinned: core_version::Version = PINNED_DRIVER_VERSION_B9.parse().unwrap();
+        assert_eq!(
+            core_version::band(&pinned),
+            Some(9),
+            "pinned band-9 fork version {PINNED_DRIVER_VERSION_B9} left protocol band 9; \
              review the gate expectations before accepting the bump"
         );
     }

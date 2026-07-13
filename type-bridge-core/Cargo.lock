@@ -2734,6 +2734,7 @@ dependencies = [
  "tracing",
  "type-bridge-core-lib",
  "type-bridge-typedb-driver-b7",
+ "type-bridge-typedb-driver-b9",
  "typedb-driver",
 ]
 

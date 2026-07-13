@@ -21,9 +21,10 @@ import type_bridge_core
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# Expected embedded pins for the default (both-bands) build.
+# Expected embedded pins for the default (all-bands) build.
 EXPECTED_BAND7_VERSION = "3.8.1"
 EXPECTED_BAND8_VERSION = "3.11.5"
+EXPECTED_BAND9_VERSION = "3.12.0"
 
 
 def _embedded_version() -> str:
@@ -39,11 +40,12 @@ def _embedded_versions() -> dict[int, str]:
 class TestEmbeddedPins:
     """Both embedded pins are present and match expected values."""
 
-    def test_embedded_driver_versions_contains_both_bands(self):
-        """Default build must report both band-7 and band-8 pins."""
+    def test_embedded_driver_versions_contains_all_bands(self):
+        """Default build must report band-7, band-8, and band-9 pins."""
         versions = _embedded_versions()
         assert 7 in versions, f"band-7 pin missing from embedded_driver_versions(): {versions}"
         assert 8 in versions, f"band-8 pin missing from embedded_driver_versions(): {versions}"
+        assert 9 in versions, f"band-9 pin missing from embedded_driver_versions(): {versions}"
 
     def test_band7_pin_value(self):
         """Band-7 embedded pin must equal the expected fork version."""
@@ -57,6 +59,13 @@ class TestEmbeddedPins:
         versions = _embedded_versions()
         assert versions[8] == EXPECTED_BAND8_VERSION, (
             f"band-8 embedded pin is {versions[8]!r}; expected {EXPECTED_BAND8_VERSION!r}"
+        )
+
+    def test_band9_pin_value(self):
+        """Band-9 embedded pin must equal the expected fork version."""
+        versions = _embedded_versions()
+        assert versions[9] == EXPECTED_BAND9_VERSION, (
+            f"band-9 embedded pin is {versions[9]!r}; expected {EXPECTED_BAND9_VERSION!r}"
         )
 
     def test_band7_pin_on_3_8_line(self):
