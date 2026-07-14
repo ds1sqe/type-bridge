@@ -6,6 +6,7 @@ use crate::ast::{
     TypedLiteral, TypedMatchPredicate, TypedMatchTarget, TypedMissingOrder, TypedPageRematch,
     TypedRootScan, TypedSortDirection, Value,
 };
+use crate::decimal::parse_decimal;
 use crate::reserved_words::is_reserved_word;
 use std::sync::OnceLock;
 use unicode_ident::{is_xid_continue, is_xid_start};
@@ -1257,7 +1258,7 @@ fn validate_typed_literal(value: &TypedLiteral) -> Result<(), TypedCompileError>
         TypedLiteral::Date(value) => ("date", valid_typeql_date(value)),
         TypedLiteral::DateTime(value) => ("datetime", valid_typeql_datetime(value)),
         TypedLiteral::DateTimeTz(value) => ("datetime-tz", valid_typeql_datetime_tz(value)),
-        TypedLiteral::Decimal(value) => ("decimal", valid_typeql_decimal(value)),
+        TypedLiteral::Decimal(value) => ("decimal", parse_decimal(value).is_some()),
         TypedLiteral::Duration(value) => ("duration", valid_typeql_duration(value)),
     };
     if valid {
@@ -1428,44 +1429,6 @@ fn valid_typeql_iana_zone(value: &str) -> bool {
                 .expect("typed IANA timezone regex is valid")
         })
         .is_match(value)
-}
-
-fn valid_typeql_decimal(value: &str) -> bool {
-    static DECIMAL: OnceLock<regex::Regex> = OnceLock::new();
-    let value = value.strip_suffix("dec").unwrap_or(value);
-    if !DECIMAL
-        .get_or_init(|| {
-            regex::Regex::new(r"^[+-]?[0-9]+(?:\.[0-9]{1,19})?$")
-                .expect("typed decimal regex is valid")
-        })
-        .is_match(value)
-    {
-        return false;
-    }
-
-    let (negative, magnitude) = value.strip_prefix('-').map_or_else(
-        || (false, value.strip_prefix('+').unwrap_or(value)),
-        |value| (true, value),
-    );
-    let (whole, fraction) = magnitude
-        .split_once('.')
-        .map_or((magnitude, None), |(whole, fraction)| {
-            (whole, Some(fraction))
-        });
-    let whole = whole.trim_start_matches('0');
-    let whole = if whole.is_empty() { "0" } else { whole };
-    let limit = if negative {
-        "9223372036854775808"
-    } else {
-        "9223372036854775807"
-    };
-    match whole.len().cmp(&limit.len()).then_with(|| whole.cmp(limit)) {
-        std::cmp::Ordering::Less => true,
-        std::cmp::Ordering::Greater => false,
-        std::cmp::Ordering::Equal => {
-            !negative || fraction.is_none_or(|fraction| fraction.bytes().all(|digit| digit == b'0'))
-        }
-    }
 }
 
 fn valid_typeql_duration(value: &str) -> bool {

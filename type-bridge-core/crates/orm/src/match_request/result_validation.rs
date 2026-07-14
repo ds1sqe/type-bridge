@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use regex::Regex;
+use type_bridge_core_lib::decimal::parse_decimal;
 use unicase::UniCase;
 
 use crate::descriptor::{OwnedAttributeDescriptor, RoleDescriptor, TypeDescriptorRef};
@@ -634,7 +635,7 @@ fn validate_solutions<'a>(
             }
             let expression = find_role_edge(request.plan.predicate.as_ref(), *edge)
                 .expect("known role edge was collected from the predicate");
-            validate_role_edge_link(expression, &bindings)?;
+            validate_role_edge_link(registry, expression, &bindings)?;
         }
 
         if let Some(predicate) = &request.plan.predicate
@@ -1177,6 +1178,7 @@ fn find_role_edge(expression: Option<&MatchExpr>, id: RoleEdgeId) -> Option<&Mat
 }
 
 fn validate_role_edge_link(
+    registry: &DescriptorRegistry,
     expression: &MatchExpr,
     bindings: &BTreeMap<BindingId, &HydratedThing>,
 ) -> Result<(), MatchError> {
@@ -1199,8 +1201,12 @@ fn validate_role_edge_link(
         hydrated_role.role().name == role.name
             && hydrated_role.players().iter().any(|candidate| {
                 candidate.concept_id() == player_thing.concept_id()
-                    && candidate.declared_descriptor() == player_thing.declared_descriptor()
                     && candidate.concrete_descriptor() == player_thing.concrete_descriptor()
+                    && declared_descriptors_share_lineage(
+                        registry,
+                        candidate.declared_descriptor(),
+                        player_thing.declared_descriptor(),
+                    )
                     && candidate.kind() == player_thing.kind()
                     && candidate.attributes() == player_thing.attributes()
             })
@@ -1214,6 +1220,14 @@ fn validate_role_edge_link(
         )
         .at(MatchErrorPathSegment::RoleEdge(*id)))
     }
+}
+
+fn declared_descriptors_share_lineage(
+    registry: &DescriptorRegistry,
+    left: &DescriptorId,
+    right: &DescriptorId,
+) -> bool {
+    registry.is_same_or_subtype(left, right) || registry.is_same_or_subtype(right, left)
 }
 
 fn evaluate_expression(
@@ -1619,7 +1633,7 @@ fn safe_value(value: &AttributeValue) -> bool {
         AttributeValue::Date(value) => parse_date(value).is_some(),
         AttributeValue::DateTime(value) => parse_datetime(value, false).is_some(),
         AttributeValue::DateTimeTZ(value) => parse_datetime(value, true).is_some(),
-        AttributeValue::Decimal(value) => decimal_parts(value).is_some(),
+        AttributeValue::Decimal(value) => parse_decimal(value).is_some(),
         AttributeValue::Duration(value) => parse_duration(value).is_some(),
         AttributeValue::String(_) | AttributeValue::Long(_) | AttributeValue::Boolean(_) => true,
     }
@@ -1765,61 +1779,8 @@ fn compare_fraction(left: &str, right: &str) -> Ordering {
         )
 }
 
-struct DecimalParts<'a> {
-    negative: bool,
-    whole: &'a str,
-    fraction: &'a str,
-}
-
-fn decimal_parts(value: &str) -> Option<DecimalParts<'_>> {
-    let (negative, unsigned) = if let Some(value) = value.strip_prefix('-') {
-        (true, value)
-    } else {
-        (false, value.strip_prefix('+').unwrap_or(value))
-    };
-    let mut parts = unsigned.split('.');
-    let raw_whole = parts.next()?;
-    let raw_fraction = parts.next().unwrap_or("");
-    if parts.next().is_some()
-        || raw_whole.is_empty()
-        || !raw_whole.bytes().all(|byte| byte.is_ascii_digit())
-        || (!raw_fraction.is_empty() && !raw_fraction.bytes().all(|byte| byte.is_ascii_digit()))
-        || unsigned.ends_with('.')
-    {
-        return None;
-    }
-    let whole = raw_whole.trim_start_matches('0');
-    let whole = if whole.is_empty() { "0" } else { whole };
-    let fraction = raw_fraction.trim_end_matches('0');
-    let negative = negative && !(whole == "0" && fraction.is_empty());
-    Some(DecimalParts {
-        negative,
-        whole,
-        fraction,
-    })
-}
-
 fn compare_decimal(left: &str, right: &str) -> Option<Ordering> {
-    let left = decimal_parts(left)?;
-    let right = decimal_parts(right)?;
-    if left.negative != right.negative {
-        return Some(if left.negative {
-            Ordering::Less
-        } else {
-            Ordering::Greater
-        });
-    }
-    let magnitude = left
-        .whole
-        .len()
-        .cmp(&right.whole.len())
-        .then_with(|| left.whole.cmp(right.whole))
-        .then_with(|| compare_fraction(left.fraction, right.fraction));
-    Some(if left.negative {
-        magnitude.reverse()
-    } else {
-        magnitude
-    })
+    Some(parse_decimal(left)?.compare(&parse_decimal(right)?))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -2945,6 +2906,98 @@ mod tests {
     }
 
     #[test]
+    fn role_edge_accepts_base_declared_view_of_exact_subtype_player() {
+        let registry = registry();
+        let person_descriptor = registry.descriptor_id("person").unwrap();
+        let employee_descriptor = registry.descriptor_id("employee").unwrap();
+        let role_owner = registry.descriptor_id("employment").unwrap();
+        let predicate = MatchExpr::RoleEdge {
+            id: RoleEdgeId::new(0),
+            relation: BindingId::new(1),
+            role: RoleId::new(role_owner.clone(), "employee"),
+            player: BindingId::new(0),
+        };
+        let validated = exact_one_request(
+            &registry,
+            vec![
+                binding(
+                    &registry,
+                    0,
+                    "employee",
+                    ThingKind::Entity,
+                    MatchMode::Exact,
+                ),
+                binding(
+                    &registry,
+                    1,
+                    "employment",
+                    ThingKind::Relation,
+                    MatchMode::Exact,
+                ),
+            ],
+            Some(predicate),
+            FetchShape::Positional {
+                slots: vec![
+                    FetchSlot::One {
+                        binding: BindingId::new(0),
+                    },
+                    FetchSlot::One {
+                        binding: BindingId::new(1),
+                    },
+                ],
+            },
+            BTreeSet::new(),
+        );
+        let attributes = vec![
+            hydrated_attribute(
+                &registry,
+                "employee",
+                "name",
+                vec![AttributeValue::String("Alice".into())],
+            ),
+            hydrated_attribute(
+                &registry,
+                "employee",
+                "badge",
+                vec![AttributeValue::String("A-1".into())],
+            ),
+        ];
+        let selected_employee = HydratedThing::new(
+            ConceptId::new("employee-1"),
+            employee_descriptor.clone(),
+            employee_descriptor.clone(),
+            ThingKind::Entity,
+            attributes.clone(),
+            vec![],
+        );
+        let nested_employee = HydratedRolePlayer::new(
+            ConceptId::new("employee-1"),
+            person_descriptor,
+            employee_descriptor,
+            ThingKind::Entity,
+            attributes,
+        );
+        let relation = employment(
+            &registry,
+            "employment-1",
+            "code-1",
+            vec![HydratedRole::new(
+                RoleId::new(role_owner, "employee"),
+                vec![nested_employee],
+            )],
+        );
+        let evidence = rows_evidence(
+            &validated,
+            vec![solution(
+                vec![(0, selected_employee), (1, relation)],
+                vec![0],
+            )],
+        );
+
+        validate_provider_result(&registry, &validated, evidence).unwrap();
+    }
+
+    #[test]
     fn page_preserves_collection_multiplicity_and_dedupes_distinct_slots() {
         let registry = registry();
         let output = FetchShape::Positional {
@@ -3234,7 +3287,7 @@ mod tests {
         assert!(
             compare_values(
                 ComparisonOp::Equal,
-                &AttributeValue::Decimal("1.0".into()),
+                &AttributeValue::Decimal("1.0dec".into()),
                 &AttributeValue::Decimal("1.00".into()),
             )
             .unwrap()

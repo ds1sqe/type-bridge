@@ -20,6 +20,8 @@ use type_bridge_core_lib::version as core_version;
 use type_bridge_core_lib::version::DEFAULT_HTTP_PORT;
 
 #[cfg(feature = "band8")]
+use typedb_driver as driver_b8;
+#[cfg(feature = "band8")]
 use typedb_driver::answer::QueryAnswer as B8QueryAnswer;
 #[cfg(feature = "band8")]
 use typedb_driver::{
@@ -28,6 +30,8 @@ use typedb_driver::{
 };
 
 #[cfg(feature = "band7")]
+use type_bridge_typedb_driver_b7 as driver_b7;
+#[cfg(feature = "band7")]
 use type_bridge_typedb_driver_b7::answer::QueryAnswer as B7QueryAnswer;
 #[cfg(feature = "band7")]
 use type_bridge_typedb_driver_b7::{
@@ -35,6 +39,8 @@ use type_bridge_typedb_driver_b7::{
     TransactionType as B7TransactionType, TypeDBDriver as B7Driver,
 };
 
+#[cfg(feature = "band9")]
+use type_bridge_typedb_driver_b9 as driver_b9;
 #[cfg(feature = "band9")]
 use type_bridge_typedb_driver_b9::answer::QueryAnswer as B9QueryAnswer;
 #[cfg(feature = "band9")]
@@ -1276,8 +1282,7 @@ impl RuntimeTransaction {
                             )
                             .await?
                             {
-                                let value = serde_json::to_value(document.into_json())
-                                    .unwrap_or(serde_json::Value::Null);
+                                let value = document_to_json_b7(&document);
                                 if runtime_accept(
                                     &limits,
                                     &mut stats,
@@ -1356,8 +1361,7 @@ impl RuntimeTransaction {
                             )
                             .await?
                             {
-                                let value = serde_json::to_value(document.into_json())
-                                    .unwrap_or(serde_json::Value::Null);
+                                let value = document_to_json_b8(&document);
                                 if runtime_accept(
                                     &limits,
                                     &mut stats,
@@ -1603,6 +1607,172 @@ impl RuntimeTransaction {
     }
 }
 
+fn document_type_to_json(kind: &str, label: &str) -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::from_iter([
+        (
+            "kind".to_owned(),
+            serde_json::Value::String(kind.to_owned()),
+        ),
+        (
+            "label".to_owned(),
+            serde_json::Value::String(label.to_owned()),
+        ),
+    ]))
+}
+
+fn document_attribute_type_to_json(label: &str, value_type: Option<&str>) -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::from_iter([
+        (
+            "kind".to_owned(),
+            serde_json::Value::String("attribute".to_owned()),
+        ),
+        (
+            "label".to_owned(),
+            serde_json::Value::String(label.to_owned()),
+        ),
+        (
+            "valueType".to_owned(),
+            serde_json::Value::String(value_type.unwrap_or("none").to_owned()),
+        ),
+    ]))
+}
+
+macro_rules! define_driver_json_conversion {
+    (
+        $feature:literal,
+        $driver:ident,
+        $document_fn:ident,
+        $node_fn:ident,
+        $leaf_fn:ident,
+        $value_fn:ident
+    ) => {
+        #[cfg(feature = $feature)]
+        fn $document_fn(document: &$driver::answer::ConceptDocument) -> serde_json::Value {
+            document
+                .root
+                .as_ref()
+                .map($node_fn)
+                .unwrap_or(serde_json::Value::Null)
+        }
+
+        #[cfg(feature = $feature)]
+        fn $node_fn(node: &$driver::answer::concept_document::Node) -> serde_json::Value {
+            use $driver::answer::concept_document::Node;
+
+            match node {
+                Node::Map(map) => serde_json::Value::Object(
+                    map.iter()
+                        .map(|(name, node)| (name.clone(), $node_fn(node)))
+                        .collect(),
+                ),
+                Node::List(list) => serde_json::Value::Array(list.iter().map($node_fn).collect()),
+                Node::Leaf(Some(leaf)) => $leaf_fn(leaf),
+                Node::Leaf(None) => serde_json::Value::Null,
+            }
+        }
+
+        #[cfg(feature = $feature)]
+        fn $leaf_fn(leaf: &$driver::answer::concept_document::Leaf) -> serde_json::Value {
+            use $driver::answer::concept_document::Leaf;
+            use $driver::concept::Concept;
+
+            match leaf {
+                Leaf::Empty => serde_json::Value::Null,
+                Leaf::Concept(concept) => match concept {
+                    Concept::EntityType(_) => document_type_to_json("entity", concept.get_label()),
+                    Concept::RelationType(_) => {
+                        document_type_to_json("relation", concept.get_label())
+                    }
+                    Concept::RoleType(_) => {
+                        document_type_to_json("relation:role", concept.get_label())
+                    }
+                    Concept::AttributeType(_) => {
+                        let value_type = concept.try_get_value_type();
+                        document_attribute_type_to_json(
+                            concept.get_label(),
+                            value_type.as_ref().map(|value_type| value_type.name()),
+                        )
+                    }
+                    Concept::Attribute(_) | Concept::Value(_) => {
+                        $value_fn(concept.try_get_value().expect("value concept has a value"))
+                    }
+                    concept @ (Concept::Entity(_) | Concept::Relation(_)) => {
+                        unreachable!(
+                            "unexpected concept encountered in fetch response: {:?}",
+                            concept
+                        )
+                    }
+                },
+                Leaf::ValueType(value_type) => {
+                    serde_json::Value::String(value_type.name().to_owned())
+                }
+                Leaf::Kind(kind) => serde_json::Value::String(kind.name().to_owned()),
+            }
+        }
+
+        #[cfg(feature = $feature)]
+        fn $value_fn(value: &$driver::concept::Value) -> serde_json::Value {
+            use $driver::concept::Value;
+
+            match value {
+                Value::Boolean(value) => serde_json::Value::Bool(*value),
+                Value::Integer(value) => serde_json::Value::from(*value),
+                Value::Double(value) => serde_json::Value::from(*value),
+                Value::String(value) => serde_json::Value::String(value.clone()),
+                Value::Decimal(_)
+                | Value::Date(_)
+                | Value::Datetime(_)
+                | Value::DatetimeTZ(_)
+                | Value::Duration(_) => serde_json::Value::String(value.to_string()),
+                Value::Struct(value, name) => {
+                    let fields = value
+                        .fields()
+                        .iter()
+                        .map(|(field, value)| {
+                            (
+                                field.clone(),
+                                value
+                                    .as_ref()
+                                    .map($value_fn)
+                                    .unwrap_or(serde_json::Value::Null),
+                            )
+                        })
+                        .collect();
+                    serde_json::Value::Object(serde_json::Map::from_iter([(
+                        name.clone(),
+                        serde_json::Value::Object(fields),
+                    )]))
+                }
+            }
+        }
+    };
+}
+
+define_driver_json_conversion!(
+    "band7",
+    driver_b7,
+    document_to_json_b7,
+    document_node_to_json_b7,
+    document_leaf_to_json_b7,
+    value_to_json_b7
+);
+define_driver_json_conversion!(
+    "band8",
+    driver_b8,
+    document_to_json_b8,
+    document_node_to_json_b8,
+    document_leaf_to_json_b8,
+    value_to_json_b8
+);
+define_driver_json_conversion!(
+    "band9",
+    driver_b9,
+    document_to_json_b9,
+    document_node_to_json_b9,
+    document_leaf_to_json_b9,
+    value_to_json_b9
+);
+
 /// Convert a band-7 TypeDB concept to a JSON value.
 ///
 /// Output shape is identical to [`concept_to_json_b8`] for all common concepts.
@@ -1634,39 +1804,6 @@ fn concept_to_json_b7(
     serde_json::Value::Object(obj)
 }
 
-/// Convert a band-7 TypeDB value to a JSON value.
-#[cfg(feature = "band7")]
-fn value_to_json_b7(value: &type_bridge_typedb_driver_b7::concept::Value) -> serde_json::Value {
-    if let Some(b) = value.get_boolean() {
-        return serde_json::Value::Bool(b);
-    }
-    if let Some(i) = value.get_integer() {
-        return serde_json::json!(i);
-    }
-    if let Some(d) = value.get_double() {
-        return serde_json::json!(d);
-    }
-    if let Some(s) = value.get_string() {
-        return serde_json::Value::String(s.to_string());
-    }
-    if let Some(date) = value.get_date() {
-        return serde_json::Value::String(date.to_string());
-    }
-    if let Some(dt) = value.get_datetime() {
-        return serde_json::Value::String(dt.to_string());
-    }
-    if let Some(dt_tz) = value.get_datetime_tz() {
-        return serde_json::Value::String(dt_tz.to_string());
-    }
-    if let Some(dec) = value.get_decimal() {
-        return serde_json::Value::String(dec.to_string());
-    }
-    if let Some(dur) = value.get_duration() {
-        return serde_json::Value::String(dur.to_string());
-    }
-    serde_json::Value::String(value.to_string())
-}
-
 /// Convert a band-8 TypeDB concept to a JSON value.
 ///
 /// Output shape is identical to [`concept_to_json_b7`] for all common concepts.
@@ -1694,39 +1831,6 @@ fn concept_to_json_b8(concept: &typedb_driver::concept::Concept) -> serde_json::
         );
     }
     serde_json::Value::Object(obj)
-}
-
-/// Convert a band-8 TypeDB value to a JSON value.
-#[cfg(feature = "band8")]
-fn value_to_json_b8(value: &typedb_driver::concept::Value) -> serde_json::Value {
-    if let Some(b) = value.get_boolean() {
-        return serde_json::Value::Bool(b);
-    }
-    if let Some(i) = value.get_integer() {
-        return serde_json::json!(i);
-    }
-    if let Some(d) = value.get_double() {
-        return serde_json::json!(d);
-    }
-    if let Some(s) = value.get_string() {
-        return serde_json::Value::String(s.to_string());
-    }
-    if let Some(date) = value.get_date() {
-        return serde_json::Value::String(date.to_string());
-    }
-    if let Some(dt) = value.get_datetime() {
-        return serde_json::Value::String(dt.to_string());
-    }
-    if let Some(dt_tz) = value.get_datetime_tz() {
-        return serde_json::Value::String(dt_tz.to_string());
-    }
-    if let Some(dec) = value.get_decimal() {
-        return serde_json::Value::String(dec.to_string());
-    }
-    if let Some(dur) = value.get_duration() {
-        return serde_json::Value::String(dur.to_string());
-    }
-    serde_json::Value::String(value.to_string())
 }
 
 /// Lower a portable [`GivenRowsSpec`] onto the band-9 driver's `GivenRows`.
@@ -1813,12 +1917,7 @@ async fn consume_answer_b9(
         }
         B9QueryAnswer::ConceptDocumentStream(_, stream) => {
             let stream = stream
-                .map_ok(|document| {
-                    RuntimeAnswerItem::Document(
-                        serde_json::to_value(document.into_json())
-                            .unwrap_or(serde_json::Value::Null),
-                    )
-                })
+                .map_ok(|document| RuntimeAnswerItem::Document(document_to_json_b9(&document)))
                 .map_err(|error| RuntimeError::QueryExecution(format!("Document stream: {error}")));
             runtime_consume_stream(stream, RuntimeAnswerKind::Documents, limits, consumer).await
         }
@@ -1856,44 +1955,64 @@ fn concept_to_json_b9(
     serde_json::Value::Object(obj)
 }
 
-/// Convert a band-9 TypeDB value to a JSON value.
-#[cfg(feature = "band9")]
-fn value_to_json_b9(value: &type_bridge_typedb_driver_b9::concept::Value) -> serde_json::Value {
-    if let Some(b) = value.get_boolean() {
-        return serde_json::Value::Bool(b);
-    }
-    if let Some(i) = value.get_integer() {
-        return serde_json::json!(i);
-    }
-    if let Some(d) = value.get_double() {
-        return serde_json::json!(d);
-    }
-    if let Some(s) = value.get_string() {
-        return serde_json::Value::String(s.to_string());
-    }
-    if let Some(date) = value.get_date() {
-        return serde_json::Value::String(date.to_string());
-    }
-    if let Some(dt) = value.get_datetime() {
-        return serde_json::Value::String(dt.to_string());
-    }
-    if let Some(dt_tz) = value.get_datetime_tz() {
-        return serde_json::Value::String(dt_tz.to_string());
-    }
-    if let Some(dec) = value.get_decimal() {
-        return serde_json::Value::String(dec.to_string());
-    }
-    if let Some(dur) = value.get_duration() {
-        return serde_json::Value::String(dur.to_string());
-    }
-    serde_json::Value::String(value.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    macro_rules! document_scalar_regression {
+        ($feature:literal, $name:ident, $driver:ident, $node_fn:ident, $decimal:expr) => {
+            #[cfg(feature = $feature)]
+            #[test]
+            fn $name() {
+                use $driver::answer::concept_document::{Leaf, Node};
+                use $driver::concept::{Concept, Value};
+
+                const LARGE_INTEGER: i64 = 9_007_199_254_740_993;
+                let integer = Node::Leaf(Some(Leaf::Concept(Concept::Value(Value::Integer(
+                    LARGE_INTEGER,
+                )))));
+                assert_eq!(
+                    $node_fn(&integer),
+                    serde_json::Value::from(LARGE_INTEGER),
+                    "concept-document integers must not cross an f64 boundary"
+                );
+
+                let decimal = $decimal;
+                let expected = decimal.to_string();
+                let decimal =
+                    Node::Leaf(Some(Leaf::Concept(Concept::Value(Value::Decimal(decimal)))));
+                assert_eq!(
+                    $node_fn(&decimal),
+                    serde_json::Value::String(expected),
+                    "concept-document decimals must remain lossless strings"
+                );
+            }
+        };
+    }
+
+    document_scalar_regression!(
+        "band7",
+        band7_document_scalars_are_lossless,
+        driver_b7,
+        document_node_to_json_b7,
+        driver_b7::concept::value::Decimal::new(1234, 5_600_000_000_000_000_000)
+    );
+    document_scalar_regression!(
+        "band8",
+        band8_document_scalars_are_lossless,
+        driver_b8,
+        document_node_to_json_b8,
+        driver_b8::concept::value::Decimal::new(1234, 5_600_000_000_000_000_000)
+    );
+    document_scalar_regression!(
+        "band9",
+        band9_document_scalars_are_lossless,
+        driver_b9,
+        document_node_to_json_b9,
+        driver_b9::concept::value::Decimal::from_parts(1234, 5_600_000_000_000_000_000)
+    );
 
     async fn assert_pending_runtime_await_hits_deadline() {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();

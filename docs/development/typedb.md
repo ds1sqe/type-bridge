@@ -52,8 +52,8 @@ serves the full supported window without user-side driver selection.
 | Dimension | Supported range | Notes |
 |-----------|-----------------|-------|
 | TypeDB server | 3.8.0–3.12.x | Band-7 (3.8.x, 3.10.x), band-8 (3.11.x), and band-9-native (3.12.x) servers; 3.12 retains band 8 for discovery/fallback and dispatch is automatic |
-| Python `typedb-driver` | 3.8–3.12 on CPython 3.13; 3.12.0 on CPython 3.14 | The public extra permits supported lines on 3.13 so callers can match the server; its 3.14 branch pins the first line with a compatible native wheel. The development extra uses 3.11.5 on 3.13 for the default test server. This installed driver does not control the ORM's embedded 3.8–3.12 runtime |
-| CPython interpreter | 3.13–3.14 | Floor: defaulted generic parameters used by the typed facade; the abi3 native wheel supports both declared interpreter lines |
+| Python `typedb-driver` | 3.8–3.12 on CPython 3.12–3.13; 3.12.0 on CPython 3.14 | The public extra permits supported lines on 3.12–3.13 so callers can match the server; its 3.14 branch pins the first line with a compatible native wheel. The development extra uses 3.11.5 below 3.14 for the default test server. This installed driver does not control the ORM's embedded 3.8–3.12 runtime |
+| CPython interpreter | 3.12–3.14 | Defaulted generic parameters use the compatible `typing_extensions` surface on 3.12; the abi3 native wheel supports all declared interpreter lines |
 
 ### Feature gates vs. the version window
 
@@ -95,7 +95,7 @@ access is requested through `Database.driver`, its separate gate validates the
 installed driver against the server before opening that external connection.
 Both errors name the relevant versions without exposing raw protocol numbers.
 
-The direct Python driver follows its own protocol band. On CPython 3.13 the
+The direct Python driver follows its own protocol band. On CPython 3.12–3.13 the
 development extra selects driver 3.11.5 for the default TypeDB 3.11.5 server.
 On CPython 3.14 it selects driver 3.12.0, the first line with a CPython 3.14
 native wheel, and direct driver connections must therefore target TypeDB 3.12.

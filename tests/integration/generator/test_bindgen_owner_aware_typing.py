@@ -215,7 +215,7 @@ def test_generated_package_pyright_contract(generated_package: Path) -> None:
             json.dumps(
                 {
                     "include": [consumer.name],
-                    "pythonVersion": "3.13",
+                    "pythonVersion": "3.12",
                     "typeCheckingMode": "standard",
                     "reportMissingModuleSource": "none",
                     "executionEnvironments": [

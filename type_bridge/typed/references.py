@@ -85,6 +85,10 @@ class Selection(
     def _selection_type_brand(self) -> type[OutputT_co]:
         """Retain the static output brand."""
 
+    @abstractmethod
+    def _selection_model(self) -> type[TypeDBType]:
+        """Return the nominal Python model carried by this selection."""
+
 
 class _PlayerBinding(Generic[PlayerT_co], ABC):  # noqa: UP046 - explicit covariance
     """Covariant role-player view while ``BoundVar`` itself stays invariant."""
@@ -391,7 +395,8 @@ class BoundVar[ModelT: TypeDBType](Selection[ModelT], _PlayerBinding[ModelT]):
 
     def collect(self) -> Collected[ModelT]:
         """Return a persistent collected selection for this variable."""
-        return Collected._from_native(self.__handle.collect())
+        model_type_name = self.__stable_model_type_name()
+        return Collected._from_native(self.__handle.collect(), self.__model, model_type_name)
 
     def _native_selection(self) -> _NativeSelectionHandle:
         return self.__handle.one()
@@ -401,6 +406,10 @@ class BoundVar[ModelT: TypeDBType](Selection[ModelT], _PlayerBinding[ModelT]):
 
     def _selection_type_brand(self) -> type[ModelT]:
         raise RuntimeError("static selection brands have no runtime value")
+
+    def _selection_model(self) -> type[TypeDBType]:
+        self.__stable_model_type_name()
+        return self.__model
 
     def _player_type_brand(self) -> type[ModelT]:
         raise RuntimeError("static player brands have no runtime value")
@@ -413,30 +422,56 @@ class BoundVar[ModelT: TypeDBType](Selection[ModelT], _PlayerBinding[ModelT]):
 class Collected[ModelT: TypeDBType](Selection[tuple[ModelT, ...]]):
     """Persistent collected-output selection for one bound model variable."""
 
-    __slots__ = ("__handle",)
+    __slots__ = ("__handle", "__model", "__model_type_name")
 
     def __init__(self) -> None:
         raise TypeError("Collected values are created by BoundVar.collect")
 
     @classmethod
-    def _from_native(cls, handle: _NativeSelectionHandle) -> Collected[ModelT]:
+    def _from_native(
+        cls,
+        handle: _NativeSelectionHandle,
+        model: type[ModelT],
+        model_type_name: str,
+    ) -> Collected[ModelT]:
         value = object.__new__(cls)
         object.__setattr__(value, "_Collected__handle", handle)
+        object.__setattr__(value, "_Collected__model", model)
+        object.__setattr__(value, "_Collected__model_type_name", model_type_name)
         return value
 
     def distinct(self) -> Collected[ModelT]:
         """Return an identity-distinct persistent collection selection."""
-        return Collected._from_native(self.__handle.distinct())
+        return Collected._from_native(
+            self.__handle.distinct(),
+            self.__model,
+            self.__model_type_name,
+        )
 
     def order_by(self, order: QueryOrder) -> Collected[ModelT]:
         """Append one native collection-member order term persistently."""
-        return Collected._from_native(self.__handle.order_by(order._native_order()))
+        return Collected._from_native(
+            self.__handle.order_by(order._native_order()),
+            self.__model,
+            self.__model_type_name,
+        )
 
     def _native_selection(self) -> _NativeSelectionHandle:
         return self.__handle
 
     def _selection_type_brand(self) -> type[tuple[ModelT, ...]]:
         raise RuntimeError("static selection brands have no runtime value")
+
+    def _selection_model(self) -> type[TypeDBType]:
+        try:
+            current_type_name = self.__model.get_type_name()
+        except Exception as error:
+            raise TypeError(
+                "collected selection model type name changed after QuerySession.var"
+            ) from error
+        if current_type_name != self.__model_type_name:
+            raise TypeError("collected selection model type name changed after QuerySession.var")
+        return self.__model
 
 
 def _dynamic_value(value: Attribute):

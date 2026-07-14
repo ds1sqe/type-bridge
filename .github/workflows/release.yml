@@ -344,7 +344,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.13.5", "3.14"]
+        python-version: ["3.12", "3.13.5", "3.14"]
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       UV_PYTHON_PREFERENCE: only-system

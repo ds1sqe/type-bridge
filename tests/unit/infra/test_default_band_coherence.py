@@ -216,11 +216,11 @@ class TestDefaultBandCoherence:
                 )
 
     def test_dev_pin_matches_embedded_line(self):
-        """The CPython 3.13 dev pin matches the embedded driver's minor line."""
+        """The CPython 3.12–3.13 dev pin matches the embedded driver's minor line."""
         pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
         dependencies = set(pyproject["project"]["optional-dependencies"]["dev"])
         requirement = "typedb-driver~=3.11.5; python_version < '3.14'"
-        assert requirement in dependencies, "CPython 3.13 dev-extra driver pin not found"
+        assert requirement in dependencies, "CPython 3.12–3.13 dev-extra driver pin not found"
         embedded = _embedded_version()
         pin_line = "3.11"
         embedded_line = ".".join(embedded.split(".")[:2])

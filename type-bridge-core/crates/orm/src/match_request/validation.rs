@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
+use type_bridge_core_lib::decimal::parse_decimal;
 
 use crate::attribute::ValueType;
 use crate::descriptor::{OwnedAttributeDescriptor, TypeDescriptorRef};
@@ -1147,7 +1148,7 @@ fn validate_safe_value(value: &AttributeValue) -> Result<(), MatchError> {
         AttributeValue::Date(value) => valid_date(value),
         AttributeValue::DateTime(value) => valid_datetime(value, false),
         AttributeValue::DateTimeTZ(value) => valid_datetime(value, true),
-        AttributeValue::Decimal(value) => valid_decimal(value),
+        AttributeValue::Decimal(value) => parse_decimal(value).is_some(),
         AttributeValue::Duration(value) => valid_duration(value),
         AttributeValue::String(_) | AttributeValue::Long(_) | AttributeValue::Boolean(_) => true,
     };
@@ -1246,19 +1247,6 @@ fn valid_clock(value: &str) -> bool {
         0
     };
     hour <= 23 && minute <= 59 && second <= 59
-}
-
-fn valid_decimal(value: &str) -> bool {
-    let value = value.strip_prefix(['+', '-']).unwrap_or(value);
-    let mut parts = value.split('.');
-    let whole = parts.next().unwrap_or_default();
-    let fraction = parts.next();
-    !whole.is_empty()
-        && whole.bytes().all(|byte| byte.is_ascii_digit())
-        && parts.next().is_none()
-        && fraction.is_none_or(|digits| {
-            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
-        })
 }
 
 fn valid_duration(value: &str) -> bool {

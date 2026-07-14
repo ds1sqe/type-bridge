@@ -2,8 +2,8 @@
 
 Import-only checks do not catch native-extension incompatibilities. This smoke
 test deliberately crosses the FFI boundary without opening a network
-connection, so both the CPython 3.13/driver-3.11 and CPython 3.14/driver-3.12 CI
-lanes prove that their selected wheel is usable.
+connection, so the CPython 3.12–3.13/driver-3.11 and CPython
+3.14/driver-3.12 CI lanes prove that their selected wheel is usable.
 """
 
 from __future__ import annotations

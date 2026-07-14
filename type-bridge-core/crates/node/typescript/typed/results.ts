@@ -62,6 +62,8 @@ interface ThingPlan {
   readonly roles: readonly RolePlan[];
 }
 
+type ThingPosition = "selected" | "role-player";
+
 interface OutputShapeProof {
   readonly names: readonly string[] | null;
   readonly collections: readonly boolean[];
@@ -127,7 +129,7 @@ export function materializeValidatedRows(
     const slotCount = slotCounts[rowIndex]!;
     for (let slotIndex = 0; slotIndex < slotCount; slotIndex += 1) {
       const thing = nativeCall(() => result.slotThing(query, rowIndex, slotIndex));
-      row.push(preflightThing(thing, models));
+      row.push(preflightThing(thing, models, "selected"));
     }
     plans.push(row);
   }
@@ -136,11 +138,7 @@ export function materializeValidatedRows(
   for (const rowPlans of plans) {
     const slots = rowPlans.map(materializeThingPlan);
     if (output.names !== null) {
-      const named: Record<string, unknown> = {};
-      for (let slotIndex = 0; slotIndex < output.names.length; slotIndex += 1) {
-        named[output.names[slotIndex]!] = slots[slotIndex];
-      }
-      rows.push(Object.freeze(named));
+      rows.push(frozenNamedOutput(output.names, slots));
     } else if (slots.length === 1) {
       rows.push(slots[0]);
     } else {
@@ -264,7 +262,7 @@ export function materializeValidatedPage(
         const thing = nativeCall(() =>
           result.pageSlotThing(query, entryIndex, slotIndex, valueIndex),
         );
-        slot.push(preflightThing(thing, models));
+        slot.push(preflightThing(thing, models, "selected"));
       }
       row.push(slot);
     }
@@ -280,11 +278,7 @@ export function materializeValidatedPage(
         : values[0];
     });
     if (output.names !== null) {
-      const named: Record<string, unknown> = {};
-      for (let slotIndex = 0; slotIndex < output.names.length; slotIndex += 1) {
-        named[output.names[slotIndex]!] = slots[slotIndex];
-      }
-      items.push(Object.freeze(named));
+      items.push(frozenNamedOutput(output.names, slots));
     } else if (slots.length === 1) {
       items.push(slots[0]);
     } else {
@@ -292,6 +286,22 @@ export function materializeValidatedPage(
     }
   }
   return pageFromValidatedResult(items, offset, limit, total);
+}
+
+function frozenNamedOutput(
+  names: readonly string[],
+  values: readonly unknown[],
+): Readonly<Record<string, unknown>> {
+  const named: Record<string, unknown> = {};
+  for (let index = 0; index < names.length; index += 1) {
+    Object.defineProperty(named, names[index]!, {
+      value: values[index],
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+  }
+  return Object.freeze(named);
 }
 
 /** @internal Preserve one lossless distinct-root count. */
@@ -368,6 +378,7 @@ function preflightOutputShape(
 function preflightThing(
   thing: NativeThingHandle,
   models: ReadonlyMap<string, QueryModelClass>,
+  position: ThingPosition,
 ): ThingPlan {
   const concreteDescriptor = nativeCall(() => thing.concreteDescriptor());
   const actualKind = nativeCall(() => thing.thingKind());
@@ -426,7 +437,9 @@ function preflightThing(
 
   const fields = preflightFields(thing, model, descriptor.owned_attributes);
   const roles = isRelationDescriptor(descriptor)
-    ? preflightRoles(thing, model, descriptor.roles, models)
+    ? position === "selected"
+      ? preflightRoles(thing, model, descriptor.roles, models)
+      : []
     : preflightEntityRoles(thing, typeName);
   return Object.freeze({
     typeName,
@@ -608,7 +621,7 @@ function preflightRoles(
     const players: ThingPlan[] = [];
     for (let index = 0; index < count; index += 1) {
       const player = nativeCall(() => thing.rolePlayer(fieldName, index));
-      const playerPlan = preflightThing(player, models);
+      const playerPlan = preflightThing(player, models, "role-player");
       if (!isAllowedRolePlayer(playerPlan, descriptor.player_type_names, models)) {
         throw resultDecode(
           "result_role_player_type_mismatch",

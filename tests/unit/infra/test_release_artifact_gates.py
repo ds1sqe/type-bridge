@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github/workflows/release.yml"
 
 
@@ -32,6 +33,32 @@ def test_core_metadata_advertises_only_the_supported_python_implementation() -> 
 
     assert "Programming Language :: Python :: Implementation :: CPython" in classifiers
     assert "Programming Language :: Python :: Implementation :: PyPy" not in classifiers
+
+
+def test_supported_python_range_is_declared_and_exercised() -> None:
+    root = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    core = tomllib.loads(
+        (REPO_ROOT / "type-bridge-core/pyproject.toml").read_text(encoding="utf-8")
+    )
+    expected_versions = {
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+    }
+
+    assert root["project"]["requires-python"] == ">=3.12,<3.15"
+    assert core["project"]["requires-python"] == ">=3.12,<3.15"
+    assert expected_versions <= set(root["project"]["classifiers"])
+    assert expected_versions <= set(core["project"]["classifiers"])
+    assert "typing-extensions>=4.12" in root["project"]["dependencies"]
+
+    ci = CI_WORKFLOW.read_text(encoding="utf-8")
+    expected_matrix = 'python-version: ["3.12", "3.13.5", "3.14"]'
+    assert expected_matrix in job_block(ci, "python-legacy-package-compat")
+    assert expected_matrix in job_block(ci, "test-unit")
+
+    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert expected_matrix in job_block(release, "accept-python-artifacts")
 
 
 def test_pyo3_extension_link_mode_is_enabled_only_for_wheel_builds() -> None:
@@ -91,9 +118,9 @@ def test_python_publication_depends_on_exact_artifact_acceptance() -> None:
     acceptance = job_block(workflow, "accept-python-artifacts")
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert pyproject["project"]["requires-python"] == ">=3.13,<3.15"
+    assert pyproject["project"]["requires-python"] == ">=3.12,<3.15"
     assert "needs: [build-core-wheels, build-core-sdist, build-python]" in acceptance
-    assert 'python-version: ["3.13.5", "3.14"]' in acceptance
+    assert 'python-version: ["3.12", "3.13.5", "3.14"]' in acceptance
     assert "PYO3_USE_ABI3_FORWARD_COMPATIBILITY" in acceptance
     assert "pattern: core-wheels-*" in acceptance
     assert "merge-multiple: true" in acceptance

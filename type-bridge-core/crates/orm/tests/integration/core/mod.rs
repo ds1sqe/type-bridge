@@ -6,3 +6,4 @@ mod mutations;
 mod relation_roles;
 mod relations;
 mod transactions;
+mod typed_query_regressions;

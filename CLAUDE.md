@@ -8,8 +8,8 @@ The root package is Python-first. Native/shared binding work lives under
 
 ## Python Version
 
-This project requires **Python 3.13+**. The package metadata currently allows
-`>=3.13,<3.15`; `.python-version` pins local development to `3.13`.
+This project requires **Python 3.12+**. The package metadata currently allows
+`>=3.12,<3.15`; `.python-version` pins local development to `3.13`.
 
 ## Quick Start
 

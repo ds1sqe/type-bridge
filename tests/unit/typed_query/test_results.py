@@ -658,7 +658,7 @@ def test_materializer_fails_if_constructor_does_not_retain_validated_iid() -> No
     assert raised.value.code == "model_iid_assignment_mismatch"
 
 
-def test_nested_relation_role_player_fails_instead_of_attrs_only_construction() -> None:
+def test_nested_relation_role_player_materializes_nonrecursive_reference() -> None:
     nested = _RolePlayer(
         "0x20",
         "result-nested-relation",
@@ -675,6 +675,13 @@ def test_nested_relation_role_player_fails_instead_of_attrs_only_construction() 
         [_Role("nested", [nested])],
     )
 
-    with pytest.raises(TypedQueryMaterializationError) as raised:
-        _materialize_one(_native(_Result([_Row([_Slot(relation)])])), _models(), None)
-    assert raised.value.code == "nested_relation_roles_unavailable"
+    envelope = _checked_instance(
+        _materialize_one(_native(_Result([_Row([_Slot(relation)])])), _models(), None),
+        ResultEnvelope,
+    )
+    materialized_nested = _checked_instance(envelope.nested, ResultNestedRelation)
+
+    assert envelope._iid == "0x30"
+    assert materialized_nested._iid == "0x20"
+    assert materialized_nested.identifier == ResultIdentity("nested-1")
+    assert materialized_nested.member is None

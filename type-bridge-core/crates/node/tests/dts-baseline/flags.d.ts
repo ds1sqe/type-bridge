@@ -9,8 +9,8 @@ export declare enum TypeNameCase {
     CLASS_NAME = "classname",
     SNAKE_CASE = "snake_case"
 }
-export interface TypeFlagsOptions {
-    name?: string | null;
+export interface TypeFlagsOptions<Name extends string | null = string | null> {
+    name?: Name;
     abstract?: boolean;
     base?: boolean;
     case?: TypeNameCase;
@@ -19,8 +19,8 @@ export interface TypeFlagsOptions {
     /** TypeDB 3.12+ `@meta("key", "value")` annotations, one value per key. */
     meta?: Record<string, string>;
 }
-export interface ResolvedTypeFlags {
-    readonly name: string | null;
+export interface ResolvedTypeFlags<Name extends string | null = string | null> {
+    readonly name: Name;
     readonly abstract: boolean;
     readonly base: boolean;
     readonly case: TypeNameCase;
@@ -81,8 +81,16 @@ export declare function Doc(text: string): DocSpec;
 /** Metadata marker for the TypeDB 3.12+ `@meta("key", "value")` ownership annotation. */
 export declare function Meta(key: string, value: string): MetaSpec;
 export type FlagInput = typeof Key | typeof Unique | typeof Ordered | typeof Distinct | CardSpec | FlagSpec | DocSpec | MetaSpec;
+type NamelessTypeFlagsOptions = Omit<TypeFlagsOptions, "name"> & {
+    readonly name?: never;
+};
 /** Type-level config for an `Entity`/`Relation` (explicit name, abstract, base, case). */
-export declare function TypeFlags(options?: TypeFlagsOptions): ResolvedTypeFlags;
+export declare function TypeFlags(): ResolvedTypeFlags<null>;
+export declare function TypeFlags(options: NamelessTypeFlagsOptions): ResolvedTypeFlags<null>;
+export declare function TypeFlags<const Name extends string | null>(options: TypeFlagsOptions<Name> & {
+    readonly name: Name;
+}): ResolvedTypeFlags<Name>;
+export declare function TypeFlags(options: TypeFlagsOptions): ResolvedTypeFlags;
 /** Attribute-level config: an explicit attribute name and/or case override. */
 export declare function AttributeFlags(options?: AttributeFlagsOptions): ResolvedAttributeFlags;
 /** A cardinality bound `[min, max]`. Omitting `max` means unbounded (`[min, null]`). */
@@ -96,3 +104,4 @@ export declare function Flag(...flags: FlagInput[]): FlagSpec;
 export declare function resolveFlags(flags: readonly FlagInput[]): FlagSpec;
 /** Convert a model class name to its TypeDB type name under the given case. */
 export declare function formatTypeName(className: string, typeCase: TypeNameCase): string;
+export {};

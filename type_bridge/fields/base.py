@@ -6,8 +6,10 @@ This module provides field descriptors and references that enable type-safe
 query expressions like Person.age.gt(Age(30)).
 """
 
-from typing import TYPE_CHECKING, Any, Generic, Never, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Generic, Never, overload
 from weakref import ReferenceType, WeakKeyDictionary, ref
+
+from typing_extensions import TypeVar
 
 from type_bridge.models.base import TypeDBType
 

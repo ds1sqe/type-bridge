@@ -256,9 +256,17 @@ jobs:
   # legacy runner installs the wheels; the typed runner only extracts the same
   # prebuilt artifacts and uses an explicitly prepared interpreter/tool pair.
   python-legacy-package-compat:
-    name: Python installed/built-wheel compatibility
+    name: Python ${{ matrix.python-version }} installed/built-wheel compatibility
     runs-on: ubuntu-latest
     needs: build-wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13.5", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_PREFERENCE: only-system
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -266,7 +274,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13.5"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -403,7 +411,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.13.5", "3.14"]
+        python-version: ["3.12", "3.13.5", "3.14"]
     env:
       # The repo's .python-version pins 3.13 for local dev; without these,
       # uv ignores the matrix interpreter and downloads a managed build

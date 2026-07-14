@@ -78,6 +78,7 @@ class RuntimeMaterializedEnvelope extends Relation("runtime-materialized-envelop
 
 const personRefs = references(RuntimeQueryPerson);
 const employmentRefs = references(RuntimeQueryEmployment);
+const envelopeRefs = references(RuntimeMaterializedEnvelope);
 
 function expectMatchError(
   operation: () => unknown,
@@ -559,6 +560,75 @@ test("validated-handle materialization preserves bigint and freezes every public
   );
 });
 
+test("named __proto__ outputs remain enumerable own data properties", () => {
+  const query = Object.freeze({});
+  const thing = Object.freeze({
+    iid: () => "0x-proto-person",
+    concreteDescriptor: () => `entity:${RuntimeMaterializedPerson.typeName}`,
+    thingKind: () => "entity" as const,
+    fieldNames: () => ["value"],
+    fieldValuesJson: () => JSON.stringify([{ Long: "1" }]),
+    roleDataComplete: () => true,
+    roleNames: () => [],
+    rolePlayerCount: () => 0,
+    rolePlayer: () => {
+      throw new Error("entity has no role players");
+    },
+  });
+  const models = new Map([
+    [RuntimeMaterializedPerson.typeName, RuntimeMaterializedPerson],
+  ]);
+  const rowsResult = Object.freeze({
+    rowCount: () => 1,
+    outputSlotCount: () => 1,
+    outputSlotIsCollection: () => false,
+    outputNames: () => ["__proto__"],
+    slotCount: () => 1,
+    slotThing: () => thing,
+  });
+  const pageResult = Object.freeze({
+    pageEntryCount: () => 1,
+    pageOffset: () => 0n,
+    pageLimit: () => 1n,
+    pageTotal: () => null,
+    outputSlotCount: () => 1,
+    outputSlotIsCollection: () => false,
+    outputNames: () => ["__proto__"],
+    pageSlotCount: () => 1,
+    pageSlotValueCount: () => 1,
+    pageSlotThing: () => thing,
+  });
+  type ProtoRow = Readonly<Record<"__proto__", RuntimeMaterializedPerson>>;
+  const [row] = materializeValidatedRows(
+    query as never,
+    rowsResult as never,
+    models,
+  ) as readonly ProtoRow[];
+  const page = materializeValidatedPage(
+    query as never,
+    pageResult as never,
+    models,
+    0n,
+    1n,
+    false,
+  ) as Readonly<{ items: readonly ProtoRow[] }>;
+
+  for (const value of [row!, page.items[0]!]) {
+    const selected = value["__proto__"];
+    assert.ok(selected instanceof RuntimeMaterializedPerson);
+    assert.equal(selected._iid, "0x-proto-person");
+    assert.deepEqual(Object.getOwnPropertyDescriptor(value, "__proto__"), {
+      value: selected,
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+    assert.equal(Object.getPrototypeOf(value), Object.prototype);
+    assert.deepEqual(Object.keys(value), ["__proto__"]);
+    assert.ok(Object.isFrozen(value));
+  }
+});
+
 test("bare ordered fields derive cardinality from requiredness without a cast", () => {
   const query = Object.freeze({});
   const thing = Object.freeze({
@@ -737,7 +807,23 @@ test("constructor collisions cannot rewrite earlier immutable query metadata", (
   );
 });
 
-test("validated relation roles preserve multiplicity and reject incomplete nested relations", () => {
+test("relation-valued role players pass planning before execution", () => {
+  const session = diagnosticQuerySession();
+  const envelope = session.var(RuntimeMaterializedEnvelope);
+  const membership = session.var(RuntimeMaterializedMembership);
+  const query = session
+    .query(envelope)
+    .match(membership)
+    .where(envelope.role(envelopeRefs.roles.nested).connects(membership));
+
+  expectMatchError(
+    () => query.one(),
+    "invalid_plan",
+    "execution_connection_required",
+  );
+});
+
+test("validated relation roles preserve roots and materialize nested relations shallowly", () => {
   RuntimeMaterializedPerson.constructions = 0;
   const query = Object.freeze({});
   const person = Object.freeze({
@@ -831,8 +917,15 @@ test("validated relation roles preserve multiplicity and reject incomplete neste
   const incompleteNested = Object.freeze({
     ...membership,
     roleDataComplete: () => false,
-    roleNames: () => [],
-    rolePlayerCount: () => 0,
+    roleNames: () => {
+      throw new Error("shallow relation roles must not be inspected");
+    },
+    rolePlayerCount: () => {
+      throw new Error("shallow relation role counts must not be inspected");
+    },
+    rolePlayer: () => {
+      throw new Error("shallow relation players must not be expanded");
+    },
   });
   const envelope = Object.freeze({
     iid: () => "0x-envelope",
@@ -856,8 +949,34 @@ test("validated relation roles preserve multiplicity and reject incomplete neste
     [RuntimeMaterializedPerson.typeName, RuntimeMaterializedPerson],
   ]);
   RuntimeMaterializedPerson.constructions = 0;
+  const hydratedEnvelope = materializeValidatedOne(
+    query as never,
+    hostile as never,
+    hostileModels,
+  ) as RuntimeMaterializedEnvelope;
+  assert.ok(hydratedEnvelope instanceof RuntimeMaterializedEnvelope);
+  assert.equal(hydratedEnvelope._iid, "0x-envelope");
+  const nested = hydratedEnvelope.nested;
+  assert.ok(nested instanceof RuntimeMaterializedMembership);
+  assert.equal(nested._iid, "0x-membership");
+  assert.equal(nested.code.value, 11n);
+  assert.equal(nested.member, undefined);
+  assert.deepEqual(Object.getOwnPropertyDescriptor(nested, "member"), {
+    value: undefined,
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
+  assert.ok(Object.isFrozen(hydratedEnvelope));
+  assert.ok(Object.isFrozen(nested));
+  assert.equal(RuntimeMaterializedPerson.constructions, 0);
+
+  const incompleteRoot = Object.freeze({
+    ...result,
+    slotThing: () => incompleteNested,
+  });
   expectMatchError(
-    () => materializeValidatedOne(query as never, hostile as never, hostileModels),
+    () => materializeValidatedOne(query as never, incompleteRoot as never, hostileModels),
     "result_decode",
     "incomplete_relation_role_data",
   );

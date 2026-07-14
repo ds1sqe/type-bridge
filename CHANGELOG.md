@@ -83,10 +83,13 @@ All notable changes to TypeBridge will be documented in this file.
   and Node parity consumers also honor the configured HTTP port.
 - **CPython 3.14 direct-driver compatibility** - optional and development
   dependencies now select TypeDB driver 3.12.0 on CPython 3.14, with native
-  constructor coverage. The CPython 3.13 development environment retains
-  driver 3.11.5 for the default 3.11 server, while its public extra continues
+  constructor coverage. The CPython 3.12–3.13 development environments retain
+  driver 3.11.5 for the default 3.11 server, while the public extra continues
   to permit driver lines 3.8–3.12. The embedded ORM runtime remains compatible
-  with TypeDB 3.8–3.12 on either interpreter.
+  with TypeDB 3.8–3.12 on every supported interpreter.
+- **CPython 3.12 typed-facade compatibility** - package metadata, defaulted
+  owner generics, static-tool targets, CI, and exact-artifact acceptance again
+  cover the declared `>=3.12,<3.15` release range.
 
 ### Testing & Tooling
 
@@ -98,7 +101,7 @@ All notable changes to TypeBridge will be documented in this file.
   only its accepted immutable candidate; crates.io publication additionally
   waits for both complete Python archive/metadata/payload validation and exact
   npm-package acceptance. Exact-wheel runtime and typing consumers run on
-  CPython 3.13 and 3.14, and exact npm-package runtime consumers run on the
+  CPython 3.12, 3.13, and 3.14, and exact npm-package runtime consumers run on the
   declared Node 18 and 20 lines. Registry retries accept an existing artifact
   only when its published hash matches the candidate.
 - **TypeDB 3.12.0 CI legs** - all ordinary Python integration groups (including

@@ -14,8 +14,10 @@ comparison or string expressions with role context for proper TypeQL generation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Generic, Never, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Never
 from weakref import ReferenceType, WeakKeyDictionary, ref
+
+from typing_extensions import TypeVar
 
 from type_bridge.models.base import TypeDBType
 
@@ -233,9 +235,10 @@ class RoleRef(Generic[T_Player, T_RelationOwner_contra]):
         self,
         role_name: str,
         player_types: tuple[type[T_Player], ...],
-        owner_type: type[T_RelationOwner_contra] | None = None,
         cardinality: Any = None,
         plays_cardinality: Any = None,
+        *,
+        owner_type: type[T_RelationOwner_contra] | None = None,
     ):
         """Create a role reference.
 
@@ -245,6 +248,7 @@ class RoleRef(Generic[T_Player, T_RelationOwner_contra]):
             cardinality: Optional relates-side role cardinality metadata.
             plays_cardinality: Optional plays-side cardinality metadata, carried as the
                 sibling of ``cardinality`` so class-level role access exposes both axes.
+            owner_type: Relation class that emitted this descriptor reference.
         """
         self.role_name = role_name
         self.player_types = player_types

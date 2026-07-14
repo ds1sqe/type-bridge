@@ -60,7 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     elif not (line[0] == 3 and 8 <= line[1] < 13):
         raise ProbeError(
-            f"Python 3.13 resolved an unsupported typedb-driver line: {installed_driver}"
+            f"Python 3.12–3.13 resolved an unsupported typedb-driver line: {installed_driver}"
         )
 
     print(

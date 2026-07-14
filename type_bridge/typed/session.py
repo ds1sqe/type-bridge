@@ -69,6 +69,8 @@ class QuerySession:
             raise TypeError("QuerySession.var requires an Entity or Relation model class")
         if model in _FRAMEWORK_MODEL_ROOTS:
             raise TypeError("QuerySession.var requires a declared Entity or Relation model class")
+        if model.is_base():
+            raise TypeError("QuerySession.var cannot bind a Python-only base=True model class")
         registered: set[type[TypeDBType]] = set()
         subtype_roots: set[type[TypeDBType]] = set()
         self._register_descriptor_closure(model, registered, subtype_roots)
@@ -350,11 +352,15 @@ class QuerySession:
 
         names = list(selections)
         selected = list(selections.values())
+        native_declarations = [
+            (name, type_name, collection) for name, type_name, collection, _ in declarations
+        ]
         shape = self.__handle.named_checked(
-            declarations,
+            native_declarations,
             names,
             [selection._native_selection() for selection in selected],
         )
+        _validate_named_selection_models(declarations, selected)
         handle = self.__handle.query(shape)
         return Query._from_native(
             handle,
@@ -437,7 +443,7 @@ class QuerySession:
 
 def _named_declaration(
     declaration: type[object],
-) -> list[tuple[str, str, bool]]:
+) -> list[tuple[str, str, bool, type[TypeDBType]]]:
     if not isinstance(declaration, type):
         raise TypeError("query_as requires a frozen dataclass or NamedTuple class")
 
@@ -466,7 +472,10 @@ def _named_declaration(
     return [(name, *_normalized_named_annotation(name, annotations[name])) for name in names]
 
 
-def _normalized_named_annotation(name: str, annotation: object) -> tuple[str, bool]:
+def _normalized_named_annotation(
+    name: str,
+    annotation: object,
+) -> tuple[str, bool, type[TypeDBType]]:
     origin = get_origin(annotation)
     if origin is tuple:
         arguments = get_args(annotation)
@@ -482,7 +491,25 @@ def _normalized_named_annotation(name: str, annotation: object) -> tuple[str, bo
 
     if not isinstance(model, type) or not issubclass(model, TypeDBType):
         raise TypeError(f"query_as field {name!r} annotation must be Model or tuple[Model, ...]")
-    return model.get_type_name(), collection
+    return model.get_type_name(), collection, model
+
+
+def _validate_named_selection_models(
+    declarations: list[tuple[str, str, bool, type[TypeDBType]]],
+    selections: list[Selection[object]],
+) -> None:
+    """Require every named selection to satisfy its nominal Python annotation."""
+    for (name, _, _, declared_model), selection in zip(
+        declarations,
+        selections,
+        strict=True,
+    ):
+        selected_model = selection._selection_model()
+        if not issubclass(selected_model, declared_model):
+            raise TypeError(
+                f"query_as field {name!r} annotation {declared_model.__name__} "
+                f"is not compatible with selection model {selected_model.__name__}"
+            )
 
 
 __all__ = ["QuerySession"]

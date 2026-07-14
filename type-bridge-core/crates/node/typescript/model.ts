@@ -296,6 +296,7 @@ export type SchemaSpec =
 export type EntitySchema = Record<string, FieldSpec<AttributeClass, boolean> | ListFieldSpec<AttributeClass, boolean>>;
 export type RelationSchema = Record<string, SchemaSpec>;
 
+/** Value accepted for one model-constructor field. */
 export type FieldValue<Spec> = Spec extends ListFieldSpec<infer Attr, boolean>
   ? InstanceType<Attr>[]
   : Spec extends FieldSpec<infer Attr, boolean>
@@ -304,12 +305,21 @@ export type FieldValue<Spec> = Spec extends ListFieldSpec<infer Attr, boolean>
       ? RoleValue<Players>
       : never;
 
+type MaterializedFieldValue<Spec> = Spec extends RoleSpec<infer Players>
+  ? MaterializedRoleValue<Players>
+  : FieldValue<Spec>;
+
+/**
+ * Fields exposed by a materialized model. Relation-valued role players are
+ * shallow: their IID and attributes are present, while their own role fields
+ * are explicitly `undefined` to prevent recursive graph hydration.
+ */
 export type InstanceFields<Schema extends Record<string, SchemaSpec>> = {
   readonly [Key in keyof Schema]: Schema[Key] extends
     | FieldSpec<AttributeClass, true>
     | ListFieldSpec<AttributeClass, true>
-    ? FieldValue<Schema[Key]> | undefined
-    : FieldValue<Schema[Key]>;
+    ? MaterializedFieldValue<Schema[Key]> | undefined
+    : MaterializedFieldValue<Schema[Key]>;
 };
 
 /**
@@ -392,6 +402,36 @@ type RolePlayerInstance<Token> = Token extends string
   : Token extends new (values: never) => infer Instance
     ? Instance
     : never;
+
+type MaterializedRoleValue<Players extends readonly ModelToken[]> =
+  Players extends readonly []
+    ? undefined
+    : | MaterializedRolePlayerInstance<Players[number]>
+      | readonly MaterializedRolePlayerInstance<Players[number]>[];
+
+type MaterializedRolePlayerInstance<Token> = Token extends string
+  ? object
+  : Token extends (new (values: never) => infer Instance) & {
+        readonly schema: infer Schema extends Record<string, SchemaSpec>;
+        descriptor(): infer Descriptor;
+      }
+    ? Descriptor extends RelationDescriptor
+      ? ShallowRelationInstance<Instance, Schema>
+      : Instance
+    : never;
+
+type RelationRoleKeys<Schema extends Record<string, SchemaSpec>> = {
+  [Key in keyof Schema]: Schema[Key] extends RoleSpec<readonly ModelToken[]>
+    ? Key
+    : never;
+}[keyof Schema];
+
+type ShallowRelationInstance<
+  Instance,
+  Schema extends Record<string, SchemaSpec>,
+> = Omit<Instance, RelationRoleKeys<Schema>> & {
+  readonly [Key in RelationRoleKeys<Schema>]: undefined;
+};
 
 /**
  * The canonical hydrated-instance type for a model schema. This is the single
@@ -530,10 +570,13 @@ export function Entity<const TypeName extends string, const Schema extends Entit
   typeNameOrFlags: TypeName,
   schema: Schema,
 ): OwnerBrandedModelClass<Schema, EntityDescriptor, TypeName>;
-export function Entity<const Schema extends EntitySchema>(
-  typeNameOrFlags: ResolvedTypeFlags,
+export function Entity<
+  const TypeName extends string,
+  const Schema extends EntitySchema,
+>(
+  typeNameOrFlags: ResolvedTypeFlags<TypeName>,
   schema: Schema,
-): OwnerBrandedModelClass<Schema, EntityDescriptor>;
+): OwnerBrandedModelClass<Schema, EntityDescriptor, TypeName>;
 export function Entity<const Schema extends EntitySchema>(
   typeNameOrFlags: string | ResolvedTypeFlags,
   schema: Schema,
@@ -545,6 +588,21 @@ export function Entity<
   const Schema extends EntitySchema,
 >(
   typeNameOrFlags: TypeName,
+  schema: Schema,
+  options: OwnerBrandedParentOption<ParentSchema, ParentOwners>,
+): OwnerBrandedModelClass<
+  MergedSchema<ParentSchema, Schema>,
+  EntityDescriptor,
+  TypeName,
+  TypeName | ParentOwners
+>;
+export function Entity<
+  const TypeName extends string,
+  const ParentSchema extends EntitySchema,
+  const ParentOwners extends string,
+  const Schema extends EntitySchema,
+>(
+  typeNameOrFlags: ResolvedTypeFlags<TypeName>,
   schema: Schema,
   options: OwnerBrandedParentOption<ParentSchema, ParentOwners>,
 ): OwnerBrandedModelClass<
@@ -590,10 +648,13 @@ export function Relation<const TypeName extends string, const Schema extends Rel
   typeNameOrFlags: TypeName,
   schema: Schema,
 ): OwnerBrandedModelClass<Schema, RelationDescriptor, TypeName>;
-export function Relation<const Schema extends RelationSchema>(
-  typeNameOrFlags: ResolvedTypeFlags,
+export function Relation<
+  const TypeName extends string,
+  const Schema extends RelationSchema,
+>(
+  typeNameOrFlags: ResolvedTypeFlags<TypeName>,
   schema: Schema,
-): OwnerBrandedModelClass<Schema, RelationDescriptor>;
+): OwnerBrandedModelClass<Schema, RelationDescriptor, TypeName>;
 export function Relation<const Schema extends RelationSchema>(
   typeNameOrFlags: string | ResolvedTypeFlags,
   schema: Schema,
@@ -605,6 +666,21 @@ export function Relation<
   const Schema extends RelationSchema,
 >(
   typeNameOrFlags: TypeName,
+  schema: Schema,
+  options: OwnerBrandedParentOption<ParentSchema, ParentOwners>,
+): OwnerBrandedModelClass<
+  MergedSchema<ParentSchema, Schema>,
+  RelationDescriptor,
+  TypeName,
+  TypeName | ParentOwners
+>;
+export function Relation<
+  const TypeName extends string,
+  const ParentSchema extends RelationSchema,
+  const ParentOwners extends string,
+  const Schema extends RelationSchema,
+>(
+  typeNameOrFlags: ResolvedTypeFlags<TypeName>,
   schema: Schema,
   options: OwnerBrandedParentOption<ParentSchema, ParentOwners>,
 ): OwnerBrandedModelClass<

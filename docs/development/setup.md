@@ -41,13 +41,14 @@ The project requires:
 - `isodate==0.7.2`: For Duration type support (ISO 8601)
 - `jinja2>=3.1.0`: Template engine for code generation
 - `typer>=0.15.0`: CLI framework for generator and migration tools
+- `typing-extensions>=4.12`: Python 3.12-compatible typed-facade generics
 
 `typedb-driver` is not a default runtime dependency. It is available through
 the `dev` and `typedb-driver` extras for integration tests and direct driver
-calls. The development extra selects driver 3.11.5 on CPython 3.13 and driver
-3.12.0 on CPython 3.14. The public extra permits supported 3.8–3.12 driver
-lines on CPython 3.13 so callers can match their server; CPython 3.14 direct
-driver calls require driver and server 3.12.
+calls. The development extra selects driver 3.11.5 on CPython 3.12–3.13 and
+driver 3.12.0 on CPython 3.14. The public extra permits supported 3.8–3.12
+driver lines on CPython 3.12–3.13 so callers can match their server; CPython
+3.14 direct driver calls require driver and server 3.12.
 The ORM's embedded runtime
 dispatches automatically across the full TypeDB 3.8–3.12 window; this pin
 is for the installed Python driver used by tests and direct driver APIs. See
@@ -415,13 +416,14 @@ For more details on logging configuration, see [docs/guide/logging.md](../guide/
 
 ### Python Version
 
-This project requires **Python 3.13+**. Check your Python version:
+This project supports **Python 3.12–3.14**. The repository's local development
+pin is Python 3.13. Check your Python version:
 
 ```bash
-python --version  # Should show 3.13 or higher
+python --version  # Should show 3.12, 3.13, or 3.14
 ```
 
-If you need to install Python 3.13, use:
+To match the repository's local development pin, use:
 
 ```bash
 # Using pyenv (recommended)

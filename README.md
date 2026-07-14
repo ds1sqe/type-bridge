@@ -3,7 +3,7 @@
 [![CI](https://github.com/ds1sqe/type-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ds1sqe/type-bridge/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/type-bridge.svg)](https://pypi.org/project/type-bridge/)
 [![Downloads](https://img.shields.io/pypi/dm/type-bridge.svg)](https://pypi.org/project/type-bridge/)
-[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![TypeDB 3.x](https://img.shields.io/badge/TypeDB-3.x-orange.svg)](https://typedb.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
@@ -54,7 +54,7 @@ PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync
 ```
 
 The variable is needed only when building the current PyO3-based core from
-source on CPython 3.14 (and is harmless on 3.13); published abi3 wheels do not
+source on CPython 3.14 (and is harmless on 3.12–3.13); published abi3 wheels do not
 need it.
 
 ## Quick Start
@@ -386,20 +386,21 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 
 ## Requirements
 
-- Python 3.13–3.14
+- Python 3.12–3.14
 - TypeDB 3.8.0–3.12.x server (see the [compatibility table](docs/development/typedb.md#server-and-driver-compatibility) for the full support window; band-7, band-8, and band-9-native 3.12 servers are all served by one artifact)
 - type-bridge-core>=1.5.7
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
 - jinja2>=3.1.0 (for code generation)
 - typer>=0.15.0 (for CLI)
+- typing-extensions>=4.12 (for Python 3.12 typed-facade compatibility)
 
 `typedb-driver` is required only for direct Python driver APIs and
 development/integration tests; install via `uv sync --extra dev` or
 `pip install type-bridge[typedb-driver]`. The development extra selects driver
-3.11.5 on CPython 3.13 for the default test server and driver 3.12.0 on CPython
-3.14. The public driver extra permits supported 3.8–3.12 driver lines on
-CPython 3.13, so choose the line matching the target server; CPython 3.14 is
+3.11.5 on CPython 3.12–3.13 for the default test server and driver 3.12.0 on
+CPython 3.14. The public driver extra permits supported 3.8–3.12 driver lines on
+CPython 3.12–3.13, so choose the line matching the target server; CPython 3.14 is
 limited to driver and server 3.12. The ORM's embedded runtime is unaffected.
 The ORM's embedded runtime handles band-7, band-8, and band-9-native 3.12
 servers automatically. Confirmed 3.12 connections normally negotiate band 9;

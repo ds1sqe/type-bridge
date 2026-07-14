@@ -42,6 +42,14 @@ class WorkPersonCollision(Entity):
     name: WorkIdentity = Flag(Key)
 
 
+class PythonOnlyWork(Entity):
+    flags = TypeFlags(name="typed-work-python-only", base=True)
+
+
+class PythonOnlyWorkRelation(Relation):
+    flags = TypeFlags(name="typed-work-python-only-relation", base=True)
+
+
 class WorkCompany(Entity):
     flags = TypeFlags(name="typed-work-company")
     name: WorkIdentity = Flag(Key)
@@ -52,6 +60,18 @@ class WorkEmployment(Relation):
     identifier: WorkIdentity = Flag(Key)
     employee: Role[WorkPerson] = Role("employee", WorkPerson)
     employer: Role[WorkCompany] = Role("employer", WorkCompany)
+
+
+class WorkNestedRelation(Relation):
+    flags = TypeFlags(name="typed-work-nested-relation")
+    identifier: WorkIdentity = Flag(Key)
+    member: Role[WorkPerson] = Role("member", WorkPerson)
+
+
+class WorkEnvelope(Relation):
+    flags = TypeFlags(name="typed-work-envelope")
+    identifier: WorkIdentity = Flag(Key)
+    nested: Role[WorkNestedRelation] = Role("nested", WorkNestedRelation)
 
 
 class UnregisteredWork(Entity):
@@ -84,6 +104,16 @@ class MutablePersonRow:
 @dataclass(frozen=True, slots=True)
 class WrongPersonRow:
     person: WorkCompany
+
+
+@dataclass(frozen=True, slots=True)
+class CollisionPersonRow:
+    person: WorkPersonCollision
+
+
+@dataclass(frozen=True, slots=True)
+class CollisionPeopleRow:
+    people: tuple[WorkPersonCollision, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +268,33 @@ def test_named_declarations_reject_kind_names_order_and_annotations() -> None:
     assert order.value.code == "named_declaration_name_mismatch"
 
 
+def test_named_declaration_rejects_unrelated_same_label_python_models() -> None:
+    session = diagnostic_session()
+    person = session.var(WorkPerson)
+
+    with pytest.raises(
+        TypeError,
+        match="annotation WorkPersonCollision.*selection model WorkPerson",
+    ):
+        session.query_as(CollisionPersonRow, person=person)
+    with pytest.raises(
+        TypeError,
+        match="annotation WorkPersonCollision.*selection model WorkPerson",
+    ):
+        session.query_as(CollisionPeopleRow, people=person.collect())
+
+    assert session._model_constructors()[WorkPerson.get_type_name()] is WorkPerson
+
+
+def test_named_declaration_accepts_nominal_root_for_subtype_inclusive_selection() -> None:
+    session = diagnostic_session()
+    person = session.subtypes(WorkPerson)
+
+    query = session.query_as(PersonRow, person=person)
+
+    _assert_connection_required(query.one)
+
+
 def test_empty_duplicate_name_and_duplicate_selection_fail_in_native_handles() -> None:
     session = diagnostic_session()
     person = session.var(WorkPerson)
@@ -326,6 +383,24 @@ def test_descriptor_closure_never_registers_framework_model_roots() -> None:
         "typed-work-company",
         "typed-work-employment",
     }
+
+
+def test_query_session_rejects_python_only_entity_and_relation_roots() -> None:
+    with pytest.raises(TypeError, match="Python-only base=True model"):
+        diagnostic_session().var(PythonOnlyWork)
+    with pytest.raises(TypeError, match="Python-only base=True model"):
+        diagnostic_session().subtypes(PythonOnlyWorkRelation)
+
+
+def test_query_session_accepts_shallow_nested_relation_player_plan() -> None:
+    session = diagnostic_session()
+    envelope = session.var(WorkEnvelope)
+    nested = session.var(WorkNestedRelation)
+    connected = envelope.role(WorkEnvelope.nested).connects(nested)
+
+    query = session.query(envelope).match(nested).where(connected)
+
+    _assert_connection_required(query.one)
 
 
 def test_existing_query_constructor_cannot_be_replaced_by_same_label_class() -> None:

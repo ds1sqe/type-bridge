@@ -211,6 +211,10 @@ void namedSingularRows;
 void namedPersonCount;
 void namedCompanyExists;
 
+const protoNamed = databaseSession.queryNamed({ ["__proto__"]: person });
+const protoNamedRow: Readonly<{ __proto__: QueryPerson }> = protoNamed.one();
+void protoNamedRow;
+
 const repeatedNamed = databaseSession.queryNamed({
   first: person,
   second: secondPerson,
