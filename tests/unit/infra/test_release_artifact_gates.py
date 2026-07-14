@@ -198,6 +198,17 @@ def test_crates_publication_waits_for_both_release_candidate_acceptance_gates() 
     assert "publish-crates" not in needs_line(node_acceptance)
 
 
+def test_node_native_crate_configures_napi_platform_linking() -> None:
+    """Direct Cargo builds must retain napi-rs's platform linker setup."""
+    crate_root = REPO_ROOT / "type-bridge-core/crates/node"
+    cargo = tomllib.loads((crate_root / "Cargo.toml").read_text(encoding="utf-8"))
+
+    assert cargo["build-dependencies"]["napi-build"] == "2"
+    assert (crate_root / "build.rs").read_text(encoding="utf-8") == (
+        "fn main() {\n    napi_build::setup();\n}\n"
+    )
+
+
 def test_npm_publication_uses_the_accepted_tarball() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     build = job_block(workflow, "build-node-native")
