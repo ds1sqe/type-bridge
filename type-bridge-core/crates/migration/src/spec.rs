@@ -6,6 +6,52 @@ use type_bridge_orm::schema::info::{
     SchemaInfo,
 };
 
+/// Identity scheme for a caller-declared semantic transition with no
+/// physical or data operations.
+pub const DECLARED_TRANSITION_SCHEME_V1: &str = "tb-declared-transition-v1";
+
+/// Canonical identity of an explicitly declared semantic transition.
+///
+/// TypeBridge computes `identity` from the caller's opaque declaration bytes;
+/// callers choose the bytes but never choose or synthesize the identity
+/// scheme.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "scheme")]
+pub enum DeclaredMigrationIntent {
+    /// First TypeBridge-owned declared-transition identity scheme.
+    #[serde(rename = "tb-declared-transition-v1")]
+    V1 {
+        /// Lowercase SHA-256 of the caller's declared semantic-transition bytes.
+        identity: String,
+    },
+}
+
+impl DeclaredMigrationIntent {
+    /// Return the stable serialized identity scheme.
+    pub fn scheme(&self) -> &'static str {
+        match self {
+            Self::V1 { .. } => DECLARED_TRANSITION_SCHEME_V1,
+        }
+    }
+
+    /// Return the opaque deterministic transition identity.
+    pub fn identity(&self) -> &str {
+        match self {
+            Self::V1 { identity } => identity,
+        }
+    }
+
+    /// Return whether the identity is the canonical lowercase full SHA-256
+    /// representation required by the scheme.
+    pub fn has_valid_identity(&self) -> bool {
+        let identity = self.identity().as_bytes();
+        identity.len() == 64
+            && identity
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    }
+}
+
 /// Reference to a migration that must be ordered before another migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrationDependencySpec {
@@ -28,6 +74,10 @@ pub struct MigrationSpec {
     /// Ordered operations in this migration.
     #[serde(default)]
     pub operations: Vec<OperationSpec>,
+    /// Explicit semantic-transition identity for a version that may contain
+    /// no physical or data operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_intent: Option<DeclaredMigrationIntent>,
     /// Optional loader checksum for later drift detection.
     #[serde(default)]
     pub checksum: Option<String>,
@@ -574,6 +624,7 @@ mod tests {
                     name: "0001_initial".to_string(),
                     dependencies: vec![],
                     operations: vec![OperationSpec::DefineSchema { schema: schema() }],
+                    declared_intent: None,
                     checksum: Some("aaa".to_string()),
                     reversible: true,
                 },
@@ -588,6 +639,7 @@ mod tests {
                         forward: "define attribute nickname, value string;".to_string(),
                         reverse: None,
                     }],
+                    declared_intent: None,
                     checksum: Some("bbb".to_string()),
                     reversible: false,
                 },
@@ -636,5 +688,21 @@ mod tests {
         })
         .expect("serialize");
         assert!(json.contains("\"kind\":\"modify_type_annotations\""));
+    }
+
+    #[test]
+    fn declared_transition_scheme_is_versioned_and_unknown_schemes_fail_closed() {
+        let intent = DeclaredMigrationIntent::V1 {
+            identity: "a".repeat(64),
+        };
+        let json = serde_json::to_string(&intent).unwrap();
+        assert!(json.contains(DECLARED_TRANSITION_SCHEME_V1));
+        assert_eq!(
+            serde_json::from_str::<DeclaredMigrationIntent>(&json).unwrap(),
+            intent
+        );
+
+        let unknown = r#"{"scheme":"tb-declared-transition-v2","identity":"abc"}"#;
+        assert!(serde_json::from_str::<DeclaredMigrationIntent>(unknown).is_err());
     }
 }

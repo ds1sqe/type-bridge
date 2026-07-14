@@ -378,6 +378,7 @@ mod tests {
                 })
                 .collect(),
             operations: Vec::new(),
+            declared_intent: None,
             checksum: Some(format!("{name}-checksum")),
             reversible: true,
         }

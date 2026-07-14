@@ -470,14 +470,27 @@ authored = author_migration(
 
 if authored is not None:
     # Inspect in memory: authored.python_source, authored.spec,
-    # authored.files - or persist through the validated writer.
-    authored.write_to(migrations_dir)
+    # authored.files. Add embedder bytes before manifest computation, then
+    # publish the whole version through one upstream commit point.
+    authored.add_extension(
+        "my-embedder",
+        "companion.json",
+        b'{"semantic_revision":3}',
+        critical=True,
+    )
+    review_set = authored.composed_files
+    authored.publish_to(migrations_dir)
 ```
 
 Notes:
 
 - `author_migration` returns `None` when the diff is empty and no explicit
-  operations were supplied.
+  operations or declared semantic transition were supplied.
+- Set `declared_intent` to deterministic caller-owned bytes only when an
+  otherwise empty diff represents a real semantic version transition.
+  TypeBridge computes the `tb-declared-transition-v1` identity and authors the
+  canonical zero-operation Python/JSON/snapshot set. It executes no dummy
+  TypeQL. Omit the declaration for a true no-op.
 - `before_schema`/`after_schema` place explicit portable operations around
   the generated schema change set (destructive cleanup before removals,
   backfills after additions). `run_typeql` carries forward/reverse TypeQL
@@ -507,16 +520,27 @@ Notes:
   accepted here — pass the directive instead.
 - Pass a fixed `generated_at` to make the output byte-deterministic;
   otherwise the current time is stamped.
-- `write_to` is all-or-nothing: existing artifacts must be byte-identical
-  (append-only snapshots) or the whole write is rejected before any file is
-  touched. Pass `on_existing="fail"` to reject any pre-existing artifact.
+- `publish_to` writes canonical and extension files under no-clobber names and
+  publishes immutable `NNNN_name.manifest.json` last. The checked loader sees
+  either the previous chain or the complete hash-verified version. A one-time
+  immutable tree sentinel records the exact legacy prefix.
+- Extension paths are rooted below
+  `ext/<namespace>/<migration-name>/`; traversal, case collisions, reserved
+  names, and hash drift fail closed. Unknown critical namespaces require an
+  embedder-aware checked loader.
+- `write_to` remains only for explicitly legacy unmanifested output. New
+  integrations and `makemigrations` use `publish_to`.
 - A schema change the canonical mapper cannot express raises an explicit
   unsupported-change error instead of silently dropping the change.
 
 The same core is available to Rust embedders as
 `type_bridge_migration::author::author_migration`, which returns the artifact
 files in memory alongside `write_authored_migration` for validated
-persistence.
+persistence. New Rust integrations use `MigrationComposer`,
+`publish_composed_migration`, and `load_dir_checked_with_extensions`; explicit
+`collect_migration_orphans` cleanup holds the exclusive tree lock and never
+runs in the background. Concurrent authoring requires a local filesystem with
+reliable advisory locks.
 
 ## Sidecars And Hand Editing
 

@@ -8,6 +8,7 @@
 //! inputs (including the explicit `generated_at`) produce byte-identical
 //! artifacts.
 
+use sha2::{Digest, Sha256};
 use type_bridge_orm::schema::SchemaDiff;
 use type_bridge_orm::schema::info::SchemaInfo;
 
@@ -16,7 +17,7 @@ use crate::author::python_render::{PythonRenderRequest, render_migration_python}
 use crate::author::snapshot::{SnapshotRenderRequest, render_snapshot};
 use crate::checksum::migration_file_checksum;
 use crate::error::MigrationError;
-use crate::spec::{MigrationDependencySpec, MigrationSpec, OperationSpec};
+use crate::spec::{DeclaredMigrationIntent, MigrationDependencySpec, MigrationSpec, OperationSpec};
 
 /// Identity and dependency metadata for one authored migration.
 #[derive(Debug)]
@@ -62,8 +63,19 @@ pub struct PositionedOperations {
     pub after_schema: Vec<OperationSpec>,
 }
 
+/// Explicit declaration that an otherwise empty authoring request represents
+/// a real semantic version transition.
+///
+/// TypeBridge treats the bytes as opaque identity input. It computes and owns
+/// the versioned identity stored in the canonical sidecar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredMigrationIntentInput {
+    /// Caller-owned deterministic bytes describing the semantic transition.
+    pub contents: Vec<u8>,
+}
+
 /// One in-memory artifact file, path relative to the migrations directory.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthoredArtifact {
     /// Relative, platform-independent path (`/`-separated).
     pub relative_path: String,
@@ -98,6 +110,9 @@ pub struct AuthorMigrationRequest {
     pub snapshot: SnapshotContext,
     /// Explicit positioned operations.
     pub extra_operations: PositionedOperations,
+    /// Explicit semantic transition declaration. Without this declaration,
+    /// an empty schema diff and empty operation lists remain a true no-op.
+    pub declared_intent: Option<DeclaredMigrationIntentInput>,
     /// `(old_name, new_name)` attribute-rename directives: each replaces
     /// the diff's independent remove+add of that pair with a
     /// data-preserving staged expansion.
@@ -131,9 +146,17 @@ pub fn author_migration(
     if schema_operations.is_empty()
         && request.extra_operations.before_schema.is_empty()
         && request.extra_operations.after_schema.is_empty()
+        && request.declared_intent.is_none()
     {
         return Ok(None);
     }
+
+    let declared_intent = request.declared_intent.as_ref().map(|input| {
+        let digest = Sha256::digest(&input.contents);
+        DeclaredMigrationIntent::V1 {
+            identity: format!("{digest:x}"),
+        }
+    });
 
     let mut operations = Vec::with_capacity(
         request.extra_operations.before_schema.len()
@@ -160,6 +183,7 @@ pub fn author_migration(
         post_version: &request.snapshot.version,
         base: &request.base,
         target: &request.target,
+        declared_intent: declared_intent.as_ref(),
     })?;
 
     // The sidecar checksum is computed from the exact returned `.py` bytes:
@@ -179,6 +203,7 @@ pub fn author_migration(
             })
             .collect(),
         operations,
+        declared_intent,
         checksum: Some(checksum),
         reversible: true,
     };
@@ -255,6 +280,7 @@ mod tests {
     use type_bridge_orm::schema::info::{AttributeSchemaEntry, EntitySchemaEntry};
 
     use super::*;
+    use crate::spec::DECLARED_TRANSITION_SCHEME_V1;
 
     fn person_schema() -> SchemaInfo {
         let mut info = SchemaInfo::default();
@@ -294,6 +320,7 @@ mod tests {
                 previous_version: None,
             },
             extra_operations: PositionedOperations::default(),
+            declared_intent: None,
             attribute_renames: vec![],
         }
     }
@@ -304,6 +331,51 @@ mod tests {
         let authored =
             author_migration(&request(schema.clone(), schema)).expect("authoring should succeed");
         assert!(authored.is_none());
+    }
+
+    #[test]
+    fn declared_semantic_transition_authors_canonical_zero_operation_version() {
+        let schema = person_schema();
+        let mut request = request(schema.clone(), schema);
+        request.declared_intent = Some(DeclaredMigrationIntentInput {
+            contents: br#"{"description":"semantic-only"}"#.to_vec(),
+        });
+
+        let authored = author_migration(&request)
+            .expect("authoring should succeed")
+            .expect("declared transition must author");
+
+        assert!(authored.spec.operations.is_empty());
+        let intent = authored
+            .spec
+            .declared_intent
+            .as_ref()
+            .expect("declared identity");
+        assert_eq!(intent.scheme(), DECLARED_TRANSITION_SCHEME_V1);
+        assert_eq!(intent.identity().len(), 64);
+        assert!(
+            authored
+                .python_source
+                .contains("Migration: declared semantic transition")
+        );
+        assert!(authored.python_source.contains(intent.identity()));
+        assert!(
+            authored
+                .python_source
+                .contains("operations: ClassVar[list[Operation]] = []")
+        );
+        assert!(
+            authored
+                .files
+                .iter()
+                .any(|file| file.relative_path == "0001_initial.json")
+        );
+        assert!(
+            authored
+                .files
+                .iter()
+                .any(|file| file.relative_path == "snapshots/v0001/snapshot.json")
+        );
     }
 
     #[test]

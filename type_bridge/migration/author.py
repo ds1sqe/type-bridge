@@ -27,9 +27,9 @@ __all__ = ["AuthoredMigration", "author_migration"]
 class AuthoredMigration:
     """A complete authored migration artifact set, held in memory.
 
-    Wraps the Rust authoring result. ``files`` contains every artifact as
-    ``(relative_path, bytes)`` pairs; :meth:`write_to` persists them through
-    the validated all-or-nothing writer.
+    Wraps the Rust authoring result. ``files`` contains canonical artifacts;
+    extensions are added before :attr:`composed_files` computes the immutable
+    commit manifest, and :meth:`publish_to` commits that complete set.
     """
 
     def __init__(self, inner: Any) -> None:
@@ -55,17 +55,47 @@ class AuthoredMigration:
         """Every artifact file as ``(relative_path, contents)``."""
         return [(str(path), bytes(contents)) for path, contents in self._inner.files]
 
+    def add_extension(
+        self,
+        namespace: str,
+        relative_path: str,
+        contents: bytes,
+        *,
+        critical: bool = False,
+    ) -> AuthoredMigration:
+        """Add one namespaced file before commit-manifest computation."""
+        self._inner.add_extension(namespace, relative_path, contents, critical)
+        return self
+
+    @property
+    def composed_files(self) -> list[tuple[str, bytes]]:
+        """Complete deterministic publication set, with the manifest last."""
+        return [(str(path), bytes(contents)) for path, contents in self._inner.composed_files]
+
+    def publish_to(
+        self,
+        migrations_dir: Path,
+        *,
+        on_existing: str = "validate_identical",
+    ) -> Path:
+        """Publish this version atomically through the upstream manifest writer."""
+        self._inner.publish_to(str(migrations_dir), on_existing)
+        return migrations_dir / f"{self.migration_name}.py"
+
     def write_to(
         self,
         migrations_dir: Path,
         *,
         on_existing: str = "validate_identical",
     ) -> Path:
-        """Write all artifacts under ``migrations_dir``.
+        """Write legacy unmanifested artifacts under ``migrations_dir``.
 
         Existing files must be byte-identical (``validate_identical``) or
         absent (``fail``); collisions and drift abort before anything is
         written. Snapshots stay append-only.
+
+        New integrations should use :meth:`publish_to`, which composes
+        extensions and commits a hash-covered per-version manifest last.
 
         Returns:
             Path to the written migration ``.py`` file.
@@ -85,6 +115,7 @@ def author_migration(
     previous_snapshot_version: str | None = None,
     before_schema: list[dict[str, Any]] | None = None,
     after_schema: list[dict[str, Any]] | None = None,
+    declared_intent: bytes | None = None,
     attribute_renames: list[tuple[str, str]] | None = None,
     generated_at: str | None = None,
 ) -> AuthoredMigration | None:
@@ -103,6 +134,10 @@ def author_migration(
             change set (e.g. destructive data cleanup).
         after_schema: Serialized operations executed after the schema
             change set (e.g. backfills).
+        declared_intent: Deterministic caller-owned bytes explicitly declaring
+            that an otherwise empty schema/operation diff is a real semantic
+            transition. TypeBridge computes the versioned identity and authors
+            canonical zero-operation artifacts. Omit for a true no-op.
         attribute_renames: ``(old_name, new_name)`` attribute-rename
             directives. Each replaces the diff's independent remove+add of
             that pair with a data-preserving staged expansion (define new,
@@ -133,6 +168,7 @@ def author_migration(
         previous_snapshot_version=previous_snapshot_version,
         before_schema=before_schema,
         after_schema=after_schema,
+        declared_intent=declared_intent,
         attribute_renames=list(attribute_renames or []),
     )
     if inner is None:

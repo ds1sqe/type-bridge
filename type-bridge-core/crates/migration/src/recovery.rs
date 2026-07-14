@@ -931,6 +931,7 @@ mod tests {
                     forward: "define attribute a, value string;".to_string(),
                     reverse: None,
                 }],
+                declared_intent: None,
                 checksum: Some("artifact-checksum".to_string()),
                 reversible: false,
             }],

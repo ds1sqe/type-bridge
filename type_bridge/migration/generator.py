@@ -113,7 +113,7 @@ class MigrationGenerator:
             return None
 
         self.migrations_dir.mkdir(parents=True, exist_ok=True)
-        filepath = authored.write_to(self.migrations_dir)
+        filepath = authored.publish_to(self.migrations_dir)
         logger.info(f"Created migration: {filepath}")
         return filepath
 

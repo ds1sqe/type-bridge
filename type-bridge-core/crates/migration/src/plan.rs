@@ -970,6 +970,7 @@ mod tests {
                 })
                 .collect(),
             operations: ops,
+            declared_intent: None,
             checksum: Some(format!("{name}-csum")),
             reversible: true,
         }

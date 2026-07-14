@@ -131,6 +131,7 @@ mod tests {
                 name: "0001_initial".to_string(),
                 dependencies: vec![],
                 operations: vec![],
+                declared_intent: None,
                 checksum: None,
                 reversible: true,
             },
@@ -280,6 +281,7 @@ mod tests {
                 previous_version: None,
             },
             extra_operations: PositionedOperations::default(),
+            declared_intent: None,
             attribute_renames: vec![],
         })
         .expect("authoring should succeed")

@@ -2,7 +2,8 @@
 //!
 //! `author_migration` accepts serialized `SchemaInfo` dictionaries and
 //! returns the complete in-memory artifact set; `PyAuthoredMigration`
-//! carries the artifacts and writes them through the validated Rust writer.
+//! carries canonical artifacts, composes namespaced extensions, and publishes
+//! the per-version commit manifest through the Rust no-clobber writer.
 //! No database connection, model registry, or generated application package
 //! is involved at any point.
 
@@ -13,8 +14,9 @@ use pyo3::types::PyBytes;
 use pythonize::{depythonize, pythonize};
 use type_bridge_migration::OperationSpec;
 use type_bridge_migration::author::{
-    AuthorMigrationRequest, AuthoredMigration, ExistingArtifactPolicy, MigrationMetadata,
-    PositionedOperations, SnapshotContext, author_migration as rust_author_migration,
+    AuthorMigrationRequest, AuthoredMigration, ComposedMigration, DeclaredMigrationIntentInput,
+    ExistingArtifactPolicy, MigrationMetadata, PositionedOperations, SnapshotContext,
+    author_migration as rust_author_migration, publish_composed_migration,
     write_authored_migration,
 };
 use type_bridge_orm::schema::info::SchemaInfo;
@@ -27,6 +29,7 @@ fn py_value_error(message: String) -> PyErr {
 #[pyclass(name = "AuthoredMigration", module = "type_bridge_core")]
 pub struct PyAuthoredMigration {
     inner: AuthoredMigration,
+    extensions: Vec<(String, String, Vec<u8>, bool)>,
 }
 
 #[pymethods]
@@ -66,23 +69,80 @@ impl PyAuthoredMigration {
             .collect()
     }
 
+    /// Add one namespaced extension before manifest computation.
+    #[pyo3(signature = (namespace, relative_path, contents, critical = false))]
+    fn add_extension(
+        &mut self,
+        namespace: String,
+        relative_path: String,
+        contents: Vec<u8>,
+        critical: bool,
+    ) -> PyResult<()> {
+        let mut extensions = self.extensions.clone();
+        extensions.push((namespace, relative_path, contents, critical));
+        compose(&self.inner, &extensions).map_err(|error| py_value_error(error.to_string()))?;
+        self.extensions = extensions;
+        Ok(())
+    }
+
+    /// Complete deterministic publication files with the manifest last.
+    #[getter]
+    fn composed_files<'py>(&self, py: Python<'py>) -> PyResult<Vec<(String, Bound<'py, PyBytes>)>> {
+        let composed = compose(&self.inner, &self.extensions)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        Ok(composed
+            .complete_files()
+            .into_iter()
+            .map(|artifact| (artifact.relative_path, PyBytes::new(py, &artifact.contents)))
+            .collect())
+    }
+
+    /// Publish canonical files and extensions through the manifest-last
+    /// no-clobber writer.
+    #[pyo3(signature = (migrations_dir, on_existing = "validate_identical"))]
+    fn publish_to(&self, migrations_dir: PathBuf, on_existing: &str) -> PyResult<()> {
+        let policy = existing_policy(on_existing)?;
+        let composed = compose(&self.inner, &self.extensions)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        publish_composed_migration(&migrations_dir, &composed, policy)
+            .map_err(|error| py_value_error(error.to_string()))
+    }
+
     /// Write every artifact under `migrations_dir` through the validated
     /// writer. `on_existing` is `"validate_identical"` (default) or
     /// `"fail"`.
     #[pyo3(signature = (migrations_dir, on_existing = "validate_identical"))]
     fn write_to(&self, migrations_dir: PathBuf, on_existing: &str) -> PyResult<()> {
-        let policy = match on_existing {
-            "validate_identical" => ExistingArtifactPolicy::ValidateIdentical,
-            "fail" => ExistingArtifactPolicy::Fail,
-            other => {
-                return Err(py_value_error(format!(
-                    "on_existing must be 'validate_identical' or 'fail', got {other:?}"
-                )));
-            }
-        };
+        let policy = existing_policy(on_existing)?;
         write_authored_migration(&migrations_dir, &self.inner, policy)
             .map_err(|error| py_value_error(error.to_string()))
     }
+}
+
+fn existing_policy(on_existing: &str) -> PyResult<ExistingArtifactPolicy> {
+    match on_existing {
+        "validate_identical" => Ok(ExistingArtifactPolicy::ValidateIdentical),
+        "fail" => Ok(ExistingArtifactPolicy::Fail),
+        other => Err(py_value_error(format!(
+            "on_existing must be 'validate_identical' or 'fail', got {other:?}"
+        ))),
+    }
+}
+
+fn compose(
+    authored: &AuthoredMigration,
+    extensions: &[(String, String, Vec<u8>, bool)],
+) -> type_bridge_migration::Result<ComposedMigration> {
+    let mut composer = authored.composer();
+    for (namespace, relative_path, contents, critical) in extensions {
+        composer.add_extension(
+            namespace.clone(),
+            relative_path.clone(),
+            contents.clone(),
+            *critical,
+        )?;
+    }
+    composer.compose()
 }
 
 fn operations_from(ops: Option<Bound<'_, PyAny>>, argument: &str) -> PyResult<Vec<OperationSpec>> {
@@ -112,6 +172,7 @@ fn operations_from(ops: Option<Bound<'_, PyAny>>, argument: &str) -> PyResult<Ve
     previous_snapshot_version = None,
     before_schema = None,
     after_schema = None,
+    declared_intent = None,
     attribute_renames = None,
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -128,6 +189,7 @@ fn author_migration(
     previous_snapshot_version: Option<String>,
     before_schema: Option<Bound<'_, PyAny>>,
     after_schema: Option<Bound<'_, PyAny>>,
+    declared_intent: Option<Vec<u8>>,
     attribute_renames: Option<Vec<(String, String)>>,
 ) -> PyResult<Option<PyAuthoredMigration>> {
     let base: SchemaInfo = depythonize(&base)
@@ -154,12 +216,16 @@ fn author_migration(
             before_schema: operations_from(before_schema, "before_schema")?,
             after_schema: operations_from(after_schema, "after_schema")?,
         },
+        declared_intent: declared_intent.map(|contents| DeclaredMigrationIntentInput { contents }),
         attribute_renames: attribute_renames.unwrap_or_default(),
     };
 
     let authored =
         rust_author_migration(&request).map_err(|error| py_value_error(error.to_string()))?;
-    Ok(authored.map(|inner| PyAuthoredMigration { inner }))
+    Ok(authored.map(|inner| PyAuthoredMigration {
+        inner,
+        extensions: Vec::new(),
+    }))
 }
 
 /// Register authoring functions and classes on the parent module.

@@ -29,7 +29,10 @@ pub use checksum::{
 pub use error::{MigrationError, Result};
 pub use executor::{MigrationResult, execute_migration, execute_plan, execute_plan_with_run_log};
 pub use graph::{AppliedMigrationRecord, MigrationValidationError, ValidationCode, validate_graph};
-pub use loader::{load_dir, load_dir_checked, load_sidecar};
+pub use loader::{
+    CheckedMigrationTree, LoadedMigrationExtension, load_dir, load_dir_checked,
+    load_dir_checked_with_extensions, load_sidecar,
+};
 pub use plan::{
     ExecutionPlan, ExecutionStep, MigrationAction, MigrationExecution, OperationKind, StepKind,
     plan,
@@ -42,7 +45,10 @@ pub use recovery::{
     StepRecoveryEvent, StepRecoveryEventKind, execute_recovery_plan, plan_recovery,
     prepare_recovery_plan,
 };
-pub use spec::{MigrationDependencySpec, MigrationGraph, MigrationSpec, OperationSpec};
+pub use spec::{
+    DECLARED_TRANSITION_SCHEME_V1, DeclaredMigrationIntent, MigrationDependencySpec,
+    MigrationGraph, MigrationSpec, OperationSpec,
+};
 pub use state::{
     InMemoryStateStore, MigrationExecutorInfo, MigrationRunRecord, MigrationStateSchemaKind,
     MigrationStateStore, TypeDbStateStore, applied_migration_entity_label, collect_executor_info,

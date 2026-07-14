@@ -133,6 +133,41 @@ def test_no_op_diff_returns_none() -> None:
     assert _author(_v1(), _v1()) is None
 
 
+def test_declared_semantic_transition_composes_and_publishes_zero_operation_version(
+    tmp_path: Path,
+) -> None:
+    authored = _author(
+        _v1(),
+        _v1(),
+        name="0001_initial",
+        dependencies=[],
+        snapshot_version="v0001",
+        previous_snapshot_version=None,
+        declared_intent=b'{"description":"semantic-only"}',
+    )
+
+    assert authored is not None
+    assert authored.spec["operations"] == []
+    assert authored.spec["declared_intent"]["scheme"] == "tb-declared-transition-v1"
+    assert len(authored.spec["declared_intent"]["identity"]) == 64
+    assert "Migration: declared semantic transition" in authored.python_source
+
+    authored.add_extension(
+        "paladin", "companion.json", b'{"description":"semantic-only"}', critical=True
+    )
+    composed = dict(authored.composed_files)
+    assert list(composed)[-1] == "0001_initial.manifest.json"
+    manifest = json.loads(composed["0001_initial.manifest.json"])
+    extension = next(entry for entry in manifest["files"] if entry.get("extension"))
+    assert extension["path"] == "ext/paladin/0001_initial/companion.json"
+    assert extension["extension"] == {"namespace": "paladin", "critical": True}
+
+    migrations_dir = tmp_path / "migrations"
+    authored.publish_to(migrations_dir)
+    assert (migrations_dir / ".typebridge-manifest-format.json").exists()
+    assert (migrations_dir / "0001_initial.manifest.json").exists()
+
+
 def test_sidecar_checksum_matches_returned_py_bytes() -> None:
     authored = _author(_v1(), _v2())
 

@@ -119,6 +119,7 @@ mod tests {
             name: name.to_string(),
             dependencies: Vec::new(),
             operations: Vec::new(),
+            declared_intent: None,
             checksum: checksum.map(str::to_string),
             reversible: true,
         }

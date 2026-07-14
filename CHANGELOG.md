@@ -6,6 +6,15 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### New Features
 
+- **Crash-atomic migration publication** - Add immutable per-migration commit
+  manifests, extension-aware in-memory composition, manifest-last no-clobber
+  publication, checked hash-scoped visibility, explicit advisory-lock orphan
+  cleanup, and legacy-prefix tree sentinels.
+
+- **Declared zero-operation migration versions** - Add explicit semantic
+  transition authoring for canonical checked zero-operation versions while
+  preserving `None` for true no-ops.
+
 - **`@doc`/`@meta` schema annotations (#169)** - TypeDB 3.12's schema
   documentation and metadata annotations are declarable from all three model
   surfaces: `TypeFlags(doc=..., meta=...)` / `AttributeFlags(doc=..., meta=...)`
