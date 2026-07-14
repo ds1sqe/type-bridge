@@ -380,10 +380,18 @@ class Relation(TypeDBType):
 
         lines.append(relation_def)
 
-        # Add roles with optional cardinality constraints
+        # Add locally declared roles in the same marker order as the canonical
+        # Rust schema generator: list suffix, specialization, constraints, then
+        # documentation metadata.
         for role in cls._roles.values():
-            role_def = f"    relates {role.role_name}"
-            # Add cardinality annotation if not default (1..1)
+            role_name_token = f"{role.role_name}[]" if role.ordered else role.role_name
+            role_def = f"    relates {role_name_token}"
+            if role.overrides is not None:
+                role_def += f" as {role.overrides}"
+            if role.is_abstract:
+                role_def += " @abstract"
+            if role.distinct:
+                role_def += " @distinct"
             if role.cardinality is not None:
                 card_annotation = format_card_annotation(role.cardinality.min, role.cardinality.max)
                 if card_annotation:

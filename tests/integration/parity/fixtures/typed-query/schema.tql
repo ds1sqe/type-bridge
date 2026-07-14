@@ -1,0 +1,25 @@
+define
+attribute parity-query-person-id, value string;
+attribute parity-query-person-name, value string;
+attribute parity-query-rank, value integer;
+attribute parity-query-specialty, value string;
+attribute parity-query-company-id, value string;
+attribute parity-query-company-name, value string;
+attribute parity-query-employment-code, value string;
+
+entity parity-query-person,
+    owns parity-query-person-id @key,
+    owns parity-query-person-name,
+    plays parity-query-employment:employee;
+entity parity-query-employee sub parity-query-person,
+    owns parity-query-rank;
+entity parity-query-contractor sub parity-query-person,
+    owns parity-query-specialty;
+entity parity-query-company,
+    owns parity-query-company-id @key,
+    owns parity-query-company-name,
+    plays parity-query-employment:employer;
+relation parity-query-employment,
+    relates employee @card(1..1),
+    relates employer @card(1..1),
+    owns parity-query-employment-code @key;

@@ -72,7 +72,7 @@ class Person(Entity):
     age: Age | None  # Optional (0 or 1)
     active: Active  # Required, default cardinality
     name: Name = Flag(Key)  # Required, unique identifier
-    email: Email = Flag(Unique)  # Required, must be unique
+    email: Email = Flag(Unique)  # Required by the type, and must be unique
 
 
 class Company(Entity):

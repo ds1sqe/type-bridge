@@ -706,12 +706,28 @@ fn owned_attribute_entries(attributes: &[OwnedAttributeDescriptor]) -> Vec<Owned
     attributes
         .iter()
         .map(|attr| {
-            // Python descriptors emit scalar optionality as `Annotation::Card(0, Some(1))`.
-            // `is_optional` remains descriptor-only dynamic-manager metadata.
+            let mut annotations = attr.annotations.clone();
+            let has_key = annotations
+                .iter()
+                .any(|annotation| matches!(annotation, Annotation::Key));
+            let has_card = annotations
+                .iter()
+                .any(|annotation| matches!(annotation, Annotation::Card(_, _)));
+            // Scalar descriptor producers may encode cardinality through
+            // `is_optional` instead of a redundant Card annotation (notably the
+            // TypeScript field API). Rust owns the canonical schema projection,
+            // so materialize that cardinality here. Ordered/list descriptors use
+            // their explicit list cardinality and must never receive scalar 0..1.
+            if !attr.is_ordered && !has_key && !has_card {
+                annotations.push(Annotation::Card(
+                    if attr.is_optional { 0 } else { 1 },
+                    Some(1),
+                ));
+            }
             OwnedAttributeEntry {
                 attr_name: attr.attr_name.clone(),
                 value_type: attr.value_type,
-                annotations: attr.annotations.clone(),
+                annotations,
                 is_ordered: attr.is_ordered,
                 doc: attr.doc.clone(),
                 meta: attr.meta.clone(),
@@ -988,7 +1004,7 @@ mod tests {
                 owned_attributes: vec![OwnedAttributeEntry {
                     attr_name: "since".into(),
                     value_type: ValueType::Date,
-                    annotations: vec![],
+                    annotations: vec![Annotation::Card(1, Some(1))],
                     is_ordered: false,
                     doc: None,
                     meta: Default::default(),
@@ -1044,6 +1060,53 @@ mod tests {
 
         assert_eq!(attr.annotations, vec![Annotation::Card(0, Some(1))]);
         assert_eq!(attr.flags_string(), "@card(0..1)");
+    }
+
+    #[test]
+    fn from_descriptors_materializes_scalar_cardinality_without_losing_unique() {
+        let descriptors = vec![TypeDescriptor::Entity(EntityDescriptor {
+            type_name: "person".into(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![
+                OwnedAttributeDescriptor {
+                    field_name: "email".into(),
+                    attr_name: "email".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Unique],
+                    is_optional: true,
+                    is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
+                },
+                OwnedAttributeDescriptor {
+                    field_name: "handle".into(),
+                    attr_name: "handle".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Unique],
+                    is_optional: false,
+                    is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
+                },
+            ],
+            doc: None,
+            meta: Default::default(),
+        })];
+
+        let info = SchemaInfo::from_descriptors(&descriptors);
+        let attributes = &info.entities["person"].owned_attributes;
+
+        assert_eq!(
+            attributes[0].annotations,
+            vec![Annotation::Unique, Annotation::Card(0, Some(1))]
+        );
+        assert_eq!(
+            attributes[1].annotations,
+            vec![Annotation::Unique, Annotation::Card(1, Some(1))]
+        );
+        assert_eq!(attributes[0].flags_string(), "@unique @card(0..1)");
+        assert_eq!(attributes[1].flags_string(), "@unique @card(1..1)");
     }
 
     #[test]

@@ -7,6 +7,9 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import tarfile
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -39,7 +42,6 @@ from tests.integration.parity.models import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_NODE_NATIVE = REPO_ROOT / "tmp" / "type_bridge_node.node"
 NODE_READER = Path(__file__).with_name("node_reader.cjs")
 NODE_PACKAGE_DIR = REPO_ROOT / "type-bridge-core" / "crates" / "node"
 WRITE_DATA = Path(__file__).with_name("fixtures") / "write-data.json"
@@ -48,6 +50,11 @@ WRITE_DATA = Path(__file__).with_name("fixtures") / "write-data.json"
 # Entity()/Relation() surface and serializes through toDict(). See
 # canonicalize_typed_reader_output for the descriptor-gate vs value-gate split.
 TYPED_NODE_READER = REPO_ROOT / "tmp" / "node-parity" / "tests" / "parity" / "typed-reader.js"
+PACKED_TYPED_QUERY_READER = Path(__file__).with_name("node_typed_query_reader.cjs")
+TYPED_QUERY_FIXTURE = Path(__file__).with_name("fixtures") / "typed-query" / "contract.json"
+TYPED_PYTHON_ARTIFACT_RUNNER = REPO_ROOT / "scripts" / "ci" / "run_typed_python_artifact.py"
+PARITY_ROOT_WHEEL_ENV = "TYPE_BRIDGE_PARITY_ROOT_WHEEL"
+PARITY_CORE_WHEEL_ENV = "TYPE_BRIDGE_PARITY_CORE_WHEEL"
 
 ENTITY_CLASSES = {
     "parity-person": ParityPerson,
@@ -115,8 +122,10 @@ def read_with_node(address: str, database: str) -> dict[str, Any]:
     env = dict(os.environ)
     env["TYPEDB_ADDRESS"] = address
     env["TYPE_BRIDGE_PARITY_DATABASE"] = database
-    if "TYPE_BRIDGE_NODE_NATIVE_PATH" not in env and DEFAULT_NODE_NATIVE.exists():
-        env["TYPE_BRIDGE_NODE_NATIVE_PATH"] = str(DEFAULT_NODE_NATIVE)
+    # Never auto-select an opaque binary from tmp/: it can outlive the source
+    # build and turn strict parity into a stale-artifact false green. The
+    # package loader resolves the native module beside package.json; callers
+    # may still provide an explicit override when that is the artifact under test.
 
     completed = subprocess.run(
         ["node", str(NODE_READER)],
@@ -204,8 +213,6 @@ def read_with_typed_node(
         env["TYPEDB_ADDRESS"] = address
     if database is not None:
         env["TYPE_BRIDGE_PARITY_DATABASE"] = database
-    if "TYPE_BRIDGE_NODE_NATIVE_PATH" not in env and DEFAULT_NODE_NATIVE.exists():
-        env["TYPE_BRIDGE_NODE_NATIVE_PATH"] = str(DEFAULT_NODE_NATIVE)
 
     cmd = ["node", str(TYPED_NODE_READER)]
     if offline:
@@ -223,6 +230,191 @@ def read_with_typed_node(
             f"Typed parity reader failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
         )
     return json.loads(completed.stdout)
+
+
+def read_typed_query_with_packed_node(
+    address: str,
+    database: str,
+    *,
+    http_port: int,
+) -> dict[str, Any]:
+    """Run the live typed-query reader from an isolated packed Node artifact.
+
+    This deliberately performs no dependency installation. The already-built
+    package is packed with lifecycle scripts disabled, extracted into a fresh
+    ignored consumer, and resolved only by its public package subpaths.
+    """
+    if shutil.which("node") is None:
+        pytest.skip("node executable is not installed")
+    if shutil.which("npm") is None:
+        pytest.skip("npm executable is not installed")
+    if (
+        not (NODE_PACKAGE_DIR / "dist" / "index.js").exists()
+        or not (NODE_PACKAGE_DIR / "dist" / "typed" / "index.js").exists()
+    ):
+        pytest.skip("compiled Node package not built; run `npm run build:types` in the node crate")
+    if not any(NODE_PACKAGE_DIR.glob("*.node")):
+        pytest.skip("native node module not built; run `npm run build:native` in the node crate")
+
+    repo_tmp = REPO_ROOT / "tmp"
+    repo_tmp.mkdir(exist_ok=True)
+    temp_root = Path(tempfile.mkdtemp(prefix="node-typed-query-parity-", dir=repo_tmp))
+    try:
+        pack_root = temp_root / "pack"
+        unpack_root = temp_root / "unpack"
+        consumer_root = temp_root / "consumer"
+        pack_root.mkdir()
+        unpack_root.mkdir()
+        (consumer_root / "node_modules" / "@type-bridge").mkdir(parents=True)
+
+        packed = subprocess.run(
+            [
+                "npm",
+                "pack",
+                "--ignore-scripts",
+                "--json",
+                "--pack-destination",
+                str(pack_root),
+            ],
+            check=False,
+            cwd=NODE_PACKAGE_DIR,
+            capture_output=True,
+            text=True,
+        )
+        if packed.returncode != 0:
+            raise AssertionError(
+                f"npm pack failed\nstdout:\n{packed.stdout}\nstderr:\n{packed.stderr}"
+            )
+        try:
+            pack_info = json.loads(packed.stdout)[0]
+            packed_paths = {entry["path"] for entry in pack_info["files"]}
+            tarball = pack_root / pack_info["filename"]
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
+            raise AssertionError(f"could not parse npm pack output: {packed.stdout}") from error
+
+        required = {"dist/index.js", "dist/typed/index.js", "dist/typed/index.d.ts"}
+        if not required <= packed_paths or not any(path.endswith(".node") for path in packed_paths):
+            raise AssertionError(f"packed Node artifact is incomplete: {sorted(packed_paths)}")
+
+        with tarfile.open(tarball, "r:gz") as archive:
+            archive.extractall(unpack_root, filter="data")
+        extracted_root = unpack_root / "package"
+        installed_root = consumer_root / "node_modules" / "@type-bridge" / "node"
+        shutil.move(extracted_root, installed_root)
+
+        env = dict(os.environ)
+        env.pop("NODE_PATH", None)
+        env.pop("TYPE_BRIDGE_NODE_NATIVE_PATH", None)
+        env["TYPEDB_ADDRESS"] = address
+        env["TYPEDB_HTTP_PORT"] = str(http_port)
+        env["TYPE_BRIDGE_PARITY_DATABASE"] = database
+        env["TYPE_BRIDGE_PACKED_CONSUMER_ROOT"] = str(consumer_root)
+        env["TYPE_BRIDGE_SOURCE_PACKAGE_ROOT"] = str(NODE_PACKAGE_DIR)
+        env["TYPE_BRIDGE_PARITY_TYPED_QUERY_FIXTURE"] = str(TYPED_QUERY_FIXTURE)
+        completed = subprocess.run(
+            ["node", str(PACKED_TYPED_QUERY_READER)],
+            check=False,
+            cwd=consumer_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(
+                "Packed Node typed-query parity reader failed\n"
+                f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+            )
+        return json.loads(completed.stdout)
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def read_typed_query_with_wheel_python(
+    address: str,
+    database: str,
+    *,
+    http_port: int,
+) -> dict[str, Any] | None:
+    """Run the live typed-query reader from isolated extracted wheel artifacts.
+
+    Local parity runs may omit prebuilt wheel paths and still exercise the source
+    Python and packed Node surfaces. Strict CI parity requires both wheel paths,
+    so the built-wheel proof cannot silently disappear from the release gate.
+    """
+    strict = os.environ.get("TYPE_BRIDGE_PARITY_STRICT") == "1"
+    root_raw = os.environ.get(PARITY_ROOT_WHEEL_ENV)
+    core_raw = os.environ.get(PARITY_CORE_WHEEL_ENV)
+    pyright = shutil.which("pyright")
+    missing = [
+        label
+        for label, value in (
+            (PARITY_ROOT_WHEEL_ENV, root_raw),
+            (PARITY_CORE_WHEEL_ENV, core_raw),
+            ("pyright executable", pyright),
+        )
+        if value is None
+    ]
+    if missing:
+        if strict:
+            raise AssertionError(
+                "strict live parity requires extracted-wheel Python acceptance; missing "
+                + ", ".join(missing)
+            )
+        return None
+
+    assert root_raw is not None
+    assert core_raw is not None
+    assert pyright is not None
+    root_wheel = Path(root_raw).expanduser().resolve()
+    core_wheel = Path(core_raw).expanduser().resolve()
+    absent = [str(path) for path in (root_wheel, core_wheel) if not path.is_file()]
+    if absent:
+        message = "configured parity wheel does not exist: " + ", ".join(absent)
+        if strict:
+            raise AssertionError(message)
+        return None
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(TYPED_PYTHON_ARTIFACT_RUNNER),
+            "--root-wheel",
+            str(root_wheel),
+            "--core-wheel",
+            str(core_wheel),
+            "--python",
+            sys.executable,
+            "--pyright",
+            pyright,
+            "--live-address",
+            address,
+            "--live-database",
+            database,
+            "--live-http-port",
+            str(http_port),
+            "--live-fixture",
+            str(TYPED_QUERY_FIXTURE),
+        ],
+        check=False,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(
+            "Built-wheel Python typed-query parity reader failed\n"
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
+    try:
+        report = json.loads(completed.stdout)
+        live = report["live"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise AssertionError(
+            f"Built-wheel Python artifact runner returned an invalid report: {completed.stdout}"
+        ) from error
+    if not isinstance(live, dict):
+        raise AssertionError(f"Built-wheel Python live report is not an object: {live!r}")
+    return live
 
 
 def assert_typed_node_output_matches_expected(raw_output: dict[str, Any]) -> None:

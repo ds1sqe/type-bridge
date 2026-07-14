@@ -476,7 +476,7 @@ class Person(Entity):
     # Key: exactly one, unique identifier
     id: PersonId = Flag(Key)
 
-    # Unique: exactly one, unique but not key
+    # Required and unique but not key (the non-optional type makes it required)
     email: Email = Flag(Unique)
 
     # Card(0..1): optional (0 or 1)

@@ -11,12 +11,16 @@ compile_error!(
 
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Instant;
 
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use type_bridge_core_lib::version as core_version;
 use type_bridge_core_lib::version::DEFAULT_HTTP_PORT;
 
+#[cfg(feature = "band8")]
+use typedb_driver as driver_b8;
 #[cfg(feature = "band8")]
 use typedb_driver::answer::QueryAnswer as B8QueryAnswer;
 #[cfg(feature = "band8")]
@@ -26,6 +30,8 @@ use typedb_driver::{
 };
 
 #[cfg(feature = "band7")]
+use type_bridge_typedb_driver_b7 as driver_b7;
+#[cfg(feature = "band7")]
 use type_bridge_typedb_driver_b7::answer::QueryAnswer as B7QueryAnswer;
 #[cfg(feature = "band7")]
 use type_bridge_typedb_driver_b7::{
@@ -33,6 +39,8 @@ use type_bridge_typedb_driver_b7::{
     TransactionType as B7TransactionType, TypeDBDriver as B7Driver,
 };
 
+#[cfg(feature = "band9")]
+use type_bridge_typedb_driver_b9 as driver_b9;
 #[cfg(feature = "band9")]
 use type_bridge_typedb_driver_b9::answer::QueryAnswer as B9QueryAnswer;
 #[cfg(feature = "band9")]
@@ -64,6 +72,19 @@ pub enum RuntimeError {
     /// Transaction lifecycle failed.
     #[error("Transaction error: {0}")]
     Transaction(String),
+
+    /// A bounded answer ceiling was exceeded while reading the driver stream.
+    #[error("Resource limit [{code}]: {message}")]
+    ResourceLimit {
+        /// Stable resource code.
+        code: &'static str,
+        /// Human-readable diagnostic.
+        message: &'static str,
+    },
+
+    /// The higher-level answer decoder rejected one streamed item.
+    #[error("Answer consumer rejected a streamed provider item")]
+    AnswerConsumer,
 }
 
 /// Convenience result alias for runtime operations.
@@ -78,6 +99,125 @@ pub enum QueryResult {
     Documents(Vec<serde_json::Value>),
     /// Row results from a match/reduce/concept query.
     Rows(Vec<serde_json::Value>),
+}
+
+/// One item read from a TypeDB concept answer stream.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeAnswerItem {
+    /// Concept row converted to JSON.
+    Row(serde_json::Value),
+    /// Concept document converted to JSON.
+    Document(serde_json::Value),
+}
+
+/// Provider answer kind, retained even for an empty stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeAnswerKind {
+    /// Statement returned no data stream.
+    Ok,
+    /// Concept-row stream.
+    Rows,
+    /// Concept-document stream.
+    Documents,
+}
+
+/// Whether the answer consumer needs another driver item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeAnswerControl {
+    /// Continue reading.
+    Continue,
+    /// Stop before polling the stream again.
+    Stop,
+}
+
+/// Cooperative cancellation shared with the ORM answer policy.
+#[derive(Debug, Clone)]
+pub struct RuntimeAnswerCancellation {
+    cancelled: watch::Sender<bool>,
+}
+
+impl Default for RuntimeAnswerCancellation {
+    fn default() -> Self {
+        let (cancelled, _) = watch::channel(false);
+        Self { cancelled }
+    }
+}
+
+impl RuntimeAnswerCancellation {
+    /// Construct from a shared wakeable cancellation state.
+    pub fn from_shared(cancelled: watch::Sender<bool>) -> Self {
+        Self { cancelled }
+    }
+
+    /// Request cancellation.
+    pub fn cancel(&self) {
+        self.cancelled.send_replace(true);
+    }
+
+    /// Return whether cancellation was requested.
+    pub fn is_cancelled(&self) -> bool {
+        *self.cancelled.borrow()
+    }
+
+    async fn cancelled(&self) {
+        let mut receiver = self.cancelled.subscribe();
+        if *receiver.borrow_and_update() {
+            return;
+        }
+        while receiver.changed().await.is_ok() {
+            if *receiver.borrow_and_update() {
+                return;
+            }
+        }
+    }
+}
+
+/// Hard limits checked while polling a real driver answer stream.
+#[derive(Debug, Clone)]
+pub struct RuntimeAnswerLimits {
+    /// Maximum processed rows/documents.
+    pub max_items: u64,
+    /// Maximum encoded JSON response bytes.
+    pub max_bytes: u64,
+    /// Optional transaction deadline.
+    pub deadline: Option<Instant>,
+    /// Cooperative cancellation signal.
+    pub cancellation: RuntimeAnswerCancellation,
+}
+
+impl RuntimeAnswerLimits {
+    fn unbounded() -> Self {
+        Self {
+            max_items: u64::MAX,
+            max_bytes: u64::MAX,
+            deadline: None,
+            cancellation: RuntimeAnswerCancellation::default(),
+        }
+    }
+}
+
+/// Bounded stream counters returned without materializing all items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeAnswerStats {
+    /// Answer kind, including empty streams.
+    pub kind: RuntimeAnswerKind,
+    /// Items processed.
+    pub processed_items: u64,
+    /// Encoded response bytes processed.
+    pub response_bytes: u64,
+    /// Whether the consumer stopped early.
+    pub stopped_early: bool,
+}
+
+impl RuntimeAnswerStats {
+    fn new(kind: RuntimeAnswerKind) -> Self {
+        Self {
+            kind,
+            processed_items: 0,
+            response_bytes: 0,
+            stopped_early: false,
+        }
+    }
 }
 
 /// Transaction type for TypeDB operations.
@@ -294,8 +434,9 @@ fn validate_server_band(server_version: &core_version::Version) -> Result<u8> {
     // Embedded-runtime gate: accept the server when it is in-window and any
     // band it accepts is one this build embedded.  Unlike the installed-driver
     // gate (check_supported), the embedded runtime carries every compiled-in
-    // band, so a band-7 server is served, and a dual-band 3.12 server is
-    // served through its band-8 acceptance.  After this passes, negotiation
+    // band. A band-7 server is therefore served, while a confirmed 3.12
+    // server normally negotiates native band 9; its band-8 acceptance remains
+    // available to discovery/fallback paths. After this passes, negotiation
     // over EMBEDDED_BANDS is guaranteed to yield a band.
     core_version::check_server_supported(server_version, EMBEDDED_BANDS)
         .map_err(RuntimeError::UnsupportedVersion)?;
@@ -398,6 +539,8 @@ async fn grpc_fallback_driver(
     password: &str,
     http_error: core_version::VersionError,
 ) -> Result<(DriverHandle, Option<core_version::Version>)> {
+    #[cfg(not(any(feature = "band7", feature = "band8")))]
+    let _ = (address, username, password);
     let mut failures = vec![format!("HTTP version probe failed: {http_error}")];
 
     // Band 9 is deliberately NOT probed blindly: a band-9 connection attempt
@@ -408,60 +551,51 @@ async fn grpc_fallback_driver(
     #[cfg(feature = "band8")]
     {
         match connect_band8_driver(address, username, password).await {
-            Ok(driver) => {
-                let reported = driver.server_version().await.map_err(|e| {
-                    RuntimeError::Connection(format!(
-                        "Band-8 gRPC version validation failed after connect to {address}: {e}"
-                    ))
-                })?;
-                let server_version = reported
-                    .version()
-                    .parse::<core_version::Version>()
-                    .map_err(RuntimeError::UnsupportedVersion)?;
-                // Window + embedded-band gate, then confirm the server accepts
-                // band 8.  The acceptance check (not negotiate == 8): a 3.12
-                // server negotiates its native band 9 when band9 is embedded,
-                // but this band-8 connection is still legitimate through the
-                // server's band-8 backward acceptance.
-                validate_server_band(&server_version)?;
-                if !core_version::server_accepted_bands(&server_version).contains(&8) {
-                    return Err(RuntimeError::UnsupportedVersion(
-                        core_version::VersionError::Probe(format!(
-                            "band-8 gRPC connection reported server version {server_version}, \
-                             which does not accept band 8"
-                        )),
-                    ));
-                }
-                // Prefer the server's native band when this build embeds it:
-                // with the version now known, a band-9 connect is safe.
-                #[cfg(feature = "band9")]
-                if core_version::negotiate_server_band(&server_version, EMBEDDED_BANDS) == Some(9) {
-                    match connect_band9_driver(address, username, password).await {
-                        Ok(b9_driver) => {
-                            tracing::debug!(
-                                address,
-                                server_version = %server_version,
-                                "Connected through gRPC band-8 fallback, upgraded to native band 9"
-                            );
-                            return Ok((DriverHandle::B9(b9_driver), Some(server_version)));
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                address,
-                                server_version = %server_version,
-                                %error,
-                                "Band-9 upgrade failed after band-8 fallback; staying on band 8"
-                            );
+            Ok(driver) => match classify_band8_grpc_version(
+                address,
+                driver
+                    .server_version()
+                    .await
+                    .map(|reported| reported.version().to_owned())
+                    .map_err(|error| error.to_string()),
+            )? {
+                Band8GrpcVersion::Validated(server_version) => {
+                    // Prefer the server's native band when this build embeds
+                    // it. The authoritative band-8 version round trip makes a
+                    // band-9 attempt safe; probing band 9 before this point can
+                    // crash a 3.11 server.
+                    #[cfg(feature = "band9")]
+                    if core_version::negotiate_server_band(&server_version, EMBEDDED_BANDS)
+                        == Some(9)
+                    {
+                        match connect_band9_driver(address, username, password).await {
+                            Ok(b9_driver) => {
+                                tracing::debug!(
+                                    address,
+                                    server_version = %server_version,
+                                    "Connected through gRPC band-8 fallback, upgraded to native band 9"
+                                );
+                                return Ok((DriverHandle::B9(b9_driver), Some(server_version)));
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    address,
+                                    server_version = %server_version,
+                                    %error,
+                                    "Band-9 upgrade failed after band-8 fallback; staying on band 8"
+                                );
+                            }
                         }
                     }
+                    tracing::debug!(
+                        address,
+                        server_version = %server_version,
+                        "Connected through gRPC band-8 fallback after HTTP version probe failed"
+                    );
+                    return Ok((DriverHandle::B8(driver), Some(server_version)));
                 }
-                tracing::debug!(
-                    address,
-                    server_version = %server_version,
-                    "Connected through gRPC band-8 fallback after HTTP version probe failed"
-                );
-                return Ok((DriverHandle::B8(driver), Some(server_version)));
-            }
+                Band8GrpcVersion::RetryableFailure(failure) => failures.push(failure),
+            },
             Err(error) => failures.push(format!("band-8 gRPC attempt failed: {error}")),
         }
     }
@@ -494,6 +628,50 @@ async fn grpc_fallback_driver(
             failures.join("; ")
         )),
     ))
+}
+
+#[cfg(feature = "band8")]
+#[derive(Debug)]
+enum Band8GrpcVersion {
+    Validated(core_version::Version),
+    RetryableFailure(String),
+}
+
+#[cfg(feature = "band8")]
+fn classify_band8_grpc_version(
+    address: &str,
+    reported: std::result::Result<String, String>,
+) -> Result<Band8GrpcVersion> {
+    let reported = match reported {
+        Ok(reported) => reported,
+        Err(error) => {
+            // TypeDB's band-8 Driver::new is lazy. Against a reachable band-7
+            // server it can return Ok before server_version performs the first
+            // protocol round trip. Treat only that inability to validate the
+            // candidate connection as retryable so band 7 still gets a chance.
+            return Ok(Band8GrpcVersion::RetryableFailure(format!(
+                "band-8 gRPC version validation failed after connect to {address}: {error}"
+            )));
+        }
+    };
+
+    // Once the server has authoritatively reported a version, parse and gate
+    // failures are terminal. Falling through to band 7 here could silently
+    // accept an unsupported server and discard the exact rejection evidence.
+    let server_version = reported
+        .parse::<core_version::Version>()
+        .map_err(RuntimeError::UnsupportedVersion)?;
+    validate_server_band(&server_version)?;
+    if !core_version::server_accepted_bands(&server_version).contains(&8) {
+        return Err(RuntimeError::UnsupportedVersion(
+            core_version::VersionError::Probe(format!(
+                "band-8 gRPC connection reported server version {server_version}, \
+                 which does not accept band 8"
+            )),
+        ));
+    }
+
+    Ok(Band8GrpcVersion::Validated(server_version))
 }
 
 /// Version-gated [`DriverHandle`] constructor.
@@ -543,6 +721,24 @@ impl TypeDBRuntime {
     /// gRPC fallback, which cannot report the server version.
     pub fn server_version(&self) -> Option<core_version::Version> {
         self.server_version
+    }
+
+    /// Return whether the connection actually negotiated a driver that can
+    /// transport `given` input rows.
+    ///
+    /// This is deliberately separate from the reported server version. A
+    /// 3.12 server may accept the band-8 discovery connection when a later
+    /// band-9 upgrade fails; advertising `given` in that state would select an
+    /// execution path the active driver cannot carry.
+    pub fn supports_given_rows(&self) -> bool {
+        match &self.driver {
+            #[cfg(feature = "band7")]
+            DriverHandle::B7(_) => false,
+            #[cfg(feature = "band8")]
+            DriverHandle::B8(_) => false,
+            #[cfg(feature = "band9")]
+            DriverHandle::B9(_) => true,
+        }
     }
 }
 
@@ -824,57 +1020,280 @@ pub struct RuntimeTransaction {
     inner: RuntimeTransactionInner,
 }
 
+fn runtime_cancelled_error() -> RuntimeError {
+    RuntimeError::ResourceLimit {
+        code: "provider_cancelled",
+        message: "provider answer processing was cancelled",
+    }
+}
+
+fn runtime_deadline_error() -> RuntimeError {
+    RuntimeError::ResourceLimit {
+        code: "transaction_deadline_exceeded",
+        message: "provider transaction deadline expired",
+    }
+}
+
+fn runtime_check(limits: &RuntimeAnswerLimits) -> Result<()> {
+    if limits.cancellation.is_cancelled() {
+        return Err(runtime_cancelled_error());
+    }
+    if limits.deadline.is_some_and(|deadline| {
+        tokio::time::Instant::now() >= tokio::time::Instant::from_std(deadline)
+    }) {
+        return Err(runtime_deadline_error());
+    }
+    Ok(())
+}
+
+async fn runtime_await<T>(
+    future: impl Future<Output = Result<T>>,
+    limits: &RuntimeAnswerLimits,
+) -> Result<T> {
+    runtime_check(limits)?;
+    tokio::pin!(future);
+    let cancellation = limits.cancellation.cancelled();
+    tokio::pin!(cancellation);
+
+    if let Some(deadline) = limits.deadline {
+        let deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+        tokio::pin!(deadline);
+        tokio::select! {
+            biased;
+            result = &mut future => result,
+            () = &mut cancellation => Err(runtime_cancelled_error()),
+            () = &mut deadline => Err(runtime_deadline_error()),
+        }
+    } else {
+        tokio::select! {
+            biased;
+            result = &mut future => result,
+            () = &mut cancellation => Err(runtime_cancelled_error()),
+        }
+    }
+}
+
+fn runtime_accept(
+    limits: &RuntimeAnswerLimits,
+    stats: &mut RuntimeAnswerStats,
+    item: RuntimeAnswerItem,
+    consumer: &mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
+) -> Result<RuntimeAnswerControl> {
+    runtime_check(limits)?;
+    let next_items = stats
+        .processed_items
+        .checked_add(1)
+        .ok_or(RuntimeError::ResourceLimit {
+            code: "processed_item_counter_overflow",
+            message: "processed provider item counter overflowed",
+        })?;
+    if next_items > limits.max_items {
+        return Err(RuntimeError::ResourceLimit {
+            code: "processed_item_limit",
+            message: "provider answer exceeded the processed-item ceiling",
+        });
+    }
+    let value = match &item {
+        RuntimeAnswerItem::Row(value) | RuntimeAnswerItem::Document(value) => value,
+    };
+    let encoded = u64::try_from(
+        serde_json::to_vec(value)
+            .map_err(|error| RuntimeError::QueryExecution(format!("Answer encode: {error}")))?
+            .len(),
+    )
+    .map_err(|_| RuntimeError::ResourceLimit {
+        code: "answer_byte_counter_overflow",
+        message: "encoded provider answer length exceeds the counter range",
+    })?;
+    let next_bytes =
+        stats
+            .response_bytes
+            .checked_add(encoded)
+            .ok_or(RuntimeError::ResourceLimit {
+                code: "answer_byte_counter_overflow",
+                message: "provider answer byte counter overflowed",
+            })?;
+    if next_bytes > limits.max_bytes {
+        return Err(RuntimeError::ResourceLimit {
+            code: "response_byte_limit",
+            message: "provider answer exceeded the response-byte ceiling",
+        });
+    }
+    stats.processed_items = next_items;
+    stats.response_bytes = next_bytes;
+    let control = consumer(item);
+    runtime_check(limits)?;
+    let control = control?;
+    if control == RuntimeAnswerControl::Stop {
+        stats.stopped_early = true;
+    }
+    Ok(control)
+}
+
+async fn runtime_consume_stream<S>(
+    mut stream: S,
+    kind: RuntimeAnswerKind,
+    limits: &RuntimeAnswerLimits,
+    consumer: &mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
+) -> Result<RuntimeAnswerStats>
+where
+    S: futures::TryStream<Ok = RuntimeAnswerItem, Error = RuntimeError> + Send + Unpin,
+{
+    let mut stats = RuntimeAnswerStats::new(kind);
+    while let Some(item) = runtime_await(async { stream.try_next().await }, limits).await? {
+        if runtime_accept(limits, &mut stats, item, consumer)? == RuntimeAnswerControl::Stop {
+            break;
+        }
+    }
+    Ok(stats)
+}
+
+fn materialize_runtime_answer(
+    stats: RuntimeAnswerStats,
+    items: Vec<RuntimeAnswerItem>,
+) -> QueryResult {
+    match stats.kind {
+        RuntimeAnswerKind::Ok => QueryResult::Ok,
+        RuntimeAnswerKind::Rows => QueryResult::Rows(
+            items
+                .into_iter()
+                .filter_map(|item| match item {
+                    RuntimeAnswerItem::Row(value) => Some(value),
+                    RuntimeAnswerItem::Document(_) => None,
+                })
+                .collect(),
+        ),
+        RuntimeAnswerKind::Documents => QueryResult::Documents(
+            items
+                .into_iter()
+                .filter_map(|item| match item {
+                    RuntimeAnswerItem::Document(value) => Some(value),
+                    RuntimeAnswerItem::Row(_) => None,
+                })
+                .collect(),
+        ),
+    }
+}
+
 impl RuntimeTransaction {
-    /// Execute TypeQL within this transaction.
+    /// Return whether this transaction's negotiated driver can transport
+    /// `given` input rows.
+    pub fn supports_given_rows(&self) -> bool {
+        match &self.inner {
+            #[cfg(feature = "band7")]
+            RuntimeTransactionInner::B7(_) => false,
+            #[cfg(feature = "band8")]
+            RuntimeTransactionInner::B8(_) => false,
+            #[cfg(feature = "band9")]
+            RuntimeTransactionInner::B9(_) => true,
+        }
+    }
+
+    /// Execute TypeQL within this transaction, materializing for legacy callers.
+    ///
+    /// New match executors use [`Self::query_bounded`] directly.
     pub fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
+        let typeql = typeql.to_owned();
+        Box::pin(async move {
+            let mut items = Vec::new();
+            let mut collect = |item| {
+                items.push(item);
+                Ok(RuntimeAnswerControl::Continue)
+            };
+            let stats = self
+                .query_bounded(&typeql, RuntimeAnswerLimits::unbounded(), &mut collect)
+                .await?;
+            Ok(materialize_runtime_answer(stats, items))
+        })
+    }
+
+    /// Execute TypeQL and enforce bounds while polling the driver stream.
+    pub fn query_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        limits: RuntimeAnswerLimits,
+        consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
+    ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
         let tql = typeql.to_string();
         Box::pin(async move {
+            runtime_check(&limits)?;
             match &self.inner {
                 #[cfg(feature = "band7")]
                 RuntimeTransactionInner::B7(opt) => {
                     let tx = opt.as_ref().ok_or_else(|| {
                         RuntimeError::Transaction("Transaction already consumed".into())
                     })?;
-                    let answer = tx
-                        .query(&tql)
-                        .await
-                        .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))?;
+                    let answer = runtime_await(
+                        async {
+                            tx.query(&tql)
+                                .await
+                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                        },
+                        &limits,
+                    )
+                    .await?;
                     match answer {
-                        B7QueryAnswer::Ok(_) => Ok(QueryResult::Ok),
-                        B7QueryAnswer::ConceptRowStream(_, stream) => {
-                            let rows: Vec<_> = stream.try_collect().await.map_err(|e| {
-                                RuntimeError::QueryExecution(format!("Row collect: {e}"))
-                            })?;
-                            let json_rows = rows
-                                .iter()
-                                .map(|row| {
-                                    let mut obj = serde_json::Map::new();
-                                    for (i, col) in row.get_column_names().iter().enumerate() {
-                                        let value = row
-                                            .row
-                                            .get(i)
-                                            .and_then(|c| c.as_ref())
-                                            .map(concept_to_json_b7)
-                                            .unwrap_or(serde_json::Value::Null);
-                                        obj.insert(col.clone(), value);
-                                    }
-                                    serde_json::Value::Object(obj)
-                                })
-                                .collect();
-                            Ok(QueryResult::Rows(json_rows))
+                        B7QueryAnswer::Ok(_) => Ok(RuntimeAnswerStats::new(RuntimeAnswerKind::Ok)),
+                        B7QueryAnswer::ConceptRowStream(_, mut stream) => {
+                            let mut stats = RuntimeAnswerStats::new(RuntimeAnswerKind::Rows);
+                            while let Some(row) = runtime_await(
+                                async {
+                                    stream.try_next().await.map_err(|error| {
+                                        RuntimeError::QueryExecution(format!("Row stream: {error}"))
+                                    })
+                                },
+                                &limits,
+                            )
+                            .await?
+                            {
+                                let mut object = serde_json::Map::new();
+                                for (index, column) in row.get_column_names().iter().enumerate() {
+                                    let value = row
+                                        .row
+                                        .get(index)
+                                        .and_then(|concept| concept.as_ref())
+                                        .map(concept_to_json_b7)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    object.insert(column.clone(), value);
+                                }
+                                if runtime_accept(
+                                    &limits,
+                                    &mut stats,
+                                    RuntimeAnswerItem::Row(serde_json::Value::Object(object)),
+                                    consumer,
+                                )? == RuntimeAnswerControl::Stop
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(stats)
                         }
-                        B7QueryAnswer::ConceptDocumentStream(_, stream) => {
-                            let docs: Vec<_> = stream.try_collect().await.map_err(|e| {
-                                RuntimeError::QueryExecution(format!("Doc collect: {e}"))
-                            })?;
-                            let json_docs = docs
-                                .into_iter()
-                                .map(|doc| {
-                                    serde_json::to_value(doc.into_json())
-                                        .unwrap_or(serde_json::Value::Null)
-                                })
-                                .collect();
-                            Ok(QueryResult::Documents(json_docs))
+                        B7QueryAnswer::ConceptDocumentStream(_, mut stream) => {
+                            let mut stats = RuntimeAnswerStats::new(RuntimeAnswerKind::Documents);
+                            while let Some(document) = runtime_await(
+                                async {
+                                    stream.try_next().await.map_err(|error| {
+                                        RuntimeError::QueryExecution(format!(
+                                            "Document stream: {error}"
+                                        ))
+                                    })
+                                },
+                                &limits,
+                            )
+                            .await?
+                            {
+                                let value = document_to_json_b7(&document);
+                                if runtime_accept(
+                                    &limits,
+                                    &mut stats,
+                                    RuntimeAnswerItem::Document(value),
+                                    consumer,
+                                )? == RuntimeAnswerControl::Stop
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(stats)
                         }
                     }
                 }
@@ -883,46 +1302,77 @@ impl RuntimeTransaction {
                     let tx = opt.as_ref().ok_or_else(|| {
                         RuntimeError::Transaction("Transaction already consumed".into())
                     })?;
-                    let answer = tx
-                        .query(&tql)
-                        .await
-                        .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))?;
+                    let answer = runtime_await(
+                        async {
+                            tx.query(&tql)
+                                .await
+                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                        },
+                        &limits,
+                    )
+                    .await?;
                     match answer {
-                        B8QueryAnswer::Ok(_) => Ok(QueryResult::Ok),
-                        B8QueryAnswer::ConceptRowStream(_, stream) => {
-                            let rows: Vec<_> = stream.try_collect().await.map_err(|e| {
-                                RuntimeError::QueryExecution(format!("Row collect: {e}"))
-                            })?;
-                            let json_rows = rows
-                                .iter()
-                                .map(|row| {
-                                    let mut obj = serde_json::Map::new();
-                                    for (i, col) in row.get_column_names().iter().enumerate() {
-                                        let value = row
-                                            .row
-                                            .get(i)
-                                            .and_then(|c| c.as_ref())
-                                            .map(concept_to_json_b8)
-                                            .unwrap_or(serde_json::Value::Null);
-                                        obj.insert(col.clone(), value);
-                                    }
-                                    serde_json::Value::Object(obj)
-                                })
-                                .collect();
-                            Ok(QueryResult::Rows(json_rows))
+                        B8QueryAnswer::Ok(_) => Ok(RuntimeAnswerStats::new(RuntimeAnswerKind::Ok)),
+                        B8QueryAnswer::ConceptRowStream(_, mut stream) => {
+                            let mut stats = RuntimeAnswerStats::new(RuntimeAnswerKind::Rows);
+                            while let Some(row) = runtime_await(
+                                async {
+                                    stream.try_next().await.map_err(|error| {
+                                        RuntimeError::QueryExecution(format!("Row stream: {error}"))
+                                    })
+                                },
+                                &limits,
+                            )
+                            .await?
+                            {
+                                let mut object = serde_json::Map::new();
+                                for (index, column) in row.get_column_names().iter().enumerate() {
+                                    let value = row
+                                        .row
+                                        .get(index)
+                                        .and_then(|concept| concept.as_ref())
+                                        .map(concept_to_json_b8)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    object.insert(column.clone(), value);
+                                }
+                                if runtime_accept(
+                                    &limits,
+                                    &mut stats,
+                                    RuntimeAnswerItem::Row(serde_json::Value::Object(object)),
+                                    consumer,
+                                )? == RuntimeAnswerControl::Stop
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(stats)
                         }
-                        B8QueryAnswer::ConceptDocumentStream(_, stream) => {
-                            let docs: Vec<_> = stream.try_collect().await.map_err(|e| {
-                                RuntimeError::QueryExecution(format!("Doc collect: {e}"))
-                            })?;
-                            let json_docs = docs
-                                .into_iter()
-                                .map(|doc| {
-                                    serde_json::to_value(doc.into_json())
-                                        .unwrap_or(serde_json::Value::Null)
-                                })
-                                .collect();
-                            Ok(QueryResult::Documents(json_docs))
+                        B8QueryAnswer::ConceptDocumentStream(_, mut stream) => {
+                            let mut stats = RuntimeAnswerStats::new(RuntimeAnswerKind::Documents);
+                            while let Some(document) = runtime_await(
+                                async {
+                                    stream.try_next().await.map_err(|error| {
+                                        RuntimeError::QueryExecution(format!(
+                                            "Document stream: {error}"
+                                        ))
+                                    })
+                                },
+                                &limits,
+                            )
+                            .await?
+                            {
+                                let value = document_to_json_b8(&document);
+                                if runtime_accept(
+                                    &limits,
+                                    &mut stats,
+                                    RuntimeAnswerItem::Document(value),
+                                    consumer,
+                                )? == RuntimeAnswerControl::Stop
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(stats)
                         }
                     }
                 }
@@ -931,11 +1381,16 @@ impl RuntimeTransaction {
                     let tx = opt.as_ref().ok_or_else(|| {
                         RuntimeError::Transaction("Transaction already consumed".into())
                     })?;
-                    let answer = tx
-                        .query(&tql)
-                        .await
-                        .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))?;
-                    convert_answer_b9(answer).await
+                    let answer = runtime_await(
+                        async {
+                            tx.query(&tql)
+                                .await
+                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                        },
+                        &limits,
+                    )
+                    .await?;
+                    consume_answer_b9(answer, &limits, consumer).await
                 }
             }
         })
@@ -953,8 +1408,39 @@ impl RuntimeTransaction {
         typeql: &str,
         rows: GivenRowsSpec,
     ) -> BoxFuture<'_, Result<QueryResult>> {
-        let tql = typeql.to_string();
+        let typeql = typeql.to_owned();
         Box::pin(async move {
+            let mut items = Vec::new();
+            let mut collect = |item| {
+                items.push(item);
+                Ok(RuntimeAnswerControl::Continue)
+            };
+            let stats = self
+                .query_with_rows_bounded(
+                    &typeql,
+                    rows,
+                    RuntimeAnswerLimits::unbounded(),
+                    &mut collect,
+                )
+                .await?;
+            Ok(materialize_runtime_answer(stats, items))
+        })
+    }
+
+    /// Execute TypeQL with `given` rows and enforce bounds while polling the
+    /// driver answer stream.
+    pub fn query_with_rows_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: GivenRowsSpec,
+        limits: RuntimeAnswerLimits,
+        consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
+    ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
+        let tql = typeql.to_owned();
+        #[cfg(not(feature = "band9"))]
+        let _ = (&tql, &rows, &consumer);
+        Box::pin(async move {
+            runtime_check(&limits)?;
             match &self.inner {
                 #[cfg(feature = "band7")]
                 RuntimeTransactionInner::B7(_) => Err(RuntimeError::QueryExecution(
@@ -974,11 +1460,16 @@ impl RuntimeTransaction {
                         RuntimeError::Transaction("Transaction already consumed".into())
                     })?;
                     let given_rows = given_rows_b9(rows)?;
-                    let answer = tx
-                        .query_with_rows(&tql, given_rows)
-                        .await
-                        .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))?;
-                    convert_answer_b9(answer).await
+                    let answer = runtime_await(
+                        async {
+                            tx.query_with_rows(&tql, given_rows)
+                                .await
+                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                        },
+                        &limits,
+                    )
+                    .await?;
+                    consume_answer_b9(answer, &limits, consumer).await
                 }
             }
         })
@@ -1116,6 +1607,172 @@ impl RuntimeTransaction {
     }
 }
 
+fn document_type_to_json(kind: &str, label: &str) -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::from_iter([
+        (
+            "kind".to_owned(),
+            serde_json::Value::String(kind.to_owned()),
+        ),
+        (
+            "label".to_owned(),
+            serde_json::Value::String(label.to_owned()),
+        ),
+    ]))
+}
+
+fn document_attribute_type_to_json(label: &str, value_type: Option<&str>) -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::from_iter([
+        (
+            "kind".to_owned(),
+            serde_json::Value::String("attribute".to_owned()),
+        ),
+        (
+            "label".to_owned(),
+            serde_json::Value::String(label.to_owned()),
+        ),
+        (
+            "valueType".to_owned(),
+            serde_json::Value::String(value_type.unwrap_or("none").to_owned()),
+        ),
+    ]))
+}
+
+macro_rules! define_driver_json_conversion {
+    (
+        $feature:literal,
+        $driver:ident,
+        $document_fn:ident,
+        $node_fn:ident,
+        $leaf_fn:ident,
+        $value_fn:ident
+    ) => {
+        #[cfg(feature = $feature)]
+        fn $document_fn(document: &$driver::answer::ConceptDocument) -> serde_json::Value {
+            document
+                .root
+                .as_ref()
+                .map($node_fn)
+                .unwrap_or(serde_json::Value::Null)
+        }
+
+        #[cfg(feature = $feature)]
+        fn $node_fn(node: &$driver::answer::concept_document::Node) -> serde_json::Value {
+            use $driver::answer::concept_document::Node;
+
+            match node {
+                Node::Map(map) => serde_json::Value::Object(
+                    map.iter()
+                        .map(|(name, node)| (name.clone(), $node_fn(node)))
+                        .collect(),
+                ),
+                Node::List(list) => serde_json::Value::Array(list.iter().map($node_fn).collect()),
+                Node::Leaf(Some(leaf)) => $leaf_fn(leaf),
+                Node::Leaf(None) => serde_json::Value::Null,
+            }
+        }
+
+        #[cfg(feature = $feature)]
+        fn $leaf_fn(leaf: &$driver::answer::concept_document::Leaf) -> serde_json::Value {
+            use $driver::answer::concept_document::Leaf;
+            use $driver::concept::Concept;
+
+            match leaf {
+                Leaf::Empty => serde_json::Value::Null,
+                Leaf::Concept(concept) => match concept {
+                    Concept::EntityType(_) => document_type_to_json("entity", concept.get_label()),
+                    Concept::RelationType(_) => {
+                        document_type_to_json("relation", concept.get_label())
+                    }
+                    Concept::RoleType(_) => {
+                        document_type_to_json("relation:role", concept.get_label())
+                    }
+                    Concept::AttributeType(_) => {
+                        let value_type = concept.try_get_value_type();
+                        document_attribute_type_to_json(
+                            concept.get_label(),
+                            value_type.as_ref().map(|value_type| value_type.name()),
+                        )
+                    }
+                    Concept::Attribute(_) | Concept::Value(_) => {
+                        $value_fn(concept.try_get_value().expect("value concept has a value"))
+                    }
+                    concept @ (Concept::Entity(_) | Concept::Relation(_)) => {
+                        unreachable!(
+                            "unexpected concept encountered in fetch response: {:?}",
+                            concept
+                        )
+                    }
+                },
+                Leaf::ValueType(value_type) => {
+                    serde_json::Value::String(value_type.name().to_owned())
+                }
+                Leaf::Kind(kind) => serde_json::Value::String(kind.name().to_owned()),
+            }
+        }
+
+        #[cfg(feature = $feature)]
+        fn $value_fn(value: &$driver::concept::Value) -> serde_json::Value {
+            use $driver::concept::Value;
+
+            match value {
+                Value::Boolean(value) => serde_json::Value::Bool(*value),
+                Value::Integer(value) => serde_json::Value::from(*value),
+                Value::Double(value) => serde_json::Value::from(*value),
+                Value::String(value) => serde_json::Value::String(value.clone()),
+                Value::Decimal(_)
+                | Value::Date(_)
+                | Value::Datetime(_)
+                | Value::DatetimeTZ(_)
+                | Value::Duration(_) => serde_json::Value::String(value.to_string()),
+                Value::Struct(value, name) => {
+                    let fields = value
+                        .fields()
+                        .iter()
+                        .map(|(field, value)| {
+                            (
+                                field.clone(),
+                                value
+                                    .as_ref()
+                                    .map($value_fn)
+                                    .unwrap_or(serde_json::Value::Null),
+                            )
+                        })
+                        .collect();
+                    serde_json::Value::Object(serde_json::Map::from_iter([(
+                        name.clone(),
+                        serde_json::Value::Object(fields),
+                    )]))
+                }
+            }
+        }
+    };
+}
+
+define_driver_json_conversion!(
+    "band7",
+    driver_b7,
+    document_to_json_b7,
+    document_node_to_json_b7,
+    document_leaf_to_json_b7,
+    value_to_json_b7
+);
+define_driver_json_conversion!(
+    "band8",
+    driver_b8,
+    document_to_json_b8,
+    document_node_to_json_b8,
+    document_leaf_to_json_b8,
+    value_to_json_b8
+);
+define_driver_json_conversion!(
+    "band9",
+    driver_b9,
+    document_to_json_b9,
+    document_node_to_json_b9,
+    document_leaf_to_json_b9,
+    value_to_json_b9
+);
+
 /// Convert a band-7 TypeDB concept to a JSON value.
 ///
 /// Output shape is identical to [`concept_to_json_b8`] for all common concepts.
@@ -1147,39 +1804,6 @@ fn concept_to_json_b7(
     serde_json::Value::Object(obj)
 }
 
-/// Convert a band-7 TypeDB value to a JSON value.
-#[cfg(feature = "band7")]
-fn value_to_json_b7(value: &type_bridge_typedb_driver_b7::concept::Value) -> serde_json::Value {
-    if let Some(b) = value.get_boolean() {
-        return serde_json::Value::Bool(b);
-    }
-    if let Some(i) = value.get_integer() {
-        return serde_json::json!(i);
-    }
-    if let Some(d) = value.get_double() {
-        return serde_json::json!(d);
-    }
-    if let Some(s) = value.get_string() {
-        return serde_json::Value::String(s.to_string());
-    }
-    if let Some(date) = value.get_date() {
-        return serde_json::Value::String(date.to_string());
-    }
-    if let Some(dt) = value.get_datetime() {
-        return serde_json::Value::String(dt.to_string());
-    }
-    if let Some(dt_tz) = value.get_datetime_tz() {
-        return serde_json::Value::String(dt_tz.to_string());
-    }
-    if let Some(dec) = value.get_decimal() {
-        return serde_json::Value::String(dec.to_string());
-    }
-    if let Some(dur) = value.get_duration() {
-        return serde_json::Value::String(dur.to_string());
-    }
-    serde_json::Value::String(value.to_string())
-}
-
 /// Convert a band-8 TypeDB concept to a JSON value.
 ///
 /// Output shape is identical to [`concept_to_json_b7`] for all common concepts.
@@ -1207,39 +1831,6 @@ fn concept_to_json_b8(concept: &typedb_driver::concept::Concept) -> serde_json::
         );
     }
     serde_json::Value::Object(obj)
-}
-
-/// Convert a band-8 TypeDB value to a JSON value.
-#[cfg(feature = "band8")]
-fn value_to_json_b8(value: &typedb_driver::concept::Value) -> serde_json::Value {
-    if let Some(b) = value.get_boolean() {
-        return serde_json::Value::Bool(b);
-    }
-    if let Some(i) = value.get_integer() {
-        return serde_json::json!(i);
-    }
-    if let Some(d) = value.get_double() {
-        return serde_json::json!(d);
-    }
-    if let Some(s) = value.get_string() {
-        return serde_json::Value::String(s.to_string());
-    }
-    if let Some(date) = value.get_date() {
-        return serde_json::Value::String(date.to_string());
-    }
-    if let Some(dt) = value.get_datetime() {
-        return serde_json::Value::String(dt.to_string());
-    }
-    if let Some(dt_tz) = value.get_datetime_tz() {
-        return serde_json::Value::String(dt_tz.to_string());
-    }
-    if let Some(dec) = value.get_decimal() {
-        return serde_json::Value::String(dec.to_string());
-    }
-    if let Some(dur) = value.get_duration() {
-        return serde_json::Value::String(dur.to_string());
-    }
-    serde_json::Value::String(value.to_string())
 }
 
 /// Lower a portable [`GivenRowsSpec`] onto the band-9 driver's `GivenRows`.
@@ -1297,22 +1888,18 @@ fn given_entry_b9(value: GivenValue) -> Result<type_bridge_typedb_driver_b9::giv
     })
 }
 
-/// Convert a band-9 [`B9QueryAnswer`] into the runtime's [`QueryResult`].
-///
-/// Shared by the plain `query` arm and the given-stage `query_with_rows`
-/// path — both produce the same driver answer type.
+/// Convert and consume a band-9 answer without materializing its stream.
 #[cfg(feature = "band9")]
-async fn convert_answer_b9(answer: B9QueryAnswer) -> Result<QueryResult> {
+async fn consume_answer_b9(
+    answer: B9QueryAnswer,
+    limits: &RuntimeAnswerLimits,
+    consumer: &mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
+) -> Result<RuntimeAnswerStats> {
     match answer {
-        B9QueryAnswer::Ok(_) => Ok(QueryResult::Ok),
+        B9QueryAnswer::Ok(_) => Ok(RuntimeAnswerStats::new(RuntimeAnswerKind::Ok)),
         B9QueryAnswer::ConceptRowStream(_, stream) => {
-            let rows: Vec<_> = stream
-                .try_collect()
-                .await
-                .map_err(|e| RuntimeError::QueryExecution(format!("Row collect: {e}")))?;
-            let json_rows = rows
-                .iter()
-                .map(|row| {
+            let stream = stream
+                .map_ok(|row| {
                     let mut obj = serde_json::Map::new();
                     for (i, col) in row.get_column_names().iter().enumerate() {
                         let value = row
@@ -1323,21 +1910,16 @@ async fn convert_answer_b9(answer: B9QueryAnswer) -> Result<QueryResult> {
                             .unwrap_or(serde_json::Value::Null);
                         obj.insert(col.clone(), value);
                     }
-                    serde_json::Value::Object(obj)
+                    RuntimeAnswerItem::Row(serde_json::Value::Object(obj))
                 })
-                .collect();
-            Ok(QueryResult::Rows(json_rows))
+                .map_err(|error| RuntimeError::QueryExecution(format!("Row stream: {error}")));
+            runtime_consume_stream(stream, RuntimeAnswerKind::Rows, limits, consumer).await
         }
         B9QueryAnswer::ConceptDocumentStream(_, stream) => {
-            let docs: Vec<_> = stream
-                .try_collect()
-                .await
-                .map_err(|e| RuntimeError::QueryExecution(format!("Doc collect: {e}")))?;
-            let json_docs = docs
-                .into_iter()
-                .map(|doc| serde_json::to_value(doc.into_json()).unwrap_or(serde_json::Value::Null))
-                .collect();
-            Ok(QueryResult::Documents(json_docs))
+            let stream = stream
+                .map_ok(|document| RuntimeAnswerItem::Document(document_to_json_b9(&document)))
+                .map_err(|error| RuntimeError::QueryExecution(format!("Document stream: {error}")));
+            runtime_consume_stream(stream, RuntimeAnswerKind::Documents, limits, consumer).await
         }
     }
 }
@@ -1373,43 +1955,373 @@ fn concept_to_json_b9(
     serde_json::Value::Object(obj)
 }
 
-/// Convert a band-9 TypeDB value to a JSON value.
-#[cfg(feature = "band9")]
-fn value_to_json_b9(value: &type_bridge_typedb_driver_b9::concept::Value) -> serde_json::Value {
-    if let Some(b) = value.get_boolean() {
-        return serde_json::Value::Bool(b);
-    }
-    if let Some(i) = value.get_integer() {
-        return serde_json::json!(i);
-    }
-    if let Some(d) = value.get_double() {
-        return serde_json::json!(d);
-    }
-    if let Some(s) = value.get_string() {
-        return serde_json::Value::String(s.to_string());
-    }
-    if let Some(date) = value.get_date() {
-        return serde_json::Value::String(date.to_string());
-    }
-    if let Some(dt) = value.get_datetime() {
-        return serde_json::Value::String(dt.to_string());
-    }
-    if let Some(dt_tz) = value.get_datetime_tz() {
-        return serde_json::Value::String(dt_tz.to_string());
-    }
-    if let Some(dec) = value.get_decimal() {
-        return serde_json::Value::String(dec.to_string());
-    }
-    if let Some(dur) = value.get_duration() {
-        return serde_json::Value::String(dur.to_string());
-    }
-    serde_json::Value::String(value.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    macro_rules! document_scalar_regression {
+        ($feature:literal, $name:ident, $driver:ident, $node_fn:ident, $decimal:expr) => {
+            #[cfg(feature = $feature)]
+            #[test]
+            fn $name() {
+                use $driver::answer::concept_document::{Leaf, Node};
+                use $driver::concept::{Concept, Value};
+
+                const LARGE_INTEGER: i64 = 9_007_199_254_740_993;
+                let integer = Node::Leaf(Some(Leaf::Concept(Concept::Value(Value::Integer(
+                    LARGE_INTEGER,
+                )))));
+                assert_eq!(
+                    $node_fn(&integer),
+                    serde_json::Value::from(LARGE_INTEGER),
+                    "concept-document integers must not cross an f64 boundary"
+                );
+
+                let decimal = $decimal;
+                let expected = decimal.to_string();
+                let decimal =
+                    Node::Leaf(Some(Leaf::Concept(Concept::Value(Value::Decimal(decimal)))));
+                assert_eq!(
+                    $node_fn(&decimal),
+                    serde_json::Value::String(expected),
+                    "concept-document decimals must remain lossless strings"
+                );
+            }
+        };
+    }
+
+    document_scalar_regression!(
+        "band7",
+        band7_document_scalars_are_lossless,
+        driver_b7,
+        document_node_to_json_b7,
+        driver_b7::concept::value::Decimal::new(1234, 5_600_000_000_000_000_000)
+    );
+    document_scalar_regression!(
+        "band8",
+        band8_document_scalars_are_lossless,
+        driver_b8,
+        document_node_to_json_b8,
+        driver_b8::concept::value::Decimal::new(1234, 5_600_000_000_000_000_000)
+    );
+    document_scalar_regression!(
+        "band9",
+        band9_document_scalars_are_lossless,
+        driver_b9,
+        document_node_to_json_b9,
+        driver_b9::concept::value::Decimal::from_parts(1234, 5_600_000_000_000_000_000)
+    );
+
+    async fn assert_pending_runtime_await_hits_deadline() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let limits = RuntimeAnswerLimits {
+            max_items: 10,
+            max_bytes: 4096,
+            deadline: Some(
+                (tokio::time::Instant::now() + std::time::Duration::from_secs(5)).into_std(),
+            ),
+            cancellation: RuntimeAnswerCancellation::default(),
+        };
+        let execution = tokio::spawn(async move {
+            runtime_await(
+                async move {
+                    let _ = started_tx.send(());
+                    std::future::pending::<Result<()>>().await
+                },
+                &limits,
+            )
+            .await
+        });
+
+        started_rx.await.unwrap();
+        tokio::time::advance(std::time::Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+        assert!(execution.is_finished());
+        assert!(matches!(
+            execution.await.unwrap().unwrap_err(),
+            RuntimeError::ResourceLimit {
+                code: "transaction_deadline_exceeded",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runtime_deadline_interrupts_pending_query_await() {
+        assert_pending_runtime_await_hits_deadline().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runtime_deadline_interrupts_pending_stream_poll() {
+        assert_pending_runtime_await_hits_deadline().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_cancellation_after_poll_start_interrupts_pending_await() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let cancellation = RuntimeAnswerCancellation::default();
+        let trigger = cancellation.clone();
+        let limits = RuntimeAnswerLimits {
+            max_items: 10,
+            max_bytes: 4096,
+            deadline: None,
+            cancellation,
+        };
+        let execution = tokio::spawn(async move {
+            runtime_await(
+                async move {
+                    let _ = started_tx.send(());
+                    std::future::pending::<Result<()>>().await
+                },
+                &limits,
+            )
+            .await
+        });
+
+        started_rx.await.unwrap();
+        trigger.cancel();
+        tokio::task::yield_now().await;
+        assert!(execution.is_finished());
+        assert!(matches!(
+            execution.await.unwrap().unwrap_err(),
+            RuntimeError::ResourceLimit {
+                code: "provider_cancelled",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn bounded_runtime_reader_stops_and_enforces_limits_before_consumer() {
+        let limits = RuntimeAnswerLimits {
+            max_items: 1,
+            max_bytes: 64,
+            deadline: None,
+            cancellation: RuntimeAnswerCancellation::default(),
+        };
+        let mut stats = RuntimeAnswerStats::new(RuntimeAnswerKind::Rows);
+        let mut accepted = 0;
+        let mut stop = |_item| {
+            accepted += 1;
+            Ok(RuntimeAnswerControl::Stop)
+        };
+        assert_eq!(
+            runtime_accept(
+                &limits,
+                &mut stats,
+                RuntimeAnswerItem::Row(serde_json::json!({"v": 1})),
+                &mut stop,
+            )
+            .unwrap(),
+            RuntimeAnswerControl::Stop
+        );
+        assert_eq!(accepted, 1);
+        assert!(stats.stopped_early);
+
+        let mut never_called =
+            |_item| -> Result<RuntimeAnswerControl> { panic!("over-limit item reached consumer") };
+        let error = runtime_accept(
+            &limits,
+            &mut stats,
+            RuntimeAnswerItem::Row(serde_json::json!({"v": 2})),
+            &mut never_called,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::ResourceLimit {
+                code: "processed_item_limit",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn bounded_runtime_stream_stops_before_polling_another_item() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed_polls = Arc::clone(&polls);
+        let mut emitted = false;
+        let stream = futures::stream::poll_fn(move |_context| {
+            observed_polls.fetch_add(1, Ordering::SeqCst);
+            assert!(!emitted, "stream was polled after the consumer stopped");
+            emitted = true;
+            std::task::Poll::Ready(Some(Ok::<_, RuntimeError>(RuntimeAnswerItem::Row(
+                serde_json::json!({"v": 1}),
+            ))))
+        });
+        let limits = RuntimeAnswerLimits::unbounded();
+        let mut consumer = |_item| Ok(RuntimeAnswerControl::Stop);
+
+        let stats = runtime_consume_stream(stream, RuntimeAnswerKind::Rows, &limits, &mut consumer)
+            .await
+            .unwrap();
+
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.processed_items, 1);
+        assert!(stats.stopped_early);
+    }
+
+    #[tokio::test]
+    async fn bounded_runtime_stream_rejects_an_over_limit_item_before_consumer() {
+        let stream = futures::stream::iter([
+            Ok(RuntimeAnswerItem::Row(serde_json::json!({"v": 1}))),
+            Ok(RuntimeAnswerItem::Row(serde_json::json!({"v": 2}))),
+        ]);
+        let limits = RuntimeAnswerLimits {
+            max_items: 1,
+            max_bytes: u64::MAX,
+            deadline: None,
+            cancellation: RuntimeAnswerCancellation::default(),
+        };
+        let mut accepted = 0;
+        let mut consumer = |_item| {
+            accepted += 1;
+            Ok(RuntimeAnswerControl::Continue)
+        };
+
+        let error = runtime_consume_stream(stream, RuntimeAnswerKind::Rows, &limits, &mut consumer)
+            .await
+            .unwrap_err();
+
+        assert_eq!(accepted, 1);
+        assert!(matches!(
+            error,
+            RuntimeError::ResourceLimit {
+                code: "processed_item_limit",
+                ..
+            }
+        ));
+    }
+
+    #[cfg(any(feature = "band7", feature = "band8"))]
+    fn empty_given_rows() -> GivenRowsSpec {
+        GivenRowsSpec {
+            variables: vec!["value".into()],
+            rows: Vec::new(),
+        }
+    }
+
+    #[cfg(feature = "band7")]
+    #[tokio::test]
+    async fn band7_transaction_rejects_bounded_given_rows_actionably() {
+        let mut transaction = RuntimeTransaction {
+            inner: RuntimeTransactionInner::B7(None),
+        };
+        let mut consumer = |_item| Ok(RuntimeAnswerControl::Continue);
+
+        assert!(!transaction.supports_given_rows());
+        let error = transaction
+            .query_with_rows_bounded(
+                "given $value: string; match $x isa thing;",
+                empty_given_rows(),
+                RuntimeAnswerLimits::unbounded(),
+                &mut consumer,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, RuntimeError::QueryExecution(message) if message.contains("band-9 driver") && message.contains("band 7")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(feature = "band8")]
+    #[tokio::test]
+    async fn band8_transaction_rejects_bounded_given_rows_actionably() {
+        let mut transaction = RuntimeTransaction {
+            inner: RuntimeTransactionInner::B8(None),
+        };
+        let mut consumer = |_item| Ok(RuntimeAnswerControl::Continue);
+
+        assert!(!transaction.supports_given_rows());
+        let error = transaction
+            .query_with_rows_bounded(
+                "given $value: string; match $x isa thing;",
+                empty_given_rows(),
+                RuntimeAnswerLimits::unbounded(),
+                &mut consumer,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, RuntimeError::QueryExecution(message) if message.contains("band-9 driver") && message.contains("band 8")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn band9_transaction_reports_given_row_transport_support() {
+        let transaction = RuntimeTransaction {
+            inner: RuntimeTransactionInner::B9(None),
+        };
+
+        assert!(transaction.supports_given_rows());
+    }
+
+    #[test]
+    fn bounded_runtime_reader_rechecks_cancellation_after_consumer_work() {
+        let cancellation = RuntimeAnswerCancellation::default();
+        let trigger = cancellation.clone();
+        let limits = RuntimeAnswerLimits {
+            max_items: 1,
+            max_bytes: 64,
+            deadline: None,
+            cancellation,
+        };
+        let mut stats = RuntimeAnswerStats::new(RuntimeAnswerKind::Rows);
+        let mut consumer = move |_item| {
+            trigger.cancel();
+            Ok(RuntimeAnswerControl::Continue)
+        };
+
+        let error = runtime_accept(
+            &limits,
+            &mut stats,
+            RuntimeAnswerItem::Row(serde_json::json!({"v": 1})),
+            &mut consumer,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::ResourceLimit {
+                code: "provider_cancelled",
+                ..
+            }
+        ));
+
+        let cancellation = RuntimeAnswerCancellation::default();
+        let trigger = cancellation.clone();
+        let limits = RuntimeAnswerLimits {
+            max_items: 1,
+            max_bytes: 64,
+            deadline: None,
+            cancellation,
+        };
+        let mut stats = RuntimeAnswerStats::new(RuntimeAnswerKind::Rows);
+        let mut failing_consumer = move |_item| -> Result<RuntimeAnswerControl> {
+            trigger.cancel();
+            Err(RuntimeError::AnswerConsumer)
+        };
+        let error = runtime_accept(
+            &limits,
+            &mut stats,
+            RuntimeAnswerItem::Row(serde_json::json!({"v": 1})),
+            &mut failing_consumer,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::ResourceLimit {
+                code: "provider_cancelled",
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn connect_options_default_matches_ssot() {
@@ -1491,6 +2403,88 @@ mod tests {
             Err(other) => panic!("expected aggregated version-probe failure, got {other}"),
             Ok(_) => panic!("expected aggregated version-probe failure, got successful connection"),
         }
+    }
+
+    #[cfg(feature = "band8")]
+    #[test]
+    fn band8_lazy_validation_failure_is_retryable() {
+        let result = classify_band8_grpc_version(
+            "localhost:1729",
+            Err("protocol handshake failed".to_string()),
+        )
+        .expect("transport validation failure should remain retryable");
+
+        match result {
+            Band8GrpcVersion::RetryableFailure(failure) => {
+                assert!(failure.contains("localhost:1729"), "{failure}");
+                assert!(failure.contains("protocol handshake failed"), "{failure}");
+            }
+            Band8GrpcVersion::Validated(version) => {
+                panic!("failed lazy connection unexpectedly validated as {version}")
+            }
+        }
+    }
+
+    #[cfg(feature = "band8")]
+    #[test]
+    fn band8_reported_versions_are_authoritative() {
+        let unsupported = classify_band8_grpc_version("localhost:1729", Ok("3.7.3".to_string()))
+            .expect_err("reported below-window version must be terminal");
+        assert!(matches!(
+            unsupported,
+            RuntimeError::UnsupportedVersion(core_version::VersionError::Unsupported {
+                component: "server",
+                found: core_version::Version {
+                    major: 3,
+                    minor: 7,
+                    patch: 3,
+                },
+            })
+        ));
+
+        let wrong_band = classify_band8_grpc_version("localhost:1729", Ok("3.10.4".to_string()))
+            .expect_err("reported band-7 version must not silently fall through");
+        match wrong_band {
+            RuntimeError::UnsupportedVersion(error) => {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("server version 3.10.4, which does not accept band 8")
+                );
+            }
+            other => panic!("expected authoritative version rejection, got {other}"),
+        }
+
+        let malformed =
+            classify_band8_grpc_version("localhost:1729", Ok("not-a-version".to_string()))
+                .expect_err("malformed reported version must be terminal");
+        assert!(matches!(
+            malformed,
+            RuntimeError::UnsupportedVersion(core_version::VersionError::Parse(_))
+        ));
+
+        let validated = classify_band8_grpc_version("localhost:1729", Ok("3.11.5".to_string()))
+            .expect("reported band-8 version should validate");
+        assert!(matches!(
+            validated,
+            Band8GrpcVersion::Validated(core_version::Version {
+                major: 3,
+                minor: 11,
+                patch: 5,
+            })
+        ));
+
+        let backward_compatible =
+            classify_band8_grpc_version("localhost:1729", Ok("3.12.0".to_string()))
+                .expect("reported band-9 server accepts the discovery band");
+        assert!(matches!(
+            backward_compatible,
+            Band8GrpcVersion::Validated(core_version::Version {
+                major: 3,
+                minor: 12,
+                patch: 0,
+            })
+        ));
     }
 
     /// A caller-supplied exact server version is the gRPC-only escape hatch: it

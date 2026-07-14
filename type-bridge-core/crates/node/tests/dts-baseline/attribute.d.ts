@@ -1,15 +1,17 @@
 import type { AttributeSchemaEntry, ValueType } from "./index.js";
 import { AggregateSpec, ComparisonExpr, SortExpr } from "./query.js";
 declare const attributeBrand: unique symbol;
+declare const attributeCategory: unique symbol;
 /**
  * Base class for a branded attribute value. `Value` is the wrapped runtime
  * value; `Brand` is the schema attribute name carried as a phantom type so that
  * distinct attribute classes are nominally distinct at compile time. Instances
  * are immutable; equality is by `(constructor, value)`.
  */
-export declare abstract class Attribute<Value, Brand extends string> {
+export declare abstract class Attribute<Value, Brand extends string, Category extends ValueType = ValueType> {
     readonly value: Value;
     readonly [attributeBrand]: Brand;
+    readonly [attributeCategory]: Category;
     constructor(value: Value);
     equals(other: unknown): boolean;
     toString(): string;
@@ -56,6 +58,10 @@ export interface AttributeTypeOptions {
     readonly regex?: string | null;
     readonly values?: readonly string[] | null;
     readonly range?: readonly [string | null, string | null] | null;
+    /** TypeDB 3.12+ `@doc("...")` documentation for the attribute type. */
+    readonly doc?: string;
+    /** TypeDB 3.12+ `@meta("key", "value")` annotations, one value per key. */
+    readonly meta?: Record<string, string>;
 }
 /**
  * The abstract base class returned by an `attr.*(name)` factory: an abstract
@@ -63,21 +69,21 @@ export interface AttributeTypeOptions {
  * wire `valueType`. Users extend it (`class Name extends attr.String("name") {}`);
  * they never name this type directly.
  */
-export type AttributeBase<Value, Brand extends string> = (abstract new (value: Value) => Attribute<Value, Brand>) & {
+export type AttributeBase<Value, Brand extends string, Category extends ValueType = ValueType> = (abstract new (value: Value) => Attribute<Value, Brand, Category>) & {
     readonly attrName: Brand;
-    readonly valueType: ValueType;
+    readonly valueType: Category;
     readonly attributeSchema: AttributeSchemaEntry;
     readonly attributeSchemaEntries: readonly AttributeSchemaEntry[];
 };
 /** Attribute base with comparison + sort helpers (every value type). */
-export type ComparableAttributeBase<Value, Brand extends string> = AttributeBase<Value, Brand> & ComparisonStatics<Value, Brand> & OrderStatics;
+export type ComparableAttributeBase<Value, Brand extends string, Category extends ValueType = ValueType> = AttributeBase<Value, Brand, Category> & ComparisonStatics<Value, Brand> & OrderStatics;
 /** Attribute base for string values: comparison + sort + string matching. */
-export type StringAttributeBase<Brand extends string> = ComparableAttributeBase<string, Brand> & StringStatics;
+export type StringAttributeBase<Brand extends string> = ComparableAttributeBase<string, Brand, "string"> & StringStatics;
 /** Attribute base for numeric values: comparison + sort + reduce helpers. */
-export type NumericAttributeBase<Value, Brand extends string> = ComparableAttributeBase<Value, Brand> & AggregateStatics;
-type ComparableFactory<Value> = <const Name extends string>(name: Name, options?: AttributeTypeOptions) => ComparableAttributeBase<Value, Name>;
+export type NumericAttributeBase<Value, Brand extends string, Category extends "long" | "double" | "decimal" = "long" | "double" | "decimal"> = ComparableAttributeBase<Value, Brand, Category> & AggregateStatics;
+type ComparableFactory<Value, Category extends ValueType> = <const Name extends string>(name: Name, options?: AttributeTypeOptions) => ComparableAttributeBase<Value, Name, Category>;
 type StringFactory = <const Name extends string>(name: Name, options?: AttributeTypeOptions) => StringAttributeBase<Name>;
-type NumericFactory<Value> = <const Name extends string>(name: Name, options?: AttributeTypeOptions) => NumericAttributeBase<Value, Name>;
+type NumericFactory<Value, Category extends "long" | "double" | "decimal"> = <const Name extends string>(name: Name, options?: AttributeTypeOptions) => NumericAttributeBase<Value, Name, Category>;
 /**
  * Attribute base-class factories, one per TypeDB value type. Each call returns a
  * branded base to extend: the mandatory `name` is both the schema `attr_name`
@@ -90,13 +96,13 @@ type NumericFactory<Value> = <const Name extends string>(name: Name, options?: A
  */
 export declare const attr: {
     readonly String: StringFactory;
-    readonly Integer: NumericFactory<bigint>;
-    readonly Double: NumericFactory<number>;
-    readonly Boolean: ComparableFactory<boolean>;
-    readonly Date: ComparableFactory<string>;
-    readonly DateTime: ComparableFactory<string>;
-    readonly DateTimeTZ: ComparableFactory<string>;
-    readonly Decimal: NumericFactory<string>;
-    readonly Duration: ComparableFactory<string>;
+    readonly Integer: NumericFactory<bigint, "long">;
+    readonly Double: NumericFactory<number, "double">;
+    readonly Boolean: ComparableFactory<boolean, "boolean">;
+    readonly Date: ComparableFactory<string, "date">;
+    readonly DateTime: ComparableFactory<string, "datetime">;
+    readonly DateTimeTZ: ComparableFactory<string, "datetime-tz">;
+    readonly Decimal: NumericFactory<string, "decimal">;
+    readonly Duration: ComparableFactory<string, "duration">;
 };
 export {};

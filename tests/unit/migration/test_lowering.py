@@ -42,7 +42,6 @@ from type_bridge.migration.introspection import (
 )
 from type_bridge.migration.loader import LoadedMigration, MigrationLoader
 from type_bridge.migration.registry import ModelRegistry
-from type_bridge.migration.schema_manager import SchemaManager
 
 
 class LowerName(String):
@@ -301,11 +300,7 @@ owns = [
     sys.path.insert(0, str(tmp_path))
     try:
         models = ModelRegistry.discover("generated_models", register=False)
-        schema_mgr = SchemaManager(None)  # type: ignore[arg-type]
-        schema_mgr.register(*models)
-        model_info = schema_mgr.collect_schema_info()
-
-        base = model_info.to_rust_schema_info()
+        base = _schema_info_for_models(models)
         target = SchemaInfo().to_rust_schema_info()
         authored = author_migration(
             base,
@@ -371,9 +366,7 @@ owns = [
     sys.path.insert(0, str(tmp_path))
     try:
         models = ModelRegistry.discover("generated_models", register=False)
-        schema_mgr = SchemaManager(None)  # type: ignore[arg-type]
-        schema_mgr.register(*models)
-        model_info = schema_mgr.collect_schema_info()
+        model_info = _schema_info_for_models(models)
 
         current_schema = IntrospectedSchema(
             entities={"customer": IntrospectedEntity(name="customer")},
@@ -394,7 +387,7 @@ owns = [
 
         authored = author_migration(
             current_schema.to_rust_schema_info(),
-            model_info.to_rust_schema_info(),
+            model_info,
             app_label="migrations",
             name="0002_add_email",
             snapshot_version="v0002",

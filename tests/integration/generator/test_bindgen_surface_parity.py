@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 import pytest
 from type_bridge_core import render_models_json, toml_to_typeql
@@ -344,7 +344,7 @@ def test_toml_generated_python_models_round_trip_real_db(
     }
 
     schema_manager = SchemaManager(clean_db)
-    schema_manager.register(*cast(list[type[Entity | Relation]], entity_classes + relation_classes))
+    schema_manager.register(*entity_classes, *relation_classes)
     schema_manager.sync_schema(force=True)
 
     schema = clean_db.get_schema()

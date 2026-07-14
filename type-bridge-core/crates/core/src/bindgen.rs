@@ -928,7 +928,32 @@ fn render_python_attributes(schema: &TypeSchema, options: &BindgenOptions) -> St
 fn render_python_attr_field(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> String {
     let py_name = field_name(&owned.name);
     let mut extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
+    if owned.ordered {
+        let mut markers = vec!["Ordered".to_string()];
+        if owned.distinct {
+            markers.push("Distinct".to_string());
+        }
+        if let Some(cardinality) = owned.cardinality.as_ref() {
+            markers.push(match cardinality.max {
+                Some(max) => format!("Card({}, {})", cardinality.min, max),
+                None => format!("Card(min={})", cardinality.min),
+            });
+        }
+        if is_key {
+            markers.push("Key".to_string());
+        }
+        if owned.is_unique {
+            markers.push("Unique".to_string());
+        }
+        return format!(
+            "{py_name}: list[attributes.{attr_class}] = Flag({}{extras})",
+            markers.join(", ")
+        );
+    }
     if is_key {
+        if owned.is_unique {
+            extras = format!(", Unique{extras}");
+        }
         return format!("{py_name}: attributes.{attr_class} = Flag(Key{extras})");
     }
     // @unique does not imply required: unlike @key it keeps the default
@@ -936,14 +961,6 @@ fn render_python_attr_field(owned: &OwnedAttribute, attr_class: &str, is_key: bo
     // plain marker instead of short-circuiting the optionality logic.
     if owned.is_unique {
         extras = format!(", Unique{extras}");
-    }
-    if owned.ordered {
-        if owned.distinct {
-            return format!(
-                "{py_name}: list[attributes.{attr_class}] = Flag(Ordered, Distinct{extras})"
-            );
-        }
-        return format!("{py_name}: list[attributes.{attr_class}] = Flag(Ordered{extras})");
     }
     // For single-valued ownerships the optionality lives in the type annotation;
     // a Flag(...) default is only emitted when annotation markers require one.
@@ -977,6 +994,65 @@ fn render_python_attr_field(owned: &OwnedAttribute, attr_class: &str, is_key: bo
     }
 }
 
+fn python_attr_instance_type(attr_class: &str, owned: &OwnedAttribute, is_key: bool) -> String {
+    let attribute = format!("attributes.{attr_class}");
+    if owned.ordered {
+        return format!("list[{attribute}]");
+    }
+    if is_key {
+        return attribute;
+    }
+    if owned.cardinality.as_ref().is_some_and(card_is_multi) {
+        return format!("list[{attribute}]");
+    }
+    if owned
+        .cardinality
+        .as_ref()
+        .is_some_and(card_is_required_single)
+    {
+        return attribute;
+    }
+    format!("{attribute} | None")
+}
+
+fn python_attr_has_constructor_default(owned: &OwnedAttribute, is_key: bool) -> bool {
+    !is_key
+        && (owned.ordered
+            || owned.cardinality.as_ref().is_some_and(card_is_multi)
+            || !owned
+                .cardinality
+                .as_ref()
+                .is_some_and(card_is_required_single))
+}
+
+fn python_attr_descriptor(value_type: &str) -> &'static str {
+    match value_type {
+        "string" => "GeneratedStringFieldDescriptor",
+        "integer" | "int" | "long" | "double" | "decimal" => "GeneratedNumericFieldDescriptor",
+        "date" | "datetime" | "datetime-tz" => "GeneratedOrderedFieldDescriptor",
+        _ => "GeneratedFieldDescriptor",
+    }
+}
+
+fn render_python_typed_attr_field(
+    schema: &TypeSchema,
+    owner_class: &str,
+    owned: &OwnedAttribute,
+    attr_class: &str,
+    is_key: bool,
+) -> String {
+    let py_name = field_name(&owned.name);
+    let attribute = format!("attributes.{attr_class}");
+    let descriptor = python_attr_descriptor(resolved_attr_value_type(schema, &owned.name));
+    let instance = python_attr_instance_type(attr_class, owned, is_key);
+    let default = if python_attr_has_constructor_default(owned, is_key) {
+        " = generated_descriptor_default()"
+    } else {
+        ""
+    };
+    format!("{py_name}: {descriptor}[\"{owner_class}\", {attribute}, {instance}]{default}")
+}
+
 fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> String {
     let order = topological_sort(&schema.entities, |entity| entity.parent.as_deref());
     let implicit_keys = options
@@ -988,8 +1064,12 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
         .entities
         .values()
         .flat_map(|entity| entity.owns.iter())
-        .filter_map(|owned| owned.cardinality.as_ref())
-        .any(card_is_multi);
+        .any(|owned| {
+            owned
+                .cardinality
+                .as_ref()
+                .is_some_and(|cardinality| owned.ordered || card_is_multi(cardinality))
+        });
     let needs_ordered = schema
         .entities
         .values()
@@ -1037,10 +1117,19 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
         "\"\"\"Entity type definitions generated from a TypeDB schema.\n\nAUTO-GENERATED FILE - DO NOT EDIT MANUALLY\nRegenerate with: type-bridge generate <schema.tql> <output_dir>\n\"\"\"\n"
     )
     .unwrap();
-    writeln!(out, "from typing import ClassVar\n").unwrap();
+    writeln!(out, "from typing import TYPE_CHECKING, ClassVar\n").unwrap();
     writeln!(out, "from type_bridge import {}", imports.join(", ")).unwrap();
     writeln!(out).unwrap();
     writeln!(out, "from . import attributes").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "if TYPE_CHECKING:").unwrap();
+    writeln!(out, "    from type_bridge.typed._descriptors import (").unwrap();
+    writeln!(out, "        GeneratedFieldDescriptor,").unwrap();
+    writeln!(out, "        GeneratedNumericFieldDescriptor,").unwrap();
+    writeln!(out, "        GeneratedOrderedFieldDescriptor,").unwrap();
+    writeln!(out, "        GeneratedStringFieldDescriptor,").unwrap();
+    writeln!(out, "        generated_descriptor_default,").unwrap();
+    writeln!(out, "    )").unwrap();
     writeln!(out).unwrap();
     writeln!(out).unwrap();
 
@@ -1113,7 +1202,17 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
             }
             let is_key = owned.is_key || implicit_keys.contains(owned.name.as_str());
             let field = render_python_attr_field(owned, &class_name(&owned.name), is_key);
-            writeln!(out, "    {field}").unwrap();
+            let typed_field = render_python_typed_attr_field(
+                schema,
+                &class,
+                owned,
+                &class_name(&owned.name),
+                is_key,
+            );
+            writeln!(out, "    if TYPE_CHECKING:").unwrap();
+            writeln!(out, "        {typed_field}").unwrap();
+            writeln!(out, "    else:").unwrap();
+            writeln!(out, "        {field}").unwrap();
         }
 
         let cascades = entity
@@ -1228,20 +1327,19 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
         .collect::<BTreeSet<_>>();
 
     let needs_card = schema.relations.values().any(|relation| {
-        relation
-            .owns
-            .iter()
-            .filter_map(|owned| owned.cardinality.as_ref())
-            .any(card_is_multi)
-            || relation.roles.iter().any(|role| {
-                role.cardinality.as_ref().is_some_and(|cardinality| {
-                    !(cardinality.min == 1 && cardinality.max == Some(1))
-                })
-            })
-            || relation.roles.iter().any(|role| {
-                let players = minimal_role_players(schema, &relation.name, &role.name);
-                plays_cardinality_for_role(schema, &relation.name, &role.name, &players).is_some()
-            })
+        relation.owns.iter().any(|owned| {
+            owned
+                .cardinality
+                .as_ref()
+                .is_some_and(|cardinality| owned.ordered || card_is_multi(cardinality))
+        }) || relation.roles.iter().any(|role| {
+            role.cardinality
+                .as_ref()
+                .is_some_and(|cardinality| !(cardinality.min == 1 && cardinality.max == Some(1)))
+        }) || relation.roles.iter().any(|role| {
+            let players = minimal_role_players(schema, &relation.name, &role.name);
+            plays_cardinality_for_role(schema, &relation.name, &role.name, &players).is_some()
+        })
     });
     let needs_key = schema.relations.values().any(|relation| {
         relation
@@ -1302,9 +1400,19 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
         "\"\"\"Relation type definitions generated from a TypeDB schema.\n\nAUTO-GENERATED FILE - DO NOT EDIT MANUALLY\nRegenerate with: type-bridge generate <schema.tql> <output_dir>\n\"\"\"\n"
     )
     .unwrap();
+    writeln!(out, "from typing import TYPE_CHECKING\n").unwrap();
     writeln!(out, "from type_bridge import {}", imports.join(", ")).unwrap();
     writeln!(out).unwrap();
     writeln!(out, "from . import attributes, entities").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "if TYPE_CHECKING:").unwrap();
+    writeln!(out, "    from type_bridge.typed._descriptors import (").unwrap();
+    writeln!(out, "        GeneratedFieldDescriptor,").unwrap();
+    writeln!(out, "        GeneratedNumericFieldDescriptor,").unwrap();
+    writeln!(out, "        GeneratedOrderedFieldDescriptor,").unwrap();
+    writeln!(out, "        GeneratedStringFieldDescriptor,").unwrap();
+    writeln!(out, "        generated_descriptor_default,").unwrap();
+    writeln!(out, "    )").unwrap();
     writeln!(out).unwrap();
     writeln!(out).unwrap();
     writeln!(out, "def _multi(role: Role) -> Role:").unwrap();
@@ -1373,7 +1481,17 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
             }
             let is_key = owned.is_key || implicit_keys.contains(owned.name.as_str());
             let field = render_python_attr_field(owned, &class_name(&owned.name), is_key);
-            writeln!(out, "    {field}").unwrap();
+            let typed_field = render_python_typed_attr_field(
+                schema,
+                &class,
+                owned,
+                &class_name(&owned.name),
+                is_key,
+            );
+            writeln!(out, "    if TYPE_CHECKING:").unwrap();
+            writeln!(out, "        {typed_field}").unwrap();
+            writeln!(out, "    else:").unwrap();
+            writeln!(out, "        {field}").unwrap();
         }
 
         let parent_roles = direct_parent_roles(schema, relation.parent.as_ref());
@@ -2313,7 +2431,35 @@ fn render_ts_attributes(schema: &TypeSchema) -> String {
 
 fn ts_field_expr(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> String {
     let mut extras = doc_meta_flag_args(owned.doc.as_deref(), &owned.meta);
+    if owned.ordered {
+        let mut markers = Vec::new();
+        if is_key {
+            markers.push("Key");
+        }
+        if owned.is_unique {
+            markers.push("Unique");
+        }
+        if !markers.is_empty() {
+            extras = format!(", {}{extras}", markers.join(", "));
+        }
+        let ordered = match owned.cardinality.as_ref() {
+            Some(cardinality) => format!(
+                "field({attr_class}{extras}).ordered({})",
+                ts_card_expr(cardinality)
+            ),
+            None if is_key => format!("field({attr_class}{extras}).ordered()"),
+            None => format!("field({attr_class}{extras}).optional().ordered()"),
+        };
+        return if owned.distinct {
+            format!("{ordered}.distinct()")
+        } else {
+            ordered
+        };
+    }
     if is_key {
+        if owned.is_unique {
+            extras = format!(", Unique{extras}");
+        }
         return format!("field({attr_class}, Key{extras})");
     }
     // @unique does not imply required: unlike @key it keeps the default
@@ -2321,14 +2467,6 @@ fn ts_field_expr(owned: &OwnedAttribute, attr_class: &str, is_key: bool) -> Stri
     // plain marker instead of short-circuiting the optionality logic.
     if owned.is_unique {
         extras = format!(", Unique{extras}");
-    }
-    if owned.ordered {
-        let base = format!("field({attr_class}{extras}).ordered()");
-        return if owned.distinct {
-            format!("{base}.distinct()")
-        } else {
-            base
-        };
     }
     match owned.cardinality.as_ref() {
         None => format!("field({attr_class}{extras}).optional()"),
@@ -2375,14 +2513,12 @@ fn render_ts_entities(schema: &TypeSchema, options: &BindgenOptions) -> String {
             if owned.is_unique {
                 factory_imports.insert("Unique");
             }
-            if owned.cardinality.as_ref().is_some_and(card_is_multi) {
+            if owned
+                .cardinality
+                .as_ref()
+                .is_some_and(|cardinality| owned.ordered || card_is_multi(cardinality))
+            {
                 factory_imports.insert("Card");
-            }
-            if owned.ordered {
-                factory_imports.insert("Ordered");
-            }
-            if owned.distinct {
-                factory_imports.insert("Distinct");
             }
             if owned.doc.is_some() {
                 factory_imports.insert("Doc");
@@ -2552,14 +2688,12 @@ fn render_ts_relations(schema: &TypeSchema, options: &BindgenOptions) -> String 
             if owned.is_unique {
                 factory_imports.insert("Unique");
             }
-            if owned.cardinality.as_ref().is_some_and(card_is_multi) {
+            if owned
+                .cardinality
+                .as_ref()
+                .is_some_and(|cardinality| owned.ordered || card_is_multi(cardinality))
+            {
                 factory_imports.insert("Card");
-            }
-            if owned.ordered {
-                factory_imports.insert("Ordered");
-            }
-            if owned.distinct {
-                factory_imports.insert("Distinct");
             }
             if owned.doc.is_some() {
                 factory_imports.insert("Doc");
@@ -2579,12 +2713,6 @@ fn render_ts_relations(schema: &TypeSchema, options: &BindgenOptions) -> String 
                 .is_some_and(|cardinality| !(cardinality.min == 1 && cardinality.max == Some(1)))
             {
                 factory_imports.insert("Card");
-            }
-            if role.ordered {
-                factory_imports.insert("Ordered");
-            }
-            if role.distinct {
-                factory_imports.insert("Distinct");
             }
             let players = minimal_role_players(schema, name, &role.name);
             if plays_cardinality_for_role(schema, name, &role.name, &players).is_some() {
@@ -3034,6 +3162,45 @@ relation friendship, relates friend @card(1..2);"
     }
 
     #[test]
+    fn python_renders_owner_aware_field_types_without_changing_runtime_declarations() {
+        let plan = BindgenPlan::from_typeql(
+            r#"define
+attribute name, value string;
+attribute age, value integer;
+attribute active, value boolean;
+attribute tag, value string;
+entity party @abstract,
+    owns name @key @doc("Generated owner name") @meta("source", "typed-probe");
+entity person sub party,
+    owns age,
+    owns active,
+    owns tag @card(0..);"#,
+        )
+        .unwrap();
+        let package = plan.render(TargetLanguage::Python, &BindgenOptions::default());
+        let entities = &package.file("entities.py").unwrap().contents;
+
+        assert!(entities.contains(
+            "name: GeneratedStringFieldDescriptor[\"Party\", attributes.Name, attributes.Name]"
+        ));
+        assert!(entities.contains(
+            "name: attributes.Name = Flag(Key, Doc(\"Generated owner name\"), Meta(\"source\", \"typed-probe\"))"
+        ));
+        assert!(entities.contains(
+            "age: GeneratedNumericFieldDescriptor[\"Person\", attributes.Age, attributes.Age | None] = generated_descriptor_default()"
+        ));
+        assert!(entities.contains(
+            "active: GeneratedFieldDescriptor[\"Person\", attributes.Active, attributes.Active | None] = generated_descriptor_default()"
+        ));
+        assert!(entities.contains(
+            "tag: GeneratedStringFieldDescriptor[\"Person\", attributes.Tag, list[attributes.Tag]] = generated_descriptor_default()"
+        ));
+        assert!(entities.contains("age: attributes.Age | None = None"));
+        assert!(entities.contains("active: attributes.Active | None = None"));
+        assert!(entities.contains("tag: list[attributes.Tag] = Flag(Card(min=0))"));
+    }
+
+    #[test]
     fn typescript_renders_cardinality_and_plays_cardinality() {
         let plan = BindgenPlan::from_typeql(schema_text()).unwrap();
         let package = plan.render(TargetLanguage::TypeScript, &BindgenOptions::default());
@@ -3146,12 +3313,66 @@ entity person,
         assert!(entities.contains("email: attributes.Email | None = Flag(Unique)"));
         assert!(entities.contains("handle: attributes.Handle = Flag(Unique)"));
         assert!(entities.contains("alias: list[attributes.Alias] = Flag(Card(0, 3), Unique)"));
+        assert!(entities.contains(
+            "email: GeneratedStringFieldDescriptor[\"Person\", attributes.Email, attributes.Email | None] = generated_descriptor_default()"
+        ));
+        assert!(entities.contains(
+            "handle: GeneratedStringFieldDescriptor[\"Person\", attributes.Handle, attributes.Handle]"
+        ));
+        assert!(entities.contains(
+            "alias: GeneratedStringFieldDescriptor[\"Person\", attributes.Alias, list[attributes.Alias]] = generated_descriptor_default()"
+        ));
 
         let typescript = plan.render(TargetLanguage::TypeScript, &BindgenOptions::default());
         let ts_entities = &typescript.file("entities.ts").unwrap().contents;
         assert!(ts_entities.contains("email: field(Email, Unique).optional()"));
         assert!(ts_entities.contains("handle: field(Handle, Unique),"));
         assert!(ts_entities.contains("alias: field(Alias, Unique).list(Card(0, 3))"));
+    }
+
+    #[test]
+    fn ordered_schema_composes_annotations_without_unused_typescript_imports() {
+        let schema_text = r#"define
+attribute nickname, value string;
+attribute bounded, value string;
+attribute pid, value string;
+attribute token, value string;
+entity person,
+    owns nickname[] @distinct,
+    owns bounded[] @unique @card(0..5) @distinct,
+    owns pid[] @key,
+    owns token @key @unique,
+    plays friendship:participant;
+relation friendship, relates participant[] @distinct;"#;
+        let plan = BindgenPlan::from_typeql(schema_text).unwrap();
+
+        let python = plan.render(TargetLanguage::Python, &BindgenOptions::default());
+        let entities = &python.file("entities.py").unwrap().contents;
+        assert!(entities.contains("nickname: list[attributes.Nickname] = Flag(Ordered, Distinct)"));
+        assert!(entities.contains(
+            "bounded: list[attributes.Bounded] = Flag(Ordered, Distinct, Card(0, 5), Unique)"
+        ));
+        assert!(entities.contains("pid: list[attributes.Pid] = Flag(Ordered, Key)"));
+        assert!(entities.contains("token: attributes.Token = Flag(Key, Unique)"));
+        assert!(entities.contains(
+            "from type_bridge import Entity, Card, Flag, Key, TypeFlags, TypeNameCase, Unique, Distinct, Ordered"
+        ));
+
+        let typescript = plan.render(TargetLanguage::TypeScript, &BindgenOptions::default());
+        let ts_entities = &typescript.file("entities.ts").unwrap().contents;
+        assert!(ts_entities.contains("nickname: field(Nickname).optional().ordered().distinct()"));
+        assert!(
+            ts_entities.contains("bounded: field(Bounded, Unique).ordered(Card(0, 5)).distinct()")
+        );
+        assert!(ts_entities.contains("pid: field(Pid, Key).ordered()"));
+        assert!(ts_entities.contains("token: field(Token, Key, Unique)"));
+        assert!(ts_entities.contains("import { Card, Entity, Key, Unique, field }"));
+
+        let ts_relations = &typescript.file("relations.ts").unwrap().contents;
+        assert!(
+            ts_relations.contains("participant: role(Person, { ordered: true, distinct: true })")
+        );
+        assert!(ts_relations.contains("import { Relation, field, role }"));
     }
 
     #[test]

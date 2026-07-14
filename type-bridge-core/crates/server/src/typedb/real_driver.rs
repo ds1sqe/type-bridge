@@ -152,6 +152,38 @@ impl From<runtime::RuntimeError> for PipelineError {
             runtime::RuntimeError::Connection(message) => Self::Connection(message),
             runtime::RuntimeError::QueryExecution(message) => Self::QueryExecution(message),
             runtime::RuntimeError::Transaction(message) => Self::QueryExecution(message),
+            error @ runtime::RuntimeError::ResourceLimit { .. } => {
+                Self::QueryExecution(error.to_string())
+            }
+            error @ runtime::RuntimeError::AnswerConsumer => Self::Internal(error.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_limit_preserves_code_and_message_as_query_execution() {
+        let error = runtime::RuntimeError::ResourceLimit {
+            code: "solution_scan_limit",
+            message: "selected query exceeded its solution scan ceiling",
+        };
+
+        assert!(matches!(
+            PipelineError::from(error),
+            PipelineError::QueryExecution(message)
+                if message == "Resource limit [solution_scan_limit]: selected query exceeded its solution scan ceiling"
+        ));
+    }
+
+    #[test]
+    fn answer_consumer_rejection_is_an_internal_server_failure() {
+        assert!(matches!(
+            PipelineError::from(runtime::RuntimeError::AnswerConsumer),
+            PipelineError::Internal(message)
+                if message == "Answer consumer rejected a streamed provider item"
+        ));
     }
 }

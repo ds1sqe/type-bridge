@@ -30,6 +30,9 @@ type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "1.5.7", de
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+regex = "1"
+unicase = "2.9"
+sha2 = "0.10"
 thiserror = "2"
 tracing = "0.1"
 type-bridge-orm-derive = { path = "../orm-derive", version = "1.5.7", optional = true }

@@ -1,3 +1,5 @@
+# ruff: noqa: UP046 -- the defaulted contravariant owner preserves legacy generic arity.
+
 """Role-player field references for type-safe query building.
 
 This module provides field reference classes that enable type-safe filtering
@@ -12,14 +14,27 @@ comparison or string expressions with role context for proper TypeQL generation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic, Never
+from weakref import ReferenceType, WeakKeyDictionary, ref
+
+from typing_extensions import TypeVar
+
+from type_bridge.models.base import TypeDBType
 
 if TYPE_CHECKING:
     from type_bridge.attribute.base import Attribute
     from type_bridge.attribute.string import String
     from type_bridge.expressions.base import Expression
     from type_bridge.expressions.role_player import RolePlayerExpr
-    from type_bridge.models.base import TypeDBType
+
+T_RelationOwner = TypeVar("T_RelationOwner", bound=TypeDBType)
+T_RelationOwner_contra = TypeVar(
+    "T_RelationOwner_contra",
+    bound=TypeDBType,
+    contravariant=True,
+    default=Never,
+)
+T_Player = TypeVar("T_Player", bound=TypeDBType)
 
 
 class RolePlayerFieldRef[T: "Attribute"]:
@@ -197,14 +212,14 @@ class RolePlayerNumericFieldRef[T: "Attribute"](RolePlayerFieldRef[T]):
     pass  # Inherits comparison methods; aggregations not applicable for role-player fields
 
 
-class RoleRef[T: "TypeDBType"]:
+class RoleRef(Generic[T_Player, T_RelationOwner_contra]):
     """Reference to a role for type-safe attribute access.
 
     Returned when accessing a Role descriptor from the Relation class level.
     Enables chained attribute access for building type-safe filter expressions.
 
     Example:
-        Employment.employee         # Returns RoleRef[Person]
+        Employment.employee         # Returns RoleRef[Person, Employment]
         Employment.employee.age     # Returns RolePlayerNumericFieldRef[Age]
         Employment.employee.age.gt(Age(30))  # Returns RolePlayerExpr
 
@@ -213,15 +228,17 @@ class RoleRef[T: "TypeDBType"]:
     it can be accessed.
 
     Relations can also be role players:
-        Permission.permitted_access  # Returns RoleRef[Access] where Access is a Relation
+        Permission.permitted_access  # Returns RoleRef[Access, Permission]
     """
 
     def __init__(
         self,
         role_name: str,
-        player_types: tuple[type[T], ...],
+        player_types: tuple[type[T_Player], ...],
         cardinality: Any = None,
         plays_cardinality: Any = None,
+        *,
+        owner_type: type[T_RelationOwner_contra] | None = None,
     ):
         """Create a role reference.
 
@@ -231,9 +248,11 @@ class RoleRef[T: "TypeDBType"]:
             cardinality: Optional relates-side role cardinality metadata.
             plays_cardinality: Optional plays-side cardinality metadata, carried as the
                 sibling of ``cardinality`` so class-level role access exposes both axes.
+            owner_type: Relation class that emitted this descriptor reference.
         """
         self.role_name = role_name
         self.player_types = player_types
+        self.owner_type = owner_type
         self.cardinality = cardinality
         self.plays_cardinality = plays_cardinality
         # Cache of collected attributes from all player types
@@ -332,3 +351,74 @@ class RoleRef[T: "TypeDBType"]:
             List of available attribute names from all player types
         """
         return sorted(self._get_player_attrs().keys())
+
+
+type _RoleReferenceSnapshot = tuple[
+    ReferenceType[object],
+    str,
+    tuple[type[TypeDBType], ...],
+    type[TypeDBType] | None,
+    str | None,
+]
+_TYPED_QUERY_ROLE_REFERENCES: WeakKeyDictionary[object, _RoleReferenceSnapshot] = (
+    WeakKeyDictionary()
+)
+
+
+def _mark_typed_query_role_reference[ReferenceT: RoleRef[Any, Any]](
+    reference: ReferenceT,
+) -> ReferenceT:
+    """Record that a role reference came from a real model descriptor."""
+    owner_type_name = (
+        reference.owner_type.get_type_name() if reference.owner_type is not None else None
+    )
+    _TYPED_QUERY_ROLE_REFERENCES[reference] = (
+        ref(reference),
+        reference.role_name,
+        reference.player_types,
+        reference.owner_type,
+        owner_type_name,
+    )
+    return reference
+
+
+def _typed_query_role_reference_owner(
+    reference: object,
+) -> tuple[type[TypeDBType], str] | None:
+    """Return immutable owner provenance for one genuine, unchanged reference."""
+    if not isinstance(reference, RoleRef):
+        return None
+    try:
+        snapshot = _TYPED_QUERY_ROLE_REFERENCES.get(reference)
+    except TypeError:
+        return None
+    if snapshot is None:
+        return None
+    original, role_name, player_types, owner_type, owner_type_name = snapshot
+    if (
+        original() is not reference
+        or reference.role_name != role_name
+        or reference.player_types != player_types
+        or reference.owner_type is not owner_type
+        or owner_type is None
+        or owner_type_name is None
+    ):
+        return None
+    try:
+        current_owner_type_name = owner_type.get_type_name()
+    except Exception:
+        return None
+    if current_owner_type_name != owner_type_name:
+        return None
+    return owner_type, owner_type_name
+
+
+def _typed_query_role_reference_owner_name(reference: object) -> str | None:
+    """Return the immutable owner label for one genuine, unchanged reference."""
+    owner = _typed_query_role_reference_owner(reference)
+    return owner[1] if owner is not None else None
+
+
+def _is_typed_query_role_reference(reference: object) -> bool:
+    """Return whether a role reference came from a real model descriptor."""
+    return _typed_query_role_reference_owner_name(reference) is not None

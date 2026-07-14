@@ -74,6 +74,7 @@ pub mod field_ref;
 pub mod filter;
 pub mod hooks;
 pub mod manager;
+pub mod match_request;
 pub mod query;
 pub mod registry;
 pub mod relation;
@@ -100,12 +101,14 @@ pub use hooks::{
     CrudOperation, HookContext, HookError, HookRunner, LifecycleHook, PreHookResult, TypeKind,
 };
 pub use manager::{DynamicEntityManager, DynamicRelationManager, EntityManager, RelationManager};
+pub use match_request::*;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
 pub use registry::DescriptorRegistry;
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 #[cfg(feature = "typedb")]
 pub use session::ConnectOptions;
+pub use session::backend::AnswerCancellation;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
 #[cfg(feature = "typedb")]

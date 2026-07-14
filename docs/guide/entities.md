@@ -511,8 +511,8 @@ class User(Entity):
     # Key attribute (required, unique, exactly one)
     user_id: UserID = Flag(Key)
 
-    # Unique attribute (required, unique, exactly one)
-    email: Email = Flag(Unique)
+    # Unique attribute (optional, unique when present)
+    email: Email | None = Flag(Unique)
 
     # Required single-value attribute (exactly one)
     username: Username
@@ -549,14 +549,19 @@ attribute tag, value string;
 
 entity user,
     owns user_id @key,
-    owns email @unique,
+    owns email @unique @card(0..1),
     owns username @card(1..1),
     owns age @card(0..1),
     owns is_verified @card(0..1),
     owns tag @card(1..);
 ```
 
-**⚠️ Note**: Multi-value attributes (like `tags` above) are **unordered sets**. TypeDB has no list type - only sets. TypeBridge uses `list[Type]` syntax for convenience, but order is never preserved. See [Cardinality](cardinality.md#important-no-lists-in-typedb-only-sets) for details.
+**⚠️ Note**: `Flag(Card(...))` multi-value attributes (like `tags` above)
+are **unordered sets**. `list[Type]` describes the Python value shape, but does
+not add ordering to ordinary cardinality ownership. For TypeDB 3.12 schemas,
+use `Flag(Ordered)` to emit ordered `owns attr[]` ownership. See
+[List attributes](attributes.md#list-attributes)
+for the current schema and instance-operation caveat.
 
 ## Best Practices
 

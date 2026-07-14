@@ -11,8 +11,10 @@ export enum TypeNameCase {
   SNAKE_CASE = "snake_case",
 }
 
-export interface TypeFlagsOptions {
-  name?: string | null;
+export interface TypeFlagsOptions<
+  Name extends string | null = string | null,
+> {
+  name?: Name;
   abstract?: boolean;
   base?: boolean;
   case?: TypeNameCase;
@@ -22,8 +24,10 @@ export interface TypeFlagsOptions {
   meta?: Record<string, string>;
 }
 
-export interface ResolvedTypeFlags {
-  readonly name: string | null;
+export interface ResolvedTypeFlags<
+  Name extends string | null = string | null,
+> {
+  readonly name: Name;
   readonly abstract: boolean;
   readonly base: boolean;
   readonly case: TypeNameCase;
@@ -107,7 +111,17 @@ export type FlagInput =
   | DocSpec
   | MetaSpec;
 
+type NamelessTypeFlagsOptions = Omit<TypeFlagsOptions, "name"> & {
+  readonly name?: never;
+};
+
 /** Type-level config for an `Entity`/`Relation` (explicit name, abstract, base, case). */
+export function TypeFlags(): ResolvedTypeFlags<null>;
+export function TypeFlags(options: NamelessTypeFlagsOptions): ResolvedTypeFlags<null>;
+export function TypeFlags<const Name extends string | null>(
+  options: TypeFlagsOptions<Name> & { readonly name: Name },
+): ResolvedTypeFlags<Name>;
+export function TypeFlags(options: TypeFlagsOptions): ResolvedTypeFlags;
 export function TypeFlags(options: TypeFlagsOptions = {}): ResolvedTypeFlags {
   return {
     name: options.name ?? null,

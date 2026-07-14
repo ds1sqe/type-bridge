@@ -2,7 +2,7 @@
 
 import pytest
 
-from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
+from type_bridge import Card, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 from type_bridge.expressions import RolePlayerExpr
 from type_bridge.fields.role import (
     RolePlayerNumericFieldRef,
@@ -67,6 +67,19 @@ class TestRoleRefCreation:
         assert role_ref.role_name == "employee"
         assert role_ref.player_types == (Person,)
 
+    def test_role_ref_preserves_legacy_positional_cardinality_parameters(self):
+        """Owner provenance must not shift the public positional API."""
+        cardinality = Card(0, 2)
+        plays_cardinality = Card(0, 1)
+
+        role_ref = RoleRef("employee", (Person,), cardinality, plays_cardinality)
+
+        assert (
+            role_ref.owner_type,
+            role_ref.cardinality,
+            role_ref.plays_cardinality,
+        ) == (None, cardinality, plays_cardinality)
+
     def test_role_ref_from_role_descriptor(self):
         """Accessing role at class level should return RoleRef."""
         role_ref = Employment.employee
@@ -74,6 +87,7 @@ class TestRoleRefCreation:
         assert isinstance(role_ref, RoleRef)
         assert role_ref.role_name == "employee"
         assert role_ref.player_types == (Person,)
+        assert role_ref.owner_type is Employment
 
     def test_role_ref_multi_player_types(self):
         """RoleRef should support multiple player types from Role.multi."""

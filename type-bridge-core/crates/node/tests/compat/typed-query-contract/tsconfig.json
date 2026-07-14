@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "paths": {
+      "@type-bridge/node": ["../../../typescript/index.ts"],
+      "@type-bridge/node/typed": ["../../../typescript/typed/index.ts"]
+    },
+    "skipLibCheck": false,
+    "strict": true,
+    "target": "ES2022"
+  },
+  "include": ["*.ts"]
+}

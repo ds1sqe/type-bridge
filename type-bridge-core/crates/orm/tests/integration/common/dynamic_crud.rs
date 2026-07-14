@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use type_bridge_orm::*;
 
-use super::typedb::ensure_database_exists;
+use super::typedb::{connect_options_from_env, ensure_database_exists};
 
 static NEXT_SCHEMA_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -107,6 +107,8 @@ relation {employment_type}, relates employee, relates employer, owns {since_attr
                     false,
                 ),
             ],
+            doc: None,
+            meta: Default::default(),
         })
     }
 
@@ -121,6 +123,8 @@ relation {employment_type}, relates employee, relates employer, owns {since_attr
                 ValueType::String,
                 true,
             )],
+            doc: None,
+            meta: Default::default(),
         })
     }
 
@@ -144,6 +148,8 @@ relation {employment_type}, relates employee, relates employer, owns {since_attr
                     ..Default::default()
                 },
             ],
+            doc: None,
+            meta: Default::default(),
         })
     }
 }
@@ -190,14 +196,20 @@ async fn connect_dynamic_database() -> Database {
     )
     .await;
 
-    Database::connect(&address, &database, &username, &password)
-        .await
-        .unwrap_or_else(|error| {
-            panic!(
-                "Rust dynamic integration requires TypeDB at {address} \
+    Database::connect_with_options(
+        &address,
+        &database,
+        &username,
+        &password,
+        connect_options_from_env(),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "Rust dynamic integration requires TypeDB at {address} \
                  database {database}: {error}"
-            )
-        })
+        )
+    })
 }
 
 pub fn person_attrs(name: &str, age: i64) -> DynamicAttributeMap {
@@ -340,5 +352,7 @@ pub fn attr(
         },
         is_optional: !is_key,
         is_ordered: false,
+        doc: None,
+        meta: Default::default(),
     }
 }

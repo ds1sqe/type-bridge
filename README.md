@@ -3,7 +3,7 @@
 [![CI](https://github.com/ds1sqe/type-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ds1sqe/type-bridge/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/type-bridge.svg)](https://pypi.org/project/type-bridge/)
 [![Downloads](https://img.shields.io/pypi/dm/type-bridge.svg)](https://pypi.org/project/type-bridge/)
-[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![TypeDB 3.x](https://img.shields.io/badge/TypeDB-3.x-orange.svg)](https://typedb.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
@@ -28,6 +28,7 @@ A modern, Pythonic ORM for [TypeDB](https://github.com/typedb/typedb) with an At
 - **Lifecycle Hooks**: Pre/post-operation hooks for audit logging, validation, cache invalidation, and async notifications
 - **Chainable Operations**: Filter, delete, and bulk update with method chaining and lambda functions
 - **Query Builder**: Pythonic interface for building TypeQL queries
+- **Immutable Typed Queries**: Owner-aware multi-model rows, named/collected pages, counts, and existence checks
 - **Multi-player Roles**: A single role can accept multiple entity types via `Role.multi(...)`
 - **Transaction Context**: Share transactions across multiple operations with `TransactionContext`
 - **Django-style Lookups**: Filter with `__contains`, `__gt`, `__in`, `__isnull` and more
@@ -48,9 +49,13 @@ uv add type-bridge
 
 ```bash
 git clone https://github.com/ds1sqe/type-bridge.git
-cd type_bridge
-uv sync
+cd type-bridge
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync
 ```
+
+The variable is needed only when building the current PyO3-based core from
+source on CPython 3.14 (and is harmless on 3.12–3.13); published abi3 wheels do not
+need it.
 
 ## Quick Start
 
@@ -108,7 +113,10 @@ class Person(Entity):
     tags: list[Tag] = Flag(Card(min=2))      # @card(2..) - two or more (unordered set)
 ```
 
-> **Note**: `list[Type]` represents an **unordered set** in TypeDB. TypeDB has no list type - order is never preserved.
+> **Note**: This `Flag(Card(...))` form is an **unordered set**;
+> `list[Type]` describes its Python container shape, not an ordering guarantee.
+> For TypeDB 3.12 schemas, use `Flag(Ordered)` to declare ordered `owns attr[]`
+> ownership when order is part of the model.
 
 ### 3. Create Instances
 
@@ -266,6 +274,7 @@ See the [Code Generator guide](https://ds1sqe.github.io/type-bridge/guide/genera
 
 - [Getting Started](https://ds1sqe.github.io/type-bridge/getting-started/) — Installation and quick start
 - [User Guide](https://ds1sqe.github.io/type-bridge/guide/) — Attributes, entities, relations, CRUD, queries, and more
+- [Immutable Typed Queries](docs/guide/typed-queries.md) — Exact/subtype matching, typed output, paging, and transaction ownership
 - [API Reference](https://ds1sqe.github.io/type-bridge/reference/) — Auto-generated from source docstrings
 - [Development](https://ds1sqe.github.io/type-bridge/development/) — Setup, testing, and internals
 
@@ -333,10 +342,10 @@ uv run pytest tests/unit/expressions/ -v  # Test query expressions
 
 # Integration tests (requires TypeDB; ./test.sh manages one by default)
 # Option 1: Isolated (recommended) — test.sh brings up TypeDB and tears it down
-./test.sh                                 # Full suite (Rust + Python + Node), isolated
+./test.sh                                 # Full source-tree suite, isolated
 
 # Option 2: Use an existing TypeDB server
-./test.sh --no-isolated                   # Full suite against a running TypeDB
+./test.sh --no-isolated                   # Source-tree suite against a running TypeDB
 USE_DOCKER=false uv run pytest -m integration -v  # Python integration only (~60s)
 
 # Run specific integration test categories
@@ -347,9 +356,13 @@ uv run pytest tests/integration/schema/ -v            # Schema operation tests
 
 # All tests
 uv run pytest -m "" -v                    # Run all Python tests
-./test.sh                                 # Full suite (Rust + Python + Node), detailed
-./scripts/check.sh                        # CI-shaped checks (rust|python|node|all)
+./test.sh                                 # Full source-tree suite, detailed
+./scripts/check.sh                        # Source-tree CI checks (rust|python|node|all)
 ```
+
+These local entry points do not claim release-artifact parity. Exact built-wheel
+and npm-tarball consumers run in CI, and the release workflow requires them
+before PyPI or npm publication.
 
 ## Rust Core
 
@@ -373,17 +386,26 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 
 ## Requirements
 
-- Python 3.12–3.13
-- TypeDB 3.8.0–3.12.x server (see the [compatibility table](docs/development/typedb.md#server-and-driver-compatibility) for the full support window; band-7, band-8, and dual-band 3.12 servers are all served by one artifact)
+- Python 3.12–3.14
+- TypeDB 3.8.0–3.12.x server (see the [compatibility table](docs/development/typedb.md#server-and-driver-compatibility) for the full support window; band-7, band-8, and band-9-native 3.12 servers are all served by one artifact)
 - type-bridge-core>=1.5.7
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
 - jinja2>=3.1.0 (for code generation)
 - typer>=0.15.0 (for CLI)
+- typing-extensions>=4.12 (for Python 3.12 typed-facade compatibility)
 
-`typedb-driver` (`~=3.11`) is required only for direct Python driver APIs and
-development/integration tests; install via `uv sync --extra dev` or `pip install type-bridge[typedb-driver]`.
-The ORM's embedded runtime handles band-7, band-8, and dual-band 3.12 servers automatically — no extra install for 3.8.x/3.10.x/3.12.x deployments.
+`typedb-driver` is required only for direct Python driver APIs and
+development/integration tests; install via `uv sync --extra dev` or
+`pip install type-bridge[typedb-driver]`. The development extra selects driver
+3.11.5 on CPython 3.12–3.13 for the default test server and driver 3.12.0 on
+CPython 3.14. The public driver extra permits supported 3.8–3.12 driver lines on
+CPython 3.12–3.13, so choose the line matching the target server; CPython 3.14 is
+limited to driver and server 3.12. The ORM's embedded runtime is unaffected.
+The ORM's embedded runtime handles band-7, band-8, and band-9-native 3.12
+servers automatically. Confirmed 3.12 connections normally negotiate band 9;
+band 8 remains available for discovery/fallback. No extra install is needed for
+3.8.x/3.10.x/3.12.x deployments.
 
 ## Release Notes
 

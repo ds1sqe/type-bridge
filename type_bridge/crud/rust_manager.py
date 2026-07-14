@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Never, Self, cast
+from typing import TYPE_CHECKING, Any, Never, Protocol, Self, cast
 
 from type_bridge._rust_runtime import (
     key_filter_for_entity,
@@ -432,12 +432,33 @@ class RustTypeDBManager[T: "TypeDBType"]:
         _execute_write_query(self._connection, query)
 
 
+class _RustQueryManager[T: "TypeDBType"](Protocol):
+    """Structural manager surface consumed by legacy query objects."""
+
+    @property
+    def model_class(self) -> type[T]: ...
+
+    @property
+    def _kind(self) -> str: ...
+
+    @property
+    def _manager(self) -> Any: ...
+
+    def _hydrate_entity(self, row: dict[str, Any]) -> T: ...
+
+    def _hydrate_relation_rows(self, rows: list[dict[str, Any]]) -> list[T]: ...
+
+    def delete(self, instance: T) -> T: ...
+
+    def update(self, instance: T) -> T: ...
+
+
 class RustTypeDBQuery[T: "TypeDBType"]:
     """Rust-backed chainable query using the typed dynamic query surface."""
 
     def __init__(
         self,
-        manager: RustTypeDBManager[T],
+        manager: _RustQueryManager[T],
         filters: dict[str, Any],
         expressions: tuple[Any, ...] = (),
     ):
@@ -561,7 +582,7 @@ class RustTypeDBGroupByQuery[T: "TypeDBType"]:
 
     def __init__(
         self,
-        manager: RustTypeDBManager[T],
+        manager: _RustQueryManager[T],
         filters: dict[str, Any],
         expressions: list[Any],
         group_fields: list[str],

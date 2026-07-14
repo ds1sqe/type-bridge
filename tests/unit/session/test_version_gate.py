@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import re
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,6 +18,13 @@ import type_bridge_core
 import type_bridge.typedb_driver as _typedb_driver_mod
 from type_bridge import version
 from type_bridge.typedb_driver import driver_version, server_version
+
+
+@pytest.fixture
+def _python313_driver_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run legacy-driver scenarios on an interpreter that supports their wheels."""
+    monkeypatch.setattr(_typedb_driver_mod.sys, "version_info", (3, 13, 0))
+
 
 # ---------------------------------------------------------------------------
 # Import smoke — assert the re-exported constants have their expected values.
@@ -299,6 +307,7 @@ class TestServerVersionDelegation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_python313_driver_runtime")
 class TestCreateDriverOptionsBand7:
     """Band-7 driver (3.10.x) uses DriverOptions(is_tls_enabled=...) keyword form."""
 
@@ -331,6 +340,7 @@ class TestCreateDriverOptionsBand7:
         assert result is sentinel
 
 
+@pytest.mark.usefixtures("_python313_driver_runtime")
 class TestCreateDriverOptionsBand8:
     """Band-8 driver (3.11.x) uses DriverOptions(tls_config) positional form."""
 
@@ -435,12 +445,42 @@ class TestCreateDriverOptionsBandNone:
         assert "band 8" not in msg
         assert "0.0.0" not in msg
 
+    def test_unknown_band_message_is_interpreter_safe(self, monkeypatch: pytest.MonkeyPatch):
+        """Remediation never recommends a native driver unavailable to this interpreter."""
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.13.0")
+        with pytest.raises(version.UnsupportedVersionError) as exc_info:
+            _typedb_driver_mod.create_driver_options()
+        msg = str(exc_info.value)
+        assert "type-bridge[typedb-driver]" in msg
+        assert "typedb-driver~=3.10" not in msg
+        if sys.version_info >= (3, 14):
+            assert "driver 3.12.0" in msg
+            assert "TypeDB 3.12" in msg
+
+    def test_python314_rejects_band8_before_native_option_constructors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A manually installed 3.11 wheel cannot cross native FFI on CPython 3.14."""
+        monkeypatch.setattr(_typedb_driver_mod.sys, "version_info", (3, 14, 0))
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.11.5")
+        load_tls = MagicMock()
+        options = MagicMock()
+        monkeypatch.setattr(_typedb_driver_mod, "_load_tls_config", load_tls)
+        monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", options)
+
+        with pytest.raises(version.UnsupportedVersionError, match=r"CPython 3\.14"):
+            _typedb_driver_mod.create_driver_options()
+
+        load_tls.assert_not_called()
+        options.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Phase 2 — Database.connect() version gate wiring
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_python313_driver_runtime")
 class TestPythonDriverVersionGate:
     """Direct Python driver access must call the gate before TypeDB.driver()."""
 
@@ -537,11 +577,47 @@ class TestPythonDriverVersionGate:
         monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.10.4")
 
         mock_typedb = MagicMock()
+        mock_credentials = MagicMock()
         monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
+        monkeypatch.setattr(session_mod, "Credentials", mock_credentials)
 
-        db = Database(address="localhost:1729", database="test_db")
+        db = Database(
+            address="localhost:1729",
+            database="test_db",
+            username="admin",
+            password="password",
+        )
         with pytest.raises(version.UnsupportedVersionError):
             _ = db.driver
+        mock_credentials.assert_not_called()
+        mock_typedb.driver.assert_not_called()
+
+    def test_python314_driver_rejection_precedes_credentials_constructor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Known-incompatible native Credentials is never called on CPython 3.14."""
+        import type_bridge.session as session_mod
+        import type_bridge.typedb_driver as tdm
+        from type_bridge.session import Database
+
+        monkeypatch.setattr(tdm.sys, "version_info", (3, 14, 0))
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.11.5")
+        mock_credentials = MagicMock()
+        mock_typedb = MagicMock()
+        monkeypatch.setattr(session_mod, "Credentials", mock_credentials)
+        monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
+
+        db = Database(
+            address="localhost:1729",
+            database="test_db",
+            username="admin",
+            password="password",
+            server_version="3.12.0",
+        )
+        with pytest.raises(version.UnsupportedVersionError, match=r"CPython 3\.14"):
+            _ = db.driver
+
+        mock_credentials.assert_not_called()
         mock_typedb.driver.assert_not_called()
 
     def test_gate_fires_before_typedb_driver_below_window(self, monkeypatch: pytest.MonkeyPatch):
@@ -609,6 +685,7 @@ class TestPythonDriverVersionGate:
         assert "0.0.0" not in msg
 
 
+@pytest.mark.usefixtures("_python313_driver_runtime")
 class TestConnectHttpPortForwarding:
     """Database paths must forward http_port to their version probes."""
 
@@ -742,7 +819,7 @@ class TestEnsureRuntimeSupported:
         assert "0.0.0" not in msg
 
     def test_dual_band_server_passes(self):
-        """Server 3.12.0 (accepts bands 9 and 8) is served via the embedded band-8 driver."""
+        """Server 3.12.0 is serviceable; live connections normally negotiate band 9."""
         version.ensure_runtime_supported("3.12.0")
 
     def test_above_window_raises_with_embedded_framing(self):

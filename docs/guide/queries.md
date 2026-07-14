@@ -581,8 +581,8 @@ class Employment(Relation):
     employee: Role[Person] = Role("employee", Person)
     employer: Role[Company] = Role("employer", Company)
 
-# Class-level access returns RoleRef for query building
-Employment.employee       # Returns RoleRef with player_types=(Person,)
+# Class-level access preserves both player and relation-owner types
+Employment.employee       # Returns RoleRef[Person, Employment]
 Employment.employee.age   # Returns RolePlayerNumericFieldRef
 Employment.employee.name  # Returns RolePlayerStringFieldRef
 
@@ -972,13 +972,15 @@ is the same call inside an open transaction. Supported column types are
 
 Requirements and fallbacks:
 
-- Requires a TypeDB 3.12+ server; on older servers the call raises the
-  versioned error from the feature gate (naming the detected server and the
-  required 3.12 line) before anything reaches the server.
-- `db.supports_given_stage()` reports whether the connection can take this
-  path — `False` on pre-3.12 servers and when the server version is unknown.
+- Requires both a TypeDB 3.12+ server and an active band-9 provider. On older
+  servers the call raises the versioned feature-gate error before anything
+  reaches the server. A known 3.12 server whose band-9 upgrade failed raises an
+  actionable provider-capability error instead of sending rows through band 8.
+- `db.supports_given_stage()` reports that effective negotiated capability —
+  it is also `False` for unknown server versions and 3.12 band-8 fallbacks.
 - Bulk ORM operations (`insert_many()` on entities) use this mechanism
-  automatically on 3.12+ and fall back to per-row queries elsewhere; see
+  automatically when that capability is available and fall back to per-row
+  queries elsewhere; see
   [CRUD Operations](crud.md#given-stage-fast-path-typedb-312).
 
 ## See Also

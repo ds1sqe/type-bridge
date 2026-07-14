@@ -236,6 +236,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Unified Query contract typecheck
+        run: npm run typecheck:query-contract
+
       - name: Unit tests
         run: npm run test:unit
 
@@ -244,6 +247,87 @@ jobs:
 
       - name: Package smoke
         run: npm run smoke:package
+
+      - name: Legacy packed-package compatibility
+        run: npm run smoke:legacy-package
+
+  # Exercise both legacy and typed Python APIs from the artifacts users receive.
+  # The native wheel comes from the existing Linux x86_64 build-wheels leg. The
+  # legacy runner installs the wheels; the typed runner only extracts the same
+  # prebuilt artifacts and uses an explicitly prepared interpreter/tool pair.
+  python-legacy-package-compat:
+    name: Python ${{ matrix.python-version }} installed/built-wheel compatibility
+    runs-on: ubuntu-latest
+    needs: build-wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13.5", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_PREFERENCE: only-system
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Download Linux x86_64 core wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-x86_64
+          path: tmp/legacy-python-wheels/core
+
+      - name: Build root Python wheel
+        run: |
+          uv build --wheel --package type-bridge \
+            --out-dir tmp/legacy-python-wheels/root
+
+      - name: Prepare typed consumer interpreter and Pyright
+        run: |
+          uv venv --python python tmp/typed-python-tools
+          uv pip install --python tmp/typed-python-tools/bin/python \
+            'pydantic>=2.12.4' 'isodate==0.7.2' 'jinja2>=3.1.0' \
+            'typer>=0.15.0' 'pyright>=1.1.407'
+
+      - name: Run isolated installed-package compatibility
+        run: |
+          mapfile -t core_wheels < <(
+            find tmp/legacy-python-wheels/core -maxdepth 1 -type f \
+              -name 'type_bridge_core-*.whl' -print
+          )
+          mapfile -t root_wheels < <(
+            find tmp/legacy-python-wheels/root -maxdepth 1 -type f \
+              -name 'type_bridge-*.whl' -print
+          )
+          if [[ ${#core_wheels[@]} -ne 1 ]]; then
+            printf 'Expected exactly one Linux x86_64 core wheel, found %s\n' \
+              "${#core_wheels[@]}" >&2
+            exit 1
+          fi
+          if [[ ${#root_wheels[@]} -ne 1 ]]; then
+            printf 'Expected exactly one root Python wheel, found %s\n' \
+              "${#root_wheels[@]}" >&2
+            exit 1
+          fi
+          python scripts/ci/run_legacy_python_compat.py \
+            --artifact "${core_wheels[0]}" \
+            --artifact "${root_wheels[0]}"
+
+          python scripts/ci/run_typed_python_artifact.py \
+            --root-wheel "${root_wheels[0]}" \
+            --core-wheel "${core_wheels[0]}" \
+            --python "$PWD/tmp/typed-python-tools/bin/python" \
+            --pyright "$PWD/tmp/typed-python-tools/bin/pyright"
 
   # Code quality: linting and formatting (parallel)
   lint:
@@ -317,19 +401,25 @@ jobs:
       - name: Run pyright on ${{ matrix.target }}
         run: uv run pyright ${{ matrix.target }}/
 
+      - name: Check intentional unified Query typing diagnostics
+        if: matrix.target == 'tests'
+        run: uv run python tests/contracts/typed_query/python/check_negative.py
+
   # Unit tests (fast, no external dependencies, parallel execution)
   test-unit:
     name: Python Unit Tests (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.12", "3.13.5"]
+        python-version: ["3.12", "3.13.5", "3.14"]
     env:
       # The repo's .python-version pins 3.13 for local dev; without these,
       # uv ignores the matrix interpreter and downloads a managed build
       # whose missing shared libpython breaks the typedb native driver.
       UV_PYTHON: ${{ matrix.python-version }}
       UV_PYTHON_PREFERENCE: only-system
+      # PyO3 0.23 predates CPython 3.14, but this extension uses abi3-py312.
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -377,10 +467,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        test-group: [crud, queries, schema, expressions, migration]
+        # Every ordinary integration directory is represented here. Parity and
+        # proxy retain their dedicated jobs because they require extra runtimes.
+        test-group:
+          [crud, queries, schema, expressions, migration, session, generator, validation]
         # Fan across all four server lines: band-7 (3.8.3, 3.10.4), band-8
-        # (3.11.5), and the dual-band 3.12 line (accepts bands 9 and 8; served
-        # by the embedded band-8 driver). Keep in sync with compose default and
+        # (3.11.5), and the dual-band 3.12 line. The 3.12 leg prefers the
+        # embedded band-9 driver after safe discovery, with band-8 retained as
+        # the compatibility fallback. Keep in sync with compose default and
         # version SSOT in crates/core.
         typedb-server:
           - "typedb/typedb:3.8.3"
@@ -470,6 +564,72 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
         run: uv run pytest tests/integration/${{ matrix.test-group }} -m integration -v --tb=short
 
+  # Rust ORM live-TypeDB integration. The ordinary rust-check job deliberately
+  # leaves `integration-tests` disabled so it remains an offline gate. This job
+  # selects the non-ignored real-provider target explicitly and mirrors the full
+  # four-version Python/Node server matrix.
+  rust-integration:
+    name: Rust integration (${{ matrix.typedb-server }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        typedb-server:
+          - "typedb/typedb:3.8.3"
+          - "typedb/typedb:3.10.4"
+          - "typedb/typedb:3.11.5"
+          - "typedb/typedb:3.12.0"
+
+    services:
+      typedb:
+        image: ${{ matrix.typedb-server }}
+        ports:
+          - 1729:1729
+          - 8000:8000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-rust-integration-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Wait for TypeDB server to be ready
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost 1729 2>/dev/null; then
+              echo "TypeDB server is ready on port 1729"
+              break
+            fi
+            echo "Waiting for port 1729... ($i/30)"
+            sleep 2
+          done
+          if ! nc -z localhost 1729 2>/dev/null; then
+            echo "ERROR: TypeDB server did not start within 60 seconds"
+            docker logs ${{ job.services.typedb.id }} 2>&1 || true
+            exit 1
+          fi
+
+      - name: Run Rust ORM integration suite
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-orm --features integration-tests
+          --test integration -- --nocapture
+
   # Cross-language parity gate: the #110 single-core / thin-bindings invariant only
   # holds if a semantic divergence between the Python and Node sides reds CI. These
   # tests shell out to the Node binding, so this job builds the Node prerequisites
@@ -538,6 +698,38 @@ jobs:
 
       - name: Install the band's Python driver
         run: uv pip install "typedb-driver==${{ matrix.python-driver }}"
+
+      - name: Build exact Python parity wheels
+        run: |
+          uv build --wheel --package type-bridge-core \
+            --out-dir tmp/typed-query-parity-wheels/core
+          uv build --wheel --package type-bridge \
+            --out-dir tmp/typed-query-parity-wheels/root
+
+      - name: Export exact Python parity wheel paths
+        run: |
+          mapfile -t core_wheels < <(
+            find tmp/typed-query-parity-wheels/core -maxdepth 1 -type f \
+              -name 'type_bridge_core-*.whl' -print
+          )
+          mapfile -t root_wheels < <(
+            find tmp/typed-query-parity-wheels/root -maxdepth 1 -type f \
+              -name 'type_bridge-*.whl' -print
+          )
+          if [[ ${#core_wheels[@]} -ne 1 ]]; then
+            printf 'Expected exactly one parity core wheel, found %s\n' \
+              "${#core_wheels[@]}" >&2
+            exit 1
+          fi
+          if [[ ${#root_wheels[@]} -ne 1 ]]; then
+            printf 'Expected exactly one parity root wheel, found %s\n' \
+              "${#root_wheels[@]}" >&2
+            exit 1
+          fi
+          printf 'TYPE_BRIDGE_PARITY_CORE_WHEEL=%s\n' \
+            "$(realpath "${core_wheels[0]}")" >> "$GITHUB_ENV"
+          printf 'TYPE_BRIDGE_PARITY_ROOT_WHEEL=%s\n' \
+            "$(realpath "${root_wheels[0]}")" >> "$GITHUB_ENV"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

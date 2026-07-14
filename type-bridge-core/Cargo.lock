@@ -2602,14 +2602,17 @@ name = "type-bridge-orm"
 version = "1.5.7"
 dependencies = [
  "criterion",
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "tracing",
  "type-bridge-core-lib",
  "type-bridge-orm-derive",
  "type-bridge-typedb-runtime",
+ "unicase",
 ]
 
 [[package]]
@@ -2788,6 +2791,12 @@ checksum = "e1b88fcfe09e89d3866a5c11019378088af2d24c3fbd4f0543f96b479ec90697"
 dependencies = [
  "version_check",
 ]
+
+[[package]]
+name = "unicase"
+version = "2.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
 
 [[package]]
 name = "unicode-ident"

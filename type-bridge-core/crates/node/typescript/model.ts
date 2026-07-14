@@ -39,15 +39,25 @@ export type AttributeClass = (new (value: never) => Attribute<unknown, string>) 
 type ModelClassLike = (new (values: never) => object) & {
   readonly typeName: string;
 };
+declare const modelClassBrand: unique symbol;
+declare const modelOwnerBrand: unique symbol;
 type ModelToken = string | ModelClassLike;
 const ATTRIBUTE_SCHEMA_METADATA = Symbol.for("@type-bridge/node.attributeSchemaMetadata");
+const modelParents = new WeakMap<object, ParentModelClass | null>();
+const modelChildren = new WeakMap<object, Set<ModelDependencyClass>>();
+
+type ModelDependencyClass = ModelClassLike & {
+  readonly schema: Record<string, SchemaSpec>;
+};
 
 /**
  * A model class that also exposes its schema, used as a parent reference.
  * The schema constraint lets `Entity()` / `Relation()` merge parent fields into
  * the child at both the type level and the descriptor-emission level.
  */
-export type ParentModelClass<ParentSchema extends Record<string, SchemaSpec> = Record<string, SchemaSpec>> =
+export type ParentModelClass<
+  ParentSchema extends Record<string, SchemaSpec> = Record<string, SchemaSpec>,
+> =
   ModelClassLike & {
     readonly schema: ParentSchema;
   };
@@ -56,9 +66,20 @@ export type ParentModelClass<ParentSchema extends Record<string, SchemaSpec> = R
  * Options accepted as the third argument to `Entity()` / `Relation()` for
  * declaring a parent (supertype) model.
  */
-export interface ParentOption<ParentSchema extends Record<string, SchemaSpec>> {
+export interface ParentOption<
+  ParentSchema extends Record<string, SchemaSpec>,
+> {
   readonly parent: ParentModelClass<ParentSchema>;
 }
+
+type OwnerBrandedParentOption<
+  ParentSchema extends Record<string, SchemaSpec>,
+  ParentOwners extends string,
+> = Readonly<{
+  parent: ParentModelClass<ParentSchema> & {
+    readonly [modelClassBrand]: ParentOwners;
+  };
+}>;
 
 /**
  * Merge two schema records: parent fields followed by child-local fields.
@@ -109,7 +130,26 @@ export class FieldSpec<Attr extends AttributeClass, Optional extends boolean = f
       this.flags.isDistinct,
       this.flags.doc,
       this.flags.meta,
+      this.flags.annotations,
     ) as ListFieldSpec<Attr, Min extends 0 ? true : false>;
+  }
+
+  /** Declare an ordered TypeDB list (`owns attr[]`), optionally with a card. */
+  ordered(): ListFieldSpec<Attr, Optional>;
+  ordered<const Min extends number, const Max extends number | null>(
+    card: CardSpec<Min, Max>,
+  ): ListFieldSpec<Attr, Min extends 0 ? true : false>;
+  ordered(card: CardSpec | null = null): ListFieldSpec<Attr, boolean> {
+    return new ListFieldSpec(
+      this.attrType,
+      card,
+      true,
+      this.flags.isDistinct,
+      this.flags.doc,
+      this.flags.meta,
+      this.flags.annotations,
+      card === null ? this.isOptional : null,
+    ) as ListFieldSpec<Attr, boolean>;
   }
 }
 
@@ -123,8 +163,8 @@ export class FieldSpec<Attr extends AttributeClass, Optional extends boolean = f
  */
 export class ListFieldSpec<Attr extends AttributeClass, Optional extends boolean = false> {
   readonly kind = "list-field";
-  /** Explicit cardinality `[min, max | null]`. Always present for list fields. */
-  readonly card: [number, number | null];
+  /** Explicit cardinality `[min, max | null]`, or null for bare ordered lists. */
+  readonly card: [number, number | null] | null;
   readonly isOptional: Optional;
   /** True when the parent FieldSpec carried the `Ordered` flag. A multi-value
    * `Card` field is a set, not a TypeDB list: only the `Ordered` flag makes
@@ -136,23 +176,55 @@ export class ListFieldSpec<Attr extends AttributeClass, Optional extends boolean
   readonly doc: string | null;
   /** TypeDB 3.12+ `@meta` annotations from the parent FieldSpec's flags. */
   readonly meta: Record<string, string>;
+  /** Non-cardinality annotations retained from the parent field flags. */
+  readonly annotations: readonly Annotation[];
 
   constructor(
     readonly attrType: Attr,
-    cardSpec: CardSpec,
+    cardSpec: CardSpec | null,
     isOrdered = false,
     isDistinct = false,
     doc: string | null = null,
     meta: Record<string, string> = {},
+    annotations: readonly Annotation[] = [],
+    optional: Optional | null = null,
   ) {
-    this.card = [cardSpec.min, cardSpec.max];
+    this.card = cardSpec === null ? null : [cardSpec.min, cardSpec.max];
     // A list field is optional when the minimum cardinality is 0, mirroring the
     // Python `_is_optional` rule: `flags.card_min == 0`.
-    this.isOptional = (cardSpec.min === 0) as Optional;
+    this.isOptional = (
+      optional ?? (cardSpec === null || cardSpec.min === 0)
+    ) as Optional;
     this.isOrdered = isOrdered;
     this.isDistinct = isDistinct;
     this.doc = doc;
     this.meta = { ...meta };
+    this.annotations = Object.freeze(
+      annotations
+        .filter((annotation) => typeof annotation === "string")
+        .map(copyAnnotation),
+    );
+  }
+
+
+  /** Add `@distinct` to an ordered list while preserving its value shape. */
+  distinct(): ListFieldSpec<Attr, Optional> {
+    if (!this.isOrdered) {
+      throw new TypeError("distinct() requires an ordered list field");
+    }
+    const cardSpec = this.card === null
+      ? null
+      : { kind: "card" as const, min: this.card[0], max: this.card[1] };
+    return new ListFieldSpec(
+      this.attrType,
+      cardSpec,
+      this.isOrdered,
+      true,
+      this.doc,
+      this.meta,
+      this.annotations,
+      this.isOptional,
+    );
   }
 }
 
@@ -224,6 +296,7 @@ export type SchemaSpec =
 export type EntitySchema = Record<string, FieldSpec<AttributeClass, boolean> | ListFieldSpec<AttributeClass, boolean>>;
 export type RelationSchema = Record<string, SchemaSpec>;
 
+/** Value accepted for one model-constructor field. */
 export type FieldValue<Spec> = Spec extends ListFieldSpec<infer Attr, boolean>
   ? InstanceType<Attr>[]
   : Spec extends FieldSpec<infer Attr, boolean>
@@ -232,12 +305,21 @@ export type FieldValue<Spec> = Spec extends ListFieldSpec<infer Attr, boolean>
       ? RoleValue<Players>
       : never;
 
+type MaterializedFieldValue<Spec> = Spec extends RoleSpec<infer Players>
+  ? MaterializedRoleValue<Players>
+  : FieldValue<Spec>;
+
+/**
+ * Fields exposed by a materialized model. Relation-valued role players are
+ * shallow: their IID and attributes are present, while their own role fields
+ * are explicitly `undefined` to prevent recursive graph hydration.
+ */
 export type InstanceFields<Schema extends Record<string, SchemaSpec>> = {
   readonly [Key in keyof Schema]: Schema[Key] extends
     | FieldSpec<AttributeClass, true>
     | ListFieldSpec<AttributeClass, true>
-    ? FieldValue<Schema[Key]> | undefined
-    : FieldValue<Schema[Key]>;
+    ? MaterializedFieldValue<Schema[Key]> | undefined
+    : MaterializedFieldValue<Schema[Key]>;
 };
 
 /**
@@ -321,6 +403,36 @@ type RolePlayerInstance<Token> = Token extends string
     ? Instance
     : never;
 
+type MaterializedRoleValue<Players extends readonly ModelToken[]> =
+  Players extends readonly []
+    ? undefined
+    : | MaterializedRolePlayerInstance<Players[number]>
+      | readonly MaterializedRolePlayerInstance<Players[number]>[];
+
+type MaterializedRolePlayerInstance<Token> = Token extends string
+  ? object
+  : Token extends (new (values: never) => infer Instance) & {
+        readonly schema: infer Schema extends Record<string, SchemaSpec>;
+        descriptor(): infer Descriptor;
+      }
+    ? Descriptor extends RelationDescriptor
+      ? ShallowRelationInstance<Instance, Schema>
+      : Instance
+    : never;
+
+type RelationRoleKeys<Schema extends Record<string, SchemaSpec>> = {
+  [Key in keyof Schema]: Schema[Key] extends RoleSpec<readonly ModelToken[]>
+    ? Key
+    : never;
+}[keyof Schema];
+
+type ShallowRelationInstance<
+  Instance,
+  Schema extends Record<string, SchemaSpec>,
+> = Omit<Instance, RelationRoleKeys<Schema>> & {
+  readonly [Key in RelationRoleKeys<Schema>]: undefined;
+};
+
 /**
  * The canonical hydrated-instance type for a model schema. This is the single
  * source of truth for what `class X extends Entity(...) {}` produces AND what a
@@ -378,6 +490,41 @@ export type ModelClass<
     : TypedRelationManager<ModelInstance<Schema>>;
 };
 
+type OwnerBrandedModelInstance<
+  Schema extends Record<string, SchemaSpec>,
+  Owners extends string,
+> = ModelInstance<Schema> & {
+  readonly [modelOwnerBrand]: Owners;
+};
+
+type OwnerBrandedModelClass<
+  Schema extends Record<string, SchemaSpec>,
+  Descriptor extends EntityDescriptor | RelationDescriptor,
+  TypeName extends string = string,
+  Owners extends string = TypeName,
+> = (new (
+  values: ConstructorInput<Schema>,
+) => OwnerBrandedModelInstance<Schema, Owners>) & {
+  readonly typeName: TypeName;
+  readonly [modelClassBrand]: Owners;
+  readonly schema: Schema;
+  readonly flags: ResolvedTypeFlags;
+  descriptor(): Descriptor;
+  fromDict(data: InstanceDict<Schema>): OwnerBrandedModelInstance<Schema, Owners>;
+  manager(
+    db: ManagerConnection,
+  ): Descriptor extends EntityDescriptor
+    ? TypedEntityManager<OwnerBrandedModelInstance<Schema, Owners>>
+    : TypedRelationManager<OwnerBrandedModelInstance<Schema, Owners>>;
+};
+
+/** Return the nominal declaring-type lineage carried by a typed model instance. */
+export type ModelOwnerToken<Model> = Model extends {
+  readonly [modelOwnerBrand]: infer Owners extends string;
+}
+  ? Owners
+  : never;
+
 /** Declare an owned-attribute field on a model schema, with optional flags. */
 export function field<Attr extends AttributeClass>(
   attrType: Attr,
@@ -419,10 +566,51 @@ export function role<const Players extends readonly ModelToken[]>(
  * `owned_attributes` (parent attrs re-listed, then child-local attrs). Inherited
  * fields are accessible on the child instance with the parent's attribute brand.
  */
+export function Entity<const TypeName extends string, const Schema extends EntitySchema>(
+  typeNameOrFlags: TypeName,
+  schema: Schema,
+): OwnerBrandedModelClass<Schema, EntityDescriptor, TypeName>;
+export function Entity<
+  const TypeName extends string,
+  const Schema extends EntitySchema,
+>(
+  typeNameOrFlags: ResolvedTypeFlags<TypeName>,
+  schema: Schema,
+): OwnerBrandedModelClass<Schema, EntityDescriptor, TypeName>;
 export function Entity<const Schema extends EntitySchema>(
   typeNameOrFlags: string | ResolvedTypeFlags,
   schema: Schema,
-): ModelClass<Schema, EntityDescriptor>;
+): OwnerBrandedModelClass<Schema, EntityDescriptor>;
+export function Entity<
+  const TypeName extends string,
+  const ParentSchema extends EntitySchema,
+  const ParentOwners extends string,
+  const Schema extends EntitySchema,
+>(
+  typeNameOrFlags: TypeName,
+  schema: Schema,
+  options: OwnerBrandedParentOption<ParentSchema, ParentOwners>,
+): OwnerBrandedModelClass<
+  MergedSchema<ParentSchema, Schema>,
+  EntityDescriptor,
+  TypeName,
+  TypeName | ParentOwners
+>;
+export function Entity<
+  const TypeName extends string,
+  const ParentSchema extends EntitySchema,
+  const ParentOwners extends string,
+  const Schema extends EntitySchema,
+>(
+  typeNameOrFlags: ResolvedTypeFlags<TypeName>,
+  schema: Schema,
+  options: OwnerBrandedParentOption<ParentSchema, ParentOwners>,
+): OwnerBrandedModelClass<
+  MergedSchema<ParentSchema, Schema>,
+  EntityDescriptor,
+  TypeName,
+  TypeName | ParentOwners
+>;
 export function Entity<
   const ParentSchema extends EntitySchema,
   const Schema extends EntitySchema,
@@ -430,7 +618,7 @@ export function Entity<
   typeNameOrFlags: string | ResolvedTypeFlags,
   schema: Schema,
   options: ParentOption<ParentSchema>,
-): ModelClass<MergedSchema<ParentSchema, Schema>, EntityDescriptor>;
+): OwnerBrandedModelClass<MergedSchema<ParentSchema, Schema>, EntityDescriptor>;
 export function Entity<
   const ParentSchema extends EntitySchema,
   const Schema extends EntitySchema,
@@ -438,7 +626,10 @@ export function Entity<
   typeNameOrFlags: string | ResolvedTypeFlags,
   schema: Schema,
   options?: ParentOption<ParentSchema>,
-): ModelClass<Schema | MergedSchema<ParentSchema, Schema>, EntityDescriptor> {
+): OwnerBrandedModelClass<
+  Schema | MergedSchema<ParentSchema, Schema>,
+  EntityDescriptor
+> {
   return createModelClass(typeNameOrFlags, schema, "entity", options?.parent ?? null) as never;
 }
 
@@ -453,10 +644,51 @@ export function Entity<
  * any parent role whose name appears as the `overrides` target of a child role.
  * This mirrors the Python descriptor contract (see `internals.md`, "Descriptor Contract").
  */
+export function Relation<const TypeName extends string, const Schema extends RelationSchema>(
+  typeNameOrFlags: TypeName,
+  schema: Schema,
+): OwnerBrandedModelClass<Schema, RelationDescriptor, TypeName>;
+export function Relation<
+  const TypeName extends string,
+  const Schema extends RelationSchema,
+>(
+  typeNameOrFlags: ResolvedTypeFlags<TypeName>,
+  schema: Schema,
+): OwnerBrandedModelClass<Schema, RelationDescriptor, TypeName>;
 export function Relation<const Schema extends RelationSchema>(
   typeNameOrFlags: string | ResolvedTypeFlags,
   schema: Schema,
-): ModelClass<Schema, RelationDescriptor>;
+): OwnerBrandedModelClass<Schema, RelationDescriptor>;
+export function Relation<
+  const TypeName extends string,
+  const ParentSchema extends RelationSchema,
+  const ParentOwners extends string,
+  const Schema extends RelationSchema,
+>(
+  typeNameOrFlags: TypeName,
+  schema: Schema,
+  options: OwnerBrandedParentOption<ParentSchema, ParentOwners>,
+): OwnerBrandedModelClass<
+  MergedSchema<ParentSchema, Schema>,
+  RelationDescriptor,
+  TypeName,
+  TypeName | ParentOwners
+>;
+export function Relation<
+  const TypeName extends string,
+  const ParentSchema extends RelationSchema,
+  const ParentOwners extends string,
+  const Schema extends RelationSchema,
+>(
+  typeNameOrFlags: ResolvedTypeFlags<TypeName>,
+  schema: Schema,
+  options: OwnerBrandedParentOption<ParentSchema, ParentOwners>,
+): OwnerBrandedModelClass<
+  MergedSchema<ParentSchema, Schema>,
+  RelationDescriptor,
+  TypeName,
+  TypeName | ParentOwners
+>;
 export function Relation<
   const ParentSchema extends RelationSchema,
   const Schema extends RelationSchema,
@@ -464,7 +696,7 @@ export function Relation<
   typeNameOrFlags: string | ResolvedTypeFlags,
   schema: Schema,
   options: ParentOption<ParentSchema>,
-): ModelClass<MergedSchema<ParentSchema, Schema>, RelationDescriptor>;
+): OwnerBrandedModelClass<MergedSchema<ParentSchema, Schema>, RelationDescriptor>;
 export function Relation<
   const ParentSchema extends RelationSchema,
   const Schema extends RelationSchema,
@@ -472,7 +704,10 @@ export function Relation<
   typeNameOrFlags: string | ResolvedTypeFlags,
   schema: Schema,
   options?: ParentOption<ParentSchema>,
-): ModelClass<Schema | MergedSchema<ParentSchema, Schema>, RelationDescriptor> {
+): OwnerBrandedModelClass<
+  Schema | MergedSchema<ParentSchema, Schema>,
+  RelationDescriptor
+> {
   return createModelClass(typeNameOrFlags, schema, "relation", options?.parent ?? null) as never;
 }
 
@@ -678,7 +913,99 @@ function createModelClass(
     }
   }
 
+  modelParents.set(TypedModel, parent);
   return TypedModel;
+}
+
+/**
+ * @internal Return constructor dependencies needed before registering a model
+ * in an owner-aware query session. The constructors themselves stay private to
+ * the session; raw string-only role targets cannot provide hydration metadata.
+ */
+export function modelConstructorDependencies(
+  model: ModelDependencyClass,
+  includeOwnDescendants = false,
+  includeDescendant: (model: ModelDependencyClass) => boolean = () => true,
+): readonly ModelDependencyClass[] {
+  observeModelConstructor(model);
+  const dependencies: ModelDependencyClass[] = [];
+  const seen = new Set<object>();
+  const append = (dependency: ModelDependencyClass): void => {
+    if (dependency !== model && !seen.has(dependency)) {
+      seen.add(dependency);
+      dependencies.push(dependency);
+    }
+  };
+  const appendDescendants = (owner: ModelDependencyClass): void => {
+    const pending = [...(modelChildren.get(owner) ?? [])];
+    const visited = new Set<object>();
+    while (pending.length > 0) {
+      const descendant = pending.shift()!;
+      if (visited.has(descendant) || descendant === model) {
+        continue;
+      }
+      visited.add(descendant);
+      if (includeDescendant(descendant)) {
+        append(descendant);
+      }
+      pending.push(...(modelChildren.get(descendant) ?? []));
+    }
+  };
+
+  if (includeOwnDescendants) {
+    appendDescendants(model);
+  }
+  const parent = modelParent(model);
+  if (parent !== undefined && parent !== null) {
+    append(parent);
+  }
+  for (const spec of Object.values(model.schema)) {
+    if (!(spec instanceof RoleSpec)) {
+      continue;
+    }
+    for (const player of spec.players) {
+      if (typeof player !== "string") {
+        const constructor = player as ModelDependencyClass;
+        observeModelConstructor(constructor);
+        append(constructor);
+        // A declared base player can legally hydrate as any already-loaded
+        // concrete subtype. Register those exact constructors up front rather
+        // than falling back to the declared base at materialization time.
+        appendDescendants(constructor);
+      }
+    }
+  }
+  return Object.freeze(dependencies);
+}
+
+function observeModelConstructor(model: ModelDependencyClass): void {
+  const factory = modelFactory(model);
+  if (factory === null || factory === model) {
+    return;
+  }
+  const parent = modelParents.get(factory);
+  if (parent === undefined || parent === null) {
+    return;
+  }
+  const children = modelChildren.get(parent) ?? new Set<ModelDependencyClass>();
+  children.add(model);
+  modelChildren.set(parent, children);
+}
+
+function modelParent(model: ModelDependencyClass): ParentModelClass | null | undefined {
+  const factory = modelFactory(model);
+  return factory === null ? undefined : modelParents.get(factory);
+}
+
+function modelFactory(model: ModelDependencyClass): ModelDependencyClass | null {
+  let candidate: object | null = model;
+  while (candidate !== null) {
+    if (modelParents.has(candidate)) {
+      return candidate as ModelDependencyClass;
+    }
+    candidate = Object.getPrototypeOf(candidate) as object | null;
+  }
+  return null;
 }
 
 /**
@@ -734,8 +1061,10 @@ function ownedAttributeEntry(
   if (spec instanceof ListFieldSpec) {
     // Multi-value list field: emit the explicit Card annotation unconditionally.
     // is_optional mirrors Python's `_is_optional`: card_min == 0.
-    const cardAnnotation: Annotation = { Card: [spec.card[0], spec.card[1]] };
-    const annotations: Annotation[] = [cardAnnotation];
+    const annotations: Annotation[] = spec.annotations.map(copyAnnotation);
+    if (spec.card !== null) {
+      annotations.push({ Card: [spec.card[0], spec.card[1]] });
+    }
     if (spec.isDistinct) {
       annotations.push("Distinct");
     }

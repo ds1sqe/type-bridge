@@ -15,6 +15,7 @@ band-7 pin (3.8.x line).
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 import type_bridge_core
@@ -101,7 +102,8 @@ class TestDefaultBandCoherence:
     def test_ci_default_band_matrices_match_embedded(self):
         """Live CI matrices contain the band-8 embedded image; band-7 images trace band-7 pin.
 
-        The three live jobs (test-integration, node-integration, cross-language-parity)
+        The four live jobs (test-integration, rust-integration, node-integration,
+        cross-language-parity)
         each fan across multiple server versions.  This test asserts:
 
         1. Every live matrix contains the band-8 embedded image (typedb/typedb:3.11.5).
@@ -138,7 +140,12 @@ class TestDefaultBandCoherence:
             end = start + 1 + next_job.start() if next_job else len(text)
             return text[start:end]
 
-        live_jobs = ["test-integration", "node-integration", "cross-language-parity"]
+        live_jobs = [
+            "test-integration",
+            "rust-integration",
+            "node-integration",
+            "cross-language-parity",
+        ]
         gate_job = "version-gate-cells"
 
         for job in live_jobs:
@@ -209,17 +216,36 @@ class TestDefaultBandCoherence:
                 )
 
     def test_dev_pin_matches_embedded_line(self):
-        """The dev extra pins a driver on the embedded driver's minor line."""
-        text = (REPO_ROOT / "pyproject.toml").read_text()
-        match = re.search(r'"typedb-driver~=([\d.]+)"', text)
-        assert match, "dev extra driver pin not found"
+        """The CPython 3.12–3.13 dev pin matches the embedded driver's minor line."""
+        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        dependencies = set(pyproject["project"]["optional-dependencies"]["dev"])
+        requirement = "typedb-driver~=3.11.5; python_version < '3.14'"
+        assert requirement in dependencies, "CPython 3.12–3.13 dev-extra driver pin not found"
         embedded = _embedded_version()
-        pin_line = ".".join(match.group(1).split(".")[:2])
+        pin_line = "3.11"
         embedded_line = ".".join(embedded.split(".")[:2])
         assert pin_line == embedded_line, (
-            f"dev extra pins ~={match.group(1)} (line {pin_line}) but the wheel "
+            f"dev extra pins {requirement!r} (line {pin_line}) but the wheel "
             f"embeds driver {embedded} (line {embedded_line})"
         )
+
+    def test_optional_driver_groups_have_complete_interpreter_split(self):
+        """Each optional group declares its complete interpreter split."""
+        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        groups = pyproject["project"]["optional-dependencies"]
+        expected = {
+            "dev": {
+                "typedb-driver~=3.11.5; python_version < '3.14'",
+                "typedb-driver==3.12.0; python_version >= '3.14'",
+            },
+            "typedb-driver": {
+                "typedb-driver>=3.8,<3.13; python_version < '3.14'",
+                "typedb-driver==3.12.0; python_version >= '3.14'",
+            },
+        }
+        for group, requirements in expected.items():
+            actual = {item for item in groups[group] if item.startswith("typedb-driver")}
+            assert actual == requirements, f"{group} driver marker split drifted: {actual}"
 
     def test_band7_live_cells_trace_band7_pin(self):
         """Band-7 server references (3.8.x line) trace the band-7 embedded pin.

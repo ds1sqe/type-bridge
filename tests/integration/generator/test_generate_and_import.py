@@ -753,12 +753,11 @@ class TestApiDtoGeneration:
         api_dto = self._import_api_dto(output)
 
         # Create a valid DTO instance
-        # ebook has isbn_13 as @key and isbn_10 as @unique, both required
+        # @key is required; bare @unique retains the default optional cardinality.
         ebook = api_dto.EbookCreate(
             type="ebook",
             isbn_13="978-0-123456-78-9",
-            isbn_10="0123456789",
         )
         assert ebook.isbn_13 == "978-0-123456-78-9"
-        assert ebook.isbn_10 == "0123456789"
+        assert ebook.isbn_10 is None
         assert ebook.type == "ebook"

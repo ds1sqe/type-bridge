@@ -1,0 +1,1 @@
+{"diagnostic_version":1,"request":{"version":1,"plan":{"bindings":[{"id":0,"descriptor":"entity:person","thing_kind":"entity","match_mode":"exact"}],"predicate":null,"allowed_cross_joins":[]},"operation":{"kind":"count_by","root":0}},"required_capabilities":["RESOURCE_BOUNDED_STREAMING","EXACT_ENTITY_TARGET","DISTINCT_ROOT_COUNT"]}

@@ -126,8 +126,8 @@ class Employment(Relation):
     employee: Role[Person] = Role("employee", Person)
     employer: Role[Company] = Role("employer", Company)
 
-# Class-level access returns RoleRef for query building
-Employment.employee       # Returns RoleRef
+# Class-level access preserves both player and relation-owner types
+Employment.employee       # Returns RoleRef[Person, Employment]
 Employment.employee.age   # Returns RolePlayerNumericFieldRef
 Employment.employee.name  # Returns RolePlayerStringFieldRef
 
@@ -701,7 +701,7 @@ attribute benefit, value string;
 
 entity person,
     owns name @key,
-    owns email @unique;
+    owns email @unique @card(1..1);
 
 entity company,
     owns company_id @key,

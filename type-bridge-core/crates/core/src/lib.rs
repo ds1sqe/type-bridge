@@ -25,6 +25,8 @@ pub mod ast;
 pub mod bindgen;
 /// Compiles an AST back into a TypeQL query string.
 pub mod compiler;
+/// Canonical TypeDB decimal parsing and semantic comparison.
+pub mod decimal;
 /// Low-level PEG grammar for TypeQL, consumed by [`query_parser`].
 pub mod parser;
 /// Parses a TypeQL query string into the AST.

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError
+from typing import Literal
 
 import pytest
 
@@ -49,6 +51,22 @@ EXPECTED_ATTRIBUTES = frozenset(
 )
 
 
+class _UncheckedMigrationStatePredicate:
+    """Checked runtime adapter for testing a hostile schema-kind value."""
+
+    def __init__(self, candidate: object) -> None:
+        if not callable(candidate):
+            raise AssertionError("migration-state predicate is not callable")
+        self._candidate: Callable[..., object] = candidate
+
+    def __call__(self, *, kind: str, label: str) -> bool:
+        return bool(self._candidate(kind=kind, label=label))
+
+
+def _unchecked_migration_state_predicate() -> _UncheckedMigrationStatePredicate:
+    return _UncheckedMigrationStatePredicate(is_migration_state_type)
+
+
 def test_migration_state_schema_projects_the_canonical_rust_descriptor() -> None:
     descriptor = migration_state_schema()
 
@@ -84,11 +102,13 @@ def test_migration_state_schema_projection_is_immutable() -> None:
         ("attribute", EXPECTED_ATTRIBUTES),
     ],
 )
-def test_predicate_recognizes_every_canonical_label(kind: str, labels: frozenset[str]) -> None:
+def test_predicate_recognizes_every_canonical_label(
+    kind: Literal["entity", "attribute"], labels: frozenset[str]
+) -> None:
     for label in labels:
-        assert is_migration_state_type(kind=kind, label=label)  # type: ignore[arg-type]
+        assert is_migration_state_type(kind=kind, label=label)
 
-    assert not is_migration_state_type(kind=kind, label="application-label")  # type: ignore[arg-type]
+    assert not is_migration_state_type(kind=kind, label="application-label")
 
 
 def test_predicate_is_keyword_only() -> None:
@@ -98,7 +118,10 @@ def test_predicate_is_keyword_only() -> None:
 
 def test_predicate_rejects_unknown_schema_kind() -> None:
     with pytest.raises(ValueError, match="kind"):
-        is_migration_state_type(kind="owner", label="type_bridge_migration")  # type: ignore[arg-type]
+        _unchecked_migration_state_predicate()(
+            kind="owner",
+            label="type_bridge_migration",
+        )
 
 
 def test_without_migration_state_schema_filters_every_object_kind(

@@ -24,6 +24,10 @@
     {
       "symbol": "native.d.ts (new file) + loadNative re-export in index.d.ts",
       "rationale": "Package migration: the real native loader (TYPE_BRIDGE_NODE_NATIVE_PATH override + package-root .node candidate resolution) moved from the hand-written root index.js into typescript/native.ts so it compiles into dist/. index.ts now re-exports loadNative from native.js (the public signature `loadNative(): NativeModule` is unchanged; the dead ambient stub was removed)."
+    },
+    {
+      "symbol": "FieldSpec.ordered() / ListFieldSpec.distinct() (model.d.ts)",
+      "rationale": "TypeDB 3.12 alignment: generated and hand-written Node models can express bare or explicitly cardinalized ordered ownerships, retain composed annotations, and add @distinct without an untyped escape hatch."
     }
   ],
   "allowedDiffs": []

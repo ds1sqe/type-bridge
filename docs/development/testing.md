@@ -236,7 +236,7 @@ Integration tests require a running TypeDB 3.x server.
 # - Started before the integration tiers with an engine-assigned host port
 # - Each worktree gets its own compose project (tb-<worktree-basename>)
 # - Torn down on exit (even on failure)
-./test.sh                                 # Full suite (Rust + Python + Node), isolated
+./test.sh                                 # Full source-tree suite, isolated
 ./test.sh -- -v                           # Forward -v to the pytest tiers
 ```
 
@@ -265,7 +265,7 @@ docker compose -p tb-v1-5-0 ps
 # 1. Start TypeDB 3.x server manually
 typedb server
 
-# 2a. Full suite against the running server (no container management)
+# 2a. Full source-tree suite against the server (no container management)
 ./test.sh --no-isolated
 
 # 2b. Python integration only (skip Docker)
@@ -388,9 +388,14 @@ uv run pytest                              # Python unit tests
 USE_DOCKER=false uv run pytest -m integration   # against a running TypeDB
 ./test.sh --no-isolated -- -m integration       # or via test.sh
 
-# All tests (Rust + Python + Node, unit + integration)
-./test.sh                                  # Full suite, isolated (manages TypeDB)
+# All source-tree tests (Rust + Python + Node, unit + integration)
+./test.sh                                  # Isolated; manages TypeDB
 ```
+
+The local entry points intentionally stop at source-tree gates. They do not
+build or install Python release artifacts and do not claim publication parity.
+CI and release jobs consume the exact built wheels and npm tarball; the release
+workflow makes those consumers prerequisites for registry publication.
 
 ### Selective Test Execution
 

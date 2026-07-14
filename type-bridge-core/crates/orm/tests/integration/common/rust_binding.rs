@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use type_bridge_orm::*;
 
-use super::typedb::ensure_database_exists;
+use super::typedb::{connect_options_from_env, ensure_database_exists};
 
 type_bridge_orm::include_schema!("tests/test_schema.tql");
 
@@ -28,14 +28,20 @@ pub async fn setup_db() -> Database {
     )
     .await;
 
-    Database::connect(&address, &database, &username, &password)
-        .await
-        .unwrap_or_else(|error| {
-            panic!(
-                "Rust ORM integration requires TypeDB at {address} \
+    Database::connect_with_options(
+        &address,
+        &database,
+        &username,
+        &password,
+        connect_options_from_env(),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "Rust ORM integration requires TypeDB at {address} \
                  database {database}: {error}"
-            )
-        })
+        )
+    })
 }
 
 pub async fn sync_person_schema(db: &Database) {

@@ -23,6 +23,9 @@ use super::backend::{DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use super::context::TransactionContext;
 use super::transaction::Transaction;
 use crate::error::Result;
+use crate::match_request::selected_result_executor::SelectedResultExecutor;
+use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult};
+use crate::registry::DescriptorRegistry;
 
 /// Primary connection handle wrapping a TypeDB driver.
 ///
@@ -105,11 +108,34 @@ impl Database {
 
     /// Create a shared [`TransactionContext`] for grouping operations.
     pub async fn transaction_context(&self, tx_type: TxType) -> Result<TransactionContext> {
+        let capabilities = self.backend.match_capabilities();
         let tx = self
             .backend
             .open_transaction(&self.database_name, tx_type)
             .await?;
-        Ok(TransactionContext::new(tx, tx_type))
+        Ok(TransactionContext::new(tx, tx_type, capabilities))
+    }
+
+    /// Execute one validated selected-row request in an owned read transaction.
+    pub async fn execute_match(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+    ) -> Result<ValidatedMatchResult> {
+        self.execute_match_with_limits(registry, validated, MatchExecutionLimits::default())
+            .await
+    }
+
+    /// Execute one validated selected-row request with caller-tightened limits.
+    pub async fn execute_match_with_limits(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+        limits: MatchExecutionLimits,
+    ) -> Result<ValidatedMatchResult> {
+        SelectedResultExecutor::new(registry, self.backend.match_capabilities(), limits)
+            .execute_owned(self, validated)
+            .await
     }
 
     /// Get the database name.
@@ -149,8 +175,8 @@ impl Database {
         Ok(())
     }
 
-    /// Whether the connected server supports `given`-stage parameterized
-    /// queries (TypeDB 3.12+).
+    /// Whether both the connected server and the active negotiated provider
+    /// support `given`-stage parameterized queries.
     ///
     /// `false` when the server predates 3.12 or its version is unknown
     /// (band-7 gRPC fallback) — callers with a per-row fallback should use
@@ -158,23 +184,35 @@ impl Database {
     pub fn supports_given_stage(&self) -> bool {
         use type_bridge_core_lib::version::{Feature, check_feature_supported};
 
-        self.server_version()
-            .is_some_and(|server| check_feature_supported(Feature::GivenStage, &server).is_ok())
+        self.backend.supports_given_rows()
+            && self
+                .server_version()
+                .is_some_and(|server| check_feature_supported(Feature::GivenStage, &server).is_ok())
     }
 
     /// Version-gate a `given`-stage query.
     ///
     /// When the detected server version predates 3.12, fail with an
     /// actionable versioned error instead of a server-side parse error.
-    /// When the server version is unknown, the query is allowed through and
-    /// the runtime rejects it only if the negotiated driver band cannot
-    /// carry given rows.
+    /// The server feature and negotiated provider transport are checked
+    /// separately. A 3.12 server reached through a band-8 fallback therefore
+    /// fails before opening a transaction instead of dispatching an operation
+    /// the active driver cannot carry.
     pub fn check_given_stage_support(&self) -> Result<()> {
         use type_bridge_core_lib::version::{Feature, check_feature_supported};
 
-        if let Some(server) = self.server_version() {
-            check_feature_supported(Feature::GivenStage, &server)
-                .map_err(crate::error::OrmError::UnsupportedVersion)?;
+        let Some(server) = self.server_version() else {
+            return Err(crate::error::OrmError::QueryExecution(
+                "given-stage support cannot be proven because the server version is unknown".into(),
+            ));
+        };
+        check_feature_supported(Feature::GivenStage, &server)
+            .map_err(crate::error::OrmError::UnsupportedVersion)?;
+        if !self.backend.supports_given_rows() {
+            return Err(crate::error::OrmError::QueryExecution(
+                "given-stage input rows require an active band-9 provider; the connected server supports the syntax but the negotiated provider cannot transport rows"
+                    .into(),
+            ));
         }
         Ok(())
     }
@@ -245,10 +283,23 @@ impl Database {
             .backend
             .open_transaction(&self.database_name, tx_type)
             .await?;
-        let result = tx.query_with_rows(typeql, rows).await?;
-        if matches!(tx_type, TxType::Write | TxType::Schema) {
-            tx.commit().await?;
+        let result = match tx.query_with_rows(typeql, rows).await {
+            Ok(result) => result,
+            Err(error) => {
+                if matches!(tx_type, TxType::Write | TxType::Schema) {
+                    let _ = tx.rollback().await;
+                }
+                let _ = tx.close().await;
+                return Err(error);
+            }
+        };
+        if matches!(tx_type, TxType::Write | TxType::Schema)
+            && let Err(error) = tx.commit().await
+        {
+            let _ = tx.close().await;
+            return Err(error);
         }
+        tx.close().await?;
         Ok(result)
     }
 }

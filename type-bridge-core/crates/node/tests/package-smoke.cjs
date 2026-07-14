@@ -218,4 +218,8 @@ assert.ok(
   packedFiles.some((f) => f.endsWith(".node")),
   "tarball must include the native .node module",
 );
+assert.ok(
+  !packedFiles.some((f) => f.startsWith("dist/typescript/")),
+  "tarball must not include stale duplicate dist/typescript outputs",
+);
 assert.ok(!packedFiles.includes("index.js"), "the deleted root index.js must not be published");

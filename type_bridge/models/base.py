@@ -530,7 +530,8 @@ class TypeDBType(BaseModel, ABC):
             flags = attr_info.flags
             attr_name = attr_class.get_attribute_name()
 
-            ownership = f"    owns {attr_name}"
+            name_token = f"{attr_name}[]" if flags.is_ordered else attr_name
+            ownership = f"    owns {name_token}"
             annotations = flags.to_typeql_annotations()
             if annotations:
                 ownership += " " + " ".join(annotations)

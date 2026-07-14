@@ -8,6 +8,7 @@ import {
   Entity,
   Key,
   Relation,
+  Unique,
   attr,
   field,
   role,
@@ -176,6 +177,31 @@ describe("typed model layer integration", () => {
         state: typeBridge.string("stale"),
       }),
     );
+  });
+
+  test("typed registry preserves optional and required unique cardinalities", () => {
+    const probeType = `${suffix}-unique-probe`;
+    const emailAttr = `${suffix}-email`;
+    const handleAttr = `${suffix}-handle`;
+    const aliasAttr = `${suffix}-alias`;
+
+    class Email extends attr.String(emailAttr) {}
+    class Handle extends attr.String(handleAttr) {}
+    class Alias extends attr.String(aliasAttr) {}
+    class UniqueProbe extends Entity(probeType, {
+      email: field(Email, Unique).optional(),
+      handle: field(Handle, Unique),
+      aliases: field(Alias, Unique).list(Card(0, 3)),
+    }) {}
+
+    const registry = new typeBridge.DescriptorRegistry();
+    registry.registerEntity(UniqueProbe.descriptor());
+    const typeql = typeBridge.generateDefineBlock(registry.schemaInfo());
+
+    assert.ok(typeql.includes(`owns ${emailAttr} @unique @card(0..1)`));
+    assert.ok(typeql.includes(`owns ${handleAttr} @unique @card(1..1)`));
+    assert.ok(typeql.includes(`owns ${aliasAttr} @unique @card(0..3)`));
+    defineSchema(db, typeql);
   });
 });
 

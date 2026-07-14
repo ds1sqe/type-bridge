@@ -8,6 +8,7 @@ import { AggregateSpec, ComparisonExpr, SortExpr } from "./query.js";
 // `Email` non-interchangeable under TypeScript's structural typing. There is no
 // runtime field — `declare` erases it.
 declare const attributeBrand: unique symbol;
+declare const attributeCategory: unique symbol;
 
 /**
  * Base class for a branded attribute value. `Value` is the wrapped runtime
@@ -15,8 +16,13 @@ declare const attributeBrand: unique symbol;
  * distinct attribute classes are nominally distinct at compile time. Instances
  * are immutable; equality is by `(constructor, value)`.
  */
-export abstract class Attribute<Value, Brand extends string> {
+export abstract class Attribute<
+  Value,
+  Brand extends string,
+  Category extends ValueType = ValueType,
+> {
   declare readonly [attributeBrand]: Brand;
+  declare readonly [attributeCategory]: Category;
 
   constructor(public readonly value: Value) {}
 
@@ -97,29 +103,40 @@ export interface AttributeTypeOptions {
  * wire `valueType`. Users extend it (`class Name extends attr.String("name") {}`);
  * they never name this type directly.
  */
-export type AttributeBase<Value, Brand extends string> = (abstract new (
+export type AttributeBase<
+  Value,
+  Brand extends string,
+  Category extends ValueType = ValueType,
+> = (abstract new (
   value: Value,
-) => Attribute<Value, Brand>) & {
+) => Attribute<Value, Brand, Category>) & {
   readonly attrName: Brand;
-  readonly valueType: ValueType;
+  readonly valueType: Category;
   readonly attributeSchema: AttributeSchemaEntry;
   readonly attributeSchemaEntries: readonly AttributeSchemaEntry[];
 };
 
 /** Attribute base with comparison + sort helpers (every value type). */
-export type ComparableAttributeBase<Value, Brand extends string> = AttributeBase<Value, Brand> &
-  ComparisonStatics<Value, Brand> &
-  OrderStatics;
+export type ComparableAttributeBase<
+  Value,
+  Brand extends string,
+  Category extends ValueType = ValueType,
+> = AttributeBase<Value, Brand, Category> & ComparisonStatics<Value, Brand> & OrderStatics;
 
 /** Attribute base for string values: comparison + sort + string matching. */
-export type StringAttributeBase<Brand extends string> = ComparableAttributeBase<string, Brand> &
+export type StringAttributeBase<Brand extends string> = ComparableAttributeBase<
+  string,
+  Brand,
+  "string"
+> &
   StringStatics;
 
 /** Attribute base for numeric values: comparison + sort + reduce helpers. */
-export type NumericAttributeBase<Value, Brand extends string> = ComparableAttributeBase<
+export type NumericAttributeBase<
   Value,
-  Brand
-> &
+  Brand extends string,
+  Category extends "long" | "double" | "decimal" = "long" | "double" | "decimal",
+> = ComparableAttributeBase<Value, Brand, Category> &
   AggregateStatics;
 
 function comparisonStatics<Value, Name extends string>(
@@ -184,19 +201,19 @@ function aggregateStatics(name: string): AggregateStatics {
 // Build the branded base class and attach the statics whose category was chosen
 // by the factory. The statics objects are type-checked individually; the final
 // assertion only states that `Object.assign` placed them on the constructor.
-function namedAttribute<Value, Name extends string>(
+function namedAttribute<Value, Name extends string, Category extends ValueType>(
   name: Name,
-  valueType: ValueType,
+  valueType: Category,
   options?: AttributeTypeOptions,
-): { new (value: Value): Attribute<Value, Name> } & {
+): { new (value: Value): Attribute<Value, Name, Category> } & {
   readonly attrName: Name;
-  readonly valueType: ValueType;
+  readonly valueType: Category;
   readonly attributeSchema: AttributeSchemaEntry;
   readonly attributeSchemaEntries: readonly AttributeSchemaEntry[];
 } {
   const attributeSchema = buildAttributeSchema(name, valueType, options);
   const attributeSchemaEntries = buildAttributeSchemaEntries(attributeSchema, options);
-  abstract class NamedAttribute extends Attribute<Value, Name> {
+  abstract class NamedAttribute extends Attribute<Value, Name, Category> {
     static readonly attrName = name;
     static readonly valueType = valueType;
     static readonly attributeSchema = attributeSchema;
@@ -274,27 +291,31 @@ function parentTypeName(parent: AttributeTypeParent): string | null {
   return parent.attrName;
 }
 
-type ComparableFactory<Value> = <const Name extends string>(
+type ComparableFactory<Value, Category extends ValueType> = <const Name extends string>(
   name: Name,
   options?: AttributeTypeOptions,
-) => ComparableAttributeBase<Value, Name>;
+) => ComparableAttributeBase<Value, Name, Category>;
 type StringFactory = <const Name extends string>(
   name: Name,
   options?: AttributeTypeOptions,
 ) => StringAttributeBase<Name>;
-type NumericFactory<Value> = <const Name extends string>(
+type NumericFactory<Value, Category extends "long" | "double" | "decimal"> = <
+  const Name extends string,
+>(
   name: Name,
   options?: AttributeTypeOptions,
-) => NumericAttributeBase<Value, Name>;
+) => NumericAttributeBase<Value, Name, Category>;
 
-function makeComparableFactory<Value>(valueType: ValueType): ComparableFactory<Value> {
+function makeComparableFactory<Value, Category extends ValueType>(
+  valueType: Category,
+): ComparableFactory<Value, Category> {
   return <const Name extends string>(
     name: Name,
     options?: AttributeTypeOptions,
-  ): ComparableAttributeBase<Value, Name> => {
-    const cls = namedAttribute<Value, Name>(name, valueType, options);
+  ): ComparableAttributeBase<Value, Name, Category> => {
+    const cls = namedAttribute<Value, Name, Category>(name, valueType, options);
     Object.assign(cls, comparisonStatics<Value, Name>(name, valueType), orderStatics(name));
-    return cls as unknown as ComparableAttributeBase<Value, Name>;
+    return cls as unknown as ComparableAttributeBase<Value, Name, Category>;
   };
 }
 
@@ -303,7 +324,7 @@ function makeStringFactory(): StringFactory {
     name: Name,
     options?: AttributeTypeOptions,
   ): StringAttributeBase<Name> => {
-    const cls = namedAttribute<string, Name>(name, "string", options);
+    const cls = namedAttribute<string, Name, "string">(name, "string", options);
     Object.assign(
       cls,
       comparisonStatics<string, Name>(name, "string"),
@@ -314,19 +335,21 @@ function makeStringFactory(): StringFactory {
   };
 }
 
-function makeNumericFactory<Value>(valueType: ValueType): NumericFactory<Value> {
+function makeNumericFactory<Value, Category extends "long" | "double" | "decimal">(
+  valueType: Category,
+): NumericFactory<Value, Category> {
   return <const Name extends string>(
     name: Name,
     options?: AttributeTypeOptions,
-  ): NumericAttributeBase<Value, Name> => {
-    const cls = namedAttribute<Value, Name>(name, valueType, options);
+  ): NumericAttributeBase<Value, Name, Category> => {
+    const cls = namedAttribute<Value, Name, Category>(name, valueType, options);
     Object.assign(
       cls,
       comparisonStatics<Value, Name>(name, valueType),
       orderStatics(name),
       aggregateStatics(name),
     );
-    return cls as unknown as NumericAttributeBase<Value, Name>;
+    return cls as unknown as NumericAttributeBase<Value, Name, Category>;
   };
 }
 
@@ -342,12 +365,12 @@ function makeNumericFactory<Value>(valueType: ValueType): NumericFactory<Value> 
  */
 export const attr = {
   String: makeStringFactory(),
-  Integer: makeNumericFactory<bigint>("long"),
-  Double: makeNumericFactory<number>("double"),
-  Boolean: makeComparableFactory<boolean>("boolean"),
-  Date: makeComparableFactory<string>("date"),
-  DateTime: makeComparableFactory<string>("datetime"),
-  DateTimeTZ: makeComparableFactory<string>("datetime-tz"),
-  Decimal: makeNumericFactory<string>("decimal"),
-  Duration: makeComparableFactory<string>("duration"),
+  Integer: makeNumericFactory<bigint, "long">("long"),
+  Double: makeNumericFactory<number, "double">("double"),
+  Boolean: makeComparableFactory<boolean, "boolean">("boolean"),
+  Date: makeComparableFactory<string, "date">("date"),
+  DateTime: makeComparableFactory<string, "datetime">("datetime"),
+  DateTimeTZ: makeComparableFactory<string, "datetime-tz">("datetime-tz"),
+  Decimal: makeNumericFactory<string, "decimal">("decimal"),
+  Duration: makeComparableFactory<string, "duration">("duration"),
 } as const;

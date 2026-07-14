@@ -1,0 +1,31 @@
+insert
+$alice isa parity-query-employee,
+    has parity-query-person-id "alice",
+    has parity-query-person-name "Alice",
+    has parity-query-rank 7;
+$bob isa parity-query-contractor,
+    has parity-query-person-id "bob",
+    has parity-query-person-name "Bob",
+    has parity-query-specialty "security";
+$carol isa parity-query-employee,
+    has parity-query-person-id "carol",
+    has parity-query-person-name "Carol",
+    has parity-query-rank 9;
+$acme isa parity-query-company,
+    has parity-query-company-id "acme",
+    has parity-query-company-name "Acme";
+$zulu isa parity-query-company,
+    has parity-query-company-id "zulu",
+    has parity-query-company-name "Zulu";
+$e1 isa parity-query-employment,
+    links (employee: $alice, employer: $acme),
+    has parity-query-employment-code "E-1";
+$e2 isa parity-query-employment,
+    links (employee: $alice, employer: $zulu),
+    has parity-query-employment-code "E-2";
+$e3 isa parity-query-employment,
+    links (employee: $alice, employer: $acme),
+    has parity-query-employment-code "E-3";
+$e4 isa parity-query-employment,
+    links (employee: $bob, employer: $acme),
+    has parity-query-employment-code "E-4";

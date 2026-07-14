@@ -351,13 +351,13 @@ def _effective_roles(model_cls: type[Relation]) -> list[_RoleMetadata]:
             isinstance(base, type) and issubclass(base, RelationBase) and base is not RelationBase
         ):
             continue
-        chain.append(base)  # type: ignore[arg-type]
+        chain.append(base)
     chain.reverse()  # root ancestor first
 
     # Accumulate the effective role list from root down.
     effective: list[_RoleMetadata] = []
     for cls in chain:
-        own = _own_roles_for_class(cls)  # type: ignore[arg-type]
+        own = _own_roles_for_class(cls)
         overridden_names = {r.overrides for r in own if r.overrides is not None}
         # Remove parent roles that are overridden at this level.
         effective = [r for r in effective if r.role_name not in overridden_names]
@@ -668,8 +668,7 @@ def _annotations(flags: Any) -> list[Any]:
         annotations.append("Distinct")
 
     should_emit_card = flags.card_min is not None or flags.card_max is not None
-    default_unique_card = flags.is_unique and flags.card_min == 1 and flags.card_max == 1
-    if should_emit_card and not flags.is_key and not default_unique_card:
+    if should_emit_card and not flags.is_key:
         annotations.append(
             {"Card": [flags.card_min if flags.card_min is not None else 0, flags.card_max]}
         )
@@ -677,7 +676,14 @@ def _annotations(flags: Any) -> list[Any]:
 
 
 def _is_optional(flags: Any) -> bool:
-    return flags.card_min == 0
+    # A bare non-key ordered ownership keeps TypeDB's default optional
+    # cardinality without inventing an explicit Card annotation. This mirrors
+    # bindgen's `field(...).optional().ordered()` projection and the model's
+    # empty-list constructor default. Keys remain required, and an explicit
+    # Card always owns the decision through its minimum.
+    return flags.card_min == 0 or (
+        flags.is_ordered and not flags.has_explicit_card and not flags.is_key
+    )
 
 
 def cardinality_tuple(cardinality: Any) -> list[Any] | None:

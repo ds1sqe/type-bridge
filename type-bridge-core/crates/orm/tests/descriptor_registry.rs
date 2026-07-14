@@ -202,6 +202,109 @@ fn registry_rejects_duplicate_attributes_and_roles() {
 }
 
 #[test]
+fn registry_rejects_cross_namespace_field_aliases_before_lookup() {
+    let mut entity = person_descriptor();
+    entity.owned_attributes = vec![
+        OwnedAttributeDescriptor {
+            field_name: "preferred_name".into(),
+            attr_name: "name".into(),
+            value_type: ValueType::String,
+            annotations: vec![],
+            is_optional: false,
+            is_ordered: false,
+            doc: None,
+            meta: Default::default(),
+        },
+        OwnedAttributeDescriptor {
+            field_name: "name".into(),
+            attr_name: "legal-name".into(),
+            value_type: ValueType::String,
+            annotations: vec![],
+            is_optional: false,
+            is_ordered: false,
+            doc: None,
+            meta: Default::default(),
+        },
+    ];
+    let mut reversed = entity.clone();
+    reversed.owned_attributes.reverse();
+
+    for descriptor in [entity, reversed] {
+        let registry = DescriptorRegistry::new();
+        let OrmError::DescriptorValidation { type_name, message } =
+            registry.register_entity(descriptor).unwrap_err()
+        else {
+            panic!("expected cross-namespace descriptor validation error")
+        };
+        assert_eq!(type_name, "person");
+        assert_eq!(
+            message,
+            "field name 'name' (attribute 'legal-name') conflicts with attribute name 'name' declared by field 'preferred_name'"
+        );
+        assert!(registry.snapshot().is_empty());
+    }
+}
+
+#[test]
+fn registry_rejects_hostile_typeql_labels_before_registration() {
+    let hostile = [
+        "person; match $x isa secret",
+        "person name",
+        "person\"",
+        "match",
+        "person::admin",
+    ];
+
+    for value in hostile {
+        let registry = DescriptorRegistry::new();
+        let mut entity = person_descriptor();
+        entity.type_name = value.into();
+        assert!(matches!(
+            registry.register_entity(entity).unwrap_err(),
+            OrmError::DescriptorValidation { .. }
+        ));
+        assert!(registry.snapshot().is_empty());
+    }
+
+    let registry = DescriptorRegistry::new();
+    let mut entity = person_descriptor();
+    entity.owned_attributes[0].attr_name = "name; delete $x".into();
+    assert!(matches!(
+        registry.register_entity(entity).unwrap_err(),
+        OrmError::DescriptorValidation { .. }
+    ));
+
+    let registry = DescriptorRegistry::new();
+    let mut relation = employment_descriptor();
+    relation.roles[0].role_name = "employee) isa secret".into();
+    assert!(matches!(
+        registry.register_relation(relation).unwrap_err(),
+        OrmError::DescriptorValidation { .. }
+    ));
+
+    let registry = DescriptorRegistry::new();
+    let mut relation = employment_descriptor();
+    relation.roles[0].player_type_names = vec!["person; delete $x".into()];
+    assert!(matches!(
+        registry.register_relation(relation).unwrap_err(),
+        OrmError::DescriptorValidation { .. }
+    ));
+}
+
+#[test]
+fn registry_accepts_canonical_hyphenated_typeql_labels() {
+    let registry = DescriptorRegistry::new();
+    let mut entity = person_descriptor();
+    entity.type_name = "work-person".into();
+    entity.owned_attributes[0].attr_name = "display-name".into();
+
+    let registered = registry.register_entity(entity).unwrap();
+
+    assert_eq!(registered.type_name, "work-person");
+    assert_eq!(registered.owned_attributes[0].attr_name, "display-name");
+}
+
+#[test]
 fn registry_accepts_relates_only_role() {
     let registry = DescriptorRegistry::new();
     let mut relation = employment_descriptor();

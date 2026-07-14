@@ -1,0 +1,492 @@
+{
+  "corpus_id": "type-bridge-unified-typed-query",
+  "version": 1,
+  "schema_version": 1,
+  "contract_document": "docs/development/typed-query-contract.md",
+  "languages": ["python", "typescript"],
+  "documented_examples": {
+    "python": [
+      "python-models-and-session",
+      "python-selection-arities",
+      "python-topology-and-strings",
+      "python-terminals-and-collections",
+      "python-transaction-ownership"
+    ],
+    "typescript": [
+      "typescript-models-and-session",
+      "typescript-selection-arities",
+      "typescript-topology-and-strings",
+      "typescript-terminals-and-collections",
+      "typescript-transaction-ownership"
+    ]
+  },
+  "example_parity_groups": [
+    {"id": "models-and-session", "python": "python-models-and-session", "typescript": "typescript-models-and-session"},
+    {"id": "selection-arities", "python": "python-selection-arities", "typescript": "typescript-selection-arities"},
+    {"id": "topology-and-strings", "python": "python-topology-and-strings", "typescript": "typescript-topology-and-strings"},
+    {"id": "terminals-and-collections", "python": "python-terminals-and-collections", "typescript": "typescript-terminals-and-collections"},
+    {"id": "transaction-ownership", "python": "python-transaction-ownership", "typescript": "typescript-transaction-ownership"}
+  ],
+  "cases": [
+    {
+      "id": "surface.one-typed-facade",
+      "description": "One immutable Query is exported only from typed subpaths; root legacy names remain separate.",
+      "features": ["one_public_facade", "typed_subpath_exports"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"python_import": "type_bridge.typed", "typescript_import": "@type-bridge/node/typed"},
+      "expected": {"outcome": "success", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-models-and-session"], "typescript": ["typescript-models-and-session"]}
+    },
+    {
+      "id": "compat.legacy-root-surfaces",
+      "description": "Existing root raw and mutable manager query surfaces preserve imports, mutability, generic arity, and terminals.",
+      "features": ["legacy_preservation"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"surfaces": ["python.Query", "python.QueryBuilder", "python.RustTypeDBQuery", "typescript.TypedQuery<T, Row>"]},
+      "expected": {"outcome": "success", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-models-and-session"], "typescript": ["typescript-models-and-session"]}
+    },
+    {
+      "id": "binding.exact-default",
+      "description": "A newly declared binding matches exactly its declared descriptor by default.",
+      "features": ["selected_bindings", "exact_default"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"model": "person", "match_mode": "default"},
+      "expected": {"outcome": "success", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "binding.explicit-subtypes",
+      "description": "Subtype-inclusive matching is an explicit binding option and preserves the binding descriptor.",
+      "features": ["explicit_subtypes"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"model": "party", "match_mode": "subtypes"},
+      "expected": {"outcome": "success", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "selection.scalar",
+      "description": "One selected slot scalarizes the row type.",
+      "features": ["one_slot"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"selection_arity": 1, "slots": ["person"]},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "python_shape": "Person", "typescript_shape": "Person"},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "selection.two-slot-tuple",
+      "description": "Two selected slots preserve construction order as a typed tuple.",
+      "features": ["two_slots"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"selection_arity": 2, "slots": ["person", "company"]},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "python_shape": "tuple[Person, Company]", "typescript_shape": "readonly [Person, Company]"},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "selection.five-slot-tuple",
+      "description": "Five slots preserve exact model and positional types.",
+      "features": ["five_slots"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"selection_arity": 5, "slots": ["person", "employment", "company", "employment-2", "person-2"]},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "selection.repeated-model-distinct-bindings",
+      "description": "Distinct binding handles of one model retain different runtime identities and result positions.",
+      "features": ["repeated_model"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"selection_arity": 2, "slots": ["person#1", "person#2"]},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "selection.duplicate-handle",
+      "description": "Selecting one underlying binding handle twice is invalid in every output shape.",
+      "features": ["duplicate_binding"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"selection_arity": 2, "slots": ["person#1", "person#1"]},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "duplicate_selection", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "selection.sixteen-slot-cap",
+      "description": "Sixteen selected slots are accepted without widening any slot type.",
+      "features": ["slot_cap_16"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"selection_arity": 16},
+      "expected": {"outcome": "success", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "selection.seventeen-slot-rejection",
+      "description": "Seventeen selected slots are rejected statically and by Rust before executor invocation.",
+      "features": ["slot_reject_17"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"selection_arity": 17},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "selection_cap_exceeded", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "topology.hidden-connected-cycle",
+      "description": "Selected and hidden bindings form one connected graph; cycles are valid.",
+      "features": ["hidden_bindings", "connected_graph", "cycle"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"selected": ["person", "company"], "hidden": ["employment"], "topology": "cycle"},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "topology.disconnected",
+      "description": "Disconnected positive components without explicit permission fail before execution.",
+      "features": ["connected_graph"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"components": [["person"], ["company"]], "allowed_cross_joins": []},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "disconnected_plan", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "topology.explicit-cross-join",
+      "description": "Topology-level cross-join permission connects the named positive components.",
+      "features": ["cross_join"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"components": [["person"], ["company"]], "allowed_cross_joins": [["person", "company"]]},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "boolean.or-definite-binding",
+      "description": "A variable exported from OR must be bound in every branch.",
+      "features": ["or_definite_binding"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"or_branch_bindings": [["person", "company"], ["person"]], "export": "company"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "partial_or_binding", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "boolean.not-unattached-reference",
+      "description": "The public facade rejects a binding used only inside NOT unless it was selected or attached first.",
+      "features": ["not_correlation"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"selected": ["person"], "attached": [], "not_references": ["company"]},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "unattached_binding", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "references.cross-owner-field",
+      "description": "Binding a field declared by an unrelated owner fails before execution.",
+      "features": ["field_ownership"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"field_owner": "company", "bound_owner": "person"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "cross_owner_field", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "references.cross-owner-role",
+      "description": "Binding a role declared by an unrelated relation owner fails before execution.",
+      "features": ["role_compatibility"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"role_owner": "collaboration", "bound_owner": "employment"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "cross_owner_role", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "references.incompatible-role-player",
+      "description": "A role edge whose player descriptor is outside the role's declared player closure fails before execution.",
+      "features": ["role_compatibility"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"role": "employment:employee", "role_player": "company", "allowed_player": "person"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "incompatible_role_player", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "identity.selected-tuple-distinct",
+      "description": "Different hidden witnesses do not duplicate the same ordered selected identity tuple.",
+      "features": ["selected_tuple_distinct"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"selected": ["person", "employment", "company"], "solution_fixture": "identity-main"},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "result_ref": "identity-main.selected_rows"},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "identity.root-distinct-page",
+      "description": "Page offset and limit apply to distinct root identities before hydration.",
+      "features": ["root_distinct", "page_envelope"],
+      "operation": "page_by",
+      "transaction_mode": "owned",
+      "input": {"root": "person", "offset": 0, "limit": 1, "include_total": true, "solution_fixture": "identity-main"},
+      "expected": {"outcome": "success", "identity_basis": "root", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "result_ref": "identity-main.page_by_person_offset_0_limit_1"},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "identity.collect-multiplicity",
+      "description": "Collect preserves matching-solution multiplicity for a selected root.",
+      "features": ["collect", "named_rows"],
+      "operation": "page_by",
+      "transaction_mode": "owned",
+      "input": {"root": "person:alice", "slot": "employment", "modifier": "collect", "solution_fixture": "identity-main"},
+      "expected": {"outcome": "success", "identity_basis": "matching_solution", "multiplicity": "preserve_solutions", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "result_ref": "identity-main.alice_collect_employments"},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "identity.collect-distinct",
+      "description": "CollectDistinct deduplicates only by TypeDB concept identity.",
+      "features": ["collect_distinct"],
+      "operation": "page_by",
+      "transaction_mode": "owned",
+      "input": {"root": "person:alice", "slot": "employment", "modifier": "collect_distinct", "solution_fixture": "identity-main"},
+      "expected": {"outcome": "success", "identity_basis": "concept", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "result_ref": "identity-main.alice_collect_distinct_employments"},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "shape.page-non-root-singular",
+      "description": "Every non-root page output must initially be collected.",
+      "features": ["page_envelope"],
+      "operation": "page_by",
+      "transaction_mode": "none",
+      "input": {"root": "person", "output": [{"person": "one"}, {"company": "one"}]},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "singular_non_root_page_slot", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "order.rows-stable-safe-window",
+      "description": "An incomplete row window uses selected-binding public order plus present unique scalar tie breakers.",
+      "features": ["stable_row_order", "positive_limit", "safe_offset"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"limit": 50, "offset": 0, "order": ["person.name.asc"], "stable_keys": ["person.key"]},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "bounds.public-invalid-limit",
+      "description": "The public language boundary rejects non-positive or out-of-range integer limits before unsigned native conversion.",
+      "features": ["positive_limit"],
+      "operation": "fetch_rows",
+      "transaction_mode": "none",
+      "input": {"boundary": "public_language", "invalid_limits": [0, -1, "u64_overflow"]},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "invalid_window_limit", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "bounds.public-invalid-offset",
+      "description": "The public language boundary rejects negative or out-of-range integer offsets before unsigned native conversion.",
+      "features": ["safe_offset"],
+      "operation": "fetch_rows",
+      "transaction_mode": "none",
+      "input": {"boundary": "public_language", "invalid_offsets": [-1, "u64_overflow"]},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "invalid_window_offset", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "bounds.canonical-zero-limit",
+      "description": "A forged canonical request that bypasses the public boundary still rejects a zero unsigned limit.",
+      "features": ["positive_limit"],
+      "operation": "fetch_rows",
+      "transaction_mode": "none",
+      "input": {"boundary": "canonical_request", "limit": 0},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "zero_window_limit", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "bounds.window-overflow",
+      "description": "A valid unsigned offset and limit whose sum overflows the canonical window fails before execution.",
+      "features": ["positive_limit", "safe_offset"],
+      "operation": "fetch_rows",
+      "transaction_mode": "none",
+      "input": {"offset": "u64_max_minus_1", "limit": 2},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "window_overflow", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "order.non-scalar-field",
+      "description": "An explicit order through a multi-valued field fails before execution.",
+      "features": ["stable_root_order"],
+      "operation": "page_by",
+      "transaction_mode": "none",
+      "input": {"order_field": "person.aliases", "field_cardinality": "many"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "non_scalar_order_field", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "order.missing-stable-root-key",
+      "description": "An incomplete root page without a present unique scalar root tie breaker fails closed.",
+      "features": ["stable_root_order"],
+      "operation": "page_by",
+      "transaction_mode": "none",
+      "input": {"root_key": "nullable_or_non_unique"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "missing_stable_unique_key", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "order.missing-stable-collection-key",
+      "description": "A collected binding without a present unique scalar binding-local tie breaker fails closed.",
+      "features": ["stable_collection_order"],
+      "operation": "page_by",
+      "transaction_mode": "none",
+      "input": {"collection_key": "nullable_or_non_unique"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "missing_stable_unique_key", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "cardinality.one-zero",
+      "description": "one raises no_result for zero distinct selected tuples.",
+      "features": ["one_cardinality"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"row_cardinality": "exactly_one", "distinct_selected_tuples": 0},
+      "expected": {"outcome": "error", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": "cardinality", "error_code": "no_result", "zero_executor_invocations": false, "zero_data_statements": false},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "cardinality.one-many",
+      "description": "one raises not_unique after proving more than one distinct selected tuple.",
+      "features": ["one_cardinality"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"row_cardinality": "exactly_one", "distinct_selected_tuples": 2},
+      "expected": {"outcome": "error", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": "cardinality", "error_code": "not_unique", "zero_executor_invocations": false, "zero_data_statements": false},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "terminal.count-distinct-root",
+      "description": "count_by ignores fetch order/window and counts distinct matching root identities.",
+      "features": ["root_distinct"],
+      "operation": "count_by",
+      "transaction_mode": "owned",
+      "input": {"root": "person", "solution_fixture": "identity-main"},
+      "expected": {"outcome": "success", "identity_basis": "root", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "result_ref": "identity-main.count_by_person"},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "terminal.exists-distinct-root",
+      "description": "exists_by ignores fetch order/window and stops once one distinct matching root is proven.",
+      "features": ["root_distinct"],
+      "operation": "exists_by",
+      "transaction_mode": "owned",
+      "input": {"root": "person", "solution_fixture": "identity-main"},
+      "expected": {"outcome": "success", "identity_basis": "root", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "result_ref": "identity-main.exists_by_person"},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "strings.literal-and-regex",
+      "description": "Contains/prefix/suffix are literal, percent is ordinary text, and regex alone is regex-aware.",
+      "features": ["literal_contains", "literal_starts_with", "literal_ends_with", "explicit_regex", "percent_literal"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"contains": "50%", "starts_with": "Al", "ends_with": "Labs", "regex": "^A[[:alpha:]]+$"},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "strings.like-absent",
+      "description": "The typed facade statically omits a like member; this is API absence, not a runtime Rust diagnostic.",
+      "features": ["like_absent"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"static_member": "like", "present": false},
+      "expected": {"outcome": "success", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "transaction.database-owned",
+      "description": "A database terminal owns one read transaction and closes it on every exit path.",
+      "features": ["database_connection"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"connection": "database", "internal_statements": "bounded"},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "opens": 1, "closes": 1, "commits": 0, "rolls_back": 0},
+      "examples": {"python": ["python-transaction-ownership"], "typescript": ["typescript-transaction-ownership"]}
+    },
+    {
+      "id": "transaction.context-borrowed",
+      "description": "A borrowed read context remains open and reusable; the query performs no lifecycle action.",
+      "features": ["borrowed_transaction"],
+      "operation": "fetch_rows",
+      "transaction_mode": "borrowed",
+      "input": {"connection": "read_transaction_context", "reuse_after_terminal": true},
+      "expected": {"outcome": "success", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false, "opens": 0, "closes": 0, "commits": 0, "rolls_back": 0},
+      "examples": {"python": ["python-transaction-ownership"], "typescript": ["typescript-transaction-ownership"]}
+    },
+    {
+      "id": "transaction.non-read-context",
+      "description": "The selected executor rejects a borrowed non-read target before issuing a data statement.",
+      "features": ["borrowed_transaction"],
+      "operation": "fetch_rows",
+      "transaction_mode": "borrowed",
+      "input": {"connection": "schema_transaction_context"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "borrowed_target_not_read_only", "zero_executor_invocations": false, "zero_data_statements": true, "closes": 0, "commits": 0, "rolls_back": 0},
+      "examples": {"python": ["python-transaction-ownership"], "typescript": ["typescript-transaction-ownership"]}
+    },
+    {
+      "id": "preflight.missing-capability",
+      "description": "Missing canonical provider capability invokes no data statement.",
+      "features": ["capability_preflight"],
+      "operation": "page_by",
+      "transaction_mode": "owned",
+      "input": {"missing_capability": "stable_root_order"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "unsupported_capability", "error_code": "missing_provider_capability", "zero_executor_invocations": false, "zero_data_statements": true, "error_details": {"missing": ["stable_root_order"]}},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "preflight.stale-schema",
+      "description": "A stale descriptor fingerprint fails immediately before capability/lowering with zero data statements.",
+      "features": ["stale_schema"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"validated_fingerprint": "generation-1", "current_fingerprint": "generation-2"},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "stale_schema", "error_code": "stale_schema", "zero_executor_invocations": false, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "execution.resource-limit",
+      "description": "A hard or caller-tightened resource ceiling fails the whole result during bounded processing.",
+      "features": ["resource_limit"],
+      "operation": "page_by",
+      "transaction_mode": "owned",
+      "input": {"ceiling": "collected_concepts", "observed": "over_limit"},
+      "expected": {"outcome": "error", "identity_basis": "root", "multiplicity": "preserve_solutions", "error_category": "resource_limit", "error_code": "collected_concept_limit", "zero_executor_invocations": false, "zero_data_statements": false, "partial_result": false},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "execution.provider-failure",
+      "description": "A provider failure retains its stable category and exposes no partial result.",
+      "features": ["provider_failure"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"provider_outcome": "error_after_statement"},
+      "expected": {"outcome": "error", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": "provider", "error_code": "provider_statement_failed", "zero_executor_invocations": false, "zero_data_statements": false, "partial_result": false},
+      "examples": {"python": ["python-transaction-ownership"], "typescript": ["typescript-transaction-ownership"]}
+    },
+    {
+      "id": "execution.result-decode",
+      "description": "Malformed, wrong-token, wrong-shape, or hostile provider evidence returns no partial result.",
+      "features": ["result_decode"],
+      "operation": "fetch_rows",
+      "transaction_mode": "owned",
+      "input": {"provider_evidence": "wrong_shape_id"},
+      "expected": {"outcome": "error", "identity_basis": "selected_tuple", "multiplicity": "deduplicate_identity", "error_category": "result_decode", "error_code": "result_shape_mismatch", "zero_executor_invocations": false, "zero_data_statements": false, "partial_result": false},
+      "examples": {"python": ["python-transaction-ownership"], "typescript": ["typescript-transaction-ownership"]}
+    }
+  ]
+}

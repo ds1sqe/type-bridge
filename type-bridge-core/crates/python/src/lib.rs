@@ -15,11 +15,13 @@
 
 pub mod ast;
 pub mod author;
+pub mod match_runtime;
 pub mod migration_runtime;
 pub mod orm;
 pub mod orm_runtime;
 pub mod schema;
 pub mod transpiler;
+mod validated_result_runtime;
 pub mod version;
 
 use type_bridge_core_lib as core;
@@ -677,6 +679,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // ORM CRUD query builder
     m.add_class::<orm::CrudQueryBuilder>()?;
     orm_runtime::register(m)?;
+    match_runtime::register(m)?;
     migration_runtime::register(m)?;
     author::register(m)?;
     schema::register(m)?;

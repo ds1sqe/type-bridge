@@ -139,21 +139,23 @@ person_manager.insert_many(persons)
 
 Both `insert()` and `insert_many()` run in a single write transaction when a transaction/context is provided to the manager. Without one, each call opens exactly one write transaction (no per-entity commits).
 
-#### Given-Stage Fast Path (TypeDB 3.12+)
+#### Given-Stage Fast Path (TypeDB 3.12 + negotiated band 9)
 
-Against a TypeDB 3.12+ server, `insert_many()` for entities automatically
-runs as **one compiled `given`-stage pipeline** over the whole batch: the
-values travel through the driver API instead of being interpolated into
-per-row TypeQL strings, removing both the per-row query-compilation
-overhead and the string-interpolation surface.
+When a TypeDB 3.12+ server is connected through the embedded band-9 driver,
+`insert_many()` for entities automatically runs as **one compiled `given`-stage
+pipeline** over the whole batch: the values travel through the driver API
+instead of being interpolated into per-row TypeQL strings, removing both the
+per-row query-compilation overhead and the string-interpolation surface.
 
 The fast path engages when the batch is homogeneous — every instance binds
 the same attribute set with matching value types. Batches with optional
 attributes present on only some instances, decimal/duration values, or
 transaction-bound managers use the per-row path instead, with identical
-results. On servers older than 3.12 the per-row path is always used; no
-code changes are needed either way. Check `db.supports_given_stage()` to
-see which path a connection takes.
+results. Servers older than 3.12, and a 3.12 connection that had to retain its
+band-8 fallback because the band-9 upgrade failed, use the per-row path; no code
+changes are needed either way. Check `db.supports_given_stage()` for the
+effective negotiated capability rather than inferring it from the server
+version alone.
 
 **Note on special characters**: TypeBridge automatically escapes special characters in string attributes (quotes, backslashes) when generating TypeQL queries. You don't need to manually escape values - just pass them as normal Python strings.
 
@@ -1504,34 +1506,38 @@ with Database(database="mydb") as db:
 
 ### Driver Injection
 
-For advanced use cases, you can inject an external `Driver` instance instead of having `Database` create one internally. This enables:
+For direct TypeDB driver and database-administration calls, you can inject an
+external Python `Driver` and retain ownership of its lifecycle. This enables:
 
-- **Connection sharing** across multiple `Database` instances
-- **Resource pooling** with custom driver management
+- **Connection sharing** for direct/admin calls across `Database` wrappers
+- **Custom lifecycle management** for the external Python driver
 - **Easier testing** via mock driver injection
 
+ORM CRUD, typed queries, and `Database.transaction()` continue to use an
+independent Rust-owned connection/transaction. Injecting a Python driver does
+not pool or share that connection with ORM operations.
+
 ```python
-from typedb.driver import TypeDB, Credentials, DriverOptions
+from type_bridge import Credentials, Database, TypeDB, create_driver_options
 
 # Create a shared driver
 driver = TypeDB.driver(
     "localhost:1729",
     Credentials("admin", "password"),
-    DriverOptions()
+    create_driver_options(),
 )
 
-# Multiple databases share one connection
+# Multiple wrappers expose the same driver for direct/admin operations.
 db1 = Database(database="project_a", driver=driver)
 db2 = Database(database="project_b", driver=driver)
+assert db1.driver is driver
+assert db2.driver is driver
 
-# Use both databases
-with db1.transaction("write") as tx:
-    Person.manager(tx).insert(alice)
+# Administration helpers use the injected Python driver.
+project_a_exists = db1.database_exists()
+project_b_exists = db2.database_exists()
 
-with db2.transaction("read") as tx:
-    results = Artifact.manager(tx).all()
-
-# Close databases (only clears references, doesn't close driver)
+# Closing wrappers clears their references without closing the shared driver.
 db1.close()
 db2.close()
 
@@ -1541,8 +1547,12 @@ driver.close()
 
 **Ownership semantics:**
 
-- `driver=None` (default): `Database` creates and owns the driver, `close()` closes it
-- `driver=<Driver>`: `Database` uses but doesn't own it, `close()` only clears the reference
+- `driver=None` (default): ORM operations use the embedded Rust runtime. If
+  `Database.driver` is accessed, `Database` creates and owns an optional Python
+  driver and `close()` closes it.
+- `driver=<Driver>`: direct/admin calls use the injected Python driver, the
+  caller owns it, and `close()` only clears the wrapper's reference. ORM
+  operations still use the independent embedded Rust runtime.
 
 ### Testing with Mock Driver
 
