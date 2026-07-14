@@ -20,6 +20,11 @@ manifest-path = "crates/python/Cargo.toml"
 features = ["pyo3/extension-module"]
 module-name = "type_bridge_core"
 python-source = "python"
+include = [
+    # Cargo metadata resolves optional path dependencies even when their feature
+    # is disabled. Maturin 1.14 no longer discovers this crate automatically.
+    { path = "crates/orm-derive/**/*", format = "sdist" },
+]
 exclude = [
     "python/**/__pycache__/**",
     "python/**/*.pyc",

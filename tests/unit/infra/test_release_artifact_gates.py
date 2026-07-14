@@ -25,6 +25,19 @@ def test_core_build_excludes_generated_python_bytecode() -> None:
     } <= excluded
 
 
+def test_core_sdist_includes_optional_rust_path_dependency() -> None:
+    """The core sdist must remain loadable by Cargo's metadata resolver."""
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "type-bridge-core/pyproject.toml").read_text(encoding="utf-8")
+    )
+    included = pyproject["tool"]["maturin"]["include"]
+
+    assert {
+        "path": "crates/orm-derive/**/*",
+        "format": "sdist",
+    } in included
+
+
 def test_core_metadata_advertises_only_the_supported_python_implementation() -> None:
     pyproject = tomllib.loads(
         (REPO_ROOT / "type-bridge-core/pyproject.toml").read_text(encoding="utf-8")
