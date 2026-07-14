@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "1.5.7" }
+type-bridge-migration = { path = "../migration", version = "1.5.7" }
 type-bridge-orm = { path = "../orm", version = "1.5.7", default-features = false, features = ["band7", "band8", "band9"] }
 napi = { version = "2", features = ["napi6"] }
 napi-derive = "2"
@@ -23,3 +24,6 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -2603,8 +2603,10 @@ dependencies = [
  "napi-derive",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "type-bridge-core-lib",
+ "type-bridge-migration",
  "type-bridge-orm",
 ]
 

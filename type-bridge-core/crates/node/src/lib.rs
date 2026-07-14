@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
 use type_bridge_core_lib::bindgen::{BindgenOptions, TargetLanguage};
@@ -1158,6 +1158,62 @@ pub fn parse_schema_json(input: String) -> Result<String> {
         .map_err(|e| Error::from_reason(format!("Failed to serialize schema JSON: {e}")))
 }
 
+/// Parse canonical TypeQL into the complete ORM `SchemaInfo` projection.
+///
+/// This keeps annotation parsing and schema normalization in the shared Rust
+/// implementation while returning only serialized data to JavaScript.
+#[napi(js_name = "parseSchemaInfoJson")]
+pub fn parse_schema_info_json(input: String) -> Result<String> {
+    let schema = SchemaInfo::from_typeql(&input)
+        .map_err(|error| Error::from_reason(format!("Failed to parse SchemaInfo: {error}")))?;
+    serde_json::to_string(&schema).map_err(json_serialize_error)
+}
+
+#[derive(Serialize)]
+struct NodeCheckedMigrationTree {
+    graph: type_bridge_migration::MigrationGraph,
+    extensions: Vec<NodeLoadedMigrationExtension>,
+}
+
+#[derive(Serialize)]
+struct NodeLoadedMigrationExtension {
+    migration_name: String,
+    namespace: String,
+    path: String,
+    critical: bool,
+    contents: Vec<u8>,
+}
+
+/// Checked-load a legacy or manifested migration tree through the shared Rust
+/// loader and return normalized graph plus hash-verified extension bytes.
+#[napi(js_name = "loadMigrationTreeCheckedJson")]
+pub fn load_migration_tree_checked_json(
+    directory: String,
+    known_extension_namespaces: Vec<String>,
+) -> Result<String> {
+    let namespaces = known_extension_namespaces.into_iter().collect();
+    let tree = type_bridge_migration::load_dir_checked_with_extensions(
+        std::path::Path::new(&directory),
+        &namespaces,
+    )
+    .map_err(|error| Error::from_reason(format!("Failed to load migration tree: {error}")))?;
+    serde_json::to_string(&NodeCheckedMigrationTree {
+        graph: tree.graph,
+        extensions: tree
+            .extensions
+            .into_iter()
+            .map(|extension| NodeLoadedMigrationExtension {
+                migration_name: extension.migration_name,
+                namespace: extension.namespace,
+                path: extension.path,
+                critical: extension.critical,
+                contents: extension.contents,
+            })
+            .collect(),
+    })
+    .map_err(json_serialize_error)
+}
+
 /// Render generated model files as a JSON package for a target language.
 #[napi(js_name = "renderModelsJson")]
 pub fn render_models_json(
@@ -2132,5 +2188,55 @@ mod tests {
                 .expect("group fields should normalize"),
             vec!["person-name".to_string(), "score".to_string()]
         );
+    }
+
+    #[test]
+    fn checked_migration_binding_uses_shared_manifest_loader() {
+        use type_bridge_migration::author::{
+            AuthorMigrationRequest, DeclaredMigrationIntentInput, ExistingArtifactPolicy,
+            MigrationMetadata, PositionedOperations, SnapshotContext, author_migration,
+            publish_composed_migration,
+        };
+
+        let authored = author_migration(&AuthorMigrationRequest {
+            base: SchemaInfo::default(),
+            target: SchemaInfo::default(),
+            metadata: MigrationMetadata {
+                app_label: "migrations".to_string(),
+                name: "0001_semantic".to_string(),
+                dependencies: Vec::new(),
+                generated_at: "2026-07-14T00:00:00Z".to_string(),
+                type_bridge_version: "1.5.7".to_string(),
+                type_bridge_core_version: "1.5.7".to_string(),
+            },
+            snapshot: SnapshotContext {
+                version: "v0001".to_string(),
+                previous_version: None,
+            },
+            extra_operations: PositionedOperations::default(),
+            declared_intent: Some(DeclaredMigrationIntentInput {
+                contents: b"semantic".to_vec(),
+            }),
+            attribute_renames: Vec::new(),
+        })
+        .unwrap()
+        .unwrap();
+        let mut composer = authored.composer();
+        composer
+            .add_extension("paladin", "companion.json", b"{}\n".to_vec(), true)
+            .unwrap();
+        let composed = composer.compose().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        publish_composed_migration(directory.path(), &composed, ExistingArtifactPolicy::Fail)
+            .unwrap();
+
+        let checked = load_migration_tree_checked_json(
+            directory.path().display().to_string(),
+            vec!["paladin".to_string()],
+        )
+        .unwrap();
+        let checked: serde_json::Value = serde_json::from_str(&checked).unwrap();
+        assert_eq!(checked["graph"]["migrations"][0]["name"], "0001_semantic");
+        assert_eq!(checked["extensions"][0]["namespace"], "paladin");
     }
 }

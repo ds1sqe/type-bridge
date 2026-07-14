@@ -551,7 +551,9 @@ export interface NativeRuntime {
 
 interface NativeSchemaParser {
   parseSchemaJson(input: string): string;
+  parseSchemaInfoJson(input: string): string;
   renderModelsJson(input: string, target: string, optionsJson?: string | null): string;
+  loadMigrationTreeCheckedJson(directory: string, knownExtensionNamespaces: string[]): string;
 }
 
 export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
@@ -600,6 +602,34 @@ export function ensureDatabase(
 }
 
 export { loadNative };
+
+export interface CheckedMigrationExtension {
+  migration_name: string;
+  namespace: string;
+  path: string;
+  critical: boolean;
+  contents: number[];
+}
+
+export interface CheckedMigrationTree {
+  graph: { migrations: Array<Record<string, unknown>> };
+  extensions: CheckedMigrationExtension[];
+}
+
+/** Parse canonical TypeQL through Rust's complete SchemaInfo implementation. */
+export function parseSchemaInfo(input: string): SchemaInfo {
+  return parseJson<SchemaInfo>(loadNative().parseSchemaInfoJson(input));
+}
+
+/** Load and hash-verify a legacy or manifested migration tree in Rust. */
+export function loadMigrationTreeChecked(
+  directory: string,
+  knownExtensionNamespaces: string[] = [],
+): CheckedMigrationTree {
+  return parseJson<CheckedMigrationTree>(
+    loadNative().loadMigrationTreeCheckedJson(directory, knownExtensionNamespaces),
+  );
+}
 
 export function generateDefineBlock(info: SchemaInfo): string {
   return loadNative().generateDefineBlockJson(JSON.stringify(info));
