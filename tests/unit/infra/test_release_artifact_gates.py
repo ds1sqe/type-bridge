@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import io
 import json
 import re
+import subprocess
+import tarfile
 import tomllib
 from pathlib import Path
+
+import pytest
+
+from tests.integration.parity import cross_language
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
@@ -195,18 +202,20 @@ def test_registry_publication_waits_for_global_release_candidate_gates() -> None
     node_acceptance = job_block(workflow, "accept-node-package")
 
     assert needs_line(crates_publish) == (
-        "    needs: [validate-release-identity, accept-python-artifacts, accept-node-package]"
+        "    needs: [validate-release-identity, accept-python-artifacts, "
+        "accept-node-package, accept-live-artifact-parity]"
     )
     assert needs_line(node_publish) == (
-        "    needs: [validate-release-identity, accept-python-artifacts, accept-node-package]"
+        "    needs: [validate-release-identity, accept-python-artifacts, "
+        "accept-node-package, accept-live-artifact-parity]"
     )
     assert needs_line(core_publish) == (
         "    needs: [validate-release-identity, build-core-wheels, build-core-sdist, "
-        "accept-python-artifacts, accept-node-package]"
+        "accept-python-artifacts, accept-node-package, accept-live-artifact-parity]"
     )
     assert needs_line(root_publish) == (
         "    needs: [validate-release-identity, build-python, accept-python-artifacts, "
-        "accept-node-package, publish-core-pypi]"
+        "accept-node-package, publish-core-pypi, accept-live-artifact-parity]"
     )
     assert "publish-crates" not in needs_line(python_acceptance)
     assert "publish-crates" not in needs_line(node_acceptance)
@@ -221,6 +230,163 @@ def test_node_native_crate_configures_napi_platform_linking() -> None:
     assert (crate_root / "build.rs").read_text(encoding="utf-8") == (
         "fn main() {\n    napi_build::setup();\n}\n"
     )
+
+
+def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> None:
+    """The live F8 gate must execute uploaded candidates without rebuilding."""
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    acceptance = job_block(workflow, "accept-live-artifact-parity")
+
+    assert needs_line(acceptance) == (
+        "    needs: [build-core-wheels, build-python, pack-node-package]"
+    )
+    assert re.findall(
+        r'^          - python-version: "([^"]+)"\n'
+        r'            typedb-server: "([^"]+)"\n'
+        r'            expect-given: "([01])"$',
+        acceptance,
+        re.MULTILINE,
+    ) == [
+        ("3.12", "typedb/typedb:3.8.3", "0"),
+        ("3.13.5", "typedb/typedb:3.11.5", "0"),
+        ("3.14", "typedb/typedb:3.12.1", "1"),
+    ]
+    assert "image: ${{ matrix.typedb-server }}" in acceptance
+    assert "python-version: ${{ matrix.python-version }}" in acceptance
+    assert "- 1729:1729" in acceptance
+    assert "- 8000:8000" in acceptance
+    assert "curl --fail --silent http://localhost:8000/v1/version" in acceptance
+
+    for artifact in (
+        "core-wheels-linux-x86_64",
+        "python-dist",
+        "node-package",
+    ):
+        assert f"name: {artifact}" in acceptance
+    assert "type_bridge_core-*linux*x86_64.whl" in acceptance
+    assert "TYPE_BRIDGE_PARITY_CORE_WHEEL" in acceptance
+    assert "TYPE_BRIDGE_PARITY_ROOT_WHEEL" in acceptance
+    assert "TYPE_BRIDGE_PARITY_NODE_PACKAGE" in acceptance
+    assert 'TYPE_BRIDGE_PARITY_STRICT: "1"' in acceptance
+    assert "TYPE_BRIDGE_PARITY_EXPECT_GIVEN: ${{ matrix.expect-given }}" in acceptance
+    assert 'USE_DOCKER: "false"' in acceptance
+
+    assert "uv venv" in acceptance
+    assert "uv pip install" in acceptance
+    assert 'for module_name in ("type_bridge", "type_bridge_core")' in acceptance
+    assert "leaked to the source checkout" in acceptance
+    assert "escaped the exact-wheel environment" in acceptance
+    assert "test_live_typed_query_summary_and_f8_contract_match_built_artifacts" in acceptance
+    assert "--import-mode=importlib" in acceptance
+    assert "release-live-parity.xml" in acceptance
+    assert '"tests": 1' in acceptance
+    assert '"failures": 0' in acceptance
+    assert '"errors": 0' in acceptance
+    assert '"skipped": 0' in acceptance
+
+    for forbidden in (
+        "uv sync",
+        "uv build",
+        "maturin",
+        "npm ci",
+        "npm pack",
+        "npm run build:native",
+        "npm run build:types",
+        "cargo build",
+        "actions/upload-artifact",
+    ):
+        assert forbidden not in acceptance
+
+    helper = (REPO_ROOT / "tests/integration/parity/cross_language.py").read_text(encoding="utf-8")
+    assert 'PARITY_NODE_PACKAGE_ENV = "TYPE_BRIDGE_PARITY_NODE_PACKAGE"' in helper
+    assert "if supplied_package is None:" in helper
+    assert '"npm",\n                    "pack"' in helper
+
+    source_reader = (
+        REPO_ROOT / "tests/integration/parity/test_typed_query_live_parity.py"
+    ).read_text(encoding="utf-8")
+    wheel_reader = (REPO_ROOT / "tests/compat/typed_python/live.py").read_text(encoding="utf-8")
+    node_reader = (REPO_ROOT / "tests/integration/parity/node_typed_query_reader.cjs").read_text(
+        encoding="utf-8"
+    )
+    assert "TYPE_BRIDGE_PARITY_EXPECT_GIVEN" in source_reader
+    assert "TYPE_BRIDGE_PARITY_EXPECT_GIVEN" in wheel_reader
+    assert "session.var(ParityQueryEnvelope)" in source_reader
+    assert "QuerySession(connection).var(Envelope)" in wheel_reader
+    assert "cannot materialize nested relation role" in source_reader
+    assert "cannot materialize nested relation role" in wheel_reader
+    assert ".eq(new EnvelopeCode(expected.relation_player.envelope_code))" in node_reader
+
+    for publisher in (
+        "publish-crates",
+        "publish-node-npm",
+        "publish-core-pypi",
+        "publish-python-pypi",
+    ):
+        assert "accept-live-artifact-parity" in needs_line(job_block(workflow, publisher))
+
+
+def test_live_node_reader_consumes_supplied_tarball_without_npm_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The release path extracts its supplied tarball and never invokes npm."""
+    artifact = tmp_path / "type-bridge-node-test.tgz"
+    members = {
+        "package/dist/index.js": b"module.exports = {};\n",
+        "package/dist/typed/index.js": b"module.exports = {};\n",
+        "package/dist/typed/index.d.ts": b"export {};\n",
+        "package/type_bridge_node.linux-x64-gnu.node": b"native\n",
+    }
+    with tarfile.open(artifact, "w:gz") as archive:
+        for name, content in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+
+    monkeypatch.setenv(cross_language.PARITY_NODE_PACKAGE_ENV, str(artifact))
+
+    def fake_which(name: str) -> str | None:
+        assert name == "node", "the supplied-artifact path must not inspect npm"
+        return "/usr/bin/node"
+
+    def fake_run(
+        command: list[str],
+        *,
+        check: bool,
+        cwd: Path,
+        env: dict[str, str],
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert command == ["node", str(cross_language.PACKED_TYPED_QUERY_READER)]
+        assert check is False
+        assert capture_output is True
+        assert text is True
+        installed = cwd / "node_modules" / "@type-bridge" / "node"
+        assert (installed / "dist/index.js").is_file()
+        assert (installed / "dist/typed/index.js").is_file()
+        assert (installed / "dist/typed/index.d.ts").is_file()
+        assert (installed / "type_bridge_node.linux-x64-gnu.node").is_file()
+        assert env["TYPE_BRIDGE_PACKED_CONSUMER_ROOT"] == str(cwd)
+        assert env["TYPEDB_ADDRESS"] == "localhost:1729"
+        assert env["TYPEDB_HTTP_PORT"] == "8000"
+        assert env["TYPE_BRIDGE_PARITY_DATABASE"] == "artifact-parity"
+        assert "TYPE_BRIDGE_NODE_NATIVE_PATH" not in env
+        payload = {"artifact": "packed", "summary": {"relation_player": "shallow"}}
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(cross_language.shutil, "which", fake_which)
+    monkeypatch.setattr(cross_language.subprocess, "run", fake_run)
+
+    assert cross_language.read_typed_query_with_packed_node(
+        "localhost:1729",
+        "artifact-parity",
+        http_port=8000,
+    ) == {
+        "artifact": "packed",
+        "summary": {"relation_player": "shallow"},
+    }
 
 
 def test_npm_publication_uses_the_accepted_tarball() -> None:
@@ -342,7 +508,10 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert "npm pack" not in acceptance
     assert "actions/upload-artifact" not in acceptance
 
-    assert "accept-node-package" in needs_line(publish)
+    assert needs_line(publish) == (
+        "    needs: [validate-release-identity, accept-python-artifacts, "
+        "accept-node-package, accept-live-artifact-parity]"
+    )
     assert "name: node-package" in publish
     assert publish.count("scripts/ci/validate_node_release_package.py") == 2
     assert "--repository-package type-bridge-core/crates/node/package.json" in publish

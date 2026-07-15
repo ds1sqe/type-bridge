@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "labels": {
     "person_id": "parity-query-person-id",
     "person_name": "parity-query-person-name",
@@ -8,11 +8,13 @@
     "company_id": "parity-query-company-id",
     "company_name": "parity-query-company-name",
     "employment_code": "parity-query-employment-code",
+    "envelope_code": "parity-query-envelope-code",
     "person": "parity-query-person",
     "employee": "parity-query-employee",
     "contractor": "parity-query-contractor",
     "company": "parity-query-company",
-    "employment": "parity-query-employment"
+    "employment": "parity-query-employment",
+    "envelope": "parity-query-envelope"
   },
   "expected": {
     "root_keys": [
@@ -38,7 +40,13 @@
         "acme"
       ]
     },
-    "total": 2
+    "total": 2,
+    "relation_player": {
+      "envelope_code": "F8-1",
+      "employment_code": "E-1",
+      "employee_id": "alice",
+      "employer_id": "acme"
+    }
   },
   "semantic_corpus_projection": {
     "source_fixture": "identity-main",

@@ -72,6 +72,10 @@ class ParityQueryEmploymentCode(String):
     flags = AttributeFlags(name=_LABELS["employment_code"])
 
 
+class ParityQueryEnvelopeCode(String):
+    flags = AttributeFlags(name=_LABELS["envelope_code"])
+
+
 class ParityQueryPerson(Entity):
     flags = TypeFlags(name=_LABELS["person"])
     person_id: ParityQueryPersonId = Flag(Key)
@@ -105,6 +109,16 @@ class ParityQueryEmployment(Relation):
     employer: Role[ParityQueryCompany] = Role(
         "employer",
         ParityQueryCompany,
+        cardinality=Card(1, 1),
+    )
+
+
+class ParityQueryEnvelope(Relation):
+    flags = TypeFlags(name=_LABELS["envelope"])
+    code: ParityQueryEnvelopeCode = Flag(Key)
+    nested: Role[ParityQueryEmployment] = Role(
+        "nested",
+        ParityQueryEmployment,
         cardinality=Card(1, 1),
     )
 

@@ -29,3 +29,6 @@ $e3 isa parity-query-employment,
 $e4 isa parity-query-employment,
     links (employee: $bob, employer: $acme),
     has parity-query-employment-code "E-4";
+$envelope isa parity-query-envelope,
+    links (nested: $e1),
+    has parity-query-envelope-code "F8-1";

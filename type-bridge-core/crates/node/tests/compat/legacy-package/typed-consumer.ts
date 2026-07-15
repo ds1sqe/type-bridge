@@ -35,6 +35,9 @@ class PackedEmployment extends Relation("packed-typed-employment", {
   employee: role(PackedPerson),
   employer: role(PackedCompany),
 }) {}
+class PackedEnvelope extends Relation("packed-typed-envelope", {
+  nested: role(PackedEmployment),
+}) {}
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
@@ -62,9 +65,11 @@ function assertPackedStaticSurface(
   const packedPerson = databaseSession.var(PackedPerson);
   const packedCompany = databaseSession.var(PackedCompany);
   const packedEmployment = databaseSession.var(PackedEmployment);
+  const packedEnvelope = databaseSession.var(PackedEnvelope);
   const personReferences = references(PackedPerson);
   const companyReferences = references(PackedCompany);
   const employmentReferences = references(PackedEmployment);
+  const envelopeReferences = references(PackedEnvelope);
 
   const UnionEntity = Entity(typeNameOrFlags, {});
   const UnionRelation = Relation(typeNameOrFlags, {});
@@ -88,6 +93,30 @@ function assertPackedStaticSurface(
       companies: packedCompany.collect().distinct(),
     })
     .pageBy(packedPerson, { limit: 10 });
+
+  const relationPlayerRow = databaseSession
+    .queryNamed({ envelope: packedEnvelope, selected: packedEmployment })
+    .where(
+      packedEnvelope
+        .role(envelopeReferences.roles.nested)
+        .connects(packedEmployment),
+    )
+    .one();
+  type SelectedEmployment = typeof relationPlayerRow.selected;
+  type ShallowEmployment = Exclude<
+    (typeof relationPlayerRow.envelope)["nested"],
+    readonly unknown[]
+  >;
+  type SelectedEmployeeIsComplete = Expect<
+    Equal<SelectedEmployment["employee"], PackedPerson | readonly PackedPerson[]>
+  >;
+  type SelectedEmployerIsComplete = Expect<
+    Equal<SelectedEmployment["employer"], PackedCompany | readonly PackedCompany[]>
+  >;
+  type ShallowEmployeeIsAbsent = Expect<Equal<ShallowEmployment["employee"], undefined>>;
+  type ShallowEmployerIsAbsent = Expect<Equal<ShallowEmployment["employer"], undefined>>;
+  type ShallowOwnedKeyIsPresent = Expect<Equal<ShallowEmployment["name"], PackedName>>;
+  type ShallowIidIsPresent = Expect<Equal<ShallowEmployment["_iid"], string | null>>;
 
   const single = databaseSession.query(packedPerson).where(
     packedPerson.field(personReferences.fields.name).startsWith("A"),
@@ -136,6 +165,7 @@ function assertPackedStaticSurface(
   void exactPage;
   void exactTotal;
   void workPage;
+  void relationPlayerRow;
   void UnionEntity;
   void UnionRelation;
   void UnionChildEntity;
