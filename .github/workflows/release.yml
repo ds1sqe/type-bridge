@@ -686,7 +686,7 @@ jobs:
   # absent, so tagging a release still succeeds without registry credentials.
   publish-node-npm:
     name: Publish Node package to npm
-    needs: accept-node-package
+    needs: [validate-release-identity, accept-python-artifacts, accept-node-package]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -769,7 +769,7 @@ jobs:
   # Publish type-bridge-core to PyPI (must complete before type-bridge)
   publish-core-pypi:
     name: Publish type-bridge-core to PyPI
-    needs: [build-core-wheels, build-core-sdist, accept-python-artifacts]
+    needs: [validate-release-identity, build-core-wheels, build-core-sdist, accept-python-artifacts, accept-node-package]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -799,13 +799,20 @@ jobs:
       - name: List artifacts
         run: ls -la dist/
 
+      # The publisher action adds attestation sidecars to dist/. Preserve the
+      # exact accepted bytes for both the preflight and post-publish checks.
+      - name: Snapshot immutable PyPI candidate
+        run: |
+          mkdir -p tmp
+          cp -a dist tmp/pypi-candidate
+
       - name: Verify idempotent PyPI hashes
         run: |
           version="${GITHUB_REF_NAME#v}"
           python scripts/ci/verify_pypi_release_hashes.py \
             --project type-bridge-core \
             --version "$version" \
-            --dist-dir dist
+            --dist-dir tmp/pypi-candidate
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
@@ -818,7 +825,7 @@ jobs:
           python scripts/ci/verify_pypi_release_hashes.py \
             --project type-bridge-core \
             --version "$version" \
-            --dist-dir dist \
+            --dist-dir tmp/pypi-candidate \
             --require-existing \
             --attempts 6 \
             --retry-delay-seconds 10
@@ -826,7 +833,7 @@ jobs:
   # Publish type-bridge to PyPI (after core is available)
   publish-python-pypi:
     name: Publish type-bridge to PyPI
-    needs: [build-python, accept-python-artifacts, publish-core-pypi]
+    needs: [validate-release-identity, build-python, accept-python-artifacts, accept-node-package, publish-core-pypi]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -846,13 +853,20 @@ jobs:
           name: python-dist
           path: dist/
 
+      # The publisher action adds attestation sidecars to dist/. Preserve the
+      # exact accepted bytes for both the preflight and post-publish checks.
+      - name: Snapshot immutable PyPI candidate
+        run: |
+          mkdir -p tmp
+          cp -a dist tmp/pypi-candidate
+
       - name: Verify idempotent PyPI hashes
         run: |
           version="${GITHUB_REF_NAME#v}"
           python scripts/ci/verify_pypi_release_hashes.py \
             --project type-bridge \
             --version "$version" \
-            --dist-dir dist
+            --dist-dir tmp/pypi-candidate
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
@@ -865,7 +879,7 @@ jobs:
           python scripts/ci/verify_pypi_release_hashes.py \
             --project type-bridge \
             --version "$version" \
-            --dist-dir dist \
+            --dist-dir tmp/pypi-candidate \
             --require-existing \
             --attempts 6 \
             --retry-delay-seconds 10

@@ -185,14 +185,28 @@ def test_python_publication_depends_on_exact_artifact_acceptance() -> None:
     assert "name: python-dist" in github_release
 
 
-def test_crates_publication_waits_for_both_release_candidate_acceptance_gates() -> None:
+def test_registry_publication_waits_for_global_release_candidate_gates() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    publish = job_block(workflow, "publish-crates")
+    crates_publish = job_block(workflow, "publish-crates")
+    node_publish = job_block(workflow, "publish-node-npm")
+    core_publish = job_block(workflow, "publish-core-pypi")
+    root_publish = job_block(workflow, "publish-python-pypi")
     python_acceptance = job_block(workflow, "accept-python-artifacts")
     node_acceptance = job_block(workflow, "accept-node-package")
 
-    assert needs_line(publish) == (
+    assert needs_line(crates_publish) == (
         "    needs: [validate-release-identity, accept-python-artifacts, accept-node-package]"
+    )
+    assert needs_line(node_publish) == (
+        "    needs: [validate-release-identity, accept-python-artifacts, accept-node-package]"
+    )
+    assert needs_line(core_publish) == (
+        "    needs: [validate-release-identity, build-core-wheels, build-core-sdist, "
+        "accept-python-artifacts, accept-node-package]"
+    )
+    assert needs_line(root_publish) == (
+        "    needs: [validate-release-identity, build-python, accept-python-artifacts, "
+        "accept-node-package, publish-core-pypi]"
     )
     assert "publish-crates" not in needs_line(python_acceptance)
     assert "publish-crates" not in needs_line(node_acceptance)
@@ -328,7 +342,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert "npm pack" not in acceptance
     assert "actions/upload-artifact" not in acceptance
 
-    assert "needs: accept-node-package" in publish
+    assert "accept-node-package" in needs_line(publish)
     assert "name: node-package" in publish
     assert publish.count("scripts/ci/validate_node_release_package.py") == 2
     assert "--repository-package type-bridge-core/crates/node/package.json" in publish
@@ -353,10 +367,12 @@ def test_pypi_skip_existing_is_guarded_before_and_after_publish() -> None:
     ):
         publish = job_block(workflow, job)
         assert publish.count("scripts/ci/verify_pypi_release_hashes.py") == 2
+        assert publish.count("--dist-dir tmp/pypi-candidate") == 2
+        snapshot = publish.index("cp -a dist tmp/pypi-candidate")
         preflight = publish.index("scripts/ci/verify_pypi_release_hashes.py")
         publisher = publish.index("pypa/gh-action-pypi-publish")
         post_publish = publish.rindex("scripts/ci/verify_pypi_release_hashes.py")
-        assert preflight < publisher < post_publish
+        assert snapshot < preflight < publisher < post_publish
         assert f"--project {project}" in publish
         assert '--version "$version"' in publish
         assert "skip-existing: true" in publish

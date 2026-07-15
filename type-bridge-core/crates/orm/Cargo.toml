@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-orm"
-version = "1.5.7"
+version = "1.5.8"
 edition = "2024"
 description = "Async ORM for TypeDB built on type-bridge-core-lib"
 license.workspace = true
@@ -25,8 +25,8 @@ derive = ["dep:type-bridge-orm-derive"]
 integration-tests = ["derive", "band7", "band8", "band9"]
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "1.5.7" }
-type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "1.5.7", default-features = false, optional = true }
+type-bridge-core-lib = { path = "../core", version = "1.5.8" }
+type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "1.5.8", default-features = false, optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -35,7 +35,7 @@ unicase = "2.9"
 sha2 = "0.10"
 thiserror = "2"
 tracing = "0.1"
-type-bridge-orm-derive = { path = "../orm-derive", version = "1.5.7", optional = true }
+type-bridge-orm-derive = { path = "../orm-derive", version = "1.5.8", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

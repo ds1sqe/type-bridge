@@ -31,7 +31,7 @@ validator = load_module("validate_release_identity", VALIDATOR_PATH)
 def validate(**overrides: object) -> dict[str, object]:
     """Run the gate against repository authorities by default."""
     arguments: dict[str, object] = {
-        "tag": "v1.5.7",
+        "tag": "v1.5.8",
         "workspace_manifest": ROOT / "type-bridge-core/Cargo.toml",
         "root_python_manifest": ROOT / "pyproject.toml",
         "core_python_manifest": ROOT / "type-bridge-core/pyproject.toml",
@@ -60,7 +60,7 @@ def test_repository_release_identity_is_complete() -> None:
     report = validate()
 
     assert report["status"] == "ok"
-    assert report["version"] == "1.5.7"
+    assert report["version"] == "1.5.8"
     assert report["published_crates"] == list(validator.PUBLISHED_CRATES)
     assert report["unpublished_crates"] == [
         "type-bridge-core",
@@ -99,7 +99,7 @@ def test_release_tag_must_match_all_public_manifests() -> None:
 def test_first_party_cargo_version_drift_hard_fails(tmp_path: Path) -> None:
     workspace = copy_workspace_manifests(tmp_path)
     manifest = workspace.parent / "crates/orm/Cargo.toml"
-    manifest.write_text(manifest.read_text().replace('version = "1.5.7"', 'version = "1.5.6"', 1))
+    manifest.write_text(manifest.read_text().replace('version = "1.5.8"', 'version = "1.5.7"', 1))
 
     with pytest.raises(validator.ValidationError, match="type-bridge-orm version"):
         validate(workspace_manifest=workspace)
@@ -108,7 +108,7 @@ def test_first_party_cargo_version_drift_hard_fails(tmp_path: Path) -> None:
 def test_unpublished_first_party_version_drift_hard_fails(tmp_path: Path) -> None:
     workspace = copy_workspace_manifests(tmp_path)
     manifest = workspace.parent / "crates/migration/Cargo.toml"
-    manifest.write_text(manifest.read_text().replace('version = "1.5.7"', 'version = "1.5.6"', 1))
+    manifest.write_text(manifest.read_text().replace('version = "1.5.8"', 'version = "1.5.7"', 1))
 
     with pytest.raises(validator.ValidationError, match="type-bridge-migration version"):
         validate(workspace_manifest=workspace)

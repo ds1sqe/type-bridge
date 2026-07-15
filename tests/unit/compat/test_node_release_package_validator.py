@@ -29,7 +29,7 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 validator = load_module("validate_node_release_package", VALIDATOR_PATH)
 PACKAGE_NAME = "@type-bridge/node"
-VERSION = "1.5.7"
+VERSION = "1.5.8"
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -88,7 +88,7 @@ def write_tarball(
 def release_fixture(tmp_path: Path) -> tuple[Path, Path]:
     """Return matching repository metadata and npm tarball paths."""
     repository = tmp_path / "package.json"
-    artifact = tmp_path / "type-bridge-node-1.5.7.tgz"
+    artifact = tmp_path / "type-bridge-node-1.5.8.tgz"
     package = {"name": PACKAGE_NAME, "version": VERSION}
     write_json(repository, package)
     write_tarball(artifact, package)
