@@ -46,6 +46,7 @@ class Specialty extends attr.String(labels.specialty) {}
 class CompanyId extends attr.String(labels.company_id) {}
 class CompanyName extends attr.String(labels.company_name) {}
 class EmploymentCode extends attr.String(labels.employment_code) {}
+class EnvelopeCode extends attr.String(labels.envelope_code) {}
 
 class Person extends Entity(labels.person, {
   person_id: field(PersonId, Key),
@@ -70,8 +71,19 @@ class Employment extends Relation(labels.employment, {
   employer: role(Company, { cardinality: Card(1, 1) }),
 }) {}
 
+class Envelope extends Relation(labels.envelope, {
+  code: field(EnvelopeCode, Key),
+  nested: role(Employment, { cardinality: Card(1, 1) }),
+}) {}
+
 function registeredSession(connection) {
-  return new QuerySession(connection).registerModels(Employee, Contractor, Company, Employment);
+  return new QuerySession(connection).registerModels(
+    Employee,
+    Contractor,
+    Company,
+    Employment,
+    Envelope,
+  );
 }
 
 function graphQuery(connection) {
@@ -100,15 +112,82 @@ function graphQuery(connection) {
   return { person, personRefs, query };
 }
 
+function relationPlayerQuery(connection) {
+  const session = registeredSession(connection);
+  const envelope = session.var(Envelope, "exact");
+  const employment = session.var(Employment, "exact");
+  const envelopeRefs = references(Envelope);
+  return session
+    .queryNamed({ envelope, selected: employment })
+    .where(
+      envelope.role(envelopeRefs.roles.nested).connects(employment),
+      envelope
+        .field(envelopeRefs.fields.code)
+        .eq(new EnvelopeCode(expected.relation_player.envelope_code)),
+    );
+}
+
 function identity(thing) {
   assert.equal(typeof thing._iid, "string", "hydrated things must carry an IID");
   let kind;
   if (thing instanceof Employee) kind = "employee";
   else if (thing instanceof Contractor) kind = "contractor";
   else if (thing instanceof Company) kind = "company";
+  else if (thing instanceof Envelope) kind = "envelope";
   else if (thing instanceof Employment) kind = "employment";
   else throw new TypeError("unknown typed-query parity constructor");
   return { kind, iid: thing._iid };
+}
+
+function relationPlayerSummary(connection) {
+  const relationExpected = expected.relation_player;
+  const row = relationPlayerQuery(connection).one();
+  const nested = row.envelope.nested;
+  const selected = row.selected;
+
+  assert.ok(row.envelope instanceof Envelope, "envelope must retain its concrete model");
+  assert.ok(nested instanceof Employment, "nested relation must retain its concrete model");
+  assert.ok(selected instanceof Employment, "selected relation must retain its concrete model");
+  assert.equal(nested._iid, selected._iid, "shallow and selected views must share an IID");
+  assert.notStrictEqual(nested, selected, "hydration states must not alias one object");
+  assert.equal(nested.code.value, relationExpected.employment_code);
+  assert.equal(row.envelope.code.value, relationExpected.envelope_code);
+  assert.equal(selected.code.value, relationExpected.employment_code);
+  assert.equal(selected.employee.person_id.value, relationExpected.employee_id);
+  assert.equal(selected.employer.company_id.value, relationExpected.employer_id);
+  assert.equal(nested.employee, undefined);
+  assert.equal(nested.employer, undefined);
+  for (const roleName of ["employee", "employer"]) {
+    assert.deepEqual(Object.getOwnPropertyDescriptor(nested, roleName), {
+      value: undefined,
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+  }
+  assert.ok(Object.isFrozen(nested), "shallow nested relation must be frozen");
+
+  return {
+    contract: "shallow-nonrecursive",
+    envelope: {
+      identity: identity(row.envelope),
+      code: row.envelope.code.value,
+    },
+    shallow: {
+      identity: identity(nested),
+      code: nested.code.value,
+      roles_materialized: false,
+    },
+    selected: {
+      identity: identity(selected),
+      code: selected.code.value,
+      roles_materialized: true,
+      employee: identity(selected.employee),
+      employer: identity(selected.employer),
+    },
+    same_iid: nested._iid === selected._iid,
+    distinct_objects: nested !== selected,
+  };
 }
 
 function summarize(db) {
@@ -156,6 +235,7 @@ function summarize(db) {
     exists_by_person: exists,
   };
   assert.deepEqual(semanticProjection, contract.semantic_corpus_projection);
+  const relationPlayer = relationPlayerSummary(db);
 
   const tx = db.transaction("read");
   let borrowed;
@@ -196,6 +276,7 @@ function summarize(db) {
     count: Number(count),
     exists,
     semantic_corpus_projection: semanticProjection,
+    relation_player: relationPlayer,
     borrowed,
   };
 }

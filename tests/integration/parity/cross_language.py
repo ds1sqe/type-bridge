@@ -11,7 +11,7 @@ import sys
 import tarfile
 import tempfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
@@ -55,6 +55,7 @@ TYPED_QUERY_FIXTURE = Path(__file__).with_name("fixtures") / "typed-query" / "co
 TYPED_PYTHON_ARTIFACT_RUNNER = REPO_ROOT / "scripts" / "ci" / "run_typed_python_artifact.py"
 PARITY_ROOT_WHEEL_ENV = "TYPE_BRIDGE_PARITY_ROOT_WHEEL"
 PARITY_CORE_WHEEL_ENV = "TYPE_BRIDGE_PARITY_CORE_WHEEL"
+PARITY_NODE_PACKAGE_ENV = "TYPE_BRIDGE_PARITY_NODE_PACKAGE"
 
 ENTITY_CLASSES = {
     "parity-person": ParityPerson,
@@ -240,21 +241,38 @@ def read_typed_query_with_packed_node(
 ) -> dict[str, Any]:
     """Run the live typed-query reader from an isolated packed Node artifact.
 
-    This deliberately performs no dependency installation. The already-built
-    package is packed with lifecycle scripts disabled, extracted into a fresh
-    ignored consumer, and resolved only by its public package subpaths.
+    This deliberately performs no dependency installation. Release acceptance
+    supplies the exact immutable tarball through
+    ``TYPE_BRIDGE_PARITY_NODE_PACKAGE``; local/source parity retains the
+    existing lifecycle-disabled ``npm pack`` fallback. Either artifact is
+    extracted into a fresh ignored consumer and resolved only by its public
+    package subpaths.
     """
     if shutil.which("node") is None:
         pytest.skip("node executable is not installed")
-    if shutil.which("npm") is None:
-        pytest.skip("npm executable is not installed")
-    if (
-        not (NODE_PACKAGE_DIR / "dist" / "index.js").exists()
-        or not (NODE_PACKAGE_DIR / "dist" / "typed" / "index.js").exists()
-    ):
-        pytest.skip("compiled Node package not built; run `npm run build:types` in the node crate")
-    if not any(NODE_PACKAGE_DIR.glob("*.node")):
-        pytest.skip("native node module not built; run `npm run build:native` in the node crate")
+
+    supplied_package_raw = os.environ.get(PARITY_NODE_PACKAGE_ENV)
+    supplied_package: Path | None = None
+    if supplied_package_raw is not None:
+        supplied_package = Path(supplied_package_raw).expanduser().resolve()
+        if not supplied_package.is_file() or supplied_package.suffix != ".tgz":
+            raise AssertionError(
+                f"{PARITY_NODE_PACKAGE_ENV} must name one prebuilt .tgz file: {supplied_package}"
+            )
+    else:
+        if shutil.which("npm") is None:
+            pytest.skip("npm executable is not installed")
+        if (
+            not (NODE_PACKAGE_DIR / "dist" / "index.js").exists()
+            or not (NODE_PACKAGE_DIR / "dist" / "typed" / "index.js").exists()
+        ):
+            pytest.skip(
+                "compiled Node package not built; run `npm run build:types` in the node crate"
+            )
+        if not any(NODE_PACKAGE_DIR.glob("*.node")):
+            pytest.skip(
+                "native node module not built; run `npm run build:native` in the node crate"
+            )
 
     repo_tmp = REPO_ROOT / "tmp"
     repo_tmp.mkdir(exist_ok=True)
@@ -267,30 +285,59 @@ def read_typed_query_with_packed_node(
         unpack_root.mkdir()
         (consumer_root / "node_modules" / "@type-bridge").mkdir(parents=True)
 
-        packed = subprocess.run(
-            [
-                "npm",
-                "pack",
-                "--ignore-scripts",
-                "--json",
-                "--pack-destination",
-                str(pack_root),
-            ],
-            check=False,
-            cwd=NODE_PACKAGE_DIR,
-            capture_output=True,
-            text=True,
-        )
-        if packed.returncode != 0:
-            raise AssertionError(
-                f"npm pack failed\nstdout:\n{packed.stdout}\nstderr:\n{packed.stderr}"
+        if supplied_package is None:
+            packed = subprocess.run(
+                [
+                    "npm",
+                    "pack",
+                    "--ignore-scripts",
+                    "--json",
+                    "--pack-destination",
+                    str(pack_root),
+                ],
+                check=False,
+                cwd=NODE_PACKAGE_DIR,
+                capture_output=True,
+                text=True,
             )
-        try:
-            pack_info = json.loads(packed.stdout)[0]
-            packed_paths = {entry["path"] for entry in pack_info["files"]}
-            tarball = pack_root / pack_info["filename"]
-        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
-            raise AssertionError(f"could not parse npm pack output: {packed.stdout}") from error
+            if packed.returncode != 0:
+                raise AssertionError(
+                    f"npm pack failed\nstdout:\n{packed.stdout}\nstderr:\n{packed.stderr}"
+                )
+            try:
+                pack_info = json.loads(packed.stdout)[0]
+                packed_paths = {entry["path"] for entry in pack_info["files"]}
+                tarball = pack_root / pack_info["filename"]
+            except (IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
+                raise AssertionError(f"could not parse npm pack output: {packed.stdout}") from error
+        else:
+            tarball = supplied_package
+            packed_paths: set[str] = set()
+            with tarfile.open(tarball, "r:gz") as archive:
+                for member in archive.getmembers():
+                    if member.name.rstrip("/") == "package":
+                        continue
+                    if not member.name.startswith("package/"):
+                        raise AssertionError(
+                            f"prebuilt Node artifact entry is outside package/: {member.name}"
+                        )
+                    relative = member.name.removeprefix("package/").rstrip("/")
+                    path = PurePosixPath(relative)
+                    if (
+                        not relative
+                        or "\\" in relative
+                        or path.is_absolute()
+                        or path.as_posix() != relative
+                        or any(part in {"", ".", ".."} for part in path.parts)
+                    ):
+                        raise AssertionError(
+                            f"prebuilt Node artifact has an unsafe path: {member.name}"
+                        )
+                    if relative in packed_paths:
+                        raise AssertionError(
+                            f"prebuilt Node artifact has a duplicate path: {relative}"
+                        )
+                    packed_paths.add(relative)
 
         required = {"dist/index.js", "dist/typed/index.js", "dist/typed/index.d.ts"}
         if not required <= packed_paths or not any(path.endswith(".node") for path in packed_paths):

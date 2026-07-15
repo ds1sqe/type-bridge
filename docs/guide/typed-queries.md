@@ -198,6 +198,13 @@ and hydrates exactly those roots in the same transaction snapshot.
 `collect()` preserves matching-solution multiplicity. `distinct()` changes only
 that collection slot and deduplicates by TypeDB concept identity.
 
+Python typed queries currently reject a relation model whose role player is
+another relation while descriptors are being planned, before TypeDB I/O. The
+legacy `Role[Relation]` declaration and CRUD surface remain supported; typed
+recursive relation hydration will require a separate cycle-safe result
+contract. The released TypeScript binding continues to expose its existing
+nonrecursive `ShallowRelationInstance` result for this shape.
+
 ## Count and Existence
 
 Counts and existence use distinct root identity and do not inherit a row/page

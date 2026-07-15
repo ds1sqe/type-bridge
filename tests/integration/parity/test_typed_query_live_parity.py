@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,7 @@ from tests.integration.parity.typed_query_models import (
     ParityQueryContractor,
     ParityQueryEmployee,
     ParityQueryEmployment,
+    ParityQueryEnvelope,
     ParityQueryPerson,
     load_typed_query_contract,
 )
@@ -66,6 +68,15 @@ def _identity(thing: TypeDBType) -> dict[str, str]:
     else:  # pragma: no cover - a materializer defect should fail loudly
         raise TypeError(f"unknown typed-query parity constructor: {type(thing).__name__}")
     return {"kind": kind, "iid": thing._iid}
+
+
+def _python_relation_player_contract(
+    connection: Database | TransactionContext,
+) -> dict[str, str]:
+    session = QuerySession(connection)
+    with pytest.raises(TypeError, match="cannot materialize nested relation role"):
+        session.var(ParityQueryEnvelope)
+    return {"contract": "planning-time-rejection"}
 
 
 def _python_summary(db: Database) -> dict[str, Any]:
@@ -114,6 +125,7 @@ def _python_summary(db: Database) -> dict[str, Any]:
         "exists_by_person": exists,
     }
     assert semantic_projection == contract["semantic_corpus_projection"]
+    relation_player = _python_relation_player_contract(db)
 
     with db.transaction("read") as transaction:
         borrowed_person, borrowed_query = _graph_query(transaction)
@@ -154,14 +166,22 @@ def _python_summary(db: Database) -> dict[str, Any]:
         "count": count,
         "exists": exists,
         "semantic_corpus_projection": semantic_projection,
+        "relation_player": relation_player,
         "borrowed": borrowed,
     }
 
 
 @pytest.mark.integration
-def test_live_typed_query_summary_matches_built_artifacts(clean_db, monkeypatch) -> None:
-    """Source Python and both built artifacts return one live identity graph."""
+def test_live_typed_query_summary_and_f8_contract_match_built_artifacts(
+    clean_db,
+    monkeypatch,
+) -> None:
+    """Built Python rejects F8 while packed Node preserves its shallow V1 result."""
     monkeypatch.delenv("TYPE_BRIDGE_BACKEND", raising=False)
+    expected_given = os.environ.get("TYPE_BRIDGE_PARITY_EXPECT_GIVEN")
+    if expected_given is not None:
+        assert expected_given in {"0", "1"}
+        assert clean_db.supports_given_stage() is (expected_given == "1")
     clean_db.execute_query(SCHEMA_PATH.read_text(encoding="utf-8"), transaction_type="schema")
     clean_db.execute_query(DATA_PATH.read_text(encoding="utf-8"), transaction_type="write")
 
@@ -182,4 +202,13 @@ def test_live_typed_query_summary_matches_built_artifacts(clean_db, monkeypatch)
     )
 
     assert node_result["artifact"] == "packed"
-    assert node_result["summary"] == python_summary
+    node_summary = node_result["summary"]
+    assert python_summary["relation_player"] == {"contract": "planning-time-rejection"}
+    assert node_summary["relation_player"]["contract"] == "shallow-nonrecursive"
+    assert node_summary["relation_player"]["shallow"]["roles_materialized"] is False
+    assert node_summary["relation_player"]["selected"]["roles_materialized"] is True
+    assert node_summary["relation_player"]["same_iid"] is True
+    assert node_summary["relation_player"]["distinct_objects"] is True
+    assert {key: value for key, value in node_summary.items() if key != "relation_player"} == {
+        key: value for key, value in python_summary.items() if key != "relation_player"
+    }

@@ -6,6 +6,7 @@ attribute parity-query-specialty, value string;
 attribute parity-query-company-id, value string;
 attribute parity-query-company-name, value string;
 attribute parity-query-employment-code, value string;
+attribute parity-query-envelope-code, value string;
 
 entity parity-query-person,
     owns parity-query-person-id @key,
@@ -22,4 +23,8 @@ entity parity-query-company,
 relation parity-query-employment,
     relates employee @card(1..1),
     relates employer @card(1..1),
-    owns parity-query-employment-code @key;
+    owns parity-query-employment-code @key,
+    plays parity-query-envelope:nested;
+relation parity-query-envelope,
+    relates nested @card(1..1),
+    owns parity-query-envelope-code @key;

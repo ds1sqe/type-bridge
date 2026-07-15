@@ -78,7 +78,7 @@ jobs:
   # driver-b9 → typedb-runtime → orm → server
   publish-crates:
     name: Publish Rust crates to crates.io
-    needs: [validate-release-identity, accept-python-artifacts, accept-node-package]
+    needs: [validate-release-identity, accept-python-artifacts, accept-node-package, accept-live-artifact-parity]
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -682,11 +682,225 @@ jobs:
           npm run smoke:legacy-package -- --artifact-directory
           "${{ github.workspace }}/tmp/release-node-package"
 
+  # Exercise the exact Linux wheel pair and the one final multi-native npm
+  # tarball against live TypeDB before any registry mutation. This job consumes
+  # only uploaded release candidates: it performs no source build or repack.
+  accept-live-artifact-parity:
+    name: Accept live artifact parity (Python ${{ matrix.python-version }}, ${{ matrix.typedb-server }})
+    needs: [build-core-wheels, build-python, pack-node-package]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.12"
+            typedb-server: "typedb/typedb:3.8.3"
+            expect-given: "0"
+          - python-version: "3.13.5"
+            typedb-server: "typedb/typedb:3.11.5"
+            expect-given: "0"
+          - python-version: "3.14"
+            typedb-server: "typedb/typedb:3.12.1"
+            expect-given: "1"
+    services:
+      typedb:
+        image: ${{ matrix.typedb-server }}
+        ports:
+          - 1729:1729
+          - 8000:8000
+    env:
+      USE_DOCKER: "false"
+      TYPEDB_ADDRESS: localhost:1729
+      TYPEDB_HTTP_PORT: "8000"
+      TYPE_BRIDGE_PARITY_STRICT: "1"
+      TYPE_BRIDGE_PARITY_EXPECT_GIVEN: ${{ matrix.expect-given }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Download exact Linux x64 core wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: core-wheels-linux-x86_64
+          path: tmp/release-live-artifacts/core
+
+      - name: Download exact root Python distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: tmp/release-live-artifacts/root
+
+      - name: Download exact multi-native npm tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: node-package
+          path: tmp/release-live-artifacts/node
+
+      - name: Export exact release candidate paths
+        run: |
+          mapfile -t core_wheels < <(
+            find tmp/release-live-artifacts/core -maxdepth 1 -type f \
+              -name 'type_bridge_core-*linux*x86_64.whl' -print
+          )
+          mapfile -t root_wheels < <(
+            find tmp/release-live-artifacts/root -maxdepth 1 -type f \
+              -name 'type_bridge-*.whl' -print
+          )
+          mapfile -t node_packages < <(
+            find tmp/release-live-artifacts/node -maxdepth 1 -type f \
+              -name '*.tgz' -print
+          )
+          if [[ ${#core_wheels[@]} -ne 1 ]]; then
+            printf 'Expected one Linux x64 core wheel, found %s\n' \
+              "${#core_wheels[@]}" >&2
+            exit 1
+          fi
+          if [[ ${#root_wheels[@]} -ne 1 ]]; then
+            printf 'Expected one root Python wheel, found %s\n' \
+              "${#root_wheels[@]}" >&2
+            exit 1
+          fi
+          if [[ ${#node_packages[@]} -ne 1 ]]; then
+            printf 'Expected one multi-native npm tarball, found %s\n' \
+              "${#node_packages[@]}" >&2
+            exit 1
+          fi
+          printf 'TYPE_BRIDGE_PARITY_CORE_WHEEL=%s\n' \
+            "$(realpath "${core_wheels[0]}")" >> "$GITHUB_ENV"
+          printf 'TYPE_BRIDGE_PARITY_ROOT_WHEEL=%s\n' \
+            "$(realpath "${root_wheels[0]}")" >> "$GITHUB_ENV"
+          printf 'TYPE_BRIDGE_PARITY_NODE_PACKAGE=%s\n' \
+            "$(realpath "${node_packages[0]}")" >> "$GITHUB_ENV"
+
+      - name: Prepare exact-wheel parity environment
+        run: |
+          parity_venv="$RUNNER_TEMP/release-live-parity"
+          uv venv --python python "$parity_venv"
+          uv pip install --python "$parity_venv/bin/python" \
+            "$TYPE_BRIDGE_PARITY_CORE_WHEEL" \
+            "$TYPE_BRIDGE_PARITY_ROOT_WHEEL" \
+            'pytest>=9.0.1' 'pyright>=1.1.407'
+
+      - name: Wait for TypeDB connect and version endpoints
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost 1729 2>/dev/null \
+              && curl --fail --silent http://localhost:8000/v1/version >/dev/null; then
+              echo "TypeDB is ready on ports 1729 and 8000"
+              break
+            fi
+            echo "Waiting for TypeDB endpoints... ($i/30)"
+            sleep 2
+          done
+          if ! nc -z localhost 1729 2>/dev/null \
+            || ! curl --fail --silent http://localhost:8000/v1/version >/dev/null; then
+            echo "ERROR: TypeDB did not become ready within 60 seconds"
+            docker logs ${{ job.services.typedb.id }} 2>&1 || true
+            exit 1
+          fi
+
+      - name: Run exact-artifact live F8 parity
+        env:
+          TYPE_BRIDGE_LIVE_PARITY_REPORT: ${{ runner.temp }}/release-live-parity.xml
+        run: |
+          cd "$RUNNER_TEMP"
+          PATH="$RUNNER_TEMP/release-live-parity/bin:$PATH" \
+            "$RUNNER_TEMP/release-live-parity/bin/python" -I - <<'PY'
+          import importlib
+          import os
+          import sys
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          environment = Path(sys.prefix).resolve()
+          for module_name in ("type_bridge", "type_bridge_core"):
+              module = importlib.import_module(module_name)
+              module_path = Path(module.__file__).resolve()
+              if module_path == workspace or workspace in module_path.parents:
+                  raise SystemExit(
+                      f"{module_name} leaked to the source checkout: {module_path}"
+                  )
+              if module_path != environment and environment not in module_path.parents:
+                  raise SystemExit(
+                      f"{module_name} escaped the exact-wheel environment: {module_path}"
+                  )
+
+          import pytest
+
+          sys.path.insert(0, str(workspace))
+          test = (
+              workspace
+              / "tests/integration/parity/test_typed_query_live_parity.py"
+          )
+          test_node = (
+              f"{test}::test_live_typed_query_summary_and_f8_contract_match_built_artifacts"
+          )
+          raise SystemExit(
+              pytest.main(
+                  [
+                      test_node,
+                      "--rootdir",
+                      str(workspace),
+                      "--import-mode=importlib",
+                      "-o",
+                      "addopts=",
+                      "-m",
+                      "integration",
+                      "-ra",
+                      "--tb=short",
+                      f"--junitxml={os.environ['TYPE_BRIDGE_LIVE_PARITY_REPORT']}",
+                  ]
+              )
+          )
+          PY
+
+      - name: Require one passing live artifact regression
+        env:
+          TYPE_BRIDGE_LIVE_PARITY_REPORT: ${{ runner.temp }}/release-live-parity.xml
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path(os.environ["TYPE_BRIDGE_LIVE_PARITY_REPORT"])
+          if not report.is_file():
+              raise SystemExit(f"Live artifact parity report is missing: {report}")
+          root = ET.parse(report).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+          totals = {
+              key: sum(int(suite.get(key, "0")) for suite in suites)
+              for key in ("tests", "failures", "errors", "skipped")
+          }
+          expected_name = "test_live_typed_query_summary_and_f8_contract_match_built_artifacts"
+          names = [case.get("name") for case in root.iter("testcase")]
+          print(f"live artifact parity: totals={totals} tests={names}")
+          if totals != {"tests": 1, "failures": 0, "errors": 0, "skipped": 0}:
+              raise SystemExit(f"Live artifact parity did not pass exactly once: {totals}")
+          if names != [expected_name]:
+              raise SystemExit(f"Unexpected live artifact parity test cases: {names}")
+          PY
+
   # Publish only the accepted tarball. The job stays inert when NPM_TOKEN is
   # absent, so tagging a release still succeeds without registry credentials.
   publish-node-npm:
     name: Publish Node package to npm
-    needs: [validate-release-identity, accept-python-artifacts, accept-node-package]
+    needs: [validate-release-identity, accept-python-artifacts, accept-node-package, accept-live-artifact-parity]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -769,7 +983,7 @@ jobs:
   # Publish type-bridge-core to PyPI (must complete before type-bridge)
   publish-core-pypi:
     name: Publish type-bridge-core to PyPI
-    needs: [validate-release-identity, build-core-wheels, build-core-sdist, accept-python-artifacts, accept-node-package]
+    needs: [validate-release-identity, build-core-wheels, build-core-sdist, accept-python-artifacts, accept-node-package, accept-live-artifact-parity]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -833,7 +1047,7 @@ jobs:
   # Publish type-bridge to PyPI (after core is available)
   publish-python-pypi:
     name: Publish type-bridge to PyPI
-    needs: [validate-release-identity, build-python, accept-python-artifacts, accept-node-package, publish-core-pypi]
+    needs: [validate-release-identity, build-python, accept-python-artifacts, accept-node-package, publish-core-pypi, accept-live-artifact-parity]
     runs-on: ubuntu-latest
     environment: release
     permissions:

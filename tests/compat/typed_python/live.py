@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,6 +105,9 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     class EmploymentCode(String):
         flags = AttributeFlags(name=labels["employment_code"])
 
+    class EnvelopeCode(String):
+        flags = AttributeFlags(name=labels["envelope_code"])
+
     globals().update(
         {
             "PersonId": PersonId,
@@ -113,6 +117,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             "CompanyId": CompanyId,
             "CompanyName": CompanyName,
             "EmploymentCode": EmploymentCode,
+            "EnvelopeCode": EnvelopeCode,
         }
     )
 
@@ -145,6 +150,17 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         employer: Role[Company] = Role("employer", Company, cardinality=Card(1, 1))
 
     globals()["Employment"] = Employment
+
+    class Envelope(Relation):
+        flags = TypeFlags(name=labels["envelope"])
+        code: EnvelopeCode = Flag(Key)
+        nested: Role[Employment] = Role(
+            "nested",
+            Employment,
+            cardinality=Card(1, 1),
+        )
+
+    globals()["Envelope"] = Envelope
 
     @dataclass(frozen=True, slots=True)
     class PersonWork:
@@ -183,6 +199,15 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             raise AssertionError(f"unexpected wheel constructor: {type(thing).__name__}")
         return {"kind": kind, "iid": thing._iid}
 
+    def relation_player_contract(connection: Database) -> dict[str, str]:
+        try:
+            QuerySession(connection).var(Envelope)
+        except TypeError as error:
+            if "cannot materialize nested relation role" not in str(error):
+                raise AssertionError("wheel rejected F8 with the wrong contract") from error
+            return {"contract": "planning-time-rejection"}
+        raise AssertionError("wheel accepted unsupported nested relation-player planning")
+
     database = Database(
         args.address,
         args.database,
@@ -191,6 +216,12 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         http_port=args.http_port,
     )
     database.connect()
+    expected_given = os.environ.get("TYPE_BRIDGE_PARITY_EXPECT_GIVEN")
+    if expected_given is not None:
+        if expected_given not in {"0", "1"}:
+            raise AssertionError("TYPE_BRIDGE_PARITY_EXPECT_GIVEN must be either '0' or '1'")
+        if database.supports_given_stage() is not (expected_given == "1"):
+            raise AssertionError("wheel given-stage capability drifted from the release lane")
     person, query = graph_query(database)
     page = query.page_by(
         person,
@@ -231,6 +262,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     }
     if semantic_projection != contract["semantic_corpus_projection"]:
         raise AssertionError("wheel semantic projection drifted from the #171 identity manifest")
+    relation_player = relation_player_contract(database)
     with database.transaction("read") as transaction:
         borrowed_person, borrowed_query = graph_query(transaction)
         borrowed = {
@@ -270,6 +302,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         "count": count,
         "exists": exists,
         "semantic_corpus_projection": semantic_projection,
+        "relation_player": relation_player,
         "borrowed": borrowed,
     }
     _assert_artifact_imports(artifact_root, source_root)

@@ -392,15 +392,14 @@ def test_query_session_rejects_python_only_entity_and_relation_roots() -> None:
         diagnostic_session().subtypes(PythonOnlyWorkRelation)
 
 
-def test_query_session_accepts_shallow_nested_relation_player_plan() -> None:
+def test_query_session_rejects_nested_relation_player_before_execution() -> None:
     session = diagnostic_session()
-    envelope = session.var(WorkEnvelope)
-    nested = session.var(WorkNestedRelation)
-    connected = envelope.role(WorkEnvelope.nested).connects(nested)
 
-    query = session.query(envelope).match(nested).where(connected)
+    with pytest.raises(TypeError, match="cannot materialize nested relation role"):
+        session.var(WorkEnvelope)
 
-    _assert_connection_required(query.one)
+    assert session._model_constructors() == {}
+    assert session._native_registry().snapshot() == []
 
 
 def test_existing_query_constructor_cannot_be_replaced_by_same_label_class() -> None:
