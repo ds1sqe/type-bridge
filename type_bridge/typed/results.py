@@ -229,6 +229,12 @@ def _materialize_role_player(
             "role_player_python_type_mismatch",
             f"concrete role player {model.__name__} is not compatible with its Python role",
         )
+    if issubclass(model, Relation):
+        _fail(
+            "nested_relation_role_player_unsupported",
+            "Python typed queries cannot materialize a relation used as a role player "
+            "without a cycle-safe result contract",
+        )
     values = _materialize_attributes(player, model)
     try:
         instance = model(**values)

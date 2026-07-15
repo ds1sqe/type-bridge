@@ -387,6 +387,7 @@ class QuerySession:
     ) -> None:
         if model in seen:
             return
+        _reject_nested_relation_player_model(model)
         if model in _FRAMEWORK_MODEL_ROOTS:
             seen.add(model)
             return
@@ -439,6 +440,22 @@ class QuerySession:
             if not subtype.is_base():
                 self._register_descriptor_closure(subtype, seen, subtype_roots)
             self._register_loaded_subtypes(subtype, seen, subtype_roots)
+
+
+def _reject_nested_relation_player_model(model: type[TypeDBType]) -> None:
+    """Reject Python result shapes that require recursive relation hydration."""
+    if not issubclass(model, Relation):
+        return
+    for relation_type in reversed(model.__mro__):
+        roles = relation_type.__dict__.get("_roles", {})
+        for role in roles.values():
+            for player in role.player_entity_types:
+                if isinstance(player, type) and issubclass(player, Relation):
+                    raise TypeError(
+                        "Python typed queries cannot materialize nested relation role "
+                        f"{model.__name__}.{role.role_name} with relation player "
+                        f"{player.__name__}; a cycle-safe result contract is required"
+                    )
 
 
 def _named_declaration(
