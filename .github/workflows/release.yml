@@ -74,8 +74,8 @@ jobs:
 
   # Publish Rust crates to crates.io only after both immutable Python and Node
   # release candidates pass acceptance. Publication remains in dependency order:
-  # core-lib → orm-derive → protocol-b7 → driver-b7 → protocol-b9 →
-  # driver-b9 → typedb-runtime → orm → server
+  # core-lib → toml-transpiler → orm-derive → protocol-b7 → driver-b7 →
+  # protocol-b9 → driver-b9 → typedb-runtime → orm → migration → server
   publish-crates:
     name: Publish Rust crates to crates.io
     needs: [validate-release-identity, accept-python-artifacts, accept-node-package, accept-live-artifact-parity]
@@ -139,6 +139,12 @@ jobs:
       - name: Wait for crates.io index
         run: sleep 30
 
+      - name: Publish type-bridge-toml-transpiler
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-toml-transpiler"
+
       - name: Publish type-bridge-orm-derive
         working-directory: type-bridge-core
         env:
@@ -149,9 +155,9 @@ jobs:
         run: sleep 30
 
       # Vendored protocol/driver pairs publish before typedb-runtime under
-      # their renamed crate identities. Order: core-lib → orm-derive →
-      # protocol-b7 → driver-b7 → protocol-b9 → driver-b9 → typedb-runtime →
-      # orm → server.
+      # their renamed crate identities. Order: core-lib → toml-transpiler →
+      # orm-derive → protocol-b7 → driver-b7 → protocol-b9 → driver-b9 →
+      # typedb-runtime → orm → migration → server.
       - name: Publish type-bridge-typedb-protocol-b7
         working-directory: type-bridge-core
         env:
@@ -205,6 +211,12 @@ jobs:
 
       - name: Wait for crates.io index
         run: sleep 30
+
+      - name: Publish type-bridge-migration
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: "$RUNNER_TEMP/publish-crate.sh type-bridge-migration"
 
       - name: Publish type-bridge-server
         working-directory: type-bridge-core

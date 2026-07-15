@@ -1,12 +1,11 @@
 [package]
 name = "type-bridge-migration"
-version = "1.5.8"
+version = "1.5.9"
 edition = "2024"
 description = "Migration IR and planning substrate for type-bridge"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-publish = false
 # The CLI bin is declared explicitly below; src/bin/display.rs is a module of
 # that bin, not its own target. Disable bin auto-discovery so it is not built
 # as a second binary.
@@ -21,8 +20,8 @@ name = "type-bridge-migration"
 path = "src/bin/type_bridge_migration.rs"
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "1.5.8" }
-type-bridge-orm = { path = "../orm", version = "1.5.8", default-features = false, features = ["band7", "band8", "band9"] }
+type-bridge-core-lib = { path = "../core", version = "1.5.9" }
+type-bridge-orm = { path = "../orm", version = "1.5.9", default-features = false, features = ["band7", "band8", "band9"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
 network-interface = "2.0.5"

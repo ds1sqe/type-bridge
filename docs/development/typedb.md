@@ -16,9 +16,10 @@ This guide covers TypeDB-specific concepts, driver API, TypeQL syntax, and integ
 ### Support window
 
 TypeBridge supports TypeDB servers in the **3.8.x through 3.12.x** range. There is no
-published 3.9 line (TypeDB skipped it); verified available tags are `3.8.3`, `3.10.4`,
-`3.11.5`, and `3.12.0`. Server `3.7.x` is protocol-compatible with band 7 (see below)
-but falls below the declared floor and is not supported.
+published 3.9 line (TypeDB skipped it); verified compatibility tags include `3.8.3`,
+`3.10.4`, `3.11.5`, and `3.12.0`, while the current exact release-artifact lane also
+targets `3.12.1`. Server `3.7.x` is protocol-compatible with band 7 (see below) but
+falls below the declared floor and is not supported.
 
 ### Protocol bands
 
@@ -157,12 +158,12 @@ validates the supplied semantic version against the same support window, derives
 protocol band from the validated version, and then opens the matching embedded Rust
 driver.
 
-Use an exact TypeDB version such as `3.8.3`, `3.10.4`, or `3.11.5`; do not substitute a
-raw protocol band. Band 7 includes unsupported TypeDB `3.7.x` as well as supported
-`3.8.x` and `3.10.x`. When HTTP is unavailable, automatic band-7 fallback can identify
-the protocol band but not the exact semantic version; use `server_version` when that
-exact validation is required. Invalid or unsupported pinned versions still fail with
-`VersionError`.
+Use an exact TypeDB version such as `3.8.3`, `3.10.4`, `3.11.5`, or `3.12.1`; do not
+substitute a raw protocol band. Band 7 includes unsupported TypeDB `3.7.x` as well as
+supported `3.8.x` and `3.10.x`. When HTTP is unavailable, automatic band-7 fallback can
+identify the protocol band but not the exact semantic version; use `server_version`
+when that exact validation is required. Invalid or unsupported pinned versions still
+fail with `VersionError`.
 
 **Node binding**
 

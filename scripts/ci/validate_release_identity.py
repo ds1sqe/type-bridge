@@ -36,6 +36,7 @@ VENDORED_PINS = {
 }
 PUBLISHED_CRATES = (
     "type-bridge-core-lib",
+    "type-bridge-toml-transpiler",
     "type-bridge-orm-derive",
     "type-bridge-typedb-protocol-b7",
     "type-bridge-typedb-driver-b7",
@@ -43,6 +44,7 @@ PUBLISHED_CRATES = (
     "type-bridge-typedb-driver-b9",
     "type-bridge-typedb-runtime",
     "type-bridge-orm",
+    "type-bridge-migration",
     "type-bridge-server",
 )
 

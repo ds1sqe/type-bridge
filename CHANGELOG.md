@@ -4,6 +4,33 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.9] - 2026-07-15
+
+### New Features
+
+- **Public migration and TOML-transpiler crates** -
+  `type-bridge-migration` and `type-bridge-toml-transpiler` now participate in
+  the validated crates.io publication graph. The transpiler publishes as an
+  independent crate; migration publishes only after its `type-bridge-orm`
+  dependency is visible in the registry index.
+
+### Bug Fixes
+
+- **Fail-closed Python relation players (#170)** - Python typed queries reject
+  nested relation-player materialization during planning, before provider I/O,
+  while preserving legacy `Role[Relation]` declarations and CRUD. Defensive
+  result hydration also rejects unsupported evidence; Node retains its released
+  shallow V1 result contract.
+
+### Testing & Tooling
+
+- **Exact F8 release-artifact gate (#170)** - registry publication now waits
+  for the exact Python wheels and packed Node tarball to prove the Python
+  rejection and Node shallow-result contracts live on TypeDB 3.8.3, 3.11.5,
+  and 3.12.1.
+
+## [1.5.8] - 2026-07-15
+
 ### New Features
 
 - **`@doc`/`@meta` schema annotations (#169)** - TypeDB 3.12's schema
