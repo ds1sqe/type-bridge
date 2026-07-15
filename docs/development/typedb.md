@@ -15,11 +15,16 @@ This guide covers TypeDB-specific concepts, driver API, TypeQL syntax, and integ
 
 ### Support window
 
-TypeBridge supports TypeDB servers in the **3.8.x through 3.12.x** range. There is no
-published 3.9 line (TypeDB skipped it); verified compatibility tags include `3.8.3`,
-`3.10.4`, `3.11.5`, and `3.12.0`, while the current exact release-artifact lane also
-targets `3.12.1`. Server `3.7.x` is protocol-compatible with band 7 (see below) but
-falls below the declared floor and is not supported.
+The current 1.x release line and TypeBridge `v2.0.0` support TypeDB servers in
+the **3.8.x through 3.12.x** range. TypeBridge `v2.0.0` is the final release to
+support TypeDB 3.8.x and 3.10.x; those server lines are deprecated in `v2.0.0`
+to provide downstream users a migration window. Starting with TypeBridge
+`v2.1.0`, the supported server window is **TypeDB 3.11.x through 3.12.x**. The
+complete V2 schema/query feature set and its conformance fixtures target
+**TypeDB 3.12.1** exactly, matching the exact release-artifact lane. Verified
+compatibility tags include `3.8.3`, `3.10.4`, `3.11.5`, and `3.12.0`. There is
+no published 3.9 line (TypeDB skipped it). TypeDB 3.7.x is protocol-compatible
+with band 7 but falls below the declared floor and remains unsupported.
 
 ### Protocol bands
 
@@ -32,7 +37,7 @@ driver is refused by a 3.11 server at connect.
 
 | Band | Driver versions | Servers accepting it |
 |------|-----------------|----------------------|
-| 7    | 3.7\*, 3.8, 3.10 | 3.7\*, 3.8, 3.10 |
+| 7    | 3.7\*, 3.8, 3.10 | 3.7\*, 3.8, 3.10 (`v2.0.x` only) |
 | 8    | 3.11            | 3.11, 3.12 |
 | 9    | 3.12            | 3.12 |
 
@@ -41,20 +46,34 @@ are declared once in `crates/core`'s version module and consumed by every tier.
 
 ### Multi-band runtime
 
-TypeBridge's wheel embeds three TypeDB Rust driver lines — band 7 (3.8.1,
+In current 1.x and through `v2.0.x`, TypeBridge's wheel embeds three TypeDB Rust driver lines — band 7 (3.8.1,
 vendored fork), band 8 (3.11.5, upstream), and band 9 (3.12.0, vendored) — and
 negotiates the connect band from the server's accepted-band set at connect time.
 A confirmed 3.12 server upgrades to band 9 so `given` rows are available; band 8
 remains its safe discovery/fallback path. A single TypeBridge release therefore
 serves the full supported window without user-side driver selection.
+Starting with `v2.1.0`, the wheel embeds only bands 8 and 9.
 
-**This release line** serves TypeDB 3.8 through 3.12:
+### Release support matrix
+
+Compatibility is release-specific: `v2.0.0` retains the current server window
+while announcing the scheduled cutoff, and `v2.1.0` removes the deprecated
+band-7 runtime.
 
 | Dimension | Supported range | Notes |
 |-----------|-----------------|-------|
-| TypeDB server | 3.8.0–3.12.x | Band-7 (3.8.x, 3.10.x), band-8 (3.11.x), and band-9-native (3.12.x) servers; 3.12 retains band 8 for discovery/fallback and dispatch is automatic |
-| Python `typedb-driver` | 3.8–3.12 on CPython 3.12–3.13; 3.12.0 on CPython 3.14 | The public extra permits supported lines on 3.12–3.13 so callers can match the server; its 3.14 branch pins the first line with a compatible native wheel. The development extra uses 3.11.5 below 3.14 for the default test server. This installed driver does not control the ORM's embedded 3.8–3.12 runtime |
+| TypeDB server, current 1.x | 3.8.0-3.12.x | Existing compatibility window |
+| TypeDB server, `v2.0.x` | 3.8.0-3.12.x | Final line supporting 3.8.x and 3.10.x; both are deprecated in `v2.0.0` |
+| TypeDB server, `v2.1.x` | 3.11.x-3.12.x | Bands 8 and 9 only; 3.8.x and 3.10.x are rejected |
+| V2 conformance baseline | TypeDB 3.12.1 | `v2.0.0` ships the complete planned V2 schema and advanced multi-type query specification against this exact baseline |
+| Embedded Rust driver bands, `v2.0.x` | 7, 8, and 9 | Band 7 exists only for the final compatibility window; band 8 is upstream 3.11.5 and band 9 is the vendored 3.12.0 line |
+| Embedded Rust driver bands, `v2.1.x` | 8 and 9 | Band 7 is removed |
+| Python `typedb-driver`, `v2.0.x` | 3.8–3.12 on CPython 3.12–3.13; 3.12.0 on CPython 3.14 | Final compatibility line for direct 3.8/3.10 drivers; the embedded runtime remains separate |
+| Python `typedb-driver`, `v2.1.x` | 3.11–3.12 on CPython 3.12–3.13; 3.12.0 on CPython 3.14 | Direct driver support narrows with the server window |
 | CPython interpreter | 3.12–3.14 | Defaulted generic parameters use the compatible `typing_extensions` surface on 3.12; the abi3 native wheel supports all declared interpreter lines |
+| Python native wheels | Linux x86_64/aarch64 GNU; macOS x86_64/arm64; Windows x86_64 | Core wheels use the CPython 3.12 stable ABI. The core sdist is a build fallback, not a promise that every unlisted native target is release-tested |
+| Node.js runtime | 18 and newer | The declared floor is exercised on Linux x64; Node 20 accepts every published native target in the release workflow |
+| Node native package | Linux x64/arm64 GNU; macOS x64/arm64; Windows x64/arm64 MSVC | These six binaries are packed into one npm artifact. No musl binary is advertised by this release line |
 
 ### Feature gates vs. the version window
 
@@ -79,12 +98,13 @@ band cannot carry input rows. Typed queries do not require the feature: they
 automatically retain validated inline literal lowering on older bands and use
 one bounded `given` row only when band-9 transport is active.
 
-The band map itself is `{7, 8, 9}` in the default build: band 9 is the
+Through `v2.0.x`, the band map itself is `{7, 8, 9}` in the default build: band 9 is the
 vendored TypeDB 3.12 driver, and its protocol is the wire path for given
 rows. One measured hazard shapes the connect design: a band-9 connection
 attempt crashes a 3.11 server outright, so the gRPC fallback discovers
 unknown servers through band 8 and upgrades to band 9 only after the
 reported version proves it safe.
+The `v2.1.x` default build uses `{8, 9}`.
 
 ### Update-safety contract
 
@@ -105,10 +125,11 @@ typed queries, or other ORM operations backed by TypeBridge's embedded Rust
 runtime.
 
 By default, the gate calls `GET :<http_port>/v1/version` on the server's HTTP API port.
-If that endpoint is unreachable and no exact server version was supplied, TypeBridge
-falls back to gRPC protocol negotiation: it tries the band-8 driver first, then the
-band-7 driver. If both gRPC attempts fail, the gate fails loudly with all attempted
-paths in the error.
+If that endpoint is unreachable and no exact server version was supplied,
+TypeBridge falls back to gRPC protocol negotiation. Through `v2.0.x`, it tries
+the band-8 driver first and then band 7; `v2.1.x` tries band 8 only. If all
+permitted gRPC attempts fail, the gate fails loudly with every attempted path
+in the error.
 
 ### HTTP version-probe port
 
@@ -136,10 +157,10 @@ db.connect()
 
 ### gRPC-only deployments
 
-If the TypeDB server exposes gRPC but disables or firewalls the HTTP API, TypeBridge
-can still connect by falling back to gRPC protocol negotiation. The fallback tries
-band 8 before band 7 and reports both failures if neither driver can open a
-connection.
+If the TypeDB server exposes gRPC but disables or firewalls the HTTP API,
+TypeBridge can still connect by falling back to gRPC protocol negotiation.
+Through `v2.0.x`, the fallback tries band 8 before band 7; `v2.1.x` tries band
+8 only. It reports every permitted failure if no driver can open a connection.
 
 For strict exact-version validation on gRPC-only deployments, pass the exact server
 version explicitly:
@@ -158,12 +179,13 @@ validates the supplied semantic version against the same support window, derives
 protocol band from the validated version, and then opens the matching embedded Rust
 driver.
 
-Use an exact TypeDB version such as `3.8.3`, `3.10.4`, `3.11.5`, or `3.12.1`; do not
-substitute a raw protocol band. Band 7 includes unsupported TypeDB `3.7.x` as well as
-supported `3.8.x` and `3.10.x`. When HTTP is unavailable, automatic band-7 fallback can
-identify the protocol band but not the exact semantic version; use `server_version`
-when that exact validation is required. Invalid or unsupported pinned versions still
-fail with `VersionError`.
+For `v2.0.x`, use an exact TypeDB version such as `3.8.3`, `3.10.4`, or
+`3.11.5`, or `3.12.1`; do not substitute a raw protocol band. Band 7 includes
+unsupported TypeDB `3.7.x` as well as supported `3.8.x` and `3.10.x`. When
+HTTP is unavailable, automatic band-7 fallback can identify the protocol band
+but not the exact semantic version; use `server_version` when that exact
+validation is required. Starting with `v2.1.0`, pin only TypeDB 3.11.x or
+3.12.x. Invalid or unsupported pinned versions still fail with `VersionError`.
 
 **Node binding**
 
