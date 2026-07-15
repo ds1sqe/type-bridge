@@ -68,6 +68,12 @@ run_python() {
     run_step "typed Query negative Pyright contract" \
         uv run python tests/contracts/typed_query/python/check_negative.py
 
+    run_step "owner-aware negative Pyright contract" \
+        uv run python tests/unit/typed_query/check_negative.py
+
+    run_step "typed Query API negative Pyright contract" \
+        uv run python tests/unit/typed_query/check_query_negative.py
+
     run_step "pytest tests/unit/" \
         uv run pytest tests/unit/ -x --tb=short -q
 }
@@ -88,6 +94,7 @@ run_node() {
     run_step "npm run test:dts"      npm run test:dts
     run_step "npm run smoke:package" npm run smoke:package
     run_step "npm run smoke:legacy-package" npm run smoke:legacy-package
+    run_step "npm run test:contract-adapter" npm run test:contract-adapter
 
     popd >/dev/null
 }

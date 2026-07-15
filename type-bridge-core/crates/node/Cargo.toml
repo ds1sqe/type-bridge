@@ -12,7 +12,12 @@ publish = false
 name = "type_bridge_node"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+contract-test-adapter = ["dep:type-bridge-contract"]
+
 [dependencies]
+type-bridge-contract = { path = "../contract", version = "0.1.0", optional = true }
 type-bridge-core-lib = { path = "../core", version = "1.5.11" }
 type-bridge-orm = { path = "../orm", version = "1.5.11", default-features = false, features = ["band7", "band8", "band9"] }
 napi = { version = "2", features = ["napi6"] }

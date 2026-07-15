@@ -251,6 +251,9 @@ jobs:
       - name: Legacy packed-package compatibility
         run: npm run smoke:legacy-package
 
+      - name: Contract foundation adapter
+        run: npm run test:contract-adapter
+
   # Exercise both legacy and typed Python APIs from the artifacts users receive.
   # The native wheel comes from the existing Linux x86_64 build-wheels leg. The
   # legacy runner installs the wheels; the typed runner only extracts the same
@@ -404,6 +407,14 @@ jobs:
       - name: Check intentional unified Query typing diagnostics
         if: matrix.target == 'tests'
         run: uv run python tests/contracts/typed_query/python/check_negative.py
+
+      - name: Check intentional owner-aware typing diagnostics
+        if: matrix.target == 'tests'
+        run: uv run python tests/unit/typed_query/check_negative.py
+
+      - name: Check intentional typed Query API diagnostics
+        if: matrix.target == 'tests'
+        run: uv run python tests/unit/typed_query/check_query_negative.py
 
   # Unit tests (fast, no external dependencies, parallel execution)
   test-unit:
@@ -566,8 +577,9 @@ jobs:
 
   # Rust ORM live-TypeDB integration. The ordinary rust-check job deliberately
   # leaves `integration-tests` disabled so it remains an offline gate. This job
-  # selects the non-ignored real-provider target explicitly and mirrors the full
-  # four-version Python/Node server matrix.
+  # selects the non-ignored real-provider target explicitly. Earlier protocol
+  # bands remain compatibility subjects; the 3.12 leg pins Phase 0's current
+  # provider baseline rather than inheriting an older patch from another job.
   rust-integration:
     name: Rust integration (${{ matrix.typedb-server }})
     runs-on: ubuntu-latest
@@ -578,7 +590,7 @@ jobs:
           - "typedb/typedb:3.8.3"
           - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
-          - "typedb/typedb:3.12.0"
+          - "typedb/typedb:3.12.1"
 
     services:
       typedb:

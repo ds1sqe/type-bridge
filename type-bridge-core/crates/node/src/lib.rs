@@ -8,6 +8,11 @@
 #![allow(missing_docs)]
 
 mod match_runtime;
+#[cfg(feature = "contract-test-adapter")]
+mod contract_test_adapter;
+
+#[cfg(feature = "contract-test-adapter")]
+pub use contract_test_adapter::round_trip_contract_foundation;
 
 pub use match_runtime::{
     NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchOrderHandle, NodeMatchPredicateHandle,

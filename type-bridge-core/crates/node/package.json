@@ -38,6 +38,7 @@
     "smoke:package": "node tests/package-smoke.cjs",
     "smoke:legacy-package": "node tests/compat/legacy-package/run.cjs",
     "test:unit": "tsc -p tsconfig.unit.json && node scripts/run-unit.js",
+    "test:contract-adapter": "cargo build -p type-bridge-node --features contract-test-adapter && node --test tests/native-contract-foundation.test.cjs",
     "typecheck": "tsc --noEmit",
     "typecheck:query-contract": "tsc -p tests/compat/typed-query-contract/tsconfig.json --noEmit",
     "typecheck:integration": "tsc -p tsconfig.integration.json",
