@@ -4,6 +4,7 @@ mod filters;
 mod migration_assertion_v2;
 mod multivalue_attributes;
 mod mutations;
+mod query_v2;
 mod relation_roles;
 mod relations;
 mod schema_acceptance_v2;
