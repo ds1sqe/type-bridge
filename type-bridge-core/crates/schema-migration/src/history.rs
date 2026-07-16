@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use type_bridge_contract::codec::from_canonical_json;
@@ -10,8 +10,14 @@ use type_bridge_contract::diagnostic::{
     Diagnostic, DiagnosticCategory, DiagnosticCode,
 };
 use type_bridge_contract::migration::{MIGRATION_FORMAT_V1, MigrationId};
+use type_bridge_contract::schema::DeclaredSchema;
+use type_bridge_schema::ManagedDeltaContext;
 
-use crate::{VerifiedSchemaMigrationManifest, encode_verified_manifest};
+use crate::manifest::peek_manifest_identity;
+use crate::{
+    VerifiedSchemaMigrationManifest, decode_verified_manifest,
+    encode_verified_manifest,
+};
 
 const CANONICAL_MIGRATION_SUFFIX: &str = ".tbmigration.json";
 
@@ -255,6 +261,137 @@ pub fn discover_verified_migrations<F>(
 where
     F: FnMut(&Path, &[u8]) -> Result<VerifiedSchemaMigrationManifest, Diagnostic>,
 {
+    let mut verified = Vec::new();
+    for candidate in collect_canonical_candidates(directory)? {
+        let manifest = verify(&candidate.path, &candidate.bytes)?;
+        if encode_verified_manifest(&manifest)? != candidate.bytes {
+            return Err(discovery_failure(
+                "migration_discovery_verifier_bytes_mismatch",
+                "injected verifier returned an artifact for different bytes",
+            ));
+        }
+        require_stem_binding(&manifest, &candidate.stem)?;
+        verified.push(manifest);
+    }
+    MigrationHistoryGraph::from_verified(verified)
+}
+
+/// Discover, order, and replay-verify one complete canonical migration chain.
+///
+/// Each manifest verifies against its authoring source schema: `genesis_source`
+/// for parentless manifests, otherwise its parents' verified target. Decoding
+/// therefore runs in dependency order regardless of filename order. A manifest
+/// with several parents is accepted only when every parent reached the same
+/// verified target state; divergent-branch merge sources are rejected until the
+/// merge-generation contract defines their recorded source. Every candidate
+/// must re-encode byte-identically through `decode_verified_manifest`.
+pub fn discover_verified_migration_chain(
+    directory: &Path,
+    genesis_source: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<MigrationHistoryGraph, Diagnostic> {
+    let candidates = collect_canonical_candidates(directory)?;
+    let mut headers = Vec::with_capacity(candidates.len());
+    let mut index_by_id = BTreeMap::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let (id, parents) = peek_manifest_identity(&candidate.bytes)?;
+        if index_by_id.insert(id.clone(), index).is_some() {
+            return Err(discovery_failure(
+                "migration_discovery_duplicate_id",
+                "two canonical migration files claim the same migration identity",
+            ));
+        }
+        headers.push((id, parents));
+    }
+    for (_, parents) in &headers {
+        for parent in parents {
+            if !index_by_id.contains_key(parent) {
+                return Err(discovery_failure(
+                    "migration_discovery_unknown_parent",
+                    "canonical migration references a parent absent from the directory",
+                ));
+            }
+        }
+    }
+    let order = order_candidate_headers(&headers, &index_by_id)?;
+
+    let mut verified_by_id: BTreeMap<MigrationId, VerifiedSchemaMigrationManifest> =
+        BTreeMap::new();
+    for id in order {
+        let index = index_by_id[&id];
+        let candidate = &candidates[index];
+        let parents = &headers[index].1;
+        let source = match parents.split_first() {
+            None => genesis_source,
+            Some((first, rest)) => {
+                let first_parent = &verified_by_id[first];
+                for parent in rest {
+                    if verified_by_id[parent].target_state()
+                        != first_parent.target_state()
+                    {
+                        return Err(discovery_failure(
+                            "migration_discovery_divergent_merge_sources",
+                            "merge manifest parents reached different verified target states",
+                        ));
+                    }
+                }
+                first_parent.target_schema()
+            }
+        };
+        let manifest = decode_verified_manifest(&candidate.bytes, (source, context))?;
+        require_stem_binding(&manifest, &candidate.stem)?;
+        verified_by_id.insert(id, manifest);
+    }
+    MigrationHistoryGraph::from_verified(
+        verified_by_id.into_values().collect::<Vec<_>>(),
+    )
+}
+
+fn require_stem_binding(
+    manifest: &VerifiedSchemaMigrationManifest,
+    stem: &str,
+) -> Result<(), Diagnostic> {
+    if manifest.id().name().as_str() != stem {
+        return Err(discovery_failure(
+            "migration_discovery_filename_manifest_mismatch",
+            "filename stem does not equal the verified manifest name",
+        ));
+    }
+    Ok(())
+}
+
+fn order_candidate_headers(
+    headers: &[(MigrationId, Vec<MigrationId>)],
+    index_by_id: &BTreeMap<MigrationId, usize>,
+) -> Result<Vec<MigrationId>, Diagnostic> {
+    let mut parents = BTreeMap::new();
+    let mut children: BTreeMap<MigrationId, BTreeSet<MigrationId>> = index_by_id
+        .keys()
+        .map(|id| (id.clone(), BTreeSet::new()))
+        .collect();
+    for (id, parent_ids) in headers {
+        let parent_set = parent_ids.iter().cloned().collect::<BTreeSet<_>>();
+        for parent in &parent_set {
+            children
+                .get_mut(parent)
+                .expect("unknown parents are rejected before ordering")
+                .insert(id.clone());
+        }
+        parents.insert(id.clone(), parent_set);
+    }
+    let all = parents.keys().cloned().collect::<BTreeSet<_>>();
+    order_apply_subset(&all, &BTreeSet::new(), &parents, &children)
+}
+
+struct CanonicalCandidate {
+    path: PathBuf,
+    stem: String,
+    bytes: Vec<u8>,
+}
+
+fn collect_canonical_candidates(
+    directory: &Path,
+) -> Result<Vec<CanonicalCandidate>, Diagnostic> {
     let read_dir = fs::read_dir(directory).map_err(|_| {
         discovery_failure(
             "migration_discovery_directory_unreadable",
@@ -273,7 +410,7 @@ where
         .collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.file_name());
 
-    let mut verified = Vec::new();
+    let mut candidates = Vec::new();
     for entry in entries {
         let file_type = entry.file_type().map_err(|_| {
             discovery_failure(
@@ -316,22 +453,13 @@ where
             )
         })?;
         sniff_v1_format(&bytes)?;
-        let manifest = verify(&path, &bytes)?;
-        if encode_verified_manifest(&manifest)? != bytes {
-            return Err(discovery_failure(
-                "migration_discovery_verifier_bytes_mismatch",
-                "injected verifier returned an artifact for different bytes",
-            ));
-        }
-        if manifest.id().name().as_str() != stem {
-            return Err(discovery_failure(
-                "migration_discovery_filename_manifest_mismatch",
-                "filename stem does not equal the verified manifest name",
-            ));
-        }
-        verified.push(manifest);
+        candidates.push(CanonicalCandidate {
+            path,
+            stem: stem.to_owned(),
+            bytes,
+        });
     }
-    MigrationHistoryGraph::from_verified(verified)
+    Ok(candidates)
 }
 
 fn sniff_v1_format(bytes: &[u8]) -> Result<(), Diagnostic> {

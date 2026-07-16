@@ -30,7 +30,10 @@ pub use lowering::{
     SchemaFactCatalog, SchemaLoweringBinding, SchemaLoweringDiagnostic, SchemaLoweringPlan,
     StatementOperationKind, StatementUnit, TypeQlStatement, TypeQlVerb, lower_schema_delta,
 };
-pub use history::{MigrationHistoryGraph, discover_verified_migrations};
+pub use history::{
+    MigrationHistoryGraph, discover_verified_migration_chain,
+    discover_verified_migrations,
+};
 pub use manifest::{
     SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
     decode_verified_manifest, encode_verified_manifest, verified_manifest_digest,

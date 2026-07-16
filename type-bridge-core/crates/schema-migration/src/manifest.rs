@@ -395,6 +395,25 @@ pub fn decode_verified_manifest(
     Ok(verified)
 }
 
+/// Read only the untrusted identity header needed to order chain decoding.
+///
+/// The returned identities carry no verification authority: callers must still
+/// decode the same bytes through `decode_verified_manifest` before any graph,
+/// planning, or execution use.
+pub(crate) fn peek_manifest_identity(
+    bytes: &[u8],
+) -> Result<(MigrationId, Vec<MigrationId>), Diagnostic> {
+    let candidate = from_canonical_json::<ManifestCandidate>(bytes)?;
+    candidate.validate_header()?;
+    let id = candidate.id.rebuild()?;
+    let parents = candidate
+        .parents
+        .iter()
+        .map(MigrationIdCandidate::rebuild)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((id, parents))
+}
+
 /// Encode a verified manifest under the bounded canonical JSON contract.
 pub fn encode_verified_manifest(
     manifest: &VerifiedSchemaMigrationManifest,

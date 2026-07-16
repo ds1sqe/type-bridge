@@ -18,7 +18,8 @@ use type_bridge_contract::schema::{
 use type_bridge_schema::{ManagedDeltaContext, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
     MigrationHistoryGraph, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
-    build_verified_manifest, decode_verified_manifest, discover_verified_migrations,
+    build_verified_manifest, decode_verified_manifest,
+    discover_verified_migration_chain, discover_verified_migrations,
     encode_verified_manifest,
 };
 
@@ -82,7 +83,15 @@ fn fixture(
     source_labels: &[&str],
     target_labels: &[&str],
 ) -> Fixture {
-    let source = declared(source_labels);
+    chained_fixture(name, parents, declared(source_labels), target_labels)
+}
+
+fn chained_fixture(
+    name: &str,
+    parents: Vec<MigrationId>,
+    source: DeclaredSchema,
+    target_labels: &[&str],
+) -> Fixture {
     let target = declared(target_labels);
     let context = context();
     let delta = diff_managed(&source, &target, &context).expect("fixture delta");
@@ -452,4 +461,156 @@ fn discovery_decodes_multiple_contexts_before_graph_construction() {
     })
     .expect("verified multi-context discovery");
     assert_eq!(graph.topological_order(), &[root_id, migration_id("0002_child")]);
+}
+
+#[test]
+fn chain_discovery_is_dependency_ordered_not_filename_ordered() {
+    let directory = TempDirectory::new();
+    let parent = fixture("0002_parent", Vec::new(), &[], &["person"]);
+    let child = chained_fixture(
+        "0001_child",
+        vec![migration_id("0002_parent")],
+        parent.verified.target_schema().clone(),
+        &["company", "person"],
+    );
+    write_manifest(directory.path(), &parent, "0002_parent");
+    write_manifest(directory.path(), &child, "0001_child");
+
+    let graph = discover_verified_migration_chain(
+        directory.path(),
+        &declared(&[]),
+        &context(),
+    )
+    .expect("chain discovery must decode parents before filename-earlier children");
+    assert_eq!(graph.len(), 2);
+    assert_eq!(
+        graph.topological_order(),
+        &[migration_id("0002_parent"), migration_id("0001_child")]
+    );
+    assert_eq!(graph.heads(), &[migration_id("0001_child")]);
+}
+
+#[test]
+fn chain_discovery_binds_filename_to_manifest_name() {
+    let directory = TempDirectory::new();
+    let genesis = fixture("alpha", Vec::new(), &[], &["person"]);
+    write_manifest(directory.path(), &genesis, "wrong-name");
+    assert_eq!(
+        discover_verified_migration_chain(directory.path(), &declared(&[]), &context())
+            .expect_err("filename stem must equal the manifest name")
+            .code()
+            .as_str(),
+        "migration_discovery_filename_manifest_mismatch"
+    );
+}
+
+#[test]
+fn chain_discovery_rejects_unknown_parents_before_decoding() {
+    let directory = TempDirectory::new();
+    let orphan = fixture(
+        "0001_orphan",
+        vec![migration_id("0000_missing")],
+        &["person"],
+        &["company", "person"],
+    );
+    write_manifest(directory.path(), &orphan, "0001_orphan");
+    assert_eq!(
+        discover_verified_migration_chain(directory.path(), &declared(&[]), &context())
+            .expect_err("missing parent file")
+            .code()
+            .as_str(),
+        "migration_discovery_unknown_parent"
+    );
+}
+
+#[test]
+fn chain_discovery_rejects_duplicate_identities_across_files() {
+    let directory = TempDirectory::new();
+    let genesis = fixture("alpha", Vec::new(), &[], &["person"]);
+    write_manifest(directory.path(), &genesis, "alpha");
+    write_manifest(directory.path(), &genesis, "beta");
+    assert_eq!(
+        discover_verified_migration_chain(directory.path(), &declared(&[]), &context())
+            .expect_err("two files claiming one identity")
+            .code()
+            .as_str(),
+        "migration_discovery_duplicate_id"
+    );
+}
+
+#[test]
+fn chain_discovery_rejects_parent_cycles_before_decoding() {
+    let directory = TempDirectory::new();
+    let first = fixture("cycle_a", vec![migration_id("cycle_b")], &[], &["person"]);
+    let second = fixture("cycle_b", vec![migration_id("cycle_a")], &[], &["person"]);
+    write_manifest(directory.path(), &first, "cycle_a");
+    write_manifest(directory.path(), &second, "cycle_b");
+    assert_eq!(
+        discover_verified_migration_chain(directory.path(), &declared(&[]), &context())
+            .expect_err("mutual parents form a cycle")
+            .code()
+            .as_str(),
+        "migration_history_cycle"
+    );
+}
+
+#[test]
+fn chain_discovery_accepts_only_convergent_merge_parents() {
+    let convergent = TempDirectory::new();
+    let root = fixture("0001_root", Vec::new(), &[], &["person"]);
+    let left = chained_fixture(
+        "0002_left",
+        vec![migration_id("0001_root")],
+        root.verified.target_schema().clone(),
+        &["company", "person"],
+    );
+    let right = chained_fixture(
+        "0003_right",
+        vec![migration_id("0001_root")],
+        root.verified.target_schema().clone(),
+        &["company", "person"],
+    );
+    let merge = chained_fixture(
+        "0004_merge",
+        vec![migration_id("0002_left"), migration_id("0003_right")],
+        left.verified.target_schema().clone(),
+        &["company", "person", "team"],
+    );
+    write_manifest(convergent.path(), &root, "0001_root");
+    write_manifest(convergent.path(), &left, "0002_left");
+    write_manifest(convergent.path(), &right, "0003_right");
+    write_manifest(convergent.path(), &merge, "0004_merge");
+    let graph = discover_verified_migration_chain(
+        convergent.path(),
+        &declared(&[]),
+        &context(),
+    )
+    .expect("equal-target merge parents are decodable");
+    assert_eq!(graph.len(), 4);
+    assert_eq!(graph.heads(), &[migration_id("0004_merge")]);
+
+    let divergent = TempDirectory::new();
+    let narrow = chained_fixture(
+        "0003_right",
+        vec![migration_id("0001_root")],
+        root.verified.target_schema().clone(),
+        &["person", "team"],
+    );
+    let stale_merge = chained_fixture(
+        "0004_merge",
+        vec![migration_id("0002_left"), migration_id("0003_right")],
+        left.verified.target_schema().clone(),
+        &["company", "person", "team"],
+    );
+    write_manifest(divergent.path(), &root, "0001_root");
+    write_manifest(divergent.path(), &left, "0002_left");
+    write_manifest(divergent.path(), &narrow, "0003_right");
+    write_manifest(divergent.path(), &stale_merge, "0004_merge");
+    assert_eq!(
+        discover_verified_migration_chain(divergent.path(), &declared(&[]), &context())
+            .expect_err("divergent merge parents must fail closed")
+            .code()
+            .as_str(),
+        "migration_discovery_divergent_merge_sources"
+    );
 }
