@@ -400,3 +400,34 @@ fn write_refuses_existing_generated_files() {
         "migration_generation_write_conflict"
     );
 }
+
+#[test]
+fn destructive_generation_is_honest_and_previews_without_approval() {
+    let genesis = declared_facts(Vec::new());
+    let head_target = declared(&["person", "company"]);
+    let context = context();
+    let committed = committed_manifest(
+        "0001_person_company",
+        Vec::new(),
+        &genesis,
+        &head_target,
+        &context,
+    );
+    let graph = MigrationHistoryGraph::from_verified(vec![committed]).expect("graph");
+
+    let desired = declared(&["person"]);
+    let request = request("drop_company", &genesis, &desired, &context);
+    let next = generated(&graph, &request);
+
+    assert_eq!(next.manifest().safety(), SafetyClass::Destructive);
+    // Destructive guard conditions never become assertions: the approved
+    // intent is data loss, not refuse-if-populated.
+    assert_eq!(next.manifest().steps().len(), 1);
+    assert!(next.manifest().steps()[0].as_schema_delta().is_some());
+
+    // The review-only preview renders the destructive statements so the
+    // operator can inspect exactly what an approval would execute.
+    let preview =
+        render_migration_preview(next.manifest(), &context).expect("preview renders");
+    assert!(preview.contains("undefine"), "preview: {preview}");
+}

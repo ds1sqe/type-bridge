@@ -21,6 +21,7 @@ use type_bridge_schema::{
     ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta,
 };
 use type_bridge_schema_migration::{
+    MigrationSafetyPolicy, SafetyPolicyDecision,
     AppliedRecord, ExecutionScope, GroupEventRecord, GroupJournalEventKind,
     LeaseHolderId, MigrationApplyTarget, MigrationExecutionJournal,
     MigrationHistoryGraph, MigrationLeaseStore, PlanRecord,
@@ -184,8 +185,10 @@ fn verified_manifest_named(
     build_verified_manifest(draft, (source, context)).expect("verified manifest")
 }
 
-fn additive_policy() -> BTreeSet<SafetyClass> {
-    BTreeSet::from([SafetyClass::Additive])
+fn additive_policy() -> MigrationSafetyPolicy {
+    MigrationSafetyPolicy::default_policy()
+        .with_decision(SafetyClass::Conditional, SafetyPolicyDecision::Reject)
+        .expect("additive-only policy")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -276,6 +279,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         &context,
         &lowering,
         &additive_policy(),
+        &[],
     )
     .expect("verified apply plan");
     assert_eq!(plan.migrations().len(), 1);
@@ -446,6 +450,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         &context,
         &lowering,
         &additive_policy(),
+        &[],
     )
     .expect("follow-on plan");
     assert_eq!(follow_on_plan.applied_migrations(), &[migration.id().clone()]);

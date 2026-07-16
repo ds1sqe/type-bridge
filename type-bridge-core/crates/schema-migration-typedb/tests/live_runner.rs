@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,11 +23,12 @@ use type_bridge_query::{
     MigrationAssertionValidationContext, lower_condition_to_plan,
 };
 use type_bridge_schema::{
-    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile,
+    ManagedDeltaContext, SafetyDerivationProfile,
     derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
     resolve,
 };
 use type_bridge_schema_migration::{
+    MigrationSafetyPolicy,
     LeaseHolderId, MigrationApplyTarget, MigrationExecutionOutcome,
     SchemaLoweringBinding, SchemaMigrationDraft,
     VerifiedSchemaMigrationManifest, build_verified_manifest,
@@ -307,12 +307,12 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
         genesis,
         context,
         lowering,
-        BTreeSet::from([SafetyClass::Additive, SafetyClass::Conditional]),
+        MigrationSafetyPolicy::default_policy(),
     );
     let holder = LeaseHolderId::new("live-runner").expect("holder");
 
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder)
+        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
         .await
         .expect("first directory apply");
     assert!(matches!(
@@ -325,14 +325,14 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
     assert!(export.contains("sub person"), "{export}");
 
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder)
+        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
         .await
         .expect("repeat apply on an up-to-date ledger");
     assert!(matches!(outcome, MigrationDirectoryApplyOutcome::UpToDate));
 
     write_manifest(directory.path(), &third);
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder)
+        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
         .await
         .expect("incremental apply from the live applied basis");
     assert!(matches!(
@@ -343,7 +343,7 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
     assert!(export.contains("company"), "{export}");
 
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder)
+        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
         .await
         .expect("final apply on a fully applied ledger");
     assert!(matches!(outcome, MigrationDirectoryApplyOutcome::UpToDate));

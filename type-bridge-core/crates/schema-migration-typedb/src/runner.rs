@@ -17,13 +17,13 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_orm::Database;
-use type_bridge_schema::{ManagedDeltaContext, SafetyClass};
+use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_migration::{
-    ExecutionScope, LeaseHolderId, MigrationApplyPlanError, MigrationApplyTarget,
-    MigrationExecutionJournal, MigrationExecutionOutcome, MigrationHistoryGraph,
-    MigrationLeaseStore, SchemaLoweringBinding,
-    build_verified_migration_apply_plan, discover_verified_migration_chain,
-    execute_verified_migration_apply_plan,
+    ExecutionScope, LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError,
+    MigrationApplyTarget, MigrationExecutionJournal, MigrationExecutionOutcome,
+    MigrationHistoryGraph, MigrationLeaseStore, MigrationSafetyPolicy,
+    SchemaLoweringBinding, build_verified_migration_apply_plan,
+    discover_verified_migration_chain, execute_verified_migration_apply_plan,
 };
 
 use crate::provider::TypeDbMigrationProvider;
@@ -77,7 +77,7 @@ pub struct TypeDbMigrationRunner {
     genesis_source: DeclaredSchema,
     context: ManagedDeltaContext,
     lowering_binding: SchemaLoweringBinding,
-    allowed_safety: BTreeSet<SafetyClass>,
+    policy: MigrationSafetyPolicy,
 }
 
 impl TypeDbMigrationRunner {
@@ -94,7 +94,7 @@ impl TypeDbMigrationRunner {
         genesis_source: DeclaredSchema,
         context: ManagedDeltaContext,
         lowering_binding: SchemaLoweringBinding,
-        allowed_safety: BTreeSet<SafetyClass>,
+        policy: MigrationSafetyPolicy,
     ) -> Self {
         Self {
             managed_database,
@@ -102,7 +102,7 @@ impl TypeDbMigrationRunner {
             genesis_source,
             context,
             lowering_binding,
-            allowed_safety,
+            policy,
         }
     }
 
@@ -129,6 +129,7 @@ impl TypeDbMigrationRunner {
         directory: &Path,
         target: &MigrationApplyTarget,
         holder: &LeaseHolderId,
+        approvals: &[MigrationApplyApproval],
     ) -> Result<MigrationDirectoryApplyOutcome, MigrationDirectoryApplyError> {
         let graph = self.discover(directory)?;
         let catalog =
@@ -159,7 +160,8 @@ impl TypeDbMigrationRunner {
             target,
             &self.context,
             &self.lowering_binding,
-            &self.allowed_safety,
+            &self.policy,
+            approvals,
         )?;
         let store = store.bind_plan(&plan)?;
         let provider =

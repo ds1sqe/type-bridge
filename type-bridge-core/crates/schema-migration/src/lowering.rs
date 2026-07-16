@@ -350,6 +350,7 @@ pub fn lower_schema_delta(
         target_facts,
         binding,
         &[],
+        false,
     )
 }
 
@@ -359,6 +360,7 @@ pub(crate) fn lower_schema_delta_with_verified_assertions(
     target_facts: &SchemaFactCatalog,
     binding: &SchemaLoweringBinding,
     conditional_operation_indices: &[usize],
+    destructive_approved: bool,
 ) -> Result<SchemaLoweringPlan, SchemaLoweringDiagnostic> {
     if !source_facts.matches_selection(delta.source().selection())
         || !target_facts.matches_selection(delta.target().selection())
@@ -392,6 +394,7 @@ pub(crate) fn lower_schema_delta_with_verified_assertions(
                 target_facts,
                 binding,
                 conditional_operation_indices.binary_search(&index).is_ok(),
+                destructive_approved,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -410,6 +413,7 @@ fn lower_operation(
     target_facts: &SchemaFactCatalog,
     binding: &SchemaLoweringBinding,
     conditional_resolved: bool,
+    destructive_approved: bool,
 ) -> Result<StatementUnit, SchemaLoweringDiagnostic> {
     let classification = classify_operation_transition(operation).map_err(|error| {
         SchemaLoweringDiagnostic::new(CODE_INVALID_TRANSITION, error.message())
@@ -433,6 +437,7 @@ fn lower_operation(
         operation_index,
         classification.safety,
         conditional_resolved,
+        destructive_approved,
     )?;
     let statements = render_operation(operation_index, operation, source_facts, target_facts)?;
     Ok(StatementUnit {
@@ -450,6 +455,7 @@ fn gate_safety(
     operation_index: usize,
     safety: SafetyClass,
     conditional_resolved: bool,
+    destructive_approved: bool,
 ) -> Result<(), SchemaLoweringDiagnostic> {
     if conditional_resolved && safety != SafetyClass::Conditional {
         return Err(SchemaLoweringDiagnostic::new(
@@ -472,9 +478,10 @@ fn gate_safety(
             CODE_REQUIRES_BACKFILL,
             "schema transition requires an explicit backfill plan",
         ),
+        SafetyClass::Destructive if destructive_approved => return Ok(()),
         SafetyClass::Destructive => (
             CODE_DESTRUCTIVE,
-            "destructive schema transition is not permitted by the schema-only lowering gate",
+            "destructive schema transition requires an identity-bound approval",
         ),
         SafetyClass::Opaque => (
             CODE_OPAQUE,
@@ -1198,7 +1205,7 @@ mod tests {
         ];
         let mut output = String::new();
         for (name, operation, binding) in cases {
-            let error = lower_operation(0, &operation, &empty, &empty, binding, false)
+            let error = lower_operation(0, &operation, &empty, &empty, binding, false, false)
                 .unwrap_err();
             output.push_str(name);
             output.push('|');
@@ -1212,6 +1219,7 @@ mod tests {
             &empty,
             &empty,
             &no_capabilities,
+            false,
             false,
         )
         .unwrap_err();
@@ -1246,6 +1254,7 @@ mod tests {
             &SchemaFactCatalog::empty(),
             &full_binding(),
             false,
+            false,
         )
         .unwrap();
         assert_eq!(unit.safety(), SafetyClass::FormalOnly);
@@ -1267,7 +1276,7 @@ mod tests {
                 SafetyClass::Unsupported => "unsupported",
             };
             output.push_str(name);
-            match gate_safety(7, safety, false) {
+            match gate_safety(7, safety, false, false) {
                 Ok(()) => output.push_str("|accepted\n"),
                 Err(error) => {
                     assert_eq!(error.operation_index(), Some(7));
@@ -1284,5 +1293,15 @@ mod tests {
             output,
             include_str!("../tests/fixtures/lowering-safety-gate-v1.txt")
         );
+    }
+
+    #[test]
+    fn destructive_gate_opens_only_under_approval() {
+        assert!(gate_safety(0, SafetyClass::Destructive, false, true).is_ok());
+        // An approval never opens classes no approval can execute.
+        assert!(gate_safety(0, SafetyClass::Opaque, false, true).is_err());
+        assert!(gate_safety(0, SafetyClass::BackfillRequired, false, true).is_err());
+        assert!(gate_safety(0, SafetyClass::Unsupported, false, true).is_err());
+        assert!(gate_safety(0, SafetyClass::Conditional, false, true).is_err());
     }
 }

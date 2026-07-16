@@ -26,7 +26,7 @@ use type_bridge_query::{
     MigrationAssertionValidationContext, lower_condition_to_plan,
 };
 use type_bridge_schema::{
-    ManagedDeltaContext, SafetyDerivationProfile, apply_delta,
+    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta,
     derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
     resolve,
 };
@@ -216,9 +216,10 @@ pub fn generate_next_migration(
 /// Render the review-only TypeQL preview of a verified manifest.
 ///
 /// The preview replays the manifest steps and lowers every schema delta under
-/// the context's capabilities; safety classes the lowering gate rejects
-/// (destructive, backfill, opaque) surface their gate diagnostic instead of
-/// producing a misleading partial preview.
+/// the context's capabilities. Destructive units render without an approval —
+/// the preview is exactly what an operator inspects before granting one —
+/// while classes no approval can execute (backfill, opaque) surface their
+/// gate diagnostic instead of producing a misleading partial preview.
 pub fn render_migration_preview(
     manifest: &VerifiedSchemaMigrationManifest,
     context: &ManagedDeltaContext,
@@ -254,6 +255,7 @@ pub fn render_migration_preview(
             &target_catalog,
             &binding,
             coverage.conditional_operation_indices(),
+            true,
         )?;
         for unit in lowering.units() {
             for statement in unit.statements() {
@@ -369,7 +371,15 @@ fn author_steps(
     for (ordinal, operation) in delta.operations().iter().enumerate() {
         let derived =
             derive_safety_conditions(ordinal, operation, source, target, &safety_profile)?;
-        for (index, condition) in derived.conditions().iter().enumerate() {
+        // Only conditional requirements become assertions. Destructive guard
+        // conditions are deliberately omitted: an approved destructive
+        // migration means the data loss is intended, and a NoRows guard would
+        // convert it into refuse-if-populated.
+        let required = derived
+            .conditions()
+            .iter()
+            .filter(|condition| condition.policy() == SafetyClass::Conditional);
+        for (index, condition) in required.enumerate() {
             let validated = lower_condition_to_plan(
                 condition,
                 &validation_context,

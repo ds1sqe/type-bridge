@@ -35,8 +35,10 @@ use type_bridge_schema_migration::{
     GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId,
     MigrationApplyTarget, MigrationExecutionJournal,
     MigrationExecutionOutcome, MigrationExecutionProvider,
+    MigrationApplyApproval, MigrationApplyPlanError,
     MigrationHistoryGraph, MigrationLease, MigrationLeaseStore,
-    OpenPlanRecord, PlanRecord, PreparedMigrationGroup, SchemaLoweringBinding,
+    MigrationSafetyPolicy, OpenPlanRecord, PlanRecord, PreparedMigrationGroup,
+    SafetyPolicyDecision, SchemaLoweringBinding,
     SchemaMigrationDraft, StatementUnit, VerifiedMigrationApplyStep,
     build_verified_manifest, build_verified_migration_apply_plan,
     execute_verified_migration_apply_plan, schema_lowering_profile_binding,
@@ -471,8 +473,10 @@ fn derived_assertion_step(
     .expect("assertion step")
 }
 
-fn additive_policy() -> BTreeSet<SafetyClass> {
-    BTreeSet::from([SafetyClass::Additive])
+fn additive_policy() -> MigrationSafetyPolicy {
+    MigrationSafetyPolicy::default_policy()
+        .with_decision(SafetyClass::Conditional, SafetyPolicyDecision::Reject)
+        .expect("additive-only policy")
 }
 
 #[test]
@@ -501,6 +505,7 @@ fn linear_apply_plan_is_deterministic_relowered_and_frontier_bound() {
             &context,
             &lowering,
             &additive_policy(),
+            &[],
         )
         .expect("apply plan")
     };
@@ -537,6 +542,7 @@ fn linear_apply_plan_is_deterministic_relowered_and_frontier_bound() {
         &context,
         &lowering,
         &additive_policy(),
+        &[],
     )
     .expect("remaining plan");
     assert_eq!(remaining.applied_frontier(), &[first.id().clone()]);
@@ -602,6 +608,7 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
         &context,
         &lowering,
         &additive_policy(),
+        &[],
     )
     .expect("complete plan");
     let already_applied = BTreeSet::from([first.id().clone(), second.id().clone()]);
@@ -612,6 +619,7 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
         &context,
         &lowering,
         &additive_policy(),
+        &[],
     )
     .expect("remaining plan");
     assert_eq!(remaining.applied_migrations().len(), 2);
@@ -710,7 +718,8 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
         &MigrationApplyTarget::DefaultHead,
         &context,
         &lowering,
-        &BTreeSet::from([SafetyClass::Conditional]),
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
     )
     .expect("verified apply plan");
     let apply_manifest = &plan.migrations()[0];
@@ -893,7 +902,10 @@ fn explicit_safety_policy_rejects_before_execution_evidence_is_returned() {
         &MigrationApplyTarget::DefaultHead,
         &context,
         &lowering,
-        &BTreeSet::new(),
+        &MigrationSafetyPolicy::default_policy()
+            .with_decision(SafetyClass::Additive, SafetyPolicyDecision::Reject)
+            .expect("policy rejecting additive"),
+        &[],
     )
     .is_err());
 }
@@ -917,6 +929,7 @@ fn divergent_branch_sources_are_not_guessed_into_one_apply_chain() {
         &context,
         &lowering,
         &additive_policy(),
+        &[],
     )
     .is_err());
 }
@@ -956,7 +969,8 @@ fn new_subtype_migration_lowers_without_assertion_coverage() {
         &MigrationApplyTarget::DefaultHead,
         &context,
         &lowering,
-        &BTreeSet::from([SafetyClass::Additive, SafetyClass::Conditional]),
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
     )
     .expect("a proven condition-free subtype transition needs no assertion");
 
@@ -976,4 +990,103 @@ fn new_subtype_migration_lowers_without_assertion_coverage() {
         VerifiedMigrationApplyStep::Assertion { .. } => false,
     });
     assert!(rendered_sub, "lowered statements must define the sub edge");
+}
+
+#[test]
+fn destructive_manifest_requires_an_identity_bound_approval() {
+    let base = declared(&["person", "company"]);
+    let target = declared(&["person"]);
+    let context = context();
+    let migration = manifest("0001_drop_company", Vec::new(), &base, &target, &context);
+    assert_eq!(migration.safety(), SafetyClass::Destructive);
+    let graph =
+        MigrationHistoryGraph::from_verified([migration.clone()]).expect("history");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering");
+    let policy = MigrationSafetyPolicy::default_policy();
+    let build = |approvals: &[MigrationApplyApproval]| {
+        build_verified_migration_apply_plan(
+            &graph,
+            &BTreeSet::new(),
+            &MigrationApplyTarget::DefaultHead,
+            &context,
+            &lowering,
+            &policy,
+            approvals,
+        )
+    };
+
+    let MigrationApplyPlanError::Contract(unapproved) =
+        build(&[]).expect_err("destructive work requires approval")
+    else {
+        panic!("missing approval must surface as a contract diagnostic");
+    };
+    assert_eq!(unapproved.code().as_str(), "migration_apply_approval_required");
+
+    // An approval bound to a different verified transition never matches.
+    let other = manifest(
+        "0002_other",
+        Vec::new(),
+        &declared(&["person"]),
+        &declared(&["person", "team"]),
+        &context,
+    );
+    let foreign =
+        MigrationApplyApproval::for_manifest(&other).expect("foreign approval");
+    let MigrationApplyPlanError::Contract(still_unapproved) =
+        build(&[foreign]).expect_err("a foreign approval must not match")
+    else {
+        panic!("foreign approval must surface as a contract diagnostic");
+    };
+    assert_eq!(
+        still_unapproved.code().as_str(),
+        "migration_apply_approval_required"
+    );
+
+    // The exact binding admits the manifest and its destructive lowering.
+    let approval =
+        MigrationApplyApproval::for_manifest(&migration).expect("bound approval");
+    assert!(approval.binds(&migration).expect("binding check"));
+    let plan = build(std::slice::from_ref(&approval)).expect("approved plan");
+    let rendered_undefine = plan.migrations()[0].steps().iter().any(|step| match step {
+        VerifiedMigrationApplyStep::SchemaDelta { lowering, .. } => lowering
+            .units()
+            .iter()
+            .flat_map(StatementUnit::statements)
+            .any(|statement| statement.query().contains("undefine")),
+        VerifiedMigrationApplyStep::Assertion { .. } => false,
+    });
+    assert!(rendered_undefine, "approved destructive work must lower");
+}
+
+#[test]
+fn destructive_reject_policy_wins_over_a_valid_approval() {
+    let base = declared(&["person", "company"]);
+    let target = declared(&["person"]);
+    let context = context();
+    let migration = manifest("0001_drop_company", Vec::new(), &base, &target, &context);
+    let approval =
+        MigrationApplyApproval::for_manifest(&migration).expect("bound approval");
+    let graph = MigrationHistoryGraph::from_verified([migration]).expect("history");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering");
+    let policy = MigrationSafetyPolicy::default_policy()
+        .with_decision(SafetyClass::Destructive, SafetyPolicyDecision::Reject)
+        .expect("rejecting policy");
+    let MigrationApplyPlanError::Contract(rejected) = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &policy,
+        &[approval],
+    )
+    .expect_err("a rejecting policy ignores approvals") else {
+        panic!("policy rejection must surface as a contract diagnostic");
+    };
+    assert_eq!(
+        rejected.code().as_str(),
+        "migration_apply_safety_policy_rejected"
+    );
 }

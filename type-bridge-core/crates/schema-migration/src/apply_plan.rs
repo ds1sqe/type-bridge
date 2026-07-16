@@ -16,8 +16,7 @@ use type_bridge_contract::migration_assertion::AssertionExpectation;
 use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState};
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 use type_bridge_schema::{
-    DeltaError, ManagedDeltaContext, SafetyClass, SafetyDerivationProfile,
-    apply_delta,
+    DeltaError, ManagedDeltaContext, SafetyDerivationProfile, apply_delta,
 };
 
 use crate::history::MigrationHistoryGraph;
@@ -28,6 +27,9 @@ use crate::lowering::{
 use crate::manifest::{
     VerifiedSchemaMigrationManifest, verified_manifest_digest,
     verify_assertion_coverage,
+};
+use crate::policy::{
+    MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision,
 };
 
 /// Select the target closure of a migration apply operation.
@@ -326,16 +328,17 @@ impl From<SchemaLoweringDiagnostic> for MigrationApplyPlanError {
 /// Every check completes before lease acquisition or provider I/O. The function
 /// independently replays and lowers every state-changing step rather than trusting
 /// manifest-adjacent rendered statements.
-/// Admitting `Destructive` in `allowed_safety` is policy admission only: the current
-/// schema-only lowering gate still rejects destructive execution until the staged
-/// operator-approval path is implemented.
+/// A manifest whose class the policy gates behind approval executes only when an
+/// approval binds its exact verified transition; the binding admits the manifest's
+/// destructive statement units through the lowering gate.
 pub fn build_verified_migration_apply_plan(
     graph: &MigrationHistoryGraph,
     applied: &BTreeSet<MigrationId>,
     target: &MigrationApplyTarget,
     delta_context: &ManagedDeltaContext,
     lowering_binding: &SchemaLoweringBinding,
-    allowed_safety: &BTreeSet<SafetyClass>,
+    policy: &MigrationSafetyPolicy,
+    approvals: &[MigrationApplyApproval],
 ) -> Result<VerifiedMigrationApplyPlan, MigrationApplyPlanError> {
     if lowering_binding.available_capabilities() != delta_context.available_capabilities() {
         return Err(contract_failure(
@@ -376,14 +379,35 @@ pub fn build_verified_migration_apply_plan(
             )
             .into());
         }
-        if !allowed_safety.contains(&manifest.safety()) {
-            return Err(contract_failure(
-                DiagnosticCategory::InvalidContract,
-                "migration_apply_safety_policy_rejected",
-                "explicit apply policy rejects a manifest safety classification",
-            )
-            .into());
-        }
+        let approved = match policy.decision(manifest.safety()) {
+            SafetyPolicyDecision::Allow => false,
+            SafetyPolicyDecision::Reject => {
+                return Err(contract_failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_apply_safety_policy_rejected",
+                    "explicit apply policy rejects a manifest safety classification",
+                )
+                .into());
+            }
+            SafetyPolicyDecision::RequireApproval => {
+                let mut bound = false;
+                for approval in approvals {
+                    if approval.binds(manifest)? {
+                        bound = true;
+                        break;
+                    }
+                }
+                if !bound {
+                    return Err(contract_failure(
+                        DiagnosticCategory::InvalidContract,
+                        "migration_apply_approval_required",
+                        "manifest safety requires an approval bound to this exact transition",
+                    )
+                    .into());
+                }
+                true
+            }
+        };
         manifest
             .required_capabilities()
             .ensure_supported_by(lowering_binding.available_capabilities())?;
@@ -461,6 +485,7 @@ pub fn build_verified_migration_apply_plan(
                 &target_catalog,
                 lowering_binding,
                 coverage.conditional_operation_indices(),
+                approved,
             )?;
             verified_steps.push(VerifiedMigrationApplyStep::SchemaDelta {
                 step: step.clone(),

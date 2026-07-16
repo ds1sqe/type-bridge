@@ -24,11 +24,12 @@ use type_bridge_query::{
     MigrationAssertionValidationContext, lower_condition_to_plan,
 };
 use type_bridge_schema::{
-    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile,
+    ManagedDeltaContext, SafetyDerivationProfile,
     derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
     resolve,
 };
 use type_bridge_schema_migration::{
+    MigrationSafetyPolicy,
     ExecutionScope, LeaseHolderId, MigrationApplyTarget,
     MigrationExecutionJournal, MigrationExecutionOutcome,
     MigrationExecutionProvider, MigrationHistoryGraph, MigrationLeaseStore,
@@ -290,7 +291,8 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
         &MigrationApplyTarget::DefaultHead,
         &context,
         &lowering,
-        &BTreeSet::from([SafetyClass::Additive, SafetyClass::Conditional]),
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
     )
     .expect("verified apply plan");
     assert_eq!(plan.migrations().len(), 2);

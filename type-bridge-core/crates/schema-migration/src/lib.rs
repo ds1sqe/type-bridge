@@ -7,6 +7,7 @@ mod generate;
 pub mod lowering;
 mod history;
 mod manifest;
+mod policy;
 pub mod profile;
 
 pub use apply_plan::{
@@ -43,6 +44,9 @@ pub use history::{
 pub use manifest::{
     SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
     decode_verified_manifest, encode_verified_manifest, verified_manifest_digest,
+};
+pub use policy::{
+    MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision,
 };
 
 pub use profile::{
