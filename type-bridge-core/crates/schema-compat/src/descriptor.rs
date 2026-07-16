@@ -222,8 +222,11 @@ pub fn typeql_to_generated_descriptors(
     Ok(String::from_utf8(bytes).expect("canonical JSON is valid UTF-8"))
 }
 
-/// Remove `ident[]` list markers (and one trailing `@distinct` list
-/// annotation each) outside string literals, recording every construct.
+/// Remove `ident[]` list markers and `@distinct` annotations outside
+/// string literals, recording every construct.
+///
+/// `@distinct` is only legal on list capabilities, all of which strip
+/// here, so any occurrence belongs to a stripped list.
 fn strip_list_capabilities(source: &str) -> (String, Vec<String>) {
     let bytes = source.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
@@ -266,12 +269,13 @@ fn strip_list_capabilities(source: &str) -> (String, Vec<String>) {
             }
             stripped.push(format!("{}[]", &source[start..index]));
             index += 2;
-            let rest = &source[index..];
-            let trimmed = rest.trim_start();
-            if let Some(remainder) = trimmed.strip_prefix("@distinct") {
-                let _ = remainder;
-                index += rest.len() - trimmed.len() + "@distinct".len();
-            }
+            continue;
+        }
+        if source[index..].starts_with("@distinct")
+            && !ident_byte(*bytes.get(index + "@distinct".len()).unwrap_or(&b' '))
+        {
+            stripped.push("@distinct".to_owned());
+            index += "@distinct".len();
             continue;
         }
         output.push(byte);
