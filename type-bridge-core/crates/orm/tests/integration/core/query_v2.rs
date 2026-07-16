@@ -2397,3 +2397,156 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
         "query_remote_provider_failed",
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_facade_executes_locally_and_remotely_live() {
+    use type_bridge_contract::query_plan_capability_vocabulary;
+    use type_bridge_contract::query_remote::RemoteLimits;
+    use type_bridge_contract::schema::encode_declared_schema;
+    use type_bridge_orm::query_v2_prepared::{
+        QueryAuthority, decode_prepared_remote_outcome, encode_prepared_remote_request,
+        execute_prepared_local,
+    };
+    use type_bridge_orm::query_v2_remote::execute_remote_envelope;
+
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-prepared-live");
+    let fixture = live_fixture(&suffix);
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {}, value string;\n\
+             entity {}, owns {};",
+            fixture.name.label(),
+            fixture.person.label(),
+            fixture.name.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("live prepared schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {name} \"ada\"; \
+             $b isa {person}, has {name} \"bob\";",
+            person = fixture.person.label(),
+            name = fixture.name.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("live prepared data");
+
+    // The binding boundary: declared bytes, plan bytes, JSON payloads.
+    let declared_bytes = {
+        // live_fixture derives its state from these facts; rebuild the
+        // declared document the same way to encode it.
+        let name_type =
+            TypeId::new(TypeKind::Attribute, fixture.name.label().as_str()).unwrap();
+        let facts = vec![
+            SchemaFact::Type(TypeFact::new(fixture.person.clone()).unwrap()),
+            SchemaFact::Type(TypeFact::new(name_type).unwrap()),
+            SchemaFact::Value(ValueFact::new(
+                ValueFactId::new(fixture.name.clone()),
+                ValueTypeTag::String,
+            )),
+            SchemaFact::Owns(OwnsFact::new(
+                OwnsFactId::new(fixture.person.clone(), fixture.name.clone())
+                    .unwrap(),
+            )),
+        ];
+        let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+            let byte = u64::try_from(index).unwrap();
+            let line = u32::try_from(index + 1).unwrap();
+            SourcedSchemaFact::new(
+                fact,
+                SourceSpan::new(
+                    DocumentId::new("query-v2-live").unwrap(),
+                    byte,
+                    byte + 1,
+                    line,
+                    1,
+                    line,
+                    2,
+                )
+                .unwrap(),
+            )
+        });
+        let declared = DeclaredSchema::from_facts(
+            FormatVersion::V1,
+            CapabilitySet::new(),
+            sourced,
+        )
+        .unwrap();
+        encode_declared_schema(&declared).unwrap()
+    };
+    let authority = QueryAuthority::from_declared_bytes(
+        &declared_bytes,
+        "query-v2-live",
+        "typedb-3.12.1/v1",
+    )
+    .expect("authority from declared bytes");
+
+    let (_, plan) = validated_query(&fixture, OrderDirection::Ascending);
+    let plan_bytes = plan.canonical_bytes().expect("plan bytes");
+    let invocation_json = serde_json::json!({
+        "operation": "rows",
+        "rows": [[{"kind": "string", "value": "a"}]],
+    })
+    .to_string();
+
+    // Local execution through the facade.
+    let local_json = execute_prepared_local(
+        &db,
+        &authority,
+        &plan_bytes,
+        &invocation_json,
+        limits(),
+    )
+    .await
+    .expect("prepared local outcome");
+    assert!(local_json.contains("\"ada\""), "{local_json}");
+    assert!(local_json.contains("\"bob\""), "{local_json}");
+
+    // Remote execution through the same facade and envelope.
+    let nonce = "prepared-nonce-0123456789abc";
+    let caller_limits = RemoteLimits {
+        deadline_ms: Some(30_000),
+        max_bytes: 1 << 20,
+        max_items: 100,
+    };
+    let request = encode_prepared_remote_request(
+        &authority,
+        &plan_bytes,
+        &invocation_json,
+        caller_limits,
+        nonce,
+    )
+    .expect("prepared request");
+    let context = MigrationAssertionValidationContext::new(
+        &fixture.resolved,
+        &fixture.managed,
+    );
+    let mut server_transaction =
+        db.read_transaction().await.expect("server transaction");
+    let response = execute_remote_envelope(
+        &request,
+        &context,
+        &query_plan_capability_vocabulary(),
+        &mut server_transaction,
+        limits(),
+    )
+    .await;
+    let remote_json = decode_prepared_remote_outcome(
+        &authority,
+        &plan_bytes,
+        &invocation_json,
+        &response,
+        nonce,
+        caller_limits,
+    )
+    .expect("prepared remote outcome");
+    assert_eq!(remote_json, local_json);
+}

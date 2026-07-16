@@ -306,7 +306,7 @@ fn tighten_limits(
     }
 }
 
-fn remote_outcome(outcome: &QueryV2Outcome) -> RemoteOutcome {
+pub(crate) fn remote_outcome(outcome: &QueryV2Outcome) -> RemoteOutcome {
     match outcome {
         QueryV2Outcome::Rows(rows) => RemoteOutcome::Rows {
             rows: rows
