@@ -1830,3 +1830,473 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
     );
     assert_eq!(failure.nonce(), Some(nonce));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_envelope_parity_corpus_live() {
+    use type_bridge_contract::id::{FunctionId, Label, RoleId};
+    use type_bridge_contract::query_plan::{
+        DocumentField, DocumentSource, LocalFunction, LocalReturn, QueryOperation,
+        ReduceAssignment, Reducer,
+    };
+    use type_bridge_contract::query_plan_capability_vocabulary;
+    use type_bridge_contract::query_remote::RemoteLimits;
+    use type_bridge_contract::schema::{
+        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
+        FunctionReturnMode, FunctionSignature, PlaysFact, PlaysFactId, RelatesFact,
+        RelatesFactId, TypeReference,
+    };
+    use type_bridge_orm::query_v2_remote::{
+        decode_remote_outcome, encode_remote_request, execute_remote_envelope,
+    };
+
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-parity-corpus");
+    let person = TypeId::new(TypeKind::Entity, format!("{suffix}-person")).unwrap();
+    let name = AttributeId::new(format!("{suffix}-name")).unwrap();
+    let age = AttributeId::new(format!("{suffix}-age")).unwrap();
+    let edge = TypeId::new(TypeKind::Relation, format!("{suffix}-edge")).unwrap();
+    let origin = RoleId::new(edge.label().as_str(), "origin").unwrap();
+    let destination = RoleId::new(edge.label().as_str(), "destination").unwrap();
+    let age_sum = FunctionId::new(format!("{}_age_sum", suffix.replace('-', "_")))
+        .unwrap();
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {name}, value string;\n\
+             attribute {age}, value integer;\n\
+             relation {edge}, relates origin, relates destination;\n\
+             entity {person}, owns {name}, owns {age} @card(0..), \
+             plays {edge}:origin, plays {edge}:destination;\n\
+             fun {age_sum}($subject: {person}) -> integer:\n\
+             match $subject has {age} $a;\n\
+             return sum($a);",
+            name = name.label(),
+            age = age.label(),
+            edge = edge.label(),
+            person = person.label(),
+            age_sum = age_sum.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("corpus schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {name} \"ada\", has {age} 30, has {age} 40; \
+             $b isa {person}, has {name} \"bob\", has {age} 25; \
+             $c isa {person}, has {name} \"eve\"; \
+             (origin: $a, destination: $b) isa {edge}; \
+             (origin: $b, destination: $c) isa {edge};",
+            person = person.label(),
+            name = name.label(),
+            age = age.label(),
+            edge = edge.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("corpus data");
+
+    let person_label = Label::new(person.label().as_str()).unwrap();
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Type(TypeFact::new(edge.clone()).unwrap()),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), name.clone()).unwrap(),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), age.clone()).unwrap(),
+        )),
+        SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(edge.clone(), origin.clone()).unwrap(),
+                None,
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(edge.clone(), destination.clone()).unwrap(),
+                None,
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(person.clone(), origin.clone()).unwrap(),
+        )),
+        SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(person.clone(), destination.clone()).unwrap(),
+        )),
+        SchemaFact::Function(FunctionFact::new(
+            age_sum.clone(),
+            FunctionSignature::new(
+                vec![FunctionParameter::new(
+                    Label::new("subject").unwrap(),
+                    TypeReference::Schema(person_label.clone()),
+                )],
+                FunctionReturnMode::scalar(FunctionReturnElement::new(
+                    TypeReference::Value(ValueTypeTag::Long),
+                    false,
+                )),
+            )
+            .unwrap(),
+            FunctionBody::new("match $subject has age $a; return sum($a);").unwrap(),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).unwrap();
+        let line = u32::try_from(index + 1).unwrap();
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-parity-corpus").unwrap(),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .unwrap(),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        sourced,
+    )
+    .unwrap();
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let managed = managed_schema_state(
+        &declared,
+        &ManagedDeltaContext::new(
+            ManagedScopeId::new("query-v2-parity-corpus").unwrap(),
+            profile,
+            CapabilitySet::new(),
+        ),
+    )
+    .unwrap();
+    let context = MigrationAssertionValidationContext::new(&resolved, &managed);
+    let semantics = managed.managed_semantic_schema().clone();
+
+    let match_person_name = |extra: Vec<QueryPattern>| {
+        let mut patterns = vec![
+            QueryPattern::Isa {
+                binding: binding_id(0),
+                include_subtypes: true,
+                type_id: person.clone(),
+            },
+            QueryPattern::Has {
+                attribute: binding_id(1),
+                attribute_id: name.clone(),
+                owner: binding_id(0),
+            },
+        ];
+        patterns.extend(extra);
+        ReadStage::Match { patterns }
+    };
+    let sort_by = |binding: u16| ReadStage::Sort {
+        terms: vec![OrderTerm::new(binding_id(binding), OrderDirection::Ascending)],
+    };
+
+    // The corpus: one plan per Phase 6 capability family.
+    let corpus: Vec<(&str, QueryPlan, Vec<InputRow>)> = vec![
+        (
+            "optional-projection",
+            QueryPlan::new(
+                vec![
+                    binding(0, "person"),
+                    binding(1, "name"),
+                    binding(2, "age"),
+                ],
+                Vec::new(),
+                vec![
+                    match_person_name(vec![QueryPattern::Try {
+                        patterns: vec![QueryPattern::Has {
+                            attribute: binding_id(2),
+                            attribute_id: age.clone(),
+                            owner: binding_id(0),
+                        }],
+                    }]),
+                    sort_by(1),
+                ],
+                QueryOutput::Rows {
+                    columns: vec![binding_id(1), binding_id(2)],
+                },
+                semantics.clone(),
+            )
+            .unwrap(),
+            Vec::new(),
+        ),
+        (
+            "grouped-reduce",
+            QueryPlan::new(
+                vec![
+                    binding(0, "person"),
+                    binding(1, "name"),
+                    binding(2, "age"),
+                    binding(3, "age_total"),
+                ],
+                Vec::new(),
+                vec![
+                    match_person_name(vec![QueryPattern::Has {
+                        attribute: binding_id(2),
+                        attribute_id: age.clone(),
+                        owner: binding_id(0),
+                    }]),
+                    ReadStage::Reduce {
+                        assignments: vec![ReduceAssignment::new(
+                            binding_id(3),
+                            Reducer::Sum,
+                            Some(binding_id(2)),
+                        )],
+                        groups: vec![binding_id(0)],
+                    },
+                    sort_by(3),
+                ],
+                QueryOutput::Rows {
+                    columns: vec![binding_id(0), binding_id(3)],
+                },
+                semantics.clone(),
+            )
+            .unwrap(),
+            Vec::new(),
+        ),
+        (
+            "document-fetch",
+            QueryPlan::new(
+                vec![binding(0, "person"), binding(1, "name")],
+                Vec::new(),
+                vec![match_person_name(Vec::new()), sort_by(1)],
+                QueryOutput::Documents {
+                    fields: vec![
+                        DocumentField::new(
+                            QueryVariable::new("name").unwrap(),
+                            DocumentSource::Binding { binding: binding_id(1) },
+                        ),
+                        DocumentField::new(
+                            QueryVariable::new("ages").unwrap(),
+                            DocumentSource::AttributeList {
+                                attribute: age.clone(),
+                                owner: binding_id(0),
+                            },
+                        ),
+                    ],
+                },
+                semantics.clone(),
+            )
+            .unwrap(),
+            Vec::new(),
+        ),
+        (
+            "multi-row-given",
+            QueryPlan::new(
+                vec![binding(0, "person"), binding(1, "name")],
+                vec![InputColumn::new(
+                    InputColumnId::new(0),
+                    QueryVariable::new("wanted_name").unwrap(),
+                    ValueTypeTag::String,
+                    false,
+                )],
+                vec![
+                    match_person_name(vec![QueryPattern::Value {
+                        comparator: ValueComparator::Equal,
+                        left: QueryOperand::Binding { binding: binding_id(1) },
+                        right: QueryOperand::Input { column: InputColumnId::new(0) },
+                    }]),
+                    sort_by(1),
+                ],
+                QueryOutput::Rows {
+                    columns: vec![binding_id(0), binding_id(1)],
+                },
+                semantics.clone(),
+            )
+            .unwrap(),
+            vec![string_row("eve"), string_row("ada")],
+        ),
+        (
+            "schema-function-call",
+            QueryPlan::new(
+                vec![
+                    binding(0, "person"),
+                    binding(1, "name"),
+                    binding(2, "age"),
+                    binding(3, "age_total"),
+                ],
+                Vec::new(),
+                vec![
+                    match_person_name(vec![
+                        QueryPattern::Has {
+                            attribute: binding_id(2),
+                            attribute_id: age.clone(),
+                            owner: binding_id(0),
+                        },
+                        QueryPattern::FunctionCall {
+                            arguments: vec![QueryOperand::Binding {
+                                binding: binding_id(0),
+                            }],
+                            assigned: binding_id(3),
+                            function: age_sum.clone(),
+                        },
+                    ]),
+                    sort_by(3),
+                ],
+                QueryOutput::Rows { columns: vec![binding_id(3)] },
+                semantics.clone(),
+            )
+            .unwrap(),
+            Vec::new(),
+        ),
+        (
+            "local-function-call",
+            QueryPlan::new_with_functions(
+                vec![
+                    binding(0, "person"),
+                    binding(1, "name"),
+                    binding(2, "age_count"),
+                ],
+                vec![LocalFunction::new(
+                    FunctionId::new("corpus_age_count").unwrap(),
+                    vec![binding(0, "subject"), binding(1, "measure")],
+                    vec![person_label.clone()],
+                    vec![QueryPattern::Has {
+                        attribute: binding_id(1),
+                        attribute_id: age.clone(),
+                        owner: binding_id(0),
+                    }],
+                    LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long),
+                )],
+                Vec::new(),
+                vec![
+                    match_person_name(vec![QueryPattern::FunctionCall {
+                        arguments: vec![QueryOperand::Binding {
+                            binding: binding_id(0),
+                        }],
+                        assigned: binding_id(2),
+                        function: FunctionId::new("corpus_age_count").unwrap(),
+                    }]),
+                    sort_by(1),
+                ],
+                QueryOutput::Rows {
+                    columns: vec![binding_id(1), binding_id(2)],
+                },
+                semantics.clone(),
+            )
+            .unwrap(),
+            Vec::new(),
+        ),
+        (
+            "bounded-reachability",
+            QueryPlan::new(
+                vec![
+                    binding(0, "person"),
+                    binding(1, "name"),
+                    binding(2, "other"),
+                    binding(3, "other_name"),
+                ],
+                Vec::new(),
+                vec![
+                    match_person_name(vec![
+                        QueryPattern::Value {
+                            comparator: ValueComparator::Equal,
+                            left: QueryOperand::Binding { binding: binding_id(1) },
+                            right: QueryOperand::Literal {
+                                value: CanonicalValue::String(
+                                    CanonicalString::new("ada").unwrap(),
+                                ),
+                            },
+                        },
+                        QueryPattern::Reachable {
+                            max_depth: 2,
+                            relation: edge.clone(),
+                            role_from: origin.clone(),
+                            role_to: destination.clone(),
+                            source: binding_id(0),
+                            target: binding_id(2),
+                        },
+                        QueryPattern::Has {
+                            attribute: binding_id(3),
+                            attribute_id: name.clone(),
+                            owner: binding_id(2),
+                        },
+                    ]),
+                    sort_by(3),
+                ],
+                QueryOutput::Rows { columns: vec![binding_id(3)] },
+                semantics.clone(),
+            )
+            .unwrap(),
+            Vec::new(),
+        ),
+    ];
+
+    let caller_limits = RemoteLimits {
+        deadline_ms: Some(30_000),
+        max_bytes: 1 << 20,
+        max_items: 1000,
+    };
+    let mut transaction = db.read_transaction().await.expect("local transaction");
+    let mut server_transaction =
+        db.read_transaction().await.expect("server transaction");
+    for (index, (label, plan, rows)) in corpus.iter().enumerate() {
+        let validated =
+            validate_query_plan(plan, &context, StructuralLimits::CANONICAL)
+                .unwrap_or_else(|error| panic!("{label}: validation: {error}"));
+        let invocation =
+            QueryInvocation::new(plan, QueryOperation::Rows, rows.clone())
+                .unwrap_or_else(|error| panic!("{label}: invocation: {error}"));
+        let local = execute_validated_query(
+            &mut transaction,
+            &validated,
+            &invocation,
+            limits(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{label}: local execution: {error}"));
+
+        let nonce = format!("corpus-parity-nonce-{index:04}");
+        let request =
+            encode_remote_request(&validated, &invocation, caller_limits, &nonce)
+                .unwrap_or_else(|error| panic!("{label}: request: {error}"));
+        let response = execute_remote_envelope(
+            &request,
+            &context,
+            &query_plan_capability_vocabulary(),
+            &mut server_transaction,
+            limits(),
+        )
+        .await;
+        let remote = decode_remote_outcome(
+            &response,
+            &validated,
+            QueryOperation::Rows,
+            &nonce,
+            caller_limits,
+        )
+        .unwrap_or_else(|error| panic!("{label}: remote outcome: {error}"));
+        assert_eq!(remote, local, "{label}: remote and local outcomes differ");
+    }
+}
