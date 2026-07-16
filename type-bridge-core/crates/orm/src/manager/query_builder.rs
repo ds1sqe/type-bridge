@@ -152,6 +152,16 @@ pub fn build_dynamic_entity_fetch(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build an exact-type fetch query for a runtime entity descriptor.
+pub fn build_dynamic_entity_fetch_exact(
+    descriptor: &EntityDescriptor,
+    filters: &[Filter],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_fetch_exact_clauses(descriptor, filters, var);
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
 /// Build an expression-aware fetch query for a runtime entity descriptor.
 pub fn build_dynamic_entity_expr_fetch(
     descriptor: &EntityDescriptor,
@@ -259,6 +269,16 @@ pub fn build_dynamic_entity_fetch_by_iid(
     let clauses = crate::dynamic::entity_fetch_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
+}
+
+/// Build an exact-type IID fetch query for a runtime entity descriptor.
+pub fn build_dynamic_entity_fetch_by_iid_exact(
+    descriptor: &EntityDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_fetch_by_iid_exact_clauses(descriptor, iid, var);
+    Ok(QueryCompiler::new().compile(&clauses))
 }
 
 /// Build a count query for a runtime entity descriptor.
@@ -583,6 +603,16 @@ pub fn build_dynamic_relation_fetch(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build an exact-type fetch query for a runtime relation descriptor.
+pub fn build_dynamic_relation_fetch_exact(
+    descriptor: &RelationDescriptor,
+    filters: &[Filter],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_fetch_exact_clauses(descriptor, filters, var);
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
 /// Build a polymorphic fetch query for a runtime relation descriptor with role-player filters.
 pub fn build_dynamic_relation_fetch_with_role_filters(
     descriptor: &RelationDescriptor,
@@ -630,6 +660,16 @@ pub fn build_dynamic_relation_fetch_by_iid(
     let clauses = crate::dynamic::relation_fetch_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
+}
+
+/// Build an exact-type IID fetch query for a runtime relation descriptor.
+pub fn build_dynamic_relation_fetch_by_iid_exact(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::relation_fetch_by_iid_exact_clauses(descriptor, iid, var);
+    Ok(QueryCompiler::new().compile(&clauses))
 }
 
 /// Build a count query for a runtime relation descriptor.

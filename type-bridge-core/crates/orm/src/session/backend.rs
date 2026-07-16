@@ -567,6 +567,9 @@ pub trait TransactionOps: Send {
     }
 
     /// Commit this transaction. Only meaningful for write/schema transactions.
+    ///
+    /// Real providers preserve known commit certainty with [`OrmError::Commit`].
+    /// Other commit errors must be treated as having unknown durability.
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
 
     /// Roll back this transaction.

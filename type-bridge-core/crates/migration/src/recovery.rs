@@ -1034,6 +1034,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn definitely_aborted_commit_response_remains_indeterminate_in_v1_recovery() {
+        let plan = checked_plan(vec![schema_step("define attribute a, value string;")]);
+        let controller = TestController::new(vec![pending()]);
+        let (backend, _log) = MockMigrationBackend::with_definitely_aborted_commit_failure(0);
+        let db = Database::with_backend(Box::new(backend), "test");
+
+        let result = execute_recovery_plan(&db, &plan, &controller).await;
+
+        assert_eq!(result.status, RecoveryPlanStatus::Indeterminate);
+        assert!(matches!(
+            result.migrations[0].steps[0].outcome,
+            StepExecutionOutcome::Indeterminate { .. }
+        ));
+        assert_eq!(
+            controller.event_kinds(),
+            vec![
+                StepRecoveryEventKind::BeforeCommit,
+                StepRecoveryEventKind::UnknownCommitOutcome,
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn ambiguous_commit_response_is_indeterminate() {
         let plan = checked_plan(vec![schema_step("define attribute a, value string;")]);
         let controller = TestController::new(vec![pending()]);

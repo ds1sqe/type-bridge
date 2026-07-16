@@ -53,6 +53,15 @@ use type_bridge_typedb_driver_b9::{
 /// Boxed future returned by async runtime methods.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// How confidently a failed commit can be classified without observing server state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitFailureCertainty {
+    /// The server rejected the commit and the transaction did not commit.
+    DefinitelyAborted,
+    /// The client cannot determine whether the transaction committed.
+    Unknown,
+}
+
 /// Runtime error type for direct TypeDB driver operations.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
@@ -73,6 +82,15 @@ pub enum RuntimeError {
     #[error("Transaction error: {0}")]
     Transaction(String),
 
+    /// A driver commit failure with an explicit durability certainty.
+    #[error("Transaction error: Commit failed: {message}")]
+    Commit {
+        /// Whether the failed response proves that the commit was aborted.
+        certainty: CommitFailureCertainty,
+        /// The original driver error text.
+        message: String,
+    },
+
     /// A bounded answer ceiling was exceeded while reading the driver stream.
     #[error("Resource limit [{code}]: {message}")]
     ResourceLimit {
@@ -85,6 +103,111 @@ pub enum RuntimeError {
     /// The higher-level answer decoder rejected one streamed item.
     #[error("Answer consumer rejected a streamed provider item")]
     AnswerConsumer,
+}
+
+fn commit_failure(
+    certainty: CommitFailureCertainty,
+    message: impl Into<String>,
+) -> RuntimeError {
+    RuntimeError::Commit {
+        certainty,
+        message: message.into(),
+    }
+}
+
+#[cfg(feature = "band7")]
+fn band7_commit_failure(error: driver_b7::Error) -> RuntimeError {
+    let certainty = if matches!(&error, driver_b7::Error::Server(_)) {
+        CommitFailureCertainty::DefinitelyAborted
+    } else {
+        CommitFailureCertainty::Unknown
+    };
+    commit_failure(certainty, error.to_string())
+}
+
+#[cfg(feature = "band8")]
+fn band8_commit_failure(error: driver_b8::Error) -> RuntimeError {
+    let certainty = if matches!(&error, driver_b8::Error::Server(_)) {
+        CommitFailureCertainty::DefinitelyAborted
+    } else {
+        CommitFailureCertainty::Unknown
+    };
+    commit_failure(certainty, error.to_string())
+}
+
+#[cfg(feature = "band9")]
+fn band9_commit_failure(error: driver_b9::Error) -> RuntimeError {
+    let certainty = if matches!(&error, driver_b9::Error::Server(_)) {
+        CommitFailureCertainty::DefinitelyAborted
+    } else {
+        CommitFailureCertainty::Unknown
+    };
+    commit_failure(certainty, error.to_string())
+}
+
+#[cfg(test)]
+mod commit_failure_tests {
+    use super::*;
+
+    #[test]
+    fn typed_commit_failure_preserves_the_legacy_display() {
+        for certainty in [
+            CommitFailureCertainty::DefinitelyAborted,
+            CommitFailureCertainty::Unknown,
+        ] {
+            let error = commit_failure(certainty, "driver response");
+            assert_eq!(
+                error.to_string(),
+                "Transaction error: Commit failed: driver response"
+            );
+            assert!(matches!(
+                error,
+                RuntimeError::Commit {
+                    certainty: actual,
+                    ..
+                } if actual == certainty
+            ));
+        }
+    }
+
+    #[cfg(feature = "band7")]
+    #[test]
+    fn band7_opaque_commit_failure_is_unknown() {
+        let error = band7_commit_failure(driver_b7::Error::Other("transport".into()));
+        assert!(matches!(
+            error,
+            RuntimeError::Commit {
+                certainty: CommitFailureCertainty::Unknown,
+                ..
+            }
+        ));
+    }
+
+    #[cfg(feature = "band8")]
+    #[test]
+    fn band8_opaque_commit_failure_is_unknown() {
+        let error = band8_commit_failure(driver_b8::Error::Other("transport".into()));
+        assert!(matches!(
+            error,
+            RuntimeError::Commit {
+                certainty: CommitFailureCertainty::Unknown,
+                ..
+            }
+        ));
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn band9_opaque_commit_failure_is_unknown() {
+        let error = band9_commit_failure(driver_b9::Error::Other("transport".into()));
+        assert!(matches!(
+            error,
+            RuntimeError::Commit {
+                certainty: CommitFailureCertainty::Unknown,
+                ..
+            }
+        ));
+    }
 }
 
 /// Convenience result alias for runtime operations.
@@ -1487,9 +1610,7 @@ impl RuntimeTransaction {
                     let t = tx.ok_or_else(|| {
                         RuntimeError::Transaction("Transaction already consumed".into())
                     })?;
-                    t.commit()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Commit failed: {e}")))
+                    t.commit().await.map_err(band7_commit_failure)
                 })
             }
             #[cfg(feature = "band8")]
@@ -1499,9 +1620,7 @@ impl RuntimeTransaction {
                     let t = tx.ok_or_else(|| {
                         RuntimeError::Transaction("Transaction already consumed".into())
                     })?;
-                    t.commit()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Commit failed: {e}")))
+                    t.commit().await.map_err(band8_commit_failure)
                 })
             }
             #[cfg(feature = "band9")]
@@ -1511,9 +1630,7 @@ impl RuntimeTransaction {
                     let t = tx.ok_or_else(|| {
                         RuntimeError::Transaction("Transaction already consumed".into())
                     })?;
-                    t.commit()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Commit failed: {e}")))
+                    t.commit().await.map_err(band9_commit_failure)
                 })
             }
         }

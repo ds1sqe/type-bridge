@@ -38,8 +38,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use type_bridge_orm::OrmError;
-use type_bridge_orm::TxType;
+use type_bridge_orm::{CommitFailureCertainty, OrmError, TxType};
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
 
 // ── Event log ─────────────────────────────────────────────────────────────────
@@ -80,6 +79,8 @@ pub struct MockMigrationBackend {
     commit_count: Arc<Mutex<usize>>,
     /// If `Some(n)`, the n-th commit returns an ambiguous driver error.
     fail_on_commit_index: Option<usize>,
+    /// Optional typed certainty for the injected commit failure.
+    commit_failure_certainty: Option<CommitFailureCertainty>,
 }
 
 impl MockMigrationBackend {
@@ -97,6 +98,7 @@ impl MockMigrationBackend {
             scripted_responses: None,
             commit_count: Arc::new(Mutex::new(0)),
             fail_on_commit_index: None,
+            commit_failure_certainty: None,
         };
         (backend, log)
     }
@@ -115,6 +117,7 @@ impl MockMigrationBackend {
             scripted_responses: Some(Arc::new(Mutex::new(responses))),
             commit_count: Arc::new(Mutex::new(0)),
             fail_on_commit_index: None,
+            commit_failure_certainty: None,
         };
         (backend, log)
     }
@@ -123,6 +126,16 @@ impl MockMigrationBackend {
     pub fn with_commit_failure(fail_on_commit_index: usize) -> (Self, EventLog) {
         let (mut backend, log) = Self::new(None);
         backend.fail_on_commit_index = Some(fail_on_commit_index);
+        (backend, log)
+    }
+
+    /// Create a backend whose selected commit is known to have been aborted.
+    pub fn with_definitely_aborted_commit_failure(
+        fail_on_commit_index: usize,
+    ) -> (Self, EventLog) {
+        let (mut backend, log) = Self::new(None);
+        backend.fail_on_commit_index = Some(fail_on_commit_index);
+        backend.commit_failure_certainty = Some(CommitFailureCertainty::DefinitelyAborted);
         (backend, log)
     }
 }
@@ -140,6 +153,7 @@ impl DriverBackend for MockMigrationBackend {
         let scripted = self.scripted_responses.as_ref().map(Arc::clone);
         let commit_count = Arc::clone(&self.commit_count);
         let fail_on_commit_index = self.fail_on_commit_index;
+        let commit_failure_certainty = self.commit_failure_certainty;
         Box::pin(async move {
             let tx: Box<dyn TransactionOps> = Box::new(MockMigrationTransaction {
                 tx_type,
@@ -149,6 +163,7 @@ impl DriverBackend for MockMigrationBackend {
                 scripted_responses: scripted,
                 commit_count,
                 fail_on_commit_index,
+                commit_failure_certainty,
             });
             Ok(tx)
         })
@@ -170,6 +185,7 @@ struct MockMigrationTransaction {
     scripted_responses: Option<Arc<Mutex<Vec<QueryResult>>>>,
     commit_count: Arc<Mutex<usize>>,
     fail_on_commit_index: Option<usize>,
+    commit_failure_certainty: Option<CommitFailureCertainty>,
 }
 
 impl TransactionOps for MockMigrationTransaction {
@@ -226,11 +242,18 @@ impl TransactionOps for MockMigrationTransaction {
             index
         };
         let fail = self.fail_on_commit_index == Some(index);
+        let certainty = self.commit_failure_certainty;
         Box::pin(async move {
             if fail {
-                Err(OrmError::Transaction(
-                    "injected ambiguous commit response for testing".to_string(),
-                ))
+                Err(match certainty {
+                    Some(certainty) => OrmError::Commit {
+                        certainty,
+                        message: "injected rejected commit response for testing".to_string(),
+                    },
+                    None => OrmError::Transaction(
+                        "injected ambiguous commit response for testing".to_string(),
+                    ),
+                })
             } else {
                 Ok(())
             }

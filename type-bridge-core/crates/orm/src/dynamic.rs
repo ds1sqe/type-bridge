@@ -501,6 +501,14 @@ pub(crate) fn entity_fetch_clauses(
     entity_fetch_with_filter_patterns(descriptor, constraints, extra_patterns, var)
 }
 
+pub(crate) fn entity_fetch_exact_clauses(
+    descriptor: &EntityDescriptor,
+    filters: &[Filter],
+    var: &str,
+) -> Vec<Clause> {
+    with_exact_type(entity_fetch_clauses(descriptor, filters, var), var, &descriptor.type_name)
+}
+
 pub(crate) fn entity_expr_fetch_clauses(
     descriptor: &EntityDescriptor,
     expressions: &[DynamicExpr],
@@ -542,6 +550,14 @@ pub(crate) fn entity_fetch_by_iid_clauses(
     var: &str,
 ) -> Vec<Clause> {
     entity_fetch_with_constraints_clauses(descriptor, vec![Constraint::Iid(iid.to_string())], var)
+}
+
+pub(crate) fn entity_fetch_by_iid_exact_clauses(
+    descriptor: &EntityDescriptor,
+    iid: &str,
+    var: &str,
+) -> Vec<Clause> {
+    with_exact_type(entity_fetch_by_iid_clauses(descriptor, iid, var), var, &descriptor.type_name)
 }
 
 fn entity_fetch_with_constraints_clauses(
@@ -866,6 +882,14 @@ pub(crate) fn relation_fetch_clauses(
     relation_fetch_with_role_filters(descriptor, constraints, extra_patterns, &[], var)
 }
 
+pub(crate) fn relation_fetch_exact_clauses(
+    descriptor: &RelationDescriptor,
+    filters: &[Filter],
+    var: &str,
+) -> Vec<Clause> {
+    with_exact_type(relation_fetch_clauses(descriptor, filters, var), var, &descriptor.type_name)
+}
+
 pub(crate) fn relation_fetch_with_role_filters_clauses(
     descriptor: &RelationDescriptor,
     filters: &[Filter],
@@ -994,6 +1018,29 @@ pub(crate) fn relation_fetch_by_iid_clauses(
     var: &str,
 ) -> Vec<Clause> {
     relation_fetch_with_constraints_clauses(descriptor, vec![Constraint::Iid(iid.to_string())], var)
+}
+
+pub(crate) fn relation_fetch_by_iid_exact_clauses(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    var: &str,
+) -> Vec<Clause> {
+    with_exact_type(relation_fetch_by_iid_clauses(descriptor, iid, var), var, &descriptor.type_name)
+}
+
+fn with_exact_type(mut clauses: Vec<Clause>, var: &str, type_name: &str) -> Vec<Clause> {
+    let exact = Pattern::Entity {
+        variable: var.to_owned(),
+        type_name: type_name.to_owned(),
+        constraints: Vec::new(),
+        is_strict: true,
+    };
+    if let Some(Clause::Match(patterns)) = clauses.first_mut() {
+        patterns.insert(0, exact);
+    } else {
+        clauses.insert(0, Clause::Match(vec![exact]));
+    }
+    clauses
 }
 
 fn relation_fetch_with_constraints_clauses(

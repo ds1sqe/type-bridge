@@ -21,7 +21,7 @@ use super::backend::{
     execute_typed_provider_statement, typed_fetch_provider_statement,
     typed_root_provider_statement,
 };
-use crate::error::OrmError;
+use crate::error::{CommitFailureCertainty, OrmError};
 use crate::match_request::{
     Capability, CapabilitySet, MatchError, MatchErrorCategory, MatchErrorPathSegment,
 };
@@ -504,6 +504,15 @@ impl From<runtime::RuntimeError> for OrmError {
             runtime::RuntimeError::Connection(message) => Self::Connection(message),
             runtime::RuntimeError::QueryExecution(message) => Self::QueryExecution(message),
             runtime::RuntimeError::Transaction(message) => Self::Transaction(message),
+            runtime::RuntimeError::Commit { certainty, message } => Self::Commit {
+                certainty: match certainty {
+                    runtime::CommitFailureCertainty::DefinitelyAborted => {
+                        CommitFailureCertainty::DefinitelyAborted
+                    }
+                    runtime::CommitFailureCertainty::Unknown => CommitFailureCertainty::Unknown,
+                },
+                message,
+            },
             runtime::RuntimeError::ResourceLimit { code, message } => {
                 MatchError::new(MatchErrorCategory::ResourceLimit, code, message)
                     .at(MatchErrorPathSegment::ProviderEvidence)
@@ -519,6 +528,30 @@ impl From<runtime::RuntimeError> for OrmError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_failure_certainty_maps_without_changing_display() {
+        for (runtime_certainty, orm_certainty) in [
+            (
+                runtime::CommitFailureCertainty::DefinitelyAborted,
+                CommitFailureCertainty::DefinitelyAborted,
+            ),
+            (
+                runtime::CommitFailureCertainty::Unknown,
+                CommitFailureCertainty::Unknown,
+            ),
+        ] {
+            let error = OrmError::from(runtime::RuntimeError::Commit {
+                certainty: runtime_certainty,
+                message: "driver response".to_owned(),
+            });
+            assert_eq!(error.commit_failure_certainty(), Some(orm_certainty));
+            assert_eq!(
+                error.to_string(),
+                "Transaction error: Commit failed: driver response"
+            );
+        }
+    }
 
     #[test]
     fn real_backend_declares_the_exact_typed_match_capability_inventory() {

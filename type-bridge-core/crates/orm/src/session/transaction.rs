@@ -35,6 +35,14 @@ impl Transaction {
         tx.query(typeql).await
     }
 
+    /// Borrow the provider boundary without transferring transaction lifecycle ownership.
+    pub(crate) fn provider_mut(&mut self) -> Result<&mut (dyn TransactionOps + 'static)> {
+        self.inner
+            .as_mut()
+            .map(Box::as_mut)
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))
+    }
+
     /// Execute a TypeQL query with `given`-stage input rows.
     ///
     /// Requires a band-9 (TypeDB 3.12+) connection; see

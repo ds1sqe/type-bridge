@@ -75,9 +75,11 @@ pub mod filter;
 pub mod hooks;
 pub mod manager;
 pub mod match_request;
+pub mod migration_assertion;
 pub mod query;
 pub mod registry;
 pub mod relation;
+pub mod runtime_projection;
 pub mod schema;
 pub mod session;
 pub mod value;
@@ -93,7 +95,7 @@ pub use dynamic::{
     DynamicRelationRow, DynamicRolePlayer, DynamicRolePlayerInput, DynamicSort,
 };
 pub use entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};
-pub use error::{OrmError, Result};
+pub use error::{CommitFailureCertainty, OrmError, Result};
 pub use expr::{Agg, AggResult, Expr, GroupByResult, SortDir};
 pub use field_ref::{FieldRef, RolePlayerFieldRef, RoleRef};
 pub use filter::Filter;
@@ -105,6 +107,7 @@ pub use match_request::*;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
 pub use registry::DescriptorRegistry;
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
+pub use runtime_projection::InstalledRuntimeProjection;
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 #[cfg(feature = "typedb")]
 pub use session::ConnectOptions;

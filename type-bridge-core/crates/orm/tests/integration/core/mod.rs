@@ -1,9 +1,14 @@
 mod attributes;
 mod entities;
 mod filters;
+mod migration_assertion_v2;
 mod multivalue_attributes;
 mod mutations;
 mod relation_roles;
 mod relations;
+mod schema_acceptance_v2;
+mod schema_defaults_v2;
+mod schema_transition_v2;
+mod schema_v2;
 mod transactions;
 mod typed_query_regressions;

@@ -106,6 +106,18 @@ impl Database {
         Ok(Transaction::new(tx, TxType::Write))
     }
 
+    /// Open an owned schema transaction.
+    ///
+    /// Migration coordinators use this form to execute bounded assertions and
+    /// an ordered schema statement group before one explicit commit.
+    pub async fn schema_transaction(&self) -> Result<Transaction> {
+        let tx = self
+            .backend
+            .open_transaction(&self.database_name, TxType::Schema)
+            .await?;
+        Ok(Transaction::new(tx, TxType::Schema))
+    }
+
     /// Create a shared [`TransactionContext`] for grouping operations.
     pub async fn transaction_context(&self, tx_type: TxType) -> Result<TransactionContext> {
         let capabilities = self.backend.match_capabilities();
