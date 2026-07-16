@@ -41,6 +41,9 @@ use type_bridge_schema::{
     derive_safety_conditions, managed_schema_state, plan_schema_operations, resolve,
 };
 
+use crate::legacy::{
+    LEGACY_CHECKSUM_ALGORITHM, LegacyMigrationChecksum, LegacyMigrationReference,
+};
 use crate::profile::schema_lowering_profile_binding;
 
 const MANIFEST_SCHEMA_CANONICALIZATION: &str = "typebridge.schema-c14n/v2";
@@ -56,6 +59,7 @@ pub struct SchemaMigrationDraft {
     id: MigrationId,
     parents: Vec<MigrationId>,
     steps: Vec<MigrationStep>,
+    legacy_parents: Vec<LegacyMigrationReference>,
 }
 
 impl SchemaMigrationDraft {
@@ -102,7 +106,47 @@ impl SchemaMigrationDraft {
                 ));
             }
         }
-        Ok(Self { id, parents, steps })
+        Ok(Self {
+            id,
+            parents,
+            steps,
+            legacy_parents: Vec::new(),
+        })
+    }
+
+    /// Construct the zero-operation legacy-frontier bridge draft.
+    ///
+    /// The bridge is the only manifest that names legacy parents; it carries
+    /// no steps and no canonical parents, so its verified source and target
+    /// are the identical reconstructed legacy head.
+    pub fn legacy_bridge(
+        id: MigrationId,
+        mut legacy_parents: Vec<LegacyMigrationReference>,
+    ) -> Result<Self, Diagnostic> {
+        if legacy_parents.is_empty() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_empty_legacy_frontier",
+                "a legacy-frontier bridge must name at least one legacy parent",
+            ));
+        }
+        legacy_parents.sort();
+        if legacy_parents
+            .windows(2)
+            .any(|pair| pair[0].id() == pair[1].id())
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_duplicate_legacy_parent",
+                "legacy-frontier bridge names a legacy identity twice",
+            ));
+        }
+        Ok(Self {
+            id,
+            parents: Vec::new(),
+            steps: Vec::new(),
+            legacy_parents,
+        })
     }
 
     /// Return the compound migration identity.
@@ -119,6 +163,11 @@ impl SchemaMigrationDraft {
     pub fn steps(&self) -> &[MigrationStep] {
         &self.steps
     }
+
+    /// Return canonical-sorted legacy frontier references (bridge only).
+    pub fn legacy_parents(&self) -> &[LegacyMigrationReference] {
+        &self.legacy_parents
+    }
 }
 
 /// A manifest whose complete schema program has been replayed and recomputed.
@@ -129,6 +178,7 @@ impl SchemaMigrationDraft {
 pub struct VerifiedSchemaMigrationManifest {
     format: MigrationFormat,
     id: MigrationId,
+    legacy_parents: Vec<LegacyMigrationReference>,
     lowering_profile: SchemaLoweringProfileBinding,
     managed_scope: ManagedScopeBinding,
     parents: Vec<MigrationId>,
@@ -155,6 +205,16 @@ impl VerifiedSchemaMigrationManifest {
 
     pub fn parents(&self) -> &[MigrationId] {
         &self.parents
+    }
+
+    /// Return canonical-sorted legacy frontier references (bridge only).
+    pub fn legacy_parents(&self) -> &[LegacyMigrationReference] {
+        &self.legacy_parents
+    }
+
+    /// Return whether this manifest is the zero-operation legacy bridge.
+    pub fn is_legacy_bridge(&self) -> bool {
+        !self.legacy_parents.is_empty()
     }
 
     pub fn steps(&self) -> &[MigrationStep] {
@@ -234,7 +294,27 @@ pub fn build_verified_manifest(
         lowering_profile.clone(),
     )?;
 
-    let SchemaMigrationDraft { id, parents, steps } = draft;
+    let SchemaMigrationDraft {
+        id,
+        parents,
+        steps,
+        legacy_parents,
+    } = draft;
+    if legacy_parents.is_empty() {
+        if steps.is_empty() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_empty_program",
+                "a migration without schema steps is valid only as a legacy-frontier bridge",
+            ));
+        }
+    } else if !steps.is_empty() || !parents.is_empty() {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_manifest_bridge_not_zero_operation",
+            "a legacy-frontier bridge carries no steps and no canonical parents",
+        ));
+    }
     let mut current_schema = source_schema.clone();
     let mut required_capabilities = source_schema.required_capabilities().clone();
     let mut safety = SafetyClass::FormalOnly;
@@ -360,6 +440,7 @@ pub fn build_verified_manifest(
     Ok(VerifiedSchemaMigrationManifest {
         format: MigrationFormat::V1,
         id,
+        legacy_parents,
         lowering_profile,
         managed_scope,
         parents,
@@ -671,6 +752,8 @@ struct ManifestWire<'a> {
     fingerprints: ManifestFingerprintsWire<'a>,
     format: &'a MigrationFormat,
     id: &'a MigrationId,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    legacy_parents: Vec<LegacyParentWire<'a>>,
     managed_scope: &'a ManagedScopeBinding,
     parents: &'a [MigrationId],
     required_capabilities: &'a CapabilitySet,
@@ -704,6 +787,18 @@ impl<'a> ManifestWire<'a> {
             },
             format: &manifest.format,
             id: &manifest.id,
+            legacy_parents: manifest
+                .legacy_parents
+                .iter()
+                .map(|reference| LegacyParentWire {
+                    app_label: reference.id().app_label().as_str(),
+                    checksum: LegacyChecksumWire {
+                        algorithm: reference.checksum().algorithm(),
+                        value: reference.checksum().as_str(),
+                    },
+                    name: reference.id().name().as_str(),
+                })
+                .collect(),
             managed_scope: &manifest.managed_scope,
             parents: &manifest.parents,
             required_capabilities: &manifest.required_capabilities,
@@ -746,6 +841,19 @@ struct ManifestSafetyWire {
     reversible: bool,
 }
 
+#[derive(Serialize)]
+struct LegacyParentWire<'a> {
+    app_label: &'a str,
+    checksum: LegacyChecksumWire<'a>,
+    name: &'a str,
+}
+
+#[derive(Serialize)]
+struct LegacyChecksumWire<'a> {
+    algorithm: &'static str,
+    value: &'a str,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestCandidate {
@@ -753,6 +861,8 @@ struct ManifestCandidate {
     fingerprints: ManifestFingerprintsCandidate,
     format: String,
     id: MigrationIdCandidate,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    legacy_parents: Vec<LegacyParentCandidate>,
     managed_scope: ManagedScopeCandidate,
     parents: Vec<MigrationIdCandidate>,
     required_capabilities: CapabilitySet,
@@ -786,6 +896,22 @@ impl ManifestCandidate {
     }
 
     fn to_draft(&self) -> Result<SchemaMigrationDraft, Diagnostic> {
+        if !self.legacy_parents.is_empty() {
+            if !self.parents.is_empty() || !self.steps.is_empty() {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_manifest_bridge_not_zero_operation",
+                    "a legacy-frontier bridge carries no steps and no canonical parents",
+                ));
+            }
+            return SchemaMigrationDraft::legacy_bridge(
+                self.id.rebuild()?,
+                self.legacy_parents
+                    .iter()
+                    .map(LegacyParentCandidate::rebuild)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
         SchemaMigrationDraft::new(
             self.id.rebuild()?,
             self.parents
@@ -829,6 +955,40 @@ impl MigrationIdCandidate {
         Ok(MigrationId::from_components(
             MigrationAppLabel::new(self.app_label.clone())?,
             MigrationName::new(self.name.clone())?,
+        ))
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyParentCandidate {
+    app_label: String,
+    checksum: LegacyChecksumCandidate,
+    name: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyChecksumCandidate {
+    algorithm: String,
+    value: String,
+}
+
+impl LegacyParentCandidate {
+    fn rebuild(&self) -> Result<LegacyMigrationReference, Diagnostic> {
+        if self.checksum.algorithm != LEGACY_CHECKSUM_ALGORITHM {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_legacy_checksum_algorithm",
+                "legacy parent checksum carries an unsupported algorithm tag",
+            ));
+        }
+        Ok(LegacyMigrationReference::new(
+            MigrationId::from_components(
+                MigrationAppLabel::new(self.app_label.clone())?,
+                MigrationName::new(self.name.clone())?,
+            ),
+            LegacyMigrationChecksum::new(self.checksum.value.clone())?,
         ))
     }
 }

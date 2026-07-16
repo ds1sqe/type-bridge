@@ -4,6 +4,7 @@ mod apply_plan;
 mod coordinator;
 mod execution;
 mod generate;
+mod legacy;
 pub mod lowering;
 mod history;
 mod manifest;
@@ -44,6 +45,10 @@ pub use generate::{
 pub use history::{
     MigrationHistoryGraph, discover_verified_migration_chain,
     discover_verified_migrations,
+};
+pub use legacy::{
+    LEGACY_CHECKSUM_ALGORITHM, LegacyMigrationChecksum, LegacyMigrationReference,
+    build_legacy_frontier_bridge,
 };
 pub use manifest::{
     SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,

@@ -47,6 +47,31 @@ impl MigrationHistoryGraph {
             }
         }
 
+        // The legacy-frontier bridge is unique per lineage and, when present,
+        // is the sole root: every other manifest must descend from it so the
+        // scope has one graph frontier rather than two competing histories.
+        let bridges = by_id
+            .values()
+            .filter(|manifest| manifest.is_legacy_bridge())
+            .map(|manifest| manifest.id().clone())
+            .collect::<Vec<_>>();
+        if bridges.len() > 1 {
+            return Err(graph_failure(
+                "migration_history_multiple_legacy_bridges",
+                "migration history contains more than one legacy-frontier bridge",
+            ));
+        }
+        if let Some(bridge) = bridges.first() {
+            for (id, manifest) in &by_id {
+                if manifest.parents().is_empty() && id != bridge {
+                    return Err(graph_failure(
+                        "migration_history_root_beside_legacy_bridge",
+                        "a bridged lineage admits no root other than its legacy bridge",
+                    ));
+                }
+            }
+        }
+
         let mut parents = BTreeMap::new();
         let mut children = by_id
             .keys()
