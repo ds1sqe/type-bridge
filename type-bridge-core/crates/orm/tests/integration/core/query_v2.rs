@@ -2300,3 +2300,100 @@ async fn remote_envelope_parity_corpus_live() {
         assert_eq!(remote, local, "{label}: remote and local outcomes differ");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deadlines_and_cancellation_bound_both_executors_live() {
+    use std::time::{Duration, Instant};
+
+    use type_bridge_contract::query_plan::QueryOperation;
+    use type_bridge_contract::query_plan_capability_vocabulary;
+    use type_bridge_contract::query_remote::{RemoteLimits, RemoteQueryFailure};
+    use type_bridge_orm::query_v2_remote::{
+        encode_remote_request, execute_remote_envelope,
+    };
+    use type_bridge_orm::session::backend::AnswerCancellation;
+
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-deadline-live");
+    let fixture = live_fixture(&suffix);
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {}, value string;\n\
+             entity {}, owns {};",
+            fixture.name.label(),
+            fixture.person.label(),
+            fixture.name.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("live deadline schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {name} \"ada\";",
+            person = fixture.person.label(),
+            name = fixture.name.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("live deadline data");
+
+    let (validated, plan) = validated_query(&fixture, OrderDirection::Ascending);
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("a")])
+            .expect("invocation");
+
+    // Local: an already-expired deadline rejects before streaming.
+    let mut transaction = db.read_transaction().await.expect("read transaction");
+    let expired = BoundedAnswerLimits {
+        max_items: 100,
+        max_bytes: 1 << 20,
+        deadline: Some(Instant::now() - Duration::from_secs(1)),
+        cancellation: AnswerCancellation::default(),
+    };
+    let error = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        expired,
+    )
+    .await
+    .expect_err("expired local deadline");
+    assert!(
+        error.to_string().contains("deadline"),
+        "local deadline error: {error}",
+    );
+
+    // Remote: a zero caller deadline tightens the executor and returns a
+    // structured failure envelope instead of typed results.
+    let nonce = "deadline-nonce-0123456789abc";
+    let caller_limits = RemoteLimits {
+        deadline_ms: Some(0),
+        max_bytes: 1 << 20,
+        max_items: 100,
+    };
+    let request = encode_remote_request(&validated, &invocation, caller_limits, nonce)
+        .expect("request envelope");
+    let context = MigrationAssertionValidationContext::new(
+        &fixture.resolved,
+        &fixture.managed,
+    );
+    let response = execute_remote_envelope(
+        &request,
+        &context,
+        &query_plan_capability_vocabulary(),
+        &mut transaction,
+        limits(),
+    )
+    .await;
+    let failure = RemoteQueryFailure::decode(&response).expect("failure envelope");
+    assert_eq!(failure.nonce(), Some(nonce));
+    assert_eq!(
+        failure.diagnostic().expect("diagnostic").code().as_str(),
+        "query_remote_provider_failed",
+    );
+}
