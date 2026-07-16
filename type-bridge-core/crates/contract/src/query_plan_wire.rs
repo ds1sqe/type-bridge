@@ -5,15 +5,16 @@ use serde::{Deserialize, Serialize};
 use crate::capability::CapabilitySet;
 use crate::codec::from_canonical_json;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
-use crate::id::{AttributeId, FunctionId};
+use crate::id::{AttributeId, FunctionId, Label};
 use crate::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
 use crate::migration_assertion_wire::{
     AssertionRolePlayerWire, FingerprintWire, TypeIdWire, ValueComparatorWire,
 };
 use crate::query_plan::{
-    DocumentField, DocumentSource, InputColumn, InputColumnId, OrderDirection,
-    OrderTerm, QUERY_PLAN_FORMAT_V1, QueryOperand, QueryOutput, QueryPattern,
-    QueryPlan, ReadStage, ReduceAssignment, Reducer, failure,
+    DocumentField, DocumentSource, InputColumn, InputColumnId, LocalFunction,
+    LocalReturn, OrderDirection, OrderTerm, QUERY_PLAN_FORMAT_V1, QueryOperand,
+    QueryOutput, QueryPattern, QueryPlan, ReadStage, ReduceAssignment, Reducer,
+    failure,
 };
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
@@ -36,6 +37,7 @@ pub(crate) fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
 struct QueryPlanWire {
     bindings: Vec<QueryBindingWire>,
     format: String,
+    functions: Vec<LocalFunctionWire>,
     inputs: Vec<InputColumnWire>,
     managed_semantics: FingerprintWire,
     output: QueryOutputWire,
@@ -52,10 +54,14 @@ impl QueryPlanWire {
                 "query plan wire format is unsupported",
             ));
         }
-        let trusted = QueryPlan::new(
+        let trusted = QueryPlan::new_with_functions(
             self.bindings
                 .into_iter()
                 .map(QueryBindingWire::rebuild)
+                .collect::<Result<Vec<_>, _>>()?,
+            self.functions
+                .into_iter()
+                .map(LocalFunctionWire::rebuild)
                 .collect::<Result<Vec<_>, _>>()?,
             self.inputs
                 .into_iter()
@@ -140,6 +146,49 @@ impl QueryOutputWire {
                     .collect::<Result<Vec<_>, _>>()?,
             },
         })
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LocalFunctionWire {
+    bindings: Vec<QueryBindingWire>,
+    body: Vec<QueryPatternWire>,
+    name: String,
+    parameters: Vec<String>,
+    returns: LocalReturnWire,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LocalReturnWire {
+    input: u16,
+    reducer: ReducerWire,
+    value_type: ValueTypeTag,
+}
+
+impl LocalFunctionWire {
+    fn rebuild(self) -> Result<LocalFunction, Diagnostic> {
+        Ok(LocalFunction::new(
+            FunctionId::new(self.name)?,
+            self.bindings
+                .into_iter()
+                .map(QueryBindingWire::rebuild)
+                .collect::<Result<Vec<_>, _>>()?,
+            self.parameters
+                .into_iter()
+                .map(Label::new)
+                .collect::<Result<Vec<_>, _>>()?,
+            self.body
+                .into_iter()
+                .map(QueryPatternWire::rebuild)
+                .collect::<Result<Vec<_>, _>>()?,
+            LocalReturn::new(
+                self.returns.reducer.rebuild(),
+                BindingId::new(self.returns.input)?,
+                self.returns.value_type,
+            ),
+        ))
     }
 }
 
@@ -248,17 +297,23 @@ enum ReducerWire {
     Sum,
 }
 
+impl ReducerWire {
+    const fn rebuild(self) -> Reducer {
+        match self {
+            Self::Count => Reducer::Count,
+            Self::Max => Reducer::Max,
+            Self::Mean => Reducer::Mean,
+            Self::Min => Reducer::Min,
+            Self::Sum => Reducer::Sum,
+        }
+    }
+}
+
 impl ReduceAssignmentWire {
     fn rebuild(self) -> Result<ReduceAssignment, Diagnostic> {
         Ok(ReduceAssignment::new(
             BindingId::new(self.assigned)?,
-            match self.reducer {
-                ReducerWire::Count => Reducer::Count,
-                ReducerWire::Max => Reducer::Max,
-                ReducerWire::Mean => Reducer::Mean,
-                ReducerWire::Min => Reducer::Min,
-                ReducerWire::Sum => Reducer::Sum,
-            },
+            self.reducer.rebuild(),
             self.input.map(BindingId::new).transpose()?,
         ))
     }

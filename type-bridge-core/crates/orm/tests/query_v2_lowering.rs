@@ -680,3 +680,119 @@ fn document_outputs_lower_to_deterministic_fetch_blocks() {
     );
     assert!(lowered.output_schema().documents().is_some());
 }
+
+#[test]
+fn local_functions_lower_to_with_fun_preambles() {
+    use type_bridge_contract::id::{FunctionId, Label};
+    use type_bridge_contract::query_plan::{
+        LocalFunction, LocalReturn, Reducer,
+    };
+
+    let person = type_id(TypeKind::Entity, "person");
+    let name = AttributeId::new("name").expect("attribute");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
+        SchemaFact::Type(
+            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, name).expect("owns id"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-local-fn-lowering").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+            .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-v2-local-fn-scope").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+
+    let plan = QueryPlan::new_with_functions(
+        vec![binding(0, "person"), binding(1, "name_count")],
+        vec![LocalFunction::new(
+            FunctionId::new("name_count_of").expect("function id"),
+            vec![binding(0, "subject"), binding(1, "value")],
+            vec![Label::new("person").expect("label")],
+            vec![QueryPattern::Has {
+                attribute: binding_id(1),
+                attribute_id: AttributeId::new("name").expect("attribute"),
+                owner: binding_id(0),
+            }],
+            LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long),
+        )],
+        Vec::new(),
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: true,
+                        type_id: type_id(TypeKind::Entity, "person"),
+                    },
+                    QueryPattern::FunctionCall {
+                        arguments: vec![QueryOperand::Binding {
+                            binding: binding_id(0),
+                        }],
+                        assigned: binding_id(1),
+                        function: FunctionId::new("name_count_of")
+                            .expect("function id"),
+                    },
+                ],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Descending)],
+            },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("local function plan");
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated =
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+            .expect("validated query");
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
+        .expect("invocation");
+    let lowered =
+        lower_validated_query(&validated, &invocation).expect("lowered query");
+    assert_eq!(
+        lowered.typeql(),
+        "with fun name_count_of($subject: person) -> integer:\n\
+         match\n\
+         $subject has name $value;\n\
+         $value isa! name;\n\
+         return count($value);\n\
+         match\n\
+         $person isa person;\n\
+         let $name_count = name_count_of($person);\n\
+         sort $name_count desc;\n",
+    );
+}

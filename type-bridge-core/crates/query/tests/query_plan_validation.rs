@@ -827,3 +827,116 @@ fn document_outputs_derive_typed_field_schemas() {
     .expect_err("unowned listed attribute");
     assert_eq!(error.code().as_str(), "query_plan_unknown_attribute");
 }
+
+#[test]
+fn local_functions_type_their_calls_and_fail_closed() {
+    use type_bridge_contract::id::{FunctionId, Label};
+    use type_bridge_contract::query_plan::{
+        LocalFunction, LocalReturn, Reducer,
+    };
+
+    let fixture = schema_fixture();
+    let name_count = |body_owner_label: &str| {
+        LocalFunction::new(
+            FunctionId::new("name_count_of").expect("function id"),
+            vec![binding(0, "subject"), binding(1, "value")],
+            vec![Label::new(body_owner_label).expect("label")],
+            vec![QueryPattern::Has {
+                attribute: binding_id(1),
+                attribute_id: AttributeId::new("name").expect("attribute"),
+                owner: binding_id(0),
+            }],
+            LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long),
+        )
+    };
+    let build = |functions: Vec<LocalFunction>| {
+        let plan = QueryPlan::new_with_functions(
+            vec![binding(0, "person"), binding(1, "name_count")],
+            functions,
+            Vec::new(),
+            vec![ReadStage::Match {
+                patterns: vec![
+                    person_isa(0),
+                    QueryPattern::FunctionCall {
+                        arguments: vec![QueryOperand::Binding {
+                            binding: binding_id(0),
+                        }],
+                        assigned: binding_id(1),
+                        function: FunctionId::new("name_count_of")
+                            .expect("function id"),
+                    },
+                ],
+            }],
+            QueryOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            fixture.managed.managed_semantic_schema().clone(),
+        )
+        .expect("local function plan");
+        validate_query_plan(
+            &plan,
+            &MigrationAssertionValidationContext::new(
+                &fixture.resolved,
+                &fixture.managed,
+            ),
+            StructuralLimits::CANONICAL,
+        )
+    };
+
+    // The call assigns a typed value binding from the local signature.
+    let validated = build(vec![name_count("person")]).expect("validated local call");
+    let columns = validated.output_schema().rows().expect("row plan").columns();
+    assert!(columns[1].domain().type_ids().is_empty());
+    assert_eq!(columns[1].domain().value_type(), Some(ValueTypeTag::Long));
+
+    // An unknown parameter type label fails closed.
+    let error = build(vec![name_count("city")]).expect_err("unknown parameter label");
+    assert_eq!(error.code().as_str(), "query_plan_unknown_function");
+
+    // A sum over a string body binding has no numeric domain.
+    let error = build(vec![LocalFunction::new(
+        FunctionId::new("name_count_of").expect("function id"),
+        vec![binding(0, "subject"), binding(1, "value")],
+        vec![Label::new("person").expect("label")],
+        vec![QueryPattern::Has {
+            attribute: binding_id(1),
+            attribute_id: AttributeId::new("name").expect("attribute"),
+            owner: binding_id(0),
+        }],
+        LocalReturn::new(Reducer::Sum, binding_id(1), ValueTypeTag::Long),
+    )])
+    .expect_err("sum over strings");
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_local_function_return_domain",
+    );
+
+    // A body that never references its parameter is uncorrelated.
+    let error = build(vec![LocalFunction::new(
+        FunctionId::new("name_count_of").expect("function id"),
+        vec![
+            binding(0, "subject"),
+            binding(1, "other"),
+            binding(2, "value"),
+        ],
+        vec![Label::new("person").expect("label")],
+        vec![
+            QueryPattern::Isa {
+                binding: binding_id(1),
+                include_subtypes: false,
+                type_id: type_id(TypeKind::Entity, "person"),
+            },
+            QueryPattern::Has {
+                attribute: binding_id(2),
+                attribute_id: AttributeId::new("name").expect("attribute"),
+                owner: binding_id(1),
+            },
+        ],
+        LocalReturn::new(Reducer::Count, binding_id(2), ValueTypeTag::Long),
+    )])
+    .expect_err("uncorrelated local body");
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_local_function_uncorrelated",
+    );
+}

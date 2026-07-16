@@ -1283,3 +1283,201 @@ async fn document_fetch_returns_typed_documents_live() {
     assert_eq!(scalar(&documents[1].values()[0]), "bob");
     assert_eq!(longs(&documents[1].values()[1]), Vec::<i64>::new());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_functions_execute_per_row_live() {
+    use type_bridge_contract::id::{FunctionId, Label};
+    use type_bridge_contract::query_plan::{
+        LocalFunction, LocalReturn, QueryOperation, Reducer,
+    };
+    use type_bridge_contract::value::CanonicalValue;
+
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-local-fn-live");
+    let person = TypeId::new(TypeKind::Entity, format!("{suffix}-person")).unwrap();
+    let name = AttributeId::new(format!("{suffix}-name")).unwrap();
+    let age = AttributeId::new(format!("{suffix}-age")).unwrap();
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {name}, value string;\n\
+             attribute {age}, value integer;\n\
+             entity {person}, owns {name}, owns {age} @card(0..);",
+            name = name.label(),
+            age = age.label(),
+            person = person.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("live local-fn schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {name} \"ada\", has {age} 30, has {age} 40; \
+             $b isa {person}, has {name} \"bob\";",
+            person = person.label(),
+            name = name.label(),
+            age = age.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("live local-fn data");
+
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), name.clone()).unwrap(),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), age.clone()).unwrap(),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).unwrap();
+        let line = u32::try_from(index + 1).unwrap();
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-local-fn-live").unwrap(),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .unwrap(),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        sourced,
+    )
+    .unwrap();
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let managed = managed_schema_state(
+        &declared,
+        &ManagedDeltaContext::new(
+            ManagedScopeId::new("query-v2-local-fn-live").unwrap(),
+            profile,
+            CapabilitySet::new(),
+        ),
+    )
+    .unwrap();
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+
+    let person_label = Label::new(person.label().as_str()).unwrap();
+    let local = |fun_name: &str, reducer, value_type| {
+        LocalFunction::new(
+            FunctionId::new(fun_name).unwrap(),
+            vec![binding(0, "subject"), binding(1, "measure")],
+            vec![person_label.clone()],
+            vec![QueryPattern::Has {
+                attribute: binding_id(1),
+                attribute_id: age.clone(),
+                owner: binding_id(0),
+            }],
+            LocalReturn::new(reducer, binding_id(1), value_type),
+        )
+    };
+    let call = |fun_name: &str, assigned: u16| QueryPattern::FunctionCall {
+        arguments: vec![QueryOperand::Binding { binding: binding_id(0) }],
+        assigned: binding_id(assigned),
+        function: FunctionId::new(fun_name).unwrap(),
+    };
+
+    // Two locals per row: age count and age sum, sorted by count.
+    let plan = QueryPlan::new_with_functions(
+        vec![
+            binding(0, "person"),
+            binding(1, "age_count"),
+            binding(2, "age_sum"),
+        ],
+        vec![
+            local(
+                &format!("{}_count", suffix.replace('-', "_")),
+                Reducer::Count,
+                ValueTypeTag::Long,
+            ),
+            local(
+                &format!("{}_sum", suffix.replace('-', "_")),
+                Reducer::Sum,
+                ValueTypeTag::Long,
+            ),
+        ],
+        Vec::new(),
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: true,
+                        type_id: person.clone(),
+                    },
+                    call(&format!("{}_count", suffix.replace('-', "_")), 1),
+                    call(&format!("{}_sum", suffix.replace('-', "_")), 2),
+                ],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+            },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(1), binding_id(2)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .unwrap();
+    let validated =
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+            .unwrap();
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let mut transaction = db.read_transaction().await.expect("read transaction");
+    let outcome = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        limits(),
+    )
+    .await
+    .expect("local function execution");
+    let QueryV2Outcome::Rows(rows) = &outcome else {
+        panic!("rows outcome: {outcome:?}");
+    };
+    let long = |value: &QueryRowValue| match value {
+        QueryRowValue::Value { value: CanonicalValue::Long(value) } => *value,
+        other => panic!("expected long value: {other:?}"),
+    };
+    let reduced = rows
+        .iter()
+        .map(|row| (long(&row.values()[0]), long(&row.values()[1])))
+        .collect::<Vec<_>>();
+    assert_eq!(reduced, vec![(0, 0), (2, 70)]);
+}

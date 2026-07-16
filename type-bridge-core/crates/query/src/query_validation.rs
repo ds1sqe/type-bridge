@@ -111,6 +111,22 @@ const QUERY_ENGINE_CODES: EngineCodes = EngineCodes {
         code: "query_plan_empty_try_domain",
         message: "try body has an impossible schema domain",
     },
+    local_unbound: EngineCode {
+        code: "query_plan_local_function_unbound",
+        message: "local-body reference is not a parameter or body-established",
+    },
+    local_uncorrelated: EngineCode {
+        code: "query_plan_local_function_uncorrelated",
+        message: "a local function body must reference every parameter",
+    },
+    empty_local_domain: EngineCode {
+        code: "query_plan_empty_local_function_domain",
+        message: "local function body has an impossible schema domain",
+    },
+    local_return_domain: EngineCode {
+        code: "query_plan_local_function_return_domain",
+        message: "the declared return does not fit the reducer over its input domain",
+    },
 };
 
 /// Opaque, non-serializable result of schema-aware plan validation.
@@ -198,6 +214,20 @@ pub fn validate_query_plan(
             "the pattern conjunction must be the first pipeline stage",
         ));
     };
+    let mut locals = BTreeMap::new();
+    for function in plan.functions() {
+        if schema.functions().contains_key(function.name()) {
+            return Err(plan_failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_local_function_shadows_schema",
+                "a plan-local function cannot shadow a schema function",
+            ));
+        }
+        let signature =
+            engine::analyze_local_function(function, schema, &QUERY_ENGINE_CODES)?;
+        locals.insert(function.name().clone(), signature);
+    }
+
     let engine::PatternAnalysis {
         domains,
         optional_positive,
@@ -210,6 +240,7 @@ pub fn validate_query_plan(
         plan.bindings().len(),
         &inputs,
         schema,
+        &locals,
         &QUERY_ENGINE_CODES,
     )?;
 

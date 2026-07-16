@@ -87,6 +87,53 @@ pub fn lower_validated_query(
     }
 
     let mut typeql = String::new();
+    for function in plan.functions() {
+        write!(typeql, "with fun {}(", function.name().label())
+            .expect("writing to String cannot fail");
+        for (index, label) in function.parameters().iter().enumerate() {
+            if index != 0 {
+                typeql.push_str(", ");
+            }
+            write!(
+                typeql,
+                "${}: {}",
+                local_variable(function.bindings(), BindingId::new(
+                    u16::try_from(index).expect("dense parameter ordinal"),
+                )?)?,
+                label.as_str(),
+            )
+            .expect("writing to String cannot fail");
+        }
+        writeln!(
+            typeql,
+            ") -> {}:",
+            given_type_keyword(function.returns().value_type())
+                .expect("contract admits integer and double local returns"),
+        )
+        .expect("writing to String cannot fail");
+        typeql.push_str("match\n");
+        render_scoped_patterns(
+            &mut typeql,
+            plan,
+            function.bindings(),
+            function.body(),
+            None,
+            0,
+        )?;
+        let keyword = match function.returns().reducer() {
+            type_bridge_contract::query_plan::Reducer::Count => "count",
+            type_bridge_contract::query_plan::Reducer::Sum => "sum",
+            type_bridge_contract::query_plan::Reducer::Max => "max",
+            type_bridge_contract::query_plan::Reducer::Mean => "mean",
+            type_bridge_contract::query_plan::Reducer::Min => "min",
+        };
+        writeln!(
+            typeql,
+            "return {keyword}(${});",
+            local_variable(function.bindings(), function.returns().input())?,
+        )
+        .expect("writing to String cannot fail");
+    }
     if let Some(spec) = &given {
         typeql.push_str("given ");
         for (index, column) in plan.inputs().iter().enumerate() {
@@ -314,6 +361,17 @@ fn render_patterns(
     row: Option<&InputRow>,
     depth: usize,
 ) -> Result<(), Diagnostic> {
+    render_scoped_patterns(output, plan, plan.bindings(), patterns, row, depth)
+}
+
+fn render_scoped_patterns(
+    output: &mut String,
+    plan: &QueryPlan,
+    bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
+    patterns: &[QueryPattern],
+    row: Option<&InputRow>,
+    depth: usize,
+) -> Result<(), Diagnostic> {
     let indent = "    ".repeat(depth);
     for pattern in patterns {
         match pattern {
@@ -325,7 +383,7 @@ fn render_patterns(
                 writeln!(
                     output,
                     "{indent}${} isa{} {};",
-                    variable(plan, *binding)?,
+                    local_variable(bindings, *binding)?,
                     if *include_subtypes { "" } else { "!" },
                     type_id.label()
                 )
@@ -339,15 +397,15 @@ fn render_patterns(
                 writeln!(
                     output,
                     "{indent}${} has {} ${};",
-                    variable(plan, *owner)?,
+                    local_variable(bindings, *owner)?,
                     attribute_id.label(),
-                    variable(plan, *attribute)?,
+                    local_variable(bindings, *attribute)?,
                 )
                 .expect("writing to String cannot fail");
                 writeln!(
                     output,
                     "{indent}${} isa! {};",
-                    variable(plan, *attribute)?,
+                    local_variable(bindings, *attribute)?,
                     attribute_id.label(),
                 )
                 .expect("writing to String cannot fail");
@@ -360,7 +418,7 @@ fn render_patterns(
                 write!(
                     output,
                     "{indent}${} isa! {}, links (",
-                    variable(plan, *relation)?,
+                    local_variable(bindings, *relation)?,
                     relation_id.label(),
                 )
                 .expect("writing to String cannot fail");
@@ -372,7 +430,7 @@ fn render_patterns(
                         output,
                         "{}: ${}",
                         player.role().label(),
-                        variable(plan, player.player())?,
+                        local_variable(bindings, player.player())?,
                     )
                     .expect("writing to String cannot fail");
                 }
@@ -386,23 +444,23 @@ fn render_patterns(
                 writeln!(
                     output,
                     "{indent}{} {} {};",
-                    render_operand(plan, left, row)?,
+                    render_operand(plan, bindings, left, row)?,
                     render_comparator(*comparator),
-                    render_operand(plan, right, row)?,
+                    render_operand(plan, bindings, right, row)?,
                 )
                 .expect("writing to String cannot fail");
             }
             QueryPattern::Not { patterns } => {
                 writeln!(output, "{indent}not {{")
                     .expect("writing to String cannot fail");
-                render_patterns(output, plan, patterns, row, depth + 1)?;
+                render_scoped_patterns(output, plan, bindings, patterns, row, depth + 1)?;
                 writeln!(output, "{indent}}};")
                     .expect("writing to String cannot fail");
             }
             QueryPattern::Try { patterns } => {
                 writeln!(output, "{indent}try {{")
                     .expect("writing to String cannot fail");
-                render_patterns(output, plan, patterns, row, depth + 1)?;
+                render_scoped_patterns(output, plan, bindings, patterns, row, depth + 1)?;
                 writeln!(output, "{indent}}};")
                     .expect("writing to String cannot fail");
             }
@@ -414,7 +472,7 @@ fn render_patterns(
                 write!(
                     output,
                     "{indent}let ${} = {}(",
-                    variable(plan, *assigned)?,
+                    local_variable(bindings, *assigned)?,
                     function.label(),
                 )
                 .expect("writing to String cannot fail");
@@ -422,7 +480,7 @@ fn render_patterns(
                     if index != 0 {
                         output.push_str(", ");
                     }
-                    output.push_str(&render_operand(plan, argument, row)?);
+                    output.push_str(&render_operand(plan, bindings, argument, row)?);
                 }
                 output.push_str(");\n");
             }
@@ -448,12 +506,13 @@ fn render_variable_list(
 
 fn render_operand(
     plan: &QueryPlan,
+    bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     operand: &QueryOperand,
     row: Option<&InputRow>,
 ) -> Result<String, Diagnostic> {
     match operand {
         QueryOperand::Binding { binding } => {
-            Ok(format!("${}", variable(plan, *binding)?))
+            Ok(format!("${}", local_variable(bindings, *binding)?))
         }
         QueryOperand::Literal { value } => Ok(render_literal(value)),
         QueryOperand::Input { column } => match row {
@@ -490,7 +549,14 @@ fn render_operand(
 }
 
 fn variable(plan: &QueryPlan, binding: BindingId) -> Result<&str, Diagnostic> {
-    plan.bindings()
+    local_variable(plan.bindings(), binding)
+}
+
+fn local_variable(
+    bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
+    binding: BindingId,
+) -> Result<&str, Diagnostic> {
+    bindings
         .get(usize::from(binding.get()))
         .map(|binding| binding.variable().as_str())
         .ok_or_else(|| {

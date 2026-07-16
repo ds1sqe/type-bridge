@@ -94,6 +94,7 @@ fn query_plan_capability_vocabulary_is_exact_and_deterministic() {
             .map(|capability| capability.as_str())
             .collect::<Vec<_>>(),
         vec![
+            "query.function.local",
             "query.input.columns",
             "query.output.documents",
             "query.output.rows",
@@ -770,4 +771,96 @@ fn document_outputs_fetch_typed_fields_and_reject_unsound_shapes() {
     )
     .expect_err("optional list owner");
     assert_eq!(error.code().as_str(), "query_plan_output_not_visible");
+}
+
+#[test]
+fn local_functions_declare_total_reducers_and_reject_unsound_shapes() {
+    use type_bridge_contract::id::{FunctionId, Label};
+    use type_bridge_contract::query_plan::{
+        LocalFunction, LocalReturn, QueryOperand as Operand, Reducer,
+    };
+
+    let semantics = managed_semantics(b"query-plan-local-fn-fixture");
+    let local_body = || {
+        vec![QueryPattern::Has {
+            attribute: binding_id(1),
+            attribute_id: AttributeId::new("age").expect("attribute id"),
+            owner: binding_id(0),
+        }]
+    };
+    let local = |returns: LocalReturn| {
+        LocalFunction::new(
+            FunctionId::new("age_count_of").expect("function id"),
+            vec![binding(0, "subject"), binding(1, "age")],
+            vec![Label::new("person").expect("label")],
+            local_body(),
+            returns,
+        )
+    };
+    let build = |functions: Vec<LocalFunction>| {
+        QueryPlan::new_with_functions(
+            vec![binding(0, "person"), binding(1, "age_count")],
+            functions,
+            Vec::new(),
+            vec![ReadStage::Match {
+                patterns: vec![
+                    person_isa(0),
+                    QueryPattern::FunctionCall {
+                        arguments: vec![Operand::Binding { binding: binding_id(0) }],
+                        assigned: binding_id(1),
+                        function: FunctionId::new("age_count_of")
+                            .expect("function id"),
+                    },
+                ],
+            }],
+            QueryOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            semantics.clone(),
+        )
+    };
+
+    // A total count declaration round-trips under the local capability.
+    let plan = build(vec![local(LocalReturn::new(
+        Reducer::Count,
+        binding_id(1),
+        ValueTypeTag::Long,
+    ))])
+    .expect("local function plan");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.function.local"),
+    );
+    let bytes = plan.canonical_bytes().expect("canonical bytes");
+    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
+
+    // Reducers that can observe an empty body stream are reserved.
+    let error = build(vec![local(LocalReturn::new(
+        Reducer::Max,
+        binding_id(1),
+        ValueTypeTag::Long,
+    ))])
+    .expect_err("partial local reducer");
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_local_function_return_partial",
+    );
+
+    // A count declares a long result, nothing else.
+    let error = build(vec![local(LocalReturn::new(
+        Reducer::Count,
+        binding_id(1),
+        ValueTypeTag::Double,
+    ))])
+    .expect_err("mistyped local return");
+    assert_eq!(error.code().as_str(), "query_plan_local_function_return_type");
+
+    // Two local functions cannot share a name.
+    let error = build(vec![
+        local(LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long)),
+        local(LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long)),
+    ])
+    .expect_err("duplicate local name");
+    assert_eq!(error.code().as_str(), "query_plan_duplicate_local_function");
 }

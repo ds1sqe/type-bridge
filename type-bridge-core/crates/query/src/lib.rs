@@ -311,6 +311,7 @@ pub fn validate_migration_assertion_plan(
         plan.bindings().len(),
         &[],
         schema,
+        &BTreeMap::new(),
         &ASSERTION_ENGINE_CODES,
     )?;
 
@@ -540,6 +541,22 @@ const ASSERTION_ENGINE_CODES: engine::EngineCodes = engine::EngineCodes {
     empty_try_domain: engine::EngineCode {
         code: "migration_assertion_unknown_binding",
         message: "assertion patterns cannot express optional blocks",
+    },
+    local_unbound: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot define local functions",
+    },
+    local_uncorrelated: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot define local functions",
+    },
+    empty_local_domain: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot define local functions",
+    },
+    local_return_domain: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot define local functions",
     },
 };
 

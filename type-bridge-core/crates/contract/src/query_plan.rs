@@ -23,7 +23,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintDomain,
 };
-use crate::id::{AttributeId, FunctionId, TypeId};
+use crate::id::{AttributeId, FunctionId, Label, TypeId};
 use crate::limits::StructuralLimits;
 use crate::migration_assertion::{
     AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable,
@@ -58,6 +58,7 @@ const CAP_FUNCTION_CALL: &str = "query.pattern.function-call";
 const CAP_STAGE_REDUCE: &str = "query.stage.reduce";
 const CAP_TRY: &str = "query.pattern.try";
 const CAP_OUTPUT_DOCUMENTS: &str = "query.output.documents";
+const CAP_LOCAL_FUNCTIONS: &str = "query.function.local";
 
 /// Return every capability the first query-plan vocabulary can require.
 #[must_use]
@@ -82,6 +83,7 @@ pub fn query_plan_capability_vocabulary() -> CapabilitySet {
         CAP_STAGE_REDUCE,
         CAP_TRY,
         CAP_OUTPUT_DOCUMENTS,
+        CAP_LOCAL_FUNCTIONS,
     ]
     .into_iter()
     .map(|value| CapabilityId::new(value).expect("static capability id is canonical"))
@@ -443,6 +445,116 @@ impl ReadStage {
     }
 }
 
+/// The declared scalar return of one plan-local function.
+///
+/// The first local vocabulary admits only reducers that stay total on an
+/// empty body stream (`count`, `sum`), so every call yields a value.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LocalReturn {
+    input: BindingId,
+    reducer: Reducer,
+    value_type: ValueTypeTag,
+}
+
+impl LocalReturn {
+    /// Declare one total reducer return over a body binding.
+    #[must_use]
+    pub const fn new(
+        reducer: Reducer,
+        input: BindingId,
+        value_type: ValueTypeTag,
+    ) -> Self {
+        Self {
+            input,
+            reducer,
+            value_type,
+        }
+    }
+
+    /// Return the reduced body binding.
+    #[must_use]
+    pub const fn input(&self) -> BindingId {
+        self.input
+    }
+
+    /// Return the reducer.
+    #[must_use]
+    pub const fn reducer(&self) -> Reducer {
+        self.reducer
+    }
+
+    /// Return the declared scalar result type.
+    #[must_use]
+    pub const fn value_type(&self) -> ValueTypeTag {
+        self.value_type
+    }
+}
+
+/// One plan-local function defined from the closed pattern algebra.
+///
+/// The function owns a private dense binding space; its parameters are the
+/// leading bindings, each declared against one schema type label. The first
+/// local vocabulary keeps bodies flat (`isa`, `has`, `links`, value) and
+/// returns one total reducer result.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LocalFunction {
+    bindings: Vec<AssertionBinding>,
+    body: Vec<QueryPattern>,
+    name: FunctionId,
+    parameters: Vec<Label>,
+    returns: LocalReturn,
+}
+
+impl LocalFunction {
+    /// Declare one plan-local function.
+    #[must_use]
+    pub const fn new(
+        name: FunctionId,
+        bindings: Vec<AssertionBinding>,
+        parameters: Vec<Label>,
+        body: Vec<QueryPattern>,
+        returns: LocalReturn,
+    ) -> Self {
+        Self {
+            bindings,
+            body,
+            name,
+            parameters,
+            returns,
+        }
+    }
+
+    /// Return the function name.
+    #[must_use]
+    pub const fn name(&self) -> &FunctionId {
+        &self.name
+    }
+
+    /// Return the private dense binding table.
+    #[must_use]
+    pub fn bindings(&self) -> &[AssertionBinding] {
+        &self.bindings
+    }
+
+    /// Return the schema type label of each leading parameter binding.
+    #[must_use]
+    pub fn parameters(&self) -> &[Label] {
+        &self.parameters
+    }
+
+    /// Return the closed body conjunction.
+    #[must_use]
+    pub fn body(&self) -> &[QueryPattern] {
+        &self.body
+    }
+
+    /// Return the declared reducer result.
+    #[must_use]
+    pub const fn returns(&self) -> &LocalReturn {
+        &self.returns
+    }
+}
+
 /// One value source of a fetched document field.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -511,6 +623,7 @@ pub enum QueryOutput {
 pub struct QueryPlan {
     bindings: Vec<AssertionBinding>,
     format: String,
+    functions: Vec<LocalFunction>,
     inputs: Vec<InputColumn>,
     managed_semantics: ManagedSemanticSchemaFingerprint,
     output: QueryOutput,
@@ -529,6 +642,27 @@ impl QueryPlan {
     ) -> Result<Self, Diagnostic> {
         Self::new_with_limits(
             bindings,
+            Vec::new(),
+            inputs,
+            pipeline,
+            output,
+            managed_semantics,
+            StructuralLimits::CANONICAL,
+        )
+    }
+
+    /// Validate and construct one plan carrying plan-local functions.
+    pub fn new_with_functions(
+        bindings: Vec<AssertionBinding>,
+        functions: Vec<LocalFunction>,
+        inputs: Vec<InputColumn>,
+        pipeline: Vec<ReadStage>,
+        output: QueryOutput,
+        managed_semantics: ManagedSemanticSchemaFingerprint,
+    ) -> Result<Self, Diagnostic> {
+        Self::new_with_limits(
+            bindings,
+            functions,
             inputs,
             pipeline,
             output,
@@ -539,6 +673,7 @@ impl QueryPlan {
 
     fn new_with_limits(
         bindings: Vec<AssertionBinding>,
+        functions: Vec<LocalFunction>,
         inputs: Vec<InputColumn>,
         pipeline: Vec<ReadStage>,
         output: QueryOutput,
@@ -592,6 +727,8 @@ impl QueryPlan {
                 ));
             }
         }
+
+        validate_local_functions(&functions, limits)?;
 
         let (mandatory, optional, has_sort) =
             validate_pipeline(&pipeline, bindings.len(), inputs.len(), limits)?;
@@ -684,10 +821,11 @@ impl QueryPlan {
         }
 
         let required_capabilities =
-            derive_capabilities(&pipeline, &inputs, &output)?;
+            derive_capabilities(&pipeline, &functions, &inputs, &output)?;
         Ok(Self {
             bindings,
             format: QUERY_PLAN_FORMAT_V1.to_owned(),
+            functions,
             inputs,
             managed_semantics,
             output,
@@ -714,8 +852,13 @@ impl QueryPlan {
         &self.inputs
     }
 
-    /// Return the ordered read pipeline.
+    /// Return the plan-local functions.
     #[must_use]
+    pub fn functions(&self) -> &[LocalFunction] {
+        &self.functions
+    }
+
+    /// Return the ordered read pipeline.
     pub fn pipeline(&self) -> &[ReadStage] {
         &self.pipeline
     }
@@ -924,6 +1067,113 @@ impl QueryPlanFingerprint {
 /// Decode canonical bytes through private constructor-rebuilding wire types.
 pub fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
     crate::query_plan_wire::decode_query_plan(bytes)
+}
+
+fn validate_local_functions(
+    functions: &[LocalFunction],
+    limits: StructuralLimits,
+) -> Result<(), Diagnostic> {
+    if !limits.allows_bindings(functions.len().max(1)) {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "query_plan_local_function_limit",
+            "plan-local function count exceeds the structural ceiling",
+        ));
+    }
+    let mut names = BTreeSet::new();
+    for function in functions {
+        if !names.insert(function.name().clone()) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_duplicate_local_function",
+                "plan-local function names must be unique",
+            ));
+        }
+        let bindings = function.bindings();
+        if bindings.is_empty() || !limits.allows_bindings(bindings.len()) {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_plan_binding_limit",
+                "plan binding count is empty or exceeds the structural ceiling",
+            ));
+        }
+        let mut local_names = BTreeSet::new();
+        for (index, binding) in bindings.iter().enumerate() {
+            if usize::from(binding.id().get()) != index {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_bindings_not_dense",
+                    "plan binding IDs must be ordered dense zero-based ordinals",
+                ));
+            }
+            if !local_names.insert(binding.variable().clone()) {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_duplicate_variable",
+                    "plan query variables must be unique",
+                ));
+            }
+        }
+        if function.parameters().is_empty()
+            || function.parameters().len() > bindings.len()
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_local_function_parameters",
+                "parameters must be a non-empty prefix of the local bindings",
+            ));
+        }
+        if function.body().is_empty() || function.body().len() > limits.boolean_terms
+        {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_plan_pattern_limit",
+                "plan root conjunction is empty or exceeds the term ceiling",
+            ));
+        }
+        let mut nodes = 0usize;
+        for pattern in function.body() {
+            // The first local vocabulary keeps bodies flat.
+            if matches!(
+                pattern,
+                QueryPattern::Not { .. }
+                    | QueryPattern::Try { .. }
+                    | QueryPattern::FunctionCall { .. }
+            ) {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_local_function_body_unsupported",
+                    "local bodies admit only isa, has, links, and value patterns",
+                ));
+            }
+            inspect_pattern(pattern, 1, bindings.len(), 0, limits, &mut nodes)?;
+        }
+        let returns = function.returns();
+        check_binding(returns.input(), bindings.len())?;
+        if !returns.reducer().total_without_groups() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_local_function_return_partial",
+                "local returns admit only reducers total on empty streams",
+            ));
+        }
+        let declared_valid = match returns.reducer() {
+            Reducer::Count => returns.value_type() == ValueTypeTag::Long,
+            Reducer::Sum => matches!(
+                returns.value_type(),
+                ValueTypeTag::Long | ValueTypeTag::Double
+            ),
+            Reducer::Max | Reducer::Min | Reducer::Mean => false,
+        };
+        if !declared_valid {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_local_function_return_type",
+                "declared return type does not fit the reducer",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_pipeline(
@@ -1409,11 +1659,20 @@ fn check_binding(binding: BindingId, binding_count: usize) -> Result<(), Diagnos
 
 fn derive_capabilities(
     pipeline: &[ReadStage],
+    functions: &[LocalFunction],
     inputs: &[InputColumn],
     output: &QueryOutput,
 ) -> Result<CapabilitySet, Diagnostic> {
     let mut capabilities = CapabilitySet::new();
     insert_capability(&mut capabilities, CAP_PLAN)?;
+    if !functions.is_empty() {
+        insert_capability(&mut capabilities, CAP_LOCAL_FUNCTIONS)?;
+        for function in functions {
+            for pattern in function.body() {
+                collect_pattern_capabilities(pattern, &mut capabilities)?;
+            }
+        }
+    }
     match output {
         QueryOutput::Rows { .. } => {
             insert_capability(&mut capabilities, CAP_OUTPUT_ROWS)?;
