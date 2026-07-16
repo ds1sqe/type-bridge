@@ -19,7 +19,7 @@ use type_bridge_contract::migration_assertion::AssertionExpectation;
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
     DeclaredSchema, DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact,
+    SourcedSchemaFact, SubFact, SubFactId, TypeFact,
 };
 use type_bridge_query::{
     MigrationAssertionValidationContext, lower_condition_to_plan,
@@ -919,4 +919,61 @@ fn divergent_branch_sources_are_not_guessed_into_one_apply_chain() {
         &additive_policy(),
     )
     .is_err());
+}
+
+#[test]
+fn new_subtype_migration_lowers_without_assertion_coverage() {
+    // A subtype introduced by its own migration derives zero safety
+    // conditions, so the conditional lowering gate is discharged by proof:
+    // the plan builds with no assertion steps and renders the sub edge.
+    let context = context();
+    let genesis = declared_facts(vec![type_fact("person")]);
+    let person = TypeId::new(TypeKind::Entity, "person").expect("person type");
+    let employee = TypeId::new(TypeKind::Entity, "employee").expect("employee type");
+    let target = declared_facts(vec![
+        type_fact("employee"),
+        type_fact("person"),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(employee, person).expect("sub identity"),
+        )),
+    ]);
+    let verified = manifest(
+        "0001_employee_sub_person",
+        Vec::new(),
+        &genesis,
+        &target,
+        &context,
+    );
+    let graph = MigrationHistoryGraph::from_verified([verified])
+        .expect("verified history");
+    let lowering = SchemaLoweringBinding::current(
+        context.available_capabilities().clone(),
+    )
+    .expect("lowering binding");
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &BTreeSet::from([SafetyClass::Additive, SafetyClass::Conditional]),
+    )
+    .expect("a proven condition-free subtype transition needs no assertion");
+
+    let steps = plan.migrations()[0].steps();
+    assert!(
+        steps
+            .iter()
+            .all(|step| !matches!(step, VerifiedMigrationApplyStep::Assertion { .. })),
+        "no assertion evidence may be required"
+    );
+    let rendered_sub = steps.iter().any(|step| match step {
+        VerifiedMigrationApplyStep::SchemaDelta { lowering, .. } => lowering
+            .units()
+            .iter()
+            .flat_map(StatementUnit::statements)
+            .any(|statement| statement.query().contains("sub person")),
+        VerifiedMigrationApplyStep::Assertion { .. } => false,
+    });
+    assert!(rendered_sub, "lowered statements must define the sub edge");
 }

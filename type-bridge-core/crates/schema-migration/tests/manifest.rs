@@ -350,8 +350,49 @@ fn limits_profiles_and_capability_claims_fail_closed() {
 }
 
 #[test]
-fn unresolved_safety_and_broken_step_chains_are_rejected_but_destructive_is_verified() {
+fn new_subtype_sub_edge_is_provably_condition_free() {
+    // The introduced subtype is absent from the committed source, so its
+    // `sub` edge needs no assertion: the manifest builds without one and
+    // stays classified as conditional work.
     let source = declared(vec![type_fact("person")]);
+    let person = TypeId::new(TypeKind::Entity, "person").expect("person type");
+    let employee = TypeId::new(TypeKind::Entity, "employee").expect("employee type");
+    let target = declared(vec![
+        type_fact("person"),
+        type_fact("employee"),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(employee, person).expect("fixture sub id"),
+        )),
+    ]);
+    let context = context();
+    let delta = diff_managed(&source, &target, &context).expect("subtype delta");
+    let step = SchemaDeltaStep::new(
+        MigrationStepId::new("new-subtype").expect("step id"),
+        delta,
+        None,
+    )
+    .expect("subtype step");
+    let draft = SchemaMigrationDraft::new(
+        migration_id("0003_new_subtype"),
+        Vec::new(),
+        vec![step],
+    )
+    .expect("subtype draft");
+    let manifest = build_verified_manifest(draft, (&source, &context))
+        .expect("a same-transition subtype needs no assertion coverage");
+    assert_eq!(manifest.safety(), SafetyClass::Conditional);
+    let bytes = encode_verified_manifest(&manifest).expect("encoding");
+    assert_eq!(
+        decode_verified_manifest(&bytes, (&source, &context)).expect("decode"),
+        manifest
+    );
+}
+
+#[test]
+fn unresolved_safety_and_broken_step_chains_are_rejected_but_destructive_is_verified() {
+    // The subtype already exists in the committed source, so gaining a
+    // supertype is a data-policy decision with no assertion representation.
+    let source = declared(vec![type_fact("person"), type_fact("employee")]);
     let person = TypeId::new(TypeKind::Entity, "person").expect("person type");
     let employee = TypeId::new(TypeKind::Entity, "employee").expect("employee type");
     let target = declared(vec![
@@ -383,6 +424,7 @@ fn unresolved_safety_and_broken_step_chains_are_rejected_but_destructive_is_veri
         "migration_manifest_unresolvable_conditional_assertion"
     );
 
+    let source = declared(vec![type_fact("person")]);
     let additive_target = declared(vec![type_fact("person"), type_fact("company")]);
     let additive = diff_managed(&source, &additive_target, &context).expect("additive delta");
     let first = SchemaDeltaStep::new(

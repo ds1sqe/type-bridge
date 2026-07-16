@@ -469,7 +469,7 @@ pub fn derive_safety_conditions(
 
     if policy == SafetyClass::Conditional
         && conditions.is_empty()
-        && !is_proven_condition_free_constraint_transition(operation)?
+        && !is_proven_condition_free_constraint_transition(operation, source_declared)?
     {
         push_condition(
             &mut conditions,
@@ -515,16 +515,29 @@ fn derive_defined_fact(
             semantic,
             conditions,
         ),
-        SchemaFact::Sub(_) => push_unresolvable(
-            conditions,
-            operation_index,
-            policy,
-            UnresolvableSafetyReason::SubtypeTransitionRequiresBackfill,
-            SafetyConditionUnlock::Backfill,
-            source,
-            target,
-            profile,
-        ),
+        // A supertype gained by a type that already exists in the committed
+        // source may carry instances whose data placement is a policy
+        // decision. A subtype introduced by this same transition cannot have
+        // instances — the exactly-observed source lacks the type and the
+        // introducing delta commits in one transaction group — so its `sub`
+        // edge is provably condition-free.
+        SchemaFact::Sub(sub)
+            if source
+                .fact(&SchemaFactId::Type(sub.id().subtype().clone()))
+                .is_some() =>
+        {
+            push_unresolvable(
+                conditions,
+                operation_index,
+                policy,
+                UnresolvableSafetyReason::SubtypeTransitionRequiresBackfill,
+                SafetyConditionUnlock::Backfill,
+                source,
+                target,
+                profile,
+            )
+        }
+        SchemaFact::Sub(_) => Ok(()),
         SchemaFact::Relates(relates) if relates.specializes().is_some() => {
             push_unresolvable(
                 conditions,
@@ -816,7 +829,11 @@ fn derive_annotation_transition(
 
 fn is_proven_condition_free_constraint_transition(
     operation: &SchemaOperation,
+    source: &DeclaredSchema,
 ) -> Result<bool, Diagnostic> {
+    if operation.kind() == SchemaOperationKind::Define {
+        return Ok(is_proven_condition_free_define(operation, source));
+    }
     if operation.kind() != SchemaOperationKind::Redefine {
         return Ok(false);
     }
@@ -840,6 +857,48 @@ fn is_proven_condition_free_constraint_transition(
         )?),
         _ => Ok(false),
     }
+}
+
+/// Prove a conditional define carries only condition-free work.
+///
+/// The only proven shape is a `sub` edge whose subtype is absent from the
+/// exactly-observed source: the type is introduced by this same transition and
+/// cannot have instances when the introducing transaction group runs. Any
+/// annotation, struct, or specializing-relates fact deliberately fails the
+/// proof — those keep the conservative backfill catch-all even when their own
+/// derivation produced no condition.
+fn is_proven_condition_free_define(
+    operation: &SchemaOperation,
+    source: &DeclaredSchema,
+) -> bool {
+    let Some(facts) = operation.defined_facts() else {
+        return false;
+    };
+    let mut proven_sub = false;
+    for fact in facts {
+        match fact {
+            SchemaFact::Sub(sub) => {
+                if source
+                    .fact(&SchemaFactId::Type(sub.id().subtype().clone()))
+                    .is_some()
+                {
+                    return false;
+                }
+                proven_sub = true;
+            }
+            SchemaFact::Relates(relates) if relates.specializes().is_some() => {
+                return false;
+            }
+            SchemaFact::Annotation(_) | SchemaFact::Struct(_) => return false,
+            SchemaFact::Type(_)
+            | SchemaFact::Value(_)
+            | SchemaFact::Owns(_)
+            | SchemaFact::Relates(_)
+            | SchemaFact::Plays(_)
+            | SchemaFact::Function(_) => {}
+        }
+    }
+    proven_sub
 }
 
 fn range_payload(annotation: &AnnotationFact) -> Result<&CanonicalValueRange, Diagnostic> {

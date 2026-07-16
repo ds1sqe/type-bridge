@@ -481,7 +481,12 @@ pub(crate) fn verify_assertion_coverage(
                 _ => {}
             }
         }
-        if operation_requires_assertion {
+        // A conditional operation is discharged either by assertion coverage
+        // or by the verifier's condition-free proof (zero derived conditions
+        // survive derivation only when the transition is proven safe).
+        if operation_requires_assertion
+            || derived.policy() == SafetyClass::Conditional
+        {
             conditional_operation_indices.push(operation_index);
         }
     }
