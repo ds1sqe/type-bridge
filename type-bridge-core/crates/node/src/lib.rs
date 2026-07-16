@@ -8,6 +8,7 @@
 #![allow(missing_docs)]
 
 mod match_runtime;
+pub mod query_v2_runtime;
 mod runtime_projection;
 #[cfg(feature = "contract-test-adapter")]
 mod contract_test_adapter;
