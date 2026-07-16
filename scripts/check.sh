@@ -45,6 +45,10 @@ run_rust() {
     run_step "cargo test --all-targets" \
         cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets
 
+    run_step "schema-codegen Rust projection acceptance" \
+        cargo test --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-schema-codegen --test rust_acceptance
+
     run_step "cargo clippy --all-targets -- -D warnings" \
         cargo clippy --manifest-path type-bridge-core/Cargo.toml --all-targets -- -D warnings
 }
@@ -74,6 +78,9 @@ run_python() {
     run_step "typed Query API negative Pyright contract" \
         uv run python tests/unit/typed_query/check_query_negative.py
 
+    run_step "schema-codegen Python projection acceptance" \
+        uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
+
     run_step "pytest tests/unit/" \
         uv run pytest tests/unit/ -x --tb=short -q
 }
@@ -90,6 +97,8 @@ run_node() {
     run_step "npm run build"         npm run build
     run_step "npm run typecheck"     npm run typecheck
     run_step "npm run typecheck:query-contract" npm run typecheck:query-contract
+    run_step "schema-codegen TypeScript projection acceptance" \
+        node ../schema-codegen/tests/typescript_acceptance/check.mjs
     run_step "npm run test:unit"     npm run test:unit
     run_step "npm run test:dts"      npm run test:dts
     run_step "npm run smoke:package" npm run smoke:package

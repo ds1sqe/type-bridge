@@ -51,6 +51,10 @@ jobs:
         working-directory: type-bridge-core
         run: cargo test --all-targets
 
+      - name: Check generated Rust projection package
+        working-directory: type-bridge-core
+        run: cargo test -p type-bridge-schema-codegen --test rust_acceptance
+
       - name: cargo clippy
         working-directory: type-bridge-core
         run: cargo clippy --all-targets -- -D warnings
@@ -239,6 +243,9 @@ jobs:
       - name: Unified Query contract typecheck
         run: npm run typecheck:query-contract
 
+      - name: Check generated TypeScript projection package
+        run: node ../schema-codegen/tests/typescript_acceptance/check.mjs
+
       - name: Unit tests
         run: npm run test:unit
 
@@ -415,6 +422,10 @@ jobs:
       - name: Check intentional typed Query API diagnostics
         if: matrix.target == 'tests'
         run: uv run python tests/unit/typed_query/check_query_negative.py
+
+      - name: Check generated Python projection package
+        if: matrix.target == 'tests'
+        run: uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
 
   # Unit tests (fast, no external dependencies, parallel execution)
   test-unit:
@@ -642,6 +653,17 @@ jobs:
           -p type-bridge-orm --features integration-tests
           --test integration -- --nocapture
 
+      - name: Run generated Rust projection live smoke
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_live
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-schema-codegen --test rust_projection_live
+          -- --ignored --nocapture
+
   # Cross-language parity gate: the #110 single-core / thin-bindings invariant only
   # holds if a semantic divergence between the Python and Node sides reds CI. These
   # tests shell out to the Node binding, so this job builds the Node prerequisites
@@ -831,13 +853,15 @@ jobs:
     strategy:
       matrix:
         # Fan across all four server lines: band-7 (3.8.3, 3.10.4), band-8
-        # (3.11.5), and the dual-band 3.12 line. No python-driver pairing
-        # needed — Node reaches TypeDB only through the embedded Rust orm seam.
+        # (3.11.5), and both the 3.12.0 compatibility and 3.12.1 V2 acceptance
+        # patches. No python-driver pairing is needed because Node reaches
+        # TypeDB only through the embedded Rust orm seam.
         typedb-server:
           - "typedb/typedb:3.8.3"
           - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.0"
+          - "typedb/typedb:3.12.1"
 
     services:
       typedb:
@@ -910,6 +934,15 @@ jobs:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
         run: npm run test:integration
+
+      - name: Run generated projection live smoke
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          USE_DOCKER: false
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: 8000
+          TYPE_BRIDGE_NODE_INTG_DATABASE: type_bridge_projection_live
+        run: node --test --test-concurrency=1 tests/projection-integration/generated-package-live.test.ts
 
   # Version-gate cells: each cell boots a server and checks either a positive
   # connect path or the expected rejection class.
