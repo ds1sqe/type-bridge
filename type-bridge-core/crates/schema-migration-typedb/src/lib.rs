@@ -10,6 +10,7 @@
 mod control_schema;
 mod observation;
 mod provider;
+mod runner;
 mod store;
 mod wire;
 
@@ -22,6 +23,10 @@ pub use observation::{
     partition_typeql_export,
 };
 pub use provider::{TypeDbMigrationProvider, execution_capability_vocabulary};
+pub use runner::{
+    MigrationDirectoryApplyError, MigrationDirectoryApplyOutcome,
+    TypeDbMigrationRunner,
+};
 pub use store::{
     TypeDbMigrationStore, VerifiedMigrationCatalog,
     derived_journal_database_name, require_active_managed_fence,
