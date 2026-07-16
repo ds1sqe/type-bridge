@@ -226,3 +226,72 @@ fn manifest_destructive_policy_tightens_but_never_forces() {
         .expect_err("a standing destructive allowance is invalid");
     assert_eq!(forced.code(), WorkspaceConfigErrorCode::InvalidWorkspaceValue);
 }
+
+#[test]
+fn environments_parse_with_symbolic_credentials_and_optin_migrate() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let origin = || {
+        ConfigOrigin::new(directory.root(), "typebridge.yaml", "environment fixture")
+            .unwrap()
+    };
+    let source = SystemSchemaSourceService;
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let services = TypeBridgeConfigServices::new(&source, &secrets, &extensions);
+    let manifest = |environments: &str| {
+        format!(
+            "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  \
+             ownership: exclusive\n  managed-scope: example-schema\ncompatibility:\n  \
+             semantic-profile: typedb-3.12.1/v1\nmigrations:\n  directory: \
+             migrations/v2\n  app-label: example\nenvironments:\n{environments}"
+        )
+    };
+
+    let config = TypeBridgeConfigSpec::parse_yaml(
+        manifest(
+            "  development:\n    database: myapp_dev\n    uri: localhost:32786\n    \
+             http-port: '32787'\n    migrate: 'true'\n    credential:\n      \
+             username: env:TYPEDB_USERNAME\n      password: env:TYPEDB_PASSWORD\n",
+        ),
+        origin(),
+    )
+    .unwrap()
+    .resolve(&services)
+    .unwrap();
+    let environment = config.environment("development").expect("environment");
+    assert_eq!(environment.uri(), "localhost:32786");
+    assert_eq!(environment.database(), "myapp_dev");
+    assert_eq!(environment.http_port(), Some(32787));
+    assert!(environment.migrate());
+    assert_eq!(environment.username().environment_variable(), "TYPEDB_USERNAME");
+    assert_eq!(environment.password().environment_variable(), "TYPEDB_PASSWORD");
+    // Credential validation went through the injected secret service.
+    assert!(secrets.0.load(Ordering::Relaxed) >= 2);
+
+    // Committed credential literals are rejected by name.
+    let literal = TypeBridgeConfigSpec::parse_yaml(
+        manifest(
+            "  development:\n    database: myapp_dev\n    uri: localhost:32786\n    \
+             credential:\n      username: admin\n      password: env:TYPEDB_PASSWORD\n",
+        ),
+        origin(),
+    )
+    .unwrap()
+    .resolve(&services)
+    .expect_err("a committed credential literal is forbidden");
+    assert_eq!(literal.code(), WorkspaceConfigErrorCode::SecretLiteralRejected);
+
+    let vague = TypeBridgeConfigSpec::parse_yaml(
+        manifest(
+            "  development:\n    database: myapp_dev\n    uri: localhost:32786\n    \
+             migrate: 'yes'\n    credential:\n      username: env:U\n      \
+             password: env:P\n",
+        ),
+        origin(),
+    )
+    .unwrap()
+    .resolve(&services)
+    .expect_err("migrate admits only true or false");
+    assert_eq!(vague.code(), WorkspaceConfigErrorCode::InvalidWorkspaceValue);
+}

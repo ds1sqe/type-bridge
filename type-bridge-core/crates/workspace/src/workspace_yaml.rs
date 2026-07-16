@@ -17,8 +17,8 @@ use type_bridge_schema_migration::{
 use crate::{
     ExtensionRequirement, MigrationV2Directory, OutputDirectory, SchemaSetPath,
     SecretReference, SecretSlot, TypeBridgeConfig, TypeBridgeConfigServices,
-    WorkspaceConfigError, WorkspaceConfigErrorCode, WorkspaceRoot, confined_relative_path,
-    workspace_paths_overlap,
+    WorkspaceConfigError, WorkspaceConfigErrorCode, WorkspaceEnvironment,
+    WorkspaceRoot, confined_relative_path, workspace_paths_overlap,
 };
 
 /// The only accepted language-neutral workspace manifest discriminator.
@@ -114,10 +114,22 @@ struct ExtensionWire {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct EnvironmentWire {
+    database: SpannedString,
+    http_port: Option<SpannedString>,
+    migrate: Option<SpannedString>,
+    password: SpannedString,
+    requirements: Vec<SpannedString>,
+    uri: SpannedString,
+    username: SpannedString,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct WorkspaceWire {
     app_label: SpannedString,
     capabilities: Vec<SpannedString>,
     destructive: Option<SpannedString>,
+    environments: Vec<(SpannedString, EnvironmentWire)>,
     extensions: Vec<ExtensionWire>,
     managed_scope: SpannedString,
     migration_directory: SpannedString,
@@ -313,6 +325,68 @@ impl LocatedConfigSpec {
             .map_err(|error| sourced(error, &origin, &extension.handler.span))?;
             builder = builder.require_extension(requirement);
         }
+        for (name, wire_environment) in wire.environments {
+            let username = SecretReference::parse_symbolic(&wire_environment.username.value)
+                .map_err(|error| {
+                    sourced(error, &origin, &wire_environment.username.span)
+                })?;
+            let password = SecretReference::parse_symbolic(&wire_environment.password.value)
+                .map_err(|error| {
+                    sourced(error, &origin, &wire_environment.password.span)
+                })?;
+            let mut environment = WorkspaceEnvironment::new(
+                wire_environment.uri.value,
+                wire_environment.database.value,
+                username,
+                password,
+            )
+            .map_err(|error| sourced(error, &origin, &name.span))?;
+            if let Some(port) = wire_environment.http_port {
+                let parsed = port
+                    .value
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|value| value.to_string() == port.value);
+                let Some(parsed) = parsed else {
+                    return Err(WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+                        "environments.http-port must be a canonical u16",
+                    )
+                    .with_source(origin.diagnostic_name.clone(), port.span.clone()));
+                };
+                environment = environment.with_http_port(parsed);
+            }
+            if let Some(migrate) = wire_environment.migrate {
+                let value = match migrate.value.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        return Err(WorkspaceConfigError::new(
+                            WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+                            "environments.migrate admits only true or false",
+                        )
+                        .with_source(origin.diagnostic_name.clone(), migrate.span.clone()));
+                    }
+                };
+                environment = environment.with_migrate(value);
+            }
+            let requirements = wire_environment
+                .requirements
+                .into_iter()
+                .map(|capability| {
+                    CapabilityId::new(capability.value).map_err(|error| {
+                        contract_value(
+                            error,
+                            "environments.requirements",
+                            &capability.span,
+                            &origin,
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            environment = environment.require_capabilities(requirements);
+            builder = builder.environment(name.value, environment);
+        }
 
         let config = builder
             .build(services)
@@ -502,6 +576,7 @@ fn parse_wire(
     let mut bindings = None;
     let mut secrets = None;
     let mut extensions = None;
+    let mut environments = None;
     for entry in root.entries() {
         match entry.key().value() {
             "format" => format = Some(entry.value()),
@@ -511,6 +586,7 @@ fn parse_wire(
             "bindings" => bindings = Some(entry.value()),
             "secrets" => secrets = Some(entry.value()),
             "extensions" => extensions = Some(entry.value()),
+            "environments" => environments = Some(entry.value()),
             unknown => return Err(unknown_key("root", unknown, entry.key().span(), origin)),
         }
     }
@@ -571,11 +647,19 @@ fn parse_wire(
         })
         .transpose()?
         .unwrap_or_default();
+    let environments = environments
+        .map(|node| {
+            mapping(node, "environments", origin)
+                .and_then(|value| parse_environments(value, origin))
+        })
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(WorkspaceWire {
         app_label,
         capabilities,
         destructive,
+        environments,
         extensions,
         managed_scope,
         migration_directory,
@@ -711,6 +795,105 @@ fn parse_migrations(
         )?,
         destructive,
     ))
+}
+
+fn parse_environments(
+    value: &YamlMapping,
+    origin: &ConfigOrigin,
+) -> Result<Vec<(SpannedString, EnvironmentWire)>, WorkspaceConfigError> {
+    let mut environments = Vec::new();
+    for entry in value.entries() {
+        let name = SpannedString {
+            span: entry.key().span().clone(),
+            value: entry.key().value().to_owned(),
+        };
+        let body = mapping(entry.value(), "environments", origin)?;
+        environments.push((name, parse_environment(body, origin)?));
+    }
+    Ok(environments)
+}
+
+fn parse_environment(
+    value: &YamlMapping,
+    origin: &ConfigOrigin,
+) -> Result<EnvironmentWire, WorkspaceConfigError> {
+    let mut database = None;
+    let mut uri = None;
+    let mut http_port = None;
+    let mut migrate = None;
+    let mut credential = None;
+    let mut requirements = None;
+    for entry in value.entries() {
+        match entry.key().value() {
+            "database" => database = Some(entry.value()),
+            "uri" => uri = Some(entry.value()),
+            "http-port" => http_port = Some(entry.value()),
+            "migrate" => migrate = Some(entry.value()),
+            "credential" => credential = Some(entry.value()),
+            "requirements" => requirements = Some(entry.value()),
+            unknown => {
+                return Err(unknown_key(
+                    "environments",
+                    unknown,
+                    entry.key().span(),
+                    origin,
+                ));
+            }
+        }
+    }
+    let credential = mapping(
+        required(credential, "environments.credential", value, origin)?,
+        "environments.credential",
+        origin,
+    )?;
+    let mut username = None;
+    let mut password = None;
+    for entry in credential.entries() {
+        match entry.key().value() {
+            "username" => username = Some(entry.value()),
+            "password" => password = Some(entry.value()),
+            unknown => {
+                return Err(unknown_key(
+                    "environments.credential",
+                    unknown,
+                    entry.key().span(),
+                    origin,
+                ));
+            }
+        }
+    }
+    Ok(EnvironmentWire {
+        database: scalar(
+            required(database, "environments.database", value, origin)?,
+            "environments.database",
+            origin,
+        )?,
+        http_port: http_port
+            .map(|node| scalar(node, "environments.http-port", origin))
+            .transpose()?,
+        migrate: migrate
+            .map(|node| scalar(node, "environments.migrate", origin))
+            .transpose()?,
+        password: scalar(
+            required(password, "environments.credential.password", credential, origin)?,
+            "environments.credential.password",
+            origin,
+        )?,
+        requirements: requirements
+            .map(|node| string_sequence(node, "environments.requirements", origin))
+            .transpose()?
+            .unwrap_or_default(),
+        uri: scalar(
+            required(uri, "environments.uri", value, origin)?,
+            "environments.uri",
+            origin,
+        )?,
+        username: scalar(
+            required(username, "environments.credential.username", credential, origin)?,
+            "environments.credential.username",
+            origin,
+        )?,
+    })
 }
 
 fn parse_bindings(

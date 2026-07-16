@@ -565,12 +565,125 @@ impl ExtensionRequirement {
     }
 }
 
+/// One named, inert deployment environment.
+///
+/// Environments carry connection identity and policy only: credentials are
+/// symbolic environment references, never committed values, and production
+/// application stays opt-in through the explicit `migrate` flag.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceEnvironment {
+    database: String,
+    http_port: Option<u16>,
+    migrate: bool,
+    password: SecretReference,
+    requirements: CapabilitySet,
+    uri: String,
+    username: SecretReference,
+}
+
+impl WorkspaceEnvironment {
+    /// Construct one environment with mandatory connection identity.
+    pub fn new(
+        uri: impl Into<String>,
+        database: impl Into<String>,
+        username: SecretReference,
+        password: SecretReference,
+    ) -> Result<Self, WorkspaceConfigError> {
+        let uri = uri.into();
+        let database = database.into();
+        if uri.is_empty() || database.is_empty() {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+                "environment uri and database must be non-empty",
+            ));
+        }
+        Ok(Self {
+            database,
+            http_port: None,
+            migrate: false,
+            password,
+            requirements: CapabilitySet::new(),
+            uri,
+            username,
+        })
+    }
+
+    /// Select an explicit provider HTTP port.
+    #[must_use]
+    pub fn with_http_port(mut self, port: u16) -> Self {
+        self.http_port = Some(port);
+        self
+    }
+
+    /// Opt this environment into migration application.
+    #[must_use]
+    pub const fn with_migrate(mut self, migrate: bool) -> Self {
+        self.migrate = migrate;
+        self
+    }
+
+    /// Add environment-specific capability requirements.
+    #[must_use]
+    pub fn require_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = CapabilityId>,
+    ) -> Self {
+        for capability in capabilities {
+            self.requirements.insert(capability);
+        }
+        self
+    }
+
+    /// Return the provider address.
+    #[must_use]
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    /// Return the managed database name.
+    #[must_use]
+    pub fn database(&self) -> &str {
+        &self.database
+    }
+
+    /// Return the explicit provider HTTP port, when configured.
+    #[must_use]
+    pub const fn http_port(&self) -> Option<u16> {
+        self.http_port
+    }
+
+    /// Return the symbolic username reference.
+    #[must_use]
+    pub const fn username(&self) -> &SecretReference {
+        &self.username
+    }
+
+    /// Return the symbolic password reference.
+    #[must_use]
+    pub const fn password(&self) -> &SecretReference {
+        &self.password
+    }
+
+    /// Return whether migration application is opted in.
+    #[must_use]
+    pub const fn migrate(&self) -> bool {
+        self.migrate
+    }
+
+    /// Return environment-specific capability requirements.
+    #[must_use]
+    pub const fn requirements(&self) -> &CapabilitySet {
+        &self.requirements
+    }
+}
+
 /// An inert validated workspace policy produced only by its builder.
 ///
 /// This trusted type intentionally implements no deserialization contract.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypeBridgeConfig {
     app_label: MigrationAppLabel,
+    environments: BTreeMap<String, WorkspaceEnvironment>,
     extensions: BTreeSet<ExtensionRequirement>,
     managed_scope: ManagedScopeBinding,
     migration_policy: MigrationSafetyPolicy,
@@ -632,6 +745,18 @@ impl TypeBridgeConfig {
         &self.migration_v2_directory
     }
 
+    /// Return every named deployment environment.
+    #[must_use]
+    pub const fn environments(&self) -> &BTreeMap<String, WorkspaceEnvironment> {
+        &self.environments
+    }
+
+    /// Return one named deployment environment.
+    #[must_use]
+    pub fn environment(&self, name: &str) -> Option<&WorkspaceEnvironment> {
+        self.environments.get(name)
+    }
+
     /// Return the explicit apply-side migration safety policy.
     ///
     /// The policy can tighten the verifier's classification but never loosen
@@ -682,6 +807,7 @@ impl TypeBridgeConfig {
 /// consulting any provider.
 pub struct TypeBridgeConfigBuilder {
     app_label: Option<MigrationAppLabel>,
+    environments: Vec<(String, WorkspaceEnvironment)>,
     duplicate_required_fields: BTreeSet<&'static str>,
     extensions: Vec<ExtensionRequirement>,
     managed_scope_id: Option<ManagedScopeId>,
@@ -699,6 +825,7 @@ impl TypeBridgeConfigBuilder {
     fn new(workspace_root: WorkspaceRoot) -> Self {
         Self {
             app_label: None,
+            environments: Vec::new(),
             duplicate_required_fields: BTreeSet::new(),
             extensions: Vec::new(),
             managed_scope_id: None,
@@ -826,6 +953,17 @@ impl TypeBridgeConfigBuilder {
         self
     }
 
+    /// Add one named deployment environment.
+    #[must_use]
+    pub fn environment(
+        mut self,
+        name: impl Into<String>,
+        environment: WorkspaceEnvironment,
+    ) -> Self {
+        self.environments.push((name.into(), environment));
+        self
+    }
+
     /// Add one retained symbolic secret reference.
     #[must_use]
     pub fn secret(mut self, slot: SecretSlot, reference: SecretReference) -> Self {
@@ -946,6 +1084,39 @@ impl TypeBridgeConfigBuilder {
             }
         }
 
+        let mut environments = BTreeMap::new();
+        for (name, environment) in self.environments {
+            if name.is_empty()
+                || name.len() > MAX_SYMBOLIC_ID_BYTES
+                || !name.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'-' | b'_')
+                })
+            {
+                return Err(WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::InvalidSymbolicIdentifier,
+                    "environment names must be bounded lowercase identifiers",
+                )
+                .with_detail(name));
+            }
+            for reference in [environment.username(), environment.password()] {
+                services.secrets.validate_reference(reference).map_err(|error| {
+                    WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::SecretReferenceRejected,
+                        "local secret-reference service rejected an environment credential",
+                    )
+                    .with_detail(error.code())
+                })?;
+            }
+            if environments.insert(name, environment).is_some() {
+                return Err(WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::DuplicateRequiredField,
+                    "environment name is configured more than once",
+                ));
+            }
+        }
+
         let mut secret_references = BTreeMap::new();
         for (slot, reference) in self.secrets {
             if secret_references.insert(slot, reference).is_some() {
@@ -999,6 +1170,7 @@ impl TypeBridgeConfigBuilder {
 
         Ok(TypeBridgeConfig {
             app_label,
+            environments,
             extensions,
             managed_scope,
             migration_policy: self
