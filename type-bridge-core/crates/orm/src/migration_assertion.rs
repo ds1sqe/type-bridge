@@ -205,7 +205,7 @@ pub async fn execute_migration_assertion(
     execute_with_provider(&mut provider, validated, context).await
 }
 
-trait AssertionProviderCall: Send {
+pub(crate) trait AssertionProviderCall: Send {
     fn query_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
@@ -214,8 +214,8 @@ trait AssertionProviderCall: Send {
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>>;
 }
 
-struct TransactionAssertionProvider<'a, T: ?Sized> {
-    transaction: &'a mut T,
+pub(crate) struct TransactionAssertionProvider<'a, T: ?Sized> {
+    pub(crate) transaction: &'a mut T,
 }
 
 impl<T: TransactionOps + ?Sized> AssertionProviderCall for TransactionAssertionProvider<'_, T> {
@@ -636,7 +636,7 @@ fn assertion_evidence_shape(
         .collect()
 }
 
-fn string_field<'a>(
+pub(crate) fn string_field<'a>(
     object: &'a Map<String, Value>,
     field: &'static str,
     binding: &QueryVariable,
@@ -677,7 +677,7 @@ fn reject_unexpected_concept_fields(
     .with_detail("unexpected_fields", unexpected))
 }
 
-fn provider_value_type(value: &str) -> Option<ValueTypeTag> {
+pub(crate) fn provider_value_type(value: &str) -> Option<ValueTypeTag> {
     match value {
         "string" => Some(ValueTypeTag::String),
         "integer" => Some(ValueTypeTag::Long),
@@ -692,7 +692,7 @@ fn provider_value_type(value: &str) -> Option<ValueTypeTag> {
     }
 }
 
-fn provider_concept_kind(value: &str) -> Option<TypeKind> {
+pub(crate) fn provider_concept_kind(value: &str) -> Option<TypeKind> {
     match value {
         "entity" | "Entity" => Some(TypeKind::Entity),
         "relation" | "Relation" => Some(TypeKind::Relation),
@@ -701,7 +701,7 @@ fn provider_concept_kind(value: &str) -> Option<TypeKind> {
     }
 }
 
-fn parse_provider_value(value: &Value, value_type: ValueTypeTag) -> Result<CanonicalValue, Diagnostic> {
+pub(crate) fn parse_provider_value(value: &Value, value_type: ValueTypeTag) -> Result<CanonicalValue, Diagnostic> {
     match value_type {
         ValueTypeTag::String => value
             .as_str()

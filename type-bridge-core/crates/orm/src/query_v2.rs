@@ -323,3 +323,611 @@ pub fn output_columns(plan: &QueryPlan) -> &[BindingId] {
     let QueryOutput::Rows { columns } = plan.output();
     columns
 }
+
+/// One typed, evidence-validated output value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum QueryRowValue {
+    /// An entity or relation reference: exact runtime type plus identity.
+    Thing {
+        /// The validated runtime type.
+        type_id: type_bridge_contract::id::TypeId,
+        /// The provider instance identity.
+        iid: String,
+    },
+    /// An attribute instance with its parsed canonical value.
+    Attribute {
+        /// The validated runtime attribute type.
+        type_id: type_bridge_contract::id::TypeId,
+        /// The exact typed scalar value.
+        value: type_bridge_contract::value::CanonicalValue,
+    },
+}
+
+/// One evidence-validated output row, positional by output column.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryResultRow {
+    values: Vec<QueryRowValue>,
+}
+
+impl QueryResultRow {
+    /// Return positional typed values in output-column order.
+    #[must_use]
+    pub fn values(&self) -> &[QueryRowValue] {
+        &self.values
+    }
+}
+
+/// The validated terminal result of one executed invocation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum QueryV2Outcome {
+    /// Evidence-validated projected rows in provider order.
+    Rows(Vec<QueryResultRow>),
+    /// The exact number of returned rows.
+    Count(u64),
+    /// Whether at least one row exists.
+    Exists(bool),
+}
+
+/// Failure executing one lowered invocation.
+#[derive(Debug, thiserror::Error)]
+pub enum QueryV2ExecutionError {
+    /// The provider call failed.
+    #[error("query execution provider call failed: {0}")]
+    Provider(crate::error::OrmError),
+    /// Lowering, preflight, or result-evidence validation failed.
+    #[error("query execution validation failed: {0}")]
+    Validation(Diagnostic),
+}
+
+/// Execute one validated invocation through an open read transaction.
+///
+/// Rows are streamed under the caller's explicit bounded limits and each
+/// provider row is evidence-validated against the derived row schema before
+/// projection; count and exists reuse the same validated stream and are
+/// decided in Rust, mirroring the released V1 executor discipline.
+pub async fn execute_validated_query(
+    transaction: &mut crate::session::transaction::Transaction,
+    validated: &ValidatedQuery,
+    invocation: &QueryInvocation,
+    limits: crate::session::backend::BoundedAnswerLimits,
+) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
+    let transaction = transaction
+        .provider_mut()
+        .map_err(QueryV2ExecutionError::Provider)?;
+    let mut provider =
+        crate::migration_assertion::TransactionAssertionProvider { transaction };
+    execute_with_provider(&mut provider, validated, invocation, limits).await
+}
+
+pub(crate) async fn execute_with_provider<
+    P: crate::migration_assertion::AssertionProviderCall + ?Sized,
+>(
+    provider: &mut P,
+    validated: &ValidatedQuery,
+    invocation: &QueryInvocation,
+    limits: crate::session::backend::BoundedAnswerLimits,
+) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
+    let lowered = lower_validated_query(validated, invocation)
+        .map_err(QueryV2ExecutionError::Validation)?;
+
+    let exists_probe = matches!(lowered.operation(), QueryOperation::Exists);
+    let mut limits = limits;
+    if exists_probe {
+        limits.max_items = 1;
+    }
+
+    let mut rows: Vec<QueryResultRow> = Vec::new();
+    let mut validation: Option<Diagnostic> = None;
+    let mut consumer = |item| {
+        let row = match item {
+            crate::session::backend::AnswerItem::Row(row) => row,
+            crate::session::backend::AnswerItem::Document(_) => {
+                validation = Some(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_v2_result_not_row",
+                    "provider returned a document for a selected-row query",
+                ));
+                return Ok(crate::session::backend::AnswerControl::Stop);
+            }
+        };
+        match validate_result_row(&row, validated) {
+            Ok(values) => {
+                rows.push(QueryResultRow { values });
+                Ok(if exists_probe {
+                    crate::session::backend::AnswerControl::Stop
+                } else {
+                    crate::session::backend::AnswerControl::Continue
+                })
+            }
+            Err(diagnostic) => {
+                validation = Some(diagnostic);
+                Ok(crate::session::backend::AnswerControl::Stop)
+            }
+        }
+    };
+    provider
+        .query_bounded(lowered.typeql(), limits, &mut consumer)
+        .await
+        .map_err(QueryV2ExecutionError::Provider)?;
+    drop(consumer);
+    if let Some(diagnostic) = validation {
+        return Err(QueryV2ExecutionError::Validation(diagnostic));
+    }
+
+    Ok(match lowered.operation() {
+        QueryOperation::Rows => QueryV2Outcome::Rows(rows),
+        QueryOperation::Count => QueryV2Outcome::Count(rows.len() as u64),
+        QueryOperation::Exists => QueryV2Outcome::Exists(!rows.is_empty()),
+    })
+}
+
+/// Validate one provider row and project it to typed output values.
+fn validate_result_row(
+    row: &serde_json::Value,
+    validated: &ValidatedQuery,
+) -> Result<Vec<QueryRowValue>, Diagnostic> {
+    use type_bridge_contract::id::{TypeId, TypeKind};
+
+    let object = row.as_object().ok_or_else(|| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "query_v2_result_row_malformed",
+            "provider row must be a JSON object keyed by selected variables",
+        )
+    })?;
+    let visible = visible_variables(validated.plan());
+    if object.len() != visible.len()
+        || visible.iter().any(|name| !object.contains_key(*name))
+    {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "query_v2_result_column_mismatch",
+            "provider row columns do not exactly match the visible row environment",
+        ));
+    }
+
+    let mut values = Vec::with_capacity(validated.row_schema().columns().len());
+    for column in validated.row_schema().columns() {
+        let domain = column.domain();
+        let concept = object
+            .get(column.variable().as_str())
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_v2_result_concept_malformed",
+                    "output column is not a provider concept object",
+                )
+            })?;
+        let category = crate::migration_assertion::string_field(
+            concept,
+            "category",
+            column.variable(),
+        )?;
+        let label = crate::migration_assertion::string_field(
+            concept,
+            "label",
+            column.variable(),
+        )?;
+        let kind = crate::migration_assertion::provider_concept_kind(category)
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "query_v2_result_type_mismatch",
+                    "provider concept category is outside the validated domain",
+                )
+            })?;
+        let type_id = TypeId::new(kind, label).map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "query_v2_result_concept_malformed",
+                "provider concept label is not a canonical type identity",
+            )
+        })?;
+        if !domain.type_ids().contains(&type_id) {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "query_v2_result_type_mismatch",
+                "provider concept type is outside the validated domain",
+            ));
+        }
+        values.push(match (kind, domain.value_type()) {
+            (TypeKind::Entity | TypeKind::Relation, None) => {
+                let iid = crate::migration_assertion::string_field(
+                    concept,
+                    "iid",
+                    column.variable(),
+                )?;
+                if iid.is_empty() {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_v2_result_concept_malformed",
+                        "thing concept carries an empty instance identity",
+                    ));
+                }
+                QueryRowValue::Thing {
+                    type_id,
+                    iid: iid.to_owned(),
+                }
+            }
+            (TypeKind::Attribute, Some(expected)) => {
+                let actual = crate::migration_assertion::string_field(
+                    concept,
+                    "value_type",
+                    column.variable(),
+                )?;
+                if crate::migration_assertion::provider_value_type(actual)
+                    != Some(expected)
+                {
+                    return Err(failure(
+                        DiagnosticCategory::Integrity,
+                        "query_v2_result_type_mismatch",
+                        "provider value type differs from the validated scalar domain",
+                    ));
+                }
+                let value = crate::migration_assertion::parse_provider_value(
+                    concept.get("value").ok_or_else(|| {
+                        failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_v2_result_concept_malformed",
+                            "attribute concept carries no value",
+                        )
+                    })?,
+                    expected,
+                )?;
+                QueryRowValue::Attribute { type_id, value }
+            }
+            _ => {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "query_v2_result_type_mismatch",
+                    "provider concept shape disagrees with the validated domain",
+                ));
+            }
+        });
+    }
+    Ok(values)
+}
+
+/// Return the visible variable names after the plan's select stage.
+fn visible_variables(plan: &QueryPlan) -> Vec<&str> {
+    for stage in plan.pipeline() {
+        if let ReadStage::Select { bindings } = stage {
+            return bindings
+                .iter()
+                .filter_map(|binding| {
+                    plan.bindings()
+                        .get(usize::from(binding.get()))
+                        .map(|binding| binding.variable().as_str())
+                })
+                .collect();
+        }
+    }
+    plan.bindings()
+        .iter()
+        .map(|binding| binding.variable().as_str())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use type_bridge_contract::capability::CapabilitySet;
+    use type_bridge_contract::codec::FormatVersion;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+    use type_bridge_contract::limits::StructuralLimits;
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::migration_assertion::{
+        AssertionBinding, QueryVariable, ValueComparator,
+    };
+    use type_bridge_contract::query_plan::{
+        InputColumn, InputColumnId, QueryOutput as PlanOutput,
+    };
+    use type_bridge_contract::schema::{
+        DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan,
+        SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    };
+    use type_bridge_contract::value::{
+        CanonicalString, CanonicalValue, ValueTypeTag,
+    };
+    use type_bridge_query::{
+        MigrationAssertionValidationContext, validate_query_plan,
+    };
+    use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
+
+    use super::*;
+    use crate::migration_assertion::AssertionProviderCall;
+    use crate::session::backend::{
+        AnswerCancellation, AnswerConsumer, AnswerItem, BoundedAnswerLimits,
+        BoundedAnswerStats, BoxFuture,
+    };
+
+    struct ScriptedProvider {
+        rows: Vec<serde_json::Value>,
+    }
+
+    impl AssertionProviderCall for ScriptedProvider {
+        fn query_bounded<'a>(
+            &'a mut self,
+            _typeql: &'a str,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, crate::error::OrmError>> {
+            Box::pin(async move {
+                let mut processed = 0u64;
+                for row in &self.rows {
+                    if processed >= limits.max_items {
+                        break;
+                    }
+                    processed += 1;
+                    if consumer.accept(AnswerItem::Row(row.clone()))?
+                        == crate::session::backend::AnswerControl::Stop
+                    {
+                        break;
+                    }
+                }
+                Ok(BoundedAnswerStats {
+                    processed_items: processed,
+                    response_bytes: 0,
+                    stopped_early: false,
+                })
+            })
+        }
+    }
+
+    fn binding_id(id: u16) -> BindingId {
+        BindingId::new(id).expect("binding id")
+    }
+
+    fn fixture() -> (ValidatedQuery, QueryPlan) {
+        let person = TypeId::new(TypeKind::Entity, "person").expect("type");
+        let name = AttributeId::new("name").expect("attribute");
+        let facts = vec![
+            SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
+            SchemaFact::Type(
+                TypeFact::new(
+                    TypeId::new(TypeKind::Attribute, "name").expect("type"),
+                )
+                .expect("type fact"),
+            ),
+            SchemaFact::Value(ValueFact::new(
+                ValueFactId::new(name.clone()),
+                ValueTypeTag::String,
+            )),
+            SchemaFact::Owns(OwnsFact::new(
+                OwnsFactId::new(person.clone(), name).expect("owns id"),
+            )),
+        ];
+        let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+            let byte = u64::try_from(index).expect("byte");
+            let line = u32::try_from(index + 1).expect("line");
+            SourcedSchemaFact::new(
+                fact,
+                SourceSpan::new(
+                    DocumentId::new("query-v2-executor-fixture").expect("document"),
+                    byte,
+                    byte + 1,
+                    line,
+                    1,
+                    line,
+                    2,
+                )
+                .expect("span"),
+            )
+        });
+        let declared = DeclaredSchema::from_facts(
+            FormatVersion::V1,
+            CapabilitySet::new(),
+            sourced,
+        )
+        .expect("declared schema");
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("query-v2-executor-scope").expect("scope"),
+            profile.clone(),
+            CapabilitySet::new(),
+        );
+        let managed =
+            managed_schema_state(&declared, &context).expect("managed state");
+        let resolved = resolve(&declared, &profile).expect("resolved schema");
+
+        let plan = QueryPlan::new(
+            vec![
+                AssertionBinding::new(
+                    binding_id(0),
+                    QueryVariable::new("person").expect("variable"),
+                ),
+                AssertionBinding::new(
+                    binding_id(1),
+                    QueryVariable::new("name").expect("variable"),
+                ),
+            ],
+            vec![InputColumn::new(
+                InputColumnId::new(0),
+                QueryVariable::new("minimum_name").expect("input name"),
+                ValueTypeTag::String,
+                false,
+            )],
+            vec![ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: false,
+                        type_id: TypeId::new(TypeKind::Entity, "person")
+                            .expect("type"),
+                    },
+                    QueryPattern::Has {
+                        attribute: binding_id(1),
+                        attribute_id: AttributeId::new("name").expect("attribute"),
+                        owner: binding_id(0),
+                    },
+                    QueryPattern::Value {
+                        comparator: ValueComparator::GreaterOrEqual,
+                        left: QueryOperand::Binding { binding: binding_id(1) },
+                        right: QueryOperand::Input {
+                            column: InputColumnId::new(0),
+                        },
+                    },
+                ],
+            }],
+            PlanOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            managed.managed_semantic_schema().clone(),
+        )
+        .expect("query plan");
+        let validation_context =
+            MigrationAssertionValidationContext::new(&resolved, &managed);
+        let validated =
+            validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+                .expect("validated query");
+        (validated, plan)
+    }
+
+    fn invocation(plan: &QueryPlan, operation: QueryOperation) -> QueryInvocation {
+        QueryInvocation::new(
+            plan,
+            operation,
+            vec![InputRow::new(vec![Some(CanonicalValue::String(
+                CanonicalString::new("a").expect("canonical string"),
+            ))])],
+        )
+        .expect("invocation")
+    }
+
+    fn person_row(iid: &str, name: &str) -> serde_json::Value {
+        json!({
+            "person": {"category": "entity", "label": "person", "iid": iid},
+            "name": {
+                "category": "attribute",
+                "label": "name",
+                "value": name,
+                "value_type": "string"
+            },
+        })
+    }
+
+    fn limits() -> BoundedAnswerLimits {
+        BoundedAnswerLimits {
+            max_items: 100,
+            max_bytes: 1 << 20,
+            deadline: None,
+            cancellation: AnswerCancellation::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn rows_count_and_exists_share_one_validated_stream() {
+        let (validated, plan) = fixture();
+        let mut provider = ScriptedProvider {
+            rows: vec![person_row("0x1", "ada"), person_row("0x2", "grace")],
+        };
+        let outcome = execute_with_provider(
+            &mut provider,
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            limits(),
+        )
+        .await
+        .expect("rows outcome");
+        let QueryV2Outcome::Rows(rows) = outcome else {
+            panic!("rows operation returns rows");
+        };
+        assert_eq!(rows.len(), 2);
+        let QueryRowValue::Thing { type_id, iid } = &rows[0].values()[0] else {
+            panic!("first column is the person reference");
+        };
+        assert_eq!(type_id.label().as_str(), "person");
+        assert_eq!(iid, "0x1");
+        let QueryRowValue::Attribute { value, .. } = &rows[1].values()[1] else {
+            panic!("second column is the name attribute");
+        };
+        assert_eq!(
+            value,
+            &CanonicalValue::String(
+                CanonicalString::new("grace").expect("canonical string")
+            ),
+        );
+
+        let outcome = execute_with_provider(
+            &mut provider,
+            &validated,
+            &invocation(&plan, QueryOperation::Count),
+            limits(),
+        )
+        .await
+        .expect("count outcome");
+        assert_eq!(outcome, QueryV2Outcome::Count(2));
+
+        let outcome = execute_with_provider(
+            &mut provider,
+            &validated,
+            &invocation(&plan, QueryOperation::Exists),
+            limits(),
+        )
+        .await
+        .expect("exists outcome");
+        assert_eq!(outcome, QueryV2Outcome::Exists(true));
+
+        let mut empty = ScriptedProvider { rows: Vec::new() };
+        let outcome = execute_with_provider(
+            &mut empty,
+            &validated,
+            &invocation(&plan, QueryOperation::Exists),
+            limits(),
+        )
+        .await
+        .expect("empty exists outcome");
+        assert_eq!(outcome, QueryV2Outcome::Exists(false));
+    }
+
+    #[tokio::test]
+    async fn forged_and_malformed_provider_rows_fail_closed() {
+        let (validated, plan) = fixture();
+        let mut forged = ScriptedProvider {
+            rows: vec![json!({
+                "person": {"category": "entity", "label": "company", "iid": "0x1"},
+                "name": {
+                    "category": "attribute",
+                    "label": "name",
+                    "value": "ada",
+                    "value_type": "string"
+                },
+            })],
+        };
+        let error = execute_with_provider(
+            &mut forged,
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            limits(),
+        )
+        .await
+        .expect_err("a foreign concept type is not evidence");
+        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+            panic!("forged evidence must surface as validation failure");
+        };
+        assert_eq!(diagnostic.code().as_str(), "query_v2_result_type_mismatch");
+
+        let mut sparse = ScriptedProvider {
+            rows: vec![json!({
+                "person": {"category": "entity", "label": "person", "iid": "0x1"},
+            })],
+        };
+        let error = execute_with_provider(
+            &mut sparse,
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            limits(),
+        )
+        .await
+        .expect_err("a sparse row is not evidence");
+        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+            panic!("sparse evidence must surface as validation failure");
+        };
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "query_v2_result_column_mismatch"
+        );
+    }
+}
