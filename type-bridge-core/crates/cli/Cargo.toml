@@ -21,3 +21,7 @@ type-bridge-workspace = { path = "../workspace" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"

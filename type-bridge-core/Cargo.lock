@@ -2617,6 +2617,7 @@ name = "type-bridge-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "tempfile",
  "tokio",
  "type-bridge-contract",
  "type-bridge-orm",

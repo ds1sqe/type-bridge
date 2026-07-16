@@ -103,6 +103,7 @@ nav:
     - TypeScript Typed Surface: guide/typescript.md
     - Functions: guide/functions.md
     - Validation: guide/validation.md
+    - Upgrading to 2.0: guide/upgrade-v2.md
     - V2 Deprecations: guide/v2-deprecations.md
     - Logging: guide/logging.md
   - API Reference: reference/
