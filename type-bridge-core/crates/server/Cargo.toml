@@ -54,6 +54,10 @@ clap = { version = "4", features = ["derive"] }
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 
+[[example]]
+name = "v2_smoke_server"
+required-features = ["v2-query"]
+
 [dev-dependencies]
 type-bridge-server = { path = ".", features = ["test-helpers", "axum-transport", "v2-query"] }
 tempfile = "3"
