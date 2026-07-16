@@ -3,7 +3,7 @@ define
 entity person;
 ## type-undefine
 undefine
-entity person;
+person;
 ## sub-define
 define
 employee sub person;

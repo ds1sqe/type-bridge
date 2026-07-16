@@ -667,11 +667,9 @@ fn render_undefinition(
     catalog: &SchemaFactCatalog,
 ) -> Result<String, RenderFailure> {
     match fact {
-        SchemaFact::Type(fact) => Ok(format!(
-            "{} {};",
-            type_kind(fact.id().kind()),
-            fact.id().label().as_str()
-        )),
+        // Type deletion takes the bare label: the kind keyword belongs to
+        // the define grammar only.
+        SchemaFact::Type(fact) => Ok(format!("{};", fact.id().label().as_str())),
         SchemaFact::Sub(fact) => Ok(format!(
             "sub {} from {};",
             fact.id().supertype().label().as_str(),
