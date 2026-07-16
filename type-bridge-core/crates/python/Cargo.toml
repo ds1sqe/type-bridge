@@ -14,10 +14,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "1.5.11" }
-type-bridge-contract = { path = "../contract", version = "0.1.0" }
+type-bridge-contract = { path = "../contract", version = "1.5.11" }
 type-bridge-migration = { path = "../migration", version = "1.5.11" }
 type-bridge-orm = { path = "../orm", version = "1.5.11" }
-type-bridge-schema-compat = { path = "../schema-compat", version = "0.1.0" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "1.5.11" }
 type-bridge-toml-transpiler = { path = "../toml-transpiler", version = "1.5.11" }
 # Keep ordinary Rust test binaries linked to libpython. Maturin enables
 # `pyo3/extension-module` only for extension builds (see ../../pyproject.toml).
@@ -28,4 +28,4 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [dev-dependencies]
-type-bridge-schema = { path = "../schema", version = "0.1.0" }
+type-bridge-schema = { path = "../schema", version = "1.5.11" }

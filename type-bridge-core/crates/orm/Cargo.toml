@@ -25,9 +25,9 @@ derive = ["dep:type-bridge-orm-derive"]
 integration-tests = ["derive", "band7", "band8", "band9"]
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "0.1.0" }
-type-bridge-query = { path = "../query", version = "0.1.0" }
-type-bridge-schema = { path = "../schema", version = "0.1.0" }
+type-bridge-contract = { path = "../contract", version = "1.5.11" }
+type-bridge-query = { path = "../query", version = "1.5.11" }
+type-bridge-schema = { path = "../schema", version = "1.5.11" }
 type-bridge-core-lib = { path = "../core", version = "1.5.11" }
 type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "1.5.11", default-features = false, optional = true }
 tokio = { version = "1", features = ["full"] }

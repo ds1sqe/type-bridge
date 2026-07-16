@@ -63,8 +63,17 @@ def test_repository_release_identity_is_complete() -> None:
     assert report["version"] == "1.5.11"
     assert report["published_crates"] == list(validator.PUBLISHED_CRATES)
     assert report["unpublished_crates"] == [
+        "type-bridge-cli",
+        "type-bridge-contract",
         "type-bridge-core",
         "type-bridge-node",
+        "type-bridge-query",
+        "type-bridge-schema",
+        "type-bridge-schema-codegen",
+        "type-bridge-schema-compat",
+        "type-bridge-schema-migration",
+        "type-bridge-schema-migration-typedb",
+        "type-bridge-workspace",
     ]
     cargo_packages = report["cargo_packages"]
     assert isinstance(cargo_packages, dict)
@@ -73,17 +82,26 @@ def test_repository_release_identity_is_complete() -> None:
         for package, version in cargo_packages.items()
     )
     assert set(cargo_packages) == {
+        "type-bridge-cli",
+        "type-bridge-contract",
         "type-bridge-core",
         "type-bridge-core-lib",
         "type-bridge-migration",
         "type-bridge-node",
         "type-bridge-orm",
         "type-bridge-orm-derive",
+        "type-bridge-query",
+        "type-bridge-schema",
+        "type-bridge-schema-codegen",
+        "type-bridge-schema-compat",
+        "type-bridge-schema-migration",
+        "type-bridge-schema-migration-typedb",
         "type-bridge-server",
         "type-bridge-toml-transpiler",
         "type-bridge-typedb-driver-b7",
         "type-bridge-typedb-driver-b9",
         "type-bridge-typedb-protocol-b7",
+        "type-bridge-workspace",
         "type-bridge-typedb-protocol-b9",
         "type-bridge-typedb-runtime",
     }

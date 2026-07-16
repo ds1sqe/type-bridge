@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-schema-migration"
-version = "0.1.0"
+version = "1.5.10"
 edition = "2024"
 publish = false
 

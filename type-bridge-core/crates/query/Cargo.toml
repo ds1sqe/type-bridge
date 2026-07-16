@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-query"
-version = "0.1.0"
+version = "1.5.10"
 edition = "2024"
 publish = false
 license.workspace = true
@@ -8,8 +8,8 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "0.1.0" }
-type-bridge-schema = { path = "../schema", version = "0.1.0" }
+type-bridge-contract = { path = "../contract", version = "1.5.10" }
+type-bridge-schema = { path = "../schema", version = "1.5.10" }
 
 [lints]
 workspace = true

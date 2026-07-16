@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-schema-compat"
-version = "0.1.0"
+version = "1.5.10"
 edition = "2024"
 publish = false
 license.workspace = true
@@ -9,9 +9,9 @@ authors.workspace = true
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-type-bridge-contract = { path = "../contract", version = "0.1.0" }
+type-bridge-contract = { path = "../contract", version = "1.5.10" }
 type-bridge-core-lib = { path = "../core", version = "1.5.9" }
-type-bridge-schema = { path = "../schema", version = "0.1.0" }
+type-bridge-schema = { path = "../schema", version = "1.5.10" }
 type-bridge-toml-transpiler = { path = "../toml-transpiler", version = "1.5.9" }
 typeql = "=3.12.0"
 
