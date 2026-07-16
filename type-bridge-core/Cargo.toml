@@ -9,6 +9,7 @@ members = [
     "crates/schema-codegen",
     "crates/schema-compat",
     "crates/workspace",
+    "crates/cli",
     "crates/core",
     "crates/migration",
     "crates/python",

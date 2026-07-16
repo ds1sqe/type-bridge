@@ -1,0 +1,20 @@
+[package]
+name = "type-bridge-cli"
+description = "TypeBridge V2 workspace command-line interface"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "type-bridge"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+type-bridge-schema = { path = "../schema" }
+type-bridge-schema-migration = { path = "../schema-migration" }
+type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb" }
+type-bridge-workspace = { path = "../workspace" }
+
+[lints]
+workspace = true
