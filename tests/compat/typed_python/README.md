@@ -10,8 +10,8 @@ third-party runtime dependencies and an explicit Pyright executable:
 
 ```bash
 python scripts/ci/run_typed_python_artifact.py \
-  --root-wheel /artifacts/type_bridge-1.5.9-py3-none-any.whl \
-  --core-wheel /artifacts/type_bridge_core-1.5.9-*.whl \
+  --root-wheel /artifacts/type_bridge-1.5.10-py3-none-any.whl \
+  --core-wheel /artifacts/type_bridge_core-1.5.10-*.whl \
   --python /prepared/venv/bin/python \
   --pyright /prepared/venv/bin/pyright
 ```

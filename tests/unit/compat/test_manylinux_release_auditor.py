@@ -29,11 +29,11 @@ def load_module(name: str, path: Path) -> ModuleType:
 auditor = load_module("audit_manylinux_release_wheels", AUDITOR_PATH)
 
 CORE_WHEELS = {
-    "linux-x86_64": "type_bridge_core-1.5.9-cp312-abi3-manylinux_2_17_x86_64.whl",
-    "linux-aarch64": "type_bridge_core-1.5.9-cp312-abi3-manylinux_2_17_aarch64.whl",
-    "macos-x86_64": "type_bridge_core-1.5.9-cp312-abi3-macosx_11_0_x86_64.whl",
-    "macos-arm64": "type_bridge_core-1.5.9-cp312-abi3-macosx_11_0_arm64.whl",
-    "windows-x86_64": "type_bridge_core-1.5.9-cp312-abi3-win_amd64.whl",
+    "linux-x86_64": "type_bridge_core-1.5.10-cp312-abi3-manylinux_2_17_x86_64.whl",
+    "linux-aarch64": "type_bridge_core-1.5.10-cp312-abi3-manylinux_2_17_aarch64.whl",
+    "macos-x86_64": "type_bridge_core-1.5.10-cp312-abi3-macosx_11_0_x86_64.whl",
+    "macos-arm64": "type_bridge_core-1.5.10-cp312-abi3-macosx_11_0_arm64.whl",
+    "windows-x86_64": "type_bridge_core-1.5.10-cp312-abi3-win_amd64.whl",
 }
 
 

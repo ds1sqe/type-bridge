@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-node"
-version = "1.5.9"
+version = "1.5.10"
 edition = "2024"
 description = "NAPI bindings exposing the type-bridge Rust ORM runtime to Node.js"
 license.workspace = true
@@ -13,8 +13,8 @@ name = "type_bridge_node"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "1.5.9" }
-type-bridge-orm = { path = "../orm", version = "1.5.9", default-features = false, features = ["band7", "band8", "band9"] }
+type-bridge-core-lib = { path = "../core", version = "1.5.10" }
+type-bridge-orm = { path = "../orm", version = "1.5.10", default-features = false, features = ["band7", "band8", "band9"] }
 napi = { version = "2", features = ["napi6"] }
 napi-derive = "2"
 serde = { version = "1.0", features = ["derive"] }

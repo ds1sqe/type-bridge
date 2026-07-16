@@ -29,7 +29,7 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 validator = load_module("validate_node_release_package", VALIDATOR_PATH)
 PACKAGE_NAME = "@type-bridge/node"
-VERSION = "1.5.9"
+VERSION = "1.5.10"
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -88,7 +88,7 @@ def write_tarball(
 def release_fixture(tmp_path: Path) -> tuple[Path, Path]:
     """Return matching repository metadata and npm tarball paths."""
     repository = tmp_path / "package.json"
-    artifact = tmp_path / "type-bridge-node-1.5.9.tgz"
+    artifact = tmp_path / "type-bridge-node-1.5.10.tgz"
     package = {"name": PACKAGE_NAME, "version": VERSION}
     write_json(repository, package)
     write_tarball(artifact, package)
@@ -173,8 +173,8 @@ def test_registry_integrity_rejects_mixed_matching_and_mismatching_tokens(
 
 def test_prerelease_version_is_rejected_before_latest_publication(tmp_path: Path) -> None:
     repository = tmp_path / "package.json"
-    artifact = tmp_path / "type-bridge-node-1.5.9-rc.1.tgz"
-    package = {"name": PACKAGE_NAME, "version": "1.5.9-rc.1"}
+    artifact = tmp_path / "type-bridge-node-1.5.10-rc.1.tgz"
+    package = {"name": PACKAGE_NAME, "version": "1.5.10-rc.1"}
     write_json(repository, package)
     write_tarball(artifact, package)
 
@@ -182,7 +182,7 @@ def test_prerelease_version_is_rejected_before_latest_publication(tmp_path: Path
         validator.validate_release_package(
             artifact=artifact,
             repository_package=repository,
-            tag="v1.5.9-rc.1",
+            tag="v1.5.10-rc.1",
         )
 
 

@@ -32,7 +32,7 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 
 validator = load_module("validate_python_release_artifacts", VALIDATOR_PATH)
-VERSION = "1.5.9"
+VERSION = "1.5.10"
 SPECS = validator.load_package_specs(ROOT, VERSION)
 CORE_PLATFORMS = {
     "linux-x86_64": "manylinux_2_17_x86_64",
@@ -490,9 +490,9 @@ def test_core_wheel_rejects_elf_newer_than_manylinux_policy(tmp_path: Path) -> N
     "extra_member",
     [
         "hostile/__init__.py",
-        "type_bridge-1.5.9.data/purelib/hostile.py",
-        "type_bridge-1.5.9.data/platlib/hostile.py",
-        "type_bridge-1.5.9.data/scripts/hostile",
+        "type_bridge-1.5.10.data/purelib/hostile.py",
+        "type_bridge-1.5.10.data/platlib/hostile.py",
+        "type_bridge-1.5.10.data/scripts/hostile",
     ],
 )
 def test_root_wheel_rejects_unexpected_install_payload(
