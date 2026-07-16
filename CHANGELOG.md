@@ -4,6 +4,18 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.10] - 2026-07-16
+
+### Bug Fixes
+
+- **Sub-type migration planning and apply (#190)** - Planning a migration
+  that adds an entity or relation with a parent no longer panics with
+  `no entry found for key`. Authored add operations now emit parents before
+  children and carry only declared capabilities, so the child's define step
+  keeps its `sub` clause without redeclaring inherited attributes or roles,
+  which TypeDB rejects at apply time. Verified against live TypeDB servers
+  from 3.8.3 through 3.12.1.
+
 ## [1.5.9] - 2026-07-15
 
 ### New Features
