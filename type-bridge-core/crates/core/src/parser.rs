@@ -755,6 +755,65 @@ fn parse_card_annotation(input: &mut &str) -> PResult<Cardinality> {
 // Function / Struct definition parsers
 // ---------------------------------------------------------------------------
 
+/// Remove `fun` and `struct` definitions from released schema text,
+/// keeping everything else byte-for-byte.
+///
+/// Definition extents are consumed by the same grammar the schema parser
+/// applies, so released spellings (dummy `return { 1 };` bodies, the
+/// `struct name, value field type;` form) strip exactly; a token that does
+/// not parse as its definition is kept untouched.
+pub fn strip_function_definitions(source: &str) -> String {
+    let mut output = String::new();
+    let mut rest = source;
+    while let Some((position, keyword)) = find_definition_token(rest) {
+        let mut cursor = &rest[position..];
+        let consumed = match keyword {
+            "fun" => parse_function_def(&mut cursor).is_ok(),
+            _ => parse_struct_def(&mut cursor).is_ok(),
+        };
+        if consumed {
+            output.push_str(&rest[..position]);
+            rest = cursor;
+        } else {
+            output.push_str(&rest[..position + keyword.len()]);
+            rest = &rest[position + keyword.len()..];
+        }
+    }
+    output.push_str(rest);
+    output
+}
+
+fn find_definition_token(source: &str) -> Option<(usize, &'static str)> {
+    let fun = find_keyword(source, "fun");
+    let structure = find_keyword(source, "struct");
+    match (fun, structure) {
+        (Some(fun), Some(structure)) if fun <= structure => Some((fun, "fun")),
+        (Some(_) | None, Some(structure)) => Some((structure, "struct")),
+        (Some(fun), None) => Some((fun, "fun")),
+        (None, None) => None,
+    }
+}
+
+fn find_keyword(source: &str, keyword: &str) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut start = 0;
+    while let Some(found) = source[start..].find(keyword) {
+        let position = start + found;
+        let before_ok = position == 0
+            || !(bytes[position - 1].is_ascii_alphanumeric()
+                || bytes[position - 1] == b'_'
+                || bytes[position - 1] == b'-');
+        let after = position + keyword.len();
+        let after_ok = after >= bytes.len()
+            || bytes[after].is_ascii_whitespace();
+        if before_ok && after_ok {
+            return Some(position);
+        }
+        start = position + keyword.len();
+    }
+    None
+}
+
 fn parse_function_def(input: &mut &str) -> PResult<FunctionType> {
     literal("fun").parse_next(input)?;
     ws_comments_required(input)?;

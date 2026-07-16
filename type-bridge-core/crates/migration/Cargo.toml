@@ -21,6 +21,7 @@ path = "src/bin/type_bridge_migration.rs"
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "1.5.11" }
+type-bridge-schema-compat = { path = "../schema-compat" }
 type-bridge-orm = { path = "../orm", version = "1.5.11", default-features = false, features = ["band7", "band8", "band9"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }

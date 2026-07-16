@@ -203,10 +203,84 @@ pub fn typeql_to_generated_descriptors(
     document: DocumentId,
     source: &str,
 ) -> Result<String, SchemaDiagnostics> {
-    let declared = crate::typeql_to_declared(document, source)?;
-    let descriptors = GeneratedDeclaredDescriptorSetV1::from_declared(&declared)?;
+    // The descriptor snapshot deliberately excludes functions, and released
+    // generator input carries opaque dummy function bodies the strict
+    // grammar rejects; strip them with the released parser's own extents.
+    let source =
+        type_bridge_core_lib::parser::strip_function_definitions(source);
+    // List capabilities sit outside the overlap grammar: pin the plain
+    // capability, record each list construct, and mark the snapshot
+    // open-world instead of failing the whole generation.
+    let (source, unsupported) = strip_list_capabilities(&source);
+    let declared = crate::typeql_to_declared(document, &source)?;
+    let mut descriptors = GeneratedDeclaredDescriptorSetV1::from_declared(&declared)?;
+    if !unsupported.is_empty() {
+        descriptors.closed_world = false;
+        descriptors.unsupported_constructs = unsupported;
+    }
     let bytes = to_canonical_json(&descriptors).map_err(|diagnostic| one(diagnostic, None))?;
     Ok(String::from_utf8(bytes).expect("canonical JSON is valid UTF-8"))
+}
+
+/// Remove `ident[]` list markers (and one trailing `@distinct` list
+/// annotation each) outside string literals, recording every construct.
+fn strip_list_capabilities(source: &str) -> (String, Vec<String>) {
+    let bytes = source.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut stripped = Vec::new();
+    let mut index = 0;
+    let mut in_string = false;
+    let ident_byte = |byte: u8| {
+        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+    };
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            output.push(byte);
+            if byte == b'\\' && index + 1 < bytes.len() {
+                output.push(bytes[index + 1]);
+                index += 2;
+                continue;
+            }
+            if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            output.push(byte);
+            index += 1;
+            continue;
+        }
+        if byte == b'['
+            && index + 1 < bytes.len()
+            && bytes[index + 1] == b']'
+            && index > 0
+            && ident_byte(bytes[index - 1])
+        {
+            let mut start = index;
+            while start > 0 && ident_byte(bytes[start - 1]) {
+                start -= 1;
+            }
+            stripped.push(format!("{}[]", &source[start..index]));
+            index += 2;
+            let rest = &source[index..];
+            let trimmed = rest.trim_start();
+            if let Some(remainder) = trimmed.strip_prefix("@distinct") {
+                let _ = remainder;
+                index += rest.len() - trimmed.len() + "@distinct".len();
+            }
+            continue;
+        }
+        output.push(byte);
+        index += 1;
+    }
+    (
+        String::from_utf8(output).expect("stripping preserves UTF-8 boundaries"),
+        stripped,
+    )
 }
 
 /// Project a generation-time TypeQL input into canonical direct-descriptor JSON.

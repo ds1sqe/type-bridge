@@ -356,6 +356,7 @@ mod tests {
                 "snapshots/__init__.py",
                 "snapshots/v0001/__init__.py",
                 "snapshots/v0001/attributes.py",
+                "snapshots/v0001/declared-schema.json",
                 "snapshots/v0001/entities.py",
                 "snapshots/v0001/registry.py",
                 "snapshots/v0001/relations.py",

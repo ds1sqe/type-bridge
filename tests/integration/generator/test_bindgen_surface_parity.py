@@ -119,8 +119,29 @@ def _directory_map(path: Path) -> dict[str, str]:
     return result
 
 
+def _strip_declared_snapshot(package: dict[str, str]) -> dict[str, str]:
+    """Reduce a package to its bindgen surface.
+
+    The full generator attaches the declared descriptor snapshot
+    (``declared-schema.json`` plus a registry literal); this suite proves
+    parity of the model rendering itself, which the raw core-lib example
+    cannot attach.
+    """
+    package = {
+        path: text for path, text in package.items() if path != "declared-schema.json"
+    }
+    registry = package.get("registry.py")
+    if registry is not None:
+        marker = "\nGENERATED_DECLARED_DESCRIPTORS_JSON: str = "
+        if marker in registry:
+            package["registry.py"] = registry.split(marker, 1)[0]
+    return package
+
+
 def _run_python_native(typeql: str, target: BindgenTarget) -> dict[str, str]:
-    return _package_map(render_models_json(typeql, target, json.dumps(_render_options(typeql))))
+    return _strip_declared_snapshot(
+        _package_map(render_models_json(typeql, target, json.dumps(_render_options(typeql))))
+    )
 
 
 def _run_rust_native(typeql_path: Path, target: BindgenTarget) -> dict[str, str]:
@@ -295,22 +316,28 @@ def test_comprehensive_toml_bindgen_surface_parity(tmp_path: Path) -> None:
             _assert_same_package(
                 f"{toml_path.name} {target} TypeScript native",
                 expected,
-                _run_typescript_native(typeql_path, target, options_path),
+                _strip_declared_snapshot(
+                    _run_typescript_native(typeql_path, target, options_path)
+                ),
             )
             _assert_same_package(
                 f"{toml_path.name} {target} Python writer",
                 expected,
-                _run_python_writer(
-                    toml_path, tmp_path / "python-writer" / toml_path.stem / target, target
+                _strip_declared_snapshot(
+                    _run_python_writer(
+                        toml_path, tmp_path / "python-writer" / toml_path.stem / target, target
+                    )
                 ),
             )
             _assert_same_package(
                 f"{toml_path.name} {target} TypeScript writer",
                 expected,
-                _run_typescript_writer(
-                    typeql_path,
-                    tmp_path / "typescript-writer" / toml_path.stem / target,
-                    target,
+                _strip_declared_snapshot(
+                    _run_typescript_writer(
+                        typeql_path,
+                        tmp_path / "typescript-writer" / toml_path.stem / target,
+                        target,
+                    )
                 ),
             )
             checked += 1

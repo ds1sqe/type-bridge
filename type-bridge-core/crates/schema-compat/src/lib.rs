@@ -80,7 +80,9 @@ pub fn typeql_to_declared_with_references(
         ));
     }
 
-    let query = typeql::parse_query(source).map_err(|parse_error| {
+    // Released schema sources may carry several define blocks; every query
+    // must still be a define, and their definables merge in source order.
+    let queries = typeql::parse_queries(source).map_err(|parse_error| {
         error(
             DiagnosticCategory::InvalidContract,
             "invalid_typeql_schema",
@@ -88,17 +90,30 @@ pub fn typeql_to_declared_with_references(
             None,
         )
     })?;
-    let definables = match query.structure {
-        QueryStructure::Schema(SchemaQuery::Define(define)) => define.definables,
-        _ => {
-            return Err(error(
-                DiagnosticCategory::InvalidContract,
-                "expected_typeql_define",
-                "schema compatibility input must contain exactly one define query",
-                query_span(&document, source, query.span)?,
-            ));
+    if queries.is_empty() {
+        return Err(error(
+            DiagnosticCategory::InvalidContract,
+            "expected_typeql_define",
+            "schema compatibility input must contain at least one define query",
+            None,
+        ));
+    }
+    let mut definables = Vec::new();
+    for query in queries {
+        match query.structure {
+            QueryStructure::Schema(SchemaQuery::Define(define)) => {
+                definables.extend(define.definables);
+            }
+            _ => {
+                return Err(error(
+                    DiagnosticCategory::InvalidContract,
+                    "expected_typeql_define",
+                    "schema compatibility input must contain only define queries",
+                    query_span(&document, source, query.span)?,
+                ));
+            }
         }
-    };
+    }
 
     let declarations: Vec<&TypeDeclaration> = definables
         .iter()
@@ -117,6 +132,12 @@ pub fn typeql_to_declared_with_references(
         let declaration_span = source_span(&document, source, declaration.span)?;
         let id = TypeId::new(kind, label.clone())
             .map_err(|diagnostic| contract(diagnostic, declaration_span.clone()))?;
+        // Released renders re-open declared labels for standalone
+        // capability statements; only a KINDLESS re-opening merges, so
+        // explicit duplicate declarations still fail with both spans.
+        if declaration.kind.is_none() && ids.contains_key(&label) {
+            continue;
+        }
         assembler.insert_fact(
             SchemaFact::Type(
                 TypeFact::new(id.clone())
@@ -286,6 +307,14 @@ fn infer_type_kinds(
         let mut changed = false;
         for (index, declaration) in declarations.iter().enumerate() {
             if inferred[index].is_some() {
+                continue;
+            }
+            // A kindless statement re-opening an already-classified label
+            // (released renders emit standalone `plays` lines this way)
+            // inherits that label's kind.
+            if let Some(own_kind) = known.get(&typeql_label(&declaration.label)) {
+                inferred[index] = Some(*own_kind);
+                changed = true;
                 continue;
             }
             for capability in &declaration.capabilities {
@@ -842,18 +871,23 @@ fn type_reference(named: &NamedType) -> Result<TypeReference, SchemaDiagnostics>
 }
 
 fn named_value_type(named: &NamedType) -> Result<ValueTypeTag, String> {
-    let NamedType::BuiltinValueType(value_type) = named else {
-        return Err("schema-defined value types are not live-pinned here".to_owned());
-    };
-    value_type_from_token(&value_type.token.to_string())
+    match named {
+        NamedType::BuiltinValueType(value_type) => {
+            value_type_from_token(&value_type.token.to_string())
+        }
+        // Released schema text spells some builtins through the frozen
+        // alias table (`int`, `long`, `bool`); the strict grammar lexes
+        // those as labels, and this compatibility front-end honors them.
+        NamedType::Label(label) => value_type_from_token(&typeql_label(label)),
+    }
 }
 
 fn value_type_from_token(token: &str) -> Result<ValueTypeTag, String> {
     match token {
         "string" => Ok(ValueTypeTag::String),
-        "integer" => Ok(ValueTypeTag::Long),
+        "integer" | "int" | "long" => Ok(ValueTypeTag::Long),
         "double" => Ok(ValueTypeTag::Double),
-        "boolean" => Ok(ValueTypeTag::Boolean),
+        "boolean" | "bool" => Ok(ValueTypeTag::Boolean),
         "date" => Ok(ValueTypeTag::Date),
         "datetime" => Ok(ValueTypeTag::DateTime),
         "datetime-tz" => Ok(ValueTypeTag::DateTimeTz),
