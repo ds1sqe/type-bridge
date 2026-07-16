@@ -27,12 +27,18 @@ pub mod migration;
 /// Canonical typed migration assertion syntax and fingerprints.
 pub mod migration_assertion;
 pub use migration_assertion::migration_assertion_capability_vocabulary;
+pub use query_plan::query_plan_capability_vocabulary;
 mod migration_assertion_wire;
 /// Binding-target configuration and reproducible projection fingerprints.
 pub mod projection;
 /// Fail-closed canonical wire decoding for runtime projections.
 pub mod projection_wire;
 /// Versioned schema identities, facts, provenance, and fingerprints.
+/// Reusable typed query plans and the first public V2 read vocabulary.
+pub mod query_plan;
+
+mod query_plan_wire;
+
 pub mod schema;
 mod declared_schema_wire;
 pub mod schema_lowering;

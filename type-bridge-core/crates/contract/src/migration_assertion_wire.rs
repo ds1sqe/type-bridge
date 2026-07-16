@@ -91,7 +91,7 @@ impl MigrationAssertionPlanWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct FingerprintWire {
+pub(crate) struct FingerprintWire {
     domain: FingerprintDomain,
     algorithm: FingerprintAlgorithm,
     canonicalization: CanonicalizationVersion,
@@ -101,7 +101,7 @@ struct FingerprintWire {
 }
 
 impl FingerprintWire {
-    fn rebuild(self) -> Result<Fingerprint, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<Fingerprint, Diagnostic> {
         serde_json::from_value(serde_json::to_value(self).map_err(|_| {
             assertion_failure(
                 DiagnosticCategory::InvalidContract,
@@ -215,13 +215,13 @@ impl AssertionPatternWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct AssertionRolePlayerWire {
+pub(crate) struct AssertionRolePlayerWire {
     player: u16,
     role: RoleIdWire,
 }
 
 impl AssertionRolePlayerWire {
-    fn rebuild(self) -> Result<AssertionRolePlayer, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<AssertionRolePlayer, Diagnostic> {
         Ok(AssertionRolePlayer::new(
             self.role.rebuild()?,
             raw_binding(self.player)?,
@@ -231,7 +231,7 @@ impl AssertionRolePlayerWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ValueComparatorWire {
+pub(crate) enum ValueComparatorWire {
     Equal,
     NotEqual,
     Less,
@@ -241,7 +241,7 @@ enum ValueComparatorWire {
 }
 
 impl ValueComparatorWire {
-    fn rebuild(self) -> ValueComparator {
+    pub(crate) fn rebuild(self) -> ValueComparator {
         match self {
             Self::Equal => ValueComparator::Equal,
             Self::NotEqual => ValueComparator::NotEqual,
@@ -271,26 +271,26 @@ impl ValueOperandWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct TypeIdWire {
+pub(crate) struct TypeIdWire {
     kind: TypeKind,
     label: String,
 }
 
 impl TypeIdWire {
-    fn rebuild(self) -> Result<TypeId, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<TypeId, Diagnostic> {
         TypeId::new(self.kind, self.label)
     }
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RoleIdWire {
+pub(crate) struct RoleIdWire {
     declaring_relation: String,
     label: String,
 }
 
 impl RoleIdWire {
-    fn rebuild(self) -> Result<RoleId, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<RoleId, Diagnostic> {
         RoleId::new(self.declaring_relation, self.label)
     }
 }
