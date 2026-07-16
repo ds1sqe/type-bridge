@@ -302,3 +302,66 @@ fn pipeline_shape_rules_fail_closed() {
         "query_plan_unknown_input_column",
     );
 }
+
+#[test]
+fn invocations_bind_the_exact_plan_and_validate_rectangular_batches() {
+    use type_bridge_contract::query_plan::{InputRow, QueryInvocation, QueryOperation};
+
+    let plan = full_pipeline_plan();
+    let row = |value: i64| InputRow::new(vec![Some(CanonicalValue::Long(value))]);
+    let invocation = QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![row(18), row(65)],
+    )
+    .expect("rectangular batch");
+    assert!(invocation.binds(&plan).expect("binding check"));
+    assert_eq!(invocation.inputs().len(), 2);
+    assert_eq!(invocation.operation(), QueryOperation::Rows);
+
+    // A plan edit invalidates the outstanding invocation.
+    let edited = QueryPlan::new(
+        plan.bindings().to_vec(),
+        plan.inputs().to_vec(),
+        vec![
+            plan.pipeline()[0].clone(),
+            ReadStage::Select { bindings: vec![binding_id(0), binding_id(1)] },
+        ],
+        plan.output().clone(),
+        plan.managed_semantics().clone(),
+    )
+    .expect("edited plan");
+    assert!(!invocation.binds(&edited).expect("edited binding check"));
+
+    // Batch shape failures are named precisely.
+    let wrong_arity = QueryInvocation::new(
+        &plan,
+        QueryOperation::Count,
+        vec![InputRow::new(Vec::new())],
+    )
+    .expect_err("arity mismatch");
+    assert_eq!(wrong_arity.code().as_str(), "query_invocation_row_arity");
+
+    let wrong_type = QueryInvocation::new(
+        &plan,
+        QueryOperation::Exists,
+        vec![InputRow::new(vec![Some(CanonicalValue::Boolean(true))])],
+    )
+    .expect_err("value type mismatch");
+    assert_eq!(wrong_type.code().as_str(), "query_invocation_value_type");
+
+    let missing_required = QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![InputRow::new(vec![None])],
+    )
+    .expect_err("required value missing");
+    assert_eq!(
+        missing_required.code().as_str(),
+        "query_invocation_missing_value"
+    );
+
+    let empty = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
+        .expect_err("declared inputs require a row");
+    assert_eq!(empty.code().as_str(), "query_invocation_missing_inputs");
+}

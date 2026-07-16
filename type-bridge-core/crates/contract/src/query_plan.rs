@@ -531,6 +531,155 @@ impl QueryPlan {
     }
 }
 
+/// One rectangular invocation input row.
+///
+/// Values are positional by dense input column ordinal. `None` is admitted
+/// only where the declaring column is optional; there is no other
+/// null-shaped default.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct InputRow {
+    values: Vec<Option<CanonicalValue>>,
+}
+
+impl InputRow {
+    /// Construct one positional input row.
+    #[must_use]
+    pub const fn new(values: Vec<Option<CanonicalValue>>) -> Self {
+        Self { values }
+    }
+
+    /// Return positional values by dense column ordinal.
+    #[must_use]
+    pub fn values(&self) -> &[Option<CanonicalValue>] {
+        &self.values
+    }
+}
+
+/// The closed operation vocabulary of the first public revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryOperation {
+    /// Stream the projected rows.
+    Rows,
+    /// Count the projected rows.
+    Count,
+    /// Report whether at least one row exists.
+    Exists,
+}
+
+/// One executable invocation of a reusable validated plan.
+///
+/// The invocation carries values and an operation; the plan carries all
+/// reusable structure. Binding is by exact plan fingerprint, so a plan edit
+/// invalidates every outstanding invocation instead of silently reshaping it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct QueryInvocation {
+    inputs: Vec<InputRow>,
+    operation: QueryOperation,
+    plan_fingerprint: QueryPlanFingerprint,
+}
+
+impl QueryInvocation {
+    /// Validate one rectangular input batch against its exact plan.
+    pub fn new(
+        plan: &QueryPlan,
+        operation: QueryOperation,
+        inputs: Vec<InputRow>,
+    ) -> Result<Self, Diagnostic> {
+        Self::new_with_limits(plan, operation, inputs, StructuralLimits::CANONICAL)
+    }
+
+    fn new_with_limits(
+        plan: &QueryPlan,
+        operation: QueryOperation,
+        inputs: Vec<InputRow>,
+        limits: StructuralLimits,
+    ) -> Result<Self, Diagnostic> {
+        if plan.inputs().is_empty() {
+            if !inputs.is_empty() {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_invocation_unexpected_inputs",
+                    "the plan declares no input columns yet the invocation carries rows",
+                ));
+            }
+        } else {
+            if inputs.is_empty() {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_invocation_missing_inputs",
+                    "the plan declares input columns and requires at least one row",
+                ));
+            }
+            if !limits.allows_selected_slots(inputs.len()) {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_invocation_row_limit",
+                    "invocation input row count exceeds the structural ceiling",
+                ));
+            }
+            for row in &inputs {
+                if row.values().len() != plan.inputs().len() {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_invocation_row_arity",
+                        "input row does not carry exactly the declared column set",
+                    ));
+                }
+                for (column, value) in plan.inputs().iter().zip(row.values()) {
+                    match value {
+                        None if column.optional() => {}
+                        None => {
+                            return Err(failure(
+                                DiagnosticCategory::InvalidContract,
+                                "query_invocation_missing_value",
+                                "a required input column carries no value",
+                            ));
+                        }
+                        Some(value) if value.value_type() == column.value_type() => {}
+                        Some(_) => {
+                            return Err(failure(
+                                DiagnosticCategory::InvalidContract,
+                                "query_invocation_value_type",
+                                "input value type differs from the declared column type",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(Self {
+            inputs,
+            operation,
+            plan_fingerprint: plan.fingerprint()?,
+        })
+    }
+
+    /// Return the rectangular validated input rows.
+    #[must_use]
+    pub fn inputs(&self) -> &[InputRow] {
+        &self.inputs
+    }
+
+    /// Return the requested operation.
+    #[must_use]
+    pub const fn operation(&self) -> QueryOperation {
+        self.operation
+    }
+
+    /// Return the exact plan fingerprint this invocation binds.
+    #[must_use]
+    pub const fn plan_fingerprint(&self) -> &QueryPlanFingerprint {
+        &self.plan_fingerprint
+    }
+
+    /// Return whether this invocation still binds the supplied plan.
+    pub fn binds(&self, plan: &QueryPlan) -> Result<bool, Diagnostic> {
+        Ok(self.plan_fingerprint == plan.fingerprint()?)
+    }
+}
+
 /// Fingerprint of exact canonical query-plan bytes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
