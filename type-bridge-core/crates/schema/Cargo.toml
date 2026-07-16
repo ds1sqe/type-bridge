@@ -1,0 +1,23 @@
+[package]
+name = "type-bridge-schema"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono = "=0.4.44"
+chrono-tz = "=0.9.0"
+granit-parser = "=0.0.7"
+serde = { version = "1.0", features = ["derive"] }
+type-bridge-contract = { path = "../contract", version = "0.1.0" }
+unicode-casefold = "=0.2.0"
+unicode-normalization = "=0.1.25"
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[lints]
+workspace = true

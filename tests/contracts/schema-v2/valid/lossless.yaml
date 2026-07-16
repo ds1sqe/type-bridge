@@ -1,0 +1,8 @@
+# retained document comment
+format: typebridge.schema/v2
+description: |
+  Exact source spelling remains available.
+  Decoded values are a separate view.
+types:
+  - kind: entity
+    label: person # retained inline comment
