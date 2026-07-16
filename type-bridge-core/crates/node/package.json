@@ -15,6 +15,11 @@
       "types": "./dist/typed/index.d.ts",
       "require": "./dist/typed/index.js",
       "default": "./dist/typed/index.js"
+    },
+    "./runtime-projection": {
+      "types": "./dist/runtime-projection.d.ts",
+      "require": "./dist/runtime-projection.js",
+      "default": "./dist/runtime-projection.js"
     }
   },
   "files": [

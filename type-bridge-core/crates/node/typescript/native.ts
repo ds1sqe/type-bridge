@@ -5,6 +5,7 @@ import type {
   NativeRustDatabase,
   NativeRustTransactionContext,
 } from "./index.js";
+import type { NativeProjectedManager } from "./runtime-projection.js";
 
 type NativeRegistryHandle = InstanceType<NativeModule["NodeDescriptorRegistry"]>;
 
@@ -195,7 +196,21 @@ interface NativeMatchModule {
   revalidateMatchDiagnostic(registry: NativeRegistryHandle, diagnosticJson: string): string;
 }
 
-type LoadedNativeModule = NativeModule & NativeMatchModule;
+interface NativeRuntimeProjectionHandle {
+  managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
+  managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
+}
+
+interface NativeRuntimeProjectionModule {
+  NodeRuntimeProjection: new (
+    projectionJson: string,
+    semanticFingerprintJson: string,
+    projectionFingerprintJson: string,
+    registrationsJson: string,
+  ) => NativeRuntimeProjectionHandle;
+}
+
+type LoadedNativeModule = NativeModule & NativeMatchModule & NativeRuntimeProjectionModule;
 
 // This module compiles to dist/native.js (CommonJS). __dirname is therefore
 // the dist/ directory. The .node artifacts are placed at the package root

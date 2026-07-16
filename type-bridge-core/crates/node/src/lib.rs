@@ -8,6 +8,7 @@
 #![allow(missing_docs)]
 
 mod match_runtime;
+mod runtime_projection;
 #[cfg(feature = "contract-test-adapter")]
 mod contract_test_adapter;
 
@@ -20,6 +21,7 @@ pub use match_runtime::{
     NodeMatchShapeHandle, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
     revalidate_match_diagnostic,
 };
+pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
 
 use std::sync::Arc;
 
@@ -1179,8 +1181,18 @@ pub fn render_models_json(
         }
         None => BindgenOptions::default(),
     };
-    type_bridge_core_lib::bindgen::generate_json_from_typeql(&input, target, &options)
-        .map_err(|e| Error::from_reason(format!("Failed to render models: {e}")))
+    type_bridge_schema_compat::generate_package_with_declared_descriptors(
+        &input, target, &options,
+    )
+    .and_then(|package| package.to_json())
+    .map_err(|e| Error::from_reason(format!("Failed to render models: {e}")))
+}
+
+/// Export the canonical direct declaration snapshot without rendering models.
+#[napi(js_name = "generatedDeclaredDescriptorsJson")]
+pub fn generated_declared_descriptors_json(input: String) -> Result<String> {
+    type_bridge_schema_compat::generated_declared_descriptors_json(&input)
+        .map_err(|e| Error::from_reason(format!("Failed to render declared descriptors: {e}")))
 }
 
 /// Generate a TypeQL `define` block from serialized SchemaInfo JSON.

@@ -19,6 +19,7 @@ pub mod match_runtime;
 pub mod migration_runtime;
 pub mod orm;
 pub mod orm_runtime;
+pub mod runtime_projection;
 pub mod schema;
 pub mod transpiler;
 mod validated_result_runtime;
@@ -608,7 +609,17 @@ fn parse_bindgen_options(options_json: Option<&str>) -> PyResult<core::bindgen::
 fn render_models_json(input: &str, target: &str, options_json: Option<&str>) -> PyResult<String> {
     let target = parse_bindgen_target(target)?;
     let options = parse_bindgen_options(options_json)?;
-    core::bindgen::generate_json_from_typeql(input, target, &options)
+    type_bridge_schema_compat::generate_package_with_declared_descriptors(
+        input, target, &options,
+    )
+    .and_then(|package| package.to_json())
+    .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+/// Export the canonical direct declaration snapshot without rendering models.
+#[pyfunction]
+fn generated_declared_descriptors_json(input: &str) -> PyResult<String> {
+    type_bridge_schema_compat::generated_declared_descriptors_json(input)
         .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
@@ -620,6 +631,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValueCoercer>()?;
     m.add_function(wrap_pyfunction!(parse_typeql_query, m)?)?;
     m.add_function(wrap_pyfunction!(render_models_json, m)?)?;
+    m.add_function(wrap_pyfunction!(generated_declared_descriptors_json, m)?)?;
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
     m.add_function(wrap_pyfunction!(transpiler::toml_to_typeql, m)?)?;
@@ -679,6 +691,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // ORM CRUD query builder
     m.add_class::<orm::CrudQueryBuilder>()?;
     orm_runtime::register(m)?;
+    runtime_projection::register(m)?;
     match_runtime::register(m)?;
     migration_runtime::register(m)?;
     author::register(m)?;
