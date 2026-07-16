@@ -169,7 +169,10 @@ fn single_row_inline_lowering_is_deterministic_golden_text() {
          limit 7;\n",
     );
     assert_eq!(lowered.operation(), QueryOperation::Rows);
-    assert_eq!(lowered.row_schema().columns().len(), 2);
+    assert_eq!(
+        lowered.output_schema().rows().expect("row plan").columns().len(),
+        2,
+    );
 
     let repeat =
         lower_validated_query(&validated, &invocation).expect("repeat lowering");
@@ -554,7 +557,9 @@ fn try_blocks_lower_to_indented_optional_bodies() {
     let validated =
         validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
             .expect("validated query");
-    assert!(validated.row_schema().columns()[1].optional());
+    assert!(
+        validated.output_schema().rows().expect("row plan").columns()[1].optional()
+    );
     let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
         .expect("invocation");
     let lowered =
@@ -568,4 +573,110 @@ fn try_blocks_lower_to_indented_optional_bodies() {
          \x20   $name isa! name;\n\
          };\n",
     );
+}
+
+#[test]
+fn document_outputs_lower_to_deterministic_fetch_blocks() {
+    use type_bridge_contract::query_plan::{DocumentField, DocumentSource};
+
+    let person = type_id(TypeKind::Entity, "person");
+    let name = AttributeId::new("name").expect("attribute");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
+        SchemaFact::Type(
+            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, name).expect("owns id"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-fetch-lowering").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+            .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-v2-fetch-scope").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+
+    let plan = QueryPlan::new(
+        vec![binding(0, "person"), binding(1, "name")],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding: binding_id(0),
+                    include_subtypes: true,
+                    type_id: type_id(TypeKind::Entity, "person"),
+                },
+                QueryPattern::Has {
+                    attribute: binding_id(1),
+                    attribute_id: AttributeId::new("name").expect("attribute"),
+                    owner: binding_id(0),
+                },
+            ],
+        }],
+        QueryOutput::Documents {
+            fields: vec![
+                DocumentField::new(
+                    QueryVariable::new("name").expect("key"),
+                    DocumentSource::Binding { binding: binding_id(1) },
+                ),
+                DocumentField::new(
+                    QueryVariable::new("all_names").expect("key"),
+                    DocumentSource::AttributeList {
+                        attribute: AttributeId::new("name").expect("attribute"),
+                        owner: binding_id(0),
+                    },
+                ),
+            ],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("document plan");
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated =
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+            .expect("validated query");
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
+        .expect("invocation");
+    let lowered =
+        lower_validated_query(&validated, &invocation).expect("lowered query");
+    assert_eq!(
+        lowered.typeql(),
+        "match\n\
+         $person isa person;\n\
+         $person has name $name;\n\
+         $name isa! name;\n\
+         fetch {\n\
+         \x20   \"name\": $name,\n\
+         \x20   \"all_names\": [ $person.name ]\n\
+         };\n",
+    );
+    assert!(lowered.output_schema().documents().is_some());
 }

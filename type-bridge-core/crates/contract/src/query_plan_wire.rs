@@ -11,9 +11,9 @@ use crate::migration_assertion_wire::{
     AssertionRolePlayerWire, FingerprintWire, TypeIdWire, ValueComparatorWire,
 };
 use crate::query_plan::{
-    InputColumn, InputColumnId, OrderDirection, OrderTerm, QUERY_PLAN_FORMAT_V1,
-    QueryOperand, QueryOutput, QueryPattern, QueryPlan, ReadStage,
-    ReduceAssignment, Reducer, failure,
+    DocumentField, DocumentSource, InputColumn, InputColumnId, OrderDirection,
+    OrderTerm, QUERY_PLAN_FORMAT_V1, QueryOperand, QueryOutput, QueryPattern,
+    QueryPlan, ReadStage, ReduceAssignment, Reducer, failure,
 };
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
@@ -121,17 +121,58 @@ impl InputColumnWire {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum QueryOutputWire {
     Rows { columns: Vec<u16> },
+    Documents { fields: Vec<DocumentFieldWire> },
 }
 
 impl QueryOutputWire {
     fn rebuild(self) -> Result<QueryOutput, Diagnostic> {
-        let Self::Rows { columns } = self;
-        Ok(QueryOutput::Rows {
-            columns: columns
-                .into_iter()
-                .map(BindingId::new)
-                .collect::<Result<Vec<_>, _>>()?,
+        Ok(match self {
+            Self::Rows { columns } => QueryOutput::Rows {
+                columns: columns
+                    .into_iter()
+                    .map(BindingId::new)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+            Self::Documents { fields } => QueryOutput::Documents {
+                fields: fields
+                    .into_iter()
+                    .map(DocumentFieldWire::rebuild)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
         })
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DocumentFieldWire {
+    key: String,
+    source: DocumentSourceWire,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum DocumentSourceWire {
+    Binding { binding: u16 },
+    AttributeList { attribute: String, owner: u16 },
+}
+
+impl DocumentFieldWire {
+    fn rebuild(self) -> Result<DocumentField, Diagnostic> {
+        Ok(DocumentField::new(
+            QueryVariable::new(self.key)?,
+            match self.source {
+                DocumentSourceWire::Binding { binding } => DocumentSource::Binding {
+                    binding: BindingId::new(binding)?,
+                },
+                DocumentSourceWire::AttributeList { attribute, owner } => {
+                    DocumentSource::AttributeList {
+                        attribute: AttributeId::new(attribute)?,
+                        owner: BindingId::new(owner)?,
+                    }
+                }
+            },
+        ))
     }
 }
 

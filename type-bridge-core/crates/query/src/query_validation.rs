@@ -12,15 +12,17 @@ use type_bridge_contract::diagnostic::{
 };
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::BindingId;
+use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::query_plan::{
-    QueryOutput, QueryPlan, ReadStage, Reducer,
+    DocumentSource, QueryOutput, QueryPlan, ReadStage, Reducer,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::ValueTypeTag;
 
 use crate::engine::{self, EngineCode, EngineCodes};
 use crate::{
-    BindingDomain, MigrationAssertionValidationContext, RowColumn, RowSchema,
+    BindingDomain, DocumentColumn, DocumentColumnShape, DocumentSchema,
+    MigrationAssertionValidationContext, OutputSchema, RowColumn, RowSchema,
 };
 
 /// The stable diagnostic vocabulary of query-plan validation.
@@ -115,8 +117,8 @@ const QUERY_ENGINE_CODES: EngineCodes = EngineCodes {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedQuery {
     binding_domains: BTreeMap<BindingId, BindingDomain>,
+    output_schema: OutputSchema,
     plan: QueryPlan,
-    row_schema: RowSchema,
     source_state: ManagedSchemaState,
     structural_limits: StructuralLimits,
 }
@@ -132,9 +134,9 @@ impl ValidatedQuery {
         self.binding_domains.get(id)
     }
 
-    /// Return the validator-derived output row schema.
-    pub const fn row_schema(&self) -> &RowSchema {
-        &self.row_schema
+    /// Return the validator-derived output shape.
+    pub const fn output_schema(&self) -> &OutputSchema {
+        &self.output_schema
     }
 
     /// Return the exact managed and declared schema identity validated here.
@@ -224,8 +226,16 @@ pub fn validate_query_plan(
         .map(|assignment| assignment.assigned())
         .collect();
 
-    let QueryOutput::Rows { columns } = plan.output();
-    let projected: BTreeSet<BindingId> = columns.iter().copied().collect();
+    let projected: BTreeSet<BindingId> = match plan.output() {
+        QueryOutput::Rows { columns } => columns.iter().copied().collect(),
+        QueryOutput::Documents { fields } => fields
+            .iter()
+            .map(|field| match field.source() {
+                DocumentSource::Binding { binding } => *binding,
+                DocumentSource::AttributeList { owner, .. } => *owner,
+            })
+            .collect(),
+    };
     for binding in plan.bindings() {
         let id = binding.id();
         if reduce_assigned.contains(&id) {
@@ -396,26 +406,93 @@ pub fn validate_query_plan(
         }
     }
 
-    let row_columns = columns
-        .iter()
-        .map(|id| {
-            let binding = plan
-                .bindings()
-                .get(usize::from(id.get()))
-                .expect("validated output binding exists");
-            RowColumn::new(
-                *id,
-                binding_domains[id].clone(),
-                binding.variable().clone(),
-                optional_positive.contains(id),
-            )
-        })
-        .collect::<Vec<_>>();
+    let output_schema = match plan.output() {
+        QueryOutput::Rows { columns } => OutputSchema::Rows(RowSchema::new(
+            columns
+                .iter()
+                .map(|id| {
+                    let binding = plan
+                        .bindings()
+                        .get(usize::from(id.get()))
+                        .expect("validated output binding exists");
+                    RowColumn::new(
+                        *id,
+                        binding_domains[id].clone(),
+                        binding.variable().clone(),
+                        optional_positive.contains(id),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )),
+        QueryOutput::Documents { fields } => {
+            let columns = fields
+                .iter()
+                .map(|field| {
+                    let shape = match field.source() {
+                        DocumentSource::Binding { binding } => {
+                            let Some(value_type) =
+                                binding_domains[binding].value_type()
+                            else {
+                                return Err(plan_failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_document_field_not_scalar",
+                                    "document fields fetch uniform scalar bindings",
+                                ));
+                            };
+                            DocumentColumnShape::Scalar {
+                                value_type,
+                                optional: optional_positive.contains(binding),
+                            }
+                        }
+                        DocumentSource::AttributeList { attribute, owner } => {
+                            let attribute_type = TypeId::new(
+                                TypeKind::Attribute,
+                                attribute.label().as_str().to_owned(),
+                            )?;
+                            let Some(element_type) = schema
+                                .types()
+                                .get(&attribute_type)
+                                .and_then(|resolved| resolved.value_type())
+                                .map(|value| value.value_type())
+                            else {
+                                return Err(plan_failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_unknown_attribute",
+                                    "attribute list references no resolved scalar attribute",
+                                ));
+                            };
+                            let reachable = binding_domains[owner]
+                                .type_ids()
+                                .iter()
+                                .any(|id| {
+                                    schema.types().get(id).is_some_and(|resolved| {
+                                        resolved.owns().contains_key(attribute)
+                                    })
+                                });
+                            if !reachable {
+                                return Err(plan_failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_document_unreachable_attribute",
+                                    "no type in the owner domain owns the listed attribute",
+                                ));
+                            }
+                            DocumentColumnShape::List {
+                                attribute: attribute.clone(),
+                                element_type,
+                            }
+                        }
+                    };
+                    Ok(DocumentColumn::new(field.key().clone(), shape))
+                })
+                .collect::<Result<Vec<_>, Diagnostic>>()?;
+            OutputSchema::Documents(DocumentSchema::new(columns))
+        }
+    };
 
     Ok(ValidatedQuery {
         binding_domains,
+        output_schema,
         plan: plan.clone(),
-        row_schema: RowSchema::new(row_columns),
         source_state: context.managed_state().clone(),
         structural_limits: limits,
     })

@@ -905,7 +905,9 @@ async fn try_blocks_carry_optional_columns_live() {
     let validated =
         validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
             .unwrap();
-    assert!(validated.row_schema().columns()[1].optional());
+    assert!(
+        validated.output_schema().rows().expect("row plan").columns()[1].optional()
+    );
     let invocation =
         QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
     let mut transaction = db.read_transaction().await.expect("read transaction");
@@ -1091,4 +1093,193 @@ async fn multi_row_given_invocations_correlate_inputs_live() {
     .await
     .expect("multi-row count execution");
     assert_eq!(outcome, QueryV2Outcome::Count(2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn document_fetch_returns_typed_documents_live() {
+    use type_bridge_contract::query_plan::{
+        DocumentField, DocumentSource, QueryOperation,
+    };
+    use type_bridge_orm::query_v2::DocumentFieldValue;
+
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-fetch-live");
+    let person = TypeId::new(TypeKind::Entity, format!("{suffix}-person")).unwrap();
+    let name = AttributeId::new(format!("{suffix}-name")).unwrap();
+    let age = AttributeId::new(format!("{suffix}-age")).unwrap();
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {name}, value string;\n\
+             attribute {age}, value integer;\n\
+             entity {person}, owns {name}, owns {age} @card(0..);",
+            name = name.label(),
+            age = age.label(),
+            person = person.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("live fetch schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {name} \"ada\", has {age} 30, has {age} 40; \
+             $b isa {person}, has {name} \"bob\";",
+            person = person.label(),
+            name = name.label(),
+            age = age.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("live fetch data");
+
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), name.clone()).unwrap(),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), age.clone()).unwrap(),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).unwrap();
+        let line = u32::try_from(index + 1).unwrap();
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-fetch-live").unwrap(),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .unwrap(),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        sourced,
+    )
+    .unwrap();
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let managed = managed_schema_state(
+        &declared,
+        &ManagedDeltaContext::new(
+            ManagedScopeId::new("query-v2-fetch-live").unwrap(),
+            profile,
+            CapabilitySet::new(),
+        ),
+    )
+    .unwrap();
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+
+    let plan = QueryPlan::new(
+        vec![binding(0, "person"), binding(1, "name")],
+        Vec::new(),
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: true,
+                        type_id: person.clone(),
+                    },
+                    QueryPattern::Has {
+                        attribute: binding_id(1),
+                        attribute_id: name.clone(),
+                        owner: binding_id(0),
+                    },
+                ],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+            },
+        ],
+        QueryOutput::Documents {
+            fields: vec![
+                DocumentField::new(
+                    QueryVariable::new("name").unwrap(),
+                    DocumentSource::Binding { binding: binding_id(1) },
+                ),
+                DocumentField::new(
+                    QueryVariable::new("ages").unwrap(),
+                    DocumentSource::AttributeList {
+                        attribute: age.clone(),
+                        owner: binding_id(0),
+                    },
+                ),
+            ],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .unwrap();
+    let validated =
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+            .unwrap();
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let mut transaction = db.read_transaction().await.expect("read transaction");
+    let outcome = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        limits(),
+    )
+    .await
+    .expect("document fetch execution");
+    let QueryV2Outcome::Documents(documents) = &outcome else {
+        panic!("documents outcome: {outcome:?}");
+    };
+    assert_eq!(documents.len(), 2);
+    let scalar = |value: &DocumentFieldValue| match value {
+        DocumentFieldValue::Scalar(CanonicalValue::String(value)) => {
+            value.as_str().to_owned()
+        }
+        other => panic!("expected string scalar: {other:?}"),
+    };
+    let longs = |value: &DocumentFieldValue| match value {
+        DocumentFieldValue::List(values) => values
+            .iter()
+            .map(|value| match value {
+                CanonicalValue::Long(value) => *value,
+                other => panic!("expected long element: {other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        other => panic!("expected list: {other:?}"),
+    };
+    assert_eq!(scalar(&documents[0].values()[0]), "ada");
+    let mut ada_ages = longs(&documents[0].values()[1]);
+    ada_ages.sort_unstable();
+    assert_eq!(ada_ages, vec![30, 40]);
+    assert_eq!(scalar(&documents[1].values()[0]), "bob");
+    assert_eq!(longs(&documents[1].values()[1]), Vec::<i64>::new());
 }

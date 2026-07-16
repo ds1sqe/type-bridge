@@ -163,7 +163,7 @@ fn a_full_pipeline_validates_to_typed_output_columns() {
     )
     .expect("validated query");
 
-    let columns = validated.row_schema().columns();
+    let columns = validated.output_schema().rows().expect("row plan").columns();
     assert_eq!(columns.len(), 2);
     assert_eq!(columns[0].variable().as_str(), "person");
     assert_eq!(columns[1].variable().as_str(), "name");
@@ -391,7 +391,8 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
         StructuralLimits::CANONICAL,
     )
     .expect("scalar function call validates");
-    let value_column = &validated.row_schema().columns()[1];
+    let value_column =
+        &validated.output_schema().rows().expect("row plan").columns()[1];
     assert!(value_column.domain().type_ids().is_empty());
     assert_eq!(value_column.domain().value_type(), Some(ValueTypeTag::Long));
 
@@ -550,7 +551,7 @@ fn reduce_stages_type_grouped_and_global_results() {
         vec![binding_id(0), binding_id(2), binding_id(3)],
     )
     .expect("grouped numeric reduce");
-    let columns = validated.row_schema().columns();
+    let columns = validated.output_schema().rows().expect("row plan").columns();
     assert!(!columns[0].domain().type_ids().is_empty());
     assert!(columns[1].domain().type_ids().is_empty());
     assert_eq!(columns[1].domain().value_type(), Some(ValueTypeTag::Long));
@@ -574,7 +575,9 @@ fn reduce_stages_type_grouped_and_global_results() {
     )
     .expect("grouped count over strings");
     assert_eq!(
-        validated.row_schema().columns()[1].domain().value_type(),
+        validated.output_schema().rows().expect("row plan").columns()[1]
+            .domain()
+            .value_type(),
         Some(ValueTypeTag::Long),
     );
 
@@ -700,7 +703,7 @@ fn try_blocks_type_optional_columns_and_fail_closed() {
 
     // The optional column is typed from its refined body domain.
     let validated = build(vec![has_age.clone()]).expect("optional projection");
-    let columns = validated.row_schema().columns();
+    let columns = validated.output_schema().rows().expect("row plan").columns();
     assert!(!columns[0].optional());
     assert!(columns[1].optional());
     assert_eq!(columns[1].domain().value_type(), Some(ValueTypeTag::Long));
@@ -735,4 +738,92 @@ fn try_blocks_type_optional_columns_and_fail_closed() {
     }])
     .expect_err("unbound try reference");
     assert_eq!(error.code().as_str(), "query_plan_try_unbound_binding");
+}
+
+#[test]
+fn document_outputs_derive_typed_field_schemas() {
+    use type_bridge_contract::query_plan::{DocumentField, DocumentSource};
+    use type_bridge_query::DocumentColumnShape;
+
+    let fixture = schema_fixture();
+    let key = |name: &str| QueryVariable::new(name).expect("document key");
+    let build = |fields: Vec<DocumentField>| {
+        let plan = QueryPlan::new(
+            vec![binding(0, "person"), binding(1, "name")],
+            Vec::new(),
+            vec![ReadStage::Match {
+                patterns: vec![
+                    person_isa(0),
+                    QueryPattern::Has {
+                        attribute: binding_id(1),
+                        attribute_id: AttributeId::new("name").expect("attribute"),
+                        owner: binding_id(0),
+                    },
+                ],
+            }],
+            QueryOutput::Documents { fields },
+            fixture.managed.managed_semantic_schema().clone(),
+        )
+        .expect("document plan");
+        validate_query_plan(
+            &plan,
+            &MigrationAssertionValidationContext::new(
+                &fixture.resolved,
+                &fixture.managed,
+            ),
+            StructuralLimits::CANONICAL,
+        )
+    };
+
+    // Scalar and list fields carry exact validated types.
+    let validated = build(vec![
+        DocumentField::new(
+            key("name"),
+            DocumentSource::Binding { binding: binding_id(1) },
+        ),
+        DocumentField::new(
+            key("names"),
+            DocumentSource::AttributeList {
+                attribute: AttributeId::new("name").expect("attribute"),
+                owner: binding_id(0),
+            },
+        ),
+    ])
+    .expect("typed document schema");
+    let schema = validated
+        .output_schema()
+        .documents()
+        .expect("document plan")
+        .columns();
+    assert_eq!(schema.len(), 2);
+    assert_eq!(
+        schema[0].shape(),
+        &DocumentColumnShape::Scalar {
+            value_type: ValueTypeTag::String,
+            optional: false,
+        },
+    );
+    assert!(matches!(
+        schema[1].shape(),
+        DocumentColumnShape::List { element_type: ValueTypeTag::String, .. },
+    ));
+
+    // A thing binding has no scalar to fetch.
+    let error = build(vec![DocumentField::new(
+        key("person"),
+        DocumentSource::Binding { binding: binding_id(0) },
+    )])
+    .expect_err("entity binding as a scalar field");
+    assert_eq!(error.code().as_str(), "query_plan_document_field_not_scalar");
+
+    // A list of an attribute no owner-domain type owns is unreachable.
+    let error = build(vec![DocumentField::new(
+        key("ages"),
+        DocumentSource::AttributeList {
+            attribute: AttributeId::new("age").expect("attribute"),
+            owner: binding_id(0),
+        },
+    )])
+    .expect_err("unowned listed attribute");
+    assert_eq!(error.code().as_str(), "query_plan_unknown_attribute");
 }

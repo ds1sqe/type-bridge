@@ -17,7 +17,9 @@ use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperand, QueryOperation, QueryOutput,
     QueryPattern, QueryPlan, ReadStage,
 };
-use type_bridge_query::{RowSchema, ValidatedQuery};
+use type_bridge_query::{
+    DocumentColumnShape, DocumentSchema, OutputSchema, RowSchema, ValidatedQuery,
+};
 
 use crate::migration_assertion::{render_comparator, render_literal};
 
@@ -26,7 +28,7 @@ use crate::migration_assertion::{render_comparator, render_literal};
 pub struct LoweredQuery {
     given: Option<crate::session::backend::GivenRowsSpec>,
     operation: QueryOperation,
-    row_schema: RowSchema,
+    output_schema: OutputSchema,
     typeql: String,
 }
 
@@ -43,10 +45,10 @@ impl LoweredQuery {
         self.given.as_ref()
     }
 
-    /// Return the validated output row shape.
+    /// Return the validated output shape.
     #[must_use]
-    pub const fn row_schema(&self) -> &RowSchema {
-        &self.row_schema
+    pub const fn output_schema(&self) -> &OutputSchema {
+        &self.output_schema
     }
 
     /// Return the requested closed operation.
@@ -193,10 +195,42 @@ pub fn lower_validated_query(
         }
     }
 
+    if let type_bridge_contract::query_plan::QueryOutput::Documents { fields } =
+        plan.output()
+    {
+        typeql.push_str("fetch {\n");
+        for (index, field) in fields.iter().enumerate() {
+            write!(typeql, "    \"{}\": ", field.key().as_str())
+                .expect("writing to String cannot fail");
+            match field.source() {
+                type_bridge_contract::query_plan::DocumentSource::Binding {
+                    binding,
+                } => {
+                    write!(typeql, "${}", variable(plan, *binding)?)
+                        .expect("writing to String cannot fail");
+                }
+                type_bridge_contract::query_plan::DocumentSource::AttributeList {
+                    attribute,
+                    owner,
+                } => {
+                    write!(
+                        typeql,
+                        "[ ${}.{} ]",
+                        variable(plan, *owner)?,
+                        attribute.label(),
+                    )
+                    .expect("writing to String cannot fail");
+                }
+            }
+            typeql.push_str(if index + 1 == fields.len() { "\n" } else { ",\n" });
+        }
+        typeql.push_str("};\n");
+    }
+
     Ok(LoweredQuery {
         given,
         operation: invocation.operation(),
-        row_schema: validated.row_schema().clone(),
+        output_schema: validated.output_schema().clone(),
         typeql,
     })
 }
@@ -487,8 +521,10 @@ fn failure(
 /// validation, mirroring the released V1 executor discipline.
 #[must_use]
 pub fn output_columns(plan: &QueryPlan) -> &[BindingId] {
-    let QueryOutput::Rows { columns } = plan.output();
-    columns
+    match plan.output() {
+        QueryOutput::Rows { columns } => columns,
+        QueryOutput::Documents { .. } => &[],
+    }
 }
 
 /// One typed, evidence-validated output value.
@@ -531,11 +567,37 @@ impl QueryResultRow {
     }
 }
 
+/// One typed, evidence-validated document field value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DocumentFieldValue {
+    /// One exact typed scalar.
+    Scalar(type_bridge_contract::value::CanonicalValue),
+    /// An explicit absence in an optional scalar field.
+    Absent,
+    /// A typed list of every owned attribute value.
+    List(Vec<type_bridge_contract::value::CanonicalValue>),
+}
+
+/// One evidence-validated fetched document, positional by document column.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryResultDocument {
+    values: Vec<DocumentFieldValue>,
+}
+
+impl QueryResultDocument {
+    /// Return field values in validated document-column order.
+    pub fn values(&self) -> &[DocumentFieldValue] {
+        &self.values
+    }
+}
+
 /// The validated terminal result of one executed invocation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum QueryV2Outcome {
     /// Evidence-validated projected rows in provider order.
     Rows(Vec<QueryResultRow>),
+    /// Evidence-validated fetched documents in provider order.
+    Documents(Vec<QueryResultDocument>),
     /// The exact number of returned rows.
     Count(u64),
     /// Whether at least one row exists.
@@ -591,28 +653,37 @@ pub(crate) async fn execute_with_provider<
     }
 
     let mut rows: Vec<QueryResultRow> = Vec::new();
+    let mut documents: Vec<QueryResultDocument> = Vec::new();
     let mut validation: Option<Diagnostic> = None;
     let mut consumer = |item| {
-        let row = match item {
-            crate::session::backend::AnswerItem::Row(row) => row,
-            crate::session::backend::AnswerItem::Document(_) => {
-                validation = Some(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_v2_result_not_row",
-                    "provider returned a document for a selected-row query",
-                ));
-                return Ok(crate::session::backend::AnswerControl::Stop);
-            }
+        let validated_item = match (validated.output_schema(), item) {
+            (
+                OutputSchema::Rows(schema),
+                crate::session::backend::AnswerItem::Row(row),
+            ) => validate_result_row(&row, validated, schema)
+                .map(|values| rows.push(QueryResultRow { values })),
+            (
+                OutputSchema::Documents(schema),
+                crate::session::backend::AnswerItem::Document(document),
+            ) => validate_result_document(&document, schema)
+                .map(|values| documents.push(QueryResultDocument { values })),
+            (OutputSchema::Rows(_), _) => Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_v2_result_not_row",
+                "provider returned a document for a selected-row query",
+            )),
+            (OutputSchema::Documents(_), _) => Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_v2_result_not_document",
+                "provider returned a row for a fetched-document query",
+            )),
         };
-        match validate_result_row(&row, validated) {
-            Ok(values) => {
-                rows.push(QueryResultRow { values });
-                Ok(if exists_probe {
-                    crate::session::backend::AnswerControl::Stop
-                } else {
-                    crate::session::backend::AnswerControl::Continue
-                })
-            }
+        match validated_item {
+            Ok(()) => Ok(if exists_probe {
+                crate::session::backend::AnswerControl::Stop
+            } else {
+                crate::session::backend::AnswerControl::Continue
+            }),
             Err(diagnostic) => {
                 validation = Some(diagnostic);
                 Ok(crate::session::backend::AnswerControl::Stop)
@@ -650,17 +721,97 @@ pub(crate) async fn execute_with_provider<
         return Err(QueryV2ExecutionError::Validation(diagnostic));
     }
 
+    let answers = rows.len() + documents.len();
     Ok(match lowered.operation() {
-        QueryOperation::Rows => QueryV2Outcome::Rows(rows),
-        QueryOperation::Count => QueryV2Outcome::Count(rows.len() as u64),
-        QueryOperation::Exists => QueryV2Outcome::Exists(!rows.is_empty()),
+        QueryOperation::Rows => match validated.output_schema() {
+            OutputSchema::Rows(_) => QueryV2Outcome::Rows(rows),
+            OutputSchema::Documents(_) => QueryV2Outcome::Documents(documents),
+        },
+        QueryOperation::Count => QueryV2Outcome::Count(answers as u64),
+        QueryOperation::Exists => QueryV2Outcome::Exists(answers != 0),
     })
+}
+
+/// Validate one provider document against the derived document schema.
+fn validate_result_document(
+    document: &serde_json::Value,
+    schema: &DocumentSchema,
+) -> Result<Vec<DocumentFieldValue>, Diagnostic> {
+    let object = document.as_object().ok_or_else(|| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "query_v2_result_document_malformed",
+            "provider document must be a JSON object keyed by fetch keys",
+        )
+    })?;
+    if object.len() != schema.columns().len()
+        || schema
+            .columns()
+            .iter()
+            .any(|column| !object.contains_key(column.key().as_str()))
+    {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "query_v2_result_column_mismatch",
+            "provider document keys do not exactly match the fetch schema",
+        ));
+    }
+    let mut values = Vec::with_capacity(schema.columns().len());
+    for column in schema.columns() {
+        let value = &object[column.key().as_str()];
+        values.push(match column.shape() {
+            DocumentColumnShape::Scalar {
+                value_type,
+                optional,
+            } => {
+                if value.is_null() {
+                    if !optional {
+                        return Err(failure(
+                            DiagnosticCategory::Integrity,
+                            "query_v2_result_type_mismatch",
+                            "mandatory document field carries an explicit absence",
+                        ));
+                    }
+                    DocumentFieldValue::Absent
+                } else {
+                    DocumentFieldValue::Scalar(
+                        crate::migration_assertion::parse_provider_value(
+                            value,
+                            *value_type,
+                        )?,
+                    )
+                }
+            }
+            DocumentColumnShape::List { element_type, .. } => {
+                let elements = value.as_array().ok_or_else(|| {
+                    failure(
+                        DiagnosticCategory::Integrity,
+                        "query_v2_result_type_mismatch",
+                        "attribute list field is not a JSON array",
+                    )
+                })?;
+                DocumentFieldValue::List(
+                    elements
+                        .iter()
+                        .map(|element| {
+                            crate::migration_assertion::parse_provider_value(
+                                element,
+                                *element_type,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+            }
+        });
+    }
+    Ok(values)
 }
 
 /// Validate one provider row and project it to typed output values.
 fn validate_result_row(
     row: &serde_json::Value,
     validated: &ValidatedQuery,
+    schema: &RowSchema,
 ) -> Result<Vec<QueryRowValue>, Diagnostic> {
     use type_bridge_contract::id::{TypeId, TypeKind};
 
@@ -693,8 +844,8 @@ fn validate_result_row(
         ));
     }
 
-    let mut values = Vec::with_capacity(validated.row_schema().columns().len());
-    for column in validated.row_schema().columns() {
+    let mut values = Vec::with_capacity(schema.columns().len());
+    for column in schema.columns() {
         let domain = column.domain();
         // Optional columns carry an explicit null when their try body did
         // not match; mandatory columns never do.

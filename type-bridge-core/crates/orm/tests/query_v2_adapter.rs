@@ -181,7 +181,9 @@ fn a_representative_v1_request_adapts_validates_and_lowers() {
 
     let plan = adapted.plan();
     assert!(plan.inputs().is_empty(), "V1 requests carry no input columns");
-    let QueryOutput::Rows { columns } = plan.output();
+    let QueryOutput::Rows { columns } = plan.output() else {
+        panic!("adapted plans project rows");
+    };
     assert_eq!(columns.len(), 1, "one selected V1 slot projects one column");
     let ReadStage::Match { patterns } = &plan.pipeline()[0] else {
         panic!("match opens the adapted pipeline");

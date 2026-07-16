@@ -95,6 +95,7 @@ fn query_plan_capability_vocabulary_is_exact_and_deterministic() {
             .collect::<Vec<_>>(),
         vec![
             "query.input.columns",
+            "query.output.documents",
             "query.output.rows",
             "query.pattern.function-call",
             "query.pattern.has",
@@ -687,4 +688,86 @@ fn try_blocks_export_optional_bindings_and_reject_unsound_shapes() {
     )
     .expect_err("negation nested in a try");
     assert_eq!(error.code().as_str(), "query_plan_try_body_unsupported");
+}
+
+#[test]
+fn document_outputs_fetch_typed_fields_and_reject_unsound_shapes() {
+    use type_bridge_contract::query_plan::{DocumentField, DocumentSource};
+
+    let semantics = managed_semantics(b"query-plan-document-fixture");
+    let key = |name: &str| QueryVariable::new(name).expect("document key");
+    let build = |patterns: Vec<QueryPattern>, fields: Vec<DocumentField>| {
+        QueryPlan::new(
+            vec![binding(0, "person"), binding(1, "age")],
+            Vec::new(),
+            vec![ReadStage::Match { patterns }],
+            QueryOutput::Documents { fields },
+            semantics.clone(),
+        )
+    };
+    let has_age = QueryPattern::Has {
+        attribute: binding_id(1),
+        attribute_id: AttributeId::new("age").expect("attribute id"),
+        owner: binding_id(0),
+    };
+
+    // Scalar and list fields round-trip under the documents capability.
+    let plan = build(
+        vec![person_isa(0), has_age.clone()],
+        vec![
+            DocumentField::new(
+                key("age"),
+                DocumentSource::Binding { binding: binding_id(1) },
+            ),
+            DocumentField::new(
+                key("names"),
+                DocumentSource::AttributeList {
+                    attribute: AttributeId::new("name").expect("attribute id"),
+                    owner: binding_id(0),
+                },
+            ),
+        ],
+    )
+    .expect("document plan");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.output.documents"),
+    );
+    let bytes = plan.canonical_bytes().expect("canonical bytes");
+    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
+
+    // One key cannot be fetched twice.
+    let error = build(
+        vec![person_isa(0), has_age.clone()],
+        vec![
+            DocumentField::new(
+                key("age"),
+                DocumentSource::Binding { binding: binding_id(1) },
+            ),
+            DocumentField::new(
+                key("age"),
+                DocumentSource::Binding { binding: binding_id(1) },
+            ),
+        ],
+    )
+    .expect_err("duplicate document key");
+    assert_eq!(error.code().as_str(), "query_plan_duplicate_output_column");
+
+    // Attribute lists reach through mandatory owners only.
+    let error = build(
+        vec![
+            person_isa(0),
+            QueryPattern::Try { patterns: vec![has_age] },
+        ],
+        vec![DocumentField::new(
+            key("names"),
+            DocumentSource::AttributeList {
+                attribute: AttributeId::new("name").expect("attribute id"),
+                owner: binding_id(1),
+            },
+        )],
+    )
+    .expect_err("optional list owner");
+    assert_eq!(error.code().as_str(), "query_plan_output_not_visible");
 }

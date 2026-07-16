@@ -143,6 +143,92 @@ impl RowSchema {
     }
 }
 
+/// The typed shape of one fetched document field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DocumentColumnShape {
+    /// One scalar value; optional sources fetch as explicit absence.
+    Scalar {
+        /// The exact scalar type.
+        value_type: ValueTypeTag,
+        /// Whether documents may carry an explicit absence here.
+        optional: bool,
+    },
+    /// A typed list of every owned value of one attribute.
+    List {
+        /// The listed attribute.
+        attribute: type_bridge_contract::id::AttributeId,
+        /// The exact scalar type of every list element.
+        element_type: ValueTypeTag,
+    },
+}
+
+/// One typed fetched-document column derived solely by validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DocumentColumn {
+    key: QueryVariable,
+    shape: DocumentColumnShape,
+}
+
+impl DocumentColumn {
+    pub(crate) const fn new(key: QueryVariable, shape: DocumentColumnShape) -> Self {
+        Self { key, shape }
+    }
+
+    /// Return the document key.
+    pub const fn key(&self) -> &QueryVariable {
+        &self.key
+    }
+
+    /// Return the typed field shape.
+    pub const fn shape(&self) -> &DocumentColumnShape {
+        &self.shape
+    }
+}
+
+/// Ordered fetched-document schema derived solely by validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DocumentSchema {
+    columns: Vec<DocumentColumn>,
+}
+
+impl DocumentSchema {
+    pub(crate) const fn new(columns: Vec<DocumentColumn>) -> Self {
+        Self { columns }
+    }
+
+    /// Return ordered document columns.
+    pub fn columns(&self) -> &[DocumentColumn] {
+        &self.columns
+    }
+}
+
+/// The validator-derived output shape of one query plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OutputSchema {
+    /// Projected typed row columns.
+    Rows(RowSchema),
+    /// Fetched flat typed documents.
+    Documents(DocumentSchema),
+}
+
+impl OutputSchema {
+    /// Return the row schema of a row-output plan.
+    pub const fn rows(&self) -> Option<&RowSchema> {
+        match self {
+            Self::Rows(schema) => Some(schema),
+            Self::Documents(_) => None,
+        }
+    }
+
+    /// Return the document schema of a document-output plan.
+    pub const fn documents(&self) -> Option<&DocumentSchema> {
+        match self {
+            Self::Documents(schema) => Some(schema),
+            Self::Rows(_) => None,
+        }
+    }
+}
+
 /// Opaque, non-serializable result of schema-aware assertion validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedMigrationAssertionPlan {

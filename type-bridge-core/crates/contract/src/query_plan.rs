@@ -57,6 +57,7 @@ const CAP_OUTPUT_ROWS: &str = "query.output.rows";
 const CAP_FUNCTION_CALL: &str = "query.pattern.function-call";
 const CAP_STAGE_REDUCE: &str = "query.stage.reduce";
 const CAP_TRY: &str = "query.pattern.try";
+const CAP_OUTPUT_DOCUMENTS: &str = "query.output.documents";
 
 /// Return every capability the first query-plan vocabulary can require.
 #[must_use]
@@ -80,6 +81,7 @@ pub fn query_plan_capability_vocabulary() -> CapabilitySet {
         CAP_FUNCTION_CALL,
         CAP_STAGE_REDUCE,
         CAP_TRY,
+        CAP_OUTPUT_DOCUMENTS,
     ]
     .into_iter()
     .map(|value| CapabilityId::new(value).expect("static capability id is canonical"))
@@ -441,6 +443,53 @@ impl ReadStage {
     }
 }
 
+/// One value source of a fetched document field.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DocumentSource {
+    /// The scalar value of one visible binding; optional bindings
+    /// fetch as an explicit JSON null where absent.
+    Binding {
+        /// The projected scalar binding.
+        binding: BindingId,
+    },
+    /// Every value of one attribute on one mandatory owner binding,
+    /// fetched as a typed list (empty where the owner has none).
+    AttributeList {
+        /// The listed attribute.
+        attribute: AttributeId,
+        /// The mandatory owner binding.
+        owner: BindingId,
+    },
+}
+
+/// One key-value field of a fetched document.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DocumentField {
+    key: QueryVariable,
+    source: DocumentSource,
+}
+
+impl DocumentField {
+    /// Bind one document key to its value source.
+    #[must_use]
+    pub const fn new(key: QueryVariable, source: DocumentSource) -> Self {
+        Self { key, source }
+    }
+
+    /// Return the document key.
+    #[must_use]
+    pub const fn key(&self) -> &QueryVariable {
+        &self.key
+    }
+
+    /// Return the value source.
+    #[must_use]
+    pub const fn source(&self) -> &DocumentSource {
+        &self.source
+    }
+}
+
 /// The explicit output category of the first public vocabulary.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -449,6 +498,11 @@ pub enum QueryOutput {
     Rows {
         /// The visible bindings projected, in output order.
         columns: Vec<BindingId>,
+    },
+    /// Fetch one flat typed JSON document per surviving row.
+    Documents {
+        /// The document fields, in output order.
+        fields: Vec<DocumentField>,
     },
 }
 
@@ -539,32 +593,79 @@ impl QueryPlan {
             }
         }
 
-        let (visible, has_sort) =
+        let (mandatory, optional, has_sort) =
             validate_pipeline(&pipeline, bindings.len(), inputs.len(), limits)?;
+        let visible: BTreeSet<BindingId> =
+            mandatory.union(&optional).copied().collect();
 
-        let QueryOutput::Rows { columns } = &output;
-        if columns.is_empty() || !limits.allows_selected_slots(columns.len()) {
-            return Err(failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_plan_output_limit",
-                "output column count is empty or exceeds the structural ceiling",
-            ));
-        }
-        let mut seen = BTreeSet::new();
-        for column in columns {
-            if !visible.contains(column) {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_plan_output_not_visible",
-                    "output projects a binding outside the visible row environment",
-                ));
+        match &output {
+            QueryOutput::Rows { columns } => {
+                if columns.is_empty() || !limits.allows_selected_slots(columns.len())
+                {
+                    return Err(failure(
+                        DiagnosticCategory::ResourceLimit,
+                        "query_plan_output_limit",
+                        "output column count is empty or exceeds the structural ceiling",
+                    ));
+                }
+                let mut seen = BTreeSet::new();
+                for column in columns {
+                    if !visible.contains(column) {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_output_not_visible",
+                            "output projects a binding outside the visible row environment",
+                        ));
+                    }
+                    if !seen.insert(*column) {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_duplicate_output_column",
+                            "output projects one binding twice",
+                        ));
+                    }
+                }
             }
-            if !seen.insert(*column) {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_plan_duplicate_output_column",
-                    "output projects one binding twice",
-                ));
+            QueryOutput::Documents { fields } => {
+                if fields.is_empty() || !limits.allows_selected_slots(fields.len()) {
+                    return Err(failure(
+                        DiagnosticCategory::ResourceLimit,
+                        "query_plan_output_limit",
+                        "output column count is empty or exceeds the structural ceiling",
+                    ));
+                }
+                let mut keys = BTreeSet::new();
+                for field in fields {
+                    if !keys.insert(field.key().clone()) {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_duplicate_output_column",
+                            "documents fetch one key twice",
+                        ));
+                    }
+                    match field.source() {
+                        DocumentSource::Binding { binding } => {
+                            if !visible.contains(binding) {
+                                return Err(failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_output_not_visible",
+                                    "output projects a binding outside the visible row environment",
+                                ));
+                            }
+                        }
+                        DocumentSource::AttributeList { owner, .. } => {
+                            // A list reaches through its owner per row;
+                            // absence would have no list to fetch from.
+                            if !mandatory.contains(owner) {
+                                return Err(failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_output_not_visible",
+                                    "attribute lists require a mandatory owner binding",
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         }
         // Offset and limit consume an ordered stream; without an explicit
@@ -582,7 +683,8 @@ impl QueryPlan {
             ));
         }
 
-        let required_capabilities = derive_capabilities(&pipeline, &inputs)?;
+        let required_capabilities =
+            derive_capabilities(&pipeline, &inputs, &output)?;
         Ok(Self {
             bindings,
             format: QUERY_PLAN_FORMAT_V1.to_owned(),
@@ -829,7 +931,7 @@ fn validate_pipeline(
     binding_count: usize,
     input_count: usize,
     limits: StructuralLimits,
-) -> Result<(BTreeSet<BindingId>, bool), Diagnostic> {
+) -> Result<(BTreeSet<BindingId>, BTreeSet<BindingId>, bool), Diagnostic> {
     let Some((first, rest)) = pipeline.split_first() else {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -1055,7 +1157,7 @@ fn validate_pipeline(
             ReadStage::Offset { .. } | ReadStage::Limit { .. } => {}
         }
     }
-    Ok((mandatory.union(&optional).copied().collect(), has_sort))
+    Ok((mandatory, optional, has_sort))
 }
 
 fn canonical_stage_set(
@@ -1308,10 +1410,18 @@ fn check_binding(binding: BindingId, binding_count: usize) -> Result<(), Diagnos
 fn derive_capabilities(
     pipeline: &[ReadStage],
     inputs: &[InputColumn],
+    output: &QueryOutput,
 ) -> Result<CapabilitySet, Diagnostic> {
     let mut capabilities = CapabilitySet::new();
     insert_capability(&mut capabilities, CAP_PLAN)?;
-    insert_capability(&mut capabilities, CAP_OUTPUT_ROWS)?;
+    match output {
+        QueryOutput::Rows { .. } => {
+            insert_capability(&mut capabilities, CAP_OUTPUT_ROWS)?;
+        }
+        QueryOutput::Documents { .. } => {
+            insert_capability(&mut capabilities, CAP_OUTPUT_DOCUMENTS)?;
+        }
+    }
     if !inputs.is_empty() {
         insert_capability(&mut capabilities, CAP_INPUT_COLUMNS)?;
     }
