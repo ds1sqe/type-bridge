@@ -22,15 +22,18 @@ use type_bridge_contract::projection::BindingTarget;
 use type_bridge_contract::schema::SourceSpan;
 use type_bridge_contract::semantic_profile::SemanticProfile;
 use type_bridge_schema::SchemaSourceService;
+use type_bridge_schema_migration::MigrationSafetyPolicy;
 
 mod workspace_yaml;
 mod workspace;
+mod migration;
 mod lock;
 mod bundle;
 
 pub use workspace_yaml::{
     ConfigOrigin, LocatedConfigSpec, TYPEBRIDGE_WORKSPACE_V1_FORMAT, TypeBridgeConfigSpec,
 };
+pub use migration::MigrationPlanEntry;
 pub use workspace::{
     TypeBridgeWorkspace, TypeBridgeWorkspaceError, TypeBridgeWorkspaceServices,
 };
@@ -570,6 +573,7 @@ pub struct TypeBridgeConfig {
     app_label: MigrationAppLabel,
     extensions: BTreeSet<ExtensionRequirement>,
     managed_scope: ManagedScopeBinding,
+    migration_policy: MigrationSafetyPolicy,
     migration_v2_directory: MigrationV2Directory,
     outputs: BTreeMap<BindingTarget, OutputDirectory>,
     required_capabilities: CapabilitySet,
@@ -628,6 +632,16 @@ impl TypeBridgeConfig {
         &self.migration_v2_directory
     }
 
+    /// Return the explicit apply-side migration safety policy.
+    ///
+    /// The policy can tighten the verifier's classification but never loosen
+    /// it: a standing allowance for destructive or opaque work is rejected by
+    /// construction, so no configuration spells a permanent `force = true`.
+    #[must_use]
+    pub const fn migration_policy(&self) -> &MigrationSafetyPolicy {
+        &self.migration_policy
+    }
+
     /// Return the V2 migration directory resolved under the root.
     #[must_use]
     pub fn migration_v2_absolute_path(&self) -> PathBuf {
@@ -671,6 +685,7 @@ pub struct TypeBridgeConfigBuilder {
     duplicate_required_fields: BTreeSet<&'static str>,
     extensions: Vec<ExtensionRequirement>,
     managed_scope_id: Option<ManagedScopeId>,
+    migration_policy: Option<MigrationSafetyPolicy>,
     migration_v2_directory: Option<MigrationV2Directory>,
     outputs: Vec<(BindingTarget, OutputDirectory)>,
     required_capabilities: CapabilitySet,
@@ -687,6 +702,7 @@ impl TypeBridgeConfigBuilder {
             duplicate_required_fields: BTreeSet::new(),
             extensions: Vec::new(),
             managed_scope_id: None,
+            migration_policy: None,
             migration_v2_directory: None,
             outputs: Vec::new(),
             required_capabilities: CapabilitySet::new(),
@@ -763,6 +779,22 @@ impl TypeBridgeConfigBuilder {
             &mut self.migration_v2_directory,
             directory,
             "migration_v2_directory",
+            &mut self.duplicate_required_fields,
+        );
+        self
+    }
+
+    /// Replace the default apply-side migration safety policy.
+    ///
+    /// [`MigrationSafetyPolicy`] construction already rejects every standing
+    /// allowance for destructive or opaque work, so no builder input spells a
+    /// permanent `force = true`.
+    #[must_use]
+    pub fn migration_policy(mut self, policy: MigrationSafetyPolicy) -> Self {
+        Self::mark_duplicate(
+            &mut self.migration_policy,
+            policy,
+            "migration_policy",
             &mut self.duplicate_required_fields,
         );
         self
@@ -969,6 +1001,9 @@ impl TypeBridgeConfigBuilder {
             app_label,
             extensions,
             managed_scope,
+            migration_policy: self
+                .migration_policy
+                .unwrap_or_else(MigrationSafetyPolicy::default_policy),
             migration_v2_directory,
             outputs,
             required_capabilities: self.required_capabilities,

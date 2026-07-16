@@ -143,6 +143,7 @@ pub struct TypeBridgeWorkspace {
     bound_scope: BoundManagedSchemaScope,
     config: TypeBridgeConfig,
     declared: DeclaredSchema,
+    delta_context: ManagedDeltaContext,
     discovery: SchemaDiscoverySnapshot,
     located_config: Option<LocatedConfigSpec>,
     managed_state: ManagedSchemaState,
@@ -209,6 +210,7 @@ impl TypeBridgeWorkspace {
             bound_scope,
             config,
             declared,
+            delta_context: context,
             discovery,
             located_config,
             managed_state,
@@ -275,6 +277,12 @@ impl TypeBridgeWorkspace {
     #[must_use]
     pub const fn required_capabilities(&self) -> &CapabilitySet {
         &self.required_capabilities
+    }
+
+    /// Return the exact managed-delta context this workspace plans under.
+    #[must_use]
+    pub const fn delta_context(&self) -> &ManagedDeltaContext {
+        &self.delta_context
     }
 }
 

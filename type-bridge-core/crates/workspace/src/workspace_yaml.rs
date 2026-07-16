@@ -10,6 +10,9 @@ use type_bridge_contract::schema::{
     DocumentFingerprint, DocumentId, SchemaDiagnostics, SourceSpan,
 };
 use type_bridge_schema::{SchemaComment, SchemaDocument, YamlMapping, YamlNode};
+use type_bridge_schema_migration::{
+    MigrationSafetyPolicy, SafetyClass, SafetyPolicyDecision,
+};
 
 use crate::{
     ExtensionRequirement, MigrationV2Directory, OutputDirectory, SchemaSetPath,
@@ -114,6 +117,7 @@ struct ExtensionWire {
 struct WorkspaceWire {
     app_label: SpannedString,
     capabilities: Vec<SpannedString>,
+    destructive: Option<SpannedString>,
     extensions: Vec<ExtensionWire>,
     managed_scope: SpannedString,
     migration_directory: SpannedString,
@@ -252,6 +256,30 @@ impl LocatedConfigSpec {
             .exclusive_managed_scope(managed_scope)
             .semantic_profile(semantic_profile)
             .migration_v2_directory(migration_v2_directory);
+
+        if let Some(destructive) = wire.destructive {
+            // The manifest may only tighten the verifier's floor. Anything
+            // spelling a standing allowance is the invalid permanent
+            // `force = true` shape and is rejected here by name.
+            let policy = match destructive.value.as_str() {
+                "require-approval" => MigrationSafetyPolicy::default_policy(),
+                "reject" => MigrationSafetyPolicy::default_policy()
+                    .with_decision(SafetyClass::Destructive, SafetyPolicyDecision::Reject)
+                    .expect("rejecting destructive work is always a valid tightening"),
+                other => {
+                    return Err(WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+                        "migrations.destructive admits only require-approval or reject",
+                    )
+                    .with_detail(other.to_owned())
+                    .with_source(
+                        origin.manifest_path().display().to_string(),
+                        destructive.span.clone(),
+                    ));
+                }
+            };
+            builder = builder.migration_policy(policy);
+        }
 
         for capability in wire.capabilities {
             let value = CapabilityId::new(capability.value).map_err(|error| {
@@ -520,7 +548,7 @@ fn parse_wire(
         )?,
         origin,
     )?;
-    let (migration_directory, app_label) = parse_migrations(
+    let (migration_directory, app_label, destructive) = parse_migrations(
         mapping(
             required(migrations, "migrations", root, origin)?,
             "migrations",
@@ -547,6 +575,7 @@ fn parse_wire(
     Ok(WorkspaceWire {
         app_label,
         capabilities,
+        destructive,
         extensions,
         managed_scope,
         migration_directory,
@@ -646,13 +675,16 @@ fn parse_compatibility(
 fn parse_migrations(
     value: &YamlMapping,
     origin: &ConfigOrigin,
-) -> Result<(SpannedString, SpannedString), WorkspaceConfigError> {
+) -> Result<(SpannedString, SpannedString, Option<SpannedString>), WorkspaceConfigError>
+{
     let mut directory = None;
     let mut app_label = None;
+    let mut destructive = None;
     for entry in value.entries() {
         match entry.key().value() {
             "directory" => directory = Some(entry.value()),
             "app-label" => app_label = Some(entry.value()),
+            "destructive" => destructive = Some(entry.value()),
             unknown => {
                 return Err(unknown_key(
                     "migrations",
@@ -663,6 +695,9 @@ fn parse_migrations(
             }
         }
     }
+    let destructive = destructive
+        .map(|value| scalar(value, "migrations.destructive", origin))
+        .transpose()?;
     Ok((
         scalar(
             required(directory, "migrations.directory", value, origin)?,
@@ -674,6 +709,7 @@ fn parse_migrations(
             "migrations.app-label",
             origin,
         )?,
+        destructive,
     ))
 }
 

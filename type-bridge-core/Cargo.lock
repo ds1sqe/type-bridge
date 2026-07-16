@@ -2920,6 +2920,7 @@ dependencies = [
  "serde_json",
  "type-bridge-contract",
  "type-bridge-schema",
+ "type-bridge-schema-migration",
 ]
 
 [[package]]
