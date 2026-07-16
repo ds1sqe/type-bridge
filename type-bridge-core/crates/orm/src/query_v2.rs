@@ -272,6 +272,13 @@ fn render_patterns(
                 writeln!(output, "{indent}}};")
                     .expect("writing to String cannot fail");
             }
+            QueryPattern::Try { patterns } => {
+                writeln!(output, "{indent}try {{")
+                    .expect("writing to String cannot fail");
+                render_patterns(output, plan, patterns, row, depth + 1)?;
+                writeln!(output, "{indent}}};")
+                    .expect("writing to String cannot fail");
+            }
             QueryPattern::FunctionCall {
                 arguments,
                 assigned,
@@ -396,6 +403,8 @@ pub enum QueryRowValue {
         /// The exact typed scalar value.
         value: type_bridge_contract::value::CanonicalValue,
     },
+    /// An explicit absence in an optional output column.
+    Absent,
 }
 
 /// One evidence-validated output row, positional by output column.
@@ -544,6 +553,16 @@ fn validate_result_row(
     let mut values = Vec::with_capacity(validated.row_schema().columns().len());
     for column in validated.row_schema().columns() {
         let domain = column.domain();
+        // Optional columns carry an explicit null when their try body did
+        // not match; mandatory columns never do.
+        if column.optional()
+            && object
+                .get(column.variable().as_str())
+                .is_some_and(serde_json::Value::is_null)
+        {
+            values.push(QueryRowValue::Absent);
+            continue;
+        }
         let concept = object
             .get(column.variable().as_str())
             .and_then(serde_json::Value::as_object)

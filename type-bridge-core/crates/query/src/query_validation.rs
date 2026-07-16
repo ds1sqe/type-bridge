@@ -97,6 +97,18 @@ const QUERY_ENGINE_CODES: EngineCodes = EngineCodes {
         code: "query_plan_value_binding_misuse",
         message: "a value binding may appear only as a comparison or argument operand",
     },
+    try_unbound: EngineCode {
+        code: "query_plan_try_unbound_binding",
+        message: "try-body reference is not established in its body or the root",
+    },
+    try_uncorrelated: EngineCode {
+        code: "query_plan_try_not_correlated",
+        message: "a try body must reference at least one mandatory root binding",
+    },
+    empty_try_domain: EngineCode {
+        code: "query_plan_empty_try_domain",
+        message: "try body has an impossible schema domain",
+    },
 };
 
 /// Opaque, non-serializable result of schema-aware plan validation.
@@ -186,6 +198,7 @@ pub fn validate_query_plan(
     };
     let engine::PatternAnalysis {
         domains,
+        optional_positive,
         positive,
         scoped_positive,
         used,
@@ -225,7 +238,10 @@ pub fn validate_query_plan(
                 "every declared binding must be referenced by a pattern",
             ));
         }
-        if projected.contains(&id) && !positive.contains(&id) {
+        if projected.contains(&id)
+            && !positive.contains(&id)
+            && !optional_positive.contains(&id)
+        {
             return Err(plan_failure(
                 DiagnosticCategory::InvalidContract,
                 "query_plan_binding_not_positive",
@@ -234,6 +250,7 @@ pub fn validate_query_plan(
         }
         if !projected.contains(&id)
             && !positive.contains(&id)
+            && !optional_positive.contains(&id)
             && !scoped_positive.contains(&id)
         {
             return Err(plan_failure(
@@ -242,7 +259,7 @@ pub fn validate_query_plan(
                 "a hidden witness must be positively established in its lexical scope",
             ));
         }
-        if positive.contains(&id)
+        if (positive.contains(&id) || optional_positive.contains(&id))
             && domains[&id].is_empty()
             && !value_bindings.contains_key(&id)
         {
@@ -256,7 +273,7 @@ pub fn validate_query_plan(
 
     let mut binding_domains = domains
         .into_iter()
-        .filter(|(id, _)| positive.contains(id))
+        .filter(|(id, _)| positive.contains(id) || optional_positive.contains(id))
         .map(|(id, type_ids)| {
             let value_type = match value_bindings.get(&id) {
                 Some(tag) => Some(*tag),
@@ -270,7 +287,20 @@ pub fn validate_query_plan(
 
     for stage in plan.pipeline() {
         match stage {
-            ReadStage::Select { bindings } | ReadStage::Require { bindings } => {
+            ReadStage::Select { bindings } => {
+                for binding in bindings {
+                    if !positive.contains(binding)
+                        && !optional_positive.contains(binding)
+                    {
+                        return Err(plan_failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_binding_not_positive",
+                            "stage bindings must be positively established at the root",
+                        ));
+                    }
+                }
+            }
+            ReadStage::Require { bindings } => {
                 for binding in bindings {
                     if !positive.contains(binding) {
                         return Err(plan_failure(
@@ -294,7 +324,10 @@ pub fn validate_query_plan(
                 for assignment in assignments {
                     let input_scalar = match assignment.input() {
                         Some(input) => {
-                            if !positive.contains(&input) {
+                            let admitted = positive.contains(&input)
+                                || (optional_positive.contains(&input)
+                                    && assignment.reducer().total_without_groups());
+                            if !admitted {
                                 return Err(plan_failure(
                                     DiagnosticCategory::InvalidContract,
                                     "query_plan_binding_not_positive",
@@ -374,6 +407,7 @@ pub fn validate_query_plan(
                 *id,
                 binding_domains[id].clone(),
                 binding.variable().clone(),
+                optional_positive.contains(id),
             )
         })
         .collect::<Vec<_>>();

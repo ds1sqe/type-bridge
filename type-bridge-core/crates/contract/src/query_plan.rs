@@ -56,6 +56,7 @@ const CAP_STAGE_LIMIT: &str = "query.stage.limit";
 const CAP_OUTPUT_ROWS: &str = "query.output.rows";
 const CAP_FUNCTION_CALL: &str = "query.pattern.function-call";
 const CAP_STAGE_REDUCE: &str = "query.stage.reduce";
+const CAP_TRY: &str = "query.pattern.try";
 
 /// Return every capability the first query-plan vocabulary can require.
 #[must_use]
@@ -78,6 +79,7 @@ pub fn query_plan_capability_vocabulary() -> CapabilitySet {
         CAP_OUTPUT_ROWS,
         CAP_FUNCTION_CALL,
         CAP_STAGE_REDUCE,
+        CAP_TRY,
     ]
     .into_iter()
     .map(|value| CapabilityId::new(value).expect("static capability id is canonical"))
@@ -232,6 +234,16 @@ pub enum QueryPattern {
     /// Negate a closed nested conjunction.
     Not {
         /// The negated conjunction.
+        patterns: Vec<QueryPattern>,
+    },
+    /// Optionally match a nested conjunction without filtering rows.
+    ///
+    /// Bindings established only inside the body survive as optional: rows
+    /// where the body matched carry them, other rows carry an explicit
+    /// absence. The first optional vocabulary admits `isa`, `has`, `links`,
+    /// and value comparisons in the body, at the root conjunction only.
+    Try {
+        /// The optional conjunction.
         patterns: Vec<QueryPattern>,
     },
     /// Assign one scalar schema-function result to a binding.
@@ -851,7 +863,37 @@ fn validate_pipeline(
     for pattern in patterns {
         collect_pattern_bindings(pattern, &mut pattern_bound);
     }
-    let mut visible = pattern_bound.clone();
+    // Bindings established only inside a try body are optional: rows carry
+    // them or an explicit absence. Each optional binding belongs to exactly
+    // one try body; sharing one across bodies has no single presence source.
+    let mut root_mandatory = BTreeSet::new();
+    for pattern in patterns {
+        if !matches!(pattern, QueryPattern::Try { .. }) {
+            collect_pattern_bindings(pattern, &mut root_mandatory);
+        }
+    }
+    let mut optional = BTreeSet::new();
+    for pattern in patterns {
+        let QueryPattern::Try { patterns } = pattern else {
+            continue;
+        };
+        let mut body_refs = BTreeSet::new();
+        for child in patterns {
+            collect_pattern_bindings(child, &mut body_refs);
+        }
+        for reference in &body_refs {
+            if optional.contains(reference) {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_try_binding_shared",
+                    "an optional binding belongs to exactly one try body",
+                ));
+            }
+        }
+        optional.extend(body_refs.difference(&root_mandatory).copied());
+    }
+    let mut mandatory: BTreeSet<BindingId> =
+        pattern_bound.difference(&optional).copied().collect();
     let mut previous_ordinal = 0u8;
     let mut has_sort = false;
     for stage in rest {
@@ -867,12 +909,26 @@ fn validate_pipeline(
         match stage {
             ReadStage::Match { .. } => unreachable!("ordinal zero cannot follow"),
             ReadStage::Select { bindings } => {
-                let selected =
-                    canonical_stage_set(bindings, &visible, "select")?;
-                visible = selected;
+                let union: BTreeSet<BindingId> =
+                    mandatory.union(&optional).copied().collect();
+                let selected = canonical_stage_set(bindings, &union, "select")?;
+                mandatory.retain(|id| selected.contains(id));
+                optional.retain(|id| selected.contains(id));
             }
             ReadStage::Require { bindings } => {
-                canonical_stage_set(bindings, &visible, "require")?;
+                // The provider contract for requiring an optional binding is
+                // unproven (TypeDB 3.12.1 stalls on it); the first optional
+                // vocabulary reserves require to mandatory bindings.
+                let union: BTreeSet<BindingId> =
+                    mandatory.union(&optional).copied().collect();
+                let required = canonical_stage_set(bindings, &union, "require")?;
+                if required.iter().any(|id| optional.contains(id)) {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_plan_require_optional_reserved",
+                        "requiring an optional binding is reserved in this vocabulary",
+                    ));
+                }
             }
             ReadStage::Distinct => {}
             ReadStage::Reduce { assignments, groups } => {
@@ -898,11 +954,13 @@ fn validate_pipeline(
                         ));
                     }
                     previous = Some(*group);
-                    if !visible.contains(group) {
+                    // Grouping by an optional binding would key groups on
+                    // absence; group keys stay mandatory.
+                    if !mandatory.contains(group) {
                         return Err(failure(
                             DiagnosticCategory::InvalidContract,
                             "query_plan_stage_unknown_binding",
-                            "reduce groups a binding outside the visible row environment",
+                            "reduce groups a binding outside the mandatory row environment",
                         ));
                     }
                     next_visible.insert(*group);
@@ -920,11 +978,25 @@ fn validate_pipeline(
                     }
                     match assignment.input() {
                         Some(input) => {
-                            if !visible.contains(&input) {
+                            if !mandatory.contains(&input)
+                                && !optional.contains(&input)
+                            {
                                 return Err(failure(
                                     DiagnosticCategory::InvalidContract,
                                     "query_plan_stage_unknown_binding",
                                     "reduce consumes a binding outside the visible row environment",
+                                ));
+                            }
+                            // Count and sum skip absent inputs and stay
+                            // total; max, min, and mean can observe a group
+                            // whose optional input never matched.
+                            if optional.contains(&input)
+                                && !assignment.reducer().total_without_groups()
+                            {
+                                return Err(failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_reduce_optional_input",
+                                    "this reducer is undefined over an optional input",
                                 ));
                             }
                         }
@@ -948,7 +1020,8 @@ fn validate_pipeline(
                         ));
                     }
                 }
-                visible = next_visible;
+                mandatory = next_visible;
+                optional.clear();
             }
             ReadStage::Sort { terms } => {
                 if terms.is_empty() || terms.len() > limits.boolean_terms {
@@ -960,11 +1033,13 @@ fn validate_pipeline(
                 }
                 let mut sorted = BTreeSet::new();
                 for term in terms {
-                    if !visible.contains(&term.binding()) {
+                    // Absence has no defined position in a total order;
+                    // sort keys stay mandatory.
+                    if !mandatory.contains(&term.binding()) {
                         return Err(failure(
                             DiagnosticCategory::InvalidContract,
                             "query_plan_stage_unknown_binding",
-                            "sort references a binding outside the visible row environment",
+                            "sort references a binding outside the mandatory row environment",
                         ));
                     }
                     if !sorted.insert(term.binding()) {
@@ -980,7 +1055,7 @@ fn validate_pipeline(
             ReadStage::Offset { .. } | ReadStage::Limit { .. } => {}
         }
     }
-    Ok((visible, has_sort))
+    Ok((mandatory.union(&optional).copied().collect(), has_sort))
 }
 
 fn canonical_stage_set(
@@ -1085,6 +1160,45 @@ fn inspect_pattern(
             }
             Ok(())
         }
+        QueryPattern::Try { patterns } => {
+            if depth > 1 {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_try_not_root",
+                    "optional blocks are admitted only in the root conjunction",
+                ));
+            }
+            if patterns.is_empty() || patterns.len() > limits.boolean_terms {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_try_term_limit",
+                    "optional block is empty or exceeds the boolean-term ceiling",
+                ));
+            }
+            for child in patterns {
+                if matches!(
+                    child,
+                    QueryPattern::Not { .. }
+                        | QueryPattern::Try { .. }
+                        | QueryPattern::FunctionCall { .. }
+                ) {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_plan_try_body_unsupported",
+                        "the first optional vocabulary admits only isa, has, links, and value patterns",
+                    ));
+                }
+                inspect_pattern(
+                    child,
+                    depth + 1,
+                    binding_count,
+                    input_count,
+                    limits,
+                    nodes,
+                )?;
+            }
+            Ok(())
+        }
         QueryPattern::FunctionCall {
             arguments,
             assigned,
@@ -1139,7 +1253,7 @@ fn collect_pattern_bindings(
             operand(left);
             operand(right);
         }
-        QueryPattern::Not { patterns } => {
+        QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
             for child in patterns {
                 collect_pattern_bindings(child, bindings);
             }
@@ -1248,6 +1362,12 @@ fn collect_pattern_capabilities(
         QueryPattern::Has { .. } => insert_capability(capabilities, CAP_HAS)?,
         QueryPattern::Links { .. } => insert_capability(capabilities, CAP_LINKS)?,
         QueryPattern::Value { .. } => insert_capability(capabilities, CAP_VALUE)?,
+        QueryPattern::Try { patterns } => {
+            insert_capability(capabilities, CAP_TRY)?;
+            for child in patterns {
+                collect_pattern_capabilities(child, capabilities)?;
+            }
+        }
         QueryPattern::Not { patterns } => {
             insert_capability(capabilities, CAP_NEGATION)?;
             for child in patterns {

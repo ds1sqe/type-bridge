@@ -614,3 +614,125 @@ fn reduce_stages_type_grouped_and_global_results() {
     .expect_err("max over entities");
     assert_eq!(error.code().as_str(), "query_plan_reduce_input_domain");
 }
+
+#[test]
+fn try_blocks_type_optional_columns_and_fail_closed() {
+    let person = type_id(TypeKind::Entity, "person");
+    let age = AttributeId::new("age").expect("attribute");
+    let name = AttributeId::new("name").expect("attribute");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
+        SchemaFact::Type(
+            TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact"),
+        ),
+        SchemaFact::Type(
+            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), age.clone()).expect("owns id"),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, name.clone()).expect("owns id"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-plan-try-fixture").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+            .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-plan-try-scope").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+
+    let has_age = QueryPattern::Has {
+        attribute: binding_id(1),
+        attribute_id: age.clone(),
+        owner: binding_id(0),
+    };
+    let build = |try_body: Vec<QueryPattern>| {
+        let plan = QueryPlan::new(
+            vec![binding(0, "person"), binding(1, "age")],
+            Vec::new(),
+            vec![ReadStage::Match {
+                patterns: vec![
+                    person_isa(0),
+                    QueryPattern::Try { patterns: try_body },
+                ],
+            }],
+            QueryOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            managed.managed_semantic_schema().clone(),
+        )
+        .expect("try plan");
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+    };
+
+    // The optional column is typed from its refined body domain.
+    let validated = build(vec![has_age.clone()]).expect("optional projection");
+    let columns = validated.row_schema().columns();
+    assert!(!columns[0].optional());
+    assert!(columns[1].optional());
+    assert_eq!(columns[1].domain().value_type(), Some(ValueTypeTag::Long));
+
+    // A try body must correlate with the mandatory row.
+    let error = build(vec![QueryPattern::Isa {
+        binding: binding_id(1),
+        include_subtypes: false,
+        type_id: type_id(TypeKind::Attribute, "age"),
+    }])
+    .expect_err("uncorrelated try body");
+    assert_eq!(error.code().as_str(), "query_plan_try_not_correlated");
+
+    // A body pinning the optional binding to two attribute types is
+    // impossible under the schema.
+    let error = build(vec![
+        has_age.clone(),
+        QueryPattern::Isa {
+            binding: binding_id(1),
+            include_subtypes: false,
+            type_id: type_id(TypeKind::Attribute, "name"),
+        },
+    ])
+    .expect_err("impossible try domain");
+    assert_eq!(error.code().as_str(), "query_plan_empty_try_domain");
+
+    // Every body reference is established in the body or the root.
+    let error = build(vec![QueryPattern::Value {
+        comparator: ValueComparator::Equal,
+        left: QueryOperand::Binding { binding: binding_id(1) },
+        right: QueryOperand::Literal { value: CanonicalValue::Long(1) },
+    }])
+    .expect_err("unbound try reference");
+    assert_eq!(error.code().as_str(), "query_plan_try_unbound_binding");
+}

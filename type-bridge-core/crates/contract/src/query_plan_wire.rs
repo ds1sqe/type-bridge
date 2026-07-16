@@ -273,6 +273,7 @@ enum QueryPatternWire {
         right: QueryOperandWire,
     },
     Not { patterns: Vec<QueryPatternWire> },
+    Try { patterns: Vec<QueryPatternWire> },
     FunctionCall {
         arguments: Vec<QueryOperandWire>,
         assigned: u16,
@@ -323,6 +324,12 @@ impl QueryPatternWire {
                 right: right.rebuild()?,
             },
             Self::Not { patterns } => QueryPattern::Not {
+                patterns: patterns
+                    .into_iter()
+                    .map(QueryPatternWire::rebuild)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+            Self::Try { patterns } => QueryPattern::Try {
                 patterns: patterns
                     .into_iter()
                     .map(QueryPatternWire::rebuild)

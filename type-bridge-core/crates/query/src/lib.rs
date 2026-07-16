@@ -86,6 +86,7 @@ impl BindingDomain {
 pub struct RowColumn {
     binding: BindingId,
     domain: BindingDomain,
+    optional: bool,
     variable: QueryVariable,
 }
 
@@ -94,13 +95,24 @@ impl RowColumn {
         binding: BindingId,
         domain: BindingDomain,
         variable: QueryVariable,
+        optional: bool,
     ) -> Self {
-        Self { binding, domain, variable }
+        Self {
+            binding,
+            domain,
+            optional,
+            variable,
+        }
     }
 
     /// Return the output binding.
     pub const fn binding(&self) -> BindingId {
         self.binding
+    }
+
+    /// Whether rows may carry an explicit absence in this column.
+    pub const fn optional(&self) -> bool {
+        self.optional
     }
 
     /// Return the canonical query variable.
@@ -203,6 +215,7 @@ pub fn validate_migration_assertion_plan(
     let converted = convert_assertion_patterns(plan.patterns());
     let engine::PatternAnalysis {
         domains,
+        optional_positive: _,
         positive,
         scoped_positive,
         used,
@@ -281,6 +294,7 @@ pub fn validate_migration_assertion_plan(
             RowColumn {
                 binding: *id,
                 domain: binding_domains[id].clone(),
+                optional: false,
                 variable: binding.variable().clone(),
             }
         })
@@ -428,6 +442,18 @@ const ASSERTION_ENGINE_CODES: engine::EngineCodes = engine::EngineCodes {
     value_binding_misuse: engine::EngineCode {
         code: "migration_assertion_unknown_binding",
         message: "assertion patterns cannot call schema functions",
+    },
+    try_unbound: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot express optional blocks",
+    },
+    try_uncorrelated: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot express optional blocks",
+    },
+    empty_try_domain: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot express optional blocks",
     },
 };
 

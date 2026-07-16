@@ -45,11 +45,15 @@ pub(crate) struct EngineCodes {
     pub(crate) function_arity_mismatch: EngineCode,
     pub(crate) function_argument_type: EngineCode,
     pub(crate) value_binding_misuse: EngineCode,
+    pub(crate) try_unbound: EngineCode,
+    pub(crate) try_uncorrelated: EngineCode,
+    pub(crate) empty_try_domain: EngineCode,
 }
 
 /// The trusted result of one root-conjunction analysis.
 pub(crate) struct PatternAnalysis {
     pub(crate) domains: BTreeMap<BindingId, BTreeSet<TypeId>>,
+    pub(crate) optional_positive: BTreeSet<BindingId>,
     pub(crate) positive: BTreeSet<BindingId>,
     pub(crate) scoped_positive: BTreeSet<BindingId>,
     pub(crate) used: BTreeSet<BindingId>,
@@ -112,6 +116,18 @@ pub(crate) fn analyze_patterns(
         &value_bindings,
         codes,
     )?;
+    let mut optional_positive = BTreeSet::new();
+    validate_tries(
+        patterns,
+        &mut domains,
+        schema,
+        inputs,
+        &positive,
+        &all_constructible,
+        &mut optional_positive,
+        &value_bindings,
+        codes,
+    )?;
     validate_values_shallow(patterns, &domains, schema, inputs, &value_bindings, codes)?;
     let mut used = BTreeSet::new();
     collect_references(patterns, &mut used);
@@ -119,6 +135,7 @@ pub(crate) fn analyze_patterns(
 
     Ok(PatternAnalysis {
         domains,
+        optional_positive,
         positive,
         scoped_positive,
         used,
@@ -256,7 +273,7 @@ fn ensure_value_bindings_stay_scalar(
                         .any(|player| value_bindings.contains_key(&player.player()))
             }
             QueryPattern::Value { .. } | QueryPattern::FunctionCall { .. } => false,
-            QueryPattern::Not { patterns } => {
+            QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
                 ensure_value_bindings_stay_scalar(patterns, value_bindings, codes)?;
                 false
             }
@@ -404,6 +421,7 @@ fn refine_pattern(
         }
         QueryPattern::Value { .. }
         | QueryPattern::Not { .. }
+        | QueryPattern::Try { .. }
         | QueryPattern::FunctionCall { .. } => Ok(false),
     }
 }
@@ -447,7 +465,7 @@ fn collect_scope_topology(
                     connect(topology, left, right);
                 }
             }
-            QueryPattern::Not { .. } => {}
+            QueryPattern::Not { .. } | QueryPattern::Try { .. } => {}
             QueryPattern::FunctionCall {
                 arguments,
                 assigned,
@@ -539,6 +557,75 @@ fn validate_negations(
     Ok(())
 }
 
+/// Validate every root optional block and export its locals.
+///
+/// A try body never filters rows: its patterns refine only the bindings it
+/// establishes, which join the analysis as optional. The body must be
+/// self-contained, internally connected, correlated with at least one
+/// mandatory binding, and possible under the schema.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "optional scoping threads the complete outer analysis state"
+)]
+fn validate_tries(
+    patterns: &[QueryPattern],
+    domains: &mut BTreeMap<BindingId, BTreeSet<TypeId>>,
+    schema: &ResolvedSchema,
+    inputs: &[ValueTypeTag],
+    outer_positive: &BTreeSet<BindingId>,
+    all_constructible: &BTreeSet<TypeId>,
+    optional_positive: &mut BTreeSet<BindingId>,
+    value_bindings: &BTreeMap<BindingId, ValueTypeTag>,
+    codes: &EngineCodes,
+) -> Result<(), Diagnostic> {
+    for pattern in patterns {
+        let QueryPattern::Try { patterns: body } = pattern else {
+            continue;
+        };
+        let mut body_positive = BTreeSet::new();
+        let mut body_references = BTreeSet::new();
+        let mut topology = domains
+            .keys()
+            .copied()
+            .map(|id| (id, BTreeSet::new()))
+            .collect::<BTreeMap<_, _>>();
+        collect_scope_topology(
+            body,
+            &mut body_positive,
+            &mut body_references,
+            &mut topology,
+        );
+        let mut body_scope = outer_positive.clone();
+        body_scope.extend(body_positive.iter().copied());
+        if body_references.iter().any(|id| !body_scope.contains(id)) {
+            return Err(fail(codes.try_unbound));
+        }
+        if !body_references.iter().any(|id| outer_positive.contains(id)) {
+            return Err(fail(codes.try_uncorrelated));
+        }
+        let mut nested = domains.clone();
+        for (id, domain) in &mut nested {
+            if !outer_positive.contains(id) {
+                *domain = all_constructible.clone();
+            }
+        }
+        refine_positive(body, &mut nested, schema, codes)?;
+        if body_positive.iter().any(|id| nested[id].is_empty()) {
+            return Err(fail(codes.empty_try_domain));
+        }
+        validate_values_shallow(body, &nested, schema, inputs, value_bindings, codes)?;
+        topology.retain(|id, _| body_references.contains(id));
+        ensure_connected(&topology, codes)?;
+        for id in &body_positive {
+            if !outer_positive.contains(id) {
+                optional_positive.insert(*id);
+                domains.insert(*id, nested[id].clone());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_values_shallow(
     patterns: &[QueryPattern],
     domains: &BTreeMap<BindingId, BTreeSet<TypeId>>,
@@ -608,7 +695,9 @@ fn collect_references(patterns: &[QueryPattern], output: &mut BTreeSet<BindingId
                 output.extend(operand_binding(left));
                 output.extend(operand_binding(right));
             }
-            QueryPattern::Not { patterns } => collect_references(patterns, output),
+            QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+                collect_references(patterns, output);
+            }
             QueryPattern::FunctionCall {
                 arguments,
                 assigned,

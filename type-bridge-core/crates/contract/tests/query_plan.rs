@@ -102,6 +102,7 @@ fn query_plan_capability_vocabulary_is_exact_and_deterministic() {
             "query.pattern.isa-subtypes",
             "query.pattern.links",
             "query.pattern.negation",
+            "query.pattern.try",
             "query.pattern.value",
             "query.plan",
             "query.stage.distinct",
@@ -517,4 +518,173 @@ fn reduce_stages_group_assign_and_reject_unsound_shapes() {
         vec![binding_id(2)],
     )
     .expect("global count plan");
+}
+
+#[test]
+fn try_blocks_export_optional_bindings_and_reject_unsound_shapes() {
+    use type_bridge_contract::query_plan::{ReduceAssignment, Reducer};
+
+    let semantics = managed_semantics(b"query-plan-try-fixture");
+    let has_age = |owner: u16, attribute: u16| QueryPattern::Has {
+        attribute: binding_id(attribute),
+        attribute_id: AttributeId::new("age").expect("attribute id"),
+        owner: binding_id(owner),
+    };
+    let build = |pipeline: Vec<ReadStage>, columns: Vec<BindingId>| {
+        QueryPlan::new(
+            vec![
+                binding(0, "person"),
+                binding(1, "age"),
+                binding(2, "result"),
+            ],
+            Vec::new(),
+            pipeline,
+            QueryOutput::Rows { columns },
+            semantics.clone(),
+        )
+    };
+    let try_match = ReadStage::Match {
+        patterns: vec![
+            person_isa(0),
+            QueryPattern::Try { patterns: vec![has_age(0, 1)] },
+        ],
+    };
+
+    // Optional bindings project and round-trip under the try capability.
+    let plan = build(
+        vec![try_match.clone()],
+        vec![binding_id(0), binding_id(1)],
+    )
+    .expect("optional projection plan");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.pattern.try"),
+    );
+    let bytes = plan.canonical_bytes().expect("canonical bytes");
+    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
+
+    // Count and sum skip absence; they may consume optional bindings.
+    build(
+        vec![
+            try_match.clone(),
+            ReadStage::Reduce {
+                assignments: vec![ReduceAssignment::new(
+                    binding_id(2),
+                    Reducer::Count,
+                    Some(binding_id(1)),
+                )],
+                groups: vec![binding_id(0)],
+            },
+        ],
+        vec![binding_id(0), binding_id(2)],
+    )
+    .expect("count over an optional binding");
+
+    // Mean can observe a group whose optional input never matched.
+    let error = build(
+        vec![
+            try_match.clone(),
+            ReadStage::Reduce {
+                assignments: vec![ReduceAssignment::new(
+                    binding_id(2),
+                    Reducer::Mean,
+                    Some(binding_id(1)),
+                )],
+                groups: vec![binding_id(0)],
+            },
+        ],
+        vec![binding_id(0), binding_id(2)],
+    )
+    .expect_err("mean over an optional binding");
+    assert_eq!(error.code().as_str(), "query_plan_reduce_optional_input");
+
+    // Absence has no defined sort position.
+    let error = build(
+        vec![
+            try_match.clone(),
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+            },
+        ],
+        vec![binding_id(0)],
+    )
+    .expect_err("sorting an optional binding");
+    assert_eq!(error.code().as_str(), "query_plan_stage_unknown_binding");
+
+    // Requiring an optional binding is reserved (provider contract unproven).
+    let error = build(
+        vec![
+            try_match.clone(),
+            ReadStage::Require { bindings: vec![binding_id(1)] },
+        ],
+        vec![binding_id(0)],
+    )
+    .expect_err("requiring an optional binding");
+    assert_eq!(error.code().as_str(), "query_plan_require_optional_reserved");
+
+    // Grouping keys stay mandatory.
+    let error = build(
+        vec![
+            try_match.clone(),
+            ReadStage::Reduce {
+                assignments: vec![ReduceAssignment::new(
+                    binding_id(2),
+                    Reducer::Count,
+                    None,
+                )],
+                groups: vec![binding_id(1)],
+            },
+        ],
+        vec![binding_id(1), binding_id(2)],
+    )
+    .expect_err("grouping by an optional binding");
+    assert_eq!(error.code().as_str(), "query_plan_stage_unknown_binding");
+
+    // One optional binding cannot be claimed by two try bodies.
+    let error = build(
+        vec![ReadStage::Match {
+            patterns: vec![
+                person_isa(0),
+                QueryPattern::Try { patterns: vec![has_age(0, 1)] },
+                QueryPattern::Try { patterns: vec![has_age(0, 1)] },
+            ],
+        }],
+        vec![binding_id(0), binding_id(1)],
+    )
+    .expect_err("two try bodies sharing a local");
+    assert_eq!(error.code().as_str(), "query_plan_try_binding_shared");
+
+    // Try blocks stay in the root conjunction with a flat first vocabulary.
+    let error = build(
+        vec![ReadStage::Match {
+            patterns: vec![
+                person_isa(0),
+                QueryPattern::Not {
+                    patterns: vec![QueryPattern::Try {
+                        patterns: vec![has_age(0, 1)],
+                    }],
+                },
+            ],
+        }],
+        vec![binding_id(0)],
+    )
+    .expect_err("try nested in a negation");
+    assert_eq!(error.code().as_str(), "query_plan_try_not_root");
+
+    let error = build(
+        vec![ReadStage::Match {
+            patterns: vec![
+                person_isa(0),
+                QueryPattern::Try {
+                    patterns: vec![QueryPattern::Not {
+                        patterns: vec![has_age(0, 1)],
+                    }],
+                },
+            ],
+        }],
+        vec![binding_id(0)],
+    )
+    .expect_err("negation nested in a try");
+    assert_eq!(error.code().as_str(), "query_plan_try_body_unsupported");
 }
