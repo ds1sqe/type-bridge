@@ -22,6 +22,9 @@ pub(crate) const LEASE_FREE: &str = "free";
 pub(crate) const PLAN_RECORD_KIND: &str = "plan";
 pub(crate) const EVENT_RECORD_KIND: &str = "event";
 pub(crate) const APPLIED_RECORD_KIND: &str = "applied";
+pub(crate) const ROLLBACK_PLAN_RECORD_KIND: &str = "rollback-plan";
+pub(crate) const ROLLBACK_EVENT_RECORD_KIND: &str = "rollback-event";
+pub(crate) const ROLLED_BACK_RECORD_KIND: &str = "rolled-back";
 
 const CONTROL_LABELS: &[&str] = &[
     CONTROL_ENTITY,

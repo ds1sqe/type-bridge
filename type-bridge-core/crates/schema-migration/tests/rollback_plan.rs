@@ -1,5 +1,9 @@
-use std::collections::BTreeSet;
+mod common;
 
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+
+use common::{CoordinatorProvider, CoordinatorStore, block_on};
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -17,10 +21,15 @@ use type_bridge_schema::{
     inverse_delta,
 };
 use type_bridge_schema_migration::{
-    MigrationApplyApproval, MigrationApplyPlanError, MigrationHistoryGraph,
-    MigrationSafetyPolicy, SafetyPolicyDecision, SchemaLoweringBinding,
-    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
-    build_verified_migration_rollback_plan, typedb_3_12_1_profile,
+    AppliedRecord, ExecutionFence, ExecutionScope, GroupJournalEventKind,
+    JournalEntry, JournalSequence, LeaseHolderId, MigrationApplyApproval,
+    MigrationApplyPlanError, MigrationApplyTarget, MigrationHistoryGraph,
+    MigrationLease, MigrationRollbackOutcome, MigrationSafetyPolicy,
+    RollbackPlanRecord, RollbackStepEventRecord, SafetyPolicyDecision,
+    SchemaLoweringBinding, SchemaMigrationDraft, VerifiedMigrationRollbackPlan,
+    VerifiedSchemaMigrationManifest, build_verified_manifest,
+    build_verified_migration_apply_plan, build_verified_migration_rollback_plan,
+    execute_verified_migration_rollback_plan, typedb_3_12_1_profile,
 };
 
 fn migration_id(name: &str) -> MigrationId {
@@ -301,6 +310,290 @@ fn full_chain_rollback_is_deterministic_and_reverse_topological() {
         plan.target_schema().declared_identity_fingerprint(),
         declared(&[]).declared_identity_fingerprint(),
     );
+}
+
+fn seed_applied(
+    store: &CoordinatorStore,
+    scope: &ExecutionScope,
+    manifests: &[&VerifiedSchemaMigrationManifest],
+) {
+    let seed_lease = MigrationLease::new(
+        scope.clone(),
+        LeaseHolderId::new("seed-ledger").expect("seed holder"),
+        ExecutionFence::new(1).expect("seed fence"),
+    );
+    let mut state = store.state.lock().expect("coordinator store");
+    state.fence = 1;
+    for (index, manifest) in manifests.iter().enumerate() {
+        let record =
+            AppliedRecord::from_verified_manifest_contract(&seed_lease, manifest)
+                .expect("seed applied record");
+        let sequence =
+            JournalSequence::new(u64::try_from(index + 1).expect("sequence"))
+                .expect("sequence");
+        state.applied.push(JournalEntry::from_store(sequence, record));
+        state.next_sequence = sequence.get();
+    }
+}
+
+fn rollback_scope(plan: &VerifiedMigrationRollbackPlan) -> ExecutionScope {
+    ExecutionScope::new(plan.source_state().scope().id().clone())
+}
+
+#[test]
+fn full_chain_rollback_executes_reverse_programs_and_retires_the_ledger() {
+    let chain = two_step_chain();
+    let applied = applied_both(&chain);
+    let approvals = [
+        MigrationApplyApproval::for_rollback(&chain.first, SafetyClass::Destructive)
+            .expect("first approval"),
+        MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
+            .expect("second approval"),
+    ];
+    let plan = build_verified_migration_rollback_plan(
+        &chain.graph,
+        &applied,
+        &applied.clone(),
+        &chain.context,
+        &chain.lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &approvals,
+    )
+    .expect("full rollback plan");
+
+    let store = CoordinatorStore::default();
+    seed_applied(&store, &rollback_scope(&plan), &[&chain.first, &chain.second]);
+    let provider = CoordinatorProvider {
+        available: chain.context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(plan.source_state().clone()),
+    };
+    let outcome = block_on(execute_verified_migration_rollback_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("rollback-executor").expect("holder"),
+        &plan,
+    ))
+    .expect("rollback execution");
+    assert!(matches!(outcome, MigrationRollbackOutcome::RolledBack));
+
+    let calls = provider.calls.lock().expect("provider calls").clone();
+    assert_eq!(calls.iter().filter(|call| **call == "prepare").count(), 2);
+    assert_eq!(calls.iter().filter(|call| **call == "commit").count(), 2);
+    assert_eq!(calls.iter().filter(|call| **call == "statement").count(), 2);
+    let state = store.state.lock().expect("coordinator store");
+    assert_eq!(
+        state.rollback_event_audit,
+        vec![
+            GroupJournalEventKind::BeforeCommit,
+            GroupJournalEventKind::Committed,
+            GroupJournalEventKind::BeforeCommit,
+            GroupJournalEventKind::Committed,
+        ],
+    );
+    // The applied history is retained while the active ledger empties.
+    assert_eq!(state.applied.len(), 2);
+    assert_eq!(state.rolled_back.len(), 2);
+    assert_eq!(
+        state.rolled_back[0].record().migration_id(),
+        chain.second.id(),
+    );
+    assert_eq!(
+        state.rolled_back[1].record().migration_id(),
+        chain.first.id(),
+    );
+    assert!(state.open_rollback.is_none());
+    assert!(state.active.is_none());
+    assert_eq!(state.releases, 1);
+}
+
+#[test]
+fn partial_rollback_reopens_the_head_for_a_fresh_apply_plan() {
+    let chain = two_step_chain();
+    let applied = applied_both(&chain);
+    let removals = BTreeSet::from([chain.second.id().clone()]);
+    let approval =
+        MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
+            .expect("rollback approval");
+    let plan = build_verified_migration_rollback_plan(
+        &chain.graph,
+        &applied,
+        &removals,
+        &chain.context,
+        &chain.lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        std::slice::from_ref(&approval),
+    )
+    .expect("head rollback plan");
+
+    let store = CoordinatorStore::default();
+    seed_applied(&store, &rollback_scope(&plan), &[&chain.first, &chain.second]);
+    let provider = CoordinatorProvider {
+        available: chain.context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(plan.source_state().clone()),
+    };
+    let outcome = block_on(execute_verified_migration_rollback_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("rollback-executor").expect("holder"),
+        &plan,
+    ))
+    .expect("rollback execution");
+    assert!(matches!(outcome, MigrationRollbackOutcome::RolledBack));
+
+    let active_basis: BTreeSet<_> = {
+        let state = store.state.lock().expect("coordinator store");
+        assert_eq!(state.rolled_back.len(), 1);
+        type_bridge_schema_migration::active_applied_entries(
+            state.applied.clone(),
+            &state.rolled_back,
+        )
+        .expect("active ledger")
+        .iter()
+        .map(|entry| entry.record().migration_id().clone())
+        .collect()
+    };
+    assert_eq!(active_basis, BTreeSet::from([chain.first.id().clone()]));
+
+    // The retired head becomes pending again for a fresh forward plan.
+    let reapply = build_verified_migration_apply_plan(
+        &chain.graph,
+        &active_basis,
+        &MigrationApplyTarget::DefaultHead,
+        &chain.context,
+        &chain.lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .expect("re-apply plan after rollback");
+    assert_eq!(reapply.migrations().len(), 1);
+    assert_eq!(reapply.migrations()[0].manifest().id(), chain.second.id());
+}
+
+#[test]
+fn rollback_execution_rejects_a_stale_applied_ledger() {
+    let chain = two_step_chain();
+    let applied = applied_both(&chain);
+    let removals = BTreeSet::from([chain.second.id().clone()]);
+    let approval =
+        MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
+            .expect("rollback approval");
+    let plan = build_verified_migration_rollback_plan(
+        &chain.graph,
+        &applied,
+        &removals,
+        &chain.context,
+        &chain.lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        std::slice::from_ref(&approval),
+    )
+    .expect("head rollback plan");
+
+    // The live ledger lost the head after planning: fail closed, no I/O.
+    let store = CoordinatorStore::default();
+    seed_applied(&store, &rollback_scope(&plan), &[&chain.first]);
+    let provider = CoordinatorProvider {
+        available: chain.context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(plan.source_state().clone()),
+    };
+    let error = block_on(execute_verified_migration_rollback_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("rollback-executor").expect("holder"),
+        &plan,
+    ))
+    .expect_err("a stale ledger must reject the rollback plan");
+    assert_eq!(error.code().as_str(), "migration_execution_stale_applied_set");
+    let calls = provider.calls.lock().expect("provider calls").clone();
+    assert!(!calls.contains(&"prepare"), "calls: {calls:?}");
+}
+
+#[test]
+fn rollback_resumes_from_a_committed_checkpoint_without_replaying() {
+    let chain = two_step_chain();
+    let applied = applied_both(&chain);
+    let removals = BTreeSet::from([chain.second.id().clone()]);
+    let approval =
+        MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
+            .expect("rollback approval");
+    let plan = build_verified_migration_rollback_plan(
+        &chain.graph,
+        &applied,
+        &removals,
+        &chain.context,
+        &chain.lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        std::slice::from_ref(&approval),
+    )
+    .expect("head rollback plan");
+    let rollback = &plan.rollbacks()[0];
+
+    // A prior run journaled BeforeCommit, committed the reverse step on the
+    // provider, and crashed before its Committed checkpoint and retirement.
+    let store = CoordinatorStore::default();
+    let scope = rollback_scope(&plan);
+    seed_applied(&store, &scope, &[&chain.first, &chain.second]);
+    let seed_lease = MigrationLease::new(
+        scope.clone(),
+        LeaseHolderId::new("crashed-executor").expect("holder"),
+        ExecutionFence::new(1).expect("fence"),
+    );
+    let basis: Vec<_> = plan.applied_basis().into_iter().collect();
+    let plan_record = RollbackPlanRecord::from_verified_rollback_plan(
+        &seed_lease,
+        &plan,
+        &basis,
+        plan.source_state(),
+    )
+    .expect("open rollback plan record");
+    let before_commit = RollbackStepEventRecord::new(
+        &seed_lease,
+        rollback,
+        0,
+        GroupJournalEventKind::BeforeCommit,
+        None,
+    )
+    .expect("before-commit checkpoint");
+    {
+        let mut state = store.state.lock().expect("coordinator store");
+        state.open_rollback = Some(JournalEntry::from_store(
+            JournalSequence::new(3).expect("sequence"),
+            plan_record,
+        ));
+        state.rollback_events.push(JournalEntry::from_store(
+            JournalSequence::new(4).expect("sequence"),
+            before_commit,
+        ));
+        state.next_sequence = 4;
+    }
+
+    // The live schema already sits at the restored state.
+    let provider = CoordinatorProvider {
+        available: chain.context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(chain.second.source_state().clone()),
+    };
+    let outcome = block_on(execute_verified_migration_rollback_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("recovering-executor").expect("holder"),
+        &plan,
+    ))
+    .expect("resumed rollback execution");
+    assert!(matches!(outcome, MigrationRollbackOutcome::RolledBack));
+    let calls = provider.calls.lock().expect("provider calls").clone();
+    assert!(!calls.contains(&"prepare"), "calls: {calls:?}");
+    assert!(!calls.contains(&"commit"), "calls: {calls:?}");
+    let state = store.state.lock().expect("coordinator store");
+    // Recovery only repaired the missing Committed checkpoint.
+    assert_eq!(
+        state.rollback_event_audit,
+        vec![GroupJournalEventKind::Committed],
+    );
+    assert_eq!(state.rolled_back.len(), 1);
+    assert!(state.open_rollback.is_none());
 }
 
 #[test]

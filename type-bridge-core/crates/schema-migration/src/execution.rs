@@ -20,6 +20,7 @@ use type_bridge_contract::schema_lowering::SchemaLoweringProfileFingerprint;
 
 use crate::{
     VerifiedMigrationApplyManifest, VerifiedMigrationApplyPlan,
+    VerifiedMigrationRollbackManifest, VerifiedMigrationRollbackPlan,
     VerifiedMigrationTransactionGroup,
 };
 
@@ -772,6 +773,413 @@ impl AppliedRecord {
     }
 }
 
+/// Identity-only journal record for one complete verified rollback plan.
+///
+/// The record binds the exact reverse-topological order, manifest digests,
+/// surviving applied set, and endpoint managed states the rollback executes
+/// under. It is the rollback analogue of [`PlanRecord`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RollbackPlanRecord {
+    scope: ExecutionScope,
+    fence: ExecutionFence,
+    source_applied: Vec<MigrationId>,
+    rollback_ids: Vec<MigrationId>,
+    manifest_digests: Vec<MigrationManifestDigest>,
+    manifest_plan_fingerprints: Vec<MigrationPlanFingerprint>,
+    remaining_applied: Vec<MigrationId>,
+    source_declared: ManagedDeclaredIdentityFingerprint,
+    target_declared: ManagedDeclaredIdentityFingerprint,
+    source_semantics: ManagedSemanticSchemaFingerprint,
+    target_semantics: ManagedSemanticSchemaFingerprint,
+    semantic_profile: SemanticProfileFingerprint,
+    lowering_profile: SchemaLoweringProfileFingerprint,
+    observed_live_source: ManagedSemanticSchemaFingerprint,
+}
+
+impl RollbackPlanRecord {
+    /// Bind a fresh-lease rollback ledger and live-state precondition to
+    /// verified rollback plan identities.
+    pub fn from_verified_rollback_plan(
+        lease: &MigrationLease,
+        plan: &VerifiedMigrationRollbackPlan,
+        observed_applied_migrations: &[MigrationId],
+        observed_live_source: &ManagedSchemaState,
+    ) -> Result<Self, Diagnostic> {
+        let first = plan.rollbacks().first().ok_or_else(|| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_execution_empty_plan",
+                "an executable rollback plan requires at least one manifest",
+            )
+        })?;
+        let basis: Vec<MigrationId> = plan.applied_basis().into_iter().collect();
+        if observed_applied_migrations != basis {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_stale_applied_set",
+                "applied ledger changed after rollback planning; rebuild the plan",
+            ));
+        }
+        if observed_live_source != plan.source_state() {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_stale_source_state",
+                "live managed state differs from the planned source; rebuild the plan",
+            ));
+        }
+        let scope = ExecutionScope::new(plan.source_state().scope().id().clone());
+        if lease.scope() != &scope
+            || plan.target_state().scope() != plan.source_state().scope()
+        {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_scope_mismatch",
+                "lease, source, and target must bind the same managed scope",
+            ));
+        }
+        let semantic_profile =
+            first.manifest().semantic_profile().fingerprint().clone();
+        let lowering_profile =
+            first.manifest().lowering_profile().fingerprint().clone();
+        for rollback in plan.rollbacks() {
+            if rollback.manifest().managed_scope().id() != scope.managed_scope_id()
+                || rollback.manifest().semantic_profile().fingerprint()
+                    != &semantic_profile
+                || rollback.manifest().lowering_profile().fingerprint()
+                    != &lowering_profile
+            {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_plan_binding_mismatch",
+                    "planned rollbacks do not share exact scope and profile bindings",
+                ));
+            }
+        }
+        Ok(Self {
+            scope,
+            fence: lease.fence(),
+            source_applied: basis,
+            rollback_ids: plan
+                .rollbacks()
+                .iter()
+                .map(|rollback| rollback.manifest().id().clone())
+                .collect(),
+            manifest_digests: plan
+                .rollbacks()
+                .iter()
+                .map(|rollback| *rollback.digest())
+                .collect(),
+            manifest_plan_fingerprints: plan
+                .rollbacks()
+                .iter()
+                .map(|rollback| rollback.manifest().plan_fingerprint().clone())
+                .collect(),
+            remaining_applied: plan.remaining_applied().to_vec(),
+            source_declared: plan
+                .source_state()
+                .managed_declared_identity()
+                .clone(),
+            target_declared: plan
+                .target_state()
+                .managed_declared_identity()
+                .clone(),
+            source_semantics: plan.source_state().managed_semantic_schema().clone(),
+            target_semantics: plan.target_state().managed_semantic_schema().clone(),
+            semantic_profile,
+            lowering_profile,
+            observed_live_source: observed_live_source
+                .managed_semantic_schema()
+                .clone(),
+        })
+    }
+
+    /// Return the execution scope.
+    pub const fn scope(&self) -> &ExecutionScope { &self.scope }
+    /// Return the fence bound into this record.
+    pub const fn fence(&self) -> ExecutionFence { self.fence }
+    /// Return the complete canonically ordered pre-rollback applied set.
+    pub fn source_applied(&self) -> &[MigrationId] { &self.source_applied }
+    /// Return rolled-back identities in reverse-topological execution order.
+    pub fn rollback_ids(&self) -> &[MigrationId] { &self.rollback_ids }
+    /// Return ordered canonical manifest digests.
+    pub fn manifest_digests(&self) -> &[MigrationManifestDigest] { &self.manifest_digests }
+    /// Return ordered manifest plan fingerprints.
+    pub fn manifest_plan_fingerprints(&self) -> &[MigrationPlanFingerprint] {
+        &self.manifest_plan_fingerprints
+    }
+    /// Return the applied identities that survive the rollback, in order.
+    pub fn remaining_applied(&self) -> &[MigrationId] { &self.remaining_applied }
+    /// Return planned pre-rollback managed-declared identity.
+    pub const fn source_declared(&self) -> &ManagedDeclaredIdentityFingerprint {
+        &self.source_declared
+    }
+    /// Return planned restored managed-declared identity.
+    pub const fn target_declared(&self) -> &ManagedDeclaredIdentityFingerprint {
+        &self.target_declared
+    }
+    /// Return planned pre-rollback managed semantics.
+    pub const fn source_semantics(&self) -> &ManagedSemanticSchemaFingerprint {
+        &self.source_semantics
+    }
+    /// Return planned restored managed semantics.
+    pub const fn target_semantics(&self) -> &ManagedSemanticSchemaFingerprint {
+        &self.target_semantics
+    }
+    /// Return semantic-profile content identity.
+    pub const fn semantic_profile(&self) -> &SemanticProfileFingerprint {
+        &self.semantic_profile
+    }
+    /// Return lowering-registry content identity.
+    pub const fn lowering_profile(&self) -> &SchemaLoweringProfileFingerprint {
+        &self.lowering_profile
+    }
+    /// Return the pre-mutation observed source semantics.
+    pub const fn observed_live_source(&self) -> &ManagedSemanticSchemaFingerprint {
+        &self.observed_live_source
+    }
+}
+
+/// Identity-only journal event for one verified rollback step transaction.
+///
+/// Each rollback step executes one recorded reverse program in its own
+/// provider transaction, so the commit-boundary vocabulary and recovery
+/// decision table are shared with forward [`GroupEventRecord`] events.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RollbackStepEventRecord {
+    scope: ExecutionScope,
+    fence: ExecutionFence,
+    manifest_digest: MigrationManifestDigest,
+    migration_id: MigrationId,
+    step_ordinal: u32,
+    kind: GroupJournalEventKind,
+    observed_target: Option<ManagedSemanticSchemaFingerprint>,
+}
+
+impl RollbackStepEventRecord {
+    /// Derive a positional event from exact verified rollback evidence.
+    pub fn new(
+        lease: &MigrationLease,
+        rollback: &VerifiedMigrationRollbackManifest,
+        step_index: usize,
+        kind: GroupJournalEventKind,
+        observed_target: Option<ManagedSemanticSchemaFingerprint>,
+    ) -> Result<Self, Diagnostic> {
+        let step = rollback.steps().get(step_index).ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_rollback_step_position",
+                "rollback event position is outside the verified rollback manifest",
+            )
+        })?;
+        let reverse = rollback.reverse_delta(step)?;
+        let scope =
+            ExecutionScope::new(rollback.manifest().managed_scope().id().clone());
+        if lease.scope() != &scope {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_scope_mismatch",
+                "lease scope differs from the verified rollback scope",
+            ));
+        }
+        match kind {
+            GroupJournalEventKind::Committed
+                if observed_target.as_ref()
+                    == Some(reverse.target().managed_semantic_schema()) => {}
+            GroupJournalEventKind::Committed => {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_commit_evidence_mismatch",
+                    "committed event requires the exact observed target semantics",
+                ));
+            }
+            GroupJournalEventKind::FormalOnlyAdvanced
+                if observed_target.is_none()
+                    && step.lowering().units().is_empty()
+                    && reverse.source().managed_semantic_schema()
+                        == reverse.target().managed_semantic_schema() => {}
+            GroupJournalEventKind::FormalOnlyAdvanced => {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_execution_invalid_formal_advance",
+                    "formal-only advancement requires an empty equal-semantic reverse program",
+                ));
+            }
+            _ if observed_target.is_none() => {}
+            _ => {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_execution_unexpected_observation",
+                    "only committed events may carry observed target semantics",
+                ));
+            }
+        }
+        Ok(Self {
+            scope,
+            fence: lease.fence(),
+            manifest_digest: *rollback.digest(),
+            migration_id: rollback.manifest().id().clone(),
+            step_ordinal: position(step_index)?,
+            kind,
+            observed_target,
+        })
+    }
+
+    /// Return the execution scope.
+    pub const fn scope(&self) -> &ExecutionScope { &self.scope }
+    /// Return the event fence.
+    pub const fn fence(&self) -> ExecutionFence { self.fence }
+    /// Return the canonical digest of the manifest being rolled back.
+    pub const fn manifest_digest(&self) -> MigrationManifestDigest { self.manifest_digest }
+    /// Return the migration identity.
+    pub const fn migration_id(&self) -> &MigrationId { &self.migration_id }
+    /// Return the rollback step position in execution order.
+    pub const fn step_ordinal(&self) -> u32 { self.step_ordinal }
+    /// Return the event kind.
+    pub const fn kind(&self) -> GroupJournalEventKind { self.kind }
+    /// Return exact target evidence carried only by committed events.
+    pub const fn observed_target(&self) -> Option<&ManagedSemanticSchemaFingerprint> {
+        self.observed_target.as_ref()
+    }
+}
+
+/// Identity-only retirement record for one rolled-back applied migration.
+///
+/// Retirement is append-only history: the applied record stays in the durable
+/// journal, and this record marks it inactive. The states enter swapped
+/// relative to [`AppliedRecord`] because rolling back moves the managed schema
+/// from the manifest's target back to its source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RolledBackRecord {
+    scope: ExecutionScope,
+    fence: ExecutionFence,
+    migration_id: MigrationId,
+    manifest_digest: MigrationManifestDigest,
+    source_declared: ManagedDeclaredIdentityFingerprint,
+    target_declared: ManagedDeclaredIdentityFingerprint,
+    source_semantics: ManagedSemanticSchemaFingerprint,
+    target_semantics: ManagedSemanticSchemaFingerprint,
+}
+
+impl RolledBackRecord {
+    /// Derive a retirement record from one exact verified rollback manifest.
+    pub fn from_verified_rollback(
+        lease: &MigrationLease,
+        rollback: &VerifiedMigrationRollbackManifest,
+    ) -> Result<Self, Diagnostic> {
+        Self::from_verified_manifest_contract(lease, rollback.manifest())
+    }
+
+    /// Derive a retirement record from one verified manifest contract.
+    ///
+    /// This is the reconstruction seam for persistent stores, mirroring
+    /// [`AppliedRecord::from_verified_manifest_contract`].
+    pub fn from_verified_manifest_contract(
+        lease: &MigrationLease,
+        manifest: &crate::VerifiedSchemaMigrationManifest,
+    ) -> Result<Self, Diagnostic> {
+        let source = manifest.target_state();
+        let target = manifest.source_state();
+        let scope = ExecutionScope::new(source.scope().id().clone());
+        if lease.scope() != &scope || target.scope() != source.scope() {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_scope_mismatch",
+                "lease and manifest endpoints must bind the same managed scope",
+            ));
+        }
+        Ok(Self {
+            scope,
+            fence: lease.fence(),
+            migration_id: manifest.id().clone(),
+            manifest_digest: crate::verified_manifest_digest(manifest)?,
+            source_declared: source.managed_declared_identity().clone(),
+            target_declared: target.managed_declared_identity().clone(),
+            source_semantics: source.managed_semantic_schema().clone(),
+            target_semantics: target.managed_semantic_schema().clone(),
+        })
+    }
+
+    /// Return the execution scope.
+    pub const fn scope(&self) -> &ExecutionScope { &self.scope }
+    /// Return the record fence.
+    pub const fn fence(&self) -> ExecutionFence { self.fence }
+    /// Return the retired migration identity.
+    pub const fn migration_id(&self) -> &MigrationId { &self.migration_id }
+    /// Return the canonical manifest digest.
+    pub const fn manifest_digest(&self) -> MigrationManifestDigest { self.manifest_digest }
+    /// Return pre-rollback managed-declared identity.
+    pub const fn source_declared(&self) -> &ManagedDeclaredIdentityFingerprint {
+        &self.source_declared
+    }
+    /// Return restored managed-declared identity.
+    pub const fn target_declared(&self) -> &ManagedDeclaredIdentityFingerprint {
+        &self.target_declared
+    }
+    /// Return pre-rollback managed semantics.
+    pub const fn source_semantics(&self) -> &ManagedSemanticSchemaFingerprint {
+        &self.source_semantics
+    }
+    /// Return restored managed semantics.
+    pub const fn target_semantics(&self) -> &ManagedSemanticSchemaFingerprint {
+        &self.target_semantics
+    }
+}
+
+/// One trusted, still-open rollback plan and its ordered step events.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenRollbackPlanRecord {
+    plan: JournalEntry<RollbackPlanRecord>,
+    events: Vec<JournalEntry<RollbackStepEventRecord>>,
+}
+
+impl OpenRollbackPlanRecord {
+    /// Rebuild store output while checking sequence, scope, fence, and manifest binding.
+    ///
+    /// The same monotonic-fence rule as [`OpenPlanRecord::from_store`] applies:
+    /// recovery events may be written under later fences than the plan itself.
+    pub fn from_store(
+        plan: JournalEntry<RollbackPlanRecord>,
+        events: Vec<JournalEntry<RollbackStepEventRecord>>,
+    ) -> Result<Self, Diagnostic> {
+        let mut previous = plan.sequence();
+        let mut previous_fence = plan.record().fence();
+        for event in &events {
+            let manifest_index = plan
+                .record()
+                .manifest_digests()
+                .iter()
+                .position(|digest| digest == &event.record().manifest_digest());
+            if event.sequence() <= previous
+                || event.record().scope() != plan.record().scope()
+                || event.record().fence() < previous_fence
+                || manifest_index.is_none_or(|index| {
+                    plan.record().rollback_ids().get(index)
+                        != Some(event.record().migration_id())
+                })
+            {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_invalid_open_plan",
+                    "loaded open-rollback events are not ordered and bound to the plan",
+                ));
+            }
+            previous = event.sequence();
+            previous_fence = event.record().fence();
+        }
+        Ok(Self { plan, events })
+    }
+
+    /// Return the sequenced rollback plan record.
+    pub const fn plan(&self) -> &JournalEntry<RollbackPlanRecord> {
+        &self.plan
+    }
+
+    /// Return ordered sequenced rollback step events.
+    pub fn events(&self) -> &[JournalEntry<RollbackStepEventRecord>] {
+        &self.events
+    }
+}
+
 /// Store-backed exclusive lease service.
 pub trait MigrationLeaseStore: Send + Sync {
     /// Atomically acquire an available scope and issue a fence strictly greater
@@ -796,6 +1204,9 @@ pub trait MigrationLeaseStore: Send + Sync {
 /// scope, holder, and fence. There is deliberately no advisory validate method.
 pub trait MigrationExecutionJournal: Send + Sync {
     /// Begin one fully verified plan after stale-ledger and live-source checks.
+    ///
+    /// An open plan of either direction is exclusive: the store must reject a
+    /// new apply plan while a rollback plan is open and vice versa.
     fn begin_plan<'a>(
         &'a self,
         lease: &'a MigrationLease,
@@ -823,7 +1234,11 @@ pub trait MigrationExecutionJournal: Send + Sync {
         record: AppliedRecord,
     ) -> ExecutionFuture<'a, JournalEntry<AppliedRecord>>;
 
-    /// Load ordered applied records under the active fence.
+    /// Load ordered active applied records under the active fence.
+    ///
+    /// Retired records — applied records whose migration was rolled back by a
+    /// later [`RolledBackRecord`] — are excluded. The full append-only history
+    /// stays durable in the store; only the active ledger is the apply basis.
     fn load_applied<'a>(
         &'a self,
         lease: &'a MigrationLease,
@@ -834,6 +1249,90 @@ pub trait MigrationExecutionJournal: Send + Sync {
         &'a self,
         lease: &'a MigrationLease,
     ) -> ExecutionFuture<'a, Option<OpenPlanRecord>>;
+
+    /// Begin one fully verified rollback plan after stale-ledger checks.
+    ///
+    /// Subject to the same open-plan exclusivity as [`Self::begin_plan`].
+    fn begin_rollback_plan<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: RollbackPlanRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<RollbackPlanRecord>>;
+
+    /// Append one positional rollback commit-boundary event under the active fence.
+    fn record_rollback_step_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: RollbackStepEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<RollbackStepEventRecord>>;
+
+    /// Retire one exact applied record from the open rollback plan.
+    ///
+    /// The store must reject a record whose migration identity and digest do
+    /// not occur at the same position in the open rollback plan, or whose
+    /// migration is not currently active in the applied ledger. Retirement is
+    /// append-only: the applied record and this record both stay durable, and
+    /// the migration merely leaves the active ledger. An exact retry is
+    /// idempotent only under the same fence.
+    fn record_rolled_back<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: RolledBackRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<RolledBackRecord>>;
+
+    /// Load ordered retirement records under the active fence.
+    fn load_rolled_back<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+    ) -> ExecutionFuture<'a, Vec<JournalEntry<RolledBackRecord>>>;
+
+    /// Load the open rollback plan and all ordered events at its fence or later.
+    fn load_open_rollback_plan<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+    ) -> ExecutionFuture<'a, Option<OpenRollbackPlanRecord>>;
+}
+
+/// Filter an applied ledger down to its active records.
+///
+/// Each retirement record consumes the latest not-yet-retired applied record
+/// with the same migration identity and manifest digest written before it.
+/// A retirement that matches no applied record is corrupt history and fails
+/// closed. Stores share this exact matching rule so every journal
+/// implementation reports the same active basis.
+pub fn active_applied_entries(
+    applied: Vec<JournalEntry<AppliedRecord>>,
+    rolled_back: &[JournalEntry<RolledBackRecord>],
+) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
+    let mut retired = vec![false; applied.len()];
+    for retirement in rolled_back {
+        let matched = applied
+            .iter()
+            .enumerate()
+            .filter(|(index, entry)| {
+                !retired[*index]
+                    && entry.sequence() < retirement.sequence()
+                    && entry.record().migration_id()
+                        == retirement.record().migration_id()
+                    && entry.record().manifest_digest()
+                        == retirement.record().manifest_digest()
+            })
+            .max_by_key(|(_, entry)| entry.sequence())
+            .map(|(index, _)| index);
+        let Some(index) = matched else {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_unmatched_retirement",
+                "retirement record matches no active applied record before it",
+            ));
+        };
+        retired[index] = true;
+    }
+    Ok(applied
+        .into_iter()
+        .zip(retired)
+        .filter_map(|(entry, retired)| (!retired).then_some(entry))
+        .collect())
 }
 
 fn position(value: usize) -> Result<u32, Diagnostic> {
@@ -882,8 +1381,11 @@ mod tests {
         active_lease: Option<MigrationLease>,
         next_sequence: u64,
         applied: Vec<JournalEntry<AppliedRecord>>,
+        rolled_back: Vec<JournalEntry<RolledBackRecord>>,
         open_plan: Option<JournalEntry<PlanRecord>>,
         events: Vec<JournalEntry<GroupEventRecord>>,
+        open_rollback_plan: Option<JournalEntry<RollbackPlanRecord>>,
+        rollback_events: Vec<JournalEntry<RollbackStepEventRecord>>,
     }
 
     #[derive(Default)]
@@ -976,7 +1478,7 @@ mod tests {
                 if record.scope() != lease.scope() || record.fence() != lease.fence() {
                     return Err(stale_fence());
                 }
-                if state.open_plan.is_some() {
+                if state.open_plan.is_some() || state.open_rollback_plan.is_some() {
                     return Err(failure(
                         DiagnosticCategory::InvalidContract,
                         "migration_execution_plan_already_open",
@@ -1037,8 +1539,9 @@ mod tests {
                 if record.scope() != lease.scope() || record.fence() != lease.fence() {
                     return Err(stale_fence());
                 }
-                if let Some(existing) = state
-                    .applied
+                let active =
+                    active_applied_entries(state.applied.clone(), &state.rolled_back)?;
+                if let Some(existing) = active
                     .iter()
                     .find(|entry| entry.record().migration_id() == record.migration_id())
                 {
@@ -1076,10 +1579,11 @@ mod tests {
                 }
                 let entry = JournalEntry::from_store(Self::sequence(state)?, record);
                 state.applied.push(entry.clone());
+                let active =
+                    active_applied_entries(state.applied.clone(), &state.rolled_back)?;
                 let complete = state.open_plan.as_ref().is_some_and(|plan| {
                     plan.record().migration_ids().iter().all(|id| {
-                        state
-                            .applied
+                        active
                             .iter()
                             .any(|applied| applied.record().migration_id() == id)
                     })
@@ -1100,7 +1604,7 @@ mod tests {
                 let mut scopes = self.scopes.lock().expect("store mutex");
                 let state = scopes.get_mut(lease.scope()).ok_or_else(stale_fence)?;
                 Self::check_lease(state, lease)?;
-                Ok(state.applied.clone())
+                active_applied_entries(state.applied.clone(), &state.rolled_back)
             })
         }
 
@@ -1114,6 +1618,169 @@ mod tests {
                 Self::check_lease(state, lease)?;
                 let Some(plan) = state.open_plan.clone() else { return Ok(None) };
                 Ok(Some(OpenPlanRecord::from_store(plan, state.events.clone())?))
+            })
+        }
+
+        fn begin_rollback_plan<'a>(
+            &'a self,
+            lease: &'a MigrationLease,
+            record: RollbackPlanRecord,
+        ) -> ExecutionFuture<'a, JournalEntry<RollbackPlanRecord>> {
+            Box::pin(async move {
+                let mut scopes = self.scopes.lock().expect("store mutex");
+                let state = scopes.get_mut(lease.scope()).ok_or_else(stale_fence)?;
+                Self::check_lease(state, lease)?;
+                if record.scope() != lease.scope() || record.fence() != lease.fence() {
+                    return Err(stale_fence());
+                }
+                if state.open_plan.is_some() || state.open_rollback_plan.is_some() {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "migration_execution_plan_already_open",
+                        "migration scope already has an open plan",
+                    ));
+                }
+                let entry = JournalEntry::from_store(Self::sequence(state)?, record);
+                state.open_rollback_plan = Some(entry.clone());
+                Ok(entry)
+            })
+        }
+
+        fn record_rollback_step_event<'a>(
+            &'a self,
+            lease: &'a MigrationLease,
+            record: RollbackStepEventRecord,
+        ) -> ExecutionFuture<'a, JournalEntry<RollbackStepEventRecord>> {
+            Box::pin(async move {
+                let mut scopes = self.scopes.lock().expect("store mutex");
+                let state = scopes.get_mut(lease.scope()).ok_or_else(stale_fence)?;
+                Self::check_lease(state, lease)?;
+                if record.scope() != lease.scope() || record.fence() != lease.fence() {
+                    return Err(stale_fence());
+                }
+                let plan = state.open_rollback_plan.as_ref().ok_or_else(|| {
+                    failure(
+                        DiagnosticCategory::InvalidContract,
+                        "migration_execution_no_open_plan",
+                        "rollback event requires an open rollback plan",
+                    )
+                })?;
+                if !plan
+                    .record()
+                    .manifest_digests()
+                    .contains(&record.manifest_digest())
+                {
+                    return Err(failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_execution_foreign_event",
+                        "rollback event manifest is absent from the open plan",
+                    ));
+                }
+                let entry = JournalEntry::from_store(Self::sequence(state)?, record);
+                state.rollback_events.push(entry.clone());
+                Ok(entry)
+            })
+        }
+
+        fn record_rolled_back<'a>(
+            &'a self,
+            lease: &'a MigrationLease,
+            record: RolledBackRecord,
+        ) -> ExecutionFuture<'a, JournalEntry<RolledBackRecord>> {
+            Box::pin(async move {
+                let mut scopes = self.scopes.lock().expect("store mutex");
+                let state = scopes.get_mut(lease.scope()).ok_or_else(stale_fence)?;
+                Self::check_lease(state, lease)?;
+                if record.scope() != lease.scope() || record.fence() != lease.fence() {
+                    return Err(stale_fence());
+                }
+                let active =
+                    active_applied_entries(state.applied.clone(), &state.rolled_back)?;
+                let is_active = active.iter().any(|entry| {
+                    entry.record().migration_id() == record.migration_id()
+                        && entry.record().manifest_digest() == record.manifest_digest()
+                });
+                if !is_active {
+                    if let Some(existing) = state.rolled_back.iter().find(|entry| {
+                        entry.record() == &record
+                            && entry.record().fence() == lease.fence()
+                    }) {
+                        return Ok(existing.clone());
+                    }
+                    return Err(failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_execution_retirement_conflict",
+                        "retirement target is not active in the applied ledger",
+                    ));
+                }
+                let plan = state.open_rollback_plan.as_ref().ok_or_else(|| {
+                    failure(
+                        DiagnosticCategory::InvalidContract,
+                        "migration_execution_no_open_plan",
+                        "retirement requires an open rollback plan",
+                    )
+                })?;
+                let manifest_index = plan
+                    .record()
+                    .rollback_ids()
+                    .iter()
+                    .position(|id| id == record.migration_id());
+                if manifest_index.is_none_or(|index| {
+                    plan.record().manifest_digests().get(index)
+                        != Some(&record.manifest_digest())
+                }) {
+                    return Err(failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_execution_foreign_applied_record",
+                        "retirement identity and digest are absent from the open plan",
+                    ));
+                }
+                let entry = JournalEntry::from_store(Self::sequence(state)?, record);
+                state.rolled_back.push(entry.clone());
+                let active =
+                    active_applied_entries(state.applied.clone(), &state.rolled_back)?;
+                let complete = state.open_rollback_plan.as_ref().is_some_and(|plan| {
+                    plan.record().rollback_ids().iter().all(|id| {
+                        !active
+                            .iter()
+                            .any(|applied| applied.record().migration_id() == id)
+                    })
+                });
+                if complete {
+                    state.open_rollback_plan = None;
+                    state.rollback_events.clear();
+                }
+                Ok(entry)
+            })
+        }
+
+        fn load_rolled_back<'a>(
+            &'a self,
+            lease: &'a MigrationLease,
+        ) -> ExecutionFuture<'a, Vec<JournalEntry<RolledBackRecord>>> {
+            Box::pin(async move {
+                let mut scopes = self.scopes.lock().expect("store mutex");
+                let state = scopes.get_mut(lease.scope()).ok_or_else(stale_fence)?;
+                Self::check_lease(state, lease)?;
+                Ok(state.rolled_back.clone())
+            })
+        }
+
+        fn load_open_rollback_plan<'a>(
+            &'a self,
+            lease: &'a MigrationLease,
+        ) -> ExecutionFuture<'a, Option<OpenRollbackPlanRecord>> {
+            Box::pin(async move {
+                let mut scopes = self.scopes.lock().expect("store mutex");
+                let state = scopes.get_mut(lease.scope()).ok_or_else(stale_fence)?;
+                Self::check_lease(state, lease)?;
+                let Some(plan) = state.open_rollback_plan.clone() else {
+                    return Ok(None);
+                };
+                Ok(Some(OpenRollbackPlanRecord::from_store(
+                    plan,
+                    state.rollback_events.clone(),
+                )?))
             })
         }
     }
@@ -1282,6 +1949,109 @@ mod tests {
         assert_eq!(
             block_on(store.load_applied(&lease)).expect("load applied ledger"),
             vec![first],
+        );
+    }
+
+    fn fake_rollback_plan(
+        lease: &MigrationLease,
+        plan: &PlanRecord,
+    ) -> RollbackPlanRecord {
+        RollbackPlanRecord {
+            scope: lease.scope().clone(),
+            fence: lease.fence(),
+            source_applied: plan.migration_ids().to_vec(),
+            rollback_ids: plan.migration_ids().to_vec(),
+            manifest_digests: plan.manifest_digests().to_vec(),
+            manifest_plan_fingerprints: plan.manifest_plan_fingerprints().to_vec(),
+            remaining_applied: Vec::new(),
+            source_declared: plan.target_declared().clone(),
+            target_declared: plan.source_declared().clone(),
+            source_semantics: plan.target_semantics().clone(),
+            target_semantics: plan.source_semantics().clone(),
+            semantic_profile: plan.semantic_profile().clone(),
+            lowering_profile: plan.lowering_profile().clone(),
+            observed_live_source: plan.target_semantics().clone(),
+        }
+    }
+
+    fn fake_rolled_back(lease: &MigrationLease, plan: &PlanRecord) -> RolledBackRecord {
+        RolledBackRecord {
+            scope: lease.scope().clone(),
+            fence: lease.fence(),
+            migration_id: plan.migration_ids()[0].clone(),
+            manifest_digest: plan.manifest_digests()[0],
+            source_declared: plan.target_declared().clone(),
+            target_declared: plan.source_declared().clone(),
+            source_semantics: plan.target_semantics().clone(),
+            target_semantics: plan.source_semantics().clone(),
+        }
+    }
+
+    #[test]
+    fn retirement_is_append_only_exclusive_and_reopens_the_identity() {
+        let store = InMemoryStore::default();
+        let scope = scope();
+        let holder = LeaseHolderId::new("retirement-owner").expect("holder");
+        let lease = block_on(store.acquire(&scope, &holder)).expect("lease");
+        let plan = fake_plan(&lease);
+        let rollback_plan = fake_rollback_plan(&lease, &plan);
+        let retirement = fake_rolled_back(&lease, &plan);
+
+        // Apply the migration through an ordinary forward plan.
+        block_on(store.begin_plan(&lease, plan.clone())).expect("open plan");
+        assert!(
+            block_on(store.begin_rollback_plan(&lease, rollback_plan.clone())).is_err(),
+            "open plans of either direction must be exclusive"
+        );
+        block_on(store.record_applied(&lease, fake_applied(&lease, &plan)))
+            .expect("apply planned manifest");
+        assert_eq!(block_on(store.load_applied(&lease)).expect("active").len(), 1);
+
+        // Retiring outside an open rollback plan fails closed.
+        assert!(block_on(store.record_rolled_back(&lease, retirement.clone())).is_err());
+        block_on(store.begin_rollback_plan(&lease, rollback_plan))
+            .expect("open rollback plan");
+        assert!(
+            block_on(store.begin_plan(&lease, plan.clone())).is_err(),
+            "an open rollback plan must block a new apply plan"
+        );
+        let first = block_on(store.record_rolled_back(&lease, retirement.clone()))
+            .expect("retire applied migration");
+        let duplicate = block_on(store.record_rolled_back(&lease, retirement))
+            .expect("same-fence duplicate retirement is idempotent");
+        assert_eq!(duplicate, first);
+        assert!(block_on(store.load_open_rollback_plan(&lease))
+            .expect("closed rollback plan")
+            .is_none());
+        assert!(block_on(store.load_applied(&lease)).expect("active").is_empty());
+        assert_eq!(
+            block_on(store.load_rolled_back(&lease)).expect("retired").len(),
+            1,
+        );
+
+        // The identity is free again: a fresh forward plan re-applies it.
+        block_on(store.begin_plan(&lease, plan.clone())).expect("reopen plan");
+        block_on(store.record_applied(&lease, fake_applied(&lease, &plan)))
+            .expect("re-apply retired migration");
+        assert_eq!(block_on(store.load_applied(&lease)).expect("active").len(), 1);
+    }
+
+    #[test]
+    fn unmatched_retirements_are_corrupt_history() {
+        let store = InMemoryStore::default();
+        let scope = scope();
+        let holder = LeaseHolderId::new("orphan-owner").expect("holder");
+        let lease = block_on(store.acquire(&scope, &holder)).expect("lease");
+        let plan = fake_plan(&lease);
+        let orphan = JournalEntry::from_store(
+            JournalSequence::new(7).expect("sequence"),
+            fake_rolled_back(&lease, &plan),
+        );
+        let error = active_applied_entries(Vec::new(), &[orphan])
+            .expect_err("a retirement without its applied record is corrupt");
+        assert_eq!(
+            error.code().as_str(),
+            "migration_execution_unmatched_retirement"
         );
     }
 

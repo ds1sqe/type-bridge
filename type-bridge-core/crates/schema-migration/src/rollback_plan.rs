@@ -8,11 +8,11 @@
 
 use std::collections::BTreeSet;
 
-use type_bridge_contract::diagnostic::DiagnosticCategory;
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::migration::{
     MigrationId, MigrationManifestDigest, MigrationStepId,
 };
-use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState};
+use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState, SchemaDelta};
 use type_bridge_schema::{
     ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta,
     classify_delta_safety,
@@ -82,6 +82,29 @@ impl VerifiedMigrationRollbackManifest {
     pub fn steps(&self) -> &[VerifiedMigrationRollbackStep] {
         &self.steps
     }
+
+    /// Return the verified reverse delta one rollback step executes.
+    ///
+    /// The manifest stays the trust anchor: the reverse program is read back
+    /// from the forward step this rollback step names, never from a copy.
+    pub fn reverse_delta(
+        &self,
+        step: &VerifiedMigrationRollbackStep,
+    ) -> Result<&SchemaDelta, Diagnostic> {
+        self.manifest
+            .steps()
+            .iter()
+            .filter_map(|candidate| candidate.as_schema_delta())
+            .find(|candidate| candidate.contract().id() == step.forward_step_id())
+            .and_then(|candidate| candidate.contract().reverse())
+            .ok_or_else(|| {
+                contract_failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_rollback_missing_reverse_step",
+                    "rollback step names a forward step without a verified reverse program",
+                )
+            })
+    }
 }
 
 /// A complete pre-verified rollback plan in reverse-topological order.
@@ -118,6 +141,19 @@ impl VerifiedMigrationRollbackPlan {
     /// Return the exact managed state the rollback restores.
     pub const fn target_state(&self) -> &ManagedSchemaState {
         &self.target_state
+    }
+
+    /// Return the complete canonically ordered applied basis this plan assumed.
+    ///
+    /// The basis is the union of the rolled-back identities and the surviving
+    /// ones; execution compares it against the live applied ledger so a plan
+    /// built from a stale ledger fails closed before provider I/O.
+    pub fn applied_basis(&self) -> BTreeSet<MigrationId> {
+        self.rollbacks
+            .iter()
+            .map(|rollback| rollback.manifest().id().clone())
+            .chain(self.remaining_applied.iter().cloned())
+            .collect()
     }
 }
 

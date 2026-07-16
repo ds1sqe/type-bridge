@@ -25,7 +25,7 @@ pub use observation::{
 pub use provider::{TypeDbMigrationProvider, execution_capability_vocabulary};
 pub use runner::{
     MigrationDirectoryApplyError, MigrationDirectoryApplyOutcome,
-    TypeDbMigrationRunner,
+    MigrationDirectoryRollbackOutcome, TypeDbMigrationRunner,
 };
 pub use store::{
     TypeDbMigrationStore, VerifiedMigrationCatalog,

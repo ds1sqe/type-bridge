@@ -19,15 +19,18 @@ pub use apply_plan::{
 };
 pub use coordinator::{
     GroupCommitFailure, GroupCommitFuture, MigrationExecutionOutcome,
-    MigrationExecutionProvider, PreparedMigrationGroup,
-    execute_verified_migration_apply_plan,
+    MigrationExecutionProvider, MigrationRollbackOutcome,
+    PreparedMigrationGroup, execute_verified_migration_apply_plan,
+    execute_verified_migration_rollback_plan,
 };
 pub use execution::{
     AppliedRecord, ExecutionFence, ExecutionFuture, ExecutionScope,
     GroupCommitCertainty, GroupEventRecord, GroupJournalEventKind,
     GroupRecoveryDecision, GroupRecoveryObservation, JournalEntry,
     JournalSequence, LeaseHolderId, MigrationExecutionJournal, MigrationLease,
-    MigrationLeaseStore, OpenPlanRecord, PlanRecord, decide_group_recovery,
+    MigrationLeaseStore, OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord,
+    RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord,
+    active_applied_entries, decide_group_recovery,
 };
 pub use lowering::{
     SchemaFactCatalog, SchemaLoweringBinding, SchemaLoweringDiagnostic, SchemaLoweringPlan,

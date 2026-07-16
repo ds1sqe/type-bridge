@@ -21,9 +21,11 @@ use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_migration::{
     ExecutionScope, LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError,
     MigrationApplyTarget, MigrationExecutionJournal, MigrationExecutionOutcome,
-    MigrationHistoryGraph, MigrationLeaseStore, MigrationSafetyPolicy,
-    SchemaLoweringBinding, build_verified_migration_apply_plan,
+    MigrationHistoryGraph, MigrationLeaseStore, MigrationRollbackOutcome,
+    MigrationSafetyPolicy, SchemaLoweringBinding,
+    build_verified_migration_apply_plan, build_verified_migration_rollback_plan,
     discover_verified_migration_chain, execute_verified_migration_apply_plan,
+    execute_verified_migration_rollback_plan,
 };
 
 use crate::provider::TypeDbMigrationProvider;
@@ -36,6 +38,15 @@ pub enum MigrationDirectoryApplyOutcome {
     UpToDate,
     /// The coordinator executed the derived plan and reported this outcome.
     Executed(MigrationExecutionOutcome),
+}
+
+/// Result of one directory rollback pass.
+#[derive(Debug)]
+pub enum MigrationDirectoryRollbackOutcome {
+    /// None of the requested removals is active in the applied ledger.
+    UpToDate,
+    /// The coordinator executed the derived rollback and reported this outcome.
+    Executed(MigrationRollbackOutcome),
 }
 
 /// Failure while orchestrating one directory apply pass.
@@ -170,6 +181,54 @@ impl TypeDbMigrationRunner {
             execute_verified_migration_apply_plan(&store, &provider, holder, &plan)
                 .await?;
         Ok(MigrationDirectoryApplyOutcome::Executed(outcome))
+    }
+
+    /// Roll the requested applied migrations back through the live pair.
+    ///
+    /// `removals` must be downward-closed over the applied set: an identity
+    /// with a remaining applied descendant is rejected by the planner. The
+    /// applied basis is read under the same rendezvous-only inspection lease
+    /// as [`Self::apply`]; the coordinator's stale-ledger gate rejects the
+    /// derived plan if the ledger moved in between.
+    pub async fn rollback(
+        &self,
+        directory: &Path,
+        removals: &BTreeSet<MigrationId>,
+        holder: &LeaseHolderId,
+        approvals: &[MigrationApplyApproval],
+    ) -> Result<MigrationDirectoryRollbackOutcome, MigrationDirectoryApplyError> {
+        let graph = self.discover(directory)?;
+        let catalog =
+            VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
+        let store = TypeDbMigrationStore::new(
+            Arc::clone(&self.managed_database),
+            Arc::clone(&self.journal_database),
+            catalog,
+        )?;
+        store.ensure_control_schema().await?;
+
+        let basis = self.load_applied_basis(&store, holder).await?;
+        if removals.iter().all(|id| !basis.contains(id)) {
+            return Ok(MigrationDirectoryRollbackOutcome::UpToDate);
+        }
+
+        let plan = build_verified_migration_rollback_plan(
+            &graph,
+            &basis,
+            removals,
+            &self.context,
+            &self.lowering_binding,
+            &self.policy,
+            approvals,
+        )?;
+        let store = store.bind_rollback_plan(&plan)?;
+        let provider =
+            TypeDbMigrationProvider::new(Arc::clone(&self.managed_database))?;
+        let outcome = execute_verified_migration_rollback_plan(
+            &store, &provider, holder, &plan,
+        )
+        .await?;
+        Ok(MigrationDirectoryRollbackOutcome::Executed(outcome))
     }
 
     async fn load_applied_basis(

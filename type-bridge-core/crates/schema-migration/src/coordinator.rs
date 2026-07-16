@@ -13,13 +13,16 @@ use type_bridge_contract::schema::ManagedSchemaState;
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 
 use crate::execution::{
-    AppliedRecord, ExecutionFuture, GroupCommitCertainty, GroupEventRecord,
-    GroupJournalEventKind, GroupRecoveryDecision, GroupRecoveryObservation,
-    LeaseHolderId, MigrationExecutionJournal, MigrationLease,
-    MigrationLeaseStore, OpenPlanRecord, PlanRecord, decide_group_recovery,
+    AppliedRecord, ExecutionFence, ExecutionFuture, GroupCommitCertainty,
+    GroupEventRecord, GroupJournalEventKind, GroupRecoveryDecision,
+    GroupRecoveryObservation, LeaseHolderId, MigrationExecutionJournal,
+    MigrationLease, MigrationLeaseStore, OpenPlanRecord,
+    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord,
+    RollbackStepEventRecord, RolledBackRecord, decide_group_recovery,
 };
 use crate::{
     StatementUnit, VerifiedMigrationApplyManifest, VerifiedMigrationApplyPlan,
+    VerifiedMigrationRollbackManifest, VerifiedMigrationRollbackPlan,
     VerifiedMigrationTransactionGroup,
 };
 
@@ -138,6 +141,31 @@ pub enum MigrationExecutionOutcome {
         migration_id: MigrationId,
         /// Zero-based verifier-owned group position.
         group_ordinal: usize,
+        /// Privacy-safe reason automatic progress was refused.
+        diagnostic: Diagnostic,
+    },
+}
+
+/// Terminal result of one rollback coordinator invocation.
+#[derive(Debug)]
+pub enum MigrationRollbackOutcome {
+    /// Every planned manifest is durably retired from the applied ledger.
+    RolledBack,
+    /// A later invocation may safely retry or repair journal-only progress.
+    RetrySafe {
+        /// Migration containing the interrupted rollback step.
+        migration_id: MigrationId,
+        /// Zero-based rollback step position in execution order.
+        step_ordinal: usize,
+        /// Privacy-safe provider or journal failure.
+        diagnostic: Diagnostic,
+    },
+    /// Evidence cannot distinguish replay from duplication.
+    RequiresExplicitRecovery {
+        /// Migration containing the ambiguous rollback step.
+        migration_id: MigrationId,
+        /// Zero-based rollback step position in execution order.
+        step_ordinal: usize,
         /// Privacy-safe reason automatic progress was refused.
         diagnostic: Diagnostic,
     },
@@ -483,6 +511,568 @@ where
     Ok(MigrationExecutionOutcome::Applied)
 }
 
+/// Execute one complete verified rollback plan under a store-backed lease.
+///
+/// Every reverse step runs in its own provider transaction with the same
+/// commit-boundary journaling and fail-closed recovery table as forward
+/// groups. Completing one manifest's reverse program appends a retirement
+/// record; the applied record itself stays durable history.
+pub async fn execute_verified_migration_rollback_plan<S, P>(
+    store: &S,
+    provider: &P,
+    holder: &LeaseHolderId,
+    plan: &VerifiedMigrationRollbackPlan,
+) -> Result<MigrationRollbackOutcome, Diagnostic>
+where
+    S: MigrationLeaseStore + MigrationExecutionJournal,
+    P: MigrationExecutionProvider,
+{
+    if plan.rollbacks().is_empty() {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_execution_empty_plan",
+            "an executable rollback plan requires at least one manifest",
+        ));
+    }
+    for rollback in plan.rollbacks() {
+        for step in rollback.steps() {
+            rollback
+                .reverse_delta(step)?
+                .required_capabilities()
+                .ensure_supported_by(provider.available_capabilities())?;
+        }
+    }
+    let scope = crate::ExecutionScope::new(plan.source_state().scope().id().clone());
+    let lease = store.acquire(&scope, holder).await?;
+    let result = execute_rollback_under_lease(store, provider, &lease, plan).await;
+    let release = store.release(&lease).await;
+    match result {
+        Ok(MigrationRollbackOutcome::RolledBack) => {
+            release?;
+            Ok(MigrationRollbackOutcome::RolledBack)
+        }
+        Ok(outcome) => {
+            let _ = release;
+            Ok(outcome)
+        }
+        Err(error) => {
+            let _ = release;
+            Err(error)
+        }
+    }
+}
+
+async fn execute_rollback_under_lease<S, P>(
+    store: &S,
+    provider: &P,
+    lease: &MigrationLease,
+    plan: &VerifiedMigrationRollbackPlan,
+) -> Result<MigrationRollbackOutcome, Diagnostic>
+where
+    S: MigrationExecutionJournal,
+    P: MigrationExecutionProvider,
+{
+    let applied = store.load_applied(lease).await?;
+    let rolled_back = store.load_rolled_back(lease).await?;
+    let open = store.load_open_rollback_plan(lease).await?;
+    let completed_manifests = match &open {
+        Some(open) => validate_open_rollback_plan(plan, lease, open, &rolled_back)?,
+        None => 0,
+    };
+    let mut observed = None;
+
+    if open.is_none() {
+        let source = plan.source_state();
+        let live_source = provider
+            .observe_managed_state(lease, source, source)
+            .await?;
+        let applied_migrations = loaded_applied_migrations(&applied)?;
+        let record = RollbackPlanRecord::from_verified_rollback_plan(
+            lease,
+            plan,
+            &applied_migrations,
+            &live_source,
+        )?;
+        store.begin_rollback_plan(lease, record).await?;
+        observed = Some(live_source);
+    }
+
+    for (manifest_index, rollback) in plan.rollbacks().iter().enumerate() {
+        if manifest_index < completed_manifests {
+            continue;
+        }
+        let snapshot = open.as_ref();
+        for (step_index, step) in rollback.steps().iter().enumerate() {
+            let last_event = snapshot.and_then(|open| {
+                last_rollback_step_event(open, rollback, step_index)
+            });
+            if last_event.is_some_and(is_completion_event) {
+                continue;
+            }
+            let reverse = rollback.reverse_delta(step)?;
+            let source = reverse.source();
+            let target = reverse.target();
+            if observed.is_none() {
+                observed = Some(
+                    provider
+                        .observe_managed_state(lease, source, target)
+                        .await?,
+                );
+            }
+            let observation = exact_observation(
+                observed.as_ref().expect("step observation"),
+                source,
+                target,
+            );
+            match decide_group_recovery(
+                last_event,
+                &observation,
+                source.managed_semantic_schema(),
+                target.managed_semantic_schema(),
+            ) {
+                GroupRecoveryDecision::RequiresExplicitRecovery => {
+                    return Ok(rollback_explicit_recovery(
+                        rollback,
+                        step_index,
+                        failure(
+                            DiagnosticCategory::Integrity,
+                            "migration_execution_ambiguous_group_state",
+                            "live managed state cannot prove whether the step may replay",
+                        ),
+                    ));
+                }
+                GroupRecoveryDecision::RepairCheckpoint => {
+                    let committed = RollbackStepEventRecord::new(
+                        lease,
+                        rollback,
+                        step_index,
+                        GroupJournalEventKind::Committed,
+                        Some(target.managed_semantic_schema().clone()),
+                    )?;
+                    if let Err(error) = store
+                        .record_rollback_step_event(lease, committed)
+                        .await
+                    {
+                        return Ok(rollback_retry_safe(rollback, step_index, error));
+                    }
+                    observed = Some(target.clone());
+                    continue;
+                }
+                GroupRecoveryDecision::ExecuteNormally => {}
+            }
+
+            if step.lowering().units().is_empty()
+                && source.managed_semantic_schema()
+                    == target.managed_semantic_schema()
+            {
+                let event = RollbackStepEventRecord::new(
+                    lease,
+                    rollback,
+                    step_index,
+                    GroupJournalEventKind::FormalOnlyAdvanced,
+                    None,
+                )?;
+                if let Err(error) =
+                    store.record_rollback_step_event(lease, event).await
+                {
+                    return Ok(rollback_retry_safe(rollback, step_index, error));
+                }
+                observed = Some(target.clone());
+                continue;
+            }
+
+            let mut transaction = provider
+                .prepare_group(lease, source, target)
+                .await?;
+            for unit in step.lowering().units() {
+                if let Err(error) = transaction.execute_statement_unit(unit).await {
+                    let _ = transaction.rollback().await;
+                    return Err(error);
+                }
+            }
+            let before = RollbackStepEventRecord::new(
+                lease,
+                rollback,
+                step_index,
+                GroupJournalEventKind::BeforeCommit,
+                None,
+            )?;
+            if let Err(error) = store.record_rollback_step_event(lease, before).await {
+                let _ = transaction.rollback().await;
+                return Err(error);
+            }
+
+            match transaction.commit(lease).await {
+                Ok(()) => {
+                    observed = match provider
+                        .observe_managed_state(lease, source, target)
+                        .await
+                    {
+                        Ok(observed) if observed == *target => observed,
+                        Ok(_) => {
+                            return Ok(rollback_explicit_recovery(
+                                rollback,
+                                step_index,
+                                failure(
+                                    DiagnosticCategory::Integrity,
+                                    "migration_execution_commit_target_mismatch",
+                                    "commit succeeded but exact target state was not observed",
+                                ),
+                            ));
+                        }
+                        Err(error) => {
+                            return Ok(rollback_retry_safe(rollback, step_index, error));
+                        }
+                    }.into();
+                    let committed = RollbackStepEventRecord::new(
+                        lease,
+                        rollback,
+                        step_index,
+                        GroupJournalEventKind::Committed,
+                        Some(target.managed_semantic_schema().clone()),
+                    )?;
+                    if let Err(error) = store
+                        .record_rollback_step_event(lease, committed)
+                        .await
+                    {
+                        return Ok(rollback_retry_safe(rollback, step_index, error));
+                    }
+                }
+                Err(commit_failure) => {
+                    let (certainty, diagnostic) = commit_failure.into_parts();
+                    let event = RollbackStepEventRecord::new(
+                        lease,
+                        rollback,
+                        step_index,
+                        certainty.journal_event(),
+                        None,
+                    )?;
+                    if let Err(error) =
+                        store.record_rollback_step_event(lease, event).await
+                    {
+                        return Ok(match certainty {
+                            GroupCommitCertainty::DefinitelyAborted => {
+                                rollback_retry_safe(rollback, step_index, error)
+                            }
+                            GroupCommitCertainty::Unknown => {
+                                rollback_explicit_recovery(rollback, step_index, error)
+                            }
+                        });
+                    }
+                    if certainty == GroupCommitCertainty::DefinitelyAborted {
+                        return Ok(rollback_retry_safe(rollback, step_index, diagnostic));
+                    }
+                    let after = match provider
+                        .observe_managed_state(lease, source, target)
+                        .await
+                    {
+                        Ok(value) => value,
+                        Err(error) => {
+                            return Ok(rollback_explicit_recovery(
+                                rollback, step_index, error,
+                            ));
+                        }
+                    };
+                    let after_observation = exact_observation(&after, source, target);
+                    match decide_group_recovery(
+                        Some(GroupJournalEventKind::CommitOutcomeUnknown),
+                        &after_observation,
+                        source.managed_semantic_schema(),
+                        target.managed_semantic_schema(),
+                    ) {
+                        GroupRecoveryDecision::ExecuteNormally => {
+                            return Ok(rollback_retry_safe(
+                                rollback, step_index, diagnostic,
+                            ));
+                        }
+                        GroupRecoveryDecision::RequiresExplicitRecovery => {
+                            return Ok(rollback_explicit_recovery(
+                                rollback, step_index, diagnostic,
+                            ));
+                        }
+                        GroupRecoveryDecision::RepairCheckpoint => {
+                            let committed = RollbackStepEventRecord::new(
+                                lease,
+                                rollback,
+                                step_index,
+                                GroupJournalEventKind::Committed,
+                                Some(target.managed_semantic_schema().clone()),
+                            )?;
+                            if let Err(error) = store
+                                .record_rollback_step_event(lease, committed)
+                                .await
+                            {
+                                return Ok(rollback_retry_safe(
+                                    rollback, step_index, error,
+                                ));
+                            }
+                            observed = Some(target.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        let restored = rollback.manifest().source_state();
+        if observed.is_none() {
+            observed = Some(
+                provider
+                    .observe_managed_state(lease, restored, restored)
+                    .await?,
+            );
+        }
+        let last_step = rollback.steps().len().saturating_sub(1);
+        if observed.as_ref() != Some(restored) {
+            return Ok(MigrationRollbackOutcome::RequiresExplicitRecovery {
+                migration_id: rollback.manifest().id().clone(),
+                step_ordinal: last_step,
+                diagnostic: failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_manifest_target_mismatch",
+                    "completed rollback steps do not restore the exact manifest source state",
+                ),
+            });
+        }
+        let record = RolledBackRecord::from_verified_rollback(lease, rollback)?;
+        if let Err(error) = store.record_rolled_back(lease, record).await {
+            return Ok(MigrationRollbackOutcome::RetrySafe {
+                migration_id: rollback.manifest().id().clone(),
+                step_ordinal: last_step,
+                diagnostic: error,
+            });
+        }
+    }
+    Ok(MigrationRollbackOutcome::RolledBack)
+}
+
+fn validate_open_rollback_plan(
+    plan: &VerifiedMigrationRollbackPlan,
+    lease: &MigrationLease,
+    open: &OpenRollbackPlanRecord,
+    rolled_back: &[crate::JournalEntry<RolledBackRecord>],
+) -> Result<usize, Diagnostic> {
+    let basis: Vec<MigrationId> = plan.applied_basis().into_iter().collect();
+    let historical = MigrationLease::new(
+        lease.scope().clone(),
+        lease.holder().clone(),
+        open.plan().record().fence(),
+    );
+    let expected = RollbackPlanRecord::from_verified_rollback_plan(
+        &historical,
+        plan,
+        &basis,
+        plan.source_state(),
+    )?;
+    if &expected != open.plan().record() {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_execution_open_plan_identity_mismatch",
+            "open journal rollback plan differs from the freshly verified rollback plan",
+        ));
+    }
+    if open.plan().record().scope() != lease.scope()
+        || open.plan().record().fence() > lease.fence()
+    {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_execution_open_plan_fence_mismatch",
+            "open rollback plan is not owned by this scope or predates no active fence",
+        ));
+    }
+
+    let mut completed_flags = vec![false; plan.rollbacks().len()];
+    let mut previous_sequence = None;
+    for entry in rolled_back {
+        if previous_sequence.is_some_and(|previous| previous >= entry.sequence()) {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_applied_order_mismatch",
+                "retirement ledger entries are not strictly ordered",
+            ));
+        }
+        previous_sequence = Some(entry.sequence());
+        if entry.sequence() <= open.plan().sequence() {
+            // Retirements older than the open plan belong to earlier
+            // completed rollback cycles and carry no progress here.
+            continue;
+        }
+        let position = plan.rollbacks().iter().position(|rollback| {
+            rollback.manifest().id() == entry.record().migration_id()
+                && *rollback.digest() == entry.record().manifest_digest()
+        });
+        let Some(position) = position else {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_foreign_applied_progress",
+                "a retirement outside the open rollback plan was appended during execution",
+            ));
+        };
+        let entry_lease = MigrationLease::new(
+            lease.scope().clone(),
+            lease.holder().clone(),
+            entry.record().fence(),
+        );
+        let expected = RolledBackRecord::from_verified_rollback(
+            &entry_lease,
+            &plan.rollbacks()[position],
+        )?;
+        if completed_flags[position] || &expected != entry.record() {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_applied_evidence_mismatch",
+                "retirement progress differs from the exact open rollback plan",
+            ));
+        }
+        completed_flags[position] = true;
+    }
+    let completed = completed_flags.iter().take_while(|value| **value).count();
+    if completed_flags[completed..].iter().any(|value| *value) {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_execution_non_prefix_applied_progress",
+            "open-plan rollbacks are not retired as an ordered prefix",
+        ));
+    }
+
+    for event in open.events() {
+        let record = event.record();
+        let manifest_index = plan.rollbacks().iter().position(|rollback| {
+            *rollback.digest() == record.manifest_digest()
+                && rollback.manifest().id() == record.migration_id()
+        }).ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_foreign_group_event",
+                "open-rollback event has no exact verified manifest",
+            )
+        })?;
+        let rollback = &plan.rollbacks()[manifest_index];
+        let step_index = usize::try_from(record.step_ordinal()).map_err(|_| {
+            failure(
+                DiagnosticCategory::ResourceLimit,
+                "migration_execution_group_position_limit",
+                "journal step position exceeds this platform",
+            )
+        })?;
+        let historical_lease = MigrationLease::new(
+            lease.scope().clone(),
+            lease.holder().clone(),
+            record.fence(),
+        );
+        let expected = RollbackStepEventRecord::new(
+            &historical_lease,
+            rollback,
+            step_index,
+            record.kind(),
+            record.observed_target().cloned(),
+        )?;
+        if &expected != record {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_group_event_mismatch",
+                "journal event differs from exact verified rollback evidence",
+            ));
+        }
+    }
+
+    for (manifest_index, rollback) in plan.rollbacks().iter().enumerate() {
+        let mut progress_closed = false;
+        let mut all_complete = true;
+        for step_index in 0..rollback.steps().len() {
+            let events = rollback_step_events(open, rollback, step_index);
+            validate_commit_transitions(
+                events.iter().map(|event| (event.kind(), event.fence())),
+            )?;
+            if events.is_empty() {
+                progress_closed = true;
+                all_complete = false;
+                continue;
+            }
+            if progress_closed {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_non_prefix_group_progress",
+                    "rollback-step journal progress is not a prefix",
+                ));
+            }
+            let complete = events
+                .last()
+                .is_some_and(|event| is_completion_event(event.kind()));
+            if !complete {
+                progress_closed = true;
+                all_complete = false;
+            }
+        }
+        if completed_flags[manifest_index] && !all_complete {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_applied_group_mismatch",
+                "retirement record and step completion evidence disagree",
+            ));
+        }
+        if manifest_index > completed
+            && (0..rollback.steps().len()).any(|step_index| {
+                !rollback_step_events(open, rollback, step_index).is_empty()
+            })
+        {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_future_manifest_progress",
+                "a later rollback has journal progress before its predecessor",
+            ));
+        }
+    }
+    Ok(completed)
+}
+
+fn rollback_step_events<'a>(
+    open: &'a OpenRollbackPlanRecord,
+    rollback: &VerifiedMigrationRollbackManifest,
+    step_index: usize,
+) -> Vec<&'a RollbackStepEventRecord> {
+    open.events().iter()
+        .map(crate::JournalEntry::record)
+        .filter(|event| {
+            event.manifest_digest() == *rollback.digest()
+                && event.step_ordinal() as usize == step_index
+        })
+        .collect()
+}
+
+fn last_rollback_step_event(
+    open: &OpenRollbackPlanRecord,
+    rollback: &VerifiedMigrationRollbackManifest,
+    step_index: usize,
+) -> Option<GroupJournalEventKind> {
+    rollback_step_events(open, rollback, step_index)
+        .last()
+        .map(|event| event.kind())
+}
+
+fn rollback_retry_safe(
+    rollback: &VerifiedMigrationRollbackManifest,
+    step_index: usize,
+    diagnostic: Diagnostic,
+) -> MigrationRollbackOutcome {
+    MigrationRollbackOutcome::RetrySafe {
+        migration_id: rollback.manifest().id().clone(),
+        step_ordinal: step_index,
+        diagnostic,
+    }
+}
+
+fn rollback_explicit_recovery(
+    rollback: &VerifiedMigrationRollbackManifest,
+    step_index: usize,
+    diagnostic: Diagnostic,
+) -> MigrationRollbackOutcome {
+    MigrationRollbackOutcome::RequiresExplicitRecovery {
+        migration_id: rollback.manifest().id().clone(),
+        step_ordinal: step_index,
+        diagnostic,
+    }
+}
+
 fn validate_open_plan(
     plan: &VerifiedMigrationApplyPlan,
     lease: &MigrationLease,
@@ -598,7 +1188,9 @@ fn validate_open_plan(
         let mut all_complete = true;
         for group in migration.transaction_groups() {
             let events = group_events(open, migration, group);
-            validate_group_transitions(&events)?;
+            validate_commit_transitions(
+                events.iter().map(|event| (event.kind(), event.fence())),
+            )?;
             if events.is_empty() {
                 progress_closed = true;
                 all_complete = false;
@@ -734,16 +1326,18 @@ fn last_group_event(
         .map(|event| event.kind())
 }
 
-fn validate_group_transitions(events: &[&GroupEventRecord]) -> Result<(), Diagnostic> {
-    let mut previous: Option<&GroupEventRecord> = None;
-    for event in events {
+fn validate_commit_transitions(
+    events: impl IntoIterator<Item = (GroupJournalEventKind, ExecutionFence)>,
+) -> Result<(), Diagnostic> {
+    let mut previous: Option<(GroupJournalEventKind, ExecutionFence)> = None;
+    for (kind, fence) in events {
         let valid = match previous {
             None => matches!(
-                event.kind(),
+                kind,
                 GroupJournalEventKind::BeforeCommit
                     | GroupJournalEventKind::FormalOnlyAdvanced
             ),
-            Some(prior) => match (prior.kind(), event.kind()) {
+            Some((prior_kind, prior_fence)) => match (prior_kind, kind) {
                 (
                     GroupJournalEventKind::BeforeCommit,
                     GroupJournalEventKind::Committed
@@ -755,11 +1349,11 @@ fn validate_group_transitions(events: &[&GroupEventRecord]) -> Result<(), Diagno
                         | GroupJournalEventKind::CommitOutcomeUnknown
                         | GroupJournalEventKind::DefinitelyAborted,
                     GroupJournalEventKind::BeforeCommit,
-                ) => event.fence() > prior.fence(),
+                ) => fence > prior_fence,
                 (
                     GroupJournalEventKind::CommitOutcomeUnknown,
                     GroupJournalEventKind::Committed,
-                ) => event.fence() >= prior.fence(),
+                ) => fence >= prior_fence,
                 _ => false,
             },
         };
@@ -770,7 +1364,7 @@ fn validate_group_transitions(events: &[&GroupEventRecord]) -> Result<(), Diagno
                 "group journal event order is not a valid commit state machine",
             ));
         }
-        previous = Some(event);
+        previous = Some((kind, fence));
     }
     Ok(())
 }

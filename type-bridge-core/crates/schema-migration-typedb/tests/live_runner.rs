@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,20 +24,21 @@ use type_bridge_query::{
     MigrationAssertionValidationContext, lower_condition_to_plan,
 };
 use type_bridge_schema::{
-    ManagedDeltaContext, SafetyDerivationProfile,
+    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile,
     derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
     resolve,
 };
 use type_bridge_schema_migration::{
-    MigrationSafetyPolicy,
-    LeaseHolderId, MigrationApplyTarget, MigrationExecutionOutcome,
+    LeaseHolderId, MigrationApplyApproval, MigrationApplyTarget,
+    MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationSafetyPolicy,
     SchemaLoweringBinding, SchemaMigrationDraft,
     VerifiedSchemaMigrationManifest, build_verified_manifest,
     encode_verified_manifest, schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
-    MigrationDirectoryApplyOutcome, TypeDbMigrationRunner,
-    derived_journal_database_name, execution_capability_vocabulary,
+    MigrationDirectoryApplyOutcome, MigrationDirectoryRollbackOutcome,
+    TypeDbMigrationRunner, derived_journal_database_name,
+    execution_capability_vocabulary,
 };
 
 fn connection() -> (String, String, String, String, ConnectOptions) {
@@ -347,6 +349,127 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
         .await
         .expect("final apply on a fully applied ledger");
     assert!(matches!(outcome, MigrationDirectoryApplyOutcome::UpToDate));
+
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
+    journal
+        .delete_database()
+        .await
+        .expect("delete isolated journal database");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(Vec::new());
+    let first_target = declared_facts(vec![type_fact("person")]);
+    let second_target =
+        declared_facts(vec![type_fact("company"), type_fact("person")]);
+    let first = manifest_with_derived_assertions(
+        "0001_person",
+        Vec::new(),
+        &genesis,
+        &first_target,
+        &context,
+    );
+    let second = manifest_with_derived_assertions(
+        "0002_company",
+        vec![first.id().clone()],
+        &first_target,
+        &second_target,
+        &context,
+    );
+
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    write_manifest(directory.path(), &second);
+
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone())
+            .expect("lowering binding");
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-rollback").expect("holder");
+
+    let outcome = runner
+        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .await
+        .expect("apply the two-migration chain");
+    assert!(matches!(
+        outcome,
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+    ));
+    let export = managed.schema_text().await.expect("post-apply export");
+    assert!(export.contains("entity company"), "{export}");
+
+    // Rolling back the additive head destroys the company type, so the
+    // default policy demands an approval bound to the reverse transition.
+    let removals = BTreeSet::from([second.id().clone()]);
+    let unapproved = runner
+        .rollback(directory.path(), &removals, &holder, &[])
+        .await
+        .expect_err("destructive reverse work requires approval");
+    assert!(
+        unapproved
+            .to_string()
+            .contains("migration_rollback_approval_required"),
+        "{unapproved}"
+    );
+
+    let approval =
+        MigrationApplyApproval::for_rollback(&second, SafetyClass::Destructive)
+            .expect("rollback approval");
+    let outcome = runner
+        .rollback(
+            directory.path(),
+            &removals,
+            &holder,
+            std::slice::from_ref(&approval),
+        )
+        .await
+        .expect("approved head rollback");
+    assert!(matches!(
+        outcome,
+        MigrationDirectoryRollbackOutcome::Executed(
+            MigrationRollbackOutcome::RolledBack
+        )
+    ));
+    let export = managed.schema_text().await.expect("post-rollback export");
+    assert!(!export.contains("entity company"), "{export}");
+    assert!(export.contains("entity person"), "{export}");
+
+    let outcome = runner
+        .rollback(
+            directory.path(),
+            &removals,
+            &holder,
+            std::slice::from_ref(&approval),
+        )
+        .await
+        .expect("repeat rollback on a retired ledger");
+    assert!(matches!(outcome, MigrationDirectoryRollbackOutcome::UpToDate));
+
+    // The retired head is pending again and re-applies from the directory.
+    let outcome = runner
+        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .await
+        .expect("re-apply the rolled-back head");
+    assert!(matches!(
+        outcome,
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+    ));
+    let export = managed.schema_text().await.expect("post-reapply export");
+    assert!(export.contains("entity company"), "{export}");
 
     managed
         .delete_database()

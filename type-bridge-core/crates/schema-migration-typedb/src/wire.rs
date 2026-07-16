@@ -12,7 +12,7 @@ use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::limits::CodecLimits;
 use type_bridge_schema_migration::{
     AppliedRecord, ExecutionFence, GroupEventRecord, GroupJournalEventKind,
-    PlanRecord,
+    PlanRecord, RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord,
 };
 
 const EXECUTION_RECORD_V1: &str = "typebridge.migration-execution-record/v1";
@@ -246,6 +246,229 @@ pub(crate) fn decode_applied(
         expected.fence(),
     )?;
     ensure_expected_bytes(bytes, &encode_applied(&expected)?)?;
+    Ok(expected)
+}
+
+#[derive(Serialize)]
+struct RollbackPlanView<'a> {
+    fence: u64,
+    format: &'static str,
+    kind: &'static str,
+    lowering_profile: &'a Fingerprint,
+    manifest_digests: Vec<String>,
+    manifest_plan_fingerprints: Vec<&'a Fingerprint>,
+    observed_live_source: &'a Fingerprint,
+    remaining_applied: &'a [type_bridge_contract::migration::MigrationId],
+    rollback_ids: &'a [type_bridge_contract::migration::MigrationId],
+    scope: &'a str,
+    semantic_profile: &'a Fingerprint,
+    source_applied: &'a [type_bridge_contract::migration::MigrationId],
+    source_declared: &'a Fingerprint,
+    source_semantics: &'a Fingerprint,
+    target_declared: &'a Fingerprint,
+    target_semantics: &'a Fingerprint,
+}
+
+#[derive(Serialize)]
+struct RollbackEventView<'a> {
+    event_kind: &'static str,
+    fence: u64,
+    format: &'static str,
+    kind: &'static str,
+    manifest_digest: String,
+    migration_id: &'a type_bridge_contract::migration::MigrationId,
+    observed_target: Option<&'a Fingerprint>,
+    scope: &'a str,
+    step_ordinal: u32,
+}
+
+#[derive(Serialize)]
+struct RolledBackView<'a> {
+    fence: u64,
+    format: &'static str,
+    kind: &'static str,
+    manifest_digest: String,
+    migration_id: &'a type_bridge_contract::migration::MigrationId,
+    scope: &'a str,
+    source_declared: &'a Fingerprint,
+    source_semantics: &'a Fingerprint,
+    target_declared: &'a Fingerprint,
+    target_semantics: &'a Fingerprint,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RollbackPlanWire {
+    fence: u64,
+    format: String,
+    kind: String,
+    lowering_profile: Value,
+    manifest_digests: Value,
+    manifest_plan_fingerprints: Value,
+    observed_live_source: Value,
+    remaining_applied: Value,
+    rollback_ids: Value,
+    scope: String,
+    semantic_profile: Value,
+    source_applied: Value,
+    source_declared: Value,
+    source_semantics: Value,
+    target_declared: Value,
+    target_semantics: Value,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RollbackEventWire {
+    event_kind: String,
+    fence: u64,
+    format: String,
+    kind: String,
+    manifest_digest: String,
+    migration_id: Value,
+    observed_target: Option<Value>,
+    scope: String,
+    step_ordinal: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RolledBackWire {
+    fence: u64,
+    format: String,
+    kind: String,
+    manifest_digest: String,
+    migration_id: Value,
+    scope: String,
+    source_declared: Value,
+    source_semantics: Value,
+    target_declared: Value,
+    target_semantics: Value,
+}
+
+pub(crate) fn encode_rollback_plan(
+    record: &RollbackPlanRecord,
+) -> Result<Vec<u8>, Diagnostic> {
+    let view = RollbackPlanView {
+        fence: record.fence().get(),
+        format: EXECUTION_RECORD_V1,
+        kind: "rollback-plan",
+        lowering_profile: record.lowering_profile().as_fingerprint(),
+        manifest_digests: record
+            .manifest_digests()
+            .iter()
+            .map(|digest| digest.to_hex())
+            .collect(),
+        manifest_plan_fingerprints: record
+            .manifest_plan_fingerprints()
+            .iter()
+            .map(|fingerprint| fingerprint.as_fingerprint())
+            .collect(),
+        observed_live_source: record.observed_live_source().as_fingerprint(),
+        remaining_applied: record.remaining_applied(),
+        rollback_ids: record.rollback_ids(),
+        scope: record.scope().managed_scope_id().as_str(),
+        semantic_profile: record.semantic_profile().as_fingerprint(),
+        source_applied: record.source_applied(),
+        source_declared: record.source_declared().as_fingerprint(),
+        source_semantics: record.source_semantics().as_fingerprint(),
+        target_declared: record.target_declared().as_fingerprint(),
+        target_semantics: record.target_semantics().as_fingerprint(),
+    };
+    to_canonical_json_with_limits(&view, EXECUTION_RECORD_LIMITS)
+}
+
+pub(crate) fn decode_rollback_plan(
+    bytes: &[u8],
+    expected: RollbackPlanRecord,
+) -> Result<RollbackPlanRecord, Diagnostic> {
+    let wire: RollbackPlanWire =
+        from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+    ensure_header(
+        &wire.format,
+        &wire.kind,
+        &wire.scope,
+        wire.fence,
+        "rollback-plan",
+        expected.scope().managed_scope_id().as_str(),
+        expected.fence(),
+    )?;
+    ensure_expected_bytes(bytes, &encode_rollback_plan(&expected)?)?;
+    Ok(expected)
+}
+
+pub(crate) fn encode_rollback_event(
+    record: &RollbackStepEventRecord,
+) -> Result<Vec<u8>, Diagnostic> {
+    let view = RollbackEventView {
+        event_kind: event_kind(record.kind()),
+        fence: record.fence().get(),
+        format: EXECUTION_RECORD_V1,
+        kind: "rollback-event",
+        manifest_digest: record.manifest_digest().to_hex(),
+        migration_id: record.migration_id(),
+        observed_target: record
+            .observed_target()
+            .map(|fingerprint| fingerprint.as_fingerprint()),
+        scope: record.scope().managed_scope_id().as_str(),
+        step_ordinal: record.step_ordinal(),
+    };
+    to_canonical_json_with_limits(&view, EXECUTION_RECORD_LIMITS)
+}
+
+pub(crate) fn decode_rollback_event(
+    bytes: &[u8],
+    expected: RollbackStepEventRecord,
+) -> Result<RollbackStepEventRecord, Diagnostic> {
+    let wire: RollbackEventWire =
+        from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+    ensure_header(
+        &wire.format,
+        &wire.kind,
+        &wire.scope,
+        wire.fence,
+        "rollback-event",
+        expected.scope().managed_scope_id().as_str(),
+        expected.fence(),
+    )?;
+    ensure_expected_bytes(bytes, &encode_rollback_event(&expected)?)?;
+    Ok(expected)
+}
+
+pub(crate) fn encode_rolled_back(
+    record: &RolledBackRecord,
+) -> Result<Vec<u8>, Diagnostic> {
+    let view = RolledBackView {
+        fence: record.fence().get(),
+        format: EXECUTION_RECORD_V1,
+        kind: "rolled-back",
+        manifest_digest: record.manifest_digest().to_hex(),
+        migration_id: record.migration_id(),
+        scope: record.scope().managed_scope_id().as_str(),
+        source_declared: record.source_declared().as_fingerprint(),
+        source_semantics: record.source_semantics().as_fingerprint(),
+        target_declared: record.target_declared().as_fingerprint(),
+        target_semantics: record.target_semantics().as_fingerprint(),
+    };
+    to_canonical_json_with_limits(&view, EXECUTION_RECORD_LIMITS)
+}
+
+pub(crate) fn decode_rolled_back(
+    bytes: &[u8],
+    expected: RolledBackRecord,
+) -> Result<RolledBackRecord, Diagnostic> {
+    let wire: RolledBackWire =
+        from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+    ensure_header(
+        &wire.format,
+        &wire.kind,
+        &wire.scope,
+        wire.fence,
+        "rolled-back",
+        expected.scope().managed_scope_id().as_str(),
+        expected.fence(),
+    )?;
+    ensure_expected_bytes(bytes, &encode_rolled_back(&expected)?)?;
     Ok(expected)
 }
 
