@@ -1,0 +1,9 @@
+format: typebridge.schema/v2
+
+attributes:
+  name:
+    value: string
+
+entities:
+  person:
+    owns: [name]
