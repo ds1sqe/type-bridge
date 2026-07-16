@@ -445,7 +445,7 @@ fn render_operand(
     }
 }
 
-const fn render_comparator(comparator: ValueComparator) -> &'static str {
+pub(crate) const fn render_comparator(comparator: ValueComparator) -> &'static str {
     match comparator {
         ValueComparator::Equal => "==",
         ValueComparator::NotEqual => "!=",
@@ -456,7 +456,7 @@ const fn render_comparator(comparator: ValueComparator) -> &'static str {
     }
 }
 
-fn render_literal(value: &CanonicalValue) -> String {
+pub(crate) fn render_literal(value: &CanonicalValue) -> String {
     match value {
         CanonicalValue::String(value) => {
             serde_json::to_string(value.as_str()).expect("serializing a string cannot fail")

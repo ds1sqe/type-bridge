@@ -76,6 +76,7 @@ pub mod hooks;
 pub mod manager;
 pub mod match_request;
 pub mod migration_assertion;
+pub mod query_v2;
 pub mod query;
 pub mod registry;
 pub mod relation;
