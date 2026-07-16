@@ -55,6 +55,7 @@ const CAP_STAGE_OFFSET: &str = "query.stage.offset";
 const CAP_STAGE_LIMIT: &str = "query.stage.limit";
 const CAP_OUTPUT_ROWS: &str = "query.output.rows";
 const CAP_FUNCTION_CALL: &str = "query.pattern.function-call";
+const CAP_STAGE_REDUCE: &str = "query.stage.reduce";
 
 /// Return every capability the first query-plan vocabulary can require.
 #[must_use]
@@ -76,6 +77,7 @@ pub fn query_plan_capability_vocabulary() -> CapabilitySet {
         CAP_STAGE_LIMIT,
         CAP_OUTPUT_ROWS,
         CAP_FUNCTION_CALL,
+        CAP_STAGE_REDUCE,
     ]
     .into_iter()
     .map(|value| CapabilityId::new(value).expect("static capability id is canonical"))
@@ -284,11 +286,87 @@ impl OrderTerm {
     }
 }
 
+/// The closed reducer vocabulary of the first reduce stage.
+///
+/// Reducers that can observe an empty stream (`max`, `min`, `mean`) are
+/// admitted only under group bindings, where every group is witnessed by at
+/// least one row; `count` and `sum` stay total on empty streams.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reducer {
+    /// Count surviving rows.
+    Count,
+    /// The largest input value.
+    Max,
+    /// The arithmetic mean of input values.
+    Mean,
+    /// The smallest input value.
+    Min,
+    /// The total of input values.
+    Sum,
+}
+
+impl Reducer {
+    /// Whether this reducer yields a defined result on an empty stream.
+    #[must_use]
+    pub const fn total_without_groups(self) -> bool {
+        matches!(self, Self::Count | Self::Sum)
+    }
+
+    /// Whether this reducer consumes an input binding.
+    #[must_use]
+    pub const fn requires_input(self) -> bool {
+        !matches!(self, Self::Count)
+    }
+}
+
+/// One reduce-stage assignment producing a fresh value binding.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ReduceAssignment {
+    assigned: BindingId,
+    input: Option<BindingId>,
+    reducer: Reducer,
+}
+
+impl ReduceAssignment {
+    /// Assign one reducer result to a fresh declared binding.
+    #[must_use]
+    pub const fn new(
+        assigned: BindingId,
+        reducer: Reducer,
+        input: Option<BindingId>,
+    ) -> Self {
+        Self {
+            assigned,
+            input,
+            reducer,
+        }
+    }
+
+    /// Return the fresh binding the reducer result is assigned to.
+    #[must_use]
+    pub const fn assigned(&self) -> BindingId {
+        self.assigned
+    }
+
+    /// Return the reduced input binding, absent for bare `count`.
+    #[must_use]
+    pub const fn input(&self) -> Option<BindingId> {
+        self.input
+    }
+
+    /// Return the reducer applied within each group.
+    #[must_use]
+    pub const fn reducer(&self) -> Reducer {
+        self.reducer
+    }
+}
+
 /// One ordered read stage of the first public vocabulary.
 ///
 /// The canonical stage order is fixed: one `match`, then at most one each of
-/// `select`, `require`, `distinct`, `sort`, `offset`, and `limit`, in that
-/// order. Later stage kinds (reductions, documents) are reserved.
+/// `select`, `require`, `distinct`, `reduce`, `sort`, `offset`, and `limit`,
+/// in that order. Later stage kinds (documents) are reserved.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReadStage {
@@ -309,6 +387,16 @@ pub enum ReadStage {
     },
     /// Deduplicate the visible row environment.
     Distinct,
+    /// Collapse rows into grouped reducer results.
+    ///
+    /// The surviving row environment is exactly the group bindings plus the
+    /// assigned reducer results; every other binding ends here.
+    Reduce {
+        /// Reducer assignments, each producing a fresh value binding.
+        assignments: Vec<ReduceAssignment>,
+        /// Canonical-sorted group-key bindings; empty for a global reduce.
+        groups: Vec<BindingId>,
+    },
     /// Impose an explicit total row order.
     Sort {
         /// Ordered sort keys.
@@ -333,9 +421,10 @@ impl ReadStage {
             Self::Select { .. } => 1,
             Self::Require { .. } => 2,
             Self::Distinct => 3,
-            Self::Sort { .. } => 4,
-            Self::Offset { .. } => 5,
-            Self::Limit { .. } => 6,
+            Self::Reduce { .. } => 4,
+            Self::Sort { .. } => 5,
+            Self::Offset { .. } => 6,
+            Self::Limit { .. } => 7,
         }
     }
 }
@@ -755,9 +844,14 @@ fn validate_pipeline(
         inspect_pattern(pattern, 1, binding_count, input_count, limits, &mut stats)?;
     }
 
-    let mut visible: BTreeSet<BindingId> = (0..binding_count)
-        .map(|index| BindingId::new(u16::try_from(index).expect("dense ordinal")))
-        .collect::<Result<_, _>>()?;
+    // The row environment starts as the pattern-referenced bindings: a
+    // declared binding no pattern mentions has no row presence, and a
+    // reduce assignment must stay outside the pattern conjunction.
+    let mut pattern_bound = BTreeSet::new();
+    for pattern in patterns {
+        collect_pattern_bindings(pattern, &mut pattern_bound);
+    }
+    let mut visible = pattern_bound.clone();
     let mut previous_ordinal = 0u8;
     let mut has_sort = false;
     for stage in rest {
@@ -781,6 +875,81 @@ fn validate_pipeline(
                 canonical_stage_set(bindings, &visible, "require")?;
             }
             ReadStage::Distinct => {}
+            ReadStage::Reduce { assignments, groups } => {
+                if assignments.is_empty()
+                    || assignments.len() > limits.boolean_terms
+                    || groups.len() > limits.boolean_terms
+                {
+                    return Err(failure(
+                        DiagnosticCategory::ResourceLimit,
+                        "query_plan_reduce_term_limit",
+                        "reduce has no assignments or exceeds the term ceiling",
+                    ));
+                }
+                let mut previous = None;
+                let mut next_visible = BTreeSet::new();
+                for group in groups {
+                    if previous.is_some_and(|previous: BindingId| previous >= *group)
+                    {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_stage_set_not_canonical",
+                            "stage binding sets must be strictly ascending",
+                        ));
+                    }
+                    previous = Some(*group);
+                    if !visible.contains(group) {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_stage_unknown_binding",
+                            "reduce groups a binding outside the visible row environment",
+                        ));
+                    }
+                    next_visible.insert(*group);
+                }
+                for assignment in assignments {
+                    check_binding(assignment.assigned(), binding_count)?;
+                    if pattern_bound.contains(&assignment.assigned())
+                        || !next_visible.insert(assignment.assigned())
+                    {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_reduce_assigned_bound",
+                            "reduce must assign a fresh binding free of patterns and groups",
+                        ));
+                    }
+                    match assignment.input() {
+                        Some(input) => {
+                            if !visible.contains(&input) {
+                                return Err(failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_stage_unknown_binding",
+                                    "reduce consumes a binding outside the visible row environment",
+                                ));
+                            }
+                        }
+                        None => {
+                            if assignment.reducer().requires_input() {
+                                return Err(failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_reduce_missing_input",
+                                    "this reducer consumes an input binding",
+                                ));
+                            }
+                        }
+                    }
+                    if groups.is_empty()
+                        && !assignment.reducer().total_without_groups()
+                    {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_reduce_requires_groups",
+                            "reducers undefined on empty streams require group bindings",
+                        ));
+                    }
+                }
+                visible = next_visible;
+            }
             ReadStage::Sort { terms } => {
                 if terms.is_empty() || terms.len() > limits.boolean_terms {
                     return Err(failure(
@@ -943,6 +1112,51 @@ fn inspect_pattern(
     }
 }
 
+fn collect_pattern_bindings(
+    pattern: &QueryPattern,
+    bindings: &mut BTreeSet<BindingId>,
+) {
+    let mut operand = |operand: &QueryOperand| {
+        if let QueryOperand::Binding { binding } = operand {
+            bindings.insert(*binding);
+        }
+    };
+    match pattern {
+        QueryPattern::Isa { binding, .. } => {
+            bindings.insert(*binding);
+        }
+        QueryPattern::Has { owner, attribute, .. } => {
+            bindings.insert(*owner);
+            bindings.insert(*attribute);
+        }
+        QueryPattern::Links { relation, players, .. } => {
+            bindings.insert(*relation);
+            for player in players {
+                bindings.insert(player.player());
+            }
+        }
+        QueryPattern::Value { left, right, .. } => {
+            operand(left);
+            operand(right);
+        }
+        QueryPattern::Not { patterns } => {
+            for child in patterns {
+                collect_pattern_bindings(child, bindings);
+            }
+        }
+        QueryPattern::FunctionCall {
+            arguments,
+            assigned,
+            ..
+        } => {
+            for argument in arguments {
+                operand(argument);
+            }
+            bindings.insert(*assigned);
+        }
+    }
+}
+
 fn check_operand(
     operand: &QueryOperand,
     binding_count: usize,
@@ -1002,6 +1216,9 @@ fn derive_capabilities(
             }
             ReadStage::Distinct => {
                 insert_capability(&mut capabilities, CAP_STAGE_DISTINCT)?;
+            }
+            ReadStage::Reduce { .. } => {
+                insert_capability(&mut capabilities, CAP_STAGE_REDUCE)?;
             }
             ReadStage::Sort { .. } => {
                 insert_capability(&mut capabilities, CAP_STAGE_SORT)?;

@@ -12,7 +12,9 @@ use type_bridge_contract::diagnostic::{
 };
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::BindingId;
-use type_bridge_contract::query_plan::{QueryOutput, QueryPlan, ReadStage};
+use type_bridge_contract::query_plan::{
+    QueryOutput, QueryPlan, ReadStage, Reducer,
+};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::ValueTypeTag;
 
@@ -196,10 +198,26 @@ pub fn validate_query_plan(
         &QUERY_ENGINE_CODES,
     )?;
 
+    // Reduce assignments establish fresh value bindings outside the
+    // pattern conjunction; collect them before per-binding auditing.
+    let reduce_assigned: BTreeSet<BindingId> = plan
+        .pipeline()
+        .iter()
+        .filter_map(|stage| match stage {
+            ReadStage::Reduce { assignments, .. } => Some(assignments),
+            _ => None,
+        })
+        .flatten()
+        .map(|assignment| assignment.assigned())
+        .collect();
+
     let QueryOutput::Rows { columns } = plan.output();
     let projected: BTreeSet<BindingId> = columns.iter().copied().collect();
     for binding in plan.bindings() {
         let id = binding.id();
+        if reduce_assigned.contains(&id) {
+            continue;
+        }
         if !used.contains(&id) {
             return Err(plan_failure(
                 DiagnosticCategory::InvalidContract,
@@ -236,7 +254,7 @@ pub fn validate_query_plan(
         }
     }
 
-    let binding_domains = domains
+    let mut binding_domains = domains
         .into_iter()
         .filter(|(id, _)| positive.contains(id))
         .map(|(id, type_ids)| {
@@ -261,6 +279,67 @@ pub fn validate_query_plan(
                             "stage bindings must be positively established at the root",
                         ));
                     }
+                }
+            }
+            ReadStage::Reduce { assignments, groups } => {
+                for group in groups {
+                    if !positive.contains(group) {
+                        return Err(plan_failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_binding_not_positive",
+                            "stage bindings must be positively established at the root",
+                        ));
+                    }
+                }
+                for assignment in assignments {
+                    let input_scalar = match assignment.input() {
+                        Some(input) => {
+                            if !positive.contains(&input) {
+                                return Err(plan_failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_binding_not_positive",
+                                    "stage bindings must be positively established at the root",
+                                ));
+                            }
+                            binding_domains
+                                .get(&input)
+                                .and_then(|domain| domain.value_type())
+                        }
+                        None => None,
+                    };
+                    let result_type = match assignment.reducer() {
+                        Reducer::Count => ValueTypeTag::Long,
+                        Reducer::Sum | Reducer::Max | Reducer::Min => {
+                            match input_scalar {
+                                Some(
+                                    tag @ (ValueTypeTag::Long | ValueTypeTag::Double),
+                                ) => tag,
+                                _ => {
+                                    return Err(plan_failure(
+                                        DiagnosticCategory::InvalidContract,
+                                        "query_plan_reduce_input_domain",
+                                        "this reducer requires a uniform numeric scalar input",
+                                    ));
+                                }
+                            }
+                        }
+                        Reducer::Mean => match input_scalar {
+                            Some(ValueTypeTag::Long | ValueTypeTag::Double) => {
+                                ValueTypeTag::Double
+                            }
+                            _ => {
+                                return Err(plan_failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_reduce_input_domain",
+                                    "this reducer requires a uniform numeric scalar input",
+                                ));
+                            }
+                        },
+                    };
+                    binding_domains.insert(
+                        assignment.assigned(),
+                        BindingDomain::new(BTreeSet::new(), Some(result_type)),
+                    );
                 }
             }
             ReadStage::Sort { terms } => {

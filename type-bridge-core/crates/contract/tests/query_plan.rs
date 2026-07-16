@@ -107,6 +107,7 @@ fn query_plan_capability_vocabulary_is_exact_and_deterministic() {
             "query.stage.distinct",
             "query.stage.limit",
             "query.stage.offset",
+            "query.stage.reduce",
             "query.stage.require",
             "query.stage.select",
             "query.stage.sort",
@@ -407,4 +408,113 @@ fn function_calls_are_first_class_and_capability_gated() {
     )
     .expect_err("negated calls are reserved");
     assert_eq!(nested.code().as_str(), "query_plan_function_in_negation");
+}
+
+#[test]
+fn reduce_stages_group_assign_and_reject_unsound_shapes() {
+    use type_bridge_contract::query_plan::{ReduceAssignment, Reducer};
+
+    let has_age = QueryPattern::Has {
+        attribute: binding_id(1),
+        attribute_id: AttributeId::new("age").expect("attribute id"),
+        owner: binding_id(0),
+    };
+    let reduce_plan = |assignments: Vec<ReduceAssignment>,
+                       groups: Vec<BindingId>,
+                       columns: Vec<BindingId>| {
+        QueryPlan::new(
+            vec![
+                binding(0, "person"),
+                binding(1, "age"),
+                binding(2, "age_sum"),
+            ],
+            Vec::new(),
+            vec![
+                ReadStage::Match {
+                    patterns: vec![person_isa(0), has_age.clone()],
+                },
+                ReadStage::Reduce {
+                    assignments,
+                    groups,
+                },
+            ],
+            QueryOutput::Rows { columns },
+            managed_semantics(b"query-plan-reduce-fixture"),
+        )
+    };
+
+    // A grouped sum round-trips and derives the reduce capability.
+    let plan = reduce_plan(
+        vec![ReduceAssignment::new(
+            binding_id(2),
+            Reducer::Sum,
+            Some(binding_id(1)),
+        )],
+        vec![binding_id(0)],
+        vec![binding_id(0), binding_id(2)],
+    )
+    .expect("grouped reduce plan");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.stage.reduce"),
+    );
+    let bytes = plan.canonical_bytes().expect("canonical bytes");
+    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
+
+    // The reduced-away binding is no longer projectable.
+    let error = reduce_plan(
+        vec![ReduceAssignment::new(
+            binding_id(2),
+            Reducer::Sum,
+            Some(binding_id(1)),
+        )],
+        vec![binding_id(0)],
+        vec![binding_id(0), binding_id(1)],
+    )
+    .expect_err("projecting a reduced binding");
+    assert_eq!(error.code().as_str(), "query_plan_output_not_visible");
+
+    // A pattern-bound binding cannot receive a reducer result.
+    let error = reduce_plan(
+        vec![ReduceAssignment::new(
+            binding_id(1),
+            Reducer::Sum,
+            Some(binding_id(1)),
+        )],
+        vec![binding_id(0)],
+        vec![binding_id(0), binding_id(1)],
+    )
+    .expect_err("assigning onto a pattern binding");
+    assert_eq!(error.code().as_str(), "query_plan_reduce_assigned_bound");
+
+    // Reducers undefined on empty streams need group keys.
+    let error = reduce_plan(
+        vec![ReduceAssignment::new(
+            binding_id(2),
+            Reducer::Max,
+            Some(binding_id(1)),
+        )],
+        Vec::new(),
+        vec![binding_id(2)],
+    )
+    .expect_err("global max");
+    assert_eq!(error.code().as_str(), "query_plan_reduce_requires_groups");
+
+    // Every reducer except count consumes an input binding.
+    let error = reduce_plan(
+        vec![ReduceAssignment::new(binding_id(2), Reducer::Sum, None)],
+        vec![binding_id(0)],
+        vec![binding_id(0), binding_id(2)],
+    )
+    .expect_err("sum without input");
+    assert_eq!(error.code().as_str(), "query_plan_reduce_missing_input");
+
+    // A bare global count stays total and needs no input.
+    reduce_plan(
+        vec![ReduceAssignment::new(binding_id(2), Reducer::Count, None)],
+        Vec::new(),
+        vec![binding_id(2)],
+    )
+    .expect("global count plan");
 }

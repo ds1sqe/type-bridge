@@ -436,3 +436,181 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
     .expect_err("schema-typed parameters require thing bindings");
     assert_eq!(argument.code().as_str(), "query_plan_function_argument_type");
 }
+
+#[test]
+fn reduce_stages_type_grouped_and_global_results() {
+    use type_bridge_contract::query_plan::{ReduceAssignment, Reducer};
+
+    let person = type_id(TypeKind::Entity, "person");
+    let age = AttributeId::new("age").expect("attribute");
+    let name = AttributeId::new("name").expect("attribute");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
+        SchemaFact::Type(
+            TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact"),
+        ),
+        SchemaFact::Type(
+            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), age.clone()).expect("owns id"),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, name.clone()).expect("owns id"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-plan-reduce-fixture").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+            .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-plan-reduce-scope").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+
+    let grouped = |input: &AttributeId,
+                   bindings: Vec<AssertionBinding>,
+                   assignments: Vec<ReduceAssignment>,
+                   columns: Vec<BindingId>| {
+        let plan = QueryPlan::new(
+            bindings,
+            Vec::new(),
+            vec![
+                ReadStage::Match {
+                    patterns: vec![
+                        person_isa(0),
+                        QueryPattern::Has {
+                            attribute: binding_id(1),
+                            attribute_id: input.clone(),
+                            owner: binding_id(0),
+                        },
+                    ],
+                },
+                ReadStage::Reduce {
+                    assignments,
+                    groups: vec![binding_id(0)],
+                },
+                ReadStage::Sort {
+                    terms: vec![OrderTerm::new(
+                        binding_id(2),
+                        OrderDirection::Ascending,
+                    )],
+                },
+            ],
+            QueryOutput::Rows { columns },
+            managed.managed_semantic_schema().clone(),
+        )
+        .expect("reduce plan");
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+    };
+
+    // Grouped sum keeps the input scalar; mean always widens to double.
+    let validated = grouped(
+        &age,
+        vec![
+            binding(0, "person"),
+            binding(1, "measure"),
+            binding(2, "first_result"),
+            binding(3, "second_result"),
+        ],
+        vec![
+            ReduceAssignment::new(binding_id(2), Reducer::Sum, Some(binding_id(1))),
+            ReduceAssignment::new(binding_id(3), Reducer::Mean, Some(binding_id(1))),
+        ],
+        vec![binding_id(0), binding_id(2), binding_id(3)],
+    )
+    .expect("grouped numeric reduce");
+    let columns = validated.row_schema().columns();
+    assert!(!columns[0].domain().type_ids().is_empty());
+    assert!(columns[1].domain().type_ids().is_empty());
+    assert_eq!(columns[1].domain().value_type(), Some(ValueTypeTag::Long));
+    assert!(columns[2].domain().type_ids().is_empty());
+    assert_eq!(columns[2].domain().value_type(), Some(ValueTypeTag::Double));
+
+    // Counting a thing binding needs no scalar and yields a long.
+    let validated = grouped(
+        &name,
+        vec![
+            binding(0, "person"),
+            binding(1, "measure"),
+            binding(2, "first_result"),
+        ],
+        vec![ReduceAssignment::new(
+            binding_id(2),
+            Reducer::Count,
+            Some(binding_id(1)),
+        )],
+        vec![binding_id(0), binding_id(2)],
+    )
+    .expect("grouped count over strings");
+    assert_eq!(
+        validated.row_schema().columns()[1].domain().value_type(),
+        Some(ValueTypeTag::Long),
+    );
+
+    // Numeric reducers reject non-numeric scalar inputs.
+    let error = grouped(
+        &name,
+        vec![
+            binding(0, "person"),
+            binding(1, "measure"),
+            binding(2, "first_result"),
+        ],
+        vec![ReduceAssignment::new(
+            binding_id(2),
+            Reducer::Sum,
+            Some(binding_id(1)),
+        )],
+        vec![binding_id(0), binding_id(2)],
+    )
+    .expect_err("sum over strings");
+    assert_eq!(error.code().as_str(), "query_plan_reduce_input_domain");
+
+    // Numeric reducers reject thing bindings without a scalar domain.
+    let error = grouped(
+        &age,
+        vec![
+            binding(0, "person"),
+            binding(1, "measure"),
+            binding(2, "first_result"),
+        ],
+        vec![ReduceAssignment::new(
+            binding_id(2),
+            Reducer::Max,
+            Some(binding_id(0)),
+        )],
+        vec![binding_id(0), binding_id(2)],
+    )
+    .expect_err("max over entities");
+    assert_eq!(error.code().as_str(), "query_plan_reduce_input_domain");
+}

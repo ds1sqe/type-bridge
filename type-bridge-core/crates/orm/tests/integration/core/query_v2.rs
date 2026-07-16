@@ -527,3 +527,228 @@ async fn scalar_schema_function_calls_execute_live() {
         .collect::<Vec<_>>();
     assert_eq!(sums, vec![25, 30, 40]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reduce_stages_group_and_total_live() {
+    use type_bridge_contract::query_plan::{
+        QueryOperation, ReduceAssignment, Reducer,
+    };
+    use type_bridge_contract::value::CanonicalValue;
+
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-reduce-live");
+    let person = TypeId::new(TypeKind::Entity, format!("{suffix}-person")).unwrap();
+    let age = AttributeId::new(format!("{suffix}-age")).unwrap();
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {age}, value integer;\n\
+             entity {person}, owns {age} @card(0..);",
+            age = age.label(),
+            person = person.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("live reduce schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {age} 30, has {age} 40; \
+             $b isa {person}, has {age} 25;",
+            person = person.label(),
+            age = age.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("live reduce data");
+
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), age.clone()).unwrap(),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).unwrap();
+        let line = u32::try_from(index + 1).unwrap();
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-reduce-live").unwrap(),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .unwrap(),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        sourced,
+    )
+    .unwrap();
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let managed = managed_schema_state(
+        &declared,
+        &ManagedDeltaContext::new(
+            ManagedScopeId::new("query-v2-reduce-live").unwrap(),
+            profile,
+            CapabilitySet::new(),
+        ),
+    )
+    .unwrap();
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+
+    let match_stage = ReadStage::Match {
+        patterns: vec![
+            QueryPattern::Isa {
+                binding: binding_id(0),
+                include_subtypes: true,
+                type_id: person.clone(),
+            },
+            QueryPattern::Has {
+                attribute: binding_id(1),
+                attribute_id: age.clone(),
+                owner: binding_id(0),
+            },
+        ],
+    };
+
+    // Grouped: each person joins its age sum and age count, sorted by sum.
+    let grouped_plan = QueryPlan::new(
+        vec![
+            binding(0, "person"),
+            binding(1, "age"),
+            binding(2, "age_sum"),
+            binding(3, "age_count"),
+        ],
+        Vec::new(),
+        vec![
+            match_stage.clone(),
+            ReadStage::Reduce {
+                assignments: vec![
+                    ReduceAssignment::new(
+                        binding_id(2),
+                        Reducer::Sum,
+                        Some(binding_id(1)),
+                    ),
+                    ReduceAssignment::new(
+                        binding_id(3),
+                        Reducer::Count,
+                        Some(binding_id(1)),
+                    ),
+                ],
+                groups: vec![binding_id(0)],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(2), OrderDirection::Ascending)],
+            },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(2), binding_id(3)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .unwrap();
+    let validated = validate_query_plan(
+        &grouped_plan,
+        &validation_context,
+        StructuralLimits::CANONICAL,
+    )
+    .unwrap();
+    let invocation =
+        QueryInvocation::new(&grouped_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let mut transaction = db.read_transaction().await.expect("read transaction");
+    let outcome = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        limits(),
+    )
+    .await
+    .expect("grouped reduce execution");
+    let QueryV2Outcome::Rows(rows) = &outcome else {
+        panic!("rows outcome: {outcome:?}");
+    };
+    let reduced = rows
+        .iter()
+        .map(|row| {
+            let QueryRowValue::Thing { .. } = &row.values()[0] else {
+                panic!("group key is the person entity: {row:?}");
+            };
+            let long = |value: &QueryRowValue| match value {
+                QueryRowValue::Value { value: CanonicalValue::Long(value) } => *value,
+                other => panic!("expected long value: {other:?}"),
+            };
+            (long(&row.values()[1]), long(&row.values()[2]))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reduced, vec![(25, 1), (70, 2)]);
+
+    // Global: one bare count row totals every match row.
+    let global_plan = QueryPlan::new(
+        vec![
+            binding(0, "person"),
+            binding(1, "age"),
+            binding(2, "total"),
+        ],
+        Vec::new(),
+        vec![
+            match_stage,
+            ReadStage::Reduce {
+                assignments: vec![ReduceAssignment::new(
+                    binding_id(2),
+                    Reducer::Count,
+                    None,
+                )],
+                groups: Vec::new(),
+            },
+        ],
+        QueryOutput::Rows { columns: vec![binding_id(2)] },
+        managed.managed_semantic_schema().clone(),
+    )
+    .unwrap();
+    let validated = validate_query_plan(
+        &global_plan,
+        &validation_context,
+        StructuralLimits::CANONICAL,
+    )
+    .unwrap();
+    let invocation =
+        QueryInvocation::new(&global_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let outcome = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        limits(),
+    )
+    .await
+    .expect("global count execution");
+    let QueryV2Outcome::Rows(rows) = &outcome else {
+        panic!("rows outcome: {outcome:?}");
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].values()[0],
+        QueryRowValue::Value { value: CanonicalValue::Long(3) },
+    );
+}

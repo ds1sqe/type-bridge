@@ -113,6 +113,36 @@ pub fn lower_validated_query(
                 typeql.push_str(";\n");
             }
             ReadStage::Distinct => typeql.push_str("distinct;\n"),
+            ReadStage::Reduce { assignments, groups } => {
+                typeql.push_str("reduce ");
+                for (index, assignment) in assignments.iter().enumerate() {
+                    if index != 0 {
+                        typeql.push_str(", ");
+                    }
+                    let keyword = match assignment.reducer() {
+                        type_bridge_contract::query_plan::Reducer::Count => "count",
+                        type_bridge_contract::query_plan::Reducer::Max => "max",
+                        type_bridge_contract::query_plan::Reducer::Mean => "mean",
+                        type_bridge_contract::query_plan::Reducer::Min => "min",
+                        type_bridge_contract::query_plan::Reducer::Sum => "sum",
+                    };
+                    write!(
+                        typeql,
+                        "${} = {keyword}",
+                        variable(plan, assignment.assigned())?,
+                    )
+                    .expect("writing to String cannot fail");
+                    if let Some(input) = assignment.input() {
+                        write!(typeql, "(${})", variable(plan, input)?)
+                            .expect("writing to String cannot fail");
+                    }
+                }
+                if !groups.is_empty() {
+                    typeql.push_str(" groupby ");
+                    render_variable_list(&mut typeql, plan, groups)?;
+                }
+                typeql.push_str(";\n");
+            }
             ReadStage::Sort { terms } => {
                 typeql.push_str("sort ");
                 for (index, term) in terms.iter().enumerate() {
@@ -662,8 +692,24 @@ fn validate_result_row(
     Ok(values)
 }
 
-/// Return the visible variable names after the plan's select stage.
+/// Return the visible variable names after select and reduce stages.
 fn visible_variables(plan: &QueryPlan) -> Vec<&str> {
+    // A reduce stage replaces the whole row environment with its group
+    // keys and assigned results, superseding any earlier select.
+    for stage in plan.pipeline() {
+        if let ReadStage::Reduce { assignments, groups } = stage {
+            return groups
+                .iter()
+                .copied()
+                .chain(assignments.iter().map(|assignment| assignment.assigned()))
+                .filter_map(|binding| {
+                    plan.bindings()
+                        .get(usize::from(binding.get()))
+                        .map(|binding| binding.variable().as_str())
+                })
+                .collect();
+        }
+    }
     for stage in plan.pipeline() {
         if let ReadStage::Select { bindings } = stage {
             return bindings

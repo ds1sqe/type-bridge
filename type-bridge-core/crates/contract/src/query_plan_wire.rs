@@ -12,7 +12,8 @@ use crate::migration_assertion_wire::{
 };
 use crate::query_plan::{
     InputColumn, InputColumnId, OrderDirection, OrderTerm, QUERY_PLAN_FORMAT_V1,
-    QueryOperand, QueryOutput, QueryPattern, QueryPlan, ReadStage, failure,
+    QueryOperand, QueryOutput, QueryPattern, QueryPlan, ReadStage,
+    ReduceAssignment, Reducer, failure,
 };
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
@@ -141,6 +142,10 @@ enum ReadStageWire {
     Select { bindings: Vec<u16> },
     Require { bindings: Vec<u16> },
     Distinct,
+    Reduce {
+        assignments: Vec<ReduceAssignmentWire>,
+        groups: Vec<u16>,
+    },
     Sort { terms: Vec<OrderTermWire> },
     Offset { rows: u64 },
     Limit { rows: u64 },
@@ -162,6 +167,16 @@ impl ReadStageWire {
                 bindings: rebuild_bindings(bindings)?,
             },
             Self::Distinct => ReadStage::Distinct,
+            Self::Reduce {
+                assignments,
+                groups,
+            } => ReadStage::Reduce {
+                assignments: assignments
+                    .into_iter()
+                    .map(ReduceAssignmentWire::rebuild)
+                    .collect::<Result<Vec<_>, _>>()?,
+                groups: rebuild_bindings(groups)?,
+            },
             Self::Sort { terms } => ReadStage::Sort {
                 terms: terms
                     .into_iter()
@@ -171,6 +186,40 @@ impl ReadStageWire {
             Self::Offset { rows } => ReadStage::Offset { rows },
             Self::Limit { rows } => ReadStage::Limit { rows },
         })
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReduceAssignmentWire {
+    assigned: u16,
+    input: Option<u16>,
+    reducer: ReducerWire,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReducerWire {
+    Count,
+    Max,
+    Mean,
+    Min,
+    Sum,
+}
+
+impl ReduceAssignmentWire {
+    fn rebuild(self) -> Result<ReduceAssignment, Diagnostic> {
+        Ok(ReduceAssignment::new(
+            BindingId::new(self.assigned)?,
+            match self.reducer {
+                ReducerWire::Count => Reducer::Count,
+                ReducerWire::Max => Reducer::Max,
+                ReducerWire::Mean => Reducer::Mean,
+                ReducerWire::Min => Reducer::Min,
+                ReducerWire::Sum => Reducer::Sum,
+            },
+            self.input.map(BindingId::new).transpose()?,
+        ))
     }
 }
 
