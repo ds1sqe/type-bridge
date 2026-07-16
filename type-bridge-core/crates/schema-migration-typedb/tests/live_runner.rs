@@ -28,11 +28,16 @@ use type_bridge_schema::{
     derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
     resolve,
 };
+use type_bridge_migration::{
+    AppliedMigrationRecord, MigrationDependencySpec, MigrationSpec,
+    MigrationStateStore, TypeDbStateStore, migration_file_checksum,
+};
 use type_bridge_schema_migration::{
-    LeaseHolderId, MigrationApplyApproval, MigrationApplyTarget,
-    MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationSafetyPolicy,
-    SchemaLoweringBinding, SchemaMigrationDraft,
-    VerifiedSchemaMigrationManifest, build_verified_manifest,
+    LeaseHolderId, LegacyMigrationChecksum, LegacyMigrationReference,
+    MigrationApplyApproval, MigrationApplyTarget, MigrationExecutionOutcome,
+    MigrationRollbackOutcome, MigrationSafetyPolicy, SchemaLoweringBinding,
+    SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
+    build_legacy_frontier_bridge, build_verified_manifest,
     encode_verified_manifest, schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
@@ -40,6 +45,38 @@ use type_bridge_schema_migration_typedb::{
     TypeDbMigrationRunner, derived_journal_database_name,
     execution_capability_vocabulary,
 };
+
+fn write_legacy_migration(
+    directory: &Path,
+    app_label: &str,
+    name: &str,
+    python_source: &str,
+    dependencies: Vec<(&str, &str)>,
+) -> String {
+    let checksum = migration_file_checksum(python_source);
+    fs::write(directory.join(format!("{name}.py")), python_source)
+        .expect("write legacy python source");
+    let spec = MigrationSpec {
+        app_label: app_label.to_owned(),
+        name: name.to_owned(),
+        dependencies: dependencies
+            .into_iter()
+            .map(|(app_label, migration_name)| MigrationDependencySpec {
+                app_label: app_label.to_owned(),
+                migration_name: migration_name.to_owned(),
+            })
+            .collect(),
+        operations: Vec::new(),
+        checksum: Some(checksum.clone()),
+        reversible: true,
+    };
+    fs::write(
+        directory.join(format!("{name}.json")),
+        serde_json::to_string_pretty(&spec).expect("legacy sidecar encoding"),
+    )
+    .expect("write legacy sidecar");
+    checksum
+}
 
 fn connection() -> (String, String, String, String, ConnectOptions) {
     let address =
@@ -470,6 +507,161 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
     ));
     let export = managed.schema_text().await.expect("post-reapply export");
     assert!(export.contains("entity company"), "{export}");
+
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
+    journal
+        .delete_database()
+        .await
+        .expect("delete isolated journal database");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
+    let (managed, journal) = databases().await;
+    let context = context();
+
+    // The completed legacy history: one applied v1 migration whose effect
+    // was "entity person". Seed its on-disk pair, its applied-ledger record,
+    // and the migrated user schema exactly as a real v1 database carries them.
+    let legacy_directory = TempDirectory::new();
+    let checksum = write_legacy_migration(
+        legacy_directory.path(),
+        "example",
+        "0001_initial",
+        "class Migration:\n    operations = []\n",
+        Vec::new(),
+    );
+    let state_store = TypeDbStateStore::new(Arc::clone(&managed));
+    state_store
+        .ensure_schema()
+        .await
+        .expect("install the legacy ledger schema");
+    state_store
+        .record_applied(AppliedMigrationRecord {
+            app_label: "example".to_owned(),
+            name: "0001_initial".to_owned(),
+            checksum: checksum.clone(),
+            applied_at: None,
+        })
+        .await
+        .expect("seed the legacy applied ledger");
+    let mut transaction = managed
+        .schema_transaction()
+        .await
+        .expect("open legacy schema transaction");
+    transaction
+        .query("define entity person;")
+        .await
+        .expect("replay the legacy migration effect");
+    transaction.commit().await.expect("commit legacy schema");
+
+    // Canonical side: the bridge records the loaded frontier and verifies
+    // against the reconstructed legacy head; ordinary work chains onto it.
+    let head = declared_facts(vec![type_fact("person")]);
+    let with_company =
+        declared_facts(vec![type_fact("company"), type_fact("person")]);
+    let bridge = build_legacy_frontier_bridge(
+        migration_id("0000_legacy_frontier"),
+        vec![LegacyMigrationReference::new(
+            type_bridge_contract::migration::MigrationId::from_components(
+                MigrationAppLabel::new("example").expect("legacy app label"),
+                MigrationName::new("0001_initial").expect("legacy name"),
+            ),
+            LegacyMigrationChecksum::new(checksum.clone()).expect("legacy checksum"),
+        )],
+        &head,
+        &context,
+    )
+    .expect("legacy frontier bridge");
+    let follow = manifest_with_derived_assertions(
+        "0001_company",
+        vec![bridge.id().clone()],
+        &head,
+        &with_company,
+        &context,
+    );
+    let canonical_directory = TempDirectory::new();
+    write_manifest(canonical_directory.path(), &bridge);
+    write_manifest(canonical_directory.path(), &follow);
+
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone())
+            .expect("lowering binding");
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        head,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("legacy-import").expect("holder");
+
+    let outcome = runner
+        .import_legacy_frontier(
+            legacy_directory.path(),
+            canonical_directory.path(),
+            &holder,
+        )
+        .await
+        .expect("import the completed legacy frontier");
+    assert!(matches!(
+        outcome,
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+    ));
+
+    let outcome = runner
+        .import_legacy_frontier(
+            legacy_directory.path(),
+            canonical_directory.path(),
+            &holder,
+        )
+        .await
+        .expect("repeat import on a bridged ledger");
+    assert!(matches!(outcome, MigrationDirectoryApplyOutcome::UpToDate));
+
+    // Ordinary canonical work proceeds from the imported basis.
+    let outcome = runner
+        .apply(
+            canonical_directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .expect("apply the post-bridge migration");
+    assert!(matches!(
+        outcome,
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+    ));
+    let export = managed.schema_text().await.expect("post-import export");
+    assert!(export.contains("entity company"), "{export}");
+
+    // Mutating the legacy source breaks byte-for-byte continuity: the
+    // checked v1 loader rejects the directory before any provider write.
+    fs::write(
+        legacy_directory.path().join("0001_initial.py"),
+        "class Migration:\n    operations = [\"changed\"]\n",
+    )
+    .expect("mutate legacy python source");
+    let drifted = runner
+        .import_legacy_frontier(
+            legacy_directory.path(),
+            canonical_directory.path(),
+            &holder,
+        )
+        .await
+        .expect_err("a drifted legacy file must not import");
+    assert!(
+        drifted
+            .to_string()
+            .contains("legacy migration directory failed the checked v1 loader"),
+        "{drifted}"
+    );
 
     managed
         .delete_database()

@@ -28,6 +28,11 @@ use type_bridge_schema_migration::{
     execute_verified_migration_rollback_plan,
 };
 
+use type_bridge_migration::{
+    MigrationStateStore, TypeDbStateStore, load_dir_checked,
+};
+
+use crate::legacy_import::{extract_legacy_frontier, verify_legacy_continuity};
 use crate::provider::TypeDbMigrationProvider;
 use crate::store::{TypeDbMigrationStore, VerifiedMigrationCatalog};
 
@@ -183,6 +188,64 @@ impl TypeDbMigrationRunner {
         Ok(MigrationDirectoryApplyOutcome::Executed(outcome))
     }
 
+    /// Import a completed legacy (v1) history as the canonical bridge basis.
+    ///
+    /// The legacy directory is loaded through the checked v1 reader (file
+    /// checksums verified byte-for-byte under the released rule), the legacy
+    /// applied ledger in the managed database must cover the complete loaded
+    /// history without checksum drift, and the canonical directory's
+    /// legacy-frontier bridge must record exactly the loaded frontier. The
+    /// bridge then applies as a zero-operation checkpoint: the coordinator's
+    /// live-state gate proves the database sits at the reconstructed legacy
+    /// head, and no legacy step is marked as newly executed.
+    pub async fn import_legacy_frontier(
+        &self,
+        legacy_directory: &Path,
+        canonical_directory: &Path,
+        holder: &LeaseHolderId,
+    ) -> Result<MigrationDirectoryApplyOutcome, MigrationDirectoryApplyError> {
+        let legacy_graph = load_dir_checked(legacy_directory).map_err(|error| {
+            legacy_import_failure(
+                "migration_legacy_import_load_failed",
+                "legacy migration directory failed the checked v1 loader",
+            )
+            .with_detail("legacy", error.to_string())
+        })?;
+        let state_store = TypeDbStateStore::new(Arc::clone(&self.managed_database));
+        let applied = state_store.load_applied().await.map_err(|error| {
+            legacy_import_failure(
+                "migration_legacy_import_ledger_unreadable",
+                "legacy applied ledger cannot be read from the managed database",
+            )
+            .with_detail("legacy", error.to_string())
+        })?;
+        verify_legacy_continuity(&legacy_graph, &applied)?;
+        let frontier = extract_legacy_frontier(&legacy_graph)?;
+
+        let graph = self.discover(canonical_directory)?;
+        let bridge = graph
+            .manifests()
+            .map(|(_, manifest)| manifest)
+            .find(|manifest| manifest.is_legacy_bridge())
+            .ok_or_else(|| {
+                legacy_import_failure(
+                    "migration_legacy_import_bridge_missing",
+                    "canonical directory carries no legacy-frontier bridge manifest",
+                )
+            })?;
+        if bridge.legacy_parents() != frontier.as_slice() {
+            return Err(legacy_import_failure(
+                "migration_legacy_import_frontier_mismatch",
+                "bridge manifest records a different legacy frontier than the loaded files",
+            )
+            .into());
+        }
+
+        let target =
+            MigrationApplyTarget::Explicit(BTreeSet::from([bridge.id().clone()]));
+        self.apply(canonical_directory, &target, holder, &[]).await
+    }
+
     /// Roll the requested applied migrations back through the live pair.
     ///
     /// `removals` must be downward-closed over the applied set: an identity
@@ -247,4 +310,13 @@ impl TypeDbMigrationRunner {
             .map(|entry| entry.record().migration_id().clone())
             .collect())
     }
+}
+
+fn legacy_import_failure(code: &'static str, message: &'static str) -> Diagnostic {
+    Diagnostic::new(
+        type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+        type_bridge_contract::diagnostic::DiagnosticCode::new(code)
+            .expect("static legacy import diagnostic code"),
+        message,
+    )
 }

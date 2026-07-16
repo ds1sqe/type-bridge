@@ -2787,6 +2787,7 @@ dependencies = [
  "sha2",
  "tokio",
  "type-bridge-contract",
+ "type-bridge-migration",
  "type-bridge-orm",
  "type-bridge-query",
  "type-bridge-schema",
