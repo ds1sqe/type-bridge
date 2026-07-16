@@ -1,5 +1,6 @@
 //! Domain-tagged canonical scalar, cardinality, and annotation values.
 
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -8,7 +9,51 @@ use serde::de::Error as _;
 
 use crate::decimal::parse_decimal;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
+use crate::limits::MAX_CANONICAL_STRING_BYTES;
 use crate::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration};
+
+/// Validated UTF-8 text bounded by the canonical per-string byte ceiling.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct CanonicalString(String);
+
+impl CanonicalString {
+    /// Construct canonical text, rejecting values above the byte ceiling.
+    pub fn new(value: impl Into<String>) -> Result<Self, Diagnostic> {
+        let value = value.into();
+        if value.len() > MAX_CANONICAL_STRING_BYTES {
+            return Err(Diagnostic::stable(
+                DiagnosticCategory::ResourceLimit,
+                "canonical_string_limit_exceeded",
+                "canonical string exceeds the UTF-8 byte ceiling",
+            )
+            .with_detail("actual_bytes", i64::try_from(value.len()).unwrap_or(i64::MAX))
+            .with_detail(
+                "maximum_bytes",
+                i64::try_from(MAX_CANONICAL_STRING_BYTES).expect("canonical string limit fits i64"),
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Return the validated text.
+    pub fn as_str(&self) -> &str { &self.0 }
+}
+
+impl fmt::Display for CanonicalString {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CanonicalString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
 
 /// A finite IEEE-754 double represented by its exact bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -84,11 +129,28 @@ pub enum ValueTypeTag {
     Duration,
 }
 
+impl ValueTypeTag {
+    /// Return the stable contract spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Long => "long",
+            Self::Double => "double",
+            Self::Boolean => "boolean",
+            Self::Date => "date",
+            Self::DateTime => "datetime",
+            Self::DateTimeTz => "datetime_tz",
+            Self::Decimal => "decimal",
+            Self::Duration => "duration",
+        }
+    }
+}
+
 /// A canonical scalar value with an explicit domain tag.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CanonicalValue {
     /// UTF-8 text.
-    String(String),
+    String(CanonicalString),
     /// Signed 64-bit integer; JSON uses a decimal string.
     Long(i64),
     /// Finite binary64; JSON uses fixed-width IEEE bits.
@@ -118,12 +180,42 @@ impl CanonicalValue {
             Self::Duration(_) => ValueTypeTag::Duration,
         }
     }
+
+    /// Compare values within one scalar domain by provider semantics.
+    ///
+    /// This is deliberately separate from representation `Ord`, which remains
+    /// the deterministic identity order used by canonical sets and bytes.
+    /// Compare values only when both belong to the same semantic scalar domain.
+    ///
+    /// Returns `None` for different domains or a domain without semantic ordering.
+    pub fn semantic_cmp_same_domain(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (Self::String(left), Self::String(right)) => Some(left.cmp(right)),
+            (Self::Long(left), Self::Long(right)) => Some(left.cmp(right)),
+            (Self::Double(left), Self::Double(right)) => left.get().partial_cmp(&right.get()),
+            (Self::Boolean(left), Self::Boolean(right)) => Some(left.cmp(right)),
+            (Self::Date(left), Self::Date(right)) => Some(left.cmp(right)),
+            (Self::DateTime(left), Self::DateTime(right)) => Some(left.cmp(right)),
+            (Self::DateTimeTz(left), Self::DateTimeTz(right)) => {
+                Some(
+                    left.semantic_utc_nanoseconds()
+                        .cmp(&right.semantic_utc_nanoseconds()),
+                )
+            }
+            (Self::Decimal(left), Self::Decimal(right)) => {
+                let left = parse_decimal(left.as_str()).expect("DecimalValue is always validated");
+                let right = parse_decimal(right.as_str()).expect("DecimalValue is always validated");
+                Some(left.compare(&right))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ValueWire {
-    String { value: String },
+    String { value: CanonicalString },
     Long { value: String },
     Double { bits: String },
     Boolean { value: bool },
@@ -275,5 +367,45 @@ mod tests {
             r#"{"kind":"double","bits":"7ff0000000000000"}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn canonical_strings_enforce_the_byte_limit_without_changing_wire_shape() {
+        let boundary = CanonicalString::new("x".repeat(MAX_CANONICAL_STRING_BYTES)).unwrap();
+        assert_eq!(boundary.as_str().len(), MAX_CANONICAL_STRING_BYTES);
+        let error = CanonicalString::new("x".repeat(MAX_CANONICAL_STRING_BYTES + 1)).unwrap_err();
+        assert_eq!(error.category(), DiagnosticCategory::ResourceLimit);
+        assert_eq!(error.code().as_str(), "canonical_string_limit_exceeded");
+        assert_eq!(
+            serde_json::to_string(&CanonicalValue::String(CanonicalString::new("text").unwrap())).unwrap(),
+            r#"{"kind":"string","value":"text"}"#,
+        );
+    }
+
+    #[test]
+    fn semantic_order_is_numeric_and_distinct_from_representation_order() {
+        let decimal_two = CanonicalValue::Decimal(DecimalValue::new("2").unwrap());
+        let decimal_ten = CanonicalValue::Decimal(DecimalValue::new("10").unwrap());
+        assert_eq!(decimal_two.semantic_cmp_same_domain(&decimal_ten), Some(Ordering::Less));
+
+        let negative_zero = CanonicalValue::Double(CanonicalDouble::new(-0.0).unwrap());
+        let positive_zero = CanonicalValue::Double(CanonicalDouble::new(0.0).unwrap());
+        assert_ne!(negative_zero, positive_zero);
+        assert_eq!(negative_zero.semantic_cmp_same_domain(&positive_zero), Some(Ordering::Equal));
+
+        assert_eq!(
+            CanonicalValue::Long(-10).semantic_cmp_same_domain(&CanonicalValue::Long(-2)),
+            Some(Ordering::Less),
+        );
+        assert_eq!(
+            CanonicalValue::String(CanonicalString::new("alpha").unwrap()).semantic_cmp_same_domain(
+                &CanonicalValue::String(CanonicalString::new("beta").unwrap()),
+            ),
+            Some(Ordering::Less),
+        );
+        assert_eq!(
+            CanonicalValue::Long(1).semantic_cmp_same_domain(&CanonicalValue::Double(CanonicalDouble::new(1.0).unwrap())),
+            None,
+        );
     }
 }

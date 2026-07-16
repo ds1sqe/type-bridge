@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn exact_limits_accept_boundary_and_reject_next_value() {
-        let value = CanonicalValue::String("abc".to_owned());
+        let value = CanonicalValue::String(crate::value::CanonicalString::new("abc").unwrap());
         let bytes = to_canonical_json(&value).unwrap();
         let mut limits = CodecLimits::CANONICAL;
         limits.max_bytes = bytes.len();
