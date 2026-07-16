@@ -1,0 +1,10 @@
+{
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.12",
+  "include": [
+    "generated_v2"
+  ],
+  "extraPaths": [
+    "."
+  ]
+}

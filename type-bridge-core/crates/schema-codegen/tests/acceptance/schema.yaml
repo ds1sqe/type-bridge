@@ -1,0 +1,57 @@
+format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  nickname: { value: string }
+  aliases: { value: string }
+  score: { value: integer }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      nickname: { card: { min: 0, max: 1 } }
+      aliases: { unique: true, card: { min: 0, max: 3 } }
+  robot: {}
+relations:
+  membership:
+    relates:
+      member: { card: 1 }
+  employment:
+    sub: membership
+    relates:
+      employee: { as: member, card: 1 }
+  container:
+    relates:
+      item: { card: { min: 0, max: 2 } }
+  event:
+    relates:
+      subject: { card: 1 }
+plays:
+  person:
+    membership:
+      member: { card: { min: 0, max: 2 }, doc: membership player }
+    employment:
+      employee: { card: { min: 0, max: 1 }, doc: employment player }
+    event:
+      subject: { card: { min: 0, max: 1 }, doc: event subject player }
+  event:
+    container:
+      item: { card: { min: 0, max: 3 }, doc: cyclic relation player }
+  robot:
+    membership:
+      member: { card: 1, doc: robot membership player }
+structs:
+  player-stats:
+    fields:
+      - { name: wins, type: integer }
+      - { name: nickname, type: string, optional: true }
+functions:
+  find-events:
+    parameters:
+      - { name: event, type: event }
+    returns:
+      stream: [event]
+    body:
+      typeql: |-
+        match
+          $event isa event;
+        return { $event };
