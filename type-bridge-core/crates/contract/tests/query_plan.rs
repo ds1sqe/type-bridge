@@ -104,6 +104,7 @@ fn query_plan_capability_vocabulary_is_exact_and_deterministic() {
             "query.pattern.isa-subtypes",
             "query.pattern.links",
             "query.pattern.negation",
+            "query.pattern.reachable",
             "query.pattern.try",
             "query.pattern.value",
             "query.plan",
@@ -863,4 +864,56 @@ fn local_functions_declare_total_reducers_and_reject_unsound_shapes() {
     ])
     .expect_err("duplicate local name");
     assert_eq!(error.code().as_str(), "query_plan_duplicate_local_function");
+}
+
+#[test]
+fn bounded_reachability_requires_a_finite_root_bound() {
+    use type_bridge_contract::id::RoleId;
+
+    let semantics = managed_semantics(b"query-plan-reachable-fixture");
+    let reachable = |max_depth: u8| QueryPattern::Reachable {
+        max_depth,
+        relation: TypeId::new(TypeKind::Relation, "edge").expect("type id"),
+        role_from: RoleId::new("edge", "from").expect("role"),
+        role_to: RoleId::new("edge", "to").expect("role"),
+        source: binding_id(0),
+        target: binding_id(1),
+    };
+    let build = |patterns: Vec<QueryPattern>| {
+        QueryPlan::new(
+            vec![binding(0, "source"), binding(1, "target")],
+            Vec::new(),
+            vec![ReadStage::Match { patterns }],
+            QueryOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            semantics.clone(),
+        )
+    };
+
+    // A bounded pattern round-trips under the reachability capability.
+    let plan = build(vec![reachable(3)]).expect("reachability plan");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.pattern.reachable"),
+    );
+    let bytes = plan.canonical_bytes().expect("canonical bytes");
+    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
+
+    // The bound is mandatory: zero hops is not a reachability question.
+    let error = build(vec![reachable(0)]).expect_err("zero bound");
+    assert_eq!(error.code().as_str(), "query_plan_reachable_depth");
+
+    // The bound stays within the structural depth ceiling.
+    let error = build(vec![reachable(u8::MAX)]).expect_err("unbounded depth");
+    assert_eq!(error.code().as_str(), "query_plan_reachable_depth");
+
+    // Reachability stays in the root conjunction.
+    let error = build(vec![
+        person_isa(0),
+        QueryPattern::Not { patterns: vec![reachable(2)] },
+    ])
+    .expect_err("reachability in a negation");
+    assert_eq!(error.code().as_str(), "query_plan_reachable_not_root");
 }

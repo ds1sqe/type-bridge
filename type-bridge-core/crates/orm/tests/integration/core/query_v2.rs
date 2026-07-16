@@ -1481,3 +1481,206 @@ async fn local_functions_execute_per_row_live() {
         .collect::<Vec<_>>();
     assert_eq!(reduced, vec![(0, 0), (2, 70)]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bounded_reachability_executes_live() {
+    use type_bridge_contract::id::RoleId;
+    use type_bridge_contract::query_plan::QueryOperation;
+    use type_bridge_contract::schema::{
+        PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
+    };
+    use type_bridge_contract::value::CanonicalValue;
+
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-reach-live");
+    let node = TypeId::new(TypeKind::Entity, format!("{suffix}-node")).unwrap();
+    let name = AttributeId::new(format!("{suffix}-name")).unwrap();
+    let edge = TypeId::new(TypeKind::Relation, format!("{suffix}-edge")).unwrap();
+    let from = RoleId::new(edge.label().as_str(), "origin").unwrap();
+    let to = RoleId::new(edge.label().as_str(), "destination").unwrap();
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {name}, value string;\n\
+             relation {edge}, relates origin, relates destination;\n\
+             entity {node}, owns {name}, plays {edge}:origin, plays {edge}:destination;",
+            name = name.label(),
+            edge = edge.label(),
+            node = node.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("live reach schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {node}, has {name} \"na\"; \
+             $b isa {node}, has {name} \"nb\"; \
+             $c isa {node}, has {name} \"nc\"; \
+             $d isa {node}, has {name} \"nd\"; \
+             (origin: $a, destination: $b) isa {edge}; \
+             (origin: $b, destination: $c) isa {edge}; \
+             (origin: $c, destination: $d) isa {edge};",
+            node = node.label(),
+            name = name.label(),
+            edge = edge.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("live reach data");
+
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(node.clone()).unwrap()),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Type(TypeFact::new(edge.clone()).unwrap()),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(node.clone(), name.clone()).unwrap(),
+        )),
+        SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(edge.clone(), from.clone()).unwrap(),
+                None,
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(edge.clone(), to.clone()).unwrap(),
+                None,
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(node.clone(), from.clone()).unwrap(),
+        )),
+        SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(node.clone(), to.clone()).unwrap(),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).unwrap();
+        let line = u32::try_from(index + 1).unwrap();
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-reach-live").unwrap(),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .unwrap(),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        sourced,
+    )
+    .unwrap();
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let managed = managed_schema_state(
+        &declared,
+        &ManagedDeltaContext::new(
+            ManagedScopeId::new("query-v2-reach-live").unwrap(),
+            profile,
+            CapabilitySet::new(),
+        ),
+    )
+    .unwrap();
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+
+    // Every node within two hops of "na", in one provider query.
+    let plan = QueryPlan::new(
+        vec![
+            binding(0, "start"),
+            binding(1, "start_name"),
+            binding(2, "finish"),
+            binding(3, "finish_name"),
+        ],
+        Vec::new(),
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Has {
+                        attribute: binding_id(1),
+                        attribute_id: name.clone(),
+                        owner: binding_id(0),
+                    },
+                    QueryPattern::Value {
+                        comparator: ValueComparator::Equal,
+                        left: QueryOperand::Binding { binding: binding_id(1) },
+                        right: QueryOperand::Literal {
+                            value: CanonicalValue::String(
+                                CanonicalString::new("na").unwrap(),
+                            ),
+                        },
+                    },
+                    QueryPattern::Reachable {
+                        max_depth: 2,
+                        relation: edge.clone(),
+                        role_from: from.clone(),
+                        role_to: to.clone(),
+                        source: binding_id(0),
+                        target: binding_id(2),
+                    },
+                    QueryPattern::Has {
+                        attribute: binding_id(3),
+                        attribute_id: name.clone(),
+                        owner: binding_id(2),
+                    },
+                ],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(3), OrderDirection::Ascending)],
+            },
+        ],
+        QueryOutput::Rows { columns: vec![binding_id(3)] },
+        managed.managed_semantic_schema().clone(),
+    )
+    .unwrap();
+    let validated =
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+            .unwrap();
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let mut transaction = db.read_transaction().await.expect("read transaction");
+    let outcome = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        limits(),
+    )
+    .await
+    .expect("reachability execution");
+    let QueryV2Outcome::Rows(rows) = &outcome else {
+        panic!("rows outcome: {outcome:?}");
+    };
+    let names = rows
+        .iter()
+        .map(|row| match &row.values()[0] {
+            QueryRowValue::Attribute {
+                value: CanonicalValue::String(value),
+                ..
+            } => value.as_str().to_owned(),
+            other => panic!("expected string names: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["nb".to_owned(), "nc".to_owned()]);
+}

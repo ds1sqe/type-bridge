@@ -373,7 +373,7 @@ fn render_scoped_patterns(
     depth: usize,
 ) -> Result<(), Diagnostic> {
     let indent = "    ".repeat(depth);
-    for pattern in patterns {
+    for (pattern_index, pattern) in patterns.iter().enumerate() {
         match pattern {
             QueryPattern::Isa {
                 binding,
@@ -463,6 +463,61 @@ fn render_scoped_patterns(
                 render_scoped_patterns(output, plan, bindings, patterns, row, depth + 1)?;
                 writeln!(output, "{indent}}};")
                     .expect("writing to String cannot fail");
+            }
+            QueryPattern::Reachable {
+                max_depth,
+                relation,
+                role_from,
+                role_to,
+                source,
+                target,
+            } => {
+                // Uppercase hop intermediates cannot collide with the
+                // lowercase plan variable space; the pattern index keeps
+                // them unique across root reachability patterns.
+                let source = local_variable(bindings, *source)?;
+                let target = local_variable(bindings, *target)?;
+                let hop_var = |hop: usize| format!("R{pattern_index}h{hop}");
+                let mut branches = Vec::with_capacity(usize::from(*max_depth));
+                for length in 1..=usize::from(*max_depth) {
+                    let mut branch = String::new();
+                    for hop in 1..=length {
+                        if hop != 1 {
+                            branch.push(' ');
+                        }
+                        let from = if hop == 1 {
+                            source.to_owned()
+                        } else {
+                            hop_var(hop - 1)
+                        };
+                        let to = if hop == length {
+                            target.to_owned()
+                        } else {
+                            hop_var(hop)
+                        };
+                        write!(
+                            branch,
+                            "({}: ${from}, {}: ${to}) isa {};",
+                            role_from.label(),
+                            role_to.label(),
+                            relation.label(),
+                        )
+                        .expect("writing to String cannot fail");
+                    }
+                    branches.push(branch);
+                }
+                if branches.len() == 1 {
+                    writeln!(output, "{indent}{}", branches[0])
+                        .expect("writing to String cannot fail");
+                } else {
+                    let joined = branches
+                        .iter()
+                        .map(|branch| format!("{{ {branch} }}"))
+                        .collect::<Vec<_>>()
+                        .join(" or ");
+                    writeln!(output, "{indent}{joined};")
+                        .expect("writing to String cannot fail");
+                }
             }
             QueryPattern::FunctionCall {
                 arguments,

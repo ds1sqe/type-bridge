@@ -23,7 +23,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintDomain,
 };
-use crate::id::{AttributeId, FunctionId, Label, TypeId};
+use crate::id::{AttributeId, FunctionId, Label, RoleId, TypeId};
 use crate::limits::StructuralLimits;
 use crate::migration_assertion::{
     AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable,
@@ -59,6 +59,7 @@ const CAP_STAGE_REDUCE: &str = "query.stage.reduce";
 const CAP_TRY: &str = "query.pattern.try";
 const CAP_OUTPUT_DOCUMENTS: &str = "query.output.documents";
 const CAP_LOCAL_FUNCTIONS: &str = "query.function.local";
+const CAP_REACHABLE: &str = "query.pattern.reachable";
 
 /// Return every capability the first query-plan vocabulary can require.
 #[must_use]
@@ -84,6 +85,7 @@ pub fn query_plan_capability_vocabulary() -> CapabilitySet {
         CAP_TRY,
         CAP_OUTPUT_DOCUMENTS,
         CAP_LOCAL_FUNCTIONS,
+        CAP_REACHABLE,
     ]
     .into_iter()
     .map(|value| CapabilityId::new(value).expect("static capability id is canonical"))
@@ -249,6 +251,26 @@ pub enum QueryPattern {
     Try {
         /// The optional conjunction.
         patterns: Vec<QueryPattern>,
+    },
+    /// Existential bounded reachability along one role-directed relation.
+    ///
+    /// Holds when the target is reachable from the source in at most
+    /// `max_depth` hops, each hop one relation instance from the `role_from`
+    /// player to the `role_to` player. The bound is mandatory and finite;
+    /// lowering unrolls it provider-side, never by repeated client queries.
+    Reachable {
+        /// The mandatory finite hop bound (at least one).
+        max_depth: u8,
+        /// The exact relation type of every hop.
+        relation: TypeId,
+        /// The role the hop starts from.
+        role_from: RoleId,
+        /// The role the hop arrives at.
+        role_to: RoleId,
+        /// The established start binding.
+        source: BindingId,
+        /// The established end binding.
+        target: BindingId,
     },
     /// Assign one scalar schema-function result to a binding.
     ///
@@ -1138,6 +1160,7 @@ fn validate_local_functions(
                 pattern,
                 QueryPattern::Not { .. }
                     | QueryPattern::Try { .. }
+                    | QueryPattern::Reachable { .. }
                     | QueryPattern::FunctionCall { .. }
             ) {
                 return Err(failure(
@@ -1532,6 +1555,7 @@ fn inspect_pattern(
                     child,
                     QueryPattern::Not { .. }
                         | QueryPattern::Try { .. }
+                        | QueryPattern::Reachable { .. }
                         | QueryPattern::FunctionCall { .. }
                 ) {
                     return Err(failure(
@@ -1550,6 +1574,31 @@ fn inspect_pattern(
                 )?;
             }
             Ok(())
+        }
+        QueryPattern::Reachable {
+            max_depth,
+            source,
+            target,
+            ..
+        } => {
+            if depth > 1 {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_reachable_not_root",
+                    "bounded reachability is admitted only in the root conjunction",
+                ));
+            }
+            if *max_depth == 0
+                || !limits.allows_predicate_depth(usize::from(*max_depth))
+            {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_reachable_depth",
+                    "reachability requires a finite hop bound within the depth ceiling",
+                ));
+            }
+            check_binding(*source, binding_count)?;
+            check_binding(*target, binding_count)
         }
         QueryPattern::FunctionCall {
             arguments,
@@ -1609,6 +1658,10 @@ fn collect_pattern_bindings(
             for child in patterns {
                 collect_pattern_bindings(child, bindings);
             }
+        }
+        QueryPattern::Reachable { source, target, .. } => {
+            bindings.insert(*source);
+            bindings.insert(*target);
         }
         QueryPattern::FunctionCall {
             arguments,
@@ -1736,6 +1789,9 @@ fn collect_pattern_capabilities(
             for child in patterns {
                 collect_pattern_capabilities(child, capabilities)?;
             }
+        }
+        QueryPattern::Reachable { .. } => {
+            insert_capability(capabilities, CAP_REACHABLE)?;
         }
         QueryPattern::Not { patterns } => {
             insert_capability(capabilities, CAP_NEGATION)?;

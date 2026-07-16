@@ -408,6 +408,10 @@ fn ensure_value_bindings_stay_scalar(
                         .any(|player| value_bindings.contains_key(&player.player()))
             }
             QueryPattern::Value { .. } | QueryPattern::FunctionCall { .. } => false,
+            QueryPattern::Reachable { source, target, .. } => {
+                value_bindings.contains_key(source)
+                    || value_bindings.contains_key(target)
+            }
             QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
                 ensure_value_bindings_stay_scalar(patterns, value_bindings, codes)?;
                 false
@@ -554,6 +558,41 @@ fn refine_pattern(
             }
             Ok(changed)
         }
+        QueryPattern::Reachable {
+            relation,
+            role_from,
+            role_to,
+            source,
+            target,
+            ..
+        } => {
+            if relation.kind() != TypeKind::Relation
+                || !schema.types().contains_key(relation)
+            {
+                return Err(fail(codes.unknown_relation));
+            }
+            let mut changed = false;
+            for (role, binding) in [(role_from, source), (role_to, target)] {
+                let resolved =
+                    schema.roles().get(role).ok_or_else(|| fail(codes.unknown_role))?;
+                if !schema.types()[relation].relates().contains_key(role) {
+                    return Err(fail(codes.role_relation_mismatch));
+                }
+                let accepted = resolved
+                    .accepted_players()
+                    .iter()
+                    .filter(|id| {
+                        schema.types().get(*id).is_some_and(|ty| ty.is_constructible())
+                    })
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                changed |= intersect_mut(
+                    domains.get_mut(binding).expect("declared binding"),
+                    &accepted,
+                );
+            }
+            Ok(changed)
+        }
         QueryPattern::Value { .. }
         | QueryPattern::Not { .. }
         | QueryPattern::Try { .. }
@@ -601,6 +640,11 @@ fn collect_scope_topology(
                 }
             }
             QueryPattern::Not { .. } | QueryPattern::Try { .. } => {}
+            QueryPattern::Reachable { source, target, .. } => {
+                referenced.extend([*source, *target]);
+                positive.extend([*source, *target]);
+                connect(topology, *source, *target);
+            }
             QueryPattern::FunctionCall {
                 arguments,
                 assigned,
@@ -832,6 +876,9 @@ fn collect_references(patterns: &[QueryPattern], output: &mut BTreeSet<BindingId
             }
             QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
                 collect_references(patterns, output);
+            }
+            QueryPattern::Reachable { source, target, .. } => {
+                output.extend([*source, *target]);
             }
             QueryPattern::FunctionCall {
                 arguments,

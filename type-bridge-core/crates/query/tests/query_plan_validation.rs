@@ -940,3 +940,112 @@ fn local_functions_type_their_calls_and_fail_closed() {
         "query_plan_local_function_uncorrelated",
     );
 }
+
+#[test]
+fn bounded_reachability_narrows_endpoints_to_role_players() {
+    use type_bridge_contract::id::RoleId;
+    use type_bridge_contract::schema::{
+        PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
+    };
+
+    let node = type_id(TypeKind::Entity, "node");
+    let island = type_id(TypeKind::Entity, "island");
+    let edge = type_id(TypeKind::Relation, "edge");
+    let from = RoleId::new("edge", "from").expect("role");
+    let to = RoleId::new("edge", "to").expect("role");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(node.clone()).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(island.clone()).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(edge.clone()).expect("type fact")),
+        SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(edge.clone(), from.clone()).expect("relates id"),
+                None,
+            )
+            .expect("relates fact"),
+        ),
+        SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(edge.clone(), to.clone()).expect("relates id"),
+                None,
+            )
+            .expect("relates fact"),
+        ),
+        SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(node.clone(), from.clone()).expect("plays id"),
+        )),
+        SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(node.clone(), to.clone()).expect("plays id"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-plan-reachable-fixture").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+            .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-plan-reachable-scope").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+
+    let build = |role_to: RoleId| {
+        let plan = QueryPlan::new(
+            vec![binding(0, "start"), binding(1, "finish")],
+            Vec::new(),
+            vec![ReadStage::Match {
+                patterns: vec![QueryPattern::Reachable {
+                    max_depth: 2,
+                    relation: edge.clone(),
+                    role_from: from.clone(),
+                    role_to,
+                    source: binding_id(0),
+                    target: binding_id(1),
+                }],
+            }],
+            QueryOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            managed.managed_semantic_schema().clone(),
+        )
+        .expect("reachability plan");
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+    };
+
+    // Both endpoints narrow to the node type; the island never plays.
+    let validated = build(to.clone()).expect("validated reachability");
+    let columns = validated.output_schema().rows().expect("row plan").columns();
+    assert_eq!(
+        columns[0].domain().type_ids().iter().collect::<Vec<_>>(),
+        vec![&node],
+    );
+    assert_eq!(
+        columns[1].domain().type_ids().iter().collect::<Vec<_>>(),
+        vec![&node],
+    );
+
+    // A role outside the relation fails closed.
+    let error = build(RoleId::new("edge", "witness").expect("role"))
+        .expect_err("unknown role");
+    assert_eq!(error.code().as_str(), "query_plan_unknown_role");
+}

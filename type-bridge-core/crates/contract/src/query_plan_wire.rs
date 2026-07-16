@@ -8,7 +8,8 @@ use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::id::{AttributeId, FunctionId, Label};
 use crate::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
 use crate::migration_assertion_wire::{
-    AssertionRolePlayerWire, FingerprintWire, TypeIdWire, ValueComparatorWire,
+    AssertionRolePlayerWire, FingerprintWire, RoleIdWire, TypeIdWire,
+    ValueComparatorWire,
 };
 use crate::query_plan::{
     DocumentField, DocumentSource, InputColumn, InputColumnId, LocalFunction,
@@ -370,6 +371,14 @@ enum QueryPatternWire {
     },
     Not { patterns: Vec<QueryPatternWire> },
     Try { patterns: Vec<QueryPatternWire> },
+    Reachable {
+        max_depth: u8,
+        relation: TypeIdWire,
+        role_from: RoleIdWire,
+        role_to: RoleIdWire,
+        source: u16,
+        target: u16,
+    },
     FunctionCall {
         arguments: Vec<QueryOperandWire>,
         assigned: u16,
@@ -430,6 +439,21 @@ impl QueryPatternWire {
                     .into_iter()
                     .map(QueryPatternWire::rebuild)
                     .collect::<Result<Vec<_>, _>>()?,
+            },
+            Self::Reachable {
+                max_depth,
+                relation,
+                role_from,
+                role_to,
+                source,
+                target,
+            } => QueryPattern::Reachable {
+                max_depth,
+                relation: relation.rebuild()?,
+                role_from: role_from.rebuild()?,
+                role_to: role_to.rebuild()?,
+                source: BindingId::new(source)?,
+                target: BindingId::new(target)?,
             },
             Self::FunctionCall {
                 arguments,
