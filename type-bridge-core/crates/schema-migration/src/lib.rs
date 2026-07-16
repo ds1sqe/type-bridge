@@ -9,6 +9,7 @@ mod history;
 mod manifest;
 mod policy;
 pub mod profile;
+mod rollback_plan;
 
 pub use apply_plan::{
     MigrationApplyPlanError, MigrationApplyTarget, VerifiedMigrationApplyManifest,
@@ -47,6 +48,10 @@ pub use manifest::{
 };
 pub use policy::{
     MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision,
+};
+pub use rollback_plan::{
+    VerifiedMigrationRollbackManifest, VerifiedMigrationRollbackPlan,
+    VerifiedMigrationRollbackStep, build_verified_migration_rollback_plan,
 };
 
 pub use profile::{

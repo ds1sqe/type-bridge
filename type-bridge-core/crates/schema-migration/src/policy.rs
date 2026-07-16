@@ -123,15 +123,41 @@ impl MigrationApplyApproval {
     pub fn for_manifest(
         manifest: &VerifiedSchemaMigrationManifest,
     ) -> Result<Self, Diagnostic> {
+        Self::for_transition(manifest, manifest.safety(), false)
+    }
+
+    /// Record an approval for rolling one verified manifest back.
+    ///
+    /// The approval binds the executed transition, so the manifest's states
+    /// enter swapped: rolling back moves the managed schema from the
+    /// manifest's target back to its source. A forward approval therefore
+    /// never authorizes a rollback, and vice versa.
+    pub fn for_rollback(
+        manifest: &VerifiedSchemaMigrationManifest,
+        rollback_safety: SafetyClass,
+    ) -> Result<Self, Diagnostic> {
+        Self::for_transition(manifest, rollback_safety, true)
+    }
+
+    fn for_transition(
+        manifest: &VerifiedSchemaMigrationManifest,
+        safety: SafetyClass,
+        rollback: bool,
+    ) -> Result<Self, Diagnostic> {
+        let (source_state, target_state) = if rollback {
+            (manifest.target_state().clone(), manifest.source_state().clone())
+        } else {
+            (manifest.source_state().clone(), manifest.target_state().clone())
+        };
         Ok(Self {
             id: manifest.id().clone(),
             lowering_profile: manifest.lowering_profile().clone(),
             manifest_digest: verified_manifest_digest(manifest)?,
             plan_fingerprint: manifest.plan_fingerprint().clone(),
-            safety: manifest.safety(),
+            safety,
             semantic_profile: manifest.semantic_profile().clone(),
-            source_state: manifest.source_state().clone(),
-            target_state: manifest.target_state().clone(),
+            source_state,
+            target_state,
         })
     }
 
@@ -145,18 +171,37 @@ impl MigrationApplyApproval {
         self.safety
     }
 
-    /// Return whether this approval binds the exact verified manifest.
+    /// Return whether this approval binds the exact forward transition.
     pub fn binds(
         &self,
         manifest: &VerifiedSchemaMigrationManifest,
     ) -> Result<bool, Diagnostic> {
+        Ok(self.safety == manifest.safety()
+            && self.source_state == *manifest.source_state()
+            && self.target_state == *manifest.target_state()
+            && self.binds_identity(manifest)?)
+    }
+
+    /// Return whether this approval binds the exact rollback transition.
+    pub fn binds_rollback(
+        &self,
+        manifest: &VerifiedSchemaMigrationManifest,
+        rollback_safety: SafetyClass,
+    ) -> Result<bool, Diagnostic> {
+        Ok(self.safety == rollback_safety
+            && self.source_state == *manifest.target_state()
+            && self.target_state == *manifest.source_state()
+            && self.binds_identity(manifest)?)
+    }
+
+    fn binds_identity(
+        &self,
+        manifest: &VerifiedSchemaMigrationManifest,
+    ) -> Result<bool, Diagnostic> {
         Ok(self.id == *manifest.id()
-            && self.safety == manifest.safety()
             && self.plan_fingerprint == *manifest.plan_fingerprint()
             && self.semantic_profile == *manifest.semantic_profile()
             && self.lowering_profile == *manifest.lowering_profile()
-            && self.source_state == *manifest.source_state()
-            && self.target_state == *manifest.target_state()
             && self.manifest_digest == verified_manifest_digest(manifest)?)
     }
 }

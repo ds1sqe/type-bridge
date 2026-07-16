@@ -552,7 +552,7 @@ pub fn build_verified_migration_apply_plan(
     })
 }
 
-fn coherent_frontier_state(
+pub(crate) fn coherent_frontier_state(
     graph: &MigrationHistoryGraph,
     frontier: &[MigrationId],
 ) -> Result<(Option<DeclaredSchema>, Option<ManagedSchemaState>), MigrationApplyPlanError> {
@@ -587,7 +587,7 @@ fn coherent_frontier_state(
     Ok((schema, state))
 }
 
-fn contract_failure(
+pub(crate) fn contract_failure(
     category: DiagnosticCategory,
     code: &'static str,
     message: &'static str,
