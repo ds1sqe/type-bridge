@@ -623,7 +623,7 @@ fn local_variable(
         })
 }
 
-fn failure(
+pub(crate) fn failure(
     category: DiagnosticCategory,
     code: &'static str,
     message: &'static str,
@@ -681,6 +681,10 @@ pub struct QueryResultRow {
 }
 
 impl QueryResultRow {
+    pub(crate) fn from_values(values: Vec<QueryRowValue>) -> Self {
+        Self { values }
+    }
+
     /// Return positional typed values in output-column order.
     #[must_use]
     pub fn values(&self) -> &[QueryRowValue] {
@@ -706,6 +710,10 @@ pub struct QueryResultDocument {
 }
 
 impl QueryResultDocument {
+    pub(crate) fn from_values(values: Vec<DocumentFieldValue>) -> Self {
+        Self { values }
+    }
+
     /// Return field values in validated document-column order.
     pub fn values(&self) -> &[DocumentFieldValue] {
         &self.values

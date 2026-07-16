@@ -36,6 +36,7 @@ pub mod projection_wire;
 /// Versioned schema identities, facts, provenance, and fingerprints.
 /// Reusable typed query plans and the first public V2 read vocabulary.
 pub mod query_plan;
+pub mod query_remote;
 
 mod query_plan_wire;
 

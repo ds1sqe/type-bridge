@@ -1684,3 +1684,149 @@ async fn bounded_reachability_executes_live() {
         .collect::<Vec<_>>();
     assert_eq!(names, vec!["nb".to_owned(), "nc".to_owned()]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_envelope_round_trip_matches_local_execution_live() {
+    use type_bridge_contract::capability::CapabilitySet as Caps;
+    use type_bridge_contract::query_plan_capability_vocabulary;
+    use type_bridge_contract::query_remote::{RemoteLimits, RemoteQueryFailure};
+    use type_bridge_orm::query_v2_remote::{
+        decode_remote_outcome, encode_remote_request, execute_remote_envelope,
+    };
+
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-remote-live");
+    let fixture = live_fixture(&suffix);
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {}, value string;\n\
+             entity {}, owns {};",
+            fixture.name.label(),
+            fixture.person.label(),
+            fixture.name.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("live remote schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {name} \"ada\"; \
+             $b isa {person}, has {name} \"bob\"; \
+             $c isa {person}, has {name} \"eve\";",
+            person = fixture.person.label(),
+            name = fixture.name.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("live remote data");
+
+    let (validated, plan) = validated_query(&fixture, OrderDirection::Ascending);
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("b")])
+            .expect("invocation");
+
+    // Local execution is the semantic reference.
+    let mut transaction = db.read_transaction().await.expect("read transaction");
+    let local = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        limits(),
+    )
+    .await
+    .expect("local execution");
+    assert_eq!(row_names(&local), vec!["bob".to_owned(), "eve".to_owned()]);
+
+    // The same invocation travels the envelope and returns equal results.
+    let nonce = "parity-nonce-0123456789abcdef";
+    let caller_limits = RemoteLimits {
+        deadline_ms: Some(30_000),
+        max_bytes: 1 << 20,
+        max_items: 100,
+    };
+    let request = encode_remote_request(&validated, &invocation, caller_limits, nonce)
+        .expect("request envelope");
+    let context = MigrationAssertionValidationContext::new(
+        &fixture.resolved,
+        &fixture.managed,
+    );
+    let mut server_transaction =
+        db.read_transaction().await.expect("server transaction");
+    let response = execute_remote_envelope(
+        &request,
+        &context,
+        &query_plan_capability_vocabulary(),
+        &mut server_transaction,
+        limits(),
+    )
+    .await;
+    let remote = decode_remote_outcome(
+        &response,
+        &validated,
+        QueryOperation::Rows,
+        nonce,
+        caller_limits,
+    )
+    .expect("remote outcome");
+    assert_eq!(remote, local);
+
+    // Replayed evidence: a foreign nonce never constructs host objects.
+    let error = decode_remote_outcome(
+        &response,
+        &validated,
+        QueryOperation::Rows,
+        "some-other-nonce-9876543210",
+        caller_limits,
+    )
+    .expect_err("foreign nonce");
+    assert_eq!(error.code().as_str(), "query_remote_nonce_mismatch");
+
+    // Forged owner: evidence for a different plan is rejected.
+    let (other_validated, _) = validated_query(&fixture, OrderDirection::Descending);
+    let error = decode_remote_outcome(
+        &response,
+        &other_validated,
+        QueryOperation::Rows,
+        nonce,
+        caller_limits,
+    )
+    .expect_err("foreign plan");
+    assert_eq!(error.code().as_str(), "query_remote_plan_mismatch");
+
+    // Oversized evidence rejects before decoding.
+    let error = decode_remote_outcome(
+        &response,
+        &validated,
+        QueryOperation::Rows,
+        nonce,
+        RemoteLimits {
+            deadline_ms: None,
+            max_bytes: 16,
+            max_items: 100,
+        },
+    )
+    .expect_err("oversized response");
+    assert_eq!(error.code().as_str(), "query_remote_response_oversized");
+
+    // Unknown capability: an executor advertising nothing rejects the
+    // plan before data I/O with a structured failure envelope.
+    let response = execute_remote_envelope(
+        &request,
+        &context,
+        &Caps::new(),
+        &mut server_transaction,
+        limits(),
+    )
+    .await;
+    let failure = RemoteQueryFailure::decode(&response).expect("failure envelope");
+    assert_eq!(
+        failure.diagnostic().expect("diagnostic").code().as_str(),
+        "query_remote_capability_unsupported",
+    );
+    assert_eq!(failure.nonce(), Some(nonce));
+}

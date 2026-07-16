@@ -78,6 +78,7 @@ pub mod match_request;
 pub mod migration_assertion;
 pub mod query_v2;
 pub mod query_v2_adapter;
+pub mod query_v2_remote;
 pub mod query;
 pub mod registry;
 pub mod relation;
