@@ -1,0 +1,981 @@
+//! Validated, programmatic TypeBridge workspace configuration.
+//!
+//! This unpublished orchestration boundary deliberately stops before YAML
+//! parsing, schema loading, history, persistence, provider I/O, secret
+//! resolution, or compiled-runtime construction. Callers inject local services
+//! and receive an inert, fully validated [`TypeBridgeConfig`].
+
+#![warn(missing_docs)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error;
+use std::fmt;
+use std::path::{Component, Path, PathBuf};
+
+use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
+use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_contract::managed_scope::{
+    ManagedScopeBinding, ManagedScopeId, ManagedScopeProfileId,
+};
+use type_bridge_contract::migration::MigrationAppLabel;
+use type_bridge_contract::projection::BindingTarget;
+use type_bridge_contract::schema::SourceSpan;
+use type_bridge_contract::semantic_profile::SemanticProfile;
+use type_bridge_schema::SchemaSourceService;
+
+mod workspace_yaml;
+mod workspace;
+mod lock;
+mod bundle;
+
+pub use workspace_yaml::{
+    ConfigOrigin, LocatedConfigSpec, TYPEBRIDGE_WORKSPACE_V1_FORMAT, TypeBridgeConfigSpec,
+};
+pub use workspace::{
+    TypeBridgeWorkspace, TypeBridgeWorkspaceError, TypeBridgeWorkspaceServices,
+};
+pub use lock::{
+    MAX_WORKSPACE_LOCK_BYTES, TYPEBRIDGE_WORKSPACE_LOCK_V1, VerifiedWorkspaceLock,
+    WorkspaceLock, WorkspaceLockError, WorkspaceLockErrorCode, generate_workspace_lock,
+    verify_workspace_lock,
+};
+pub use bundle::{
+    BundleProjectionContext, BundleVerificationContext, MAX_SCHEMA_BUNDLE_BYTES,
+    SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION, SCHEMA_BUNDLE_FINGERPRINT_DOMAIN,
+    SchemaBundleError, SchemaBundleErrorCode, TYPEBRIDGE_SCHEMA_BUNDLE_V1,
+    TypeBridgeRuntime, VerifiedSchemaBundle, build_verified_schema_bundle,
+    decode_verified_schema_bundle, encode_verified_schema_bundle,
+};
+
+/// The exact server-semantic profile accepted by the first V2 workspace.
+pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID: &str = "typedb-3.12.1/v1";
+
+const MAX_SYMBOLIC_ID_BYTES: usize = 255;
+const MAX_EXTENSION_VERSION_BYTES: usize = 64;
+
+/// Stable categories returned while validating programmatic workspace policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum WorkspaceConfigErrorCode {
+    /// A workspace root was not absolute.
+    WorkspaceRootNotAbsolute,
+    /// A workspace root contained unresolved lexical components.
+    WorkspaceRootNotCanonical,
+    /// The injected source service could not canonicalize the root.
+    WorkspaceRootCanonicalizationFailed,
+    /// A path was not a portable, confined workspace-relative path.
+    PathNotConfined,
+    /// The schema-set path was not a lowercase YAML path.
+    InvalidSchemaSetPath,
+    /// The migration path did not identify a direct V2 history directory.
+    InvalidMigrationV2Directory,
+    /// A required builder field was absent.
+    MissingRequiredField,
+    /// A singleton builder field was assigned more than once.
+    DuplicateRequiredField,
+    /// The selected semantic profile is not the exact workspace profile.
+    UnsupportedSemanticProfile,
+    /// The exclusive managed-scope profile could not be bound.
+    InvalidManagedScope,
+    /// Two workspace-owned paths are equal or nested.
+    OverlappingWorkspacePath,
+    /// One binding output target appeared more than once.
+    DuplicateOutputTarget,
+    /// A symbolic secret slot appeared more than once.
+    DuplicateSecretSlot,
+    /// One extension handler appeared more than once.
+    DuplicateExtensionHandler,
+    /// A symbolic identifier was malformed.
+    InvalidSymbolicIdentifier,
+    /// A config origin was absent, escaped its root, or was malformed.
+    InvalidConfigOrigin,
+    /// Config bytes were not valid UTF-8.
+    InvalidWorkspaceEncoding,
+    /// The shared lossless YAML parser rejected the document.
+    InvalidWorkspaceYaml,
+    /// The workspace format discriminator is unsupported.
+    UnsupportedWorkspaceFormat,
+    /// A closed workspace mapping contained an unknown key.
+    UnknownWorkspaceKey,
+    /// A required workspace wire field was absent.
+    MissingWorkspaceField,
+    /// A workspace wire value had the wrong shape or spelling.
+    InvalidWorkspaceValue,
+    /// A secret input was a literal rather than a reference.
+    SecretLiteralRejected,
+    /// An environment secret reference was malformed.
+    InvalidSecretReference,
+    /// A local secret-reference validator rejected a reference.
+    SecretReferenceRejected,
+    /// A local extension registry rejected a requirement.
+    ExtensionRequirementRejected,
+}
+
+/// A structured programmatic workspace validation failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceConfigError {
+    code: WorkspaceConfigErrorCode,
+    detail: Option<String>,
+    message: &'static str,
+    origin: Option<String>,
+    source_span: Option<SourceSpan>,
+}
+
+impl WorkspaceConfigError {
+    fn new(code: WorkspaceConfigErrorCode, message: &'static str) -> Self {
+        Self {
+            code,
+            detail: None,
+            message,
+            origin: None,
+            source_span: None,
+        }
+    }
+
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub(crate) fn with_source(
+        mut self,
+        origin: impl Into<String>,
+        source_span: SourceSpan,
+    ) -> Self {
+        self.origin = Some(origin.into());
+        self.source_span = Some(source_span);
+        self
+    }
+
+    /// Return the stable error category.
+    #[must_use]
+    pub const fn code(&self) -> WorkspaceConfigErrorCode {
+        self.code
+    }
+
+    /// Return optional deterministic error context.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+
+    /// Return the immutable diagnostic origin captured during parsing.
+    #[must_use]
+    pub fn origin(&self) -> Option<&str> {
+        self.origin.as_deref()
+    }
+
+    /// Return the exact source span for a parsed-config failure, if available.
+    #[must_use]
+    pub const fn source_span(&self) -> Option<&SourceSpan> {
+        self.source_span.as_ref()
+    }
+}
+
+impl fmt::Display for WorkspaceConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.message)?;
+        if let Some(detail) = &self.detail {
+            write!(formatter, ": {detail}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for WorkspaceConfigError {}
+
+/// A stable failure reported by an injected, local-only config service.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkspaceServiceError {
+    code: &'static str,
+}
+
+impl WorkspaceServiceError {
+    /// Construct a service failure with a stable implementation-owned code.
+    #[must_use]
+    pub const fn new(code: &'static str) -> Self {
+        Self { code }
+    }
+
+    /// Return the stable service-owned code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        self.code
+    }
+}
+
+impl fmt::Display for WorkspaceServiceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.code)
+    }
+}
+
+impl Error for WorkspaceServiceError {}
+
+/// A narrow source service used only to prove an explicit root is canonical.
+///
+/// Config validation never reads schema bytes or expands source patterns.
+/// Full schema source services automatically satisfy this boundary.
+pub trait WorkspaceSourceService {
+    /// Return the canonical spelling of the supplied workspace root.
+    fn canonicalize_workspace_root(
+        &self,
+        root: &Path,
+    ) -> Result<PathBuf, WorkspaceServiceError>;
+}
+
+impl<T> WorkspaceSourceService for T
+where
+    T: SchemaSourceService + ?Sized,
+{
+    fn canonicalize_workspace_root(
+        &self,
+        root: &Path,
+    ) -> Result<PathBuf, WorkspaceServiceError> {
+        self.canonicalize(root)
+            .map_err(|_| WorkspaceServiceError::new("schema_source_canonicalize_failed"))
+    }
+}
+
+/// A validator for symbolic secret references.
+///
+/// This service intentionally has no method that can resolve or read a secret.
+pub trait SecretReferenceService {
+    /// Validate that a symbolic reference is accepted by local policy.
+    fn validate_reference(
+        &self,
+        reference: &SecretReference,
+    ) -> Result<(), WorkspaceServiceError>;
+}
+
+/// A local registry for projection-only extension requirements.
+///
+/// Implementations must validate against locally supplied registry state and
+/// must not perform network discovery during config construction.
+pub trait ExtensionRegistryService {
+    /// Validate one exact extension handler/version requirement.
+    fn validate_requirement(
+        &self,
+        requirement: &ExtensionRequirement,
+    ) -> Result<(), WorkspaceServiceError>;
+}
+
+/// Explicit services used to validate a programmatic config hermetically.
+pub struct TypeBridgeConfigServices<'a> {
+    extensions: &'a dyn ExtensionRegistryService,
+    secrets: &'a dyn SecretReferenceService,
+    sources: &'a dyn WorkspaceSourceService,
+}
+
+impl<'a> TypeBridgeConfigServices<'a> {
+    /// Construct a service set without ambient filesystem, environment, or network state.
+    #[must_use]
+    pub const fn new(
+        sources: &'a dyn WorkspaceSourceService,
+        secrets: &'a dyn SecretReferenceService,
+        extensions: &'a dyn ExtensionRegistryService,
+    ) -> Self {
+        Self {
+            extensions,
+            secrets,
+            sources,
+        }
+    }
+}
+
+/// An explicit absolute workspace root whose canonical spelling is service-verified.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct WorkspaceRoot(PathBuf);
+
+impl WorkspaceRoot {
+    /// Validate the lexical portion of an explicit absolute workspace root.
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self, WorkspaceConfigError> {
+        let path = path.into();
+        if !path.is_absolute() {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::WorkspaceRootNotAbsolute,
+                "workspace root must be explicit and absolute",
+            ));
+        }
+        if path.to_str().is_none()
+            || path
+                .components()
+                .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+        {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::WorkspaceRootNotCanonical,
+                "workspace root must have a portable canonical spelling",
+            ));
+        }
+        Ok(Self(path))
+    }
+
+    /// Return the explicit root path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+pub(crate) fn confined_relative_path(
+    path: impl Into<PathBuf>,
+    subject: &'static str,
+) -> Result<PathBuf, WorkspaceConfigError> {
+    let path = path.into();
+    let Some(portable) = path.to_str() else {
+        return Err(WorkspaceConfigError::new(
+            WorkspaceConfigErrorCode::PathNotConfined,
+            "workspace-relative path must be valid UTF-8",
+        )
+        .with_detail(subject));
+    };
+    let invalid_spelling = portable.is_empty()
+        || portable.contains(['\\', ':', '\0'])
+        || portable.bytes().any(|byte| byte.is_ascii_control())
+        || portable
+            .split('/')
+            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."));
+    let invalid_components = path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)));
+    if invalid_spelling || invalid_components {
+        return Err(WorkspaceConfigError::new(
+            WorkspaceConfigErrorCode::PathNotConfined,
+            "workspace-relative path escapes or is not portable",
+        )
+        .with_detail(subject));
+    }
+    Ok(path)
+}
+
+/// A confined path to one portable schema-set manifest.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SchemaSetPath(PathBuf);
+
+impl SchemaSetPath {
+    /// Validate a confined lowercase `.yaml` schema-set path.
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self, WorkspaceConfigError> {
+        let path = confined_relative_path(path, "schema_set")?;
+        if path.extension().and_then(|extension| extension.to_str()) != Some("yaml") {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidSchemaSetPath,
+                "schema-set path must end in lowercase .yaml",
+            ));
+        }
+        Ok(Self(path))
+    }
+
+    /// Return the canonical workspace-relative path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// A confined direct V2 migration-history directory.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct MigrationV2Directory(PathBuf);
+
+impl MigrationV2Directory {
+    /// Validate a confined directory whose final component is exactly `v2`.
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self, WorkspaceConfigError> {
+        let path = confined_relative_path(path, "migration_v2_directory")?;
+        if path.file_name().and_then(|name| name.to_str()) != Some("v2") {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidMigrationV2Directory,
+                "canonical migration directory must identify the V2 history directly",
+            ));
+        }
+        Ok(Self(path))
+    }
+
+    /// Return the canonical workspace-relative directory.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// A confined output directory for one shipped binding target.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct OutputDirectory(PathBuf);
+
+impl OutputDirectory {
+    /// Validate a confined output directory.
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self, WorkspaceConfigError> {
+        Ok(Self(confined_relative_path(path, "binding_output")?))
+    }
+
+    /// Return the canonical workspace-relative directory.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+const fn output_field_name(target: BindingTarget) -> &'static str {
+    match target {
+        BindingTarget::Python => "output.python",
+        BindingTarget::TypeScript => "output.typescript",
+        BindingTarget::Rust => "output.rust",
+    }
+}
+
+pub(crate) fn workspace_paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
+fn valid_namespaced_id(value: &str) -> bool {
+    let mut count = 0_usize;
+    let valid = value.split('.').all(|segment| {
+        count += 1;
+        let mut bytes = segment.bytes();
+        bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+            && bytes.all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'-' | b'_')
+            })
+    });
+    valid && count >= 2 && value.len() <= MAX_SYMBOLIC_ID_BYTES
+}
+
+/// A deterministic logical slot containing one symbolic secret reference.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SecretSlot(String);
+
+impl SecretSlot {
+    /// Validate a lowercase namespaced secret slot such as `typedb.credential`.
+    pub fn new(value: impl Into<String>) -> Result<Self, WorkspaceConfigError> {
+        let value = value.into();
+        if !valid_namespaced_id(&value) {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidSymbolicIdentifier,
+                "secret slot must be a bounded lowercase namespaced identifier",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Return the canonical slot spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A retained environment-variable reference, never a resolved secret value.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SecretReference {
+    environment_variable: String,
+}
+
+impl SecretReference {
+    /// Construct an environment reference without reading the environment.
+    pub fn environment(
+        variable: impl Into<String>,
+    ) -> Result<Self, WorkspaceConfigError> {
+        let variable = variable.into();
+        let mut bytes = variable.bytes();
+        let valid = variable.len() <= MAX_SYMBOLIC_ID_BYTES
+            && bytes
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+        if !valid {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidSecretReference,
+                "environment reference contains an invalid variable name",
+            ));
+        }
+        Ok(Self {
+            environment_variable: variable,
+        })
+    }
+
+    /// Parse the sole shipped symbolic spelling, `env:VARIABLE`.
+    ///
+    /// Inputs without a symbolic scheme are rejected as literals.
+    pub fn parse_symbolic(value: impl AsRef<str>) -> Result<Self, WorkspaceConfigError> {
+        let value = value.as_ref();
+        let Some(variable) = value.strip_prefix("env:") else {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::SecretLiteralRejected,
+                "secret literals are forbidden; use a symbolic reference",
+            ));
+        };
+        Self::environment(variable)
+    }
+
+    /// Return the retained environment variable name without resolving it.
+    #[must_use]
+    pub fn environment_variable(&self) -> &str {
+        &self.environment_variable
+    }
+}
+
+/// One exact local extension handler/version requirement.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExtensionRequirement {
+    handler_id: String,
+    version: String,
+}
+
+impl ExtensionRequirement {
+    /// Validate one namespaced handler ID and bounded version spelling.
+    pub fn new(
+        handler_id: impl Into<String>,
+        version: impl Into<String>,
+    ) -> Result<Self, WorkspaceConfigError> {
+        let handler_id = handler_id.into();
+        let version = version.into();
+        let valid_version = !version.is_empty()
+            && version.len() <= MAX_EXTENSION_VERSION_BYTES
+            && version.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'-' | b'_')
+            });
+        if !valid_namespaced_id(&handler_id) || !valid_version {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidSymbolicIdentifier,
+                "extension requirement has an invalid handler ID or version",
+            ));
+        }
+        Ok(Self {
+            handler_id,
+            version,
+        })
+    }
+
+    /// Return the stable extension handler ID.
+    #[must_use]
+    pub fn handler_id(&self) -> &str {
+        &self.handler_id
+    }
+
+    /// Return the exact required handler version.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+}
+
+/// An inert validated workspace policy produced only by its builder.
+///
+/// This trusted type intentionally implements no deserialization contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypeBridgeConfig {
+    app_label: MigrationAppLabel,
+    extensions: BTreeSet<ExtensionRequirement>,
+    managed_scope: ManagedScopeBinding,
+    migration_v2_directory: MigrationV2Directory,
+    outputs: BTreeMap<BindingTarget, OutputDirectory>,
+    required_capabilities: CapabilitySet,
+    schema_set: SchemaSetPath,
+    secret_references: BTreeMap<SecretSlot, SecretReference>,
+    semantic_profile: SemanticProfileId,
+    workspace_root: WorkspaceRoot,
+}
+
+impl TypeBridgeConfig {
+    /// Begin typed programmatic construction at one explicit workspace root.
+    #[must_use]
+    pub fn builder(workspace_root: WorkspaceRoot) -> TypeBridgeConfigBuilder {
+        TypeBridgeConfigBuilder::new(workspace_root)
+    }
+
+    /// Return the service-verified canonical workspace root.
+    #[must_use]
+    pub const fn workspace_root(&self) -> &WorkspaceRoot {
+        &self.workspace_root
+    }
+
+    /// Return the confined schema-set manifest path.
+    #[must_use]
+    pub const fn schema_set(&self) -> &SchemaSetPath {
+        &self.schema_set
+    }
+
+    /// Return the schema-set manifest path resolved under the root.
+    #[must_use]
+    pub fn schema_set_absolute_path(&self) -> PathBuf {
+        self.workspace_root.as_path().join(self.schema_set.as_path())
+    }
+
+    /// Return the validated migration application label.
+    #[must_use]
+    pub const fn app_label(&self) -> &MigrationAppLabel {
+        &self.app_label
+    }
+
+    /// Return the durable scope bound to the frozen exclusive profile.
+    #[must_use]
+    pub const fn managed_scope(&self) -> &ManagedScopeBinding {
+        &self.managed_scope
+    }
+
+    /// Return the exact server-semantic profile.
+    #[must_use]
+    pub const fn semantic_profile(&self) -> &SemanticProfileId {
+        &self.semantic_profile
+    }
+
+    /// Return the confined canonical V2 migration directory.
+    #[must_use]
+    pub const fn migration_v2_directory(&self) -> &MigrationV2Directory {
+        &self.migration_v2_directory
+    }
+
+    /// Return the V2 migration directory resolved under the root.
+    #[must_use]
+    pub fn migration_v2_absolute_path(&self) -> PathBuf {
+        self.workspace_root
+            .as_path()
+            .join(self.migration_v2_directory.as_path())
+    }
+
+    /// Return additive workspace capability requirements.
+    #[must_use]
+    pub const fn required_capabilities(&self) -> &CapabilitySet {
+        &self.required_capabilities
+    }
+
+    /// Return independently configured shipped output targets.
+    #[must_use]
+    pub const fn outputs(&self) -> &BTreeMap<BindingTarget, OutputDirectory> {
+        &self.outputs
+    }
+
+    /// Return retained symbolic references without resolving secret values.
+    #[must_use]
+    pub const fn secret_references(&self) -> &BTreeMap<SecretSlot, SecretReference> {
+        &self.secret_references
+    }
+
+    /// Return exact locally validated extension requirements.
+    #[must_use]
+    pub const fn extensions(&self) -> &BTreeSet<ExtensionRequirement> {
+        &self.extensions
+    }
+}
+
+/// A consuming typed builder for [`TypeBridgeConfig`].
+///
+/// The builder accepts only validated nested values. `build` performs the
+/// remaining cross-field and injected-service checks without loading schema or
+/// consulting any provider.
+pub struct TypeBridgeConfigBuilder {
+    app_label: Option<MigrationAppLabel>,
+    duplicate_required_fields: BTreeSet<&'static str>,
+    extensions: Vec<ExtensionRequirement>,
+    managed_scope_id: Option<ManagedScopeId>,
+    migration_v2_directory: Option<MigrationV2Directory>,
+    outputs: Vec<(BindingTarget, OutputDirectory)>,
+    required_capabilities: CapabilitySet,
+    schema_set: Option<SchemaSetPath>,
+    secrets: Vec<(SecretSlot, SecretReference)>,
+    semantic_profile: Option<SemanticProfileId>,
+    workspace_root: WorkspaceRoot,
+}
+
+impl TypeBridgeConfigBuilder {
+    fn new(workspace_root: WorkspaceRoot) -> Self {
+        Self {
+            app_label: None,
+            duplicate_required_fields: BTreeSet::new(),
+            extensions: Vec::new(),
+            managed_scope_id: None,
+            migration_v2_directory: None,
+            outputs: Vec::new(),
+            required_capabilities: CapabilitySet::new(),
+            schema_set: None,
+            secrets: Vec::new(),
+            semantic_profile: None,
+            workspace_root,
+        }
+    }
+
+    fn mark_duplicate<T>(
+        slot: &mut Option<T>,
+        value: T,
+        field: &'static str,
+        duplicates: &mut BTreeSet<&'static str>,
+    ) {
+        if slot.replace(value).is_some() {
+            duplicates.insert(field);
+        }
+    }
+
+    /// Select the portable schema-set manifest.
+    #[must_use]
+    pub fn schema_set(mut self, path: SchemaSetPath) -> Self {
+        Self::mark_duplicate(
+            &mut self.schema_set,
+            path,
+            "schema_set",
+            &mut self.duplicate_required_fields,
+        );
+        self
+    }
+
+    /// Select the validated migration application label.
+    #[must_use]
+    pub fn app_label(mut self, app_label: MigrationAppLabel) -> Self {
+        Self::mark_duplicate(
+            &mut self.app_label,
+            app_label,
+            "app_label",
+            &mut self.duplicate_required_fields,
+        );
+        self
+    }
+
+    /// Bind the durable managed-scope identity to the sole exclusive profile.
+    #[must_use]
+    pub fn exclusive_managed_scope(mut self, scope_id: ManagedScopeId) -> Self {
+        Self::mark_duplicate(
+            &mut self.managed_scope_id,
+            scope_id,
+            "managed_scope",
+            &mut self.duplicate_required_fields,
+        );
+        self
+    }
+
+    /// Select the exact server-semantic profile.
+    #[must_use]
+    pub fn semantic_profile(mut self, profile: SemanticProfileId) -> Self {
+        Self::mark_duplicate(
+            &mut self.semantic_profile,
+            profile,
+            "semantic_profile",
+            &mut self.duplicate_required_fields,
+        );
+        self
+    }
+
+    /// Select the confined direct V2 migration directory.
+    #[must_use]
+    pub fn migration_v2_directory(mut self, directory: MigrationV2Directory) -> Self {
+        Self::mark_duplicate(
+            &mut self.migration_v2_directory,
+            directory,
+            "migration_v2_directory",
+            &mut self.duplicate_required_fields,
+        );
+        self
+    }
+
+    /// Add one open capability requirement without replacing prior requirements.
+    #[must_use]
+    pub fn require_capability(mut self, capability: CapabilityId) -> Self {
+        self.required_capabilities.insert(capability);
+        self
+    }
+
+    /// Add capability requirements without replacing prior requirements.
+    #[must_use]
+    pub fn require_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = CapabilityId>,
+    ) -> Self {
+        for capability in capabilities {
+            self.required_capabilities.insert(capability);
+        }
+        self
+    }
+
+    /// Add one independently regenerated shipped binding target.
+    #[must_use]
+    pub fn output(mut self, target: BindingTarget, directory: OutputDirectory) -> Self {
+        self.outputs.push((target, directory));
+        self
+    }
+
+    /// Add one retained symbolic secret reference.
+    #[must_use]
+    pub fn secret(mut self, slot: SecretSlot, reference: SecretReference) -> Self {
+        self.secrets.push((slot, reference));
+        self
+    }
+
+    /// Add one exact local extension requirement.
+    #[must_use]
+    pub fn require_extension(mut self, requirement: ExtensionRequirement) -> Self {
+        self.extensions.push(requirement);
+        self
+    }
+
+    /// Validate the complete config using only the explicitly injected services.
+    pub fn build(
+        self,
+        services: &TypeBridgeConfigServices<'_>,
+    ) -> Result<TypeBridgeConfig, WorkspaceConfigError> {
+        if let Some(field) = self.duplicate_required_fields.iter().next() {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::DuplicateRequiredField,
+                "a singleton workspace field was assigned more than once",
+            )
+            .with_detail(*field));
+        }
+
+        fn required<T>(
+            value: Option<T>,
+            field: &'static str,
+        ) -> Result<T, WorkspaceConfigError> {
+            value.ok_or_else(|| {
+                WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::MissingRequiredField,
+                    "required workspace field is missing",
+                )
+                .with_detail(field)
+            })
+        }
+        let schema_set = required(self.schema_set, "schema_set")?;
+        let app_label = required(self.app_label, "app_label")?;
+        let managed_scope_id = required(self.managed_scope_id, "managed_scope")?;
+        let semantic_profile = required(self.semantic_profile, "semantic_profile")?;
+        let migration_v2_directory = required(
+            self.migration_v2_directory,
+            "migration_v2_directory",
+        )?;
+
+        if semantic_profile.as_str() != TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID
+            || SemanticProfile::resolve(&semantic_profile).is_err()
+        {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::UnsupportedSemanticProfile,
+                "workspace requires the exact frozen TypeDB 3.12.1 semantic profile",
+            )
+            .with_detail(semantic_profile.as_str()));
+        }
+
+        let canonical_root = services
+            .sources
+            .canonicalize_workspace_root(self.workspace_root.as_path())
+            .map_err(|error| {
+                WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::WorkspaceRootCanonicalizationFailed,
+                    "injected source service could not canonicalize workspace root",
+                )
+                .with_detail(error.code())
+            })?;
+        if canonical_root != self.workspace_root.as_path() {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::WorkspaceRootNotCanonical,
+                "explicit workspace root differs from its canonical spelling",
+            ));
+        }
+
+        let managed_scope = ManagedScopeBinding::exclusive(managed_scope_id).map_err(|_| {
+            WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidManagedScope,
+                "managed scope could not bind to the exclusive profile",
+            )
+        })?;
+        debug_assert_eq!(
+            managed_scope.profile().id(),
+            &ManagedScopeProfileId::exclusive()
+        );
+
+        let mut outputs = BTreeMap::new();
+        for (target, directory) in self.outputs {
+            if outputs.insert(target, directory).is_some() {
+                return Err(WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::DuplicateOutputTarget,
+                    "binding output target is configured more than once",
+                ));
+            }
+        }
+
+        let mut workspace_paths: Vec<(&'static str, &Path)> = vec![
+            ("schema_set", schema_set.as_path()),
+            (
+                "migration_v2_directory",
+                migration_v2_directory.as_path(),
+            ),
+        ];
+        for (target, directory) in &outputs {
+            workspace_paths.push((output_field_name(*target), directory.as_path()));
+        }
+        for left_index in 0..workspace_paths.len() {
+            for right_index in (left_index + 1)..workspace_paths.len() {
+                let (left_name, left_path) = workspace_paths[left_index];
+                let (right_name, right_path) = workspace_paths[right_index];
+                if workspace_paths_overlap(left_path, right_path) {
+                    return Err(WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::OverlappingWorkspacePath,
+                        "workspace-owned paths must be pairwise disjoint",
+                    )
+                    .with_detail(format!("{left_name},{right_name}")));
+                }
+            }
+        }
+
+        let mut secret_references = BTreeMap::new();
+        for (slot, reference) in self.secrets {
+            if secret_references.insert(slot, reference).is_some() {
+                return Err(WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::DuplicateSecretSlot,
+                    "symbolic secret slot is configured more than once",
+                ));
+            }
+        }
+
+        let mut extensions_by_handler = BTreeMap::new();
+        for requirement in self.extensions {
+            if extensions_by_handler
+                .insert(requirement.handler_id.clone(), requirement)
+                .is_some()
+            {
+                return Err(WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::DuplicateExtensionHandler,
+                    "extension handler is required more than once",
+                ));
+            }
+        }
+        let extensions = extensions_by_handler
+            .into_values()
+            .collect::<BTreeSet<_>>();
+
+        for reference in secret_references.values() {
+            services
+                .secrets
+                .validate_reference(reference)
+                .map_err(|error| {
+                    WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::SecretReferenceRejected,
+                        "local secret-reference service rejected a symbolic reference",
+                    )
+                    .with_detail(error.code())
+                })?;
+        }
+        for requirement in &extensions {
+            services
+                .extensions
+                .validate_requirement(requirement)
+                .map_err(|error| {
+                    WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::ExtensionRequirementRejected,
+                        "local extension registry rejected a handler requirement",
+                    )
+                    .with_detail(error.code())
+                })?;
+        }
+
+        Ok(TypeBridgeConfig {
+            app_label,
+            extensions,
+            managed_scope,
+            migration_v2_directory,
+            outputs,
+            required_capabilities: self.required_capabilities,
+            schema_set,
+            secret_references,
+            semantic_profile,
+            workspace_root: self.workspace_root,
+        })
+    }
+}
