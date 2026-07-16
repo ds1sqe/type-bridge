@@ -8,8 +8,8 @@
 //!    attribute, staged plain ownerships, data backfill, annotation
 //!    tightening)
 //! 2. modified attribute type definitions (`RunTypeql` define/redefine)
-//! 3. added entities
-//! 4. added relations
+//! 3. added entities (parents before children)
+//! 4. added relations (parents before children)
 //! 5. modified entities (ownerships, then header changes)
 //! 6. modified relations (ownerships, roles, role players, cardinality,
 //!    then header changes)
@@ -28,8 +28,12 @@ use std::collections::BTreeSet;
 use std::collections::BTreeMap;
 
 use type_bridge_orm::schema::diff::{AttributeTypeChanges, SchemaDiff};
-use type_bridge_orm::schema::generator::{attribute_constraint_definition, card_annotation};
-use type_bridge_orm::schema::info::{OwnedAttributeEntry, SchemaInfo};
+use type_bridge_orm::schema::generator::{
+    attribute_constraint_definition, card_annotation, topological_sort,
+};
+use type_bridge_orm::schema::info::{
+    EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry, SchemaInfo,
+};
 
 use crate::error::MigrationError;
 use crate::spec::OperationSpec;
@@ -98,23 +102,36 @@ pub fn map_schema_diff(
         }
     }
 
+    // Added types are emitted parents-before-children and reduced to their
+    // own declarations: each `Add*` lowers to a singleton define with no
+    // parent in scope, so a child emitted first would reference an undefined
+    // supertype, and a flattened entry would redeclare inherited
+    // capabilities, which TypeDB rejects (#190).
+    let mut added_entities = BTreeMap::new();
     for entity_name in &diff.added_entities {
         let entity = target
             .entities
             .get(entity_name)
             .ok_or_else(|| missing("added entity", entity_name, "target"))?;
+        added_entities.insert(entity_name.clone(), entity);
+    }
+    for entity_name in topological_sort(&added_entities, |e| e.parent_type.as_deref()) {
         operations.push(OperationSpec::AddEntity {
-            entity: entity.clone(),
+            entity: declared_entity_entry(added_entities[&entity_name], target),
         });
     }
 
+    let mut added_relations = BTreeMap::new();
     for relation_name in &diff.added_relations {
         let relation = target
             .relations
             .get(relation_name)
             .ok_or_else(|| missing("added relation", relation_name, "target"))?;
+        added_relations.insert(relation_name.clone(), relation);
+    }
+    for relation_name in topological_sort(&added_relations, |r| r.parent_type.as_deref()) {
         operations.push(OperationSpec::AddRelation {
-            relation: relation.clone(),
+            relation: declared_relation_entry(added_relations[&relation_name], target),
         });
     }
 
@@ -607,6 +624,65 @@ fn type_annotation_change(
     })
 }
 
+/// Reduce a flattened entity entry to its own declarations by dropping
+/// attributes the parent already owns.
+///
+/// `SchemaInfo` entries carry the inheritance-resolved effective set. A
+/// full-schema define block skips inherited capabilities by consulting the
+/// parent entry, but the singleton `AddEntity` lowering has no parent in
+/// scope — anything left in the entry is emitted verbatim, and TypeDB
+/// rejects redeclaring an inherited capability on a subtype (#190).
+fn declared_entity_entry(entity: &EntitySchemaEntry, target: &SchemaInfo) -> EntitySchemaEntry {
+    let mut entity = entity.clone();
+    if let Some(parent) = entity
+        .parent_type
+        .as_deref()
+        .and_then(|p| target.entities.get(p))
+    {
+        let parent_attrs: BTreeSet<&str> = parent
+            .owned_attributes
+            .iter()
+            .map(|a| a.attr_name.as_str())
+            .collect();
+        entity
+            .owned_attributes
+            .retain(|a| !parent_attrs.contains(a.attr_name.as_str()));
+    }
+    entity
+}
+
+/// Relation counterpart of [`declared_entity_entry`]: drops attributes and
+/// roles the parent relation already declares.
+fn declared_relation_entry(
+    relation: &RelationSchemaEntry,
+    target: &SchemaInfo,
+) -> RelationSchemaEntry {
+    let mut relation = relation.clone();
+    if let Some(parent) = relation
+        .parent_type
+        .as_deref()
+        .and_then(|p| target.relations.get(p))
+    {
+        let parent_attrs: BTreeSet<&str> = parent
+            .owned_attributes
+            .iter()
+            .map(|a| a.attr_name.as_str())
+            .collect();
+        let parent_roles: BTreeSet<&str> = parent
+            .roles
+            .iter()
+            .map(|r| r.role_name.as_str())
+            .collect();
+        relation
+            .owned_attributes
+            .retain(|a| !parent_attrs.contains(a.attr_name.as_str()));
+        relation
+            .roles
+            .retain(|r| !parent_roles.contains(r.role_name.as_str()));
+    }
+    relation
+}
+
 fn missing(what: &str, name: &str, schema: &str) -> MigrationError {
     MigrationError::AuthoringInput {
         message: format!("diff lists {what} {name:?} but the {schema} schema does not define it"),
@@ -882,6 +958,102 @@ mod tests {
         assert_eq!(
             kinds(&operations),
             vec!["add_attribute", "add_entity", "add_relation"]
+        );
+    }
+
+    #[test]
+    fn added_sub_entities_emit_parent_first_with_declared_attributes_only() {
+        // "ape" sorts before its parent "zebra", and the flattened child
+        // entry carries the inherited key attribute (#190).
+        let base = SchemaInfo::default();
+        let mut child = entity("ape", vec![owned("name", vec![Annotation::Key])]);
+        child.parent_type = Some("zebra".to_string());
+        let target = schema(
+            vec![
+                child,
+                entity("zebra", vec![owned("name", vec![Annotation::Key])]),
+            ],
+            vec![],
+            vec![attribute("name")],
+        );
+
+        let operations = map(&base, &target);
+
+        assert_eq!(
+            kinds(&operations),
+            vec!["add_attribute", "add_entity", "add_entity"]
+        );
+        let OperationSpec::AddEntity { entity: first } = &operations[1] else {
+            panic!("expected AddEntity: {:?}", operations[1]);
+        };
+        let OperationSpec::AddEntity { entity: second } = &operations[2] else {
+            panic!("expected AddEntity: {:?}", operations[2]);
+        };
+        assert_eq!(first.type_name, "zebra");
+        assert_eq!(second.type_name, "ape");
+        assert_eq!(second.parent_type.as_deref(), Some("zebra"));
+        assert!(
+            second.owned_attributes.is_empty(),
+            "inherited attributes must not be redeclared: {:?}",
+            second.owned_attributes
+        );
+    }
+
+    #[test]
+    fn added_sub_entity_with_preexisting_parent_drops_inherited_attributes() {
+        let parent = entity("zebra", vec![owned("name", vec![Annotation::Key])]);
+        let base = schema(vec![parent.clone()], vec![], vec![attribute("name")]);
+        let mut child = entity("ape", vec![owned("name", vec![Annotation::Key])]);
+        child.parent_type = Some("zebra".to_string());
+        let target = schema(vec![child, parent], vec![], vec![attribute("name")]);
+
+        let operations = map(&base, &target);
+
+        assert_eq!(kinds(&operations), vec!["add_entity"]);
+        let OperationSpec::AddEntity { entity } = &operations[0] else {
+            panic!("expected AddEntity: {:?}", operations[0]);
+        };
+        assert_eq!(entity.parent_type.as_deref(), Some("zebra"));
+        assert!(entity.owned_attributes.is_empty());
+    }
+
+    #[test]
+    fn added_sub_relations_emit_parent_first_with_declared_roles_only() {
+        // "contract" sorts before its parent "work", and the flattened child
+        // entry carries the inherited role (#190).
+        let base = SchemaInfo::default();
+        let parent = relation("work", vec![role("employee", &["person"])], vec![]);
+        let mut child = relation(
+            "contract",
+            vec![
+                role("employee", &["person"]),
+                role("contractor", &["person"]),
+            ],
+            vec![],
+        );
+        child.parent_type = Some("work".to_string());
+        let target = schema(vec![entity("person", vec![])], vec![child, parent], vec![]);
+
+        let operations = map(&base, &target);
+
+        assert_eq!(
+            kinds(&operations),
+            vec!["add_entity", "add_relation", "add_relation"]
+        );
+        let OperationSpec::AddRelation { relation: first } = &operations[1] else {
+            panic!("expected AddRelation: {:?}", operations[1]);
+        };
+        let OperationSpec::AddRelation { relation: second } = &operations[2] else {
+            panic!("expected AddRelation: {:?}", operations[2]);
+        };
+        assert_eq!(first.type_name, "work");
+        assert_eq!(second.type_name, "contract");
+        assert_eq!(second.parent_type.as_deref(), Some("work"));
+        let role_names: Vec<&str> = second.roles.iter().map(|r| r.role_name.as_str()).collect();
+        assert_eq!(
+            role_names,
+            vec!["contractor"],
+            "inherited roles must not be redeclared"
         );
     }
 

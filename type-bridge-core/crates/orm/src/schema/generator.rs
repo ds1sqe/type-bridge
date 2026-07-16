@@ -408,7 +408,11 @@ fn build_relation_header(relation: &RelationSchemaEntry) -> String {
 }
 
 /// Topological sort: parents before children, deterministic order within each level.
-fn topological_sort<T, F>(map: &BTreeMap<String, T>, get_parent: F) -> Vec<String>
+///
+/// Only keys of `map` appear in the result; a parent naming a type outside
+/// the map (e.g. defined in an earlier migration) is ignored rather than
+/// emitted.
+pub fn topological_sort<T, F>(map: &BTreeMap<String, T>, get_parent: F) -> Vec<String>
 where
     F: Fn(&T) -> Option<&str>,
 {
@@ -428,9 +432,13 @@ where
             return;
         }
         visited.insert(name.to_string());
-        if let Some(entry) = map.get(name)
-            && let Some(parent) = get_parent(entry)
-        {
+        // A parent may name a type outside this map (e.g. the singleton
+        // SchemaInfo built by migration lowering); such names are not part
+        // of this ordering and must not be emitted.
+        let Some(entry) = map.get(name) else {
+            return;
+        };
+        if let Some(parent) = get_parent(entry) {
             visit(parent, map, get_parent, visited, result);
         }
         result.push(name.to_string());
@@ -853,6 +861,57 @@ mod tests {
             mammal_pos < cat_pos,
             "parent (mammal) should appear before child (cat): {result}"
         );
+    }
+
+    #[test]
+    fn entity_with_parent_outside_schema_keeps_sub_clause() {
+        // Migration lowering builds singleton SchemaInfos whose entries may
+        // reference parents defined elsewhere; generation must not panic and
+        // must preserve the `sub` clause (#190).
+        let mut info = SchemaInfo::default();
+        info.entities.insert(
+            "person".into(),
+            EntitySchemaEntry {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: Some("animal".into()),
+                owned_attributes: vec![],
+                plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+
+        assert!(result.contains("entity person sub animal;"), "{result}");
+        assert!(!result.contains("entity animal"), "{result}");
+    }
+
+    #[test]
+    fn relation_with_parent_outside_schema_keeps_sub_clause() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "part-time-employment".into(),
+            RelationSchemaEntry {
+                type_name: "part-time-employment".into(),
+                is_abstract: false,
+                parent_type: Some("employment".into()),
+                owned_attributes: vec![],
+                roles: vec![],
+                plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
+            },
+        );
+
+        let result = generate_define_block(&info);
+
+        assert!(
+            result.contains("relation part-time-employment sub employment;"),
+            "{result}"
+        );
+        assert!(!result.contains("relation employment"), "{result}");
     }
 
     #[test]

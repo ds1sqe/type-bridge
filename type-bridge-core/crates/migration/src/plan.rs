@@ -1295,6 +1295,27 @@ delete $a has email "ops@example.com";"#,
     }
 
     #[test]
+    fn add_entity_with_parent_outside_singleton_schema_lowers_without_panic() {
+        // Lowering AddEntity builds a singleton SchemaInfo containing only the
+        // child; the parent named by `sub` lives outside it. Planning must not
+        // panic and the define step must keep the `sub` clause (#190).
+        let mut child = entity_entry("person");
+        child.parent_type = Some("animal".to_string());
+        let g = graph(vec![migration(
+            "0001_sub_entity",
+            vec![OperationSpec::AddEntity { entity: child }],
+            vec![],
+        )]);
+
+        let result = plan(&g, &[], None).expect("plan should succeed");
+        let steps = &result.to_apply[0].steps;
+
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].forward.contains("entity person sub animal,"));
+        assert_eq!(steps[0].reverse.as_deref(), Some("undefine\nperson;"));
+    }
+
+    #[test]
     fn typed_ownership_operations_lower_to_schema_steps() {
         let g = graph(vec![migration(
             "0001_ownership",
