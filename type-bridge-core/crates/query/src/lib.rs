@@ -1,21 +1,26 @@
 //! Schema-aware validation for typed query foundations.
 
+mod engine;
+mod query_validation;
 mod safety_condition;
+
+pub use query_validation::{ValidatedQuery, validate_query_plan};
 
 pub use safety_condition::{
     lower_condition_to_plan, safety_condition_to_assertion_plan,
 };
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_contract::diagnostic::{
     Diagnostic, DiagnosticCategory, DiagnosticCode,
 };
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::TypeId;
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::{
     AssertionPattern, BindingId, MigrationAssertionPlan, QueryVariable, ValueOperand,
 };
+use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_schema::ResolvedSchema;
@@ -58,6 +63,13 @@ pub struct BindingDomain {
 }
 
 impl BindingDomain {
+    pub(crate) const fn new(
+        type_ids: BTreeSet<TypeId>,
+        value_type: Option<ValueTypeTag>,
+    ) -> Self {
+        Self { type_ids, value_type }
+    }
+
     /// Return possible concrete runtime types.
     pub const fn type_ids(&self) -> &BTreeSet<TypeId> {
         &self.type_ids
@@ -78,6 +90,14 @@ pub struct RowColumn {
 }
 
 impl RowColumn {
+    pub(crate) const fn new(
+        binding: BindingId,
+        domain: BindingDomain,
+        variable: QueryVariable,
+    ) -> Self {
+        Self { binding, domain, variable }
+    }
+
     /// Return the output binding.
     pub const fn binding(&self) -> BindingId {
         self.binding
@@ -101,6 +121,10 @@ pub struct RowSchema {
 }
 
 impl RowSchema {
+    pub(crate) const fn new(columns: Vec<RowColumn>) -> Self {
+        Self { columns }
+    }
+
     /// Return ordered output columns.
     pub fn columns(&self) -> &[RowColumn] {
         &self.columns
@@ -176,51 +200,19 @@ pub fn validate_migration_assertion_plan(
     }
     validate_limits(plan, limits)?;
     let schema = context.resolved_schema();
-    let all_constructible = schema
-        .types()
-        .iter()
-        .filter(|(_, resolved)| resolved.is_constructible())
-        .map(|(id, _)| id.clone())
-        .collect::<BTreeSet<_>>();
-    let mut domains = plan
-        .bindings()
-        .iter()
-        .map(|binding| (binding.id(), all_constructible.clone()))
-        .collect::<BTreeMap<_, _>>();
-
-    refine_positive(plan.patterns(), &mut domains, schema)?;
-    let mut positive = BTreeSet::new();
-    let mut root_references = BTreeSet::new();
-    let mut topology = plan
-        .bindings()
-        .iter()
-        .map(|binding| (binding.id(), BTreeSet::new()))
-        .collect::<BTreeMap<_, _>>();
-    collect_scope_topology(
-        plan.patterns(),
-        &mut positive,
-        &mut root_references,
-        &mut topology,
-    );
-    if root_references.iter().any(|id| !positive.contains(id)) {
-        return Err(query_failure(
-            "migration_assertion_binding_not_positive",
-            "a root-scope reference is not positively established at the root",
-        ));
-    }
-    topology.retain(|id, _| root_references.contains(id));
-    let mut scoped_positive = BTreeSet::new();
-    validate_negations(
-        plan.patterns(),
-        &domains,
+    let converted = convert_assertion_patterns(plan.patterns());
+    let engine::PatternAnalysis {
+        domains,
+        positive,
+        scoped_positive,
+        used,
+    } = engine::analyze_patterns(
+        &converted,
+        plan.bindings().len(),
+        &[],
         schema,
-        &positive,
-        &all_constructible,
-        &mut scoped_positive,
+        &ASSERTION_ENGINE_CODES,
     )?;
-    validate_values_shallow(plan.patterns(), &domains, schema)?;
-    let mut used = BTreeSet::new();
-    collect_references(plan.patterns(), &mut used);
 
     for binding in plan.bindings() {
         let id = binding.id();
@@ -270,13 +262,13 @@ pub fn validate_migration_assertion_plan(
             ));
         }
     }
-    ensure_connected(&topology)?;
 
     let binding_domains = domains
         .into_iter()
         .filter(|(id, _)| positive.contains(id))
         .map(|(id, type_ids)| {
-            let value_type = uniform_value_type(&type_ids, schema)?;
+            let value_type =
+                engine::uniform_value_type(&type_ids, schema, &ASSERTION_ENGINE_CODES)?;
             Ok((id, BindingDomain { type_ids, value_type }))
         })
         .collect::<Result<BTreeMap<_, _>, Diagnostic>>()?;
@@ -349,364 +341,127 @@ fn inspect_limits(
     Ok(())
 }
 
-fn refine_positive(
-    patterns: &[AssertionPattern],
-    domains: &mut BTreeMap<BindingId, BTreeSet<TypeId>>,
-    schema: &ResolvedSchema,
-) -> Result<(), Diagnostic> {
-    loop {
-        let mut changed = false;
-        for pattern in patterns {
-            changed |= refine_pattern(pattern, domains, schema)?;
-        }
-        if !changed {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn refine_pattern(
-    pattern: &AssertionPattern,
-    domains: &mut BTreeMap<BindingId, BTreeSet<TypeId>>,
-    schema: &ResolvedSchema,
-) -> Result<bool, Diagnostic> {
-    match pattern {
-        AssertionPattern::Isa {
-            binding,
-            include_subtypes,
-            type_id,
-        } => {
-            let resolved = schema.types().get(type_id).ok_or_else(|| {
-                query_failure(
-                    "migration_assertion_unknown_type",
-                    "isa pattern references a type outside the resolved schema",
-                )
-            })?;
-            let mut allowed = BTreeSet::from([type_id.clone()]);
-            if *include_subtypes {
-                allowed.extend(resolved.subtypes().iter().cloned());
-            }
-            allowed.retain(|id| schema.types().get(id).is_some_and(|ty| ty.is_constructible()));
-            Ok(intersect_mut(
-                domains.get_mut(binding).expect("declared binding"),
-                &allowed,
-            ))
-        }
-        AssertionPattern::Has {
-            attribute,
-            attribute_id,
-            owner,
-        } => {
-            let attribute_type = TypeId::new(
-                TypeKind::Attribute,
-                attribute_id.label().as_str().to_owned(),
-            )?;
-            if !schema.types().contains_key(&attribute_type) {
-                return Err(query_failure(
-                    "migration_assertion_unknown_attribute",
-                    "has pattern references an attribute outside the resolved schema",
-                ));
-            }
-            let allowed_owners = schema
-                .types()
-                .iter()
-                .filter(|(_, resolved)| {
-                    resolved.is_constructible() && resolved.owns().contains_key(attribute_id)
-                })
-                .map(|(id, _)| id.clone())
-                .collect::<BTreeSet<_>>();
-            let owner_changed = intersect_mut(domains.get_mut(owner).expect("declared owner"), &allowed_owners);
-            let attribute_changed = intersect_mut(
-                domains.get_mut(attribute).expect("declared attribute"),
-                &BTreeSet::from([attribute_type]),
-            );
-            Ok(owner_changed || attribute_changed)
-        }
-        AssertionPattern::Links {
-            players,
-            relation,
-            relation_id,
-        } => {
-            if relation_id.kind() != TypeKind::Relation
-                || !schema.types().contains_key(relation_id)
-            {
-                return Err(query_failure(
-                    "migration_assertion_unknown_relation",
-                    "links pattern relation is absent or not relation-kind",
-                ));
-            }
-            let mut changed = intersect_mut(
-                domains.get_mut(relation).expect("declared relation"),
-                &BTreeSet::from([relation_id.clone()]),
-            );
-            for player in players {
-                let role = schema.roles().get(player.role()).ok_or_else(|| {
-                    query_failure(
-                        "migration_assertion_unknown_role",
-                        "links pattern references a role outside the resolved schema",
-                    )
-                })?;
-                if !schema.types()[relation_id]
-                    .relates()
-                    .contains_key(player.role())
-                {
-                    return Err(query_failure(
-                        "migration_assertion_role_relation_mismatch",
-                        "links role is not effective on the declared relation",
-                    ));
-                }
-                let accepted = role
-                    .accepted_players()
-                    .iter()
-                    .filter(|id| schema.types().get(*id).is_some_and(|ty| ty.is_constructible()))
-                    .cloned()
-                    .collect::<BTreeSet<_>>();
-                changed |= intersect_mut(
-                    domains.get_mut(&player.player()).expect("declared player"),
-                    &accepted,
-                );
-            }
-            Ok(changed)
-        }
-        AssertionPattern::Value { .. } | AssertionPattern::Not { .. } => Ok(false),
-    }
-}
-
-fn intersect_mut(target: &mut BTreeSet<TypeId>, allowed: &BTreeSet<TypeId>) -> bool {
-    let before = target.len();
-    target.retain(|id| allowed.contains(id));
-    target.len() != before
-}
-
-fn collect_scope_topology(
-    patterns: &[AssertionPattern],
-    positive: &mut BTreeSet<BindingId>,
-    referenced: &mut BTreeSet<BindingId>,
-    topology: &mut BTreeMap<BindingId, BTreeSet<BindingId>>,
-) {
-    for pattern in patterns {
-        match pattern {
-            AssertionPattern::Isa { binding, .. } => {
-                referenced.insert(*binding);
-                positive.insert(*binding);
-            }
-            AssertionPattern::Has { attribute, owner, .. } => {
-                referenced.extend([*owner, *attribute]);
-                positive.extend([*owner, *attribute]);
-                connect(topology, *owner, *attribute);
-            }
-            AssertionPattern::Links { relation, players, .. } => {
-                referenced.insert(*relation);
-                for player in players {
-                    referenced.insert(player.player());
-                    positive.extend([*relation, player.player()]);
-                    connect(topology, *relation, player.player());
-                }
-            }
-            AssertionPattern::Value { left, right, .. } => {
-                let left = operand_binding(left);
-                let right = operand_binding(right);
-                referenced.extend(left.into_iter().chain(right));
-                if let (Some(left), Some(right)) = (left, right) {
-                    connect(topology, left, right);
-                }
-            }
-            AssertionPattern::Not { .. } => {}
-        }
-    }
-}
-
-fn validate_negations(
-    patterns: &[AssertionPattern],
-    outer_domains: &BTreeMap<BindingId, BTreeSet<TypeId>>,
-    schema: &ResolvedSchema,
-    outer_positive: &BTreeSet<BindingId>,
-    all_constructible: &BTreeSet<TypeId>,
-    scoped_positive: &mut BTreeSet<BindingId>,
-) -> Result<(), Diagnostic> {
-    for pattern in patterns {
-        if let AssertionPattern::Not { patterns } = pattern {
-            let mut body_positive = BTreeSet::new();
-            let mut body_references = BTreeSet::new();
-            let mut topology = outer_domains
-                .keys()
-                .copied()
-                .map(|id| (id, BTreeSet::new()))
-                .collect::<BTreeMap<_, _>>();
-            collect_scope_topology(
-                patterns,
-                &mut body_positive,
-                &mut body_references,
-                &mut topology,
-            );
-            let mut body_scope = outer_positive.clone();
-            body_scope.extend(body_positive.iter().copied());
-            if body_references.iter().any(|id| !body_scope.contains(id)) {
-                return Err(query_failure(
-                    "migration_assertion_negation_unbound_binding",
-                    "negation-local reference is not positively established in its body",
-                ));
-            }
-            let mut nested = outer_domains.clone();
-            for (id, domain) in &mut nested {
-                if !outer_positive.contains(id) {
-                    *domain = all_constructible.clone();
-                }
-            }
-            refine_positive(patterns, &mut nested, schema)?;
-            if body_positive.iter().any(|id| nested[id].is_empty()) {
-                return Err(query_failure(
-                    "migration_assertion_empty_negated_domain",
-                    "negated pattern has an impossible schema domain",
-                ));
-            }
-            validate_values_shallow(patterns, &nested, schema)?;
-            topology.retain(|id, _| body_references.contains(id));
-            ensure_connected(&topology)?;
-            scoped_positive.extend(body_positive.iter().copied());
-            validate_negations(
-                patterns,
-                &nested,
-                schema,
-                &body_scope,
-                all_constructible,
-                scoped_positive,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_values_shallow(
-    patterns: &[AssertionPattern],
-    domains: &BTreeMap<BindingId, BTreeSet<TypeId>>,
-    schema: &ResolvedSchema,
-) -> Result<(), Diagnostic> {
-    for pattern in patterns {
-        match pattern {
-            AssertionPattern::Value { left, right, .. } => {
-                let left = operand_value_type(left, domains, schema)?;
-                let right = operand_value_type(right, domains, schema)?;
-                if left != right {
-                    return Err(query_failure(
-                        "migration_assertion_value_domain_mismatch",
-                        "value comparison operands have different scalar domains",
-                    ));
-                }
-            }
-            AssertionPattern::Not { .. } => {}
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn operand_value_type(
-    operand: &ValueOperand,
-    domains: &BTreeMap<BindingId, BTreeSet<TypeId>>,
-    schema: &ResolvedSchema,
-) -> Result<ValueTypeTag, Diagnostic> {
-    match operand {
-        ValueOperand::Literal { value } => Ok(value.value_type()),
-        ValueOperand::Binding { binding } => uniform_value_type(&domains[binding], schema)?
-            .ok_or_else(|| {
-                query_failure(
-                    "migration_assertion_binding_not_scalar",
-                    "value operand binding has no uniform attribute scalar domain",
-                )
-            }),
-    }
-}
-
-fn uniform_value_type(
-    domain: &BTreeSet<TypeId>,
-    schema: &ResolvedSchema,
-) -> Result<Option<ValueTypeTag>, Diagnostic> {
-    let mut uniform: Option<Option<ValueTypeTag>> = None;
-    for id in domain {
-        let value_type = schema.types()[id].value_type().map(|value| value.value_type());
-        match uniform {
-            None => uniform = Some(value_type),
-            Some(expected) if expected == value_type => {}
-            Some(_) => {
-                return Err(query_failure(
-                    "migration_assertion_nonuniform_value_domain",
-                    "binding domain mixes incompatible scalar domains",
-                ));
-            }
-        }
-    }
-    Ok(uniform.flatten())
-}
-
-fn collect_references(patterns: &[AssertionPattern], output: &mut BTreeSet<BindingId>) {
-    for pattern in patterns {
-        match pattern {
-            AssertionPattern::Isa { binding, .. } => {
-                output.insert(*binding);
-            }
-            AssertionPattern::Has { attribute, owner, .. } => {
-                output.extend([*owner, *attribute]);
-            }
-            AssertionPattern::Links { relation, players, .. } => {
-                output.insert(*relation);
-                output.extend(players.iter().map(|player| player.player()));
-            }
-            AssertionPattern::Value { left, right, .. } => {
-                output.extend(operand_binding(left));
-                output.extend(operand_binding(right));
-            }
-            AssertionPattern::Not { patterns } => collect_references(patterns, output),
-        }
-    }
-}
-
-fn operand_binding(operand: &ValueOperand) -> Option<BindingId> {
-    match operand {
-        ValueOperand::Binding { binding } => Some(*binding),
-        ValueOperand::Literal { .. } => None,
-    }
-}
-
-fn connect(
-    topology: &mut BTreeMap<BindingId, BTreeSet<BindingId>>,
-    left: BindingId,
-    right: BindingId,
-) {
-    topology.get_mut(&left).expect("declared binding").insert(right);
-    topology.get_mut(&right).expect("declared binding").insert(left);
-}
-
-fn ensure_connected(
-    topology: &BTreeMap<BindingId, BTreeSet<BindingId>>,
-) -> Result<(), Diagnostic> {
-    let Some(start) = topology.keys().next().copied() else {
-        return Ok(());
-    };
-    let mut seen = BTreeSet::from([start]);
-    let mut queue = VecDeque::from([start]);
-    while let Some(id) = queue.pop_front() {
-        for neighbor in &topology[&id] {
-            if seen.insert(*neighbor) {
-                queue.push_back(*neighbor);
-            }
-        }
-    }
-    if seen.len() == topology.len() {
-        Ok(())
-    } else {
-        Err(query_failure(
-            "migration_assertion_disconnected_topology",
-            "positive assertion bindings form a disconnected cross join",
-        ))
-    }
-}
-
 fn query_failure(code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         DiagnosticCategory::InvalidContract,
         DiagnosticCode::new(code).expect("static query diagnostic code is canonical"),
         message,
     )
+}
+
+/// The released stable diagnostic vocabulary of assertion validation.
+///
+/// Assertion validation delegates to the shared pattern engine; these exact
+/// codes and messages predate that engine and must never drift.
+const ASSERTION_ENGINE_CODES: engine::EngineCodes = engine::EngineCodes {
+    unknown_type: engine::EngineCode {
+        code: "migration_assertion_unknown_type",
+        message: "isa pattern references a type outside the resolved schema",
+    },
+    unknown_attribute: engine::EngineCode {
+        code: "migration_assertion_unknown_attribute",
+        message: "has pattern references an attribute outside the resolved schema",
+    },
+    unknown_relation: engine::EngineCode {
+        code: "migration_assertion_unknown_relation",
+        message: "links pattern relation is absent or not relation-kind",
+    },
+    unknown_role: engine::EngineCode {
+        code: "migration_assertion_unknown_role",
+        message: "links pattern references a role outside the resolved schema",
+    },
+    role_relation_mismatch: engine::EngineCode {
+        code: "migration_assertion_role_relation_mismatch",
+        message: "links role is not effective on the declared relation",
+    },
+    root_reference_not_positive: engine::EngineCode {
+        code: "migration_assertion_binding_not_positive",
+        message: "a root-scope reference is not positively established at the root",
+    },
+    negation_unbound: engine::EngineCode {
+        code: "migration_assertion_negation_unbound_binding",
+        message: "negation-local reference is not positively established in its body",
+    },
+    empty_negated_domain: engine::EngineCode {
+        code: "migration_assertion_empty_negated_domain",
+        message: "negated pattern has an impossible schema domain",
+    },
+    value_domain_mismatch: engine::EngineCode {
+        code: "migration_assertion_value_domain_mismatch",
+        message: "value comparison operands have different scalar domains",
+    },
+    binding_not_scalar: engine::EngineCode {
+        code: "migration_assertion_binding_not_scalar",
+        message: "value operand binding has no uniform attribute scalar domain",
+    },
+    nonuniform_value_domain: engine::EngineCode {
+        code: "migration_assertion_nonuniform_value_domain",
+        message: "binding domain mixes incompatible scalar domains",
+    },
+    disconnected_topology: engine::EngineCode {
+        code: "migration_assertion_disconnected_topology",
+        message: "positive assertion bindings form a disconnected cross join",
+    },
+    // Assertion plans cannot express input operands; this entry never fires.
+    unknown_input: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot reference invocation inputs",
+    },
+};
+
+fn convert_assertion_patterns(patterns: &[AssertionPattern]) -> Vec<QueryPattern> {
+    patterns.iter().map(convert_assertion_pattern).collect()
+}
+
+fn convert_assertion_pattern(pattern: &AssertionPattern) -> QueryPattern {
+    match pattern {
+        AssertionPattern::Isa {
+            binding,
+            include_subtypes,
+            type_id,
+        } => QueryPattern::Isa {
+            binding: *binding,
+            include_subtypes: *include_subtypes,
+            type_id: type_id.clone(),
+        },
+        AssertionPattern::Has {
+            attribute,
+            attribute_id,
+            owner,
+        } => QueryPattern::Has {
+            attribute: *attribute,
+            attribute_id: attribute_id.clone(),
+            owner: *owner,
+        },
+        AssertionPattern::Links {
+            players,
+            relation,
+            relation_id,
+        } => QueryPattern::Links {
+            players: players.clone(),
+            relation: *relation,
+            relation_id: relation_id.clone(),
+        },
+        AssertionPattern::Value {
+            comparator,
+            left,
+            right,
+        } => QueryPattern::Value {
+            comparator: *comparator,
+            left: convert_operand(left),
+            right: convert_operand(right),
+        },
+        AssertionPattern::Not { patterns } => QueryPattern::Not {
+            patterns: convert_assertion_patterns(patterns),
+        },
+    }
+}
+
+fn convert_operand(operand: &ValueOperand) -> QueryOperand {
+    match operand {
+        ValueOperand::Binding { binding } => QueryOperand::Binding { binding: *binding },
+        ValueOperand::Literal { value } => QueryOperand::Literal {
+            value: value.clone(),
+        },
+    }
 }
