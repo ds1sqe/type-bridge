@@ -22,8 +22,9 @@ use type_bridge_query::{RowSchema, ValidatedQuery};
 use crate::migration_assertion::{render_comparator, render_literal};
 
 /// Exact provider text and typed shape for one lowered invocation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LoweredQuery {
+    given: Option<crate::session::backend::GivenRowsSpec>,
     operation: QueryOperation,
     row_schema: RowSchema,
     typeql: String,
@@ -34,6 +35,12 @@ impl LoweredQuery {
     #[must_use]
     pub fn typeql(&self) -> &str {
         &self.typeql
+    }
+
+    /// Return the driver-transported input rows for a `given` lowering.
+    #[must_use]
+    pub const fn given_rows(&self) -> Option<&crate::session::backend::GivenRowsSpec> {
+        self.given.as_ref()
     }
 
     /// Return the validated output row shape.
@@ -62,16 +69,10 @@ pub fn lower_validated_query(
             "invocation does not bind the exact validated plan fingerprint",
         ));
     }
-    let row = match invocation.inputs() {
-        [] => None,
-        [row] => Some(row),
-        _ => {
-            return Err(failure(
-                DiagnosticCategory::InvalidContract,
-                "query_v2_multi_row_given_unsupported",
-                "explicit multi-row input requires the native given transport capability",
-            ));
-        }
+    let (row, given) = match invocation.inputs() {
+        [] => (None, None),
+        [row] => (Some(row), None),
+        rows => (None, Some(given_rows_spec(plan, rows)?)),
     };
     if let Some(row) = row
         && row.values().iter().any(Option::is_none)
@@ -83,7 +84,26 @@ pub fn lower_validated_query(
         ));
     }
 
-    let mut typeql = String::from("match\n");
+    let mut typeql = String::new();
+    if let Some(spec) = &given {
+        typeql.push_str("given ");
+        for (index, column) in plan.inputs().iter().enumerate() {
+            if index != 0 {
+                typeql.push_str(", ");
+            }
+            write!(
+                typeql,
+                "${}: {}",
+                column.public_name().as_str(),
+                given_type_keyword(column.value_type())
+                    .expect("spec construction admitted this value type"),
+            )
+            .expect("writing to String cannot fail");
+        }
+        typeql.push_str(";\n");
+        debug_assert_eq!(spec.variables.len(), plan.inputs().len());
+    }
+    typeql.push_str("match\n");
     let Some(ReadStage::Match { patterns }) = plan.pipeline().first() else {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -174,10 +194,83 @@ pub fn lower_validated_query(
     }
 
     Ok(LoweredQuery {
+        given,
         operation: invocation.operation(),
         row_schema: validated.row_schema().clone(),
         typeql,
     })
+}
+
+/// Build the driver-transported batch for one multi-row invocation.
+///
+/// The first given vocabulary transports boolean, integer, double, and
+/// string values; temporal, decimal, and duration inputs keep the proven
+/// single-row inline path until their canonical driver spelling is proven.
+fn given_rows_spec(
+    plan: &QueryPlan,
+    rows: &[type_bridge_contract::query_plan::InputRow],
+) -> Result<crate::session::backend::GivenRowsSpec, Diagnostic> {
+    let variables = plan
+        .inputs()
+        .iter()
+        .map(|column| {
+            if given_type_keyword(column.value_type()).is_none() {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_v2_given_value_unsupported",
+                    "this input value type has no proven given transport",
+                ));
+            }
+            Ok(column.public_name().as_str().to_owned())
+        })
+        .collect::<Result<Vec<_>, Diagnostic>>()?;
+    let rows = rows
+        .iter()
+        .map(|row| {
+            row.values()
+                .iter()
+                .map(|value| {
+                    value.as_ref().and_then(given_value).ok_or_else(|| {
+                        failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_v2_missing_input_value",
+                            "given-row lowering requires every input value to be present",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, Diagnostic>>()
+        })
+        .collect::<Result<Vec<_>, Diagnostic>>()?;
+    Ok(crate::session::backend::GivenRowsSpec { variables, rows })
+}
+
+const fn given_type_keyword(
+    tag: type_bridge_contract::value::ValueTypeTag,
+) -> Option<&'static str> {
+    use type_bridge_contract::value::ValueTypeTag;
+    match tag {
+        ValueTypeTag::Boolean => Some("boolean"),
+        ValueTypeTag::Long => Some("integer"),
+        ValueTypeTag::Double => Some("double"),
+        ValueTypeTag::String => Some("string"),
+        _ => None,
+    }
+}
+
+fn given_value(
+    value: &type_bridge_contract::value::CanonicalValue,
+) -> Option<crate::session::backend::GivenValue> {
+    use crate::session::backend::GivenValue;
+    use type_bridge_contract::value::CanonicalValue;
+    match value {
+        CanonicalValue::Boolean(value) => Some(GivenValue::Boolean(*value)),
+        CanonicalValue::Long(value) => Some(GivenValue::Integer(*value)),
+        CanonicalValue::Double(value) => Some(GivenValue::Double(value.get())),
+        CanonicalValue::String(value) => {
+            Some(GivenValue::String(value.as_str().to_owned()))
+        }
+        _ => None,
+    }
 }
 
 fn render_patterns(
@@ -329,19 +422,36 @@ fn render_operand(
             Ok(format!("${}", variable(plan, *binding)?))
         }
         QueryOperand::Literal { value } => Ok(render_literal(value)),
-        QueryOperand::Input { column } => {
-            let value = row
-                .and_then(|row| row.values().get(usize::from(column.get())))
-                .and_then(Option::as_ref)
-                .ok_or_else(|| {
-                    failure(
-                        DiagnosticCategory::InvalidContract,
-                        "query_v2_missing_input_value",
-                        "pattern reads an input column absent from the bound row",
-                    )
-                })?;
-            Ok(render_literal(value))
-        }
+        QueryOperand::Input { column } => match row {
+            Some(row) => {
+                let value = row
+                    .values()
+                    .get(usize::from(column.get()))
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| {
+                        failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_v2_missing_input_value",
+                            "pattern reads an input column absent from the bound row",
+                        )
+                    })?;
+                Ok(render_literal(value))
+            }
+            // Given lowering: the column is a driver-bound row variable.
+            None => {
+                let column = plan
+                    .inputs()
+                    .get(usize::from(column.get()))
+                    .ok_or_else(|| {
+                        failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_v2_missing_input_value",
+                            "pattern reads an undeclared input column",
+                        )
+                    })?;
+                Ok(format!("${}", column.public_name().as_str()))
+            }
+        },
     }
 }
 
@@ -509,10 +619,32 @@ pub(crate) async fn execute_with_provider<
             }
         }
     };
-    provider
-        .query_bounded(lowered.typeql(), limits, &mut consumer)
-        .await
-        .map_err(QueryV2ExecutionError::Provider)?;
+    match lowered.given_rows() {
+        Some(spec) => {
+            if !provider.supports_given_rows() {
+                return Err(QueryV2ExecutionError::Validation(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_v2_multi_row_given_unsupported",
+                    "explicit multi-row input requires the native given transport capability",
+                )));
+            }
+            provider
+                .query_with_rows_bounded(
+                    lowered.typeql(),
+                    spec.clone(),
+                    limits,
+                    &mut consumer,
+                )
+                .await
+                .map_err(QueryV2ExecutionError::Provider)?;
+        }
+        None => {
+            provider
+                .query_bounded(lowered.typeql(), limits, &mut consumer)
+                .await
+                .map_err(QueryV2ExecutionError::Provider)?;
+        }
+    }
     drop(consumer);
     if let Some(diagnostic) = validation {
         return Err(QueryV2ExecutionError::Validation(diagnostic));
@@ -540,8 +672,19 @@ fn validate_result_row(
         )
     })?;
     let visible = visible_variables(validated.plan());
-    if object.len() != visible.len()
-        || visible.iter().any(|name| !object.contains_key(*name))
+    // Given lowerings echo the driver-bound input variables in every row;
+    // input names are contract-unique against binding names, so tolerating
+    // exactly them stays closed.
+    let inputs: std::collections::BTreeSet<&str> = validated
+        .plan()
+        .inputs()
+        .iter()
+        .map(|column| column.public_name().as_str())
+        .collect();
+    if visible.iter().any(|name| !object.contains_key(*name))
+        || object
+            .keys()
+            .any(|key| !visible.contains(&key.as_str()) && !inputs.contains(key.as_str()))
     {
         return Err(failure(
             DiagnosticCategory::InvalidContract,

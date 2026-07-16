@@ -976,3 +976,119 @@ async fn try_blocks_carry_optional_columns_live() {
         QueryRowValue::Value { value: CanonicalValue::Long(1) },
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_row_given_invocations_correlate_inputs_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-given-live");
+    let fixture = live_fixture(&suffix);
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {}, value string;\n\
+             entity {}, owns {};",
+            fixture.name.label(),
+            fixture.person.label(),
+            fixture.name.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("live given schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {name} \"ada\"; \
+             $b isa {person}, has {name} \"bob\"; \
+             $c isa {person}, has {name} \"eve\";",
+            person = fixture.person.label(),
+            name = fixture.name.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("live given data");
+
+    // One prepared plan: exact name equality against a driver-bound input.
+    let plan = QueryPlan::new(
+        vec![binding(0, "person"), binding(1, "name")],
+        vec![InputColumn::new(
+            InputColumnId::new(0),
+            QueryVariable::new("wanted_name").expect("input name"),
+            ValueTypeTag::String,
+            false,
+        )],
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: true,
+                        type_id: fixture.person.clone(),
+                    },
+                    QueryPattern::Has {
+                        attribute: binding_id(1),
+                        attribute_id: fixture.name.clone(),
+                        owner: binding_id(0),
+                    },
+                    QueryPattern::Value {
+                        comparator: ValueComparator::Equal,
+                        left: QueryOperand::Binding { binding: binding_id(1) },
+                        right: QueryOperand::Input { column: InputColumnId::new(0) },
+                    },
+                ],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+            },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+        fixture.managed.managed_semantic_schema().clone(),
+    )
+    .expect("given plan");
+    let validated = validate_query_plan(
+        &plan,
+        &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
+        StructuralLimits::CANONICAL,
+    )
+    .expect("validated given plan");
+
+    // Two input rows through one prepared plan, one provider call.
+    let invocation = QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![string_row("eve"), string_row("ada")],
+    )
+    .expect("multi-row invocation");
+    let mut transaction = db.read_transaction().await.expect("read transaction");
+    let outcome = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        limits(),
+    )
+    .await
+    .expect("multi-row given execution");
+    let names = row_names(&outcome);
+    assert_eq!(names, vec!["ada".to_owned(), "eve".to_owned()]);
+
+    // The same batch decides count in Rust over the validated stream.
+    let count = QueryInvocation::new(
+        &plan,
+        QueryOperation::Count,
+        vec![string_row("eve"), string_row("ada"), string_row("nobody")],
+    )
+    .expect("count invocation");
+    let outcome = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &count,
+        limits(),
+    )
+    .await
+    .expect("multi-row count execution");
+    assert_eq!(outcome, QueryV2Outcome::Count(2));
+}

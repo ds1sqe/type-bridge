@@ -185,12 +185,19 @@ fn multi_row_and_absent_values_reject_before_data_io() {
         vec![string_row("ada"), string_row("grace")],
     )
     .expect("rectangular batch");
-    let error = lower_validated_query(&validated, &multi)
-        .expect_err("multi-row transport is capability-gated");
-    assert_eq!(
-        error.code().as_str(),
-        "query_v2_multi_row_given_unsupported"
+    // Multi-row batches lower onto the driver-transported given stage:
+    // a typed header in the query text, values outside it.
+    let lowered =
+        lower_validated_query(&validated, &multi).expect("given lowering");
+    assert!(
+        lowered.typeql().starts_with("given $wanted_name: string;\nmatch\n"),
+        "{}",
+        lowered.typeql(),
     );
+    assert!(!lowered.typeql().contains("\"ada\""));
+    let spec = lowered.given_rows().expect("given rows");
+    assert_eq!(spec.variables, vec!["wanted_name".to_owned()]);
+    assert_eq!(spec.rows.len(), 2);
 
     // A foreign invocation never lowers against this plan.
     let foreign_plan = QueryPlan::new(
