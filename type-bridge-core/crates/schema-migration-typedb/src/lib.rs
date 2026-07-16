@@ -22,7 +22,7 @@ pub use control_schema::{
 pub use legacy_import::{extract_legacy_frontier, verify_legacy_continuity};
 pub use observation::{
     PartitionedDeclaredSchema, observe_managed_state_from_export,
-    partition_typeql_export,
+    partition_typeql_export, rebuild_live_managed_state,
 };
 pub use provider::{TypeDbMigrationProvider, execution_capability_vocabulary};
 pub use runner::{

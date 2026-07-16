@@ -11,6 +11,7 @@ mod manifest;
 mod policy;
 pub mod profile;
 mod rollback_plan;
+mod verify;
 
 pub use apply_plan::{
     MigrationApplyPlanError, MigrationApplyTarget, VerifiedMigrationApplyManifest,
@@ -60,6 +61,9 @@ pub use policy::{
 pub use rollback_plan::{
     VerifiedMigrationRollbackManifest, VerifiedMigrationRollbackPlan,
     VerifiedMigrationRollbackStep, build_verified_migration_rollback_plan,
+};
+pub use verify::{
+    MigrationDriftFinding, MigrationVerifyReport, verify_migration_state,
 };
 
 pub use profile::{

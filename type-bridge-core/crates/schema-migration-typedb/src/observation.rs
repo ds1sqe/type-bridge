@@ -223,6 +223,54 @@ pub fn observe_managed_state_from_export(
     }
 }
 
+/// Rebuild the live managed state from one export for drift reporting.
+///
+/// Unlike [`observe_managed_state_from_export`], no candidate equality is
+/// required: verification reports the observed managed fingerprint even when
+/// it matches nothing the history recorded. `context_schema` and `context`
+/// donate only scope, profile, format, and capability bindings — never
+/// fingerprint claims. The control partitions are still gated exactly.
+pub fn rebuild_live_managed_state(
+    document: DocumentId,
+    export: &str,
+    context_schema: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<ManagedSchemaState, Diagnostic> {
+    let donor = managed_schema_state(context_schema, context).map_err(|error| {
+        match error {
+            DeltaError::Contract(diagnostic) => diagnostic,
+            DeltaError::Schema(diagnostics) => diagnostics
+                .iter()
+                .next()
+                .map(|entry| entry.diagnostic().clone())
+                .unwrap_or_else(|| {
+                    failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_typedb_observation_rebuild_failed",
+                        "verification context schema does not resolve",
+                    )
+                }),
+        }
+    })?;
+    let parsed =
+        typeql_to_declared_with_references(document, export).map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_typedb_export_invalid",
+                "TypeDB schema export cannot be normalized into V2 facts",
+            )
+        })?;
+    reject_reserved_function_references(&parsed)?;
+    let partitioned = partition_declared_schema(parsed.into_declared())?;
+    verify_fence_mirror_partition(partitioned.internal())?;
+    verify_legacy_control_partition(partitioned.legacy_control())?;
+    rebuild_candidate_state(
+        &partitioned,
+        context.available_capabilities(),
+        &donor,
+    )
+}
+
 fn reject_reserved_function_references(
     parsed: &TypeqlDeclaredSchema,
 ) -> Result<(), Diagnostic> {

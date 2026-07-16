@@ -15,17 +15,17 @@ use std::sync::Arc;
 
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::migration::MigrationId;
-use type_bridge_contract::schema::DeclaredSchema;
+use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_orm::Database;
 use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_migration::{
     ExecutionScope, LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError,
     MigrationApplyTarget, MigrationExecutionJournal, MigrationExecutionOutcome,
     MigrationHistoryGraph, MigrationLeaseStore, MigrationRollbackOutcome,
-    MigrationSafetyPolicy, SchemaLoweringBinding,
+    MigrationSafetyPolicy, MigrationVerifyReport, SchemaLoweringBinding,
     build_verified_migration_apply_plan, build_verified_migration_rollback_plan,
     discover_verified_migration_chain, execute_verified_migration_apply_plan,
-    execute_verified_migration_rollback_plan,
+    execute_verified_migration_rollback_plan, verify_migration_state,
 };
 
 use type_bridge_migration::{
@@ -33,6 +33,7 @@ use type_bridge_migration::{
 };
 
 use crate::legacy_import::{extract_legacy_frontier, verify_legacy_continuity};
+use crate::observation::rebuild_live_managed_state;
 use crate::provider::TypeDbMigrationProvider;
 use crate::store::{TypeDbMigrationStore, VerifiedMigrationCatalog};
 
@@ -186,6 +187,59 @@ impl TypeDbMigrationRunner {
             execute_verified_migration_apply_plan(&store, &provider, holder, &plan)
                 .await?;
         Ok(MigrationDirectoryApplyOutcome::Executed(outcome))
+    }
+
+    /// Verify the migration state triad and report every drift finding.
+    ///
+    /// The check is read-only: the applied basis is read under the same
+    /// short-lived rendezvous lease as [`Self::apply`], the live schema is
+    /// rebuilt for reporting without candidate matching, and nothing is
+    /// repaired, generated, or applied. A schema mismatch is drift, not an
+    /// invitation to reconcile production automatically.
+    pub async fn verify(
+        &self,
+        directory: &Path,
+        desired: Option<&DeclaredSchema>,
+        holder: &LeaseHolderId,
+    ) -> Result<MigrationVerifyReport, MigrationDirectoryApplyError> {
+        let graph = self.discover(directory)?;
+        let catalog =
+            VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
+        let store = TypeDbMigrationStore::new(
+            Arc::clone(&self.managed_database),
+            Arc::clone(&self.journal_database),
+            catalog,
+        )?;
+        store.ensure_control_schema().await?;
+        let basis = self.load_applied_basis(&store, holder).await?;
+
+        let export = self
+            .managed_database
+            .schema_text()
+            .await
+            .map_err(|error| {
+                legacy_import_failure(
+                    "migration_typedb_export_unreadable",
+                    "managed database schema export failed during verification",
+                )
+                .with_detail("provider", error.to_string())
+            })?;
+        let document = DocumentId::new("typebridge-verify-live-export.typeql")?;
+        let live = rebuild_live_managed_state(
+            document,
+            &export,
+            &self.genesis_source,
+            &self.context,
+        )?;
+
+        Ok(verify_migration_state(
+            &graph,
+            &basis,
+            &self.genesis_source,
+            desired,
+            Some(&live),
+            &self.context,
+        )?)
     }
 
     /// Import a completed legacy (v1) history as the canonical bridge basis.

@@ -34,11 +34,12 @@ use type_bridge_migration::{
 };
 use type_bridge_schema_migration::{
     LeaseHolderId, LegacyMigrationChecksum, LegacyMigrationReference,
-    MigrationApplyApproval, MigrationApplyTarget, MigrationExecutionOutcome,
-    MigrationRollbackOutcome, MigrationSafetyPolicy, SchemaLoweringBinding,
-    SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
-    build_legacy_frontier_bridge, build_verified_manifest,
-    encode_verified_manifest, schema_lowering_profile_binding,
+    MigrationApplyApproval, MigrationApplyTarget, MigrationDriftFinding,
+    MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationSafetyPolicy,
+    SchemaLoweringBinding, SchemaMigrationDraft,
+    VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge,
+    build_verified_manifest, encode_verified_manifest,
+    schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
     MigrationDirectoryApplyOutcome, MigrationDirectoryRollbackOutcome,
@@ -662,6 +663,124 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
             .contains("legacy migration directory failed the checked v1 loader"),
         "{drifted}"
     );
+
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
+    journal
+        .delete_database()
+        .await
+        .expect("delete isolated journal database");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(Vec::new());
+    let first_target = declared_facts(vec![type_fact("person")]);
+    let second_target =
+        declared_facts(vec![type_fact("company"), type_fact("person")]);
+    let first = manifest_with_derived_assertions(
+        "0001_person",
+        Vec::new(),
+        &genesis,
+        &first_target,
+        &context,
+    );
+    let second = manifest_with_derived_assertions(
+        "0002_company",
+        vec![first.id().clone()],
+        &first_target,
+        &second_target,
+        &context,
+    );
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    write_manifest(directory.path(), &second);
+
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone())
+            .expect("lowering binding");
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-verify").expect("holder");
+
+    // Before any apply, the only finding is the pending chain.
+    let report = runner
+        .verify(directory.path(), Some(&second_target), &holder)
+        .await
+        .expect("pre-apply verification");
+    assert!(matches!(
+        report.findings(),
+        [MigrationDriftFinding::PendingMigrations { .. }]
+    ));
+
+    let outcome = runner
+        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .await
+        .expect("apply the chain");
+    assert!(matches!(
+        outcome,
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+    ));
+
+    // A coherent triad verifies clean.
+    let report = runner
+        .verify(directory.path(), Some(&second_target), &holder)
+        .await
+        .expect("clean verification");
+    assert!(report.is_clean(), "findings: {:?}", report.findings());
+    assert_eq!(report.applied_frontier(), &[second.id().clone()]);
+    assert_eq!(
+        report.observed_semantics(),
+        Some(second.target_state().managed_semantic_schema()),
+    );
+
+    // A desired schema ahead of the committed head is divergence.
+    let desired = declared_facts(vec![
+        type_fact("company"),
+        type_fact("person"),
+        type_fact("team"),
+    ]);
+    let report = runner
+        .verify(directory.path(), Some(&desired), &holder)
+        .await
+        .expect("desired divergence verification");
+    assert!(matches!(
+        report.findings(),
+        [MigrationDriftFinding::DesiredDivergence { .. }]
+    ));
+
+    // Out-of-band schema mutation is live drift, never generation input.
+    let mut transaction = managed
+        .schema_transaction()
+        .await
+        .expect("open out-of-band transaction");
+    transaction
+        .query("define entity intruder;")
+        .await
+        .expect("mutate the managed schema out of band");
+    transaction.commit().await.expect("commit out-of-band change");
+    let report = runner
+        .verify(directory.path(), Some(&second_target), &holder)
+        .await
+        .expect("live drift verification");
+    let [MigrationDriftFinding::LiveSemantics { recorded, observed }] =
+        report.findings()
+    else {
+        panic!("expected exactly one live-semantics finding: {report:?}");
+    };
+    assert_eq!(recorded, second.target_state().managed_semantic_schema());
+    assert_ne!(observed, recorded);
 
     managed
         .delete_database()
