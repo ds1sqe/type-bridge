@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::capability::CapabilitySet;
 use crate::codec::from_canonical_json;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
-use crate::id::AttributeId;
+use crate::id::{AttributeId, FunctionId};
 use crate::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
 use crate::migration_assertion_wire::{
     AssertionRolePlayerWire, FingerprintWire, TypeIdWire, ValueComparatorWire,
@@ -224,6 +224,11 @@ enum QueryPatternWire {
         right: QueryOperandWire,
     },
     Not { patterns: Vec<QueryPatternWire> },
+    FunctionCall {
+        arguments: Vec<QueryOperandWire>,
+        assigned: u16,
+        function: String,
+    },
 }
 
 impl QueryPatternWire {
@@ -273,6 +278,18 @@ impl QueryPatternWire {
                     .into_iter()
                     .map(QueryPatternWire::rebuild)
                     .collect::<Result<Vec<_>, _>>()?,
+            },
+            Self::FunctionCall {
+                arguments,
+                assigned,
+                function,
+            } => QueryPattern::FunctionCall {
+                arguments: arguments
+                    .into_iter()
+                    .map(QueryOperandWire::rebuild)
+                    .collect::<Result<Vec<_>, _>>()?,
+                assigned: BindingId::new(assigned)?,
+                function: FunctionId::new(function)?,
             },
         })
     }

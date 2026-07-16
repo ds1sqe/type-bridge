@@ -280,3 +280,250 @@ async fn validated_queries_execute_rows_count_and_exists_live() {
     .expect("exists outcome");
     assert_eq!(exists, QueryV2Outcome::Exists(false));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scalar_schema_function_calls_execute_live() {
+    use type_bridge_contract::id::{FunctionId, Label};
+    use type_bridge_contract::query_plan::QueryOperation;
+    use type_bridge_contract::schema::{
+        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
+        FunctionReturnMode, FunctionSignature, TypeReference,
+    };
+    use type_bridge_orm::query_v2::lower_validated_query;
+
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-fn-live");
+    let person = TypeId::new(TypeKind::Entity, format!("{suffix}-person")).unwrap();
+    let age = AttributeId::new(format!("{suffix}-age")).unwrap();
+    let count_fn = FunctionId::new(format!("{suffix}-person-count")).unwrap();
+    let sum_fn = FunctionId::new(format!("{suffix}-age-sum")).unwrap();
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {age}, value integer;\n\
+             entity {person}, owns {age};\n\
+             fun {count_fn}() -> integer:\n\
+             match $p isa {person};\n\
+             return count($p);\n\
+             fun {sum_fn}($subject: {person}) -> integer:\n\
+             match $subject has {age} $a;\n\
+             return sum($a);",
+            age = age.label(),
+            person = person.label(),
+            count_fn = count_fn.label(),
+            sum_fn = sum_fn.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("live function schema");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {age} 30; \
+             $b isa {person}, has {age} 40; \
+             $c isa {person}, has {age} 25;",
+            person = person.label(),
+            age = age.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("live function data");
+
+    // The declared authority carries typed signatures for both functions.
+    let person_label = Label::new(person.label().as_str()).unwrap();
+    let scalar_long = FunctionReturnMode::scalar(FunctionReturnElement::new(
+        TypeReference::Value(ValueTypeTag::Long),
+        false,
+    ));
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), age.clone()).unwrap(),
+        )),
+        SchemaFact::Function(FunctionFact::new(
+            count_fn.clone(),
+            FunctionSignature::new(Vec::new(), scalar_long.clone()).unwrap(),
+            FunctionBody::new("match $p isa person; return count($p);").unwrap(),
+        )),
+        SchemaFact::Function(FunctionFact::new(
+            sum_fn.clone(),
+            FunctionSignature::new(
+                vec![FunctionParameter::new(
+                    Label::new("subject").unwrap(),
+                    TypeReference::Schema(person_label),
+                )],
+                scalar_long,
+            )
+            .unwrap(),
+            FunctionBody::new("match $subject has age $a; return sum($a);").unwrap(),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).unwrap();
+        let line = u32::try_from(index + 1).unwrap();
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-fn-live").unwrap(),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .unwrap(),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        sourced,
+    )
+    .unwrap();
+    let profile =
+        type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.12.1/v1")
+            .unwrap();
+    let resolved = type_bridge_schema::resolve(&declared, &profile).unwrap();
+    let managed = type_bridge_schema::managed_schema_state(
+        &declared,
+        &type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new("query-v2-fn-live")
+                .unwrap(),
+            profile,
+            CapabilitySet::new(),
+        ),
+    )
+    .unwrap();
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+
+    // Zero-argument call: one row carrying the counted value.
+    let count_plan = QueryPlan::new(
+        vec![AssertionBinding::new(
+            binding_id(0),
+            QueryVariable::new("person_count").unwrap(),
+        )],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![QueryPattern::FunctionCall {
+                arguments: Vec::new(),
+                assigned: binding_id(0),
+                function: count_fn,
+            }],
+        }],
+        QueryOutput::Rows { columns: vec![binding_id(0)] },
+        managed.managed_semantic_schema().clone(),
+    )
+    .unwrap();
+    let validated =
+        validate_query_plan(&count_plan, &validation_context, StructuralLimits::CANONICAL)
+            .unwrap();
+    let invocation =
+        QueryInvocation::new(&count_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let lowered = lower_validated_query(&validated, &invocation).unwrap();
+    assert!(
+        lowered.typeql().contains("let $person_count = "),
+        "{}",
+        lowered.typeql(),
+    );
+    let mut transaction = db.read_transaction().await.expect("read transaction");
+    let outcome = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        limits(),
+    )
+    .await
+    .expect("count function execution");
+    let QueryV2Outcome::Rows(rows) = &outcome else {
+        panic!("rows outcome: {outcome:?}");
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].values()[0],
+        QueryRowValue::Value {
+            value: type_bridge_contract::value::CanonicalValue::Long(3)
+        },
+    );
+
+    // Per-row call: each person joins its summed (single) age, sorted.
+    let sum_plan = QueryPlan::new(
+        vec![
+            AssertionBinding::new(binding_id(0), QueryVariable::new("person").unwrap()),
+            AssertionBinding::new(
+                binding_id(1),
+                QueryVariable::new("age_sum").unwrap(),
+            ),
+        ],
+        Vec::new(),
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: true,
+                        type_id: person,
+                    },
+                    QueryPattern::FunctionCall {
+                        arguments: vec![
+                            type_bridge_contract::query_plan::QueryOperand::Binding {
+                                binding: binding_id(0),
+                            },
+                        ],
+                        assigned: binding_id(1),
+                        function: sum_fn,
+                    },
+                ],
+            },
+            ReadStage::Select {
+                bindings: vec![binding_id(0), binding_id(1)],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+            },
+        ],
+        QueryOutput::Rows { columns: vec![binding_id(1)] },
+        managed.managed_semantic_schema().clone(),
+    )
+    .unwrap();
+    let validated =
+        validate_query_plan(&sum_plan, &validation_context, StructuralLimits::CANONICAL)
+            .unwrap();
+    let invocation =
+        QueryInvocation::new(&sum_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let outcome = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &invocation,
+        limits(),
+    )
+    .await
+    .expect("sum function execution");
+    let QueryV2Outcome::Rows(rows) = &outcome else {
+        panic!("rows outcome: {outcome:?}");
+    };
+    let sums = rows
+        .iter()
+        .map(|row| match &row.values()[0] {
+            QueryRowValue::Value {
+                value: type_bridge_contract::value::CanonicalValue::Long(value),
+            } => *value,
+            other => panic!("expected long values: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sums, vec![25, 30, 40]);
+}

@@ -23,7 +23,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintDomain,
 };
-use crate::id::{AttributeId, TypeId};
+use crate::id::{AttributeId, FunctionId, TypeId};
 use crate::limits::StructuralLimits;
 use crate::migration_assertion::{
     AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable,
@@ -54,6 +54,7 @@ const CAP_STAGE_SORT: &str = "query.stage.sort";
 const CAP_STAGE_OFFSET: &str = "query.stage.offset";
 const CAP_STAGE_LIMIT: &str = "query.stage.limit";
 const CAP_OUTPUT_ROWS: &str = "query.output.rows";
+const CAP_FUNCTION_CALL: &str = "query.pattern.function-call";
 
 /// Return every capability the first query-plan vocabulary can require.
 #[must_use]
@@ -74,6 +75,7 @@ pub fn query_plan_capability_vocabulary() -> CapabilitySet {
         CAP_STAGE_OFFSET,
         CAP_STAGE_LIMIT,
         CAP_OUTPUT_ROWS,
+        CAP_FUNCTION_CALL,
     ]
     .into_iter()
     .map(|value| CapabilityId::new(value).expect("static capability id is canonical"))
@@ -229,6 +231,19 @@ pub enum QueryPattern {
     Not {
         /// The negated conjunction.
         patterns: Vec<QueryPattern>,
+    },
+    /// Assign one scalar schema-function result to a binding.
+    ///
+    /// The first function vocabulary admits scalar, non-optional returns
+    /// only; tuple and stream returns stay reserved behind later
+    /// capabilities.
+    FunctionCall {
+        /// Ordered call arguments.
+        arguments: Vec<QueryOperand>,
+        /// The binding assigned from the scalar return.
+        assigned: BindingId,
+        /// The exact schema function identity.
+        function: FunctionId,
     },
 }
 
@@ -901,6 +916,30 @@ fn inspect_pattern(
             }
             Ok(())
         }
+        QueryPattern::FunctionCall {
+            arguments,
+            assigned,
+            ..
+        } => {
+            if depth > 1 {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_function_in_negation",
+                    "function calls are admitted only in the root conjunction",
+                ));
+            }
+            if arguments.len() > limits.boolean_terms {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_function_argument_limit",
+                    "function call arguments exceed the term ceiling",
+                ));
+            }
+            for argument in arguments {
+                check_operand(argument, binding_count, input_count)?;
+            }
+            check_binding(*assigned, binding_count)
+        }
     }
 }
 
@@ -997,6 +1036,9 @@ fn collect_pattern_capabilities(
             for child in patterns {
                 collect_pattern_capabilities(child, capabilities)?;
             }
+        }
+        QueryPattern::FunctionCall { .. } => {
+            insert_capability(capabilities, CAP_FUNCTION_CALL)?;
         }
     }
     Ok(())

@@ -206,6 +206,7 @@ pub fn validate_migration_assertion_plan(
         positive,
         scoped_positive,
         used,
+        value_bindings: _,
     } = engine::analyze_patterns(
         &converted,
         plan.bindings().len(),
@@ -402,10 +403,31 @@ const ASSERTION_ENGINE_CODES: engine::EngineCodes = engine::EngineCodes {
         code: "migration_assertion_disconnected_topology",
         message: "positive assertion bindings form a disconnected cross join",
     },
-    // Assertion plans cannot express input operands; this entry never fires.
+    // Assertion plans cannot express input operands or function calls;
+    // these entries never fire.
     unknown_input: engine::EngineCode {
         code: "migration_assertion_unknown_binding",
         message: "assertion patterns cannot reference invocation inputs",
+    },
+    unknown_function: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot call schema functions",
+    },
+    function_return_unsupported: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot call schema functions",
+    },
+    function_arity_mismatch: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot call schema functions",
+    },
+    function_argument_type: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot call schema functions",
+    },
+    value_binding_misuse: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot call schema functions",
     },
 };
 

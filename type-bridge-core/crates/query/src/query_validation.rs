@@ -75,6 +75,26 @@ const QUERY_ENGINE_CODES: EngineCodes = EngineCodes {
         code: "query_plan_unknown_input_column",
         message: "pattern references an undeclared input column",
     },
+    unknown_function: EngineCode {
+        code: "query_plan_unknown_function",
+        message: "call references a function outside the resolved schema",
+    },
+    function_return_unsupported: EngineCode {
+        code: "query_plan_function_return_unsupported",
+        message: "the first function vocabulary admits scalar non-optional returns only",
+    },
+    function_arity_mismatch: EngineCode {
+        code: "query_plan_function_arity_mismatch",
+        message: "call arguments do not match the function signature arity",
+    },
+    function_argument_type: EngineCode {
+        code: "query_plan_function_argument_type",
+        message: "call argument disagrees with the declared parameter type",
+    },
+    value_binding_misuse: EngineCode {
+        code: "query_plan_value_binding_misuse",
+        message: "a value binding may appear only as a comparison or argument operand",
+    },
 };
 
 /// Opaque, non-serializable result of schema-aware plan validation.
@@ -167,6 +187,7 @@ pub fn validate_query_plan(
         positive,
         scoped_positive,
         used,
+        value_bindings,
     } = engine::analyze_patterns(
         patterns,
         plan.bindings().len(),
@@ -203,7 +224,10 @@ pub fn validate_query_plan(
                 "a hidden witness must be positively established in its lexical scope",
             ));
         }
-        if positive.contains(&id) && domains[&id].is_empty() {
+        if positive.contains(&id)
+            && domains[&id].is_empty()
+            && !value_bindings.contains_key(&id)
+        {
             return Err(plan_failure(
                 DiagnosticCategory::InvalidContract,
                 "query_plan_empty_domain",
@@ -216,8 +240,12 @@ pub fn validate_query_plan(
         .into_iter()
         .filter(|(id, _)| positive.contains(id))
         .map(|(id, type_ids)| {
-            let value_type =
-                engine::uniform_value_type(&type_ids, schema, &QUERY_ENGINE_CODES)?;
+            let value_type = match value_bindings.get(&id) {
+                Some(tag) => Some(*tag),
+                None => {
+                    engine::uniform_value_type(&type_ids, schema, &QUERY_ENGINE_CODES)?
+                }
+            };
             Ok((id, BindingDomain::new(type_ids, value_type)))
         })
         .collect::<Result<BTreeMap<_, _>, Diagnostic>>()?;

@@ -11,6 +11,7 @@ use type_bridge_contract::diagnostic::{
     Diagnostic, DiagnosticCategory, DiagnosticCode,
 };
 use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::schema::{FunctionReturnMode, TypeReference};
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
 use type_bridge_contract::value::ValueTypeTag;
@@ -39,6 +40,11 @@ pub(crate) struct EngineCodes {
     pub(crate) nonuniform_value_domain: EngineCode,
     pub(crate) disconnected_topology: EngineCode,
     pub(crate) unknown_input: EngineCode,
+    pub(crate) unknown_function: EngineCode,
+    pub(crate) function_return_unsupported: EngineCode,
+    pub(crate) function_arity_mismatch: EngineCode,
+    pub(crate) function_argument_type: EngineCode,
+    pub(crate) value_binding_misuse: EngineCode,
 }
 
 /// The trusted result of one root-conjunction analysis.
@@ -47,6 +53,7 @@ pub(crate) struct PatternAnalysis {
     pub(crate) positive: BTreeSet<BindingId>,
     pub(crate) scoped_positive: BTreeSet<BindingId>,
     pub(crate) used: BTreeSet<BindingId>,
+    pub(crate) value_bindings: BTreeMap<BindingId, ValueTypeTag>,
 }
 
 /// Analyze one closed root conjunction against the resolved schema.
@@ -76,6 +83,12 @@ pub(crate) fn analyze_patterns(
         .collect::<BTreeMap<_, _>>();
 
     refine_positive(patterns, &mut domains, schema, codes)?;
+    let value_bindings =
+        analyze_function_calls(patterns, &mut domains, schema, inputs, codes)?;
+    refine_positive(patterns, &mut domains, schema, codes)?;
+    for binding in value_bindings.keys() {
+        domains.insert(*binding, BTreeSet::new());
+    }
     let mut positive = BTreeSet::new();
     let mut root_references = BTreeSet::new();
     let mut topology = binding_ids
@@ -96,9 +109,10 @@ pub(crate) fn analyze_patterns(
         &positive,
         &all_constructible,
         &mut scoped_positive,
+        &value_bindings,
         codes,
     )?;
-    validate_values_shallow(patterns, &domains, schema, inputs, codes)?;
+    validate_values_shallow(patterns, &domains, schema, inputs, &value_bindings, codes)?;
     let mut used = BTreeSet::new();
     collect_references(patterns, &mut used);
     ensure_connected(&topology, codes)?;
@@ -108,7 +122,150 @@ pub(crate) fn analyze_patterns(
         positive,
         scoped_positive,
         used,
+        value_bindings,
     })
+}
+
+/// Resolve every root function call against the schema function table.
+///
+/// The first function vocabulary admits scalar non-optional returns only.
+/// A value-returning call turns its assigned binding into a pure value
+/// binding, which may then appear only as a comparison or argument operand.
+fn analyze_function_calls(
+    patterns: &[QueryPattern],
+    domains: &mut BTreeMap<BindingId, BTreeSet<TypeId>>,
+    schema: &ResolvedSchema,
+    inputs: &[ValueTypeTag],
+    codes: &EngineCodes,
+) -> Result<BTreeMap<BindingId, ValueTypeTag>, Diagnostic> {
+    let mut value_bindings = BTreeMap::new();
+    for pattern in patterns {
+        let QueryPattern::FunctionCall {
+            arguments,
+            assigned,
+            function,
+        } = pattern
+        else {
+            continue;
+        };
+        let resolved = schema
+            .functions()
+            .get(function)
+            .ok_or_else(|| fail(codes.unknown_function))?;
+        let signature = resolved.declaration().signature();
+        let FunctionReturnMode::Scalar(element) = signature.returns() else {
+            return Err(fail(codes.function_return_unsupported));
+        };
+        if element.optional() {
+            return Err(fail(codes.function_return_unsupported));
+        }
+        if signature.parameters().len() != arguments.len() {
+            return Err(fail(codes.function_arity_mismatch));
+        }
+        for (parameter, argument) in signature.parameters().iter().zip(arguments) {
+            match parameter.type_ref() {
+                TypeReference::Value(expected) => {
+                    let actual = operand_value_type(
+                        argument,
+                        domains,
+                        schema,
+                        inputs,
+                        &value_bindings,
+                        codes,
+                    )?;
+                    if actual != *expected {
+                        return Err(fail(codes.function_argument_type));
+                    }
+                }
+                TypeReference::Schema(label) => {
+                    let QueryOperand::Binding { binding } = argument else {
+                        return Err(fail(codes.function_argument_type));
+                    };
+                    if value_bindings.contains_key(binding) {
+                        return Err(fail(codes.value_binding_misuse));
+                    }
+                    let allowed =
+                        schema_reference_domain(label.as_str(), schema, codes)?;
+                    intersect_mut(
+                        domains.get_mut(binding).expect("declared binding"),
+                        &allowed,
+                    );
+                }
+            }
+        }
+        match element.type_ref() {
+            TypeReference::Value(tag) => {
+                if value_bindings.insert(*assigned, *tag).is_some() {
+                    return Err(fail(codes.value_binding_misuse));
+                }
+            }
+            TypeReference::Schema(label) => {
+                let allowed = schema_reference_domain(label.as_str(), schema, codes)?;
+                intersect_mut(
+                    domains.get_mut(assigned).expect("declared binding"),
+                    &allowed,
+                );
+            }
+        }
+    }
+    if !value_bindings.is_empty() {
+        ensure_value_bindings_stay_scalar(patterns, &value_bindings, codes)?;
+    }
+    Ok(value_bindings)
+}
+
+/// Resolve one schema-position type reference to its constructible domain.
+fn schema_reference_domain(
+    label: &str,
+    schema: &ResolvedSchema,
+    codes: &EngineCodes,
+) -> Result<BTreeSet<TypeId>, Diagnostic> {
+    for kind in [TypeKind::Entity, TypeKind::Relation, TypeKind::Attribute] {
+        let Ok(candidate) = TypeId::new(kind, label.to_owned()) else {
+            continue;
+        };
+        let Some(resolved) = schema.types().get(&candidate) else {
+            continue;
+        };
+        let mut allowed = BTreeSet::from([candidate]);
+        allowed.extend(resolved.subtypes().iter().cloned());
+        allowed.retain(|id| {
+            schema.types().get(id).is_some_and(|ty| ty.is_constructible())
+        });
+        return Ok(allowed);
+    }
+    Err(fail(codes.unknown_function))
+}
+
+fn ensure_value_bindings_stay_scalar(
+    patterns: &[QueryPattern],
+    value_bindings: &BTreeMap<BindingId, ValueTypeTag>,
+    codes: &EngineCodes,
+) -> Result<(), Diagnostic> {
+    for pattern in patterns {
+        let misuse = match pattern {
+            QueryPattern::Isa { binding, .. } => value_bindings.contains_key(binding),
+            QueryPattern::Has { attribute, owner, .. } => {
+                value_bindings.contains_key(attribute)
+                    || value_bindings.contains_key(owner)
+            }
+            QueryPattern::Links { relation, players, .. } => {
+                value_bindings.contains_key(relation)
+                    || players
+                        .iter()
+                        .any(|player| value_bindings.contains_key(&player.player()))
+            }
+            QueryPattern::Value { .. } | QueryPattern::FunctionCall { .. } => false,
+            QueryPattern::Not { patterns } => {
+                ensure_value_bindings_stay_scalar(patterns, value_bindings, codes)?;
+                false
+            }
+        };
+        if misuse {
+            return Err(fail(codes.value_binding_misuse));
+        }
+    }
+    Ok(())
 }
 
 /// Return the uniform scalar domain of one refined binding domain.
@@ -245,7 +402,9 @@ fn refine_pattern(
             }
             Ok(changed)
         }
-        QueryPattern::Value { .. } | QueryPattern::Not { .. } => Ok(false),
+        QueryPattern::Value { .. }
+        | QueryPattern::Not { .. }
+        | QueryPattern::FunctionCall { .. } => Ok(false),
     }
 }
 
@@ -289,6 +448,21 @@ fn collect_scope_topology(
                 }
             }
             QueryPattern::Not { .. } => {}
+            QueryPattern::FunctionCall {
+                arguments,
+                assigned,
+                ..
+            } => {
+                referenced.insert(*assigned);
+                positive.insert(*assigned);
+                for argument in arguments {
+                    if let Some(binding) = operand_binding(argument) {
+                        referenced.insert(binding);
+                        positive.insert(binding);
+                        connect(topology, *assigned, binding);
+                    }
+                }
+            }
         }
     }
 }
@@ -305,6 +479,7 @@ fn validate_negations(
     outer_positive: &BTreeSet<BindingId>,
     all_constructible: &BTreeSet<TypeId>,
     scoped_positive: &mut BTreeSet<BindingId>,
+    value_bindings: &BTreeMap<BindingId, ValueTypeTag>,
     codes: &EngineCodes,
 ) -> Result<(), Diagnostic> {
     for pattern in patterns {
@@ -337,7 +512,14 @@ fn validate_negations(
             if body_positive.iter().any(|id| nested[id].is_empty()) {
                 return Err(fail(codes.empty_negated_domain));
             }
-            validate_values_shallow(patterns, &nested, schema, inputs, codes)?;
+            validate_values_shallow(
+                patterns,
+                &nested,
+                schema,
+                inputs,
+                value_bindings,
+                codes,
+            )?;
             topology.retain(|id, _| body_references.contains(id));
             ensure_connected(&topology, codes)?;
             scoped_positive.extend(body_positive.iter().copied());
@@ -349,6 +531,7 @@ fn validate_negations(
                 &body_scope,
                 all_constructible,
                 scoped_positive,
+                value_bindings,
                 codes,
             )?;
         }
@@ -361,12 +544,21 @@ fn validate_values_shallow(
     domains: &BTreeMap<BindingId, BTreeSet<TypeId>>,
     schema: &ResolvedSchema,
     inputs: &[ValueTypeTag],
+    value_bindings: &BTreeMap<BindingId, ValueTypeTag>,
     codes: &EngineCodes,
 ) -> Result<(), Diagnostic> {
     for pattern in patterns {
         if let QueryPattern::Value { left, right, .. } = pattern {
-            let left = operand_value_type(left, domains, schema, inputs, codes)?;
-            let right = operand_value_type(right, domains, schema, inputs, codes)?;
+            let left =
+                operand_value_type(left, domains, schema, inputs, value_bindings, codes)?;
+            let right = operand_value_type(
+                right,
+                domains,
+                schema,
+                inputs,
+                value_bindings,
+                codes,
+            )?;
             if left != right {
                 return Err(fail(codes.value_domain_mismatch));
             }
@@ -380,11 +572,15 @@ fn operand_value_type(
     domains: &BTreeMap<BindingId, BTreeSet<TypeId>>,
     schema: &ResolvedSchema,
     inputs: &[ValueTypeTag],
+    value_bindings: &BTreeMap<BindingId, ValueTypeTag>,
     codes: &EngineCodes,
 ) -> Result<ValueTypeTag, Diagnostic> {
     match operand {
         QueryOperand::Literal { value } => Ok(value.value_type()),
         QueryOperand::Binding { binding } => {
+            if let Some(tag) = value_bindings.get(binding) {
+                return Ok(*tag);
+            }
             uniform_value_type(&domains[binding], schema, codes)?
                 .ok_or_else(|| fail(codes.binding_not_scalar))
         }
@@ -413,6 +609,16 @@ fn collect_references(patterns: &[QueryPattern], output: &mut BTreeSet<BindingId
                 output.extend(operand_binding(right));
             }
             QueryPattern::Not { patterns } => collect_references(patterns, output),
+            QueryPattern::FunctionCall {
+                arguments,
+                assigned,
+                ..
+            } => {
+                output.insert(*assigned);
+                for argument in arguments {
+                    output.extend(operand_binding(argument));
+                }
+            }
         }
     }
 }

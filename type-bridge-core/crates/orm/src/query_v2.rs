@@ -242,6 +242,26 @@ fn render_patterns(
                 writeln!(output, "{indent}}};")
                     .expect("writing to String cannot fail");
             }
+            QueryPattern::FunctionCall {
+                arguments,
+                assigned,
+                function,
+            } => {
+                write!(
+                    output,
+                    "{indent}let ${} = {}(",
+                    variable(plan, *assigned)?,
+                    function.label(),
+                )
+                .expect("writing to String cannot fail");
+                for (index, argument) in arguments.iter().enumerate() {
+                    if index != 0 {
+                        output.push_str(", ");
+                    }
+                    output.push_str(&render_operand(plan, argument, row)?);
+                }
+                output.push_str(");\n");
+            }
         }
     }
     Ok(())
@@ -338,6 +358,11 @@ pub enum QueryRowValue {
     Attribute {
         /// The validated runtime attribute type.
         type_id: type_bridge_contract::id::TypeId,
+        /// The exact typed scalar value.
+        value: type_bridge_contract::value::CanonicalValue,
+    },
+    /// A pure typed value produced by a schema-function assignment.
+    Value {
         /// The exact typed scalar value.
         value: type_bridge_contract::value::CanonicalValue,
     },
@@ -499,6 +524,54 @@ fn validate_result_row(
                     "output column is not a provider concept object",
                 )
             })?;
+        // A pure value binding (empty thing domain, exact scalar) carries a
+        // value concept: no type label, only the typed scalar itself.
+        if domain.type_ids().is_empty() {
+            let Some(expected) = domain.value_type() else {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "query_v2_result_type_mismatch",
+                    "output column has neither a thing domain nor a scalar domain",
+                ));
+            };
+            let category = crate::migration_assertion::string_field(
+                concept,
+                "category",
+                column.variable(),
+            )?;
+            if !matches!(category, "value" | "Value") {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "query_v2_result_type_mismatch",
+                    "value column evidence is not a provider value concept",
+                ));
+            }
+            let actual = crate::migration_assertion::string_field(
+                concept,
+                "value_type",
+                column.variable(),
+            )?;
+            if crate::migration_assertion::provider_value_type(actual) != Some(expected)
+            {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "query_v2_result_type_mismatch",
+                    "provider value type differs from the validated scalar domain",
+                ));
+            }
+            let value = crate::migration_assertion::parse_provider_value(
+                concept.get("value").ok_or_else(|| {
+                    failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_v2_result_concept_malformed",
+                        "value concept carries no value",
+                    )
+                })?,
+                expected,
+            )?;
+            values.push(QueryRowValue::Value { value });
+            continue;
+        }
         let category = crate::migration_assertion::string_field(
             concept,
             "category",

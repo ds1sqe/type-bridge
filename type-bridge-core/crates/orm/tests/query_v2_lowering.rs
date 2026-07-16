@@ -211,3 +211,115 @@ fn multi_row_and_absent_values_reject_before_data_io() {
         .expect_err("invocations bind exactly one plan");
     assert_eq!(error.code().as_str(), "query_v2_invocation_plan_mismatch");
 }
+
+#[test]
+fn scalar_function_calls_lower_to_deterministic_let_assignments() {
+    use type_bridge_contract::id::{FunctionId, Label};
+    use type_bridge_contract::schema::{
+        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
+        FunctionReturnMode, FunctionSignature, TypeReference,
+    };
+
+    let person = type_id(TypeKind::Entity, "person");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
+        SchemaFact::Function(FunctionFact::new(
+            FunctionId::new("person_name_length").expect("function id"),
+            FunctionSignature::new(
+                vec![FunctionParameter::new(
+                    Label::new("subject").expect("parameter"),
+                    TypeReference::Schema(Label::new("person").expect("label")),
+                )],
+                FunctionReturnMode::scalar(FunctionReturnElement::new(
+                    TypeReference::Value(ValueTypeTag::Long),
+                    false,
+                )),
+            )
+            .expect("signature"),
+            FunctionBody::new(
+                "match $subject has name $n; let $l = length($n); return first $l;",
+            )
+            .expect("body"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-fn-lowering").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+            .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-v2-fn-scope").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+
+    let plan = QueryPlan::new(
+        vec![binding(0, "person"), binding(1, "name_length")],
+        Vec::new(),
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: true,
+                        type_id: type_id(TypeKind::Entity, "person"),
+                    },
+                    QueryPattern::FunctionCall {
+                        arguments: vec![QueryOperand::Binding {
+                            binding: binding_id(0),
+                        }],
+                        assigned: binding_id(1),
+                        function: FunctionId::new("person_name_length")
+                            .expect("function id"),
+                    },
+                ],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+            },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("query plan");
+    let validation_context =
+        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated =
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+            .expect("validated query");
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
+        .expect("invocation");
+    let lowered =
+        lower_validated_query(&validated, &invocation).expect("lowered query");
+    assert_eq!(
+        lowered.typeql(),
+        "match\n\
+         $person isa person;\n\
+         let $name_length = person_name_length($person);\n\
+         sort $name_length asc;\n",
+    );
+
+    let repeat =
+        lower_validated_query(&validated, &invocation).expect("repeat lowering");
+    assert_eq!(repeat, lowered);
+}

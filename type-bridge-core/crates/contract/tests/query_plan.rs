@@ -96,6 +96,7 @@ fn query_plan_capability_vocabulary_is_exact_and_deterministic() {
         vec![
             "query.input.columns",
             "query.output.rows",
+            "query.pattern.function-call",
             "query.pattern.has",
             "query.pattern.isa",
             "query.pattern.isa-subtypes",
@@ -364,4 +365,46 @@ fn invocations_bind_the_exact_plan_and_validate_rectangular_batches() {
     let empty = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
         .expect_err("declared inputs require a row");
     assert_eq!(empty.code().as_str(), "query_invocation_missing_inputs");
+}
+
+#[test]
+fn function_calls_are_first_class_and_capability_gated() {
+    use type_bridge_contract::id::FunctionId;
+
+    let semantics = managed_semantics(b"query-plan-function-fixture");
+    let call = QueryPattern::FunctionCall {
+        arguments: vec![QueryOperand::Binding { binding: binding_id(0) }],
+        assigned: binding_id(1),
+        function: FunctionId::new("person_age").expect("function id"),
+    };
+    let plan = QueryPlan::new(
+        vec![binding(0, "person"), binding(1, "age_value")],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![person_isa(0), call.clone()],
+        }],
+        QueryOutput::Rows { columns: vec![binding_id(0), binding_id(1)] },
+        semantics.clone(),
+    )
+    .expect("function-call plan");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.pattern.function-call"),
+    );
+    let bytes = plan.canonical_bytes().expect("canonical bytes");
+    assert_eq!(decode_query_plan(&bytes).expect("decode"), plan);
+
+    // Function calls stay out of negations in the first vocabulary.
+    let nested = QueryPlan::new(
+        vec![binding(0, "person"), binding(1, "age_value")],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![person_isa(0), QueryPattern::Not { patterns: vec![call] }],
+        }],
+        QueryOutput::Rows { columns: vec![binding_id(0)] },
+        semantics,
+    )
+    .expect_err("negated calls are reserved");
+    assert_eq!(nested.code().as_str(), "query_plan_function_in_negation");
 }
