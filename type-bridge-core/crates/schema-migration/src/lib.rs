@@ -3,6 +3,7 @@
 mod apply_plan;
 mod coordinator;
 mod execution;
+mod generate;
 pub mod lowering;
 mod history;
 mod manifest;
@@ -29,6 +30,11 @@ pub use execution::{
 pub use lowering::{
     SchemaFactCatalog, SchemaLoweringBinding, SchemaLoweringDiagnostic, SchemaLoweringPlan,
     StatementOperationKind, StatementUnit, TypeQlStatement, TypeQlVerb, lower_schema_delta,
+};
+pub use generate::{
+    GeneratedMigration, MigrationGenerationOutcome, MigrationGenerationRequest,
+    MigrationPreviewError, generate_next_migration, render_migration_preview,
+    write_generated_migration,
 };
 pub use history::{
     MigrationHistoryGraph, discover_verified_migration_chain,

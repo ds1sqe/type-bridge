@@ -636,7 +636,7 @@ fn reject_reverse_assertion_requirement(
     Ok(())
 }
 
-fn delta_diagnostic(error: DeltaError) -> Diagnostic {
+pub(crate) fn delta_diagnostic(error: DeltaError) -> Diagnostic {
     match error {
         DeltaError::Contract(diagnostic) => diagnostic,
         DeltaError::Schema(diagnostics) => diagnostics
