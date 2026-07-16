@@ -23,11 +23,22 @@ band7 = ["typedb", "type-bridge-typedb-runtime/band7"]
 band8 = ["typedb", "type-bridge-typedb-runtime/band8"]
 band9 = ["typedb", "type-bridge-typedb-runtime/band9"]
 axum-transport = ["dep:axum", "dep:tower-http"]
+v2-query = [
+    "axum-transport",
+    "dep:type-bridge-contract",
+    "dep:type-bridge-query",
+    "dep:type-bridge-orm",
+    "dep:type-bridge-schema",
+]
 test-helpers = []
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "1.5.11" }
 type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "1.5.11", default-features = false, optional = true }
+type-bridge-contract = { path = "../contract", optional = true }
+type-bridge-query = { path = "../query", optional = true }
+type-bridge-orm = { path = "../orm", optional = true }
+type-bridge-schema = { path = "../schema", optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -44,7 +55,7 @@ axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 
 [dev-dependencies]
-type-bridge-server = { path = ".", features = ["test-helpers", "axum-transport"] }
+type-bridge-server = { path = ".", features = ["test-helpers", "axum-transport", "v2-query"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

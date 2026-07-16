@@ -374,6 +374,56 @@ impl RemoteQueryFailure {
     }
 }
 
+/// The exact wire discriminator for first-format capability advertisements.
+pub const QUERY_REMOTE_CAPABILITIES_FORMAT_V1: &str =
+    "typebridge.query-remote-capabilities/v1";
+
+/// One executor capability advertisement for pre-flight negotiation.
+///
+/// A client checks its plan's required capabilities against this set and
+/// refuses to send unsupported plans; the executor re-checks on receipt.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteCapabilities {
+    capabilities: crate::capability::CapabilitySet,
+    format: String,
+}
+
+impl RemoteCapabilities {
+    /// Advertise one executor capability set.
+    #[must_use]
+    pub fn new(capabilities: crate::capability::CapabilitySet) -> Self {
+        Self {
+            capabilities,
+            format: QUERY_REMOTE_CAPABILITIES_FORMAT_V1.to_owned(),
+        }
+    }
+
+    /// Encode exact canonical envelope bytes.
+    pub fn encode(&self) -> Result<Vec<u8>, Diagnostic> {
+        to_canonical_json(self)
+    }
+
+    /// Decode one advertisement, rejecting unknown fields and formats.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Diagnostic> {
+        let advertisement = from_canonical_json::<Self>(bytes)?;
+        if advertisement.format != QUERY_REMOTE_CAPABILITIES_FORMAT_V1 {
+            return Err(envelope_failure(
+                DiagnosticCategory::InvalidContract,
+                "query_remote_format_unsupported",
+                "remote capability wire format is unsupported",
+            ));
+        }
+        Ok(advertisement)
+    }
+
+    /// Return the advertised capability set.
+    #[must_use]
+    pub const fn capabilities(&self) -> &crate::capability::CapabilitySet {
+        &self.capabilities
+    }
+}
+
 fn check_nonce(nonce: &str) -> Result<(), Diagnostic> {
     let valid = (NONCE_MIN_BYTES..=NONCE_MAX_BYTES).contains(&nonce.len())
         && nonce
