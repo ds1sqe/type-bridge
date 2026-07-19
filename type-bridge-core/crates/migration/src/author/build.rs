@@ -367,6 +367,34 @@ mod tests {
     }
 
     #[test]
+    fn teardown_snapshot_attaches_the_empty_declared_descriptors() {
+        let authored = author_migration(&request(person_schema(), SchemaInfo::default()))
+            .expect("authoring should succeed")
+            .expect("changes must author");
+
+        let declared = authored
+            .files
+            .iter()
+            .find(|f| f.relative_path == "snapshots/v0001/declared-schema.json")
+            .expect("teardown snapshot carries the declared descriptor set");
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(&declared.contents).expect("descriptor JSON parses");
+        assert_eq!(snapshot["closed_world"], serde_json::Value::Bool(true));
+        assert_eq!(snapshot["entities"].as_array().map(Vec::len), Some(0));
+
+        let registry = authored
+            .files
+            .iter()
+            .find(|f| f.relative_path == "snapshots/v0001/registry.py")
+            .expect("teardown snapshot carries registry.py");
+        assert!(
+            std::str::from_utf8(&registry.contents)
+                .expect("registry is UTF-8")
+                .contains("GENERATED_DECLARED_DESCRIPTORS_JSON")
+        );
+    }
+
+    #[test]
     fn positioned_operations_wrap_the_schema_change_set() {
         let mut req = request(SchemaInfo::default(), person_schema());
         req.metadata.name = "0002_cleanup_then_backfill".to_string();

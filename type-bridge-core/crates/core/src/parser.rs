@@ -755,49 +755,158 @@ fn parse_card_annotation(input: &mut &str) -> PResult<Cardinality> {
 // Function / Struct definition parsers
 // ---------------------------------------------------------------------------
 
-/// Remove `fun` and `struct` definitions from released schema text,
-/// keeping everything else byte-for-byte.
+/// A lexical region of TypeQL source text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceRegionKind {
+    /// Ordinary schema text.
+    Code,
+    /// A `#` comment running to the end of its line.
+    LineComment,
+    /// A double- or single-quoted string literal, `\`-escaped.
+    StringLiteral,
+}
+
+/// Classify `source` into contiguous lexical regions covering every byte.
 ///
-/// Definition extents are consumed by the same grammar the schema parser
-/// applies, so released spellings (dummy `return { 1 };` bodies, the
-/// `struct name, value field type;` form) strip exactly; a token that does
-/// not parse as its definition is kept untouched.
-pub fn strip_function_definitions(source: &str) -> String {
-    let mut output = String::new();
-    let mut rest = source;
-    while let Some((position, keyword)) = find_definition_token(rest) {
-        let mut cursor = &rest[position..];
-        let consumed = match keyword {
-            "fun" => parse_function_def(&mut cursor).is_ok(),
-            _ => parse_struct_def(&mut cursor).is_ok(),
-        };
-        if consumed {
-            output.push_str(&rest[..position]);
-            rest = cursor;
-        } else {
-            output.push_str(&rest[..position + keyword.len()]);
-            rest = &rest[position + keyword.len()..];
+/// Region boundaries always fall on character boundaries, so slicing
+/// `source` by a returned range never panics on multi-byte text. An
+/// unterminated string or comment extends to the end of the source.
+pub fn scan_source_regions(source: &str) -> Vec<(core::ops::Range<usize>, SourceRegionKind)> {
+    let mut regions = Vec::new();
+    let mut region_start = 0;
+    let mut kind = SourceRegionKind::Code;
+    let mut close_quote = '"';
+    let mut escaped = false;
+    let push = |regions: &mut Vec<_>, start: &mut usize, end: usize, kind| {
+        if *start < end {
+            regions.push((*start..end, kind));
+        }
+        *start = end;
+    };
+    for (index, character) in source.char_indices() {
+        match kind {
+            SourceRegionKind::Code => match character {
+                '#' => {
+                    push(&mut regions, &mut region_start, index, kind);
+                    kind = SourceRegionKind::LineComment;
+                }
+                '"' | '\'' => {
+                    push(&mut regions, &mut region_start, index, kind);
+                    kind = SourceRegionKind::StringLiteral;
+                    close_quote = character;
+                    escaped = false;
+                }
+                _ => {}
+            },
+            SourceRegionKind::LineComment => {
+                if character == '\n' {
+                    push(&mut regions, &mut region_start, index, kind);
+                    kind = SourceRegionKind::Code;
+                }
+            }
+            SourceRegionKind::StringLiteral => {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == close_quote {
+                    push(
+                        &mut regions,
+                        &mut region_start,
+                        index + character.len_utf8(),
+                        kind,
+                    );
+                    kind = SourceRegionKind::Code;
+                }
+            }
         }
     }
-    output.push_str(rest);
+    push(&mut regions, &mut region_start, source.len(), kind);
+    regions
+}
+
+/// Replace the byte extents of `source` with spaces, preserving line
+/// structure (`\n`/`\r` survive) and total byte length, so downstream
+/// spans keep indexing the original document.
+///
+/// Extents must be non-overlapping, ascending, and fall on character
+/// boundaries.
+pub fn blank_source_extents(source: &str, extents: &[core::ops::Range<usize>]) -> String {
+    let mut output = String::with_capacity(source.len());
+    let mut position = 0;
+    for extent in extents {
+        output.push_str(&source[position..extent.start]);
+        for character in source[extent.clone()].chars() {
+            if character == '\n' || character == '\r' {
+                output.push(character);
+            } else {
+                for _ in 0..character.len_utf8() {
+                    output.push(' ');
+                }
+            }
+        }
+        position = extent.end;
+    }
+    output.push_str(&source[position..]);
     output
 }
 
-fn find_definition_token(source: &str) -> Option<(usize, &'static str)> {
-    let fun = find_keyword(source, "fun");
-    let structure = find_keyword(source, "struct");
+/// Blank `fun` and `struct` definitions out of released schema text,
+/// keeping everything else byte-for-byte at its original offset.
+///
+/// Definition extents are consumed by the same grammar the schema parser
+/// applies, so released spellings (dummy `return { 1 };` bodies, the
+/// `struct name, value field type;` form) strip exactly; a token that
+/// does not parse as its definition is kept untouched. Keywords inside
+/// comments and string literals are never candidates, and blanked
+/// extents keep their length so source spans stay valid.
+pub fn strip_function_definitions(source: &str) -> String {
+    let mut extents: Vec<core::ops::Range<usize>> = Vec::new();
+    let mut resume_at = 0;
+    for (range, kind) in scan_source_regions(source) {
+        if kind != SourceRegionKind::Code {
+            continue;
+        }
+        let mut search_from = range.start.max(resume_at);
+        while search_from < range.end {
+            let Some(offset) =
+                find_definition_token(source, search_from, range.end)
+            else {
+                break;
+            };
+            let keyword = if source[offset..].starts_with("fun") { "fun" } else { "struct" };
+            let mut cursor = &source[offset..];
+            let consumed = match keyword {
+                "fun" => parse_function_def(&mut cursor).is_ok(),
+                _ => parse_struct_def(&mut cursor).is_ok(),
+            };
+            if consumed {
+                let end = source.len() - cursor.len();
+                extents.push(offset..end);
+                resume_at = end;
+                search_from = end;
+            } else {
+                search_from = offset + keyword.len();
+            }
+        }
+    }
+    blank_source_extents(source, &extents)
+}
+
+fn find_definition_token(source: &str, from: usize, to: usize) -> Option<usize> {
+    let fun = find_keyword(source, "fun", from, to);
+    let structure = find_keyword(source, "struct", from, to);
     match (fun, structure) {
-        (Some(fun), Some(structure)) if fun <= structure => Some((fun, "fun")),
-        (Some(_) | None, Some(structure)) => Some((structure, "struct")),
-        (Some(fun), None) => Some((fun, "fun")),
+        (Some(fun), Some(structure)) => Some(fun.min(structure)),
+        (position @ Some(_), None) | (None, position @ Some(_)) => position,
         (None, None) => None,
     }
 }
 
-fn find_keyword(source: &str, keyword: &str) -> Option<usize> {
+fn find_keyword(source: &str, keyword: &str, from: usize, to: usize) -> Option<usize> {
     let bytes = source.as_bytes();
-    let mut start = 0;
-    while let Some(found) = source[start..].find(keyword) {
+    let mut start = from;
+    while let Some(found) = source[start..to].find(keyword) {
         let position = start + found;
         let before_ok = position == 0
             || !(bytes[position - 1].is_ascii_alphanumeric()

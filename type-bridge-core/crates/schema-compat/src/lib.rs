@@ -14,7 +14,9 @@ pub use function_references::{
 
 pub use descriptor::{
     GENERATED_DECLARED_DESCRIPTOR_PATH, GENERATED_DECLARED_DESCRIPTOR_V1,
-    GeneratedDeclaredDescriptorSetV1, generate_package_with_declared_descriptors,
+    GeneratedDeclaredDescriptorSetV1, attach_declared_descriptors,
+    empty_generated_declared_descriptors_json,
+    generate_package_with_declared_descriptors,
     generated_declared_descriptors_json, generated_descriptors_to_declared,
     typeql_to_generated_descriptors,
 };
@@ -132,10 +134,12 @@ pub fn typeql_to_declared_with_references(
         let declaration_span = source_span(&document, source, declaration.span)?;
         let id = TypeId::new(kind, label.clone())
             .map_err(|diagnostic| contract(diagnostic, declaration_span.clone()))?;
-        // Released renders re-open declared labels for standalone
-        // capability statements; only a KINDLESS re-opening merges, so
-        // explicit duplicate declarations still fail with both spans.
-        if declaration.kind.is_none() && ids.contains_key(&label) {
+        // Released renders re-open declared labels freely — kindless
+        // standalone `plays` lines and explicit split declarations alike —
+        // in any order. Every compatible re-opening merges into the one
+        // identity; genuinely conflicting kinds were already rejected by
+        // `infer_type_kinds` with both spans.
+        if ids.contains_key(&label) {
             continue;
         }
         assembler.insert_fact(

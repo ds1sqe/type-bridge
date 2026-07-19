@@ -208,10 +208,11 @@ pub fn typeql_to_generated_descriptors(
     // grammar rejects; strip them with the released parser's own extents.
     let source =
         type_bridge_core_lib::parser::strip_function_definitions(source);
-    // List capabilities sit outside the overlap grammar: pin the plain
-    // capability, record each list construct, and mark the snapshot
-    // open-world instead of failing the whole generation.
-    let (source, unsupported) = strip_list_capabilities(&source);
+    // List capabilities and released-only annotations sit outside the
+    // overlap grammar: pin the plain capability, record each construct,
+    // and mark the snapshot open-world instead of failing the whole
+    // generation.
+    let (source, unsupported) = strip_unportable_constructs(&source);
     let declared = crate::typeql_to_declared(document, &source)?;
     let mut descriptors = GeneratedDeclaredDescriptorSetV1::from_declared(&declared)?;
     if !unsupported.is_empty() {
@@ -222,69 +223,93 @@ pub fn typeql_to_generated_descriptors(
     Ok(String::from_utf8(bytes).expect("canonical JSON is valid UTF-8"))
 }
 
-/// Remove `ident[]` list markers and `@distinct` annotations outside
+/// Blank `ident[]` list markers and the released-only `@distinct`,
+/// `@cascade`, and `@subkey(...)` annotations outside comments and
 /// string literals, recording every construct.
 ///
 /// `@distinct` is only legal on list capabilities, all of which strip
-/// here, so any occurrence belongs to a stripped list.
-fn strip_list_capabilities(source: &str) -> (String, Vec<String>) {
-    let bytes = source.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut stripped = Vec::new();
-    let mut index = 0;
-    let mut in_string = false;
-    let ident_byte = |byte: u8| {
-        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+/// here, so any occurrence belongs to a stripped list. `@cascade` and
+/// `@subkey` are released ownership annotations with no portable V2
+/// identity; stripping them here keeps the legacy generator working
+/// while the open-world marker records the incompleteness. Redaction is
+/// length-preserving (spans become spaces) so descriptor offsets keep
+/// indexing the original document.
+fn strip_unportable_constructs(source: &str) -> (String, Vec<String>) {
+    use type_bridge_core_lib::parser::{
+        blank_source_extents, scan_source_regions, SourceRegionKind,
     };
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if in_string {
-            output.push(byte);
-            if byte == b'\\' && index + 1 < bytes.len() {
-                output.push(bytes[index + 1]);
+    let ident_byte =
+        |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-';
+    let bytes = source.as_bytes();
+    let mut extents: Vec<core::ops::Range<usize>> = Vec::new();
+    let mut stripped = Vec::new();
+    for (range, kind) in scan_source_regions(source) {
+        if kind != SourceRegionKind::Code {
+            continue;
+        }
+        let mut index = range.start;
+        while index < range.end {
+            let byte = bytes[index];
+            if byte == b'['
+                && index + 1 < range.end
+                && bytes[index + 1] == b']'
+                && index > range.start
+                && ident_byte(bytes[index - 1])
+            {
+                let mut start = index;
+                while start > range.start && ident_byte(bytes[start - 1]) {
+                    start -= 1;
+                }
+                stripped.push(format!("{}[]", &source[start..index]));
+                extents.push(index..index + 2);
                 index += 2;
                 continue;
             }
-            if byte == b'"' {
-                in_string = false;
+            if byte == b'@'
+                && let Some((construct, length)) =
+                    match_unportable_annotation(&source[index..range.end], &ident_byte)
+            {
+                stripped.push(construct);
+                extents.push(index..index + length);
+                index += length;
+                continue;
             }
-            index += 1;
-            continue;
+            // Advance one full character so multi-byte text never lands
+            // this scanner inside a codepoint.
+            index += source[index..].chars().next().map_or(1, char::len_utf8);
         }
-        if byte == b'"' {
-            in_string = true;
-            output.push(byte);
-            index += 1;
-            continue;
-        }
-        if byte == b'['
-            && index + 1 < bytes.len()
-            && bytes[index + 1] == b']'
-            && index > 0
-            && ident_byte(bytes[index - 1])
-        {
-            let mut start = index;
-            while start > 0 && ident_byte(bytes[start - 1]) {
-                start -= 1;
-            }
-            stripped.push(format!("{}[]", &source[start..index]));
-            index += 2;
-            continue;
-        }
-        if source[index..].starts_with("@distinct")
-            && !ident_byte(*bytes.get(index + "@distinct".len()).unwrap_or(&b' '))
-        {
-            stripped.push("@distinct".to_owned());
-            index += "@distinct".len();
-            continue;
-        }
-        output.push(byte);
-        index += 1;
     }
-    (
-        String::from_utf8(output).expect("stripping preserves UTF-8 boundaries"),
-        stripped,
-    )
+    (blank_source_extents(source, &extents), stripped)
+}
+
+/// Match a released-only annotation at the start of `rest` (which begins
+/// with `@`), returning its recorded spelling and byte length.
+fn match_unportable_annotation(
+    rest: &str,
+    ident_byte: &dyn Fn(u8) -> bool,
+) -> Option<(String, usize)> {
+    let boundary = |after: usize| {
+        !ident_byte(*rest.as_bytes().get(after).unwrap_or(&b' '))
+    };
+    for bare in ["@distinct", "@cascade"] {
+        if rest.starts_with(bare) && boundary(bare.len()) {
+            return Some((bare.to_owned(), bare.len()));
+        }
+    }
+    let subkey = "@subkey";
+    if rest.starts_with(subkey) {
+        let after = &rest[subkey.len()..];
+        if let Some(argument) = after.strip_prefix('(') {
+            if let Some(close) = argument.find(')') {
+                let length = subkey.len() + 1 + close + 1;
+                return Some((rest[..length].to_owned(), length));
+            }
+        }
+        if boundary(subkey.len()) {
+            return Some((subkey.to_owned(), subkey.len()));
+        }
+    }
+    None
 }
 
 /// Project a generation-time TypeQL input into canonical direct-descriptor JSON.
@@ -303,7 +328,35 @@ pub fn generate_package_with_declared_descriptors(
     let descriptors = generated_declared_descriptors_json(input)
         .map_err(|error| format!("Failed to render declared descriptor snapshot: {error}"))?;
     let mut package = type_bridge_core_lib::bindgen::generate_from_typeql(input, target, options)?;
+    attach_declared_descriptors(&mut package, descriptors, target)?;
+    Ok(package)
+}
 
+/// Render the canonical empty declared-descriptor snapshot: a closed
+/// world with zero declarations, as produced by a complete teardown.
+pub fn empty_generated_declared_descriptors_json() -> Result<String, String> {
+    let descriptors = GeneratedDeclaredDescriptorSetV1 {
+        format: GENERATED_DECLARED_DESCRIPTOR_V1.to_string(),
+        snapshot_kind: SnapshotKind::Declared,
+        closed_world: true,
+        unsupported_constructs: Vec::new(),
+        attributes: Vec::new(),
+        entities: Vec::new(),
+        relations: Vec::new(),
+        plays: Vec::new(),
+    };
+    let bytes = to_canonical_json(&descriptors).map_err(|diagnostic| diagnostic.to_string())?;
+    Ok(String::from_utf8(bytes).expect("canonical JSON is valid UTF-8"))
+}
+
+/// Attach an already-rendered declared-descriptor snapshot to a generated
+/// package exactly like the standard generation path: the snapshot file
+/// plus, for Python, the registry constant.
+pub fn attach_declared_descriptors(
+    package: &mut type_bridge_core_lib::bindgen::GeneratedPackage,
+    descriptors: String,
+    target: type_bridge_core_lib::bindgen::TargetLanguage,
+) -> Result<(), String> {
     if target == type_bridge_core_lib::bindgen::TargetLanguage::Python {
         let registry = package
             .files
@@ -323,7 +376,7 @@ pub fn generate_package_with_declared_descriptors(
         path: GENERATED_DECLARED_DESCRIPTOR_PATH.to_string(),
         contents: descriptors,
     });
-    Ok(package)
+    Ok(())
 }
 
 impl GeneratedDeclaredDescriptorSetV1 {

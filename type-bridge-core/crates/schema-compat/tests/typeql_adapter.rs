@@ -23,8 +23,23 @@ relation friendship, relates friend;
 }
 
 #[test]
-fn typeql_duplicate_fact_reports_both_source_locations() {
+fn typeql_reopened_type_declarations_merge_into_one_identity() {
+    // Released renders split declarations of one label freely; every
+    // compatible re-opening merges into the single type identity.
     let source = "define\nentity person;\nentity person;\n";
+    let declared = typeql_to_declared(document(), source).expect("reopened label adapts");
+    let types = declared
+        .facts()
+        .filter(|fact| matches!(fact, SchemaFact::Type(_)))
+        .count();
+    assert_eq!(types, 1);
+}
+
+#[test]
+fn typeql_duplicate_fact_reports_both_source_locations() {
+    // Genuine duplicates of a non-type fact still fail with both spans.
+    let source = "define\nattribute name, value string;\n\
+                  entity person, owns name, owns name;\n";
     let diagnostics = typeql_to_declared(document(), source).expect_err("duplicate must fail");
     let diagnostic = diagnostics.iter().next().expect("one diagnostic");
 
