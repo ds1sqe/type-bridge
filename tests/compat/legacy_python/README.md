@@ -8,8 +8,8 @@ Run against prebuilt root/native wheels (dependencies may be resolved normally):
 
 ```bash
 python scripts/ci/run_legacy_python_compat.py \
-  --artifact dist/type_bridge-1.5.10-py3-none-any.whl \
-  --artifact dist/type_bridge_core-1.5.10-*.whl
+  --artifact dist/type_bridge-1.5.11-py3-none-any.whl \
+  --artifact dist/type_bridge_core-1.5.11-*.whl
 ```
 
 For an offline wheelhouse, add `--wheelhouse PATH --no-index`. To test an
