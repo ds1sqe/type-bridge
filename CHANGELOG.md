@@ -4,6 +4,17 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.11] - 2026-07-19
+
+### Bug Fixes
+
+- **Declared role-player migration authoring (#190)** - Migration authoring
+  now reduces inheritance-flattened role-player vectors to the capabilities
+  actually declared in each schema. This prevents phantom `plays` operations,
+  preserves declaration changes hidden behind identical effective player
+  sets, and orders player changes safely around entity and relation hierarchy
+  updates.
+
 ## [1.5.10] - 2026-07-16
 
 ### Bug Fixes
