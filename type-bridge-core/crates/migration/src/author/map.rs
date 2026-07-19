@@ -10,7 +10,8 @@
 //! 2. modified attribute type definitions (`RunTypeql` define/redefine)
 //! 3. added entities (parents before children)
 //! 4. added relations (parents before children)
-//! 5. modified entities (ownerships, then header changes)
+//! 5. prerequisite player removals for new `sub` edges, then modified
+//!    entities (ownerships, then header changes)
 //! 6. modified relations (ownerships, roles, role players, cardinality,
 //!    then header changes)
 //! 7. removed relations — exactly one `RemoveRelation` each (#168)
@@ -23,11 +24,9 @@
 //! destroys data. A rename replaces those diff-mapped operations with a
 //! staged expansion built from existing primitives.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use std::collections::BTreeMap;
-
-use type_bridge_orm::schema::diff::{AttributeTypeChanges, SchemaDiff};
+use type_bridge_orm::schema::diff::{AttributeTypeChanges, RelationChanges, SchemaDiff};
 use type_bridge_orm::schema::generator::{
     attribute_constraint_definition, card_annotation, topological_sort,
 };
@@ -65,6 +64,32 @@ pub fn map_schema_diff(
     let rename_additions = std::mem::take(&mut rename.additions);
     let rename_removals = std::mem::take(&mut rename.removals);
     let mut operations = Vec::new();
+    let declared_player_changes = declared_role_player_changes(base, target);
+    let players_attaching_to_parent: BTreeSet<&str> = diff
+        .modified_entities
+        .iter()
+        .filter_map(|(name, changes)| {
+            changes
+                .parent_changed
+                .as_ref()
+                .and_then(|(_, new)| new.as_ref().map(|_| name.as_str()))
+        })
+        .chain(
+            diff.modified_relations
+                .iter()
+                .filter_map(|(name, changes)| {
+                    changes
+                        .parent_changed
+                        .as_ref()
+                        .and_then(|(_, new)| new.as_ref().map(|_| name.as_str()))
+                }),
+        )
+        .collect();
+    let relation_players_changing_parent: BTreeSet<&str> = diff
+        .modified_relations
+        .iter()
+        .filter_map(|(name, changes)| changes.parent_changed.as_ref().map(|_| name.as_str()))
+        .collect();
 
     for attr_name in &diff.added_attributes {
         if rename.suppress_added_attributes.contains(attr_name) {
@@ -135,6 +160,24 @@ pub fn map_schema_diff(
         });
     }
 
+    // A type cannot gain a parent while still declaring a `plays` capability
+    // it will inherit from that parent. Emit those removals before any entity
+    // or relation `sub` header changes; the remaining player changes stay in
+    // the normal modified-relation phase below.
+    for (relation_name, changes) in &declared_player_changes {
+        for change in changes {
+            for player_type in &change.removed_player_types {
+                if players_attaching_to_parent.contains(player_type.as_str()) {
+                    operations.push(OperationSpec::RemoveRolePlayer {
+                        relation_type: relation_name.clone(),
+                        role_name: change.role_name.clone(),
+                        player_type_name: player_type.clone(),
+                    });
+                }
+            }
+        }
+    }
+
     for (entity_name, changes) in &diff.modified_entities {
         let owned = |attr_name: &str| -> crate::Result<OwnedAttributeEntry> {
             target
@@ -182,7 +225,19 @@ pub fn map_schema_diff(
         )?;
     }
 
-    for (relation_name, changes) in &diff.modified_relations {
+    // Include declared-player changes even when the flattened diff omits the
+    // relation. A player hierarchy change can preserve a role's effective
+    // player vector while changing which players declare `plays`.
+    // Diff-only names remain included so mismatched authoring inputs retain
+    // the same validation behaviour as the regular modified-relation path.
+    let mut mapped_relation_names: BTreeSet<&String> = diff.modified_relations.keys().collect();
+    mapped_relation_names.extend(declared_player_changes.keys());
+    for relation_name in mapped_relation_names {
+        let no_changes = RelationChanges::default();
+        let changes = diff
+            .modified_relations
+            .get(relation_name)
+            .unwrap_or(&no_changes);
         let target_relation = target.relations.get(relation_name);
         let owned = |attr_name: &str| -> crate::Result<OwnedAttributeEntry> {
             target_relation
@@ -224,9 +279,11 @@ pub fn map_schema_diff(
                         .find(|role| role.role_name == *role_name)
                 })
                 .ok_or_else(|| missing("added role", role_name, "target"))?;
+            let mut role = role.clone();
+            role.player_type_names = declared_role_players(&role.player_type_names, target);
             operations.push(OperationSpec::AddRole {
                 relation_type: relation_name.clone(),
-                role: role.clone(),
+                role,
             });
         }
         for role_name in &changes.removed_roles {
@@ -235,20 +292,28 @@ pub fn map_schema_diff(
                 role_name: role_name.clone(),
             });
         }
-        for player_change in &changes.modified_role_players {
-            for player_type in &player_change.added_player_types {
-                operations.push(OperationSpec::AddRolePlayer {
-                    relation_type: relation_name.clone(),
-                    role_name: player_change.role_name.clone(),
-                    player_type_name: player_type.clone(),
-                });
-            }
-            for player_type in &player_change.removed_player_types {
-                operations.push(OperationSpec::RemoveRolePlayer {
-                    relation_type: relation_name.clone(),
-                    role_name: player_change.role_name.clone(),
-                    player_type_name: player_type.clone(),
-                });
+        if let Some(player_changes) = declared_player_changes.get(relation_name) {
+            for player_change in player_changes {
+                for player_type in &player_change.added_player_types {
+                    if relation_players_changing_parent.contains(player_type.as_str()) {
+                        continue;
+                    }
+                    operations.push(OperationSpec::AddRolePlayer {
+                        relation_type: relation_name.clone(),
+                        role_name: player_change.role_name.clone(),
+                        player_type_name: player_type.clone(),
+                    });
+                }
+                for player_type in &player_change.removed_player_types {
+                    if players_attaching_to_parent.contains(player_type.as_str()) {
+                        continue;
+                    }
+                    operations.push(OperationSpec::RemoveRolePlayer {
+                        relation_type: relation_name.clone(),
+                        role_name: player_change.role_name.clone(),
+                        player_type_name: player_type.clone(),
+                    });
+                }
             }
         }
         for cardinality_change in &changes.modified_role_cardinality {
@@ -282,6 +347,24 @@ pub fn map_schema_diff(
             changes.abstract_changed,
             &changes.parent_changed,
         )?;
+    }
+
+    // Relations can themselves play roles. Their hierarchy changes occur in
+    // the modified-relation loop above, so additions that depend on losing an
+    // inherited capability must wait until every relation header has changed;
+    // lexical relation ordering is not a dependency order.
+    for (relation_name, changes) in &declared_player_changes {
+        for change in changes {
+            for player_type in &change.added_player_types {
+                if relation_players_changing_parent.contains(player_type.as_str()) {
+                    operations.push(OperationSpec::AddRolePlayer {
+                        relation_type: relation_name.clone(),
+                        role_name: change.role_name.clone(),
+                        player_type_name: player_type.clone(),
+                    });
+                }
+            }
+        }
     }
 
     for relation_name in &diff.removed_relations {
@@ -652,7 +735,8 @@ fn declared_entity_entry(entity: &EntitySchemaEntry, target: &SchemaInfo) -> Ent
 }
 
 /// Relation counterpart of [`declared_entity_entry`]: drops attributes and
-/// roles the parent relation already declares.
+/// roles the parent relation already declares, then reduces every
+/// surviving role's player list to its declared players.
 fn declared_relation_entry(
     relation: &RelationSchemaEntry,
     target: &SchemaInfo,
@@ -668,11 +752,8 @@ fn declared_relation_entry(
             .iter()
             .map(|a| a.attr_name.as_str())
             .collect();
-        let parent_roles: BTreeSet<&str> = parent
-            .roles
-            .iter()
-            .map(|r| r.role_name.as_str())
-            .collect();
+        let parent_roles: BTreeSet<&str> =
+            parent.roles.iter().map(|r| r.role_name.as_str()).collect();
         relation
             .owned_attributes
             .retain(|a| !parent_attrs.contains(a.attr_name.as_str()));
@@ -680,7 +761,164 @@ fn declared_relation_entry(
             .roles
             .retain(|r| !parent_roles.contains(r.role_name.as_str()));
     }
+    // A role's player list is flattened by `SchemaInfo::from_typeql`
+    // regardless of whether the *relation* itself has a parent — a root
+    // relation's role can still list both a player and that player's
+    // subtype (#190 follow-up). Reduce every surviving role independently
+    // of the parent-relation guard above.
+    for role in &mut relation.roles {
+        role.player_type_names = declared_role_players(&role.player_type_names, target);
+    }
     relation
+}
+
+struct DeclaredRolePlayerChange {
+    role_name: String,
+    added_player_types: Vec<String>,
+    removed_player_types: Vec<String>,
+}
+
+/// Compute the declared-player delta for every declared role present in both
+/// schemas.
+///
+/// `SchemaDiff` compares effective (flattened) player vectors, which means a
+/// hierarchy change can alter declarations without producing a role-player
+/// diff at all. Comparing the reduced sets from the two schemas both removes
+/// phantom changes and recovers declaration changes hidden by equal effective
+/// vectors (#190 follow-up).
+fn declared_role_player_changes(
+    base: &SchemaInfo,
+    target: &SchemaInfo,
+) -> BTreeMap<String, Vec<DeclaredRolePlayerChange>> {
+    let mut changes_by_relation = BTreeMap::new();
+    for (relation_name, base_relation) in &base.relations {
+        let Some(target_relation) = target.relations.get(relation_name) else {
+            continue;
+        };
+        let base_inherited_roles: BTreeSet<&str> = base_relation
+            .parent_type
+            .as_deref()
+            .and_then(|parent| base.relations.get(parent))
+            .map(|parent| {
+                parent
+                    .roles
+                    .iter()
+                    .map(|role| role.role_name.as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let target_inherited_roles: BTreeSet<&str> = target_relation
+            .parent_type
+            .as_deref()
+            .and_then(|parent| target.relations.get(parent))
+            .map(|parent| {
+                parent
+                    .roles
+                    .iter()
+                    .map(|role| role.role_name.as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let base_roles: BTreeMap<&str, _> = base_relation
+            .roles
+            .iter()
+            .filter(|role| !base_inherited_roles.contains(role.role_name.as_str()))
+            .map(|role| (role.role_name.as_str(), role))
+            .collect();
+        let target_roles: BTreeMap<&str, _> = target_relation
+            .roles
+            .iter()
+            .filter(|role| !target_inherited_roles.contains(role.role_name.as_str()))
+            .map(|role| (role.role_name.as_str(), role))
+            .collect();
+
+        let mut relation_changes = Vec::new();
+        for (role_name, base_role) in base_roles {
+            let Some(target_role) = target_roles.get(role_name) else {
+                continue;
+            };
+            let base_players: BTreeSet<String> =
+                declared_role_players(&base_role.player_type_names, base)
+                    .into_iter()
+                    .collect();
+            let target_players: BTreeSet<String> =
+                declared_role_players(&target_role.player_type_names, target)
+                    .into_iter()
+                    .collect();
+            let added_player_types: Vec<String> =
+                target_players.difference(&base_players).cloned().collect();
+            let removed_player_types: Vec<String> =
+                base_players.difference(&target_players).cloned().collect();
+            if !added_player_types.is_empty() || !removed_player_types.is_empty() {
+                relation_changes.push(DeclaredRolePlayerChange {
+                    role_name: role_name.to_string(),
+                    added_player_types,
+                    removed_player_types,
+                });
+            }
+        }
+        if !relation_changes.is_empty() {
+            changes_by_relation.insert(relation_name.clone(), relation_changes);
+        }
+    }
+    changes_by_relation
+}
+
+/// Reduce a role's flattened player list to its declared players (#190
+/// follow-up).
+///
+/// `SchemaInfo` role entries carry the inheritance-flattened effective
+/// player set: if `Person sub DomainEntity` and `DomainEntity` plays a
+/// role, `player_type_names` lists both. A valid TypeDB 3.x schema never
+/// lets a subtype plainly redeclare an inherited `plays` capability, so a
+/// player whose transitive ancestor (via `parent_type`, walked through
+/// both `entities` and `relations` — a relation can play a role too) also
+/// appears in the same list can only be flattening, never a genuine
+/// declaration; it is dropped. A player whose ancestors are *not* in the
+/// list is a real declaration and survives untouched.
+fn declared_role_players(players: &[String], schema: &SchemaInfo) -> Vec<String> {
+    let present: BTreeSet<&str> = players.iter().map(String::as_str).collect();
+    players
+        .iter()
+        .filter(|player| {
+            !ancestors_of(player.as_str(), schema)
+                .into_iter()
+                .any(|ancestor| present.contains(ancestor))
+        })
+        .cloned()
+        .collect()
+}
+
+/// The transitive `parent_type` chain of `type_name` in `schema`, checking
+/// both `entities` and `relations` at each step (a relation can play a role
+/// too). Does not include `type_name` itself.
+fn ancestors_of<'schema>(type_name: &str, schema: &'schema SchemaInfo) -> Vec<&'schema str> {
+    let mut chain = Vec::new();
+    let mut visited: BTreeSet<&str> = BTreeSet::new();
+    let mut current = type_name;
+    while let Some(parent) = parent_type_of(current, schema) {
+        if !visited.insert(parent) {
+            break; // defend against a malformed cyclic `sub` chain
+        }
+        chain.push(parent);
+        current = parent;
+    }
+    chain
+}
+
+/// The declared `parent_type` of `type_name`, whether it is an entity or a
+/// relation.
+fn parent_type_of<'schema>(type_name: &str, schema: &'schema SchemaInfo) -> Option<&'schema str> {
+    schema
+        .entities
+        .get(type_name)
+        .and_then(|entity| entity.parent_type.as_deref())
+        .or_else(|| {
+            schema
+                .relations
+                .get(type_name)
+                .and_then(|relation| relation.parent_type.as_deref())
+        })
 }
 
 fn missing(what: &str, name: &str, schema: &str) -> MigrationError {
@@ -1054,6 +1292,421 @@ mod tests {
             role_names,
             vec!["contractor"],
             "inherited roles must not be redeclared"
+        );
+    }
+
+    /// Find the `AddRelation` operation for `type_name`, or panic.
+    fn add_relation_entry<'a>(
+        operations: &'a [OperationSpec],
+        type_name: &str,
+    ) -> &'a RelationSchemaEntry {
+        operations
+            .iter()
+            .find_map(|op| match op {
+                OperationSpec::AddRelation { relation } if relation.type_name == type_name => {
+                    Some(relation)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected AddRelation for {type_name:?}: {operations:?}"))
+    }
+
+    #[test]
+    fn added_relation_role_players_reduced_to_declared_players() {
+        // "person" subs "domain-entity", which already plays "owner":
+        // flattening lists both in the role's player set, but only
+        // "domain-entity" is a genuine declaration (#190 follow-up).
+        let base = SchemaInfo::default();
+        let mut person = entity("person", vec![]);
+        person.parent_type = Some("domain-entity".to_string());
+        let target = schema(
+            vec![
+                entity("domain-entity", vec![]),
+                person,
+                entity("asset", vec![]),
+            ],
+            vec![relation(
+                "ownership",
+                vec![
+                    role("owner", &["domain-entity", "person"]),
+                    role("asset", &["asset"]),
+                ],
+                vec![],
+            )],
+            vec![],
+        );
+
+        let operations = map(&base, &target);
+
+        let ownership = add_relation_entry(&operations, "ownership");
+        let owner_role = ownership
+            .roles
+            .iter()
+            .find(|r| r.role_name == "owner")
+            .expect("owner role present");
+        assert_eq!(
+            owner_role.player_type_names,
+            vec!["domain-entity".to_string()],
+            "flattened subtype must not be redeclared: {:?}",
+            owner_role.player_type_names
+        );
+    }
+
+    #[test]
+    fn added_role_player_for_flattened_subtype_produces_no_phantom_add() {
+        // Adding "person" as a subtype of an already-playing "domain-entity"
+        // flattens "person" into "owner"'s player set at the SchemaInfo
+        // level, but "person" never declares the `plays` capability itself:
+        // only the add_entity should surface, not a phantom
+        // add_role_player that TypeDB would reject (#190 follow-up).
+        let base = schema(
+            vec![entity("domain-entity", vec![]), entity("asset", vec![])],
+            vec![relation(
+                "ownership",
+                vec![role("owner", &["domain-entity"]), role("asset", &["asset"])],
+                vec![],
+            )],
+            vec![],
+        );
+        let mut person = entity("person", vec![]);
+        person.parent_type = Some("domain-entity".to_string());
+        let target = schema(
+            vec![
+                entity("domain-entity", vec![]),
+                person,
+                entity("asset", vec![]),
+            ],
+            vec![relation(
+                "ownership",
+                vec![
+                    role("owner", &["domain-entity", "person"]),
+                    role("asset", &["asset"]),
+                ],
+                vec![],
+            )],
+            vec![],
+        );
+
+        let operations = map(&base, &target);
+
+        assert_eq!(
+            kinds(&operations),
+            vec!["add_entity"],
+            "adding a subtype already flattened into an existing player's role \
+             must not synthesize a role-player operation: {operations:?}"
+        );
+    }
+
+    #[test]
+    fn detached_subtype_explicit_role_player_is_added_when_flattened_sets_match() {
+        // Initially only "parent" declares `plays owner`; flattening also
+        // lists "child" because it subs "parent". After detaching, both
+        // types declare the capability directly. The effective player vector
+        // is identical, so SchemaDiff has no relation change, but the mapper
+        // must still add the newly declared child player (#190 follow-up).
+        let mut base_child = entity("child", vec![]);
+        base_child.parent_type = Some("parent".to_string());
+        let base = schema(
+            vec![base_child, entity("parent", vec![])],
+            vec![relation(
+                "ownership",
+                vec![role("owner", &["child", "parent"])],
+                vec![],
+            )],
+            vec![],
+        );
+        let target = schema(
+            vec![entity("child", vec![]), entity("parent", vec![])],
+            vec![relation(
+                "ownership",
+                vec![role("owner", &["child", "parent"])],
+                vec![],
+            )],
+            vec![],
+        );
+
+        let diff = SchemaDiff::compute(&base, &target);
+        assert!(
+            diff.modified_relations.is_empty(),
+            "equal flattened vectors must expose the regression precondition: {diff:?}"
+        );
+
+        let operations = map_schema_diff(&base, &target, &diff, &[])
+            .expect("mapping should recover the declared-player change");
+
+        assert_eq!(
+            operations,
+            vec![
+                OperationSpec::RunTypeql {
+                    forward: "undefine\nsub parent from child;".to_string(),
+                    reverse: None,
+                },
+                OperationSpec::AddRolePlayer {
+                    relation_type: "ownership".to_string(),
+                    role_name: "owner".to_string(),
+                    player_type_name: "child".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn attached_subtype_explicit_role_player_is_removed_before_parent_change() {
+        // The inverse transition must remove "child"'s direct declaration
+        // before making it a subtype of the already-playing "parent". Each
+        // schema operation commits independently, so adding the `sub` edge
+        // first would temporarily redeclare an inherited capability.
+        let base = schema(
+            vec![entity("child", vec![]), entity("parent", vec![])],
+            vec![relation(
+                "ownership",
+                vec![role("owner", &["child", "parent"])],
+                vec![],
+            )],
+            vec![],
+        );
+        let mut target_child = entity("child", vec![]);
+        target_child.parent_type = Some("parent".to_string());
+        let target = schema(
+            vec![target_child, entity("parent", vec![])],
+            vec![relation(
+                "ownership",
+                vec![role("owner", &["child", "parent"])],
+                vec![],
+            )],
+            vec![],
+        );
+
+        let diff = SchemaDiff::compute(&base, &target);
+        assert!(diff.modified_relations.is_empty());
+
+        let operations = map_schema_diff(&base, &target, &diff, &[])
+            .expect("mapping should recover the declared-player change");
+
+        assert_eq!(
+            operations,
+            vec![
+                OperationSpec::RemoveRolePlayer {
+                    relation_type: "ownership".to_string(),
+                    role_name: "owner".to_string(),
+                    player_type_name: "child".to_string(),
+                },
+                OperationSpec::RunTypeql {
+                    forward: "define\nchild sub parent;".to_string(),
+                    reverse: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn detached_relation_player_is_added_after_its_parent_change() {
+        // Relations can play roles too. "a-holder" sorts before the player
+        // relation "z-child", but the mapper must still detach "z-child"
+        // before declaring the capability that it previously inherited from
+        // "z-parent".
+        let outer = relation(
+            "a-holder",
+            vec![role("member", &["z-child", "z-parent"])],
+            vec![],
+        );
+        let mut parent = relation("z-parent", vec![], vec![]);
+        parent.is_abstract = true;
+        let mut base_child = relation("z-child", vec![], vec![]);
+        base_child.is_abstract = true;
+        base_child.parent_type = Some("z-parent".to_string());
+        let mut target_child = base_child.clone();
+        target_child.parent_type = None;
+        let base = schema(
+            vec![],
+            vec![outer.clone(), parent.clone(), base_child],
+            vec![],
+        );
+        let target = schema(vec![], vec![outer, parent, target_child], vec![]);
+
+        let diff = SchemaDiff::compute(&base, &target);
+        assert!(
+            !diff.modified_relations.contains_key("a-holder"),
+            "equal flattened vectors must hide the outer relation change"
+        );
+
+        let operations = map_schema_diff(&base, &target, &diff, &[])
+            .expect("mapping should order the declared-player change safely");
+
+        assert_eq!(
+            operations,
+            vec![
+                OperationSpec::RunTypeql {
+                    forward: "undefine\nsub z-parent from z-child;".to_string(),
+                    reverse: None,
+                },
+                OperationSpec::AddRolePlayer {
+                    relation_type: "a-holder".to_string(),
+                    role_name: "member".to_string(),
+                    player_type_name: "z-child".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn inherited_relation_role_does_not_duplicate_declared_player_change() {
+        // "special-ownership" inherits "owner" from "ownership" and its
+        // flattened entry repeats the role. The newly declared child player
+        // belongs to the role's declaring relation only; emitting the same
+        // operation against the child relation would reference an inherited
+        // role as though it were declared there.
+        let mut base_child = entity("child", vec![]);
+        base_child.parent_type = Some("parent".to_string());
+        let parent_relation = relation(
+            "ownership",
+            vec![role("owner", &["child", "parent"])],
+            vec![],
+        );
+        let mut child_relation = relation(
+            "special-ownership",
+            vec![role("owner", &["child", "parent"])],
+            vec![],
+        );
+        child_relation.parent_type = Some("ownership".to_string());
+        let base = schema(
+            vec![base_child, entity("parent", vec![])],
+            vec![parent_relation.clone(), child_relation.clone()],
+            vec![],
+        );
+        let target = schema(
+            vec![entity("child", vec![]), entity("parent", vec![])],
+            vec![parent_relation, child_relation],
+            vec![],
+        );
+
+        let operations = map(&base, &target);
+
+        assert_eq!(kinds(&operations), vec!["run_typeql", "add_role_player"]);
+        assert!(matches!(
+            &operations[1],
+            OperationSpec::AddRolePlayer {
+                relation_type,
+                role_name,
+                player_type_name,
+            } if relation_type == "ownership"
+                && role_name == "owner"
+                && player_type_name == "child"
+        ));
+    }
+
+    #[test]
+    fn removed_subtype_flattened_into_role_players_produces_no_phantom_undefine() {
+        // The mirror of the add case: removing "person" (flattened into
+        // "owner" alongside its already-playing ancestor) must not
+        // synthesize a remove_role_player op — only the remove_entity path
+        // applies (#190 follow-up).
+        let mut person = entity("person", vec![]);
+        person.parent_type = Some("domain-entity".to_string());
+        let base = schema(
+            vec![
+                entity("domain-entity", vec![]),
+                person,
+                entity("asset", vec![]),
+            ],
+            vec![relation(
+                "ownership",
+                vec![
+                    role("owner", &["domain-entity", "person"]),
+                    role("asset", &["asset"]),
+                ],
+                vec![],
+            )],
+            vec![],
+        );
+        let target = schema(
+            vec![entity("domain-entity", vec![]), entity("asset", vec![])],
+            vec![relation(
+                "ownership",
+                vec![role("owner", &["domain-entity"]), role("asset", &["asset"])],
+                vec![],
+            )],
+            vec![],
+        );
+
+        let operations = map(&base, &target);
+
+        assert_eq!(
+            kinds(&operations),
+            vec!["remove_entity"],
+            "removing a subtype flattened into a surviving player's role must \
+             not synthesize a role-player undefine: {operations:?}"
+        );
+    }
+
+    #[test]
+    fn subtype_sole_declared_player_survives_reduction() {
+        // "person" is the *only* declared player of "owner" — its ancestor
+        // "domain-entity" does not play the role, so this is a genuine
+        // declaration and must survive the reduction untouched (#190
+        // follow-up).
+        let base = SchemaInfo::default();
+        let mut person = entity("person", vec![]);
+        person.parent_type = Some("domain-entity".to_string());
+        let target = schema(
+            vec![entity("domain-entity", vec![]), person],
+            vec![relation(
+                "ownership",
+                vec![role("owner", &["person"])],
+                vec![],
+            )],
+            vec![],
+        );
+
+        let operations = map(&base, &target);
+
+        let ownership = add_relation_entry(&operations, "ownership");
+        let owner_role = ownership
+            .roles
+            .iter()
+            .find(|r| r.role_name == "owner")
+            .expect("owner role present");
+        assert_eq!(
+            owner_role.player_type_names,
+            vec!["person".to_string()],
+            "a genuine declaration must not be dropped: {:?}",
+            owner_role.player_type_names
+        );
+    }
+
+    #[test]
+    fn transitively_flattened_grandchild_is_dropped() {
+        // "grandchild" subs "child" subs "grandparent": only "grandparent"
+        // declares `plays`, but flattening lists all three. The ancestor
+        // walk must be transitive, not one level deep (#190 follow-up).
+        let base = SchemaInfo::default();
+        let mut child = entity("child", vec![]);
+        child.parent_type = Some("grandparent".to_string());
+        let mut grandchild = entity("grandchild", vec![]);
+        grandchild.parent_type = Some("child".to_string());
+        let target = schema(
+            vec![entity("grandparent", vec![]), child, grandchild],
+            vec![relation(
+                "ownership",
+                vec![role("owner", &["grandparent", "child", "grandchild"])],
+                vec![],
+            )],
+            vec![],
+        );
+
+        let operations = map(&base, &target);
+
+        let ownership = add_relation_entry(&operations, "ownership");
+        let owner_role = ownership
+            .roles
+            .iter()
+            .find(|r| r.role_name == "owner")
+            .expect("owner role present");
+        assert_eq!(
+            owner_role.player_type_names,
+            vec!["grandparent".to_string()],
+            "transitive ancestors must be dropped: {:?}",
+            owner_role.player_type_names
         );
     }
 
