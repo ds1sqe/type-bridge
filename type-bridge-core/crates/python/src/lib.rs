@@ -622,6 +622,17 @@ fn generated_declared_descriptors_json(input: &str) -> PyResult<String> {
         .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
+/// Run the V2 workspace CLI in-process over process-style arguments.
+///
+/// `arguments` must include `argv[0]`. Output goes to the process stdout
+/// and stderr exactly as the standalone `type-bridge` binary prints it;
+/// the returned value is the process exit code. The GIL is released for
+/// the whole run so connected commands do not block other Python threads.
+#[pyfunction]
+fn run_v2_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
+    py.allow_threads(|| type_bridge_cli::run_cli(arguments))
+}
+
 #[pymodule]
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationEngine>()?;
@@ -634,6 +645,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
     m.add_function(wrap_pyfunction!(transpiler::toml_to_typeql, m)?)?;
+    m.add_function(wrap_pyfunction!(run_v2_cli, m)?)?;
 
     // Values
     m.add_class::<ast::LiteralValue>()?;

@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "1.5.11" }
+type-bridge-cli = { path = "../cli", version = "1.5.11" }
 type-bridge-contract = { path = "../contract", version = "1.5.11" }
 type-bridge-migration = { path = "../migration", version = "1.5.11" }
 type-bridge-orm = { path = "../orm", version = "1.5.11" }

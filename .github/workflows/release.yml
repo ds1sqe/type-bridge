@@ -486,6 +486,70 @@ jobs:
             tests/compat/typedb_driver_native/probe.py \
             --expected-version "$version"
 
+      - name: Run CLI wheel acceptance (legacy and V2 verbs)
+        run: |
+          set -euo pipefail
+          mapfile -t core_wheels < <(
+            find tmp/release-python-artifacts/core-wheels -maxdepth 1 -type f \
+              -name 'type_bridge_core-*linux*x86_64.whl' -print
+          )
+          mapfile -t root_wheels < <(
+            find tmp/release-python-artifacts/root -maxdepth 1 -type f \
+              -name 'type_bridge-*.whl' -print
+          )
+          cli_venv="$GITHUB_WORKSPACE/tmp/release-python-cli-smoke"
+          uv venv --python python "$cli_venv"
+          uv pip install --python "$cli_venv/bin/python" \
+            "${root_wheels[0]}" "${core_wheels[0]}"
+
+          # Legacy verb contract: the console script forwards released verbs
+          # to the type-bridge-migration binary discovered on PATH.
+          cargo build --manifest-path type-bridge-core/Cargo.toml \
+            --release -p type-bridge-migration
+          export PATH="$GITHUB_WORKSPACE/type-bridge-core/target/release:$PATH"
+          "$cli_venv/bin/type-bridge" plan --help > /dev/null
+          "$cli_venv/bin/type-bridge" makemigrations --help > /dev/null
+
+          # V2 verb contract: schema and migration workspace verbs are served
+          # in-process from the installed wheel; no external binary involved.
+          "$cli_venv/bin/type-bridge" --version
+          workspace=$(mktemp -d)
+          mkdir -p "$workspace/schema/fragments" "$workspace/migrations/v2"
+          printf '%s\n' \
+            'format: typebridge.workspace/v1' \
+            'schema:' \
+            '  root: schema/schema.yaml' \
+            '  ownership: exclusive' \
+            '  managed-scope: wheel-smoke' \
+            'compatibility:' \
+            '  semantic-profile: typedb-3.12.1/v1' \
+            'migrations:' \
+            '  directory: migrations/v2' \
+            '  app-label: wheelsmoke' \
+            'bindings:' \
+            '  python:' \
+            '    output: generated/python' \
+            > "$workspace/typebridge.yaml"
+          printf '%s\n' \
+            'format: typebridge.schema-set/v1' \
+            'sources: [fragments/*.yaml]' \
+            > "$workspace/schema/schema.yaml"
+          printf '%s\n' \
+            'format: typebridge.schema/v2' \
+            'attributes:' \
+            '  nickname: { value: string }' \
+            'entities:' \
+            '  person: { owns: [nickname] }' \
+            > "$workspace/schema/fragments/model.yaml"
+          (
+            cd "$workspace"
+            "$cli_venv/bin/type-bridge" schema check
+            "$cli_venv/bin/type-bridge" schema generate
+            "$cli_venv/bin/type-bridge" migration make --name init
+          )
+          test -f "$workspace/migrations/v2/0001_init.tbmigration.json"
+          test -n "$(ls "$workspace/generated/python")"
+
   # Build every native target that the public loader advertises. The pack job
   # fans these immutable, uniquely named outputs into one portable tarball.
   build-node-native:
