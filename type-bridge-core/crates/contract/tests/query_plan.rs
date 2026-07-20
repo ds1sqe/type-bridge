@@ -969,4 +969,18 @@ fn bounded_reachability_requires_a_finite_root_bound() {
     ])
     .expect_err("reachability in a negation");
     assert_eq!(error.code().as_str(), "query_plan_reachable_not_root");
+
+    // Expansion is charged, not the single spelled pattern: each bound of d
+    // unrolls into d(d+1)/2 hop clauses, so a depth-64 pattern alone charges
+    // 2,080 nodes and three of them cross the 4,096-node ceiling that a
+    // pattern-count check would never see.
+    let plan = build(vec![reachable(64)]).expect("one depth-64 pattern fits the node budget");
+    let bytes = plan.canonical_bytes().expect("canonical bytes");
+    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
+    let error = build(vec![reachable(64), reachable(64), reachable(64)])
+        .expect_err("stacked deep reachability must exhaust the node budget");
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_reachable_expansion_limit"
+    );
 }

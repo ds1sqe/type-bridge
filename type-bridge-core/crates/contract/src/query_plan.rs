@@ -1563,6 +1563,21 @@ fn inspect_pattern(
                     "reachability requires a finite hop bound within the depth ceiling",
                 ));
             }
+            // Lowering unrolls one branch per path length, so a bound of d
+            // expands into d(d+1)/2 relation clauses. Charge that expansion
+            // against the shared node budget: a compact plan cannot smuggle
+            // hundreds of thousands of emitted clauses past the ceiling by
+            // spelling them as one pattern.
+            let bound = usize::from(*max_depth);
+            let expanded_hops = bound * (bound + 1) / 2;
+            *nodes = nodes.saturating_add(expanded_hops.saturating_sub(1));
+            if !limits.allows_predicate_nodes(*nodes) {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_reachable_expansion_limit",
+                    "reachability expansion exceeds the plan pattern-node ceiling",
+                ));
+            }
             check_binding(*source, binding_count)?;
             check_binding(*target, binding_count)
         }

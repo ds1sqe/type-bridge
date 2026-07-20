@@ -847,11 +847,11 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
     assert_eq!(
         lowered.typeql(),
         "match\n\
-         { (from: $start, to: $finish) isa edge; } or \
-         { (from: $start, to: $R0h1) isa edge; \
-         (from: $R0h1, to: $finish) isa edge; } or \
-         { (from: $start, to: $R0h1) isa edge; \
-         (from: $R0h1, to: $R0h2) isa edge; \
-         (from: $R0h2, to: $finish) isa edge; };\n",
+         { (from: $start, to: $finish) isa! edge; } or \
+         { (from: $start, to: $R0h1) isa! edge; \
+         (from: $R0h1, to: $finish) isa! edge; } or \
+         { (from: $start, to: $R0h1) isa! edge; \
+         (from: $R0h1, to: $R0h2) isa! edge; \
+         (from: $R0h2, to: $finish) isa! edge; };\n",
     );
 }

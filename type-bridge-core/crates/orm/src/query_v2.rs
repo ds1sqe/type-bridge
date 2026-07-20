@@ -489,9 +489,12 @@ fn render_scoped_patterns(
                         } else {
                             hop_var(hop)
                         };
+                        // The Reachable contract promises the exact relation
+                        // type for every hop; `isa!` keeps subtype instances
+                        // out exactly like every other exact-type pattern.
                         write!(
                             branch,
-                            "({}: ${from}, {}: ${to}) isa {};",
+                            "({}: ${from}, {}: ${to}) isa! {};",
                             role_from.label(),
                             role_to.label(),
                             relation.label(),
