@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -10,22 +11,20 @@ use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::{
     MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
-use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-    DeclaredSchema, DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-    SourcedSchemaFact, SubFact, SubFactId, TypeFact,
-};
-use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::migration_assertion::migration_assertion_capability_vocabulary;
+use type_bridge_contract::schema::{
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact,
+    SubFactId, TypeFact,
+};
 use type_bridge_schema::{
-    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed,
-    inverse_delta,
+    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta,
 };
 use type_bridge_schema_migration::{
     MigrationGenerationOutcome, MigrationGenerationRequest, MigrationHistoryGraph,
     SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
-    discover_verified_migration_chain, generate_next_migration,
-    render_migration_preview, typedb_3_12_1_profile, write_generated_migration,
+    discover_verified_migration_chain, generate_next_migration, render_migration_preview,
+    typedb_3_12_1_profile, write_generated_migration,
 };
 
 const APP_LABEL: &str = "example";
@@ -47,8 +46,7 @@ fn type_fact(label: &str) -> SchemaFact {
 
 fn sub_fact(child: &str, parent: &str) -> SchemaFact {
     SchemaFact::Sub(SubFact::new(
-        SubFactId::new(entity_id(child), entity_id(parent))
-            .expect("fixture sub identity"),
+        SubFactId::new(entity_id(child), entity_id(parent)).expect("fixture sub identity"),
     ))
 }
 
@@ -133,8 +131,8 @@ fn committed_manifest(
         Some(reverse),
     )
     .expect("fixture step");
-    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step])
-        .expect("fixture draft");
+    let draft =
+        SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("fixture draft");
     build_verified_manifest(draft, (source, context)).expect("fixture manifest")
 }
 
@@ -162,7 +160,7 @@ fn generated(
     request: &MigrationGenerationRequest<'_>,
 ) -> type_bridge_schema_migration::GeneratedMigration {
     match generate_next_migration(graph, request).expect("generation succeeds") {
-        MigrationGenerationOutcome::Generated(generated) => generated,
+        MigrationGenerationOutcome::Generated(generated) => *generated,
         MigrationGenerationOutcome::UpToDate => panic!("expected a generated migration"),
     }
 }
@@ -209,17 +207,15 @@ fn genesis_generation_is_deterministic_and_round_trips_through_discovery() {
     assert_eq!(first.file_name(), "0001_init.tbmigration.json");
     assert_eq!(first.preview_file_name(), "0001_init.typeql");
 
-    let preview =
-        render_migration_preview(first.manifest(), &context).expect("preview renders");
+    let preview = render_migration_preview(first.manifest(), &context).expect("preview renders");
     assert!(preview.contains("define"), "preview: {preview}");
     assert!(preview.contains("entity person"), "preview: {preview}");
 
     let directory = TempDirectory::new();
     write_generated_migration(directory.path(), &first, &preview)
         .expect("write generated migration");
-    let discovered =
-        discover_verified_migration_chain(directory.path(), &genesis, &context)
-            .expect("discover generated migration");
+    let discovered = discover_verified_migration_chain(directory.path(), &genesis, &context)
+        .expect("discover generated migration");
     assert_eq!(discovered.len(), 1);
 
     // The committed head now equals the desired schema.
@@ -264,8 +260,7 @@ fn conditional_operations_receive_derived_assertion_steps() {
     let genesis = declared_facts(Vec::new());
     let head_target = declared(&["person"]);
     let context = context();
-    let committed =
-        committed_manifest("0001_person", Vec::new(), &genesis, &head_target, &context);
+    let committed = committed_manifest("0001_person", Vec::new(), &genesis, &head_target, &context);
     let graph = MigrationHistoryGraph::from_verified(vec![committed]).expect("graph");
 
     let desired = declared_facts(vec![type_fact("person"), abstract_fact("person")]);
@@ -285,15 +280,13 @@ fn reverse_requiring_assertions_downgrades_to_an_irreversible_manifest() {
     let first_target = declared(&["person"]);
     let head_target = declared_facts(vec![type_fact("person"), abstract_fact("person")]);
     let context = context();
-    let first =
-        committed_manifest("0001_person", Vec::new(), &genesis, &first_target, &context);
+    let first = committed_manifest("0001_person", Vec::new(), &genesis, &first_target, &context);
     let second = generated(
         &MigrationHistoryGraph::from_verified(vec![first.clone()]).expect("first graph"),
         &request("person_abstract", &genesis, &head_target, &context),
     );
-    let graph =
-        MigrationHistoryGraph::from_verified(vec![first, second.manifest().clone()])
-            .expect("graph");
+    let graph = MigrationHistoryGraph::from_verified(vec![first, second.manifest().clone()])
+        .expect("graph");
 
     // Removing the abstract annotation is forward-safe, but its structural
     // inverse (re-adding @abstract) would require assertions, so the verifier
@@ -308,8 +301,13 @@ fn reverse_requiring_assertions_downgrades_to_an_irreversible_manifest() {
 fn ambiguous_heads_are_refused() {
     let genesis = declared_facts(Vec::new());
     let context = context();
-    let left =
-        committed_manifest("0001_left", Vec::new(), &genesis, &declared(&["left"]), &context);
+    let left = committed_manifest(
+        "0001_left",
+        Vec::new(),
+        &genesis,
+        &declared(&["left"]),
+        &context,
+    );
     let right = committed_manifest(
         "0002_right",
         Vec::new(),
@@ -362,8 +360,7 @@ fn ordinal_allocation_continues_past_gaps_and_ignores_non_numeric_names() {
     let first_target = declared(&["person"]);
     let second_target = declared(&["person", "company"]);
     let context = context();
-    let first =
-        committed_manifest("0001_person", Vec::new(), &genesis, &first_target, &context);
+    let first = committed_manifest("0001_person", Vec::new(), &genesis, &first_target, &context);
     let second = committed_manifest(
         "0007_company",
         vec![first.id().clone()],
@@ -387,18 +384,14 @@ fn write_refuses_existing_generated_files() {
     let graph = empty_graph();
     let request = request("init", &genesis, &desired, &context);
     let generated = generated(&graph, &request);
-    let preview =
-        render_migration_preview(generated.manifest(), &context).expect("preview");
+    let preview = render_migration_preview(generated.manifest(), &context).expect("preview");
 
     let directory = TempDirectory::new();
     write_generated_migration(directory.path(), &generated, &preview)
         .expect("first write succeeds");
     let error = write_generated_migration(directory.path(), &generated, &preview)
         .expect_err("second write conflicts");
-    assert_eq!(
-        error.code().as_str(),
-        "migration_generation_write_conflict"
-    );
+    assert_eq!(error.code().as_str(), "migration_generation_write_conflict");
 }
 
 #[test]
@@ -427,7 +420,6 @@ fn destructive_generation_is_honest_and_previews_without_approval() {
 
     // The review-only preview renders the destructive statements so the
     // operator can inspect exactly what an approval would execute.
-    let preview =
-        render_migration_preview(next.manifest(), &context).expect("preview renders");
+    let preview = render_migration_preview(next.manifest(), &context).expect("preview renders");
     assert!(preview.contains("undefine"), "preview: {preview}");
 }

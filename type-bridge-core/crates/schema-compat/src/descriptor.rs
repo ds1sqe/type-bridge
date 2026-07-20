@@ -7,15 +7,12 @@ use type_bridge_contract::codec::{FormatVersion, from_canonical_json, to_canonic
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{AttributeId, Label, RoleId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-    CanonicalValueRange, CanonicalValueSet, DeclaredSchema, DocText, DocumentId, OwnsFact,
-    OwnsFactId, RegexPattern, RelatesFactId, SchemaAnnotationValue, SchemaDiagnostic,
-    SchemaDiagnostics, SchemaFact, SourceSpan, SubFact, SubFactId, TypeFact, ValueFact,
-    ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
+    CanonicalValueSet, DeclaredSchema, DocText, DocumentId, OwnsFact, OwnsFactId, RegexPattern,
+    RelatesFactId, SchemaAnnotationValue, SchemaDiagnostic, SchemaDiagnostics, SchemaFact,
+    SourceSpan, SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
 };
-use type_bridge_contract::value::{
-    CanonicalString, CanonicalValue, Cardinality, ValueTypeTag,
-};
+use type_bridge_contract::value::{CanonicalString, CanonicalValue, Cardinality, ValueTypeTag};
 use type_bridge_schema::FactAssembler;
 
 /// Exact discriminator for the first generated direct-descriptor format.
@@ -206,8 +203,7 @@ pub fn typeql_to_generated_descriptors(
     // The descriptor snapshot deliberately excludes functions, and released
     // generator input carries opaque dummy function bodies the strict
     // grammar rejects; strip them with the released parser's own extents.
-    let source =
-        type_bridge_core_lib::parser::strip_function_definitions(source);
+    let source = type_bridge_core_lib::parser::strip_function_definitions(source);
     // List capabilities and released-only annotations sit outside the
     // overlap grammar: pin the plain capability, record each construct,
     // and mark the snapshot open-world instead of failing the whole
@@ -236,10 +232,9 @@ pub fn typeql_to_generated_descriptors(
 /// indexing the original document.
 fn strip_unportable_constructs(source: &str) -> (String, Vec<String>) {
     use type_bridge_core_lib::parser::{
-        blank_source_extents, scan_source_regions, SourceRegionKind,
+        SourceRegionKind, blank_source_extents, scan_source_regions,
     };
-    let ident_byte =
-        |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-';
+    let ident_byte = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-';
     let bytes = source.as_bytes();
     let mut extents: Vec<core::ops::Range<usize>> = Vec::new();
     let mut stripped = Vec::new();
@@ -288,22 +283,19 @@ fn match_unportable_annotation(
     rest: &str,
     ident_byte: &dyn Fn(u8) -> bool,
 ) -> Option<(String, usize)> {
-    let boundary = |after: usize| {
-        !ident_byte(*rest.as_bytes().get(after).unwrap_or(&b' '))
-    };
+    let boundary = |after: usize| !ident_byte(*rest.as_bytes().get(after).unwrap_or(&b' '));
     for bare in ["@distinct", "@cascade"] {
         if rest.starts_with(bare) && boundary(bare.len()) {
             return Some((bare.to_owned(), bare.len()));
         }
     }
     let subkey = "@subkey";
-    if rest.starts_with(subkey) {
-        let after = &rest[subkey.len()..];
-        if let Some(argument) = after.strip_prefix('(') {
-            if let Some(close) = argument.find(')') {
-                let length = subkey.len() + 1 + close + 1;
-                return Some((rest[..length].to_owned(), length));
-            }
+    if let Some(after) = rest.strip_prefix(subkey) {
+        if let Some(argument) = after.strip_prefix('(')
+            && let Some(close) = argument.find(')')
+        {
+            let length = subkey.len() + 1 + close + 1;
+            return Some((rest[..length].to_owned(), length));
         }
         if boundary(subkey.len()) {
             return Some((subkey.to_owned(), subkey.len()));
@@ -372,10 +364,12 @@ pub fn attach_declared_descriptors(
         ));
     }
 
-    package.files.push(type_bridge_core_lib::bindgen::GeneratedFile {
-        path: GENERATED_DECLARED_DESCRIPTOR_PATH.to_string(),
-        contents: descriptors,
-    });
+    package
+        .files
+        .push(type_bridge_core_lib::bindgen::GeneratedFile {
+            path: GENERATED_DECLARED_DESCRIPTOR_PATH.to_string(),
+            contents: descriptors,
+        });
     Ok(())
 }
 
@@ -467,15 +461,17 @@ impl GeneratedDeclaredDescriptorSetV1 {
                 SchemaFact::Owns(fact) => {
                     let id = fact.id();
                     let source = direct_source(declared, &SchemaFact::Owns(fact.clone()))?;
-                    object_mut(&mut descriptors, id.owner()).owns.push(OwnsDescriptor {
-                        attribute: id.attribute().label().as_str().to_string(),
-                        key: false,
-                        unique: false,
-                        card: None,
-                        doc: None,
-                        meta: BTreeMap::new(),
-                        source,
-                    });
+                    object_mut(&mut descriptors, id.owner())
+                        .owns
+                        .push(OwnsDescriptor {
+                            attribute: id.attribute().label().as_str().to_string(),
+                            key: false,
+                            unique: false,
+                            card: None,
+                            doc: None,
+                            meta: BTreeMap::new(),
+                            source,
+                        });
                 }
                 SchemaFact::Relates(fact) => {
                     let id = fact.id();
@@ -593,13 +589,7 @@ impl GeneratedDeclaredDescriptorSetV1 {
         }
 
         for attribute in &self.attributes {
-            insert_attribute(
-                &mut assembler,
-                &type_ids,
-                attribute,
-                &document,
-                source_len,
-            )?;
+            insert_attribute(&mut assembler, &type_ids, attribute, &document, source_len)?;
         }
         for entity in &self.entities {
             insert_object(
@@ -620,22 +610,10 @@ impl GeneratedDeclaredDescriptorSetV1 {
                 &document,
                 source_len,
             )?;
-            insert_relates(
-                &mut assembler,
-                &type_ids,
-                relation,
-                &document,
-                source_len,
-            )?;
+            insert_relates(&mut assembler, &type_ids, relation, &document, source_len)?;
         }
         for plays in &self.plays {
-            insert_plays(
-                &mut assembler,
-                &type_ids,
-                plays,
-                &document,
-                source_len,
-            )?;
+            insert_plays(&mut assembler, &type_ids, plays, &document, source_len)?;
         }
 
         assembler.finish()
@@ -676,8 +654,8 @@ fn insert_attribute(
         &source,
     )?;
 
-    let attribute = AttributeId::new(&descriptor.label)
-        .map_err(|diagnostic| contract(diagnostic, &source))?;
+    let attribute =
+        AttributeId::new(&descriptor.label).map_err(|diagnostic| contract(diagnostic, &source))?;
     let value_id = ValueFactId::new(attribute);
     if let Some(value_type) = descriptor.value_type {
         assembler.insert_fact(
@@ -686,8 +664,8 @@ fn insert_attribute(
         )?;
     }
     if let Some(regex) = &descriptor.regex {
-        let regex = RegexPattern::new(regex.clone())
-            .map_err(|diagnostic| contract(diagnostic, &source))?;
+        let regex =
+            RegexPattern::new(regex.clone()).map_err(|diagnostic| contract(diagnostic, &source))?;
         insert_annotation(
             assembler,
             AnnotationSubjectId::Value(value_id.clone()),
@@ -903,10 +881,10 @@ fn insert_parent(
     let Some(parent) = parent else {
         return Ok(());
     };
-    let supertype = TypeId::new(subtype.kind(), parent)
-        .map_err(|diagnostic| contract(diagnostic, source))?;
-    let id = SubFactId::new(subtype, supertype)
-        .map_err(|diagnostic| contract(diagnostic, source))?;
+    let supertype =
+        TypeId::new(subtype.kind(), parent).map_err(|diagnostic| contract(diagnostic, source))?;
+    let id =
+        SubFactId::new(subtype, supertype).map_err(|diagnostic| contract(diagnostic, source))?;
     assembler.insert_fact(SchemaFact::Sub(SubFact::new(id)), source.clone())
 }
 
@@ -935,13 +913,7 @@ fn insert_type_annotations(
             source,
         )?;
     }
-    insert_doc_meta(
-        assembler,
-        AnnotationSubjectId::Type(id),
-        doc,
-        meta,
-        source,
-    )
+    insert_doc_meta(assembler, AnnotationSubjectId::Type(id), doc, meta, source)
 }
 
 fn insert_presence(
@@ -1155,12 +1127,7 @@ fn apply_annotation(
                         descriptor.is_independent = true;
                         true
                     }
-                    _ => apply_doc_meta(
-                        kind,
-                        value,
-                        &mut descriptor.doc,
-                        &mut descriptor.meta,
-                    ),
+                    _ => apply_doc_meta(kind, value, &mut descriptor.doc, &mut descriptor.meta),
                 }
             }
             TypeKind::Entity | TypeKind::Relation => {
@@ -1170,12 +1137,7 @@ fn apply_annotation(
                         descriptor.is_abstract = true;
                         true
                     }
-                    _ => apply_doc_meta(
-                        kind,
-                        value,
-                        &mut descriptor.doc,
-                        &mut descriptor.meta,
-                    ),
+                    _ => apply_doc_meta(kind, value, &mut descriptor.doc, &mut descriptor.meta),
                 }
             }
             TypeKind::Struct => false,
@@ -1285,7 +1247,10 @@ fn apply_doc_meta(
             *doc = Some(value.as_str().to_string());
             true
         }
-        (AnnotationKindId::Meta(key), SchemaAnnotationValue::Meta(CanonicalValue::String(value))) => {
+        (
+            AnnotationKindId::Meta(key),
+            SchemaAnnotationValue::Meta(CanonicalValue::String(value)),
+        ) => {
             meta.insert(key.as_str().to_string(), value.as_str().to_string());
             true
         }

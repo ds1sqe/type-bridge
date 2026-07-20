@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{Label, RoleId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
-    AnnotationSubjectId, DeclaredSchema, RelatesFactId, SchemaFact, SchemaFactId,
-    SchemaOperation, SubFactId, ValueFactId,
+    AnnotationSubjectId, DeclaredSchema, RelatesFactId, SchemaFact, SchemaFactId, SchemaOperation,
+    SubFactId, ValueFactId,
 };
 
 /// The exact fact-level dependency graph used to order schema operations.
@@ -65,10 +65,7 @@ impl FactDependencyGraph {
 
         let mut dependencies = BTreeMap::new();
         for fact in inventory.values() {
-            dependencies.insert(
-                fact.id(),
-                dependencies_for(fact, &labels, &sub_by_child)?,
-            );
+            dependencies.insert(fact.id(), dependencies_for(fact, &labels, &sub_by_child)?);
         }
 
         let mut dependents: BTreeMap<SchemaFactId, BTreeSet<SchemaFactId>> = BTreeMap::new();
@@ -109,9 +106,7 @@ impl FactDependencyGraph {
                 if !self.dependencies.contains_key(prerequisite) {
                     return Err(failure(
                         "schema_delta_missing_dependency",
-                        format!(
-                            "fact {dependent:?} requires absent fact {prerequisite:?}"
-                        ),
+                        format!("fact {dependent:?} requires absent fact {prerequisite:?}"),
                     ));
                 }
             }
@@ -280,9 +275,7 @@ fn annotation_subject_id(subject: &AnnotationSubjectId) -> SchemaFactId {
     }
 }
 
-fn attribute_type(
-    attribute: &type_bridge_contract::id::AttributeId,
-) -> Result<TypeId, Diagnostic> {
+fn attribute_type(attribute: &type_bridge_contract::id::AttributeId) -> Result<TypeId, Diagnostic> {
     TypeId::new(TypeKind::Attribute, attribute.label().as_str())
 }
 
@@ -336,11 +329,11 @@ fn ordered_components(
     for (index, component) in components.iter().enumerate() {
         for node in component {
             for dependency in graph.dependencies(node).into_iter().flatten() {
-                if let Some(dependency_index) = component_of.get(dependency).copied() {
-                    if dependency_index != index {
-                        prerequisites[index].insert(dependency_index);
-                        dependents[dependency_index].insert(index);
-                    }
+                if let Some(dependency_index) = component_of.get(dependency).copied()
+                    && dependency_index != index
+                {
+                    prerequisites[index].insert(dependency_index);
+                    dependents[dependency_index].insert(index);
                 }
             }
         }

@@ -18,9 +18,8 @@ use type_bridge_contract::schema::{
 use type_bridge_schema::{ManagedDeltaContext, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
     MigrationHistoryGraph, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
-    build_verified_manifest, decode_verified_manifest,
-    discover_verified_migration_chain, discover_verified_migrations,
-    encode_verified_manifest,
+    build_verified_manifest, decode_verified_manifest, discover_verified_migration_chain,
+    discover_verified_migrations, encode_verified_manifest,
 };
 
 struct Fixture {
@@ -102,10 +101,9 @@ fn chained_fixture(
         Some(reverse),
     )
     .expect("fixture step");
-    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step])
-        .expect("fixture draft");
-    let verified =
-        build_verified_manifest(draft, (&source, &context)).expect("fixture manifest");
+    let draft =
+        SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("fixture draft");
+    let verified = build_verified_manifest(draft, (&source, &context)).expect("fixture manifest");
     Fixture {
         context,
         source,
@@ -210,20 +208,12 @@ fn discovery_is_direct_exact_verified_and_filename_bound() {
 
 #[test]
 fn malformed_duplicate_missing_self_and_cycle_histories_fail_closed() {
-    let root = fixture(
-        "0001_root",
-        Vec::new(),
-        &["person"],
-        &["person", "root"],
-    );
+    let root = fixture("0001_root", Vec::new(), &["person"], &["person", "root"]);
     assert_eq!(
-        MigrationHistoryGraph::from_verified([
-            root.verified.clone(),
-            root.verified.clone(),
-        ])
-        .expect_err("duplicate id")
-        .code()
-        .as_str(),
+        MigrationHistoryGraph::from_verified([root.verified.clone(), root.verified.clone(),])
+            .expect_err("duplicate id")
+            .code()
+            .as_str(),
         "migration_history_duplicate_id"
     );
 
@@ -292,12 +282,7 @@ fn branch_graph() -> (
     let left_id = migration_id("0002_left");
     let right_id = migration_id("0003_right");
     let merge_id = migration_id("0004_merge");
-    let root = fixture(
-        "0001_root",
-        Vec::new(),
-        &["person"],
-        &["person", "root"],
-    );
+    let root = fixture("0001_root", Vec::new(), &["person"], &["person", "root"]);
     let left = fixture(
         "0002_left",
         vec![root_id.clone()],
@@ -333,7 +318,7 @@ fn branch_merge_frontier_and_apply_closure_are_deterministic() {
         graph.topological_order(),
         &[root.clone(), left.clone(), right.clone(), merge.clone()]
     );
-    assert_eq!(graph.heads(), &[merge.clone()]);
+    assert_eq!(graph.heads(), std::slice::from_ref(&merge));
     assert_eq!(graph.default_head().expect("single head"), Some(&merge));
 
     let branched = BTreeSet::from([root.clone(), left.clone(), right.clone()]);
@@ -384,12 +369,7 @@ fn branch_merge_frontier_and_apply_closure_are_deterministic() {
 #[test]
 fn rollback_is_reverse_topological_and_preserves_applied_ancestry() {
     let (graph, root, left, right, merge) = branch_graph();
-    let applied = BTreeSet::from([
-        root.clone(),
-        left.clone(),
-        right.clone(),
-        merge.clone(),
-    ]);
+    let applied = BTreeSet::from([root.clone(), left.clone(), right.clone(), merge.clone()]);
     assert_eq!(
         graph
             .plan_rollback(&applied, &BTreeSet::from([left.clone()]))
@@ -400,10 +380,7 @@ fn rollback_is_reverse_topological_and_preserves_applied_ancestry() {
     );
     assert_eq!(
         graph
-            .plan_rollback(
-                &applied,
-                &BTreeSet::from([merge.clone(), left.clone()]),
-            )
+            .plan_rollback(&applied, &BTreeSet::from([merge.clone(), left.clone()]),)
             .expect("rollback one merged branch"),
         vec![merge.clone(), left.clone()]
     );
@@ -411,12 +388,7 @@ fn rollback_is_reverse_topological_and_preserves_applied_ancestry() {
         graph
             .plan_rollback(
                 &applied,
-                &BTreeSet::from([
-                    root.clone(),
-                    left.clone(),
-                    right.clone(),
-                    merge.clone(),
-                ]),
+                &BTreeSet::from([root.clone(), left.clone(), right.clone(), merge.clone(),]),
             )
             .expect("rollback complete graph"),
         vec![merge, left, right, root]
@@ -427,12 +399,7 @@ fn rollback_is_reverse_topological_and_preserves_applied_ancestry() {
 fn discovery_decodes_multiple_contexts_before_graph_construction() {
     let directory = TempDirectory::new();
     let root_id = migration_id("0001_root");
-    let root = fixture(
-        "0001_root",
-        Vec::new(),
-        &["person"],
-        &["person", "root"],
-    );
+    let root = fixture("0001_root", Vec::new(), &["person"], &["person", "root"]);
     let child = fixture(
         "0002_child",
         vec![root_id.clone()],
@@ -460,7 +427,10 @@ fn discovery_decodes_multiple_contexts_before_graph_construction() {
         decode_verified_manifest(bytes, (source, context))
     })
     .expect("verified multi-context discovery");
-    assert_eq!(graph.topological_order(), &[root_id, migration_id("0002_child")]);
+    assert_eq!(
+        graph.topological_order(),
+        &[root_id, migration_id("0002_child")]
+    );
 }
 
 #[test]
@@ -476,12 +446,8 @@ fn chain_discovery_is_dependency_ordered_not_filename_ordered() {
     write_manifest(directory.path(), &parent, "0002_parent");
     write_manifest(directory.path(), &child, "0001_child");
 
-    let graph = discover_verified_migration_chain(
-        directory.path(),
-        &declared(&[]),
-        &context(),
-    )
-    .expect("chain discovery must decode parents before filename-earlier children");
+    let graph = discover_verified_migration_chain(directory.path(), &declared(&[]), &context())
+        .expect("chain discovery must decode parents before filename-earlier children");
     assert_eq!(graph.len(), 2);
     assert_eq!(
         graph.topological_order(),
@@ -580,12 +546,8 @@ fn chain_discovery_accepts_only_convergent_merge_parents() {
     write_manifest(convergent.path(), &left, "0002_left");
     write_manifest(convergent.path(), &right, "0003_right");
     write_manifest(convergent.path(), &merge, "0004_merge");
-    let graph = discover_verified_migration_chain(
-        convergent.path(),
-        &declared(&[]),
-        &context(),
-    )
-    .expect("equal-target merge parents are decodable");
+    let graph = discover_verified_migration_chain(convergent.path(), &declared(&[]), &context())
+        .expect("equal-target merge parents are decodable");
     assert_eq!(graph.len(), 4);
     assert_eq!(graph.heads(), &[migration_id("0004_merge")]);
 

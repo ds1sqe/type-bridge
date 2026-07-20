@@ -28,16 +28,13 @@ pub const MIGRATION_ID_CANONICALIZATION: &str = "typebridge.migration-id/v1";
 /// Fingerprint domain for trusted schema-delta bytes.
 pub const SCHEMA_DELTA_FINGERPRINT_DOMAIN: &str = "typebridge.migration.schema-delta";
 /// Canonicalization contract for trusted schema deltas.
-pub const SCHEMA_DELTA_FINGERPRINT_CANONICALIZATION: &str =
-    "typebridge.schema-delta/v1";
+pub const SCHEMA_DELTA_FINGERPRINT_CANONICALIZATION: &str = "typebridge.schema-delta/v1";
 /// Fingerprint domain for ordered schema-only migration plans.
 pub const MIGRATION_PLAN_FINGERPRINT_DOMAIN: &str = "typebridge.migration.plan";
 /// Canonicalization contract for ordered schema-only migration plans.
-pub const MIGRATION_PLAN_FINGERPRINT_CANONICALIZATION: &str =
-    "typebridge.migration-plan/v1";
+pub const MIGRATION_PLAN_FINGERPRINT_CANONICALIZATION: &str = "typebridge.migration-plan/v1";
 /// Capability required by a persisted verifier-derived conditional assertion.
-pub const CONDITIONAL_RESOLUTION_CAPABILITY: &str =
-    "migration.conditional-resolution";
+pub const CONDITIONAL_RESOLUTION_CAPABILITY: &str = "migration.conditional-resolution";
 /// Maximum ASCII byte length of one portable migration identity component.
 pub const MAX_MIGRATION_COMPONENT_BYTES: usize = 255;
 
@@ -51,9 +48,7 @@ fn validate_component(
         byte.is_ascii_lowercase() || (allow_leading_digit && byte.is_ascii_digit())
     });
     let valid_rest = bytes.all(|byte| {
-        byte.is_ascii_lowercase()
-            || byte.is_ascii_digit()
-            || matches!(byte, b'_' | b'-')
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
     });
     if value.len() <= MAX_MIGRATION_COMPONENT_BYTES && valid_first && valid_rest {
         Ok(value)
@@ -126,10 +121,7 @@ pub struct MigrationId {
 
 impl MigrationId {
     /// Validate and construct a compound migration identity.
-    pub fn new(
-        app_label: impl Into<String>,
-        name: impl Into<String>,
-    ) -> Result<Self, Diagnostic> {
+    pub fn new(app_label: impl Into<String>, name: impl Into<String>) -> Result<Self, Diagnostic> {
         Ok(Self {
             app_label: MigrationAppLabel::new(app_label)?,
             name: MigrationName::new(name)?,
@@ -138,10 +130,7 @@ impl MigrationId {
 
     /// Construct from already validated components.
     #[must_use]
-    pub const fn from_components(
-        app_label: MigrationAppLabel,
-        name: MigrationName,
-    ) -> Self {
+    pub const fn from_components(app_label: MigrationAppLabel, name: MigrationName) -> Self {
         Self { app_label, name }
     }
 
@@ -539,13 +528,13 @@ impl AssertionStepContract {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrationStep {
     /// One state-changing schema delta.
-    SchemaDelta(SchemaDeltaStep),
+    SchemaDelta(Box<SchemaDeltaStep>),
     /// One state-preserving verifier-derived assertion.
     Assertion {
         /// Constructor-derived assertion contract.
-        contract: AssertionStepContract,
+        contract: Box<AssertionStepContract>,
         /// Canonical typed assertion plan.
-        plan: MigrationAssertionPlan,
+        plan: Box<MigrationAssertionPlan>,
         /// Closed expected outcome.
         expected: AssertionExpectation,
     },
@@ -560,8 +549,8 @@ impl MigrationStep {
     ) -> Result<Self, Diagnostic> {
         let contract = AssertionStepContract::derive(id, &plan, expected)?;
         Ok(Self::Assertion {
-            contract,
-            plan,
+            contract: Box::new(contract),
+            plan: Box::new(plan),
             expected,
         })
     }
@@ -591,7 +580,7 @@ impl MigrationStep {
     }
 
     /// Return a schema-delta step when this is state-changing.
-    pub const fn as_schema_delta(&self) -> Option<&SchemaDeltaStep> {
+    pub fn as_schema_delta(&self) -> Option<&SchemaDeltaStep> {
         match self {
             Self::SchemaDelta(step) => Some(step),
             Self::Assertion { .. } => None,
@@ -599,7 +588,7 @@ impl MigrationStep {
     }
 
     /// Return assertion contract, plan, and expectation when state-preserving.
-    pub const fn as_assertion(
+    pub fn as_assertion(
         &self,
     ) -> Option<(
         &AssertionStepContract,
@@ -619,16 +608,16 @@ impl MigrationStep {
     /// Rebuild all derived claims and reject an assembled mismatched step.
     pub fn validate(&self) -> Result<(), Diagnostic> {
         let rebuilt = match self {
-            Self::SchemaDelta(step) => Self::SchemaDelta(SchemaDeltaStep::new(
+            Self::SchemaDelta(step) => Self::SchemaDelta(Box::new(SchemaDeltaStep::new(
                 step.contract().id().clone(),
                 step.delta().clone(),
                 step.contract().reverse().cloned(),
-            )?),
+            )?)),
             Self::Assertion {
                 contract,
                 plan,
                 expected,
-            } => Self::assertion(contract.id().clone(), plan.clone(), *expected)?,
+            } => Self::assertion(contract.id().clone(), plan.as_ref().clone(), *expected)?,
         };
         if &rebuilt != self {
             return Err(Diagnostic::stable(
@@ -648,7 +637,7 @@ impl MigrationStep {
 
 impl From<SchemaDeltaStep> for MigrationStep {
     fn from(step: SchemaDeltaStep) -> Self {
-        Self::SchemaDelta(step)
+        Self::SchemaDelta(Box::new(step))
     }
 }
 

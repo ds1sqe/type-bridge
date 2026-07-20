@@ -13,22 +13,17 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration::{
     MigrationId, MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
 use type_bridge_contract::schema::{DeclaredSchema, SchemaDelta};
-use type_bridge_query::{
-    MigrationAssertionValidationContext, lower_condition_to_plan,
-};
+use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
     ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta,
-    derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
-    resolve,
+    derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state, resolve,
 };
 
 use crate::history::MigrationHistoryGraph;
@@ -37,9 +32,8 @@ use crate::lowering::{
     lower_schema_delta_with_verified_assertions,
 };
 use crate::manifest::{
-    SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
-    build_verified_manifest, delta_diagnostic, encode_verified_manifest,
-    verify_assertion_coverage,
+    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
+    delta_diagnostic, encode_verified_manifest, verify_assertion_coverage,
 };
 use crate::profile::schema_lowering_profile_binding;
 use type_bridge_contract::managed_scope::SemanticProfileBinding;
@@ -77,7 +71,7 @@ pub enum MigrationGenerationOutcome {
     /// The head target already equals the desired schema.
     UpToDate,
     /// A new verified manifest was authored.
-    Generated(GeneratedMigration),
+    Generated(Box<GeneratedMigration>),
 }
 
 /// A freshly authored manifest with its exact canonical persistence bytes.
@@ -173,15 +167,13 @@ pub fn generate_next_migration(
         ),
     };
 
-    let source_state =
-        managed_schema_state(source, request.context).map_err(delta_diagnostic)?;
+    let source_state = managed_schema_state(source, request.context).map_err(delta_diagnostic)?;
     let desired_state =
         managed_schema_state(request.desired, request.context).map_err(delta_diagnostic)?;
     if source_state == desired_state {
         return Ok(MigrationGenerationOutcome::UpToDate);
     }
-    let delta =
-        diff_managed(source, request.desired, request.context).map_err(delta_diagnostic)?;
+    let delta = diff_managed(source, request.desired, request.context).map_err(delta_diagnostic)?;
 
     let id = MigrationId::new(request.app_label, allocate_name(graph, request.base_name))?;
     if graph.manifest(&id).is_some() {
@@ -196,21 +188,20 @@ pub fn generate_next_migration(
     let draft = SchemaMigrationDraft::new(id.clone(), parents.clone(), steps)?;
     let manifest = match build_verified_manifest(draft, (source, request.context)) {
         Ok(manifest) => manifest,
-        Err(diagnostic)
-            if REVERSE_REJECTION_CODES.contains(&diagnostic.code().as_str()) =>
-        {
-            let steps =
-                author_steps(&delta, source, request.desired, request.context, false)?;
+        Err(diagnostic) if REVERSE_REJECTION_CODES.contains(&diagnostic.code().as_str()) => {
+            let steps = author_steps(&delta, source, request.desired, request.context, false)?;
             let draft = SchemaMigrationDraft::new(id, parents, steps)?;
             build_verified_manifest(draft, (source, request.context))?
         }
         Err(diagnostic) => return Err(diagnostic),
     };
     let canonical_bytes = encode_verified_manifest(&manifest)?;
-    Ok(MigrationGenerationOutcome::Generated(GeneratedMigration {
-        manifest,
-        canonical_bytes,
-    }))
+    Ok(MigrationGenerationOutcome::Generated(Box::new(
+        GeneratedMigration {
+            manifest,
+            canonical_bytes,
+        },
+    )))
 }
 
 /// Render the review-only TypeQL preview of a verified manifest.
@@ -237,8 +228,8 @@ pub fn render_migration_preview(
             pending.push(step);
             continue;
         };
-        let target = apply_delta(&current, schema_step.delta(), context)
-            .map_err(delta_diagnostic)?;
+        let target =
+            apply_delta(&current, schema_step.delta(), context).map_err(delta_diagnostic)?;
         let coverage = verify_assertion_coverage(
             &pending,
             schema_step.delta(),
@@ -362,10 +353,8 @@ fn author_steps(
                 )
             })
     })?;
-    let source_state =
-        managed_schema_state(source, context).map_err(delta_diagnostic)?;
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &source_state);
+    let source_state = managed_schema_state(source, context).map_err(delta_diagnostic)?;
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &source_state);
 
     let mut steps = Vec::new();
     for (ordinal, operation) in delta.operations().iter().enumerate() {
@@ -405,11 +394,7 @@ fn author_steps(
     Ok(steps)
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static generation diagnostic code is canonical"),

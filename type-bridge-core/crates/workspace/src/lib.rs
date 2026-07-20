@@ -24,30 +24,27 @@ use type_bridge_contract::semantic_profile::SemanticProfile;
 use type_bridge_schema::SchemaSourceService;
 use type_bridge_schema_migration::MigrationSafetyPolicy;
 
-mod workspace_yaml;
-mod workspace;
-mod migration;
-mod lock;
 mod bundle;
+mod lock;
+mod migration;
+mod workspace;
+mod workspace_yaml;
 
-pub use workspace_yaml::{
-    ConfigOrigin, LocatedConfigSpec, TYPEBRIDGE_WORKSPACE_V1_FORMAT, TypeBridgeConfigSpec,
-};
-pub use migration::MigrationPlanEntry;
-pub use workspace::{
-    TypeBridgeWorkspace, TypeBridgeWorkspaceError, TypeBridgeWorkspaceServices,
-};
-pub use lock::{
-    MAX_WORKSPACE_LOCK_BYTES, TYPEBRIDGE_WORKSPACE_LOCK_V1, VerifiedWorkspaceLock,
-    WorkspaceLock, WorkspaceLockError, WorkspaceLockErrorCode, generate_workspace_lock,
-    verify_workspace_lock,
-};
 pub use bundle::{
     BundleProjectionContext, BundleVerificationContext, MAX_SCHEMA_BUNDLE_BYTES,
     SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION, SCHEMA_BUNDLE_FINGERPRINT_DOMAIN,
-    SchemaBundleError, SchemaBundleErrorCode, TYPEBRIDGE_SCHEMA_BUNDLE_V1,
-    TypeBridgeRuntime, VerifiedSchemaBundle, build_verified_schema_bundle,
-    decode_verified_schema_bundle, encode_verified_schema_bundle,
+    SchemaBundleError, SchemaBundleErrorCode, TYPEBRIDGE_SCHEMA_BUNDLE_V1, TypeBridgeRuntime,
+    VerifiedSchemaBundle, build_verified_schema_bundle, decode_verified_schema_bundle,
+    encode_verified_schema_bundle,
+};
+pub use lock::{
+    MAX_WORKSPACE_LOCK_BYTES, TYPEBRIDGE_WORKSPACE_LOCK_V1, VerifiedWorkspaceLock, WorkspaceLock,
+    WorkspaceLockError, WorkspaceLockErrorCode, generate_workspace_lock, verify_workspace_lock,
+};
+pub use migration::MigrationPlanEntry;
+pub use workspace::{TypeBridgeWorkspace, TypeBridgeWorkspaceError, TypeBridgeWorkspaceServices};
+pub use workspace_yaml::{
+    ConfigOrigin, LocatedConfigSpec, TYPEBRIDGE_WORKSPACE_V1_FORMAT, TypeBridgeConfigSpec,
 };
 
 /// The exact server-semantic profile accepted by the first V2 workspace.
@@ -121,7 +118,7 @@ pub struct WorkspaceConfigError {
     detail: Option<String>,
     message: &'static str,
     origin: Option<String>,
-    source_span: Option<SourceSpan>,
+    source_span: Option<Box<SourceSpan>>,
 }
 
 impl WorkspaceConfigError {
@@ -146,7 +143,7 @@ impl WorkspaceConfigError {
         source_span: SourceSpan,
     ) -> Self {
         self.origin = Some(origin.into());
-        self.source_span = Some(source_span);
+        self.source_span = Some(Box::new(source_span));
         self
     }
 
@@ -170,8 +167,8 @@ impl WorkspaceConfigError {
 
     /// Return the exact source span for a parsed-config failure, if available.
     #[must_use]
-    pub const fn source_span(&self) -> Option<&SourceSpan> {
-        self.source_span.as_ref()
+    pub fn source_span(&self) -> Option<&SourceSpan> {
+        self.source_span.as_deref()
     }
 }
 
@@ -221,20 +218,14 @@ impl Error for WorkspaceServiceError {}
 /// Full schema source services automatically satisfy this boundary.
 pub trait WorkspaceSourceService {
     /// Return the canonical spelling of the supplied workspace root.
-    fn canonicalize_workspace_root(
-        &self,
-        root: &Path,
-    ) -> Result<PathBuf, WorkspaceServiceError>;
+    fn canonicalize_workspace_root(&self, root: &Path) -> Result<PathBuf, WorkspaceServiceError>;
 }
 
 impl<T> WorkspaceSourceService for T
 where
     T: SchemaSourceService + ?Sized,
 {
-    fn canonicalize_workspace_root(
-        &self,
-        root: &Path,
-    ) -> Result<PathBuf, WorkspaceServiceError> {
+    fn canonicalize_workspace_root(&self, root: &Path) -> Result<PathBuf, WorkspaceServiceError> {
         self.canonicalize(root)
             .map_err(|_| WorkspaceServiceError::new("schema_source_canonicalize_failed"))
     }
@@ -245,10 +236,7 @@ where
 /// This service intentionally has no method that can resolve or read a secret.
 pub trait SecretReferenceService {
     /// Validate that a symbolic reference is accepted by local policy.
-    fn validate_reference(
-        &self,
-        reference: &SecretReference,
-    ) -> Result<(), WorkspaceServiceError>;
+    fn validate_reference(&self, reference: &SecretReference) -> Result<(), WorkspaceServiceError>;
 }
 
 /// A local registry for projection-only extension requirements.
@@ -436,9 +424,7 @@ fn valid_namespaced_id(value: &str) -> bool {
         let mut bytes = segment.bytes();
         bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
             && bytes.all(|byte| {
-                byte.is_ascii_lowercase()
-                    || byte.is_ascii_digit()
-                    || matches!(byte, b'-' | b'_')
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
             })
     });
     valid && count >= 2 && value.len() <= MAX_SYMBOLIC_ID_BYTES
@@ -476,9 +462,7 @@ pub struct SecretReference {
 
 impl SecretReference {
     /// Construct an environment reference without reading the environment.
-    pub fn environment(
-        variable: impl Into<String>,
-    ) -> Result<Self, WorkspaceConfigError> {
+    pub fn environment(variable: impl Into<String>) -> Result<Self, WorkspaceConfigError> {
         let variable = variable.into();
         let mut bytes = variable.bytes();
         let valid = variable.len() <= MAX_SYMBOLIC_ID_BYTES
@@ -718,7 +702,9 @@ impl TypeBridgeConfig {
     /// Return the schema-set manifest path resolved under the root.
     #[must_use]
     pub fn schema_set_absolute_path(&self) -> PathBuf {
-        self.workspace_root.as_path().join(self.schema_set.as_path())
+        self.workspace_root
+            .as_path()
+            .join(self.schema_set.as_path())
     }
 
     /// Return the validated migration application label.
@@ -991,10 +977,7 @@ impl TypeBridgeConfigBuilder {
             .with_detail(*field));
         }
 
-        fn required<T>(
-            value: Option<T>,
-            field: &'static str,
-        ) -> Result<T, WorkspaceConfigError> {
+        fn required<T>(value: Option<T>, field: &'static str) -> Result<T, WorkspaceConfigError> {
             value.ok_or_else(|| {
                 WorkspaceConfigError::new(
                     WorkspaceConfigErrorCode::MissingRequiredField,
@@ -1007,10 +990,8 @@ impl TypeBridgeConfigBuilder {
         let app_label = required(self.app_label, "app_label")?;
         let managed_scope_id = required(self.managed_scope_id, "managed_scope")?;
         let semantic_profile = required(self.semantic_profile, "semantic_profile")?;
-        let migration_v2_directory = required(
-            self.migration_v2_directory,
-            "migration_v2_directory",
-        )?;
+        let migration_v2_directory =
+            required(self.migration_v2_directory, "migration_v2_directory")?;
 
         if semantic_profile.as_str() != TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID
             || SemanticProfile::resolve(&semantic_profile).is_err()
@@ -1062,10 +1043,7 @@ impl TypeBridgeConfigBuilder {
 
         let mut workspace_paths: Vec<(&'static str, &Path)> = vec![
             ("schema_set", schema_set.as_path()),
-            (
-                "migration_v2_directory",
-                migration_v2_directory.as_path(),
-            ),
+            ("migration_v2_directory", migration_v2_directory.as_path()),
         ];
         for (target, directory) in &outputs {
             workspace_paths.push((output_field_name(*target), directory.as_path()));
@@ -1101,13 +1079,16 @@ impl TypeBridgeConfigBuilder {
                 .with_detail(name));
             }
             for reference in [environment.username(), environment.password()] {
-                services.secrets.validate_reference(reference).map_err(|error| {
-                    WorkspaceConfigError::new(
-                        WorkspaceConfigErrorCode::SecretReferenceRejected,
-                        "local secret-reference service rejected an environment credential",
-                    )
-                    .with_detail(error.code())
-                })?;
+                services
+                    .secrets
+                    .validate_reference(reference)
+                    .map_err(|error| {
+                        WorkspaceConfigError::new(
+                            WorkspaceConfigErrorCode::SecretReferenceRejected,
+                            "local secret-reference service rejected an environment credential",
+                        )
+                        .with_detail(error.code())
+                    })?;
             }
             if environments.insert(name, environment).is_some() {
                 return Err(WorkspaceConfigError::new(
@@ -1139,9 +1120,7 @@ impl TypeBridgeConfigBuilder {
                 ));
             }
         }
-        let extensions = extensions_by_handler
-            .into_values()
-            .collect::<BTreeSet<_>>();
+        let extensions = extensions_by_handler.into_values().collect::<BTreeSet<_>>();
 
         for reference in secret_references.values() {
             services

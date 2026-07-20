@@ -7,14 +7,14 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, ManagedFactSelection, ManagedSchemaState, ManagedScopeId,
-    PatchFormatVersion, SchemaDelta, SchemaDiagnostic, SchemaDiagnostics, SchemaFact,
-    SchemaFactId, SchemaOperation, SchemaOperationKind, SourceSpan, SourcedSchemaFact,
+    PatchFormatVersion, SchemaDelta, SchemaDiagnostic, SchemaDiagnostics, SchemaFact, SchemaFactId,
+    SchemaOperation, SchemaOperationKind, SourceSpan, SourcedSchemaFact,
 };
 
 use crate::delta_dependencies::{FactDependencyGraph, plan_schema_operations};
 use crate::{
-    ManagedSchemaScope, managed_declared_identity_fingerprint,
-    managed_semantic_schema_fingerprint, resolve_schema_with_capabilities,
+    ManagedSchemaScope, managed_declared_identity_fingerprint, managed_semantic_schema_fingerprint,
+    resolve_schema_with_capabilities,
 };
 
 /// Explicit inputs which determine a managed schema state.
@@ -96,11 +96,8 @@ pub fn managed_schema_state(
     )?;
     let selection = ManagedFactSelection::new(bound.selection().iter().cloned())?;
     let declared_fingerprint = managed_declared_identity_fingerprint(declared, &bound)?;
-    let semantic_fingerprint = managed_semantic_schema_fingerprint(
-        declared,
-        context.semantic_profile(),
-        &bound,
-    )?;
+    let semantic_fingerprint =
+        managed_semantic_schema_fingerprint(declared, context.semantic_profile(), &bound)?;
     Ok(ManagedSchemaState::new(
         declared.format(),
         declared.required_capabilities().clone(),
@@ -192,16 +189,16 @@ pub fn inverse_delta(delta: &SchemaDelta) -> Result<SchemaDelta, DeltaError> {
     )?)
 }
 
+/// Replayed fact state paired with each fact's originating source span.
+type ReplayedFacts = (
+    BTreeMap<SchemaFactId, SchemaFact>,
+    BTreeMap<SchemaFactId, SourceSpan>,
+);
+
 fn replay(
     source: &DeclaredSchema,
     operations: &[SchemaOperation],
-) -> Result<
-    (
-        BTreeMap<SchemaFactId, SchemaFact>,
-        BTreeMap<SchemaFactId, SourceSpan>,
-    ),
-    DeltaError,
-> {
+) -> Result<ReplayedFacts, DeltaError> {
     let mut facts = BTreeMap::new();
     let mut spans = BTreeMap::new();
     for fact in source.facts() {
@@ -272,16 +269,16 @@ fn replay(
                     .into());
                 }
                 let graph = FactDependencyGraph::from_facts(facts.values())?;
-                if let Some(dependents) = graph.dependents(&id) {
-                    if let Some(survivor) = dependents.iter().find(|dependent| facts.contains_key(*dependent)) {
-                        return Err(failure(
-                            "schema_delta_survivor_dependency",
-                            format!(
-                                "cannot undefine {id:?} while dependent {survivor:?} survives"
-                            ),
-                        )
-                        .into());
-                    }
+                if let Some(dependents) = graph.dependents(&id)
+                    && let Some(survivor) = dependents
+                        .iter()
+                        .find(|dependent| facts.contains_key(*dependent))
+                {
+                    return Err(failure(
+                        "schema_delta_survivor_dependency",
+                        format!("cannot undefine {id:?} while dependent {survivor:?} survives"),
+                    )
+                    .into());
                 }
                 facts.remove(&id);
                 spans.remove(&id);
@@ -321,7 +318,12 @@ fn synthetic_span(operation_index: usize, fact_index: usize) -> Result<SourceSpa
     let ordinal = operation_index
         .checked_mul(1_000)
         .and_then(|value| value.checked_add(fact_index))
-        .ok_or_else(|| failure("schema_delta_span_overflow", "synthetic span ordinal overflow"))?;
+        .ok_or_else(|| {
+            failure(
+                "schema_delta_span_overflow",
+                "synthetic span ordinal overflow",
+            )
+        })?;
     let byte_start = u64::try_from(ordinal)
         .map_err(|_| failure("schema_delta_span_overflow", "synthetic span byte overflow"))?;
     let line = u32::try_from(ordinal + 1)

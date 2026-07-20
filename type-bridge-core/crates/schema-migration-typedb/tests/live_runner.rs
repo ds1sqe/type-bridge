@@ -7,44 +7,38 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{TypeId, TypeKind};
-use type_bridge_contract::migration::{
-    MigrationAppLabel, MigrationId, MigrationName, MigrationStepId,
-    SchemaDeltaStep,
-};
-use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact,
-    SubFact, SubFactId, TypeFact,
-};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::SemanticProfileBinding;
 use type_bridge_contract::migration::MigrationStep;
-use type_bridge_contract::migration_assertion::AssertionExpectation;
-use type_bridge_orm::{ConnectOptions, Database};
-use type_bridge_query::{
-    MigrationAssertionValidationContext, lower_condition_to_plan,
+use type_bridge_contract::migration::{
+    MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
-use type_bridge_schema::{
-    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile,
-    derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
-    resolve,
+use type_bridge_contract::migration_assertion::AssertionExpectation;
+use type_bridge_contract::schema::{
+    DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId,
+    TypeFact,
 };
 use type_bridge_migration::{
-    AppliedMigrationRecord, MigrationDependencySpec, MigrationSpec,
-    MigrationStateStore, TypeDbStateStore, migration_file_checksum,
+    AppliedMigrationRecord, MigrationDependencySpec, MigrationSpec, MigrationStateStore,
+    TypeDbStateStore, migration_file_checksum,
+};
+use type_bridge_orm::{ConnectOptions, Database};
+use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
+use type_bridge_schema::{
+    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, derive_safety_conditions,
+    diff_managed, inverse_delta, managed_schema_state, resolve,
 };
 use type_bridge_schema_migration::{
-    LeaseHolderId, LegacyMigrationChecksum, LegacyMigrationReference,
-    MigrationApplyApproval, MigrationApplyTarget, MigrationDriftFinding,
-    MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationSafetyPolicy,
-    SchemaLoweringBinding, SchemaMigrationDraft,
-    VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge,
-    build_verified_manifest, encode_verified_manifest,
-    schema_lowering_profile_binding,
+    LeaseHolderId, LegacyMigrationChecksum, LegacyMigrationReference, MigrationApplyApproval,
+    MigrationApplyTarget, MigrationDriftFinding, MigrationExecutionOutcome,
+    MigrationRollbackOutcome, MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
+    VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge, build_verified_manifest,
+    encode_verified_manifest, schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
     MigrationDirectoryApplyError, MigrationDirectoryApplyOutcome,
-    MigrationDirectoryRollbackOutcome, TypeDbMigrationRunner,
-    derived_journal_database_name, execution_capability_vocabulary,
+    MigrationDirectoryRollbackOutcome, TypeDbMigrationRunner, derived_journal_database_name,
+    execution_capability_vocabulary,
 };
 
 fn write_legacy_migration(
@@ -80,13 +74,11 @@ fn write_legacy_migration(
 }
 
 fn connection() -> (String, String, String, String, ConnectOptions) {
-    let address =
-        env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
+    let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
     let database = env::var("TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE")
         .unwrap_or_else(|_| "type_bridge_v2_apply_runner".to_owned());
     let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
-    let password =
-        env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
+    let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
     let mut options = ConnectOptions::default();
     if let Ok(port) = env::var("TYPEDB_HTTP_PORT") {
         options.http_port = port.parse().expect("TYPEDB_HTTP_PORT must be a u16");
@@ -102,45 +94,21 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
         .as_nanos();
     let managed_name = format!("{database}_{}_{unique:x}", std::process::id());
     let journal_name = derived_journal_database_name(&managed_name);
-    type_bridge_orm::ensure_database_exists(
-        &address,
-        &managed_name,
-        &username,
-        &password,
-        options.clone(),
-    )
-    .await
-    .expect("create isolated managed database");
-    type_bridge_orm::ensure_database_exists(
-        &address,
-        &journal_name,
-        &username,
-        &password,
-        options.clone(),
-    )
-    .await
-    .expect("create isolated journal database");
-    let managed = Arc::new(
-        Database::connect_with_options(
-            &address,
-            &managed_name,
-            &username,
-            &password,
-            options.clone(),
-        )
+    type_bridge_orm::ensure_database_exists(&address, &managed_name, &username, &password, options)
         .await
-        .expect("connect isolated managed database"),
+        .expect("create isolated managed database");
+    type_bridge_orm::ensure_database_exists(&address, &journal_name, &username, &password, options)
+        .await
+        .expect("create isolated journal database");
+    let managed = Arc::new(
+        Database::connect_with_options(&address, &managed_name, &username, &password, options)
+            .await
+            .expect("connect isolated managed database"),
     );
     let journal = Arc::new(
-        Database::connect_with_options(
-            &address,
-            &journal_name,
-            &username,
-            &password,
-            options,
-        )
-        .await
-        .expect("connect isolated journal database"),
+        Database::connect_with_options(&address, &journal_name, &username, &password, options)
+            .await
+            .expect("connect isolated journal database"),
     );
     (managed, journal)
 }
@@ -182,8 +150,7 @@ fn type_fact(label: &str) -> SchemaFact {
 
 fn sub_fact(child: &str, parent: &str) -> SchemaFact {
     SchemaFact::Sub(SubFact::new(
-        SubFactId::new(entity_id(child), entity_id(parent))
-            .expect("fixture sub identity"),
+        SubFactId::new(entity_id(child), entity_id(parent)).expect("fixture sub identity"),
     ))
 }
 
@@ -211,10 +178,8 @@ fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
 
 fn context() -> ManagedDeltaContext {
     ManagedDeltaContext::new(
-        type_bridge_contract::managed_scope::ManagedScopeId::new(
-            "runner-live-scope",
-        )
-        .expect("scope"),
+        type_bridge_contract::managed_scope::ManagedScopeId::new("runner-live-scope")
+            .expect("scope"),
         type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.12.1/v1")
             .expect("profile"),
         execution_capability_vocabulary().expect("execution capability vocabulary"),
@@ -242,22 +207,13 @@ fn manifest_with_derived_assertions(
         schema_lowering_profile_binding().expect("lowering profile binding"),
     )
     .expect("safety profile");
-    let resolved = resolve(source, context.semantic_profile())
-        .expect("resolved assertion source");
-    let source_state =
-        managed_schema_state(source, context).expect("managed assertion source");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &source_state);
+    let resolved = resolve(source, context.semantic_profile()).expect("resolved assertion source");
+    let source_state = managed_schema_state(source, context).expect("managed assertion source");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &source_state);
     let mut steps = Vec::new();
     for (ordinal, operation) in delta.operations().iter().enumerate() {
-        let derived = derive_safety_conditions(
-            ordinal,
-            operation,
-            source,
-            target,
-            &safety_profile,
-        )
-        .expect("derived safety conditions");
+        let derived = derive_safety_conditions(ordinal, operation, source, target, &safety_profile)
+            .expect("derived safety conditions");
         for (index, condition) in derived.conditions().iter().enumerate() {
             let validated = lower_condition_to_plan(
                 condition,
@@ -284,14 +240,16 @@ fn manifest_with_derived_assertions(
     )
     .expect("schema step");
     steps.push(MigrationStep::from(step));
-    let draft = SchemaMigrationDraft::new(migration_id(name), parents, steps)
-        .expect("draft");
+    let draft = SchemaMigrationDraft::new(migration_id(name), parents, steps).expect("draft");
     build_verified_manifest(draft, (source, context)).expect("verified manifest")
 }
 
 fn write_manifest(directory: &Path, manifest: &VerifiedSchemaMigrationManifest) {
     fs::write(
-        directory.join(format!("{}.tbmigration.json", manifest.id().name().as_str())),
+        directory.join(format!(
+            "{}.tbmigration.json",
+            manifest.id().name().as_str()
+        )),
         encode_verified_manifest(manifest).expect("manifest encoding"),
     )
     .expect("write manifest file");
@@ -317,8 +275,13 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
         type_fact("person"),
         sub_fact("employee", "person"),
     ]);
-    let first =
-        manifest_with_derived_assertions("0001_person", Vec::new(), &genesis, &first_target, &context);
+    let first = manifest_with_derived_assertions(
+        "0001_person",
+        Vec::new(),
+        &genesis,
+        &first_target,
+        &context,
+    );
     let second = manifest_with_derived_assertions(
         "0002_employee_sub_person",
         vec![first.id().clone()],
@@ -338,9 +301,8 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
     write_manifest(directory.path(), &first);
     write_manifest(directory.path(), &second);
 
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone())
-            .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
     let runner = TypeDbMigrationRunner::new(
         Arc::clone(&managed),
         Arc::clone(&journal),
@@ -352,7 +314,12 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
     let holder = LeaseHolderId::new("live-runner").expect("holder");
 
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
         .await
         .expect("first directory apply");
     assert!(matches!(
@@ -365,14 +332,24 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
     assert!(export.contains("sub person"), "{export}");
 
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
         .await
         .expect("repeat apply on an up-to-date ledger");
     assert!(matches!(outcome, MigrationDirectoryApplyOutcome::UpToDate));
 
     write_manifest(directory.path(), &third);
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
         .await
         .expect("incremental apply from the live applied basis");
     assert!(matches!(
@@ -383,7 +360,12 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
     assert!(export.contains("company"), "{export}");
 
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
         .await
         .expect("final apply on a fully applied ledger");
     assert!(matches!(outcome, MigrationDirectoryApplyOutcome::UpToDate));
@@ -405,8 +387,7 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
     let context = context();
     let genesis = declared_facts(Vec::new());
     let first_target = declared_facts(vec![type_fact("person")]);
-    let second_target =
-        declared_facts(vec![type_fact("company"), type_fact("person")]);
+    let second_target = declared_facts(vec![type_fact("company"), type_fact("person")]);
     let first = manifest_with_derived_assertions(
         "0001_person",
         Vec::new(),
@@ -426,9 +407,8 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
     write_manifest(directory.path(), &first);
     write_manifest(directory.path(), &second);
 
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone())
-            .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
     let runner = TypeDbMigrationRunner::new(
         Arc::clone(&managed),
         Arc::clone(&journal),
@@ -440,7 +420,12 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
     let holder = LeaseHolderId::new("live-rollback").expect("holder");
 
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
         .await
         .expect("apply the two-migration chain");
     assert!(matches!(
@@ -464,9 +449,8 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
         "{unapproved}"
     );
 
-    let approval =
-        MigrationApplyApproval::for_rollback(&second, SafetyClass::Destructive)
-            .expect("rollback approval");
+    let approval = MigrationApplyApproval::for_rollback(&second, SafetyClass::Destructive)
+        .expect("rollback approval");
     let outcome = runner
         .rollback(
             directory.path(),
@@ -478,9 +462,7 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
         .expect("approved head rollback");
     assert!(matches!(
         outcome,
-        MigrationDirectoryRollbackOutcome::Executed(
-            MigrationRollbackOutcome::RolledBack
-        )
+        MigrationDirectoryRollbackOutcome::Executed(MigrationRollbackOutcome::RolledBack)
     ));
     let export = managed.schema_text().await.expect("post-rollback export");
     assert!(!export.contains("entity company"), "{export}");
@@ -495,11 +477,19 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
         )
         .await
         .expect("repeat rollback on a retired ledger");
-    assert!(matches!(outcome, MigrationDirectoryRollbackOutcome::UpToDate));
+    assert!(matches!(
+        outcome,
+        MigrationDirectoryRollbackOutcome::UpToDate
+    ));
 
     // The retired head is pending again and re-applies from the directory.
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
         .await
         .expect("re-apply the rolled-back head");
     assert!(matches!(
@@ -563,8 +553,7 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
     // Canonical side: the bridge records the loaded frontier and verifies
     // against the reconstructed legacy head; ordinary work chains onto it.
     let head = declared_facts(vec![type_fact("person")]);
-    let with_company =
-        declared_facts(vec![type_fact("company"), type_fact("person")]);
+    let with_company = declared_facts(vec![type_fact("company"), type_fact("person")]);
     let bridge = build_legacy_frontier_bridge(
         migration_id("0000_legacy_frontier"),
         vec![LegacyMigrationReference::new(
@@ -589,9 +578,8 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
     write_manifest(canonical_directory.path(), &bridge);
     write_manifest(canonical_directory.path(), &follow);
 
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone())
-            .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
     let runner = TypeDbMigrationRunner::new(
         Arc::clone(&managed),
         Arc::clone(&journal),
@@ -603,11 +591,7 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
     let holder = LeaseHolderId::new("legacy-import").expect("holder");
 
     let outcome = runner
-        .import_legacy_frontier(
-            legacy_directory.path(),
-            canonical_directory.path(),
-            &holder,
-        )
+        .import_legacy_frontier(legacy_directory.path(), canonical_directory.path(), &holder)
         .await
         .expect("import the completed legacy frontier");
     assert!(matches!(
@@ -616,11 +600,7 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
     ));
 
     let outcome = runner
-        .import_legacy_frontier(
-            legacy_directory.path(),
-            canonical_directory.path(),
-            &holder,
-        )
+        .import_legacy_frontier(legacy_directory.path(), canonical_directory.path(), &holder)
         .await
         .expect("repeat import on a bridged ledger");
     assert!(matches!(outcome, MigrationDirectoryApplyOutcome::UpToDate));
@@ -650,11 +630,7 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
     )
     .expect("mutate legacy python source");
     let drifted = runner
-        .import_legacy_frontier(
-            legacy_directory.path(),
-            canonical_directory.path(),
-            &holder,
-        )
+        .import_legacy_frontier(legacy_directory.path(), canonical_directory.path(), &holder)
         .await
         .expect_err("a drifted legacy file must not import");
     assert!(
@@ -681,8 +657,7 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
     let context = context();
     let genesis = declared_facts(Vec::new());
     let first_target = declared_facts(vec![type_fact("person")]);
-    let second_target =
-        declared_facts(vec![type_fact("company"), type_fact("person")]);
+    let second_target = declared_facts(vec![type_fact("company"), type_fact("person")]);
     let first = manifest_with_derived_assertions(
         "0001_person",
         Vec::new(),
@@ -701,9 +676,8 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
     write_manifest(directory.path(), &first);
     write_manifest(directory.path(), &second);
 
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone())
-            .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
     let runner = TypeDbMigrationRunner::new(
         Arc::clone(&managed),
         Arc::clone(&journal),
@@ -731,7 +705,12 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
     );
 
     let outcome = runner
-        .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
         .await
         .expect("apply the chain");
     assert!(matches!(
@@ -775,14 +754,15 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
         .query("define entity intruder;")
         .await
         .expect("mutate the managed schema out of band");
-    transaction.commit().await.expect("commit out-of-band change");
+    transaction
+        .commit()
+        .await
+        .expect("commit out-of-band change");
     let report = runner
         .verify(directory.path(), Some(&second_target))
         .await
         .expect("live drift verification");
-    let [MigrationDriftFinding::LiveSemantics { recorded, observed }] =
-        report.findings()
-    else {
+    let [MigrationDriftFinding::LiveSemantics { recorded, observed }] = report.findings() else {
         panic!("expected exactly one live-semantics finding: {report:?}");
     };
     assert_eq!(recorded, second.target_state().managed_semantic_schema());

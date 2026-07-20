@@ -1,5 +1,5 @@
-use std::env;
 use std::collections::BTreeSet;
+use std::env;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,30 +9,23 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::{
-    MigrationAppLabel, MigrationId, MigrationName, MigrationStepId,
-    SchemaDeltaStep,
+    MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact,
-    TypeFact,
+    DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
 };
 use type_bridge_orm::{ConnectOptions, Database};
-use type_bridge_schema::{
-    ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta,
-};
+use type_bridge_schema::{ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
-    MigrationSafetyPolicy, SafetyPolicyDecision,
-    AppliedRecord, ExecutionScope, GroupEventRecord, GroupJournalEventKind,
-    LeaseHolderId, MigrationApplyTarget, MigrationExecutionJournal,
-    MigrationHistoryGraph, MigrationLeaseStore, PlanRecord,
-    SchemaLoweringBinding, SchemaMigrationDraft,
-    VerifiedSchemaMigrationManifest, build_verified_manifest,
+    AppliedRecord, ExecutionScope, GroupEventRecord, GroupJournalEventKind, LeaseHolderId,
+    MigrationApplyTarget, MigrationExecutionJournal, MigrationHistoryGraph, MigrationLeaseStore,
+    MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision, SchemaLoweringBinding,
+    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
     build_verified_migration_apply_plan, typedb_3_12_1_profile,
 };
 use type_bridge_schema_migration_typedb::{
-    TypeDbMigrationStore, VerifiedMigrationCatalog,
-    derived_journal_database_name, partition_typeql_export,
-    require_active_managed_fence,
+    TypeDbMigrationStore, VerifiedMigrationCatalog, derived_journal_database_name,
+    partition_typeql_export, require_active_managed_fence,
 };
 
 fn connection() -> (String, String, String, String, ConnectOptions) {
@@ -56,45 +49,21 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
         .as_nanos();
     let managed_name = format!("{database}_{}_{unique:x}", std::process::id());
     let journal_name = derived_journal_database_name(&managed_name);
-    type_bridge_orm::ensure_database_exists(
-        &address,
-        &managed_name,
-        &username,
-        &password,
-        options.clone(),
-    )
-    .await
-    .expect("create isolated managed database");
-    type_bridge_orm::ensure_database_exists(
-        &address,
-        &journal_name,
-        &username,
-        &password,
-        options.clone(),
-    )
-    .await
-    .expect("create isolated journal database");
-    let managed = Arc::new(
-        Database::connect_with_options(
-            &address,
-            &managed_name,
-            &username,
-            &password,
-            options.clone(),
-        )
+    type_bridge_orm::ensure_database_exists(&address, &managed_name, &username, &password, options)
         .await
-        .expect("connect isolated managed database"),
+        .expect("create isolated managed database");
+    type_bridge_orm::ensure_database_exists(&address, &journal_name, &username, &password, options)
+        .await
+        .expect("create isolated journal database");
+    let managed = Arc::new(
+        Database::connect_with_options(&address, &managed_name, &username, &password, options)
+            .await
+            .expect("connect isolated managed database"),
     );
     let journal = Arc::new(
-        Database::connect_with_options(
-            &address,
-            &journal_name,
-            &username,
-            &password,
-            options,
-        )
-        .await
-        .expect("connect isolated journal database"),
+        Database::connect_with_options(&address, &journal_name, &username, &password, options)
+            .await
+            .expect("connect isolated journal database"),
     );
     assert_eq!(
         journal.database_name(),
@@ -152,13 +121,7 @@ fn verified_manifest(
     target: &DeclaredSchema,
     context: &ManagedDeltaContext,
 ) -> VerifiedSchemaMigrationManifest {
-    verified_manifest_named(
-        "0001_company",
-        Vec::new(),
-        source,
-        target,
-        context,
-    )
+    verified_manifest_named("0001_company", Vec::new(), source, target, context)
 }
 
 fn verified_manifest_named(
@@ -176,12 +139,7 @@ fn verified_manifest_named(
         Some(reverse),
     )
     .expect("schema step");
-    let draft = SchemaMigrationDraft::new(
-        migration_id(name),
-        parents,
-        vec![step],
-    )
-    .expect("draft");
+    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("draft");
     build_verified_manifest(draft, (source, context)).expect("verified manifest")
 }
 
@@ -195,10 +153,9 @@ fn additive_policy() -> MigrationSafetyPolicy {
 #[ignore = "requires an isolated TypeDB 3.12.1 server"]
 async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
     let (managed_database, journal_database) = databases().await;
-    let catalog = VerifiedMigrationCatalog::new(
-        std::iter::empty::<&VerifiedSchemaMigrationManifest>(),
-    )
-    .expect("empty verified catalog");
+    let catalog =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .expect("empty verified catalog");
     let store = TypeDbMigrationStore::new(
         Arc::clone(&managed_database),
         Arc::clone(&journal_database),
@@ -210,9 +167,8 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         .await
         .expect("install and verify frozen control schema");
 
-    let scope = ExecutionScope::new(
-        ManagedScopeId::new("live-execution-store").expect("managed scope id"),
-    );
+    let scope =
+        ExecutionScope::new(ManagedScopeId::new("live-execution-store").expect("managed scope id"));
     let owner_a = LeaseHolderId::new("live-owner-a").expect("lease owner A");
     let owner_b = LeaseHolderId::new("live-owner-b").expect("lease owner B");
 
@@ -228,7 +184,10 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         .load_applied(&lease_a)
         .await
         .expect_err("old fence must not read the journal");
-    assert_eq!(stale_read.code().as_str(), "migration_execution_stale_fence");
+    assert_eq!(
+        stale_read.code().as_str(),
+        "migration_execution_stale_fence"
+    );
     let stale_release = store
         .release(&lease_a)
         .await
@@ -245,7 +204,10 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
             .is_empty()
     );
 
-    store.release(&lease_b).await.expect("release current lease");
+    store
+        .release(&lease_b)
+        .await
+        .expect("release current lease");
     let lease_c = store
         .acquire(&scope, &owner_a)
         .await
@@ -253,7 +215,10 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
     assert_eq!(lease_c.fence().get(), 3);
     store.release(&lease_c).await.expect("release final lease");
 
-    let export = managed_database.schema_text().await.expect("export provider schema");
+    let export = managed_database
+        .schema_text()
+        .await
+        .expect("export provider schema");
     let partition = partition_typeql_export(
         DocumentId::new("live-provider-export.typeql").expect("document id"),
         &export,
@@ -266,12 +231,10 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
     let target = declared(&["person", "company"]);
     let context = context();
     let migration = verified_manifest(&base, &target, &context);
-    let graph = MigrationHistoryGraph::from_verified([migration.clone()])
-        .expect("verified history");
-    let lowering = SchemaLoweringBinding::current(
-        context.available_capabilities().clone(),
-    )
-    .expect("lowering binding");
+    let graph =
+        MigrationHistoryGraph::from_verified([migration.clone()]).expect("verified history");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -290,12 +253,11 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         Arc::clone(&journal_database),
         catalog,
     )
-        .expect("bind exact managed/journal pair")
-        .bind_plan(&plan)
-        .expect("bind exact plan");
-    let journal_scope = ExecutionScope::new(
-        ManagedScopeId::new("journal-live-scope").expect("journal scope"),
-    );
+    .expect("bind exact managed/journal pair")
+    .bind_plan(&plan)
+    .expect("bind exact plan");
+    let journal_scope =
+        ExecutionScope::new(ManagedScopeId::new("journal-live-scope").expect("journal scope"));
     let executor_a = LeaseHolderId::new("journal-executor-a").expect("executor A");
     let executor_b = LeaseHolderId::new("journal-executor-b").expect("executor B");
     let lease_one = journal
@@ -427,7 +389,10 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         .expect("load applied ledger");
     assert_eq!(applied.len(), 1);
     assert_eq!(applied[0].sequence().get(), 4);
-    journal.release(&lease_two).await.expect("release recovery lease");
+    journal
+        .release(&lease_two)
+        .await
+        .expect("release recovery lease");
 
     let final_target = declared(&["person", "company", "office"]);
     let second = verified_manifest_named(
@@ -437,11 +402,8 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         &final_target,
         &context,
     );
-    let follow_on_graph = MigrationHistoryGraph::from_verified([
-        migration.clone(),
-        second.clone(),
-    ])
-    .expect("follow-on history");
+    let follow_on_graph = MigrationHistoryGraph::from_verified([migration.clone(), second.clone()])
+        .expect("follow-on history");
     let applied_basis = BTreeSet::from([migration.id().clone()]);
     let follow_on_plan = build_verified_migration_apply_plan(
         &follow_on_graph,
@@ -453,20 +415,23 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         &[],
     )
     .expect("follow-on plan");
-    assert_eq!(follow_on_plan.applied_migrations(), &[migration.id().clone()]);
+    assert_eq!(
+        follow_on_plan.applied_migrations(),
+        &[migration.id().clone()]
+    );
     assert_eq!(follow_on_plan.migrations().len(), 1);
     assert_eq!(follow_on_plan.migrations()[0].manifest().id(), second.id());
 
-    let reopened_catalog = VerifiedMigrationCatalog::new([&migration, &second])
-        .expect("reopened catalog");
+    let reopened_catalog =
+        VerifiedMigrationCatalog::new([&migration, &second]).expect("reopened catalog");
     let reopened = TypeDbMigrationStore::new(
         Arc::clone(&managed_database),
         Arc::clone(&journal_database),
         reopened_catalog,
     )
-        .expect("rebind exact managed/journal pair")
-        .bind_plan(&follow_on_plan)
-        .expect("bind follow-on plan after store restart");
+    .expect("rebind exact managed/journal pair")
+    .bind_plan(&follow_on_plan)
+    .expect("bind follow-on plan after store restart");
     let executor_c = LeaseHolderId::new("journal-executor-c").expect("executor C");
     let lease_three = reopened
         .acquire(&journal_scope, &executor_c)
@@ -544,9 +509,8 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
             .get(),
         7
     );
-    let follow_on_applied =
-        AppliedRecord::from_verified_manifest_contract(&lease_three, &second)
-            .expect("follow-on applied record");
+    let follow_on_applied = AppliedRecord::from_verified_manifest_contract(&lease_three, &second)
+        .expect("follow-on applied record");
     assert_eq!(
         reopened
             .record_applied(&lease_three, follow_on_applied)

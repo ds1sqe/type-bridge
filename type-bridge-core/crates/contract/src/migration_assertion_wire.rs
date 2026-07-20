@@ -11,9 +11,9 @@ use crate::fingerprint::{
 };
 use crate::id::{AttributeId, RoleId, TypeId, TypeKind};
 use crate::migration_assertion::{
-    AssertionBinding, AssertionExpectation, AssertionPattern, AssertionRolePlayer,
-    BindingId, MigrationAssertionPlan, QueryVariable, ValueComparator, ValueOperand,
-    assertion_failure, encode_migration_assertion_plan,
+    AssertionBinding, AssertionExpectation, AssertionPattern, AssertionRolePlayer, BindingId,
+    MigrationAssertionPlan, QueryVariable, ValueComparator, ValueOperand, assertion_failure,
+    encode_migration_assertion_plan,
 };
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::CanonicalValue;
@@ -67,15 +67,13 @@ impl MigrationAssertionPlanWire {
                 .collect::<Result<Vec<_>, _>>()?,
             self.outputs
                 .into_iter()
-                .map(|id| raw_binding(id))
+                .map(raw_binding)
                 .collect::<Result<Vec<_>, _>>()?,
             self.witnesses
                 .into_iter()
-                .map(|id| raw_binding(id))
+                .map(raw_binding)
                 .collect::<Result<Vec<_>, _>>()?,
-            ManagedSemanticSchemaFingerprint::from_wire(
-                self.managed_semantics.rebuild()?,
-            )?,
+            ManagedSemanticSchemaFingerprint::from_wire(self.managed_semantics.rebuild()?)?,
             AssertionExpectation::NoRows,
         )?;
         if self.required_capabilities != *trusted.required_capabilities() {
@@ -158,7 +156,9 @@ enum AssertionPatternWire {
         left: ValueOperandWire,
         right: ValueOperandWire,
     },
-    Not { patterns: Vec<AssertionPatternWire> },
+    Not {
+        patterns: Vec<AssertionPatternWire>,
+    },
 }
 
 impl AssertionPatternWire {

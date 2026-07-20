@@ -6,39 +6,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{Database, OrmError, Transaction};
 use type_bridge_schema_compat::typeql_to_declared;
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, ExecutionFuture, ExecutionScope,
-    GroupEventRecord, GroupJournalEventKind, JournalEntry, JournalSequence,
-    LeaseHolderId, MigrationExecutionJournal, MigrationLease,
-    MigrationLeaseStore, OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord,
-    RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord,
-    VerifiedMigrationApplyPlan, VerifiedMigrationRollbackPlan,
-    VerifiedMigrationTransactionGroup, VerifiedSchemaMigrationManifest,
-    active_applied_entries, verified_manifest_digest,
+    AppliedRecord, ExecutionFence, ExecutionFuture, ExecutionScope, GroupEventRecord,
+    GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId, MigrationExecutionJournal,
+    MigrationLease, MigrationLeaseStore, OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord,
+    RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord, VerifiedMigrationApplyPlan,
+    VerifiedMigrationRollbackPlan, VerifiedMigrationTransactionGroup,
+    VerifiedSchemaMigrationManifest, active_applied_entries, verified_manifest_digest,
 };
 
 use crate::control_schema::{
     APPLIED_RECORD_KIND, CONTROL_ENTITY, CONTROL_SCOPE, EVENT_RECORD_KIND,
-    JOURNAL_CONTROL_SCHEMA_TYPEQL, JOURNAL_ENTITY, LEASE_FENCE, LEASE_FREE,
-    LEASE_HELD, LEASE_HOLDER, LEASE_STATE, MANAGED_FENCE_SCHEMA_TYPEQL,
-    NEXT_SEQUENCE, PLAN_RECORD_KIND, RECORD_KEY, RECORD_KIND, RECORD_PAYLOAD,
-    RECORD_PAYLOAD_DIGEST, RECORD_SEQUENCE, ROLLBACK_EVENT_RECORD_KIND,
-    ROLLBACK_PLAN_RECORD_KIND, ROLLED_BACK_RECORD_KIND,
+    JOURNAL_CONTROL_SCHEMA_TYPEQL, JOURNAL_ENTITY, LEASE_FENCE, LEASE_FREE, LEASE_HELD,
+    LEASE_HOLDER, LEASE_STATE, MANAGED_FENCE_SCHEMA_TYPEQL, NEXT_SEQUENCE, PLAN_RECORD_KIND,
+    RECORD_KEY, RECORD_KIND, RECORD_PAYLOAD, RECORD_PAYLOAD_DIGEST, RECORD_SEQUENCE,
+    ROLLBACK_EVENT_RECORD_KIND, ROLLBACK_PLAN_RECORD_KIND, ROLLED_BACK_RECORD_KIND,
 };
 use crate::observation::partition_typeql_export;
 use crate::wire::{
-    decode_applied, decode_event, decode_plan, decode_rollback_event,
-    decode_rollback_plan, decode_rolled_back, encode_applied, encode_event,
-    encode_plan, encode_rollback_event, encode_rollback_plan,
-    encode_rolled_back, persisted_fence,
+    decode_applied, decode_event, decode_plan, decode_rollback_event, decode_rollback_plan,
+    decode_rolled_back, encode_applied, encode_event, encode_plan, encode_rollback_event,
+    encode_rollback_plan, encode_rolled_back, persisted_fence,
 };
 
 const JOURNAL_DATABASE_SUFFIX: &str = "__tbv2_journal";
@@ -82,9 +76,7 @@ impl<'a> VerifiedMigrationCatalog<'a> {
         self.manifests.get(id).copied()
     }
 
-    fn values(
-        &self,
-    ) -> impl ExactSizeIterator<Item = &'a VerifiedSchemaMigrationManifest> + '_ {
+    fn values(&self) -> impl ExactSizeIterator<Item = &'a VerifiedSchemaMigrationManifest> + '_ {
         self.manifests.values().copied()
     }
 }
@@ -127,9 +119,15 @@ impl<'a> TypeDbMigrationStore<'a> {
                 "migration_typedb_journal_database_name_mismatch",
                 "journal database name is not the one-to-one derivative of the managed database",
             )
-            .with_detail("managed_database", managed_database.database_name().to_owned())
+            .with_detail(
+                "managed_database",
+                managed_database.database_name().to_owned(),
+            )
             .with_detail("expected_journal_database", expected)
-            .with_detail("actual_journal_database", journal_database.database_name().to_owned()));
+            .with_detail(
+                "actual_journal_database",
+                journal_database.database_name().to_owned(),
+            ));
         }
         Ok(Self {
             managed_database,
@@ -143,10 +141,7 @@ impl<'a> TypeDbMigrationStore<'a> {
     }
 
     /// Bind the store to the exact apply plan used for open-plan recovery.
-    pub fn bind_plan(
-        mut self,
-        plan: &'a VerifiedMigrationApplyPlan,
-    ) -> Result<Self, Diagnostic> {
+    pub fn bind_plan(mut self, plan: &'a VerifiedMigrationApplyPlan) -> Result<Self, Diagnostic> {
         for migration in plan.migrations() {
             let Some(catalog_manifest) = self.catalog.get(migration.manifest().id()) else {
                 return Err(failure(
@@ -173,8 +168,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         plan: &'a VerifiedMigrationRollbackPlan,
     ) -> Result<Self, Diagnostic> {
         for rollback in plan.rollbacks() {
-            let Some(catalog_manifest) = self.catalog.get(rollback.manifest().id())
-            else {
+            let Some(catalog_manifest) = self.catalog.get(rollback.manifest().id()) else {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
                     "migration_typedb_plan_manifest_missing",
@@ -265,9 +259,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         })
     }
 
-    fn require_rollback_plan(
-        &self,
-    ) -> Result<&VerifiedMigrationRollbackPlan, Diagnostic> {
+    fn require_rollback_plan(&self) -> Result<&VerifiedMigrationRollbackPlan, Diagnostic> {
         self.rollback_plan.ok_or_else(|| {
             failure(
                 DiagnosticCategory::InvalidContract,
@@ -333,10 +325,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         Ok(lease)
     }
 
-    async fn publish_managed_fence(
-        &self,
-        lease: &MigrationLease,
-    ) -> Result<(), Diagnostic> {
+    async fn publish_managed_fence(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
         let mut transaction = self
             .managed_database
             .write_transaction()
@@ -414,7 +403,11 @@ impl<'a> TypeDbMigrationStore<'a> {
             return Err(record_identity_mismatch());
         }
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.write_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .write_transaction()
+            .await
+            .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         if open_plan_exists(&mut transaction, lease.scope()).await? {
             let _ = transaction.rollback().await;
@@ -425,14 +418,8 @@ impl<'a> TypeDbMigrationStore<'a> {
             ));
         }
         let payload = encode_plan(&record)?;
-        let sequence = append_record(
-            &mut transaction,
-            lease,
-            current,
-            PLAN_RECORD_KIND,
-            &payload,
-        )
-        .await?;
+        let sequence =
+            append_record(&mut transaction, lease, current, PLAN_RECORD_KIND, &payload).await?;
         transaction.commit().await.map_err(map_orm_error)?;
         Ok(JournalEntry::from_store(sequence, record))
     }
@@ -445,7 +432,11 @@ impl<'a> TypeDbMigrationStore<'a> {
         ensure_record_lease(lease, record.scope(), record.fence())?;
         let plan = self.require_plan()?;
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.write_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .write_transaction()
+            .await
+            .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let open = self
             .load_open_plan_in_transaction(&mut transaction, lease, plan)
@@ -484,7 +475,11 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
         let plan = self.require_plan()?;
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.write_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .write_transaction()
+            .await
+            .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let existing = self
             .load_applied_in_transaction(&mut transaction, lease.scope(), lease.holder())
@@ -565,11 +560,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             .schema_text()
             .await
             .map_err(map_orm_error)?;
-        if !control_schema_matches(
-            &export,
-            JOURNAL_CONTROL_SCHEMA_TYPEQL,
-            "journal-control",
-        )? {
+        if !control_schema_matches(&export, JOURNAL_CONTROL_SCHEMA_TYPEQL, "journal-control")? {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_typedb_journal_control_schema_absent",
@@ -587,7 +578,11 @@ impl<'a> TypeDbMigrationStore<'a> {
         // inspection-local identity keeps this path honest about never
         // having acquired anything.
         let holder = LeaseHolderId::new("typebridge-read-only-inspection")?;
-        let mut transaction = self.journal_database.read_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .read_transaction()
+            .await
+            .map_err(map_orm_error)?;
         let result = self
             .load_applied_in_transaction(&mut transaction, scope, &holder)
             .await;
@@ -604,7 +599,11 @@ impl<'a> TypeDbMigrationStore<'a> {
         lease: &MigrationLease,
     ) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.read_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .read_transaction()
+            .await
+            .map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
             .load_applied_in_transaction(&mut transaction, lease.scope(), lease.holder())
@@ -623,7 +622,11 @@ impl<'a> TypeDbMigrationStore<'a> {
     ) -> Result<Option<OpenPlanRecord>, Diagnostic> {
         let plan = self.require_plan()?;
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.read_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .read_transaction()
+            .await
+            .map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
             .load_open_plan_in_transaction(&mut transaction, lease, plan)
@@ -661,16 +664,15 @@ impl<'a> TypeDbMigrationStore<'a> {
         let mut result = Vec::with_capacity(rows.len());
         for row in rows {
             let fence = persisted_fence(&row.payload, APPLIED_RECORD_KIND)?;
-            let historical =
-                MigrationLease::new(scope.clone(), holder.clone(), fence);
+            let historical = MigrationLease::new(scope.clone(), holder.clone(), fence);
             let mut decoded = None;
             for manifest in self.catalog.values() {
                 let expected =
                     AppliedRecord::from_verified_manifest_contract(&historical, manifest)?;
-                if let Ok(record) = decode_applied(&row.payload, expected) {
-                    if decoded.replace(record).is_some() {
-                        return Err(record_identity_mismatch());
-                    }
+                if let Ok(record) = decode_applied(&row.payload, expected)
+                    && decoded.replace(record).is_some()
+                {
+                    return Err(record_identity_mismatch());
                 }
             }
             let record = decoded.ok_or_else(record_identity_mismatch)?;
@@ -685,23 +687,19 @@ impl<'a> TypeDbMigrationStore<'a> {
         scope: &ExecutionScope,
         holder: &LeaseHolderId,
     ) -> Result<Vec<JournalEntry<RolledBackRecord>>, Diagnostic> {
-        let rows =
-            load_rows(transaction, scope, Some(ROLLED_BACK_RECORD_KIND)).await?;
+        let rows = load_rows(transaction, scope, Some(ROLLED_BACK_RECORD_KIND)).await?;
         let mut result = Vec::with_capacity(rows.len());
         for row in rows {
             let fence = persisted_fence(&row.payload, ROLLED_BACK_RECORD_KIND)?;
-            let historical =
-                MigrationLease::new(scope.clone(), holder.clone(), fence);
+            let historical = MigrationLease::new(scope.clone(), holder.clone(), fence);
             let mut decoded = None;
             for manifest in self.catalog.values() {
-                let expected = RolledBackRecord::from_verified_manifest_contract(
-                    &historical,
-                    manifest,
-                )?;
-                if let Ok(record) = decode_rolled_back(&row.payload, expected) {
-                    if decoded.replace(record).is_some() {
-                        return Err(record_identity_mismatch());
-                    }
+                let expected =
+                    RolledBackRecord::from_verified_manifest_contract(&historical, manifest)?;
+                if let Ok(record) = decode_rolled_back(&row.payload, expected)
+                    && decoded.replace(record).is_some()
+                {
+                    return Err(record_identity_mismatch());
                 }
             }
             let record = decoded.ok_or_else(record_identity_mismatch)?;
@@ -729,11 +727,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
         let row = &plan_rows[0];
         let fence = persisted_fence(&row.payload, PLAN_RECORD_KIND)?;
-        let historical = MigrationLease::new(
-            lease.scope().clone(),
-            lease.holder().clone(),
-            fence,
-        );
+        let historical = MigrationLease::new(lease.scope().clone(), lease.holder().clone(), fence);
         let expected = expected_plan_record(plan, &historical, fence)?;
         let plan_record = decode_plan(&row.payload, expected)?;
         let plan_entry = JournalEntry::from_store(row.sequence, plan_record);
@@ -759,7 +753,11 @@ impl<'a> TypeDbMigrationStore<'a> {
             return Err(record_identity_mismatch());
         }
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.write_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .write_transaction()
+            .await
+            .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         if open_plan_exists(&mut transaction, lease.scope()).await? {
             let _ = transaction.rollback().await;
@@ -790,7 +788,11 @@ impl<'a> TypeDbMigrationStore<'a> {
         ensure_record_lease(lease, record.scope(), record.fence())?;
         let plan = self.require_rollback_plan()?;
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.write_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .write_transaction()
+            .await
+            .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let open = self
             .load_open_rollback_plan_in_transaction(&mut transaction, lease, plan)
@@ -802,9 +804,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             .rollback_ids()
             .iter()
             .zip(open.plan().record().manifest_digests())
-            .any(|(id, digest)| {
-                id == record.migration_id() && *digest == record.manifest_digest()
-            });
+            .any(|(id, digest)| id == record.migration_id() && *digest == record.manifest_digest());
         if !member {
             let _ = transaction.rollback().await;
             return Err(record_identity_mismatch());
@@ -835,14 +835,17 @@ impl<'a> TypeDbMigrationStore<'a> {
                 "retirement record references a manifest absent from verified history",
             )
         })?;
-        let expected =
-            RolledBackRecord::from_verified_manifest_contract(lease, expected_manifest)?;
+        let expected = RolledBackRecord::from_verified_manifest_contract(lease, expected_manifest)?;
         if record != expected {
             return Err(record_identity_mismatch());
         }
         let plan = self.require_rollback_plan()?;
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.write_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .write_transaction()
+            .await
+            .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let raw = self
             .load_applied_rows_in_transaction(&mut transaction, lease.scope(), lease.holder())
@@ -856,9 +859,10 @@ impl<'a> TypeDbMigrationStore<'a> {
                 && entry.record().manifest_digest() == record.manifest_digest()
         });
         if !is_active {
-            let result = if let Some(existing) = rolled_back.iter().find(|entry| {
-                entry.record() == &record && entry.record().fence() == lease.fence()
-            }) {
+            let result = if let Some(existing) = rolled_back
+                .iter()
+                .find(|entry| entry.record() == &record && entry.record().fence() == lease.fence())
+            {
                 Ok(existing.clone())
             } else {
                 Err(failure(
@@ -882,8 +886,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             .iter()
             .position(|id| id == record.migration_id());
         if manifest_index.is_none_or(|index| {
-            open.plan().record().manifest_digests().get(index)
-                != Some(&record.manifest_digest())
+            open.plan().record().manifest_digests().get(index) != Some(&record.manifest_digest())
         }) {
             let _ = transaction.rollback().await;
             return Err(failure(
@@ -928,7 +931,11 @@ impl<'a> TypeDbMigrationStore<'a> {
         lease: &MigrationLease,
     ) -> Result<Vec<JournalEntry<RolledBackRecord>>, Diagnostic> {
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.read_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .read_transaction()
+            .await
+            .map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
             .load_rolled_back_in_transaction(&mut transaction, lease.scope(), lease.holder())
@@ -947,7 +954,11 @@ impl<'a> TypeDbMigrationStore<'a> {
     ) -> Result<Option<OpenRollbackPlanRecord>, Diagnostic> {
         let plan = self.require_rollback_plan()?;
         self.ensure_schema().await?;
-        let mut transaction = self.journal_database.read_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = self
+            .journal_database
+            .read_transaction()
+            .await
+            .map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
             .load_open_rollback_plan_in_transaction(&mut transaction, lease, plan)
@@ -988,8 +999,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             load_rows(transaction, lease.scope(), Some(ROLLBACK_EVENT_RECORD_KIND)).await?;
         let mut events = Vec::with_capacity(event_rows.len());
         for event_row in event_rows {
-            let record =
-                decode_rollback_event_against_plan(&event_row.payload, lease, plan)?;
+            let record = decode_rollback_event_against_plan(&event_row.payload, lease, plan)?;
             events.push(JournalEntry::from_store(event_row.sequence, record));
         }
         OpenRollbackPlanRecord::from_store(plan_entry, events).map(Some)
@@ -1206,9 +1216,7 @@ async fn load_free_control(
     Ok(query_documents(transaction, &query).await?.len() == 1)
 }
 
-fn parse_control_documents(
-    documents: Vec<Value>,
-) -> Result<Option<ControlSnapshot>, Diagnostic> {
+fn parse_control_documents(documents: Vec<Value>) -> Result<Option<ControlSnapshot>, Diagnostic> {
     if documents.is_empty() {
         return Ok(None);
     }
@@ -1364,10 +1372,7 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
         key,
         kind,
         payload,
-        sequence: JournalSequence::new(canonical_u64(&required_scalar(
-            &document,
-            "sequence",
-        )?)?)?,
+        sequence: JournalSequence::new(canonical_u64(&required_scalar(&document, "sequence")?)?)?,
     })
 }
 
@@ -1386,7 +1391,9 @@ async fn query_documents(
 }
 
 fn required_scalar(document: &Value, key: &str) -> Result<String, Diagnostic> {
-    let value = document.get(key).ok_or_else(|| malformed_provider_row(key))?;
+    let value = document
+        .get(key)
+        .ok_or_else(|| malformed_provider_row(key))?;
     scalar(value).ok_or_else(|| malformed_provider_row(key))
 }
 
@@ -1401,7 +1408,9 @@ fn scalar(value: &Value) -> Option<String> {
 }
 
 fn canonical_u64(value: &str) -> Result<u64, Diagnostic> {
-    let parsed = value.parse::<u64>().map_err(|_| malformed_provider_row("u64"))?;
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|_| malformed_provider_row("u64"))?;
     if parsed.to_string() != value {
         return Err(malformed_provider_row("u64"));
     }
@@ -1553,17 +1562,8 @@ fn expected_plan_record(
             "persistent execution store requires a non-empty apply plan",
         )
     })?;
-    let historical = MigrationLease::new(
-        lease.scope().clone(),
-        lease.holder().clone(),
-        fence,
-    );
-    PlanRecord::from_verified_plan(
-        &historical,
-        plan,
-        plan.applied_migrations(),
-        source,
-    )
+    let historical = MigrationLease::new(lease.scope().clone(), lease.holder().clone(), fence);
+    PlanRecord::from_verified_plan(&historical, plan, plan.applied_migrations(), source)
 }
 
 fn expected_rollback_plan_record(
@@ -1571,18 +1571,9 @@ fn expected_rollback_plan_record(
     lease: &MigrationLease,
     fence: ExecutionFence,
 ) -> Result<RollbackPlanRecord, Diagnostic> {
-    let historical = MigrationLease::new(
-        lease.scope().clone(),
-        lease.holder().clone(),
-        fence,
-    );
+    let historical = MigrationLease::new(lease.scope().clone(), lease.holder().clone(), fence);
     let basis: Vec<MigrationId> = plan.applied_basis().into_iter().collect();
-    RollbackPlanRecord::from_verified_rollback_plan(
-        &historical,
-        plan,
-        &basis,
-        plan.source_state(),
-    )
+    RollbackPlanRecord::from_verified_rollback_plan(&historical, plan, &basis, plan.source_state())
 }
 
 fn decode_rollback_event_against_plan(
@@ -1591,11 +1582,7 @@ fn decode_rollback_event_against_plan(
     plan: &VerifiedMigrationRollbackPlan,
 ) -> Result<RollbackStepEventRecord, Diagnostic> {
     let fence = persisted_fence(bytes, ROLLBACK_EVENT_RECORD_KIND)?;
-    let historical = MigrationLease::new(
-        lease.scope().clone(),
-        lease.holder().clone(),
-        fence,
-    );
+    let historical = MigrationLease::new(lease.scope().clone(), lease.holder().clone(), fence);
     let mut matched = None;
     for rollback in plan.rollbacks() {
         for (step_index, step) in rollback.steps().iter().enumerate() {
@@ -1611,19 +1598,15 @@ fn decode_rollback_event_against_plan(
             ] {
                 let observed = (kind == GroupJournalEventKind::Committed)
                     .then(|| reverse.target().managed_semantic_schema().clone());
-                let Ok(candidate) = RollbackStepEventRecord::new(
-                    &historical,
-                    rollback,
-                    step_index,
-                    kind,
-                    observed,
-                ) else {
+                let Ok(candidate) =
+                    RollbackStepEventRecord::new(&historical, rollback, step_index, kind, observed)
+                else {
                     continue;
                 };
-                if let Ok(record) = decode_rollback_event(bytes, candidate) {
-                    if matched.replace(record).is_some() {
-                        return Err(record_identity_mismatch());
-                    }
+                if let Ok(record) = decode_rollback_event(bytes, candidate)
+                    && matched.replace(record).is_some()
+                {
+                    return Err(record_identity_mismatch());
                 }
             }
         }
@@ -1637,11 +1620,7 @@ fn decode_event_against_plan(
     plan: &VerifiedMigrationApplyPlan,
 ) -> Result<GroupEventRecord, Diagnostic> {
     let fence = persisted_fence(bytes, EVENT_RECORD_KIND)?;
-    let historical = MigrationLease::new(
-        lease.scope().clone(),
-        lease.holder().clone(),
-        fence,
-    );
+    let historical = MigrationLease::new(lease.scope().clone(), lease.holder().clone(), fence);
     let mut matched = None;
     for migration in plan.migrations() {
         for group in migration.transaction_groups() {
@@ -1657,19 +1636,15 @@ fn decode_event_against_plan(
                 } else {
                     None
                 };
-                let Ok(candidate) = GroupEventRecord::new(
-                    &historical,
-                    migration,
-                    group,
-                    kind,
-                    observed,
-                ) else {
+                let Ok(candidate) =
+                    GroupEventRecord::new(&historical, migration, group, kind, observed)
+                else {
                     continue;
                 };
-                if let Ok(record) = decode_event(bytes, candidate) {
-                    if matched.replace(record).is_some() {
-                        return Err(record_identity_mismatch());
-                    }
+                if let Ok(record) = decode_event(bytes, candidate)
+                    && matched.replace(record).is_some()
+                {
+                    return Err(record_identity_mismatch());
                 }
             }
         }
@@ -1703,10 +1678,7 @@ fn ensure_record_lease(
     }
 }
 
-fn ensure_plan_membership(
-    plan: &PlanRecord,
-    event: &GroupEventRecord,
-) -> Result<(), Diagnostic> {
+fn ensure_plan_membership(plan: &PlanRecord, event: &GroupEventRecord) -> Result<(), Diagnostic> {
     let found = plan
         .migration_ids()
         .iter()
@@ -1719,10 +1691,7 @@ fn ensure_plan_membership(
     }
 }
 
-fn ensure_applied_membership(
-    plan: &PlanRecord,
-    applied: &AppliedRecord,
-) -> Result<(), Diagnostic> {
+fn ensure_applied_membership(plan: &PlanRecord, applied: &AppliedRecord) -> Result<(), Diagnostic> {
     let found = plan
         .migration_ids()
         .iter()
@@ -1822,11 +1791,7 @@ fn malformed_provider_row(field: &str) -> Diagnostic {
     .with_detail("field", field.to_owned())
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static diagnostic code is valid"),

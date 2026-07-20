@@ -4,39 +4,29 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use type_bridge_contract::codec::FormatVersion;
+use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
-use type_bridge_contract::managed_scope::{
-    ManagedScopeId, SemanticProfileBinding,
-};
+use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileBinding};
 use type_bridge_contract::migration::{
-    MigrationAppLabel, MigrationId, MigrationStep, MigrationStepId,
-    SchemaDeltaStep,
+    MigrationAppLabel, MigrationId, MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-    DeclaredSchema, DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
 };
-use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_orm::{ConnectOptions, Database};
-use type_bridge_query::{
-    MigrationAssertionValidationContext, lower_condition_to_plan,
-};
+use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
-    ManagedDeltaContext, SafetyDerivationProfile,
-    derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
-    resolve,
+    ManagedDeltaContext, SafetyDerivationProfile, derive_safety_conditions, diff_managed,
+    inverse_delta, managed_schema_state, resolve,
 };
 use type_bridge_schema_migration::{
-    MigrationSafetyPolicy,
-    ExecutionScope, LeaseHolderId, MigrationApplyTarget,
-    MigrationExecutionJournal, MigrationExecutionOutcome,
-    MigrationExecutionProvider, MigrationHistoryGraph, MigrationLeaseStore,
-    SchemaLoweringBinding, SchemaMigrationDraft,
-    VerifiedSchemaMigrationManifest, build_verified_manifest,
-    build_verified_migration_apply_plan, execute_verified_migration_apply_plan,
-    schema_lowering_profile_binding,
+    ExecutionScope, LeaseHolderId, MigrationApplyTarget, MigrationExecutionJournal,
+    MigrationExecutionOutcome, MigrationExecutionProvider, MigrationHistoryGraph,
+    MigrationLeaseStore, MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
+    VerifiedSchemaMigrationManifest, build_verified_manifest, build_verified_migration_apply_plan,
+    execute_verified_migration_apply_plan, schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
     TypeDbMigrationProvider, TypeDbMigrationStore, VerifiedMigrationCatalog,
@@ -64,45 +54,21 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
         .as_nanos();
     let managed_name = format!("{database}_{}_{unique:x}", std::process::id());
     let journal_name = derived_journal_database_name(&managed_name);
-    type_bridge_orm::ensure_database_exists(
-        &address,
-        &managed_name,
-        &username,
-        &password,
-        options.clone(),
-    )
-    .await
-    .expect("create isolated managed database");
-    type_bridge_orm::ensure_database_exists(
-        &address,
-        &journal_name,
-        &username,
-        &password,
-        options.clone(),
-    )
-    .await
-    .expect("create isolated journal database");
-    let managed = Arc::new(
-        Database::connect_with_options(
-            &address,
-            &managed_name,
-            &username,
-            &password,
-            options.clone(),
-        )
+    type_bridge_orm::ensure_database_exists(&address, &managed_name, &username, &password, options)
         .await
-        .expect("connect isolated managed database"),
+        .expect("create isolated managed database");
+    type_bridge_orm::ensure_database_exists(&address, &journal_name, &username, &password, options)
+        .await
+        .expect("create isolated journal database");
+    let managed = Arc::new(
+        Database::connect_with_options(&address, &managed_name, &username, &password, options)
+            .await
+            .expect("connect isolated managed database"),
     );
     let journal = Arc::new(
-        Database::connect_with_options(
-            &address,
-            &journal_name,
-            &username,
-            &password,
-            options,
-        )
-        .await
-        .expect("connect isolated journal database"),
+        Database::connect_with_options(&address, &journal_name, &username, &password, options)
+            .await
+            .expect("connect isolated journal database"),
     );
     (managed, journal)
 }
@@ -118,10 +84,7 @@ fn abstract_fact(label: &str) -> SchemaFact {
     let id = TypeId::new(TypeKind::Entity, label).expect("fixture type");
     SchemaFact::Annotation(
         AnnotationFact::new(
-            AnnotationFactId::new(
-                AnnotationSubjectId::Type(id),
-                AnnotationKindId::Abstract,
-            ),
+            AnnotationFactId::new(AnnotationSubjectId::Type(id), AnnotationKindId::Abstract),
             SchemaAnnotationValue::Presence,
         )
         .expect("abstract annotation"),
@@ -178,21 +141,13 @@ fn derived_assertion_step(
         schema_lowering_profile_binding().expect("lowering profile binding"),
     )
     .expect("safety profile");
-    let derived = derive_safety_conditions(
-        0,
-        &delta.operations()[0],
-        source,
-        target,
-        &safety_profile,
-    )
-    .expect("conditional safety condition");
+    let derived =
+        derive_safety_conditions(0, &delta.operations()[0], source, target, &safety_profile)
+            .expect("conditional safety condition");
     assert_eq!(derived.conditions().len(), 1);
-    let resolved = resolve(source, context.semantic_profile())
-        .expect("resolved assertion source");
-    let source_state =
-        managed_schema_state(source, context).expect("managed assertion source");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &source_state);
+    let resolved = resolve(source, context.semantic_profile()).expect("resolved assertion source");
+    let source_state = managed_schema_state(source, context).expect("managed assertion source");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &source_state);
     let validated = lower_condition_to_plan(
         &derived.conditions()[0],
         &validation_context,
@@ -222,8 +177,7 @@ fn additive_manifest(
         Some(reverse),
     )
     .expect("schema step");
-    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step])
-        .expect("draft");
+    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("draft");
     build_verified_manifest(draft, (source, context)).expect("verified manifest")
 }
 
@@ -258,8 +212,7 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
     let (managed, journal_database) = databases().await;
     let context = context();
     let genesis = declared_facts(Vec::new());
-    let first_target =
-        declared_facts(vec![type_fact("person"), type_fact("company")]);
+    let first_target = declared_facts(vec![type_fact("person"), type_fact("company")]);
     let second_target = declared_facts(vec![
         type_fact("person"),
         type_fact("company"),
@@ -281,10 +234,8 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
     );
     let graph = MigrationHistoryGraph::from_verified([first.clone(), second.clone()])
         .expect("verified history");
-    let lowering = SchemaLoweringBinding::current(
-        context.available_capabilities().clone(),
-    )
-    .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -297,28 +248,25 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
     .expect("verified apply plan");
     assert_eq!(plan.migrations().len(), 2);
 
-    let catalog =
-        VerifiedMigrationCatalog::new([&first, &second]).expect("catalog");
-    let store = TypeDbMigrationStore::new(
-        Arc::clone(&managed),
-        Arc::clone(&journal_database),
-        catalog,
-    )
-    .expect("paired store")
-    .bind_plan(&plan)
-    .expect("bind exact plan");
-    let provider = TypeDbMigrationProvider::new(Arc::clone(&managed))
-        .expect("version-gated provider");
+    let catalog = VerifiedMigrationCatalog::new([&first, &second]).expect("catalog");
+    let store =
+        TypeDbMigrationStore::new(Arc::clone(&managed), Arc::clone(&journal_database), catalog)
+            .expect("paired store")
+            .bind_plan(&plan)
+            .expect("bind exact plan");
+    let provider =
+        TypeDbMigrationProvider::new(Arc::clone(&managed)).expect("version-gated provider");
     let holder = LeaseHolderId::new("live-provider-coordinator").expect("holder");
 
-    let outcome = execute_verified_migration_apply_plan(
-        &store, &provider, &holder, &plan,
-    )
-    .await
-    .expect("coordinator execution against live TypeDB");
+    let outcome = execute_verified_migration_apply_plan(&store, &provider, &holder, &plan)
+        .await
+        .expect("coordinator execution against live TypeDB");
     assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
 
-    let export = managed.schema_text().await.expect("post-apply schema export");
+    let export = managed
+        .schema_text()
+        .await
+        .expect("post-apply schema export");
     assert!(export.contains("person"));
     assert!(export.contains("company"));
     assert!(export.contains("@abstract"));
@@ -355,7 +303,10 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
         .await
         .expect("full-stack live observation of the applied target");
     assert_eq!(&observed, target);
-    store.release(&lease).await.expect("release inspection lease");
+    store
+        .release(&lease)
+        .await
+        .expect("release inspection lease");
 
     managed
         .delete_database()

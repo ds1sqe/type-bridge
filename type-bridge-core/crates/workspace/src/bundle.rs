@@ -6,20 +6,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::{
-    CodecVersion, FormatVersion, from_canonical_json_with_limits,
-    to_canonical_json_with_limits,
+    CodecVersion, FormatVersion, from_canonical_json_with_limits, to_canonical_json_with_limits,
 };
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintDomain, SemanticProfileId,
 };
 use type_bridge_contract::limits::{
-    CodecLimits, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_DEPTH,
-    MAX_CANONICAL_STRING_BYTES,
+    CodecLimits, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_DEPTH, MAX_CANONICAL_STRING_BYTES,
 };
-use type_bridge_contract::managed_scope::{
-    ManagedScopeBinding, SemanticProfileBinding,
-};
+use type_bridge_contract::managed_scope::{ManagedScopeBinding, SemanticProfileBinding};
 use type_bridge_contract::projection::{
     BindingTarget, ProjectionConfig, ProjectionHandler, RuntimeProjection,
 };
@@ -40,8 +36,7 @@ pub const TYPEBRIDGE_SCHEMA_BUNDLE_V1: &str = "typebridge.schema-bundle/v1";
 /// Fingerprint domain for the exact bundle content envelope.
 pub const SCHEMA_BUNDLE_FINGERPRINT_DOMAIN: &str = "typebridge.schema.bundle";
 /// Canonicalization identity for the first bundle content envelope.
-pub const SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION: &str =
-    "typebridge.schema-bundle/v1";
+pub const SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION: &str = "typebridge.schema-bundle/v1";
 /// Maximum canonical compiled bundle size: 16 MiB.
 pub const MAX_SCHEMA_BUNDLE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -80,9 +75,9 @@ pub enum SchemaBundleErrorCode {
 pub struct SchemaBundleError {
     code: SchemaBundleErrorCode,
     message: &'static str,
-    config: Option<WorkspaceConfigError>,
-    contract: Option<Diagnostic>,
-    schema: Option<SchemaDiagnostics>,
+    config: Option<Box<WorkspaceConfigError>>,
+    contract: Option<Box<Diagnostic>>,
+    schema: Option<Box<SchemaDiagnostics>>,
 }
 
 impl SchemaBundleError {
@@ -101,7 +96,7 @@ impl SchemaBundleError {
             code: SchemaBundleErrorCode::ProjectionMismatch,
             message: "runtime projection verification failed",
             config: None,
-            contract: Some(error),
+            contract: Some(Box::new(error)),
             schema: None,
         }
     }
@@ -114,20 +109,20 @@ impl SchemaBundleError {
 
     /// Return a nested contract diagnostic, when one caused the failure.
     #[must_use]
-    pub const fn contract(&self) -> Option<&Diagnostic> {
-        self.contract.as_ref()
+    pub fn contract(&self) -> Option<&Diagnostic> {
+        self.contract.as_deref()
     }
 
     /// Return a nested workspace-constructor diagnostic, when one caused the failure.
     #[must_use]
-    pub const fn config(&self) -> Option<&WorkspaceConfigError> {
-        self.config.as_ref()
+    pub fn config(&self) -> Option<&WorkspaceConfigError> {
+        self.config.as_deref()
     }
 
     /// Return nested schema diagnostics, when resolution or projection caused the failure.
     #[must_use]
-    pub const fn schema(&self) -> Option<&SchemaDiagnostics> {
-        self.schema.as_ref()
+    pub fn schema(&self) -> Option<&SchemaDiagnostics> {
+        self.schema.as_deref()
     }
 }
 
@@ -145,7 +140,7 @@ impl From<Diagnostic> for SchemaBundleError {
             code: SchemaBundleErrorCode::Contract,
             message: "a compiled bundle contract is invalid",
             config: None,
-            contract: Some(value),
+            contract: Some(Box::new(value)),
             schema: None,
         }
     }
@@ -158,7 +153,7 @@ impl From<SchemaDiagnostics> for SchemaBundleError {
             message: "compiled schema reconstruction failed",
             config: None,
             contract: None,
-            schema: Some(value),
+            schema: Some(Box::new(value)),
         }
     }
 }
@@ -168,7 +163,7 @@ impl From<WorkspaceConfigError> for SchemaBundleError {
         Self {
             code: SchemaBundleErrorCode::Contract,
             message: "a compiled bundle workspace contract is invalid",
-            config: Some(value),
+            config: Some(Box::new(value)),
             contract: None,
             schema: None,
         }
@@ -202,10 +197,7 @@ impl BundleProjectionContext {
                 .cmp(right.id())
                 .then(left.version().cmp(&right.version()))
         });
-        if handlers
-            .windows(2)
-            .any(|pair| pair[0].id() == pair[1].id())
-        {
+        if handlers.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
             return Err(SchemaBundleError::new(
                 SchemaBundleErrorCode::ContextMismatch,
                 "projection context contains duplicate handler identities",
@@ -275,7 +267,10 @@ impl BundleVerificationContext {
         }
         let mut projection_map = BTreeMap::new();
         for projection in projections {
-            if projection_map.insert(projection.target(), projection).is_some() {
+            if projection_map
+                .insert(projection.target(), projection)
+                .is_some()
+            {
                 return Err(SchemaBundleError::new(
                     SchemaBundleErrorCode::ProjectionTargetMismatch,
                     "verification context contains a duplicate projection target",
@@ -481,7 +476,9 @@ impl VerifiedSchemaBundle {
     pub fn projections(
         &self,
     ) -> impl ExactSizeIterator<Item = (BindingTarget, &RuntimeProjection)> {
-        self.projections.iter().map(|(target, value)| (*target, value))
+        self.projections
+            .iter()
+            .map(|(target, value)| (*target, value))
     }
 }
 
@@ -584,8 +581,7 @@ pub fn decode_verified_schema_bundle(
     bytes: &[u8],
     context: &BundleVerificationContext,
 ) -> Result<VerifiedSchemaBundle, SchemaBundleError> {
-    let wire: SchemaBundleWire =
-        from_canonical_json_with_limits(bytes, SCHEMA_BUNDLE_LIMITS)?;
+    let wire: SchemaBundleWire = from_canonical_json_with_limits(bytes, SCHEMA_BUNDLE_LIMITS)?;
     let bundle_fingerprint = compute_bundle_fingerprint(&wire.content)?;
     if wire.bundle_fingerprint != canonical_value(&bundle_fingerprint)? {
         return Err(SchemaBundleError::new(
@@ -604,8 +600,7 @@ pub fn decode_verified_schema_bundle(
         ));
     }
 
-    let semantic_profile =
-        SemanticProfileBinding::resolve(context.semantic_profile.clone())?;
+    let semantic_profile = SemanticProfileBinding::resolve(context.semantic_profile.clone())?;
     require_exact_value(
         &content.semantic_profile,
         &semantic_profile,
@@ -732,10 +727,8 @@ fn content_from_workspace(
     context: &BundleVerificationContext,
 ) -> Result<SchemaBundleContentWire, SchemaBundleError> {
     let declared_bytes = encode_declared_schema(workspace.declared_schema())?;
-    let declared_schema =
-        from_canonical_json_with_limits(&declared_bytes, SCHEMA_BUNDLE_LIMITS)?;
-    let semantic_profile =
-        SemanticProfileBinding::resolve(context.semantic_profile.clone())?;
+    let declared_schema = from_canonical_json_with_limits(&declared_bytes, SCHEMA_BUNDLE_LIMITS)?;
+    let semantic_profile = SemanticProfileBinding::resolve(context.semantic_profile.clone())?;
     let mut projections = Vec::with_capacity(context.projections.len());
     for (&target, projection_context) in &context.projections {
         let projection = project(
@@ -820,14 +813,10 @@ fn verify_projections(
                 "projection configuration or handler evidence differs from context",
             ));
         }
-        let projection_bytes = to_canonical_json_with_limits(
-            &entry.canonical_projection,
-            SCHEMA_BUNDLE_LIMITS,
-        )?;
-        let binding_bytes = to_canonical_json_with_limits(
-            &entry.binding_fingerprint,
-            SCHEMA_BUNDLE_LIMITS,
-        )?;
+        let projection_bytes =
+            to_canonical_json_with_limits(&entry.canonical_projection, SCHEMA_BUNDLE_LIMITS)?;
+        let binding_bytes =
+            to_canonical_json_with_limits(&entry.binding_fingerprint, SCHEMA_BUNDLE_LIMITS)?;
         let decoded = decode_runtime_projection_verified(
             &projection_bytes,
             &expected_semantic,
@@ -857,8 +846,7 @@ fn verify_projections(
             expected.handlers(),
             &[],
         )?;
-        let recomputed_bytes =
-            to_canonical_json_with_limits(&recomputed, SCHEMA_BUNDLE_LIMITS)?;
+        let recomputed_bytes = to_canonical_json_with_limits(&recomputed, SCHEMA_BUNDLE_LIMITS)?;
         if projection_bytes != recomputed_bytes || decoded != recomputed {
             return Err(SchemaBundleError::new(
                 SchemaBundleErrorCode::ProjectionMismatch,

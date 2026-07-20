@@ -9,13 +9,11 @@
 
 use std::fmt::Write as _;
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
-    InputRow, QueryInvocation, QueryOperand, QueryOperation, QueryOutput,
-    QueryPattern, QueryPlan, ReadStage,
+    InputRow, QueryInvocation, QueryOperand, QueryOperation, QueryOutput, QueryPattern, QueryPlan,
+    ReadStage,
 };
 use type_bridge_query::{
     DocumentColumnShape, DocumentSchema, OutputSchema, RowSchema, ValidatedQuery,
@@ -97,9 +95,10 @@ pub fn lower_validated_query(
             write!(
                 typeql,
                 "${}: {}",
-                local_variable(function.bindings(), BindingId::new(
-                    u16::try_from(index).expect("dense parameter ordinal"),
-                )?)?,
+                local_variable(
+                    function.bindings(),
+                    BindingId::new(u16::try_from(index).expect("dense parameter ordinal"),)?
+                )?,
                 label.as_str(),
             )
             .expect("writing to String cannot fail");
@@ -182,7 +181,10 @@ pub fn lower_validated_query(
                 typeql.push_str(";\n");
             }
             ReadStage::Distinct => typeql.push_str("distinct;\n"),
-            ReadStage::Reduce { assignments, groups } => {
+            ReadStage::Reduce {
+                assignments,
+                groups,
+            } => {
                 typeql.push_str("reduce ");
                 for (index, assignment) in assignments.iter().enumerate() {
                     if index != 0 {
@@ -232,27 +234,21 @@ pub fn lower_validated_query(
                 typeql.push_str(";\n");
             }
             ReadStage::Offset { rows } => {
-                writeln!(typeql, "offset {rows};")
-                    .expect("writing to String cannot fail");
+                writeln!(typeql, "offset {rows};").expect("writing to String cannot fail");
             }
             ReadStage::Limit { rows } => {
-                writeln!(typeql, "limit {rows};")
-                    .expect("writing to String cannot fail");
+                writeln!(typeql, "limit {rows};").expect("writing to String cannot fail");
             }
         }
     }
 
-    if let type_bridge_contract::query_plan::QueryOutput::Documents { fields } =
-        plan.output()
-    {
+    if let type_bridge_contract::query_plan::QueryOutput::Documents { fields } = plan.output() {
         typeql.push_str("fetch {\n");
         for (index, field) in fields.iter().enumerate() {
             write!(typeql, "    \"{}\": ", field.key().as_str())
                 .expect("writing to String cannot fail");
             match field.source() {
-                type_bridge_contract::query_plan::DocumentSource::Binding {
-                    binding,
-                } => {
+                type_bridge_contract::query_plan::DocumentSource::Binding { binding } => {
                     write!(typeql, "${}", variable(plan, *binding)?)
                         .expect("writing to String cannot fail");
                 }
@@ -269,7 +265,11 @@ pub fn lower_validated_query(
                     .expect("writing to String cannot fail");
                 }
             }
-            typeql.push_str(if index + 1 == fields.len() { "\n" } else { ",\n" });
+            typeql.push_str(if index + 1 == fields.len() {
+                "\n"
+            } else {
+                ",\n"
+            });
         }
         typeql.push_str("};\n");
     }
@@ -347,9 +347,7 @@ fn given_value(
         CanonicalValue::Boolean(value) => Some(GivenValue::Boolean(*value)),
         CanonicalValue::Long(value) => Some(GivenValue::Integer(*value)),
         CanonicalValue::Double(value) => Some(GivenValue::Double(value.get())),
-        CanonicalValue::String(value) => {
-            Some(GivenValue::String(value.as_str().to_owned()))
-        }
+        CanonicalValue::String(value) => Some(GivenValue::String(value.as_str().to_owned())),
         _ => None,
     }
 }
@@ -451,18 +449,14 @@ fn render_scoped_patterns(
                 .expect("writing to String cannot fail");
             }
             QueryPattern::Not { patterns } => {
-                writeln!(output, "{indent}not {{")
-                    .expect("writing to String cannot fail");
+                writeln!(output, "{indent}not {{").expect("writing to String cannot fail");
                 render_scoped_patterns(output, plan, bindings, patterns, row, depth + 1)?;
-                writeln!(output, "{indent}}};")
-                    .expect("writing to String cannot fail");
+                writeln!(output, "{indent}}};").expect("writing to String cannot fail");
             }
             QueryPattern::Try { patterns } => {
-                writeln!(output, "{indent}try {{")
-                    .expect("writing to String cannot fail");
+                writeln!(output, "{indent}try {{").expect("writing to String cannot fail");
                 render_scoped_patterns(output, plan, bindings, patterns, row, depth + 1)?;
-                writeln!(output, "{indent}}};")
-                    .expect("writing to String cannot fail");
+                writeln!(output, "{indent}}};").expect("writing to String cannot fail");
             }
             QueryPattern::Reachable {
                 max_depth,
@@ -515,8 +509,7 @@ fn render_scoped_patterns(
                         .map(|branch| format!("{{ {branch} }}"))
                         .collect::<Vec<_>>()
                         .join(" or ");
-                    writeln!(output, "{indent}{joined};")
-                        .expect("writing to String cannot fail");
+                    writeln!(output, "{indent}{joined};").expect("writing to String cannot fail");
                 }
             }
             QueryPattern::FunctionCall {
@@ -759,8 +752,7 @@ pub async fn execute_validated_query(
     let transaction = transaction
         .provider_mut()
         .map_err(QueryV2ExecutionError::Provider)?;
-    let mut provider =
-        crate::migration_assertion::TransactionAssertionProvider { transaction };
+    let mut provider = crate::migration_assertion::TransactionAssertionProvider { transaction };
     execute_with_provider(&mut provider, validated, invocation, limits).await
 }
 
@@ -772,8 +764,8 @@ pub(crate) async fn execute_with_provider<
     invocation: &QueryInvocation,
     limits: crate::session::backend::BoundedAnswerLimits,
 ) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
-    let lowered = lower_validated_query(validated, invocation)
-        .map_err(QueryV2ExecutionError::Validation)?;
+    let lowered =
+        lower_validated_query(validated, invocation).map_err(QueryV2ExecutionError::Validation)?;
 
     let exists_probe = matches!(lowered.operation(), QueryOperation::Exists);
     let mut limits = limits;
@@ -786,11 +778,10 @@ pub(crate) async fn execute_with_provider<
     let mut validation: Option<Diagnostic> = None;
     let mut consumer = |item| {
         let validated_item = match (validated.output_schema(), item) {
-            (
-                OutputSchema::Rows(schema),
-                crate::session::backend::AnswerItem::Row(row),
-            ) => validate_result_row(&row, validated, schema)
-                .map(|values| rows.push(QueryResultRow { values })),
+            (OutputSchema::Rows(schema), crate::session::backend::AnswerItem::Row(row)) => {
+                validate_result_row(&row, validated, schema)
+                    .map(|values| rows.push(QueryResultRow { values }))
+            }
             (
                 OutputSchema::Documents(schema),
                 crate::session::backend::AnswerItem::Document(document),
@@ -829,12 +820,7 @@ pub(crate) async fn execute_with_provider<
                 )));
             }
             provider
-                .query_with_rows_bounded(
-                    lowered.typeql(),
-                    spec.clone(),
-                    limits,
-                    &mut consumer,
-                )
+                .query_with_rows_bounded(lowered.typeql(), spec.clone(), limits, &mut consumer)
                 .await
                 .map_err(QueryV2ExecutionError::Provider)?;
         }
@@ -845,7 +831,6 @@ pub(crate) async fn execute_with_provider<
                 .map_err(QueryV2ExecutionError::Provider)?;
         }
     }
-    drop(consumer);
     if let Some(diagnostic) = validation {
         return Err(QueryV2ExecutionError::Validation(diagnostic));
     }
@@ -903,12 +888,10 @@ fn validate_result_document(
                     }
                     DocumentFieldValue::Absent
                 } else {
-                    DocumentFieldValue::Scalar(
-                        crate::migration_assertion::parse_provider_value(
-                            value,
-                            *value_type,
-                        )?,
-                    )
+                    DocumentFieldValue::Scalar(crate::migration_assertion::parse_provider_value(
+                        value,
+                        *value_type,
+                    )?)
                 }
             }
             DocumentColumnShape::List { element_type, .. } => {
@@ -923,10 +906,7 @@ fn validate_result_document(
                     elements
                         .iter()
                         .map(|element| {
-                            crate::migration_assertion::parse_provider_value(
-                                element,
-                                *element_type,
-                            )
+                            crate::migration_assertion::parse_provider_value(element, *element_type)
                         })
                         .collect::<Result<Vec<_>, _>>()?,
                 )
@@ -1006,11 +986,8 @@ fn validate_result_row(
                     "output column has neither a thing domain nor a scalar domain",
                 ));
             };
-            let category = crate::migration_assertion::string_field(
-                concept,
-                "category",
-                column.variable(),
-            )?;
+            let category =
+                crate::migration_assertion::string_field(concept, "category", column.variable())?;
             if !matches!(category, "value" | "Value") {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
@@ -1018,13 +995,9 @@ fn validate_result_row(
                     "value column evidence is not a provider value concept",
                 ));
             }
-            let actual = crate::migration_assertion::string_field(
-                concept,
-                "value_type",
-                column.variable(),
-            )?;
-            if crate::migration_assertion::provider_value_type(actual) != Some(expected)
-            {
+            let actual =
+                crate::migration_assertion::string_field(concept, "value_type", column.variable())?;
+            if crate::migration_assertion::provider_value_type(actual) != Some(expected) {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
                     "query_v2_result_type_mismatch",
@@ -1044,18 +1017,11 @@ fn validate_result_row(
             values.push(QueryRowValue::Value { value });
             continue;
         }
-        let category = crate::migration_assertion::string_field(
-            concept,
-            "category",
-            column.variable(),
-        )?;
-        let label = crate::migration_assertion::string_field(
-            concept,
-            "label",
-            column.variable(),
-        )?;
-        let kind = crate::migration_assertion::provider_concept_kind(category)
-            .ok_or_else(|| {
+        let category =
+            crate::migration_assertion::string_field(concept, "category", column.variable())?;
+        let label = crate::migration_assertion::string_field(concept, "label", column.variable())?;
+        let kind =
+            crate::migration_assertion::provider_concept_kind(category).ok_or_else(|| {
                 failure(
                     DiagnosticCategory::Integrity,
                     "query_v2_result_type_mismatch",
@@ -1078,11 +1044,8 @@ fn validate_result_row(
         }
         values.push(match (kind, domain.value_type()) {
             (TypeKind::Entity | TypeKind::Relation, None) => {
-                let iid = crate::migration_assertion::string_field(
-                    concept,
-                    "iid",
-                    column.variable(),
-                )?;
+                let iid =
+                    crate::migration_assertion::string_field(concept, "iid", column.variable())?;
                 if iid.is_empty() {
                     return Err(failure(
                         DiagnosticCategory::InvalidContract,
@@ -1101,9 +1064,7 @@ fn validate_result_row(
                     "value_type",
                     column.variable(),
                 )?;
-                if crate::migration_assertion::provider_value_type(actual)
-                    != Some(expected)
-                {
+                if crate::migration_assertion::provider_value_type(actual) != Some(expected) {
                     return Err(failure(
                         DiagnosticCategory::Integrity,
                         "query_v2_result_type_mismatch",
@@ -1139,7 +1100,11 @@ fn visible_variables(plan: &QueryPlan) -> Vec<&str> {
     // A reduce stage replaces the whole row environment with its group
     // keys and assigned results, superseding any earlier select.
     for stage in plan.pipeline() {
-        if let ReadStage::Reduce { assignments, groups } = stage {
+        if let ReadStage::Reduce {
+            assignments,
+            groups,
+        } = stage
+        {
             return groups
                 .iter()
                 .copied()
@@ -1182,26 +1147,20 @@ mod tests {
     use type_bridge_contract::migration_assertion::{
         AssertionBinding, QueryVariable, ValueComparator,
     };
-    use type_bridge_contract::query_plan::{
-        InputColumn, InputColumnId, QueryOutput as PlanOutput,
-    };
+    use type_bridge_contract::query_plan::{InputColumn, InputColumnId, QueryOutput as PlanOutput};
     use type_bridge_contract::schema::{
         DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan,
         SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
     };
-    use type_bridge_contract::value::{
-        CanonicalString, CanonicalValue, ValueTypeTag,
-    };
-    use type_bridge_query::{
-        MigrationAssertionValidationContext, validate_query_plan,
-    };
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+    use type_bridge_query::{MigrationAssertionValidationContext, validate_query_plan};
     use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
 
     use super::*;
     use crate::migration_assertion::AssertionProviderCall;
     use crate::session::backend::{
-        AnswerCancellation, AnswerConsumer, AnswerItem, BoundedAnswerLimits,
-        BoundedAnswerStats, BoxFuture,
+        AnswerCancellation, AnswerConsumer, AnswerItem, BoundedAnswerLimits, BoundedAnswerStats,
+        BoxFuture,
     };
 
     struct ScriptedProvider {
@@ -1247,10 +1206,8 @@ mod tests {
         let facts = vec![
             SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
             SchemaFact::Type(
-                TypeFact::new(
-                    TypeId::new(TypeKind::Attribute, "name").expect("type"),
-                )
-                .expect("type fact"),
+                TypeFact::new(TypeId::new(TypeKind::Attribute, "name").expect("type"))
+                    .expect("type fact"),
             ),
             SchemaFact::Value(ValueFact::new(
                 ValueFactId::new(name.clone()),
@@ -1277,20 +1234,15 @@ mod tests {
                 .expect("span"),
             )
         });
-        let declared = DeclaredSchema::from_facts(
-            FormatVersion::V1,
-            CapabilitySet::new(),
-            sourced,
-        )
-        .expect("declared schema");
+        let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+            .expect("declared schema");
         let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
         let context = ManagedDeltaContext::new(
             ManagedScopeId::new("query-v2-executor-scope").expect("scope"),
             profile.clone(),
             CapabilitySet::new(),
         );
-        let managed =
-            managed_schema_state(&declared, &context).expect("managed state");
+        let managed = managed_schema_state(&declared, &context).expect("managed state");
         let resolved = resolve(&declared, &profile).expect("resolved schema");
 
         let plan = QueryPlan::new(
@@ -1299,10 +1251,7 @@ mod tests {
                     binding_id(0),
                     QueryVariable::new("person").expect("variable"),
                 ),
-                AssertionBinding::new(
-                    binding_id(1),
-                    QueryVariable::new("name").expect("variable"),
-                ),
+                AssertionBinding::new(binding_id(1), QueryVariable::new("name").expect("variable")),
             ],
             vec![InputColumn::new(
                 InputColumnId::new(0),
@@ -1315,8 +1264,7 @@ mod tests {
                     QueryPattern::Isa {
                         binding: binding_id(0),
                         include_subtypes: false,
-                        type_id: TypeId::new(TypeKind::Entity, "person")
-                            .expect("type"),
+                        type_id: TypeId::new(TypeKind::Entity, "person").expect("type"),
                     },
                     QueryPattern::Has {
                         attribute: binding_id(1),
@@ -1325,7 +1273,9 @@ mod tests {
                     },
                     QueryPattern::Value {
                         comparator: ValueComparator::GreaterOrEqual,
-                        left: QueryOperand::Binding { binding: binding_id(1) },
+                        left: QueryOperand::Binding {
+                            binding: binding_id(1),
+                        },
                         right: QueryOperand::Input {
                             column: InputColumnId::new(0),
                         },
@@ -1338,8 +1288,7 @@ mod tests {
             managed.managed_semantic_schema().clone(),
         )
         .expect("query plan");
-        let validation_context =
-            MigrationAssertionValidationContext::new(&resolved, &managed);
+        let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
         let validated =
             validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
                 .expect("validated query");
@@ -1406,9 +1355,7 @@ mod tests {
         };
         assert_eq!(
             value,
-            &CanonicalValue::String(
-                CanonicalString::new("grace").expect("canonical string")
-            ),
+            &CanonicalValue::String(CanonicalString::new("grace").expect("canonical string")),
         );
 
         let outcome = execute_with_provider(

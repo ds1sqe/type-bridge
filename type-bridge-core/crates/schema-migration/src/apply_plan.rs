@@ -5,32 +5,23 @@ use std::error::Error;
 use std::fmt;
 
 use type_bridge_contract::capability::CapabilitySet;
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::managed_scope::SemanticProfileBinding;
-use type_bridge_contract::migration::{
-    MigrationId, MigrationManifestDigest, MigrationStep,
-};
+use type_bridge_contract::migration::{MigrationId, MigrationManifestDigest, MigrationStep};
 use type_bridge_contract::migration_assertion::AssertionExpectation;
 use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState};
 use type_bridge_query::ValidatedMigrationAssertionPlan;
-use type_bridge_schema::{
-    DeltaError, ManagedDeltaContext, SafetyDerivationProfile, apply_delta,
-};
+use type_bridge_schema::{DeltaError, ManagedDeltaContext, SafetyDerivationProfile, apply_delta};
 
 use crate::history::MigrationHistoryGraph;
 use crate::lowering::{
-    SchemaFactCatalog, SchemaLoweringBinding, SchemaLoweringDiagnostic,
-    SchemaLoweringPlan, lower_schema_delta_with_verified_assertions,
+    SchemaFactCatalog, SchemaLoweringBinding, SchemaLoweringDiagnostic, SchemaLoweringPlan,
+    lower_schema_delta_with_verified_assertions,
 };
 use crate::manifest::{
-    VerifiedSchemaMigrationManifest, verified_manifest_digest,
-    verify_assertion_coverage,
+    VerifiedSchemaMigrationManifest, verified_manifest_digest, verify_assertion_coverage,
 };
-use crate::policy::{
-    MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision,
-};
+use crate::policy::{MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision};
 
 /// Select the target closure of a migration apply operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,14 +40,14 @@ pub enum VerifiedMigrationApplyStep {
         /// The constructor-validated binding-neutral migration step.
         step: MigrationStep,
         /// Schema-aware validation rederived against the exact replayed source state.
-        validated: ValidatedMigrationAssertionPlan,
+        validated: Box<ValidatedMigrationAssertionPlan>,
     },
     /// A state-changing schema step with freshly derived provider lowering.
     SchemaDelta {
         /// The constructor-validated binding-neutral migration step.
         step: MigrationStep,
         /// The exact lowering derived from the replayed source and target catalogs.
-        lowering: SchemaLoweringPlan,
+        lowering: Box<SchemaLoweringPlan>,
     },
 }
 
@@ -69,7 +60,7 @@ impl VerifiedMigrationApplyStep {
     }
 
     /// Return schema-aware execution evidence only for an assertion step.
-    pub const fn validated_assertion(&self) -> Option<&ValidatedMigrationAssertionPlan> {
+    pub fn validated_assertion(&self) -> Option<&ValidatedMigrationAssertionPlan> {
         match self {
             Self::Assertion { validated, .. } => Some(validated),
             Self::SchemaDelta { .. } => None,
@@ -77,7 +68,7 @@ impl VerifiedMigrationApplyStep {
     }
 
     /// Return provider lowering only for a schema-delta step.
-    pub const fn lowering(&self) -> Option<&SchemaLoweringPlan> {
+    pub fn lowering(&self) -> Option<&SchemaLoweringPlan> {
         match self {
             Self::Assertion { .. } => None,
             Self::SchemaDelta { lowering, .. } => Some(lowering),
@@ -145,10 +136,8 @@ pub fn partition_transaction_groups(
                     "a pre-delta transaction step is not validated assertion evidence",
                 ));
             };
-            let (contract, persisted, expectation) = assertion
-                .step()
-                .as_assertion()
-                .ok_or_else(|| {
+            let (contract, persisted, expectation) =
+                assertion.step().as_assertion().ok_or_else(|| {
                     contract_failure(
                         DiagnosticCategory::Integrity,
                         "migration_apply_group_step_kind_mismatch",
@@ -369,8 +358,7 @@ pub fn build_verified_migration_apply_plan(
             )
         })?;
         if manifest.lowering_profile().id() != lowering_binding.profile_id()
-            || manifest.lowering_profile().fingerprint()
-                != lowering_binding.profile_fingerprint()
+            || manifest.lowering_profile().fingerprint() != lowering_binding.profile_fingerprint()
         {
             return Err(contract_failure(
                 DiagnosticCategory::InvalidContract,
@@ -467,13 +455,10 @@ pub fn build_verified_migration_apply_plan(
                 &target_schema,
                 &safety_profile,
             )?;
-            for (assertion, validated) in pending_assertions
-                .iter()
-                .zip(coverage.validated())
-            {
+            for (assertion, validated) in pending_assertions.iter().zip(coverage.validated()) {
                 verified_steps.push(VerifiedMigrationApplyStep::Assertion {
                     step: (*assertion).clone(),
-                    validated: validated.clone(),
+                    validated: Box::new(validated.clone()),
                 });
             }
             pending_assertions.clear();
@@ -489,7 +474,7 @@ pub fn build_verified_migration_apply_plan(
             )?;
             verified_steps.push(VerifiedMigrationApplyStep::SchemaDelta {
                 step: step.clone(),
-                lowering,
+                lowering: Box::new(lowering),
             });
             replayed = target_schema;
         }
@@ -533,11 +518,7 @@ pub fn build_verified_migration_apply_plan(
             .map(|entry| entry.manifest().source_state().clone())
     });
     let mut resulting_applied = applied.clone();
-    resulting_applied.extend(
-        migrations
-            .iter()
-            .map(|entry| entry.manifest().id().clone()),
-    );
+    resulting_applied.extend(migrations.iter().map(|entry| entry.manifest().id().clone()));
     let target_frontier = graph.applied_frontier(&resulting_applied)?;
     Ok(VerifiedMigrationApplyPlan {
         applied_migrations: applied.iter().cloned().collect(),
@@ -569,10 +550,9 @@ pub(crate) fn coherent_frontier_state(
         if schema.as_ref().is_some_and(|current| {
             current.declared_identity_fingerprint()
                 != manifest.target_schema().declared_identity_fingerprint()
-        })
-            || state
-                .as_ref()
-                .is_some_and(|current| current != manifest.target_state())
+        }) || state
+            .as_ref()
+            .is_some_and(|current| current != manifest.target_state())
         {
             return Err(contract_failure(
                 DiagnosticCategory::Integrity,

@@ -15,11 +15,9 @@ use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::CanonicalValue;
 
 /// Fingerprint domain for canonical migration assertions.
-pub const MIGRATION_ASSERTION_FINGERPRINT_DOMAIN: &str =
-    "typebridge.query.migration-assertion";
+pub const MIGRATION_ASSERTION_FINGERPRINT_DOMAIN: &str = "typebridge.query.migration-assertion";
 /// Canonicalization identifier for canonical migration assertions.
-pub const MIGRATION_ASSERTION_CANONICALIZATION: &str =
-    "typebridge.migration-assertion/v1";
+pub const MIGRATION_ASSERTION_CANONICALIZATION: &str = "typebridge.migration-assertion/v1";
 
 const CAP_ASSERTION: &str = "query.migration-assertion";
 const CAP_ISA: &str = "query.pattern.isa";
@@ -84,9 +82,7 @@ impl QueryVariable {
         let valid = !value.is_empty()
             && value.len() <= MAX_OUTPUT_NAME_BYTES
             && bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
-            && bytes.all(|byte| {
-                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
-            });
+            && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
         if valid {
             Ok(Self(value))
         } else {
@@ -190,9 +186,15 @@ pub enum ValueComparator {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ValueOperand {
     /// Read the scalar value of an attribute binding.
-    Binding { binding: BindingId },
+    Binding {
+        /// The attribute binding whose value is read.
+        binding: BindingId,
+    },
     /// Compare with an exact canonical literal.
-    Literal { value: CanonicalValue },
+    Literal {
+        /// The exact canonical scalar to compare against.
+        value: CanonicalValue,
+    },
 }
 
 impl ValueOperand {
@@ -213,30 +215,45 @@ impl ValueOperand {
 pub enum AssertionPattern {
     /// Constrain a binding to one schema type, optionally including subtypes.
     Isa {
+        /// The binding the type constraint applies to.
         binding: BindingId,
+        /// Whether subtypes of the named type also satisfy the constraint.
         include_subtypes: bool,
+        /// The schema type the binding must instantiate.
         type_id: TypeId,
     },
     /// Bind an owned attribute through an effective ownership.
     Has {
+        /// The binding that receives the owned attribute instance.
         attribute: BindingId,
+        /// The schema attribute type being read.
         attribute_id: AttributeId,
+        /// The binding that owns the attribute.
         owner: BindingId,
     },
     /// Bind a relation and role-qualified players.
     Links {
+        /// The role-qualified players the relation must link.
         players: Vec<AssertionRolePlayer>,
+        /// The binding that receives the relation instance.
         relation: BindingId,
+        /// The schema relation type being matched.
         relation_id: TypeId,
     },
     /// Compare two exact typed scalar operands.
     Value {
+        /// The comparison operator.
         comparator: ValueComparator,
+        /// The left operand.
         left: ValueOperand,
+        /// The right operand.
         right: ValueOperand,
     },
     /// Negate a closed nested conjunction.
-    Not { patterns: Vec<AssertionPattern> },
+    Not {
+        /// The conjunction that must not match.
+        patterns: Vec<AssertionPattern>,
+    },
 }
 
 /// The only expectation admitted by the first migration assertion revision.
@@ -440,9 +457,7 @@ pub fn encode_migration_assertion_plan(
 }
 
 /// Decode canonical bytes through private constructor-rebuilding wire types.
-pub fn decode_migration_assertion_plan(
-    bytes: &[u8],
-) -> Result<MigrationAssertionPlan, Diagnostic> {
+pub fn decode_migration_assertion_plan(bytes: &[u8]) -> Result<MigrationAssertionPlan, Diagnostic> {
     crate::migration_assertion_wire::decode_migration_assertion_plan(bytes)
 }
 
@@ -475,11 +490,15 @@ fn inspect_pattern(
     }
     match pattern {
         AssertionPattern::Isa { binding, .. } => check_binding(*binding, binding_count),
-        AssertionPattern::Has { owner, attribute, .. } => {
+        AssertionPattern::Has {
+            owner, attribute, ..
+        } => {
             check_binding(*owner, binding_count)?;
             check_binding(*attribute, binding_count)
         }
-        AssertionPattern::Links { relation, players, .. } => {
+        AssertionPattern::Links {
+            relation, players, ..
+        } => {
             check_binding(*relation, binding_count)?;
             if players.is_empty() || players.len() > limits.boolean_terms {
                 return Err(assertion_failure(
@@ -533,7 +552,7 @@ fn check_binding(binding: BindingId, binding_count: usize) -> Result<(), Diagnos
 }
 
 fn canonical_binding_set(
-    bindings: &mut Vec<BindingId>,
+    bindings: &mut [BindingId],
     binding_count: usize,
     kind: &'static str,
 ) -> Result<(), Diagnostic> {
@@ -565,7 +584,9 @@ fn collect_capabilities(
     capabilities: &mut CapabilitySet,
 ) -> Result<(), Diagnostic> {
     match pattern {
-        AssertionPattern::Isa { include_subtypes, .. } => {
+        AssertionPattern::Isa {
+            include_subtypes, ..
+        } => {
             insert_capability(capabilities, CAP_ISA)?;
             if *include_subtypes {
                 insert_capability(capabilities, CAP_ISA_SUBTYPES)?;

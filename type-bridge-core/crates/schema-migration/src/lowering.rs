@@ -9,17 +9,15 @@ use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::id::{FunctionId, TypeKind};
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationKindId, AnnotationSubjectId, FunctionFact, FunctionReturnElement,
-    FunctionReturnMode, RelatesFact, SchemaAnnotationValue, SchemaDelta, SchemaFact,
-    SchemaFactId, SchemaOperation, SchemaOperationKind, TypeReference,
+    FunctionReturnMode, RelatesFact, SchemaAnnotationValue, SchemaDelta, SchemaFact, SchemaFactId,
+    SchemaOperation, SchemaOperationKind, TypeReference,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
 use type_bridge_schema::SafetyClass;
 
 use crate::profile::{classify_operation_transition, typedb_3_12_1_profile};
-use crate::{
-    SchemaLoweringProfileFingerprint, SchemaLoweringProfileId, profile_fingerprint,
-};
+use crate::{SchemaLoweringProfileFingerprint, SchemaLoweringProfileId, profile_fingerprint};
 
 const CODE_PROFILE_MISMATCH: &str = "schema_lowering_profile_mismatch";
 const CODE_CAPABILITY_MISMATCH: &str = "schema_lowering_capability_mismatch";
@@ -144,7 +142,11 @@ impl SchemaFactCatalog {
         selection: &type_bridge_contract::schema::ManagedFactSelection,
     ) -> bool {
         self.0.len() == selection.len()
-            && self.0.keys().zip(selection.iter()).all(|(left, right)| left == right)
+            && self
+                .0
+                .keys()
+                .zip(selection.iter())
+                .all(|(left, right)| left == right)
     }
 }
 
@@ -510,8 +512,7 @@ fn render_operation(
     target_facts: &SchemaFactCatalog,
 ) -> Result<Vec<TypeQlStatement>, SchemaLoweringDiagnostic> {
     render_operation_inner(operation, source_facts, target_facts).map_err(|failure| {
-        SchemaLoweringDiagnostic::new(failure.code, failure.message)
-            .at_operation(operation_index)
+        SchemaLoweringDiagnostic::new(failure.code, failure.message).at_operation(operation_index)
     })
 }
 
@@ -545,8 +546,8 @@ fn render_operation_inner(
             let mut bodies = Vec::new();
             for fact in facts {
                 match fact {
-                    SchemaFact::Annotation(annotation)
-                        if matches!(annotation.id().subject(), AnnotationSubjectId::Function(id) if function_ids.contains(id)) => {}
+                    SchemaFact::Annotation(annotation) if matches!(annotation.id().subject(), AnnotationSubjectId::Function(id) if function_ids.contains(id)) =>
+                        {}
                     SchemaFact::Function(function) => bodies.push(render_function(
                         function,
                         function_annotations
@@ -557,7 +558,10 @@ fn render_operation_inner(
                     _ => bodies.push(render_definition(fact, target_facts, true)?),
                 }
             }
-            Ok(vec![TypeQlStatement::new(TypeQlVerb::Define, bodies.join("\n"))])
+            Ok(vec![TypeQlStatement::new(
+                TypeQlVerb::Define,
+                bodies.join("\n"),
+            )])
         }
         SchemaOperationKind::Undefine => Ok(vec![TypeQlStatement::new(
             TypeQlVerb::Undefine,
@@ -567,14 +571,19 @@ fn render_operation_inner(
             )?,
         )]),
         SchemaOperationKind::Redefine => {
-            let expected = operation.expected_fact().expect("redefine exposes expected");
+            let expected = operation
+                .expected_fact()
+                .expect("redefine exposes expected");
             let replacement = operation
                 .replacement_fact()
                 .expect("redefine exposes replacement");
             if let (SchemaFact::Annotation(old), SchemaFact::Annotation(new)) =
                 (expected, replacement)
                 && matches!(old.id().subject(), AnnotationSubjectId::Sub(_))
-                && matches!(old.id().kind(), AnnotationKindId::Doc | AnnotationKindId::Meta(_))
+                && matches!(
+                    old.id().kind(),
+                    AnnotationKindId::Doc | AnnotationKindId::Meta(_)
+                )
             {
                 return Ok(vec![
                     TypeQlStatement::new(
@@ -744,11 +753,9 @@ fn render_annotation_subject(
     defining: bool,
 ) -> Result<String, RenderFailure> {
     match subject {
-        AnnotationSubjectId::Type(id) if defining => Ok(format!(
-            "{} {}",
-            type_kind(id.kind()),
-            id.label().as_str()
-        )),
+        AnnotationSubjectId::Type(id) if defining => {
+            Ok(format!("{} {}", type_kind(id.kind()), id.label().as_str()))
+        }
         AnnotationSubjectId::Type(id) => Ok(id.label().as_str().to_owned()),
         AnnotationSubjectId::Sub(id) => Ok(format!(
             "{} sub {}",
@@ -816,16 +823,18 @@ fn render_annotation(annotation: &AnnotationFact) -> String {
         ),
         (AnnotationKindId::Values, SchemaAnnotationValue::Values(values)) => format!(
             "@values({})",
-            values.iter().map(render_value).collect::<Vec<_>>().join(", ")
+            values
+                .iter()
+                .map(render_value)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         (AnnotationKindId::Doc, SchemaAnnotationValue::Doc(doc)) => {
             format!("@doc({})", quote(doc.as_str()))
         }
-        (AnnotationKindId::Meta(key), SchemaAnnotationValue::Meta(value)) => format!(
-            "@meta({}, {})",
-            quote(key.as_str()),
-            render_value(value)
-        ),
+        (AnnotationKindId::Meta(key), SchemaAnnotationValue::Meta(value)) => {
+            format!("@meta({}, {})", quote(key.as_str()), render_value(value))
+        }
         _ => unreachable!("annotation constructors preserve kind-safe payloads"),
     }
 }
@@ -955,8 +964,8 @@ mod tests {
     use type_bridge_contract::schema::{
         AnnotationFactId, CanonicalValueRange, CanonicalValueSet, DocText, FunctionBody,
         FunctionParameter, FunctionSignature, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
-        RegexPattern, RelatesFactId, SchemaOperation, StructFact, StructField, SubFact,
-        SubFactId, TypeFact, ValueFact, ValueFactId,
+        RegexPattern, RelatesFactId, SchemaOperation, StructFact, StructField, SubFact, SubFactId,
+        TypeFact, ValueFact, ValueFactId,
     };
     use type_bridge_contract::value::{CanonicalString, Cardinality};
 
@@ -1008,10 +1017,8 @@ mod tests {
     }
 
     fn full_binding() -> SchemaLoweringBinding {
-        SchemaLoweringBinding::current(
-            typedb_3_12_1_profile().required_capabilities.clone(),
-        )
-        .unwrap()
+        SchemaLoweringBinding::current(typedb_3_12_1_profile().required_capabilities.clone())
+            .unwrap()
     }
 
     fn dump(
@@ -1061,29 +1068,129 @@ mod tests {
         let mut output = String::new();
 
         let type_fact = SchemaFact::Type(TypeFact::new(person.clone()).unwrap());
-        dump("type-define", SchemaOperation::define(vec![type_fact.clone()]).unwrap(), &empty, &empty, &mut output);
-        dump("type-undefine", SchemaOperation::undefine(type_fact), &empty, &empty, &mut output);
+        dump(
+            "type-define",
+            SchemaOperation::define(vec![type_fact.clone()]).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "type-undefine",
+            SchemaOperation::undefine(type_fact),
+            &empty,
+            &empty,
+            &mut output,
+        );
         let sub_fact = SchemaFact::Sub(SubFact::new(sub_id.clone()));
-        dump("sub-define", SchemaOperation::define(vec![sub_fact.clone()]).unwrap(), &empty, &empty, &mut output);
-        dump("sub-undefine", SchemaOperation::undefine(sub_fact), &empty, &empty, &mut output);
-        dump("value-define", SchemaOperation::define(vec![string_value.clone()]).unwrap(), &empty, &string_catalog, &mut output);
-        dump("value-redefine", SchemaOperation::redefine(string_value.clone(), integer_value.clone()).unwrap(), &string_catalog, &integer_catalog, &mut output);
-        dump("value-undefine", SchemaOperation::undefine(string_value.clone()), &string_catalog, &empty, &mut output);
+        dump(
+            "sub-define",
+            SchemaOperation::define(vec![sub_fact.clone()]).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "sub-undefine",
+            SchemaOperation::undefine(sub_fact),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "value-define",
+            SchemaOperation::define(vec![string_value.clone()]).unwrap(),
+            &empty,
+            &string_catalog,
+            &mut output,
+        );
+        dump(
+            "value-redefine",
+            SchemaOperation::redefine(string_value.clone(), integer_value.clone()).unwrap(),
+            &string_catalog,
+            &integer_catalog,
+            &mut output,
+        );
+        dump(
+            "value-undefine",
+            SchemaOperation::undefine(string_value.clone()),
+            &string_catalog,
+            &empty,
+            &mut output,
+        );
         let owns = SchemaFact::Owns(OwnsFact::new(owns_id.clone()));
-        dump("owns-define", SchemaOperation::define(vec![owns.clone()]).unwrap(), &empty, &empty, &mut output);
-        dump("owns-undefine", SchemaOperation::undefine(owns), &empty, &empty, &mut output);
+        dump(
+            "owns-define",
+            SchemaOperation::define(vec![owns.clone()]).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "owns-undefine",
+            SchemaOperation::undefine(owns),
+            &empty,
+            &empty,
+            &mut output,
+        );
         let relates = SchemaFact::Relates(RelatesFact::new(relates_id, None).unwrap());
-        dump("relates-define", SchemaOperation::define(vec![relates.clone()]).unwrap(), &empty, &empty, &mut output);
-        dump("relates-undefine", SchemaOperation::undefine(relates), &empty, &empty, &mut output);
-        let specialization_a = SchemaFact::Relates(RelatesFact::new(child_relates.clone(), Some(parent_a.clone())).unwrap());
-        let specialization_b = SchemaFact::Relates(RelatesFact::new(child_relates.clone(), Some(parent_b.clone())).unwrap());
+        dump(
+            "relates-define",
+            SchemaOperation::define(vec![relates.clone()]).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "relates-undefine",
+            SchemaOperation::undefine(relates),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        let specialization_a = SchemaFact::Relates(
+            RelatesFact::new(child_relates.clone(), Some(parent_a.clone())).unwrap(),
+        );
+        let specialization_b = SchemaFact::Relates(
+            RelatesFact::new(child_relates.clone(), Some(parent_b.clone())).unwrap(),
+        );
         let unspecialized = SchemaFact::Relates(RelatesFact::new(child_relates, None).unwrap());
-        dump("specialization-define", SchemaOperation::redefine(unspecialized.clone(), specialization_a.clone()).unwrap(), &empty, &empty, &mut output);
-        dump("specialization-redefine", SchemaOperation::redefine(specialization_a.clone(), specialization_b.clone()).unwrap(), &empty, &empty, &mut output);
-        dump("specialization-undefine", SchemaOperation::redefine(specialization_b, unspecialized).unwrap(), &empty, &empty, &mut output);
+        dump(
+            "specialization-define",
+            SchemaOperation::redefine(unspecialized.clone(), specialization_a.clone()).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "specialization-redefine",
+            SchemaOperation::redefine(specialization_a.clone(), specialization_b.clone()).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "specialization-undefine",
+            SchemaOperation::redefine(specialization_b, unspecialized).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
         let plays = SchemaFact::Plays(PlaysFact::new(plays_id));
-        dump("plays-define", SchemaOperation::define(vec![plays.clone()]).unwrap(), &empty, &empty, &mut output);
-        dump("plays-undefine", SchemaOperation::undefine(plays), &empty, &empty, &mut output);
+        dump(
+            "plays-define",
+            SchemaOperation::define(vec![plays.clone()]).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "plays-undefine",
+            SchemaOperation::undefine(plays),
+            &empty,
+            &empty,
+            &mut output,
+        );
 
         let doc_old = annotation(
             AnnotationSubjectId::Type(person.clone()),
@@ -1095,9 +1202,27 @@ mod tests {
             AnnotationKindId::Doc,
             SchemaAnnotationValue::Doc(DocText::new("changed").unwrap()),
         );
-        dump("doc-define", SchemaOperation::define(vec![doc_old.clone()]).unwrap(), &empty, &empty, &mut output);
-        dump("doc-redefine", SchemaOperation::redefine(doc_old.clone(), doc_new).unwrap(), &empty, &empty, &mut output);
-        dump("doc-undefine", SchemaOperation::undefine(doc_old), &empty, &empty, &mut output);
+        dump(
+            "doc-define",
+            SchemaOperation::define(vec![doc_old.clone()]).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "doc-redefine",
+            SchemaOperation::redefine(doc_old.clone(), doc_new).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "doc-undefine",
+            SchemaOperation::undefine(doc_old),
+            &empty,
+            &empty,
+            &mut output,
+        );
         let regex_old = annotation(
             AnnotationSubjectId::Value(ValueFactId::new(name.clone())),
             AnnotationKindId::Regex,
@@ -1108,7 +1233,13 @@ mod tests {
             AnnotationKindId::Regex,
             SchemaAnnotationValue::Regex(RegexPattern::new("^b+$").unwrap()),
         );
-        dump("regex-redefine", SchemaOperation::redefine(regex_old, regex_new).unwrap(), &string_catalog, &string_catalog, &mut output);
+        dump(
+            "regex-redefine",
+            SchemaOperation::redefine(regex_old, regex_new).unwrap(),
+            &string_catalog,
+            &string_catalog,
+            &mut output,
+        );
         let card_old = annotation(
             AnnotationSubjectId::Owns(owns_id.clone()),
             AnnotationKindId::Card,
@@ -1119,31 +1250,73 @@ mod tests {
             AnnotationKindId::Card,
             SchemaAnnotationValue::Cardinality(Cardinality::new(0, Some(2)).unwrap()),
         );
-        dump("card-redefine", SchemaOperation::redefine(card_old, card_new).unwrap(), &empty, &empty, &mut output);
+        dump(
+            "card-redefine",
+            SchemaOperation::redefine(card_old, card_new).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
         let range = annotation(
             AnnotationSubjectId::Value(ValueFactId::new(name.clone())),
             AnnotationKindId::Range,
-            SchemaAnnotationValue::Range(CanonicalValueRange::new(Some(CanonicalValue::Long(1)), Some(CanonicalValue::Long(10))).unwrap()),
+            SchemaAnnotationValue::Range(
+                CanonicalValueRange::new(
+                    Some(CanonicalValue::Long(1)),
+                    Some(CanonicalValue::Long(10)),
+                )
+                .unwrap(),
+            ),
         );
-        dump("range-define", SchemaOperation::define(vec![range]).unwrap(), &empty, &string_catalog, &mut output);
+        dump(
+            "range-define",
+            SchemaOperation::define(vec![range]).unwrap(),
+            &empty,
+            &string_catalog,
+            &mut output,
+        );
         let values = annotation(
             AnnotationSubjectId::Value(ValueFactId::new(name)),
             AnnotationKindId::Values,
-            SchemaAnnotationValue::Values(CanonicalValueSet::new([CanonicalValue::Long(2), CanonicalValue::Long(1)]).unwrap()),
+            SchemaAnnotationValue::Values(
+                CanonicalValueSet::new([CanonicalValue::Long(2), CanonicalValue::Long(1)]).unwrap(),
+            ),
         );
-        dump("values-define", SchemaOperation::define(vec![values]).unwrap(), &empty, &integer_catalog, &mut output);
+        dump(
+            "values-define",
+            SchemaOperation::define(vec![values]).unwrap(),
+            &empty,
+            &integer_catalog,
+            &mut output,
+        );
         let meta_old = annotation(
             AnnotationSubjectId::Sub(sub_id.clone()),
             AnnotationKindId::meta("owner").unwrap(),
-            SchemaAnnotationValue::Meta(CanonicalValue::String(CanonicalString::new("old").unwrap())),
+            SchemaAnnotationValue::Meta(CanonicalValue::String(
+                CanonicalString::new("old").unwrap(),
+            )),
         );
         let meta_new = annotation(
             AnnotationSubjectId::Sub(sub_id),
             AnnotationKindId::meta("owner").unwrap(),
-            SchemaAnnotationValue::Meta(CanonicalValue::String(CanonicalString::new("new").unwrap())),
+            SchemaAnnotationValue::Meta(CanonicalValue::String(
+                CanonicalString::new("new").unwrap(),
+            )),
         );
-        dump("sub-meta-fallback", SchemaOperation::redefine(meta_old.clone(), meta_new).unwrap(), &empty, &empty, &mut output);
-        dump("meta-keyed-undefine", SchemaOperation::undefine(meta_old), &empty, &empty, &mut output);
+        dump(
+            "sub-meta-fallback",
+            SchemaOperation::redefine(meta_old.clone(), meta_new).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "meta-keyed-undefine",
+            SchemaOperation::undefine(meta_old),
+            &empty,
+            &empty,
+            &mut output,
+        );
 
         let function_fact = function("match\n  let $value = $seed;\nreturn first $value;");
         let function_doc = annotation(
@@ -1154,14 +1327,38 @@ mod tests {
         let function_meta = annotation(
             AnnotationSubjectId::Function(FunctionId::new("answer").unwrap()),
             AnnotationKindId::meta("owner").unwrap(),
-            SchemaAnnotationValue::Meta(CanonicalValue::String(CanonicalString::new("core").unwrap())),
+            SchemaAnnotationValue::Meta(CanonicalValue::String(
+                CanonicalString::new("core").unwrap(),
+            )),
         );
-        dump("function-define-with-metadata", SchemaOperation::define(vec![function_meta, function_fact.clone(), function_doc]).unwrap(), &empty, &empty, &mut output);
+        dump(
+            "function-define-with-metadata",
+            SchemaOperation::define(vec![function_meta, function_fact.clone(), function_doc])
+                .unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
         let changed_function = function("match\n  let $value = 2;\nreturn first $value;");
-        dump("function-redefine", SchemaOperation::redefine(function_fact.clone(), changed_function).unwrap(), &empty, &empty, &mut output);
-        dump("function-undefine", SchemaOperation::undefine(function_fact), &empty, &empty, &mut output);
+        dump(
+            "function-redefine",
+            SchemaOperation::redefine(function_fact.clone(), changed_function).unwrap(),
+            &empty,
+            &empty,
+            &mut output,
+        );
+        dump(
+            "function-undefine",
+            SchemaOperation::undefine(function_fact),
+            &empty,
+            &empty,
+            &mut output,
+        );
 
-        assert_eq!(output, include_str!("../tests/fixtures/lowering-supported-v1.txt"));
+        assert_eq!(
+            output,
+            include_str!("../tests/fixtures/lowering-supported-v1.txt")
+        );
     }
 
     #[test]
@@ -1170,7 +1367,9 @@ mod tests {
         let full = full_binding();
         let person = type_id(TypeKind::Entity, "person");
         let employee = type_id(TypeKind::Entity, "employee");
-        let sub = SchemaFact::Sub(SubFact::new(SubFactId::new(employee, person.clone()).unwrap()));
+        let sub = SchemaFact::Sub(SubFact::new(
+            SubFactId::new(employee, person.clone()).unwrap(),
+        ));
         let name = attribute_id("name");
         let owns_id = OwnsFactId::new(person.clone(), name).unwrap();
         let key = annotation(
@@ -1184,7 +1383,11 @@ mod tests {
         let struct_fact = SchemaFact::Struct(
             StructFact::new(
                 StructId::new("record").unwrap(),
-                vec![StructField::new(Label::new("field").unwrap(), ValueTypeTag::Long, false)],
+                vec![StructField::new(
+                    Label::new("field").unwrap(),
+                    ValueTypeTag::Long,
+                    false,
+                )],
             )
             .unwrap(),
         );
@@ -1194,17 +1397,41 @@ mod tests {
             SchemaAnnotationValue::Doc(DocText::new("docs").unwrap()),
         );
         let cases = [
-            ("conditional", SchemaOperation::define(vec![sub]).unwrap(), &full),
-            ("backfill", SchemaOperation::define(vec![key]).unwrap(), &full),
-            ("destructive", SchemaOperation::undefine(type_fact.clone()), &full),
-            ("opaque", SchemaOperation::redefine(function_old, function_new).unwrap(), &full),
-            ("struct-unsupported", SchemaOperation::define(vec![struct_fact]).unwrap(), &full),
-            ("persistent-function-metadata", SchemaOperation::define(vec![persistent_function_doc]).unwrap(), &full),
+            (
+                "conditional",
+                SchemaOperation::define(vec![sub]).unwrap(),
+                &full,
+            ),
+            (
+                "backfill",
+                SchemaOperation::define(vec![key]).unwrap(),
+                &full,
+            ),
+            (
+                "destructive",
+                SchemaOperation::undefine(type_fact.clone()),
+                &full,
+            ),
+            (
+                "opaque",
+                SchemaOperation::redefine(function_old, function_new).unwrap(),
+                &full,
+            ),
+            (
+                "struct-unsupported",
+                SchemaOperation::define(vec![struct_fact]).unwrap(),
+                &full,
+            ),
+            (
+                "persistent-function-metadata",
+                SchemaOperation::define(vec![persistent_function_doc]).unwrap(),
+                &full,
+            ),
         ];
         let mut output = String::new();
         for (name, operation, binding) in cases {
-            let error = lower_operation(0, &operation, &empty, &empty, binding, false, false)
-                .unwrap_err();
+            let error =
+                lower_operation(0, &operation, &empty, &empty, binding, false, false).unwrap_err();
             output.push_str(name);
             output.push('|');
             output.push_str(error.code());
@@ -1233,7 +1460,10 @@ mod tests {
         output.push_str("profile|");
         output.push_str(profile_error.code());
         output.push('\n');
-        assert_eq!(output, include_str!("../tests/fixtures/lowering-rejections-v1.txt"));
+        assert_eq!(
+            output,
+            include_str!("../tests/fixtures/lowering-rejections-v1.txt")
+        );
     }
 
     #[test]
@@ -1247,7 +1477,7 @@ mod tests {
         );
         let unit = lower_operation(
             0,
-            &SchemaOperation::undefine(card).into(),
+            &SchemaOperation::undefine(card),
             &SchemaFactCatalog::empty(),
             &SchemaFactCatalog::empty(),
             &full_binding(),
@@ -1256,7 +1486,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unit.safety(), SafetyClass::FormalOnly);
-        assert_eq!(unit.statements()[0].query(), "undefine\n@card from person owns name;");
+        assert_eq!(
+            unit.statements()[0].query(),
+            "undefine\n@card from person owns name;"
+        );
     }
 
     #[test]

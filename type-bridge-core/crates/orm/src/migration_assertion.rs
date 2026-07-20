@@ -231,8 +231,7 @@ pub(crate) trait AssertionProviderCall: Send {
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         Box::pin(async {
             Err(OrmError::QueryExecution(
-                "given-stage parameterized queries are not supported by this provider"
-                    .into(),
+                "given-stage parameterized queries are not supported by this provider".into(),
             ))
         })
     }
@@ -274,8 +273,8 @@ async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
     context: MigrationAssertionExecutionContext<'_>,
 ) -> Result<(), MigrationAssertionExecutionError> {
     preflight(validated, context).map_err(MigrationAssertionExecutionError::Preflight)?;
-    let lowered = lower_migration_assertion(validated)
-        .map_err(MigrationAssertionExecutionError::Lowering)?;
+    let lowered =
+        lower_migration_assertion(validated).map_err(MigrationAssertionExecutionError::Lowering)?;
     let plan_fingerprint = validated
         .plan()
         .fingerprint()
@@ -307,7 +306,6 @@ async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
         )
         .await
         .map_err(MigrationAssertionExecutionError::Provider)?;
-    drop(consumer);
 
     match evidence {
         None => Ok(()),
@@ -344,8 +342,7 @@ fn preflight(
         .ensure_supported_by(context.available_capabilities)?;
     if validated.source_state().managed_semantic_schema()
         != context.source_state.managed_semantic_schema()
-        || validated.plan().managed_semantics()
-            != context.source_state.managed_semantic_schema()
+        || validated.plan().managed_semantics() != context.source_state.managed_semantic_schema()
     {
         return Err(assertion_diagnostic(
             DiagnosticCategory::Integrity,
@@ -448,11 +445,9 @@ fn render_patterns(
                 .expect("writing to String cannot fail");
             }
             AssertionPattern::Not { patterns } => {
-                writeln!(output, "{indent}not {{")
-                    .expect("writing to String cannot fail");
+                writeln!(output, "{indent}not {{").expect("writing to String cannot fail");
                 render_patterns(output, plan, patterns, depth + 1)?;
-                writeln!(output, "{indent}}};")
-                    .expect("writing to String cannot fail");
+                writeln!(output, "{indent}}};").expect("writing to String cannot fail");
             }
         }
     }
@@ -463,13 +458,15 @@ fn variable(
     plan: &MigrationAssertionPlan,
     binding: BindingId,
 ) -> Result<&QueryVariable, Diagnostic> {
-    plan.binding(binding).map(|binding| binding.variable()).ok_or_else(|| {
-        assertion_diagnostic(
-            DiagnosticCategory::InvalidContract,
-            "migration_assertion_unknown_binding",
-            "validated assertion references an unknown binding",
-        )
-    })
+    plan.binding(binding)
+        .map(|binding| binding.variable())
+        .ok_or_else(|| {
+            assertion_diagnostic(
+                DiagnosticCategory::InvalidContract,
+                "migration_assertion_unknown_binding",
+                "validated assertion references an unknown binding",
+            )
+        })
 }
 
 fn render_operand(
@@ -477,9 +474,7 @@ fn render_operand(
     operand: &ValueOperand,
 ) -> Result<String, Diagnostic> {
     match operand {
-        ValueOperand::Binding { binding } => {
-            Ok(format!("${}", variable(plan, *binding)?))
-        }
+        ValueOperand::Binding { binding } => Ok(format!("${}", variable(plan, *binding)?)),
         ValueOperand::Literal { value } => Ok(render_literal(value)),
     }
 }
@@ -559,9 +554,7 @@ fn validate_evidence_row(
         let concept = object
             .get(column.variable().as_str())
             .and_then(Value::as_object)
-            .ok_or_else(|| {
-                malformed_concept(column.variable(), &["category", "label"])
-            })?;
+            .ok_or_else(|| malformed_concept(column.variable(), &["category", "label"]))?;
         let category = string_field(concept, "category", column.variable())?;
         let label = string_field(concept, "label", column.variable())?;
         let kind = provider_concept_kind(category).ok_or_else(|| {
@@ -574,8 +567,8 @@ fn validate_evidence_row(
             )
         })?;
         reject_unexpected_concept_fields(concept, column.variable(), kind)?;
-        let type_id = TypeId::new(kind, label)
-            .map_err(|_| invalid_concept(column.variable(), &["label"]))?;
+        let type_id =
+            TypeId::new(kind, label).map_err(|_| invalid_concept(column.variable(), &["label"]))?;
         if !domain.type_ids().contains(&type_id) {
             return Err(type_mismatch(
                 column.variable(),
@@ -624,9 +617,9 @@ fn validate_evidence_row(
                     ));
                 }
                 parse_provider_value(
-                    concept.get("value").ok_or_else(|| {
-                        malformed_concept(column.variable(), &["value"])
-                    })?,
+                    concept
+                        .get("value")
+                        .ok_or_else(|| malformed_concept(column.variable(), &["value"]))?,
                     expected,
                 )?;
             }
@@ -740,7 +733,10 @@ pub(crate) fn provider_concept_kind(value: &str) -> Option<TypeKind> {
     }
 }
 
-pub(crate) fn parse_provider_value(value: &Value, value_type: ValueTypeTag) -> Result<CanonicalValue, Diagnostic> {
+pub(crate) fn parse_provider_value(
+    value: &Value,
+    value_type: ValueTypeTag,
+) -> Result<CanonicalValue, Diagnostic> {
     match value_type {
         ValueTypeTag::String => value
             .as_str()
@@ -761,9 +757,7 @@ pub(crate) fn parse_provider_value(value: &Value, value_type: ValueTypeTag) -> R
             .ok_or_else(malformed_value)
             .map(CanonicalValue::Boolean),
         ValueTypeTag::Date => parse_text::<CanonicalDate>(value, CanonicalValue::Date),
-        ValueTypeTag::DateTime => {
-            parse_text::<CanonicalDateTime>(value, CanonicalValue::DateTime)
-        }
+        ValueTypeTag::DateTime => parse_text::<CanonicalDateTime>(value, CanonicalValue::DateTime),
         ValueTypeTag::DateTimeTz => {
             parse_text::<CanonicalDateTimeTz>(value, CanonicalValue::DateTimeTz)
         }
@@ -772,9 +766,7 @@ pub(crate) fn parse_provider_value(value: &Value, value_type: ValueTypeTag) -> R
             .ok_or_else(malformed_value)
             .and_then(|value| DecimalValue::new(value).map_err(|_| malformed_value()))
             .map(CanonicalValue::Decimal),
-        ValueTypeTag::Duration => {
-            parse_text::<CanonicalDuration>(value, CanonicalValue::Duration)
-        }
+        ValueTypeTag::Duration => parse_text::<CanonicalDuration>(value, CanonicalValue::Duration),
     }
 }
 
@@ -867,7 +859,10 @@ fn type_mismatch(
     .with_detail("allowed_type_domains", allowed_types)
     .with_detail(
         "expected_value_type",
-        allowed.value_type().map(ValueTypeTag::as_str).unwrap_or("<none>"),
+        allowed
+            .value_type()
+            .map(ValueTypeTag::as_str)
+            .unwrap_or("<none>"),
     )
 }
 
@@ -895,9 +890,8 @@ mod tests {
         AssertionBinding, AssertionExpectation, AssertionRolePlayer,
     };
     use type_bridge_contract::schema::{
-        DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
-        RelatesFact, RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
-        ValueFact, ValueFactId,
+        DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact,
+        RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
     };
     use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
     use type_bridge_query::{
@@ -956,8 +950,7 @@ mod tests {
         ];
         if extra_type {
             facts.push(SchemaFact::Type(
-                TypeFact::new(type_id(TypeKind::Entity, "department"))
-                    .expect("extra type fact"),
+                TypeFact::new(type_id(TypeKind::Entity, "department")).expect("extra type fact"),
             ));
         }
         let sourced = facts
@@ -981,9 +974,8 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let declared =
-            DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-                .expect("declared schema");
+        let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+            .expect("declared schema");
         let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
         let resolved = resolve(&declared, &profile).expect("resolved schema");
         let managed = managed_schema_state(
@@ -1077,10 +1069,7 @@ mod tests {
         .expect("assertion plan");
         validate_migration_assertion_plan(
             &plan,
-            &MigrationAssertionValidationContext::new(
-                &fixture.resolved,
-                &fixture.managed,
-            ),
+            &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
             StructuralLimits::CANONICAL,
         )
         .expect("validated assertion")
@@ -1205,7 +1194,10 @@ limit 1;\n"
             )),
             "\"quote \\\" slash \\\\ line\\n\""
         );
-        assert_eq!(render_literal(&CanonicalValue::Long(i64::MIN)), i64::MIN.to_string());
+        assert_eq!(
+            render_literal(&CanonicalValue::Long(i64::MIN)),
+            i64::MIN.to_string()
+        );
         assert_eq!(
             render_literal(&CanonicalValue::Double(CanonicalDouble::new(-0.0).unwrap())),
             "-0.0"
@@ -1223,7 +1215,9 @@ limit 1;\n"
             "2.2250738585072014e-308"
         );
         assert_eq!(
-            render_literal(&CanonicalValue::Decimal(DecimalValue::new("12.30dec").unwrap())),
+            render_literal(&CanonicalValue::Decimal(
+                DecimalValue::new("12.30dec").unwrap()
+            )),
             "12.3dec"
         );
         assert_eq!(
@@ -1330,8 +1324,7 @@ limit 1;\n"
             StructuralLimits::CANONICAL,
         );
 
-        let mut absent =
-            FakeProvider::returning(QueryResult::Rows(vec![all_category_row(None)]));
+        let mut absent = FakeProvider::returning(QueryResult::Rows(vec![all_category_row(None)]));
         let MigrationAssertionExecutionError::AssertionFailed(absent) =
             execute_with_provider(&mut absent, &validated, context)
                 .await

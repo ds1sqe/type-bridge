@@ -5,20 +5,17 @@ use std::future::Future;
 use std::pin::Pin;
 
 use type_bridge_contract::capability::CapabilitySet;
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_contract::schema::ManagedSchemaState;
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 
 use crate::execution::{
-    AppliedRecord, ExecutionFence, ExecutionFuture, GroupCommitCertainty,
-    GroupEventRecord, GroupJournalEventKind, GroupRecoveryDecision,
-    GroupRecoveryObservation, LeaseHolderId, MigrationExecutionJournal,
-    MigrationLease, MigrationLeaseStore, OpenPlanRecord,
-    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord,
-    RollbackStepEventRecord, RolledBackRecord, decide_group_recovery,
+    AppliedRecord, ExecutionFence, ExecutionFuture, GroupCommitCertainty, GroupEventRecord,
+    GroupJournalEventKind, GroupRecoveryDecision, GroupRecoveryObservation, LeaseHolderId,
+    MigrationExecutionJournal, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
+    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord, RollbackStepEventRecord,
+    RolledBackRecord, decide_group_recovery,
 };
 use crate::{
     StatementUnit, VerifiedMigrationApplyManifest, VerifiedMigrationApplyPlan,
@@ -27,9 +24,8 @@ use crate::{
 };
 
 /// Future returned by a consuming provider commit operation.
-pub type GroupCommitFuture<'a> = Pin<
-    Box<dyn Future<Output = Result<(), GroupCommitFailure>> + Send + 'a>,
->;
+pub type GroupCommitFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), GroupCommitFailure>> + Send + 'a>>;
 
 /// A provider commit failure with explicit asymmetric certainty.
 #[derive(Debug)]
@@ -40,11 +36,11 @@ pub struct GroupCommitFailure {
 
 impl GroupCommitFailure {
     /// Construct a privacy-safe typed commit failure.
-    pub const fn new(
-        certainty: GroupCommitCertainty,
-        diagnostic: Diagnostic,
-    ) -> Self {
-        Self { certainty, diagnostic }
+    pub const fn new(certainty: GroupCommitCertainty, diagnostic: Diagnostic) -> Self {
+        Self {
+            certainty,
+            diagnostic,
+        }
     }
 
     /// Return whether the provider proved non-commit or cannot know.
@@ -71,10 +67,8 @@ pub trait PreparedMigrationGroup: Send {
     ) -> ExecutionFuture<'a, ()>;
 
     /// Execute one provider-lowered statement unit in exact order.
-    fn execute_statement_unit<'a>(
-        &'a mut self,
-        unit: &'a StatementUnit,
-    ) -> ExecutionFuture<'a, ()>;
+    fn execute_statement_unit<'a>(&'a mut self, unit: &'a StatementUnit)
+    -> ExecutionFuture<'a, ()>;
 
     /// Commit once after atomically rechecking the supplied active fence.
     ///
@@ -82,10 +76,7 @@ pub trait PreparedMigrationGroup: Send {
     /// schema statements. A lease takeover racing commit must therefore abort
     /// that commit or surface an unknown outcome, never commit under a stale
     /// fence after an advisory out-of-transaction check.
-    fn commit<'a>(
-        self: Box<Self>,
-        lease: &'a MigrationLease,
-    ) -> GroupCommitFuture<'a>
+    fn commit<'a>(self: Box<Self>, lease: &'a MigrationLease) -> GroupCommitFuture<'a>
     where
         Self: 'a;
 
@@ -242,17 +233,15 @@ where
     let mut observed = None;
 
     if open.is_none() {
-        let source = plan.source_state().expect("non-empty plan has source state");
+        let source = plan
+            .source_state()
+            .expect("non-empty plan has source state");
         let live_source = provider
             .observe_managed_state(lease, source, source)
             .await?;
         let applied_migrations = loaded_applied_migrations(&applied)?;
-        let record = PlanRecord::from_verified_plan(
-            lease,
-            plan,
-            &applied_migrations,
-            &live_source,
-        )?;
+        let record =
+            PlanRecord::from_verified_plan(lease, plan, &applied_migrations, &live_source)?;
         store.begin_plan(lease, record).await?;
         observed = Some(live_source);
     }
@@ -263,9 +252,7 @@ where
         }
         let snapshot = open.as_ref();
         for group in migration.transaction_groups() {
-            let last_event = snapshot.and_then(|open| {
-                last_group_event(open, migration, group)
-            });
+            let last_event = snapshot.and_then(|open| last_group_event(open, migration, group));
             if last_event.is_some_and(is_completion_event) {
                 continue;
             }
@@ -307,10 +294,7 @@ where
                         GroupJournalEventKind::Committed,
                         Some(target.managed_semantic_schema().clone()),
                     )?;
-                    if let Err(error) = store
-                        .record_group_event(lease, committed)
-                        .await
-                    {
+                    if let Err(error) = store.record_group_event(lease, committed).await {
                         return Ok(retry_safe(migration, group, error));
                     }
                     observed = Some(target.clone());
@@ -321,8 +305,7 @@ where
 
             if group.assertion_count() == 0
                 && lowering.units().is_empty()
-                && source.managed_semantic_schema()
-                    == target.managed_semantic_schema()
+                && source.managed_semantic_schema() == target.managed_semantic_schema()
             {
                 let event = GroupEventRecord::new(
                     lease,
@@ -338,12 +321,8 @@ where
                 continue;
             }
 
-            let mut transaction = provider
-                .prepare_group(lease, source, target)
-                .await?;
-            let steps = &migration.steps()[
-                group.first_step_index()..group.end_step_index()
-            ];
+            let mut transaction = provider.prepare_group(lease, source, target).await?;
+            let steps = &migration.steps()[group.first_step_index()..group.end_step_index()];
             for step in &steps[..group.assertion_count()] {
                 let validated = step.validated_assertion().ok_or_else(|| {
                     failure(
@@ -377,10 +356,7 @@ where
 
             match transaction.commit(lease).await {
                 Ok(()) => {
-                    observed = match provider
-                        .observe_managed_state(lease, source, target)
-                        .await
-                    {
+                    observed = match provider.observe_managed_state(lease, source, target).await {
                         Ok(observed) if observed == *target => observed,
                         Ok(_) => {
                             return Ok(explicit_recovery(
@@ -396,7 +372,8 @@ where
                         Err(error) => {
                             return Ok(retry_safe(migration, group, error));
                         }
-                    }.into();
+                    }
+                    .into();
                     let committed = GroupEventRecord::new(
                         lease,
                         migration,
@@ -404,10 +381,7 @@ where
                         GroupJournalEventKind::Committed,
                         Some(target.managed_semantic_schema().clone()),
                     )?;
-                    if let Err(error) = store
-                        .record_group_event(lease, committed)
-                        .await
-                    {
+                    if let Err(error) = store.record_group_event(lease, committed).await {
                         return Ok(retry_safe(migration, group, error));
                     }
                 }
@@ -433,10 +407,7 @@ where
                     if certainty == GroupCommitCertainty::DefinitelyAborted {
                         return Ok(retry_safe(migration, group, diagnostic));
                     }
-                    let after = match provider
-                        .observe_managed_state(lease, source, target)
-                        .await
-                    {
+                    let after = match provider.observe_managed_state(lease, source, target).await {
                         Ok(value) => value,
                         Err(error) => {
                             return Ok(explicit_recovery(migration, group, error));
@@ -453,11 +424,7 @@ where
                             return Ok(retry_safe(migration, group, diagnostic));
                         }
                         GroupRecoveryDecision::RequiresExplicitRecovery => {
-                            return Ok(explicit_recovery(
-                                migration,
-                                group,
-                                diagnostic,
-                            ));
+                            return Ok(explicit_recovery(migration, group, diagnostic));
                         }
                         GroupRecoveryDecision::RepairCheckpoint => {
                             let committed = GroupEventRecord::new(
@@ -467,10 +434,7 @@ where
                                 GroupJournalEventKind::Committed,
                                 Some(target.managed_semantic_schema().clone()),
                             )?;
-                            if let Err(error) = store
-                                .record_group_event(lease, committed)
-                                .await
-                            {
+                            if let Err(error) = store.record_group_event(lease, committed).await {
                                 return Ok(retry_safe(migration, group, error));
                             }
                             observed = Some(target.clone());
@@ -603,9 +567,8 @@ where
         }
         let snapshot = open.as_ref();
         for (step_index, step) in rollback.steps().iter().enumerate() {
-            let last_event = snapshot.and_then(|open| {
-                last_rollback_step_event(open, rollback, step_index)
-            });
+            let last_event =
+                snapshot.and_then(|open| last_rollback_step_event(open, rollback, step_index));
             if last_event.is_some_and(is_completion_event) {
                 continue;
             }
@@ -619,11 +582,8 @@ where
                         .await?,
                 );
             }
-            let observation = exact_observation(
-                observed.as_ref().expect("step observation"),
-                source,
-                target,
-            );
+            let observation =
+                exact_observation(observed.as_ref().expect("step observation"), source, target);
             match decide_group_recovery(
                 last_event,
                 &observation,
@@ -649,10 +609,7 @@ where
                         GroupJournalEventKind::Committed,
                         Some(target.managed_semantic_schema().clone()),
                     )?;
-                    if let Err(error) = store
-                        .record_rollback_step_event(lease, committed)
-                        .await
-                    {
+                    if let Err(error) = store.record_rollback_step_event(lease, committed).await {
                         return Ok(rollback_retry_safe(rollback, step_index, error));
                     }
                     observed = Some(target.clone());
@@ -662,8 +619,7 @@ where
             }
 
             if step.lowering().units().is_empty()
-                && source.managed_semantic_schema()
-                    == target.managed_semantic_schema()
+                && source.managed_semantic_schema() == target.managed_semantic_schema()
             {
                 let event = RollbackStepEventRecord::new(
                     lease,
@@ -672,18 +628,14 @@ where
                     GroupJournalEventKind::FormalOnlyAdvanced,
                     None,
                 )?;
-                if let Err(error) =
-                    store.record_rollback_step_event(lease, event).await
-                {
+                if let Err(error) = store.record_rollback_step_event(lease, event).await {
                     return Ok(rollback_retry_safe(rollback, step_index, error));
                 }
                 observed = Some(target.clone());
                 continue;
             }
 
-            let mut transaction = provider
-                .prepare_group(lease, source, target)
-                .await?;
+            let mut transaction = provider.prepare_group(lease, source, target).await?;
             for unit in step.lowering().units() {
                 if let Err(error) = transaction.execute_statement_unit(unit).await {
                     let _ = transaction.rollback().await;
@@ -704,10 +656,7 @@ where
 
             match transaction.commit(lease).await {
                 Ok(()) => {
-                    observed = match provider
-                        .observe_managed_state(lease, source, target)
-                        .await
-                    {
+                    observed = match provider.observe_managed_state(lease, source, target).await {
                         Ok(observed) if observed == *target => observed,
                         Ok(_) => {
                             return Ok(rollback_explicit_recovery(
@@ -723,7 +672,8 @@ where
                         Err(error) => {
                             return Ok(rollback_retry_safe(rollback, step_index, error));
                         }
-                    }.into();
+                    }
+                    .into();
                     let committed = RollbackStepEventRecord::new(
                         lease,
                         rollback,
@@ -731,10 +681,7 @@ where
                         GroupJournalEventKind::Committed,
                         Some(target.managed_semantic_schema().clone()),
                     )?;
-                    if let Err(error) = store
-                        .record_rollback_step_event(lease, committed)
-                        .await
-                    {
+                    if let Err(error) = store.record_rollback_step_event(lease, committed).await {
                         return Ok(rollback_retry_safe(rollback, step_index, error));
                     }
                 }
@@ -747,9 +694,7 @@ where
                         certainty.journal_event(),
                         None,
                     )?;
-                    if let Err(error) =
-                        store.record_rollback_step_event(lease, event).await
-                    {
+                    if let Err(error) = store.record_rollback_step_event(lease, event).await {
                         return Ok(match certainty {
                             GroupCommitCertainty::DefinitelyAborted => {
                                 rollback_retry_safe(rollback, step_index, error)
@@ -762,15 +707,10 @@ where
                     if certainty == GroupCommitCertainty::DefinitelyAborted {
                         return Ok(rollback_retry_safe(rollback, step_index, diagnostic));
                     }
-                    let after = match provider
-                        .observe_managed_state(lease, source, target)
-                        .await
-                    {
+                    let after = match provider.observe_managed_state(lease, source, target).await {
                         Ok(value) => value,
                         Err(error) => {
-                            return Ok(rollback_explicit_recovery(
-                                rollback, step_index, error,
-                            ));
+                            return Ok(rollback_explicit_recovery(rollback, step_index, error));
                         }
                     };
                     let after_observation = exact_observation(&after, source, target);
@@ -781,9 +721,7 @@ where
                         target.managed_semantic_schema(),
                     ) {
                         GroupRecoveryDecision::ExecuteNormally => {
-                            return Ok(rollback_retry_safe(
-                                rollback, step_index, diagnostic,
-                            ));
+                            return Ok(rollback_retry_safe(rollback, step_index, diagnostic));
                         }
                         GroupRecoveryDecision::RequiresExplicitRecovery => {
                             return Ok(rollback_explicit_recovery(
@@ -798,13 +736,10 @@ where
                                 GroupJournalEventKind::Committed,
                                 Some(target.managed_semantic_schema().clone()),
                             )?;
-                            if let Err(error) = store
-                                .record_rollback_step_event(lease, committed)
-                                .await
+                            if let Err(error) =
+                                store.record_rollback_step_event(lease, committed).await
                             {
-                                return Ok(rollback_retry_safe(
-                                    rollback, step_index, error,
-                                ));
+                                return Ok(rollback_retry_safe(rollback, step_index, error));
                             }
                             observed = Some(target.clone());
                         }
@@ -870,8 +805,7 @@ fn validate_open_rollback_plan(
             "open journal rollback plan differs from the freshly verified rollback plan",
         ));
     }
-    if open.plan().record().scope() != lease.scope()
-        || open.plan().record().fence() > lease.fence()
+    if open.plan().record().scope() != lease.scope() || open.plan().record().fence() > lease.fence()
     {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -912,10 +846,8 @@ fn validate_open_rollback_plan(
             lease.holder().clone(),
             entry.record().fence(),
         );
-        let expected = RolledBackRecord::from_verified_rollback(
-            &entry_lease,
-            &plan.rollbacks()[position],
-        )?;
+        let expected =
+            RolledBackRecord::from_verified_rollback(&entry_lease, &plan.rollbacks()[position])?;
         if completed_flags[position] || &expected != entry.record() {
             return Err(failure(
                 DiagnosticCategory::Integrity,
@@ -936,16 +868,20 @@ fn validate_open_rollback_plan(
 
     for event in open.events() {
         let record = event.record();
-        let manifest_index = plan.rollbacks().iter().position(|rollback| {
-            *rollback.digest() == record.manifest_digest()
-                && rollback.manifest().id() == record.migration_id()
-        }).ok_or_else(|| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "migration_execution_foreign_group_event",
-                "open-rollback event has no exact verified manifest",
-            )
-        })?;
+        let manifest_index = plan
+            .rollbacks()
+            .iter()
+            .position(|rollback| {
+                *rollback.digest() == record.manifest_digest()
+                    && rollback.manifest().id() == record.migration_id()
+            })
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_foreign_group_event",
+                    "open-rollback event has no exact verified manifest",
+                )
+            })?;
         let rollback = &plan.rollbacks()[manifest_index];
         let step_index = usize::try_from(record.step_ordinal()).map_err(|_| {
             failure(
@@ -980,9 +916,7 @@ fn validate_open_rollback_plan(
         let mut all_complete = true;
         for step_index in 0..rollback.steps().len() {
             let events = rollback_step_events(open, rollback, step_index);
-            validate_commit_transitions(
-                events.iter().map(|event| (event.kind(), event.fence())),
-            )?;
+            validate_commit_transitions(events.iter().map(|event| (event.kind(), event.fence())))?;
             if events.is_empty() {
                 progress_closed = true;
                 all_complete = false;
@@ -1011,9 +945,8 @@ fn validate_open_rollback_plan(
             ));
         }
         if manifest_index > completed
-            && (0..rollback.steps().len()).any(|step_index| {
-                !rollback_step_events(open, rollback, step_index).is_empty()
-            })
+            && (0..rollback.steps().len())
+                .any(|step_index| !rollback_step_events(open, rollback, step_index).is_empty())
         {
             return Err(failure(
                 DiagnosticCategory::Integrity,
@@ -1030,7 +963,8 @@ fn rollback_step_events<'a>(
     rollback: &VerifiedMigrationRollbackManifest,
     step_index: usize,
 ) -> Vec<&'a RollbackStepEventRecord> {
-    open.events().iter()
+    open.events()
+        .iter()
         .map(crate::JournalEntry::record)
         .filter(|event| {
             event.manifest_digest() == *rollback.digest()
@@ -1080,8 +1014,7 @@ fn validate_open_plan(
     applied: &[crate::JournalEntry<AppliedRecord>],
 ) -> Result<usize, Diagnostic> {
     validate_plan_identity(open.plan().record(), plan)?;
-    if open.plan().record().scope() != lease.scope()
-        || open.plan().record().fence() > lease.fence()
+    if open.plan().record().scope() != lease.scope() || open.plan().record().fence() > lease.fence()
     {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -1101,9 +1034,10 @@ fn validate_open_plan(
             ));
         }
         previous_sequence = Some(entry.sequence());
-        let position = plan.migrations().iter().position(|migration| {
-            migration.manifest().id() == entry.record().migration_id()
-        });
+        let position = plan
+            .migrations()
+            .iter()
+            .position(|migration| migration.manifest().id() == entry.record().migration_id());
         let Some(position) = position else {
             if entry.sequence() > open.plan().sequence() {
                 return Err(failure(
@@ -1137,16 +1071,20 @@ fn validate_open_plan(
 
     for event in open.events() {
         let record = event.record();
-        let migration_index = plan.migrations().iter().position(|migration| {
-            migration.digest() == record.manifest_digest()
-                && migration.manifest().id() == record.migration_id()
-        }).ok_or_else(|| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "migration_execution_foreign_group_event",
-                "open-plan event has no exact verified manifest",
-            )
-        })?;
+        let migration_index = plan
+            .migrations()
+            .iter()
+            .position(|migration| {
+                migration.digest() == record.manifest_digest()
+                    && migration.manifest().id() == record.migration_id()
+            })
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_foreign_group_event",
+                    "open-plan event has no exact verified manifest",
+                )
+            })?;
         let migration = &plan.migrations()[migration_index];
         let group_index = usize::try_from(record.group_ordinal()).map_err(|_| {
             failure(
@@ -1155,13 +1093,16 @@ fn validate_open_plan(
                 "journal group position exceeds this platform",
             )
         })?;
-        let group = migration.transaction_groups().get(group_index).ok_or_else(|| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "migration_execution_group_position_mismatch",
-                "journal event group is absent from the verified manifest",
-            )
-        })?;
+        let group = migration
+            .transaction_groups()
+            .get(group_index)
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_group_position_mismatch",
+                    "journal event group is absent from the verified manifest",
+                )
+            })?;
         let historical_lease = MigrationLease::new(
             lease.scope().clone(),
             lease.holder().clone(),
@@ -1188,9 +1129,7 @@ fn validate_open_plan(
         let mut all_complete = true;
         for group in migration.transaction_groups() {
             let events = group_events(open, migration, group);
-            validate_commit_transitions(
-                events.iter().map(|event| (event.kind(), event.fence())),
-            )?;
+            validate_commit_transitions(events.iter().map(|event| (event.kind(), event.fence())))?;
             if events.is_empty() {
                 progress_closed = true;
                 all_complete = false;
@@ -1211,19 +1150,20 @@ fn validate_open_plan(
                 all_complete = false;
             }
         }
-        if applied_flags[migration_index] != all_complete {
-            if applied_flags[migration_index] || migration_index < completed {
-                return Err(failure(
-                    DiagnosticCategory::Integrity,
-                    "migration_execution_applied_group_mismatch",
-                    "applied record and group completion evidence disagree",
-                ));
-            }
+        if applied_flags[migration_index] != all_complete
+            && (applied_flags[migration_index] || migration_index < completed)
+        {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_applied_group_mismatch",
+                "applied record and group completion evidence disagree",
+            ));
         }
         if migration_index > completed
-            && migration.transaction_groups().iter().any(|group| {
-                !group_events(open, migration, group).is_empty()
-            })
+            && migration
+                .transaction_groups()
+                .iter()
+                .any(|group| !group_events(open, migration, group).is_empty())
         {
             return Err(failure(
                 DiagnosticCategory::Integrity,
@@ -1239,27 +1179,42 @@ fn validate_plan_identity(
     record: &PlanRecord,
     plan: &VerifiedMigrationApplyPlan,
 ) -> Result<(), Diagnostic> {
-    let source = plan.source_state().ok_or_else(|| failure(
-        DiagnosticCategory::InvalidContract,
-        "migration_execution_empty_plan",
-        "an executable migration plan requires a source state",
-    ))?;
-    let target = plan.target_state().ok_or_else(|| failure(
-        DiagnosticCategory::InvalidContract,
-        "migration_execution_empty_plan",
-        "an executable migration plan requires a target state",
-    ))?;
-    let first = plan.migrations().first().ok_or_else(|| failure(
-        DiagnosticCategory::InvalidContract,
-        "migration_execution_empty_plan",
-        "an executable migration plan requires at least one manifest",
-    ))?;
-    let ids: Vec<_> = plan.migrations().iter()
-        .map(|migration| migration.manifest().id().clone()).collect();
-    let digests: Vec<_> = plan.migrations().iter()
-        .map(VerifiedMigrationApplyManifest::digest).collect();
-    let fingerprints: Vec<_> = plan.migrations().iter()
-        .map(|migration| migration.manifest().plan_fingerprint().clone()).collect();
+    let source = plan.source_state().ok_or_else(|| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_execution_empty_plan",
+            "an executable migration plan requires a source state",
+        )
+    })?;
+    let target = plan.target_state().ok_or_else(|| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_execution_empty_plan",
+            "an executable migration plan requires a target state",
+        )
+    })?;
+    let first = plan.migrations().first().ok_or_else(|| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_execution_empty_plan",
+            "an executable migration plan requires at least one manifest",
+        )
+    })?;
+    let ids: Vec<_> = plan
+        .migrations()
+        .iter()
+        .map(|migration| migration.manifest().id().clone())
+        .collect();
+    let digests: Vec<_> = plan
+        .migrations()
+        .iter()
+        .map(VerifiedMigrationApplyManifest::digest)
+        .collect();
+    let fingerprints: Vec<_> = plan
+        .migrations()
+        .iter()
+        .map(|migration| migration.manifest().plan_fingerprint().clone())
+        .collect();
     let matches = record.source_frontier() == plan.applied_frontier()
         && record.source_applied() == plan.applied_migrations()
         && record.target_frontier() == plan.target_frontier()
@@ -1273,10 +1228,8 @@ fn validate_plan_identity(
         && record.source_semantics() == source.managed_semantic_schema()
         && record.target_semantics() == target.managed_semantic_schema()
         && record.observed_live_source() == source.managed_semantic_schema()
-        && record.semantic_profile()
-            == first.manifest().semantic_profile().fingerprint()
-        && record.lowering_profile()
-            == first.manifest().lowering_profile().fingerprint();
+        && record.semantic_profile() == first.manifest().semantic_profile().fingerprint()
+        && record.lowering_profile() == first.manifest().lowering_profile().fingerprint();
     if !matches {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -1287,10 +1240,7 @@ fn validate_plan_identity(
     Ok(())
 }
 
-fn applied_matches(
-    record: &AppliedRecord,
-    migration: &VerifiedMigrationApplyManifest,
-) -> bool {
+fn applied_matches(record: &AppliedRecord, migration: &VerifiedMigrationApplyManifest) -> bool {
     let source = migration.manifest().source_state();
     let target = migration.manifest().target_state();
     record.scope().managed_scope_id() == source.scope().id()
@@ -1307,7 +1257,8 @@ fn group_events<'a>(
     migration: &VerifiedMigrationApplyManifest,
     group: &VerifiedMigrationTransactionGroup,
 ) -> Vec<&'a GroupEventRecord> {
-    open.events().iter()
+    open.events()
+        .iter()
         .map(crate::JournalEntry::record)
         .filter(|event| {
             event.manifest_digest() == migration.digest()
@@ -1334,26 +1285,24 @@ fn validate_commit_transitions(
         let valid = match previous {
             None => matches!(
                 kind,
-                GroupJournalEventKind::BeforeCommit
-                    | GroupJournalEventKind::FormalOnlyAdvanced
+                GroupJournalEventKind::BeforeCommit | GroupJournalEventKind::FormalOnlyAdvanced
             ),
             Some((prior_kind, prior_fence)) => match (prior_kind, kind) {
                 (
                     GroupJournalEventKind::BeforeCommit,
                     GroupJournalEventKind::Committed
-                        | GroupJournalEventKind::CommitOutcomeUnknown
-                        | GroupJournalEventKind::DefinitelyAborted,
+                    | GroupJournalEventKind::CommitOutcomeUnknown
+                    | GroupJournalEventKind::DefinitelyAborted,
                 ) => true,
                 (
                     GroupJournalEventKind::BeforeCommit
-                        | GroupJournalEventKind::CommitOutcomeUnknown
-                        | GroupJournalEventKind::DefinitelyAborted,
+                    | GroupJournalEventKind::CommitOutcomeUnknown
+                    | GroupJournalEventKind::DefinitelyAborted,
                     GroupJournalEventKind::BeforeCommit,
                 ) => fence > prior_fence,
-                (
-                    GroupJournalEventKind::CommitOutcomeUnknown,
-                    GroupJournalEventKind::Committed,
-                ) => fence >= prior_fence,
+                (GroupJournalEventKind::CommitOutcomeUnknown, GroupJournalEventKind::Committed) => {
+                    fence >= prior_fence
+                }
                 _ => false,
             },
         };
@@ -1372,27 +1321,42 @@ fn validate_commit_transitions(
 fn group_evidence<'a>(
     migration: &'a VerifiedMigrationApplyManifest,
     group: &VerifiedMigrationTransactionGroup,
-) -> Result<(
-    &'a ManagedSchemaState,
-    &'a ManagedSchemaState,
-    &'a crate::SchemaLoweringPlan,
-), Diagnostic> {
-    let step = migration.steps().get(group.schema_delta_step_index())
-        .ok_or_else(|| failure(
+) -> Result<
+    (
+        &'a ManagedSchemaState,
+        &'a ManagedSchemaState,
+        &'a crate::SchemaLoweringPlan,
+    ),
+    Diagnostic,
+> {
+    let step = migration
+        .steps()
+        .get(group.schema_delta_step_index())
+        .ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_group_position_mismatch",
+                "transaction group delta is outside the verified manifest",
+            )
+        })?;
+    let delta = step
+        .step()
+        .as_schema_delta()
+        .ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_group_step_kind_mismatch",
+                "transaction group does not terminate in a schema delta",
+            )
+        })?
+        .delta();
+    let lowering = step.lowering().ok_or_else(|| {
+        failure(
             DiagnosticCategory::Integrity,
-            "migration_execution_group_position_mismatch",
-            "transaction group delta is outside the verified manifest",
-        ))?;
-    let delta = step.step().as_schema_delta().ok_or_else(|| failure(
-        DiagnosticCategory::Integrity,
-        "migration_execution_group_step_kind_mismatch",
-        "transaction group does not terminate in a schema delta",
-    ))?.delta();
-    let lowering = step.lowering().ok_or_else(|| failure(
-        DiagnosticCategory::Integrity,
-        "migration_execution_group_lowering_missing",
-        "transaction group delta has no verified lowering",
-    ))?;
+            "migration_execution_group_lowering_missing",
+            "transaction group delta has no verified lowering",
+        )
+    })?;
     Ok((delta.source(), delta.target(), lowering))
 }
 
@@ -1402,9 +1366,7 @@ fn exact_observation(
     target: &ManagedSchemaState,
 ) -> GroupRecoveryObservation {
     if observed == source || observed == target {
-        GroupRecoveryObservation::ManagedSemantics(
-            observed.managed_semantic_schema().clone(),
-        )
+        GroupRecoveryObservation::ManagedSemantics(observed.managed_semantic_schema().clone())
     } else {
         GroupRecoveryObservation::Unavailable
     }
@@ -1433,8 +1395,7 @@ fn loaded_applied_migrations(
 fn is_completion_event(event: GroupJournalEventKind) -> bool {
     matches!(
         event,
-        GroupJournalEventKind::Committed
-            | GroupJournalEventKind::FormalOnlyAdvanced
+        GroupJournalEventKind::Committed | GroupJournalEventKind::FormalOnlyAdvanced
     )
 }
 
@@ -1462,26 +1423,25 @@ fn explicit_recovery(
     }
 }
 
-fn last_group_ordinal(
-    migration: &VerifiedMigrationApplyManifest,
-) -> Result<usize, Diagnostic> {
-    let ordinal = migration.transaction_groups().last().ok_or_else(|| failure(
-        DiagnosticCategory::Integrity,
-        "migration_execution_manifest_without_group",
-        "verified migration manifest has no transaction group",
-    ))?.ordinal();
+fn last_group_ordinal(migration: &VerifiedMigrationApplyManifest) -> Result<usize, Diagnostic> {
+    let ordinal = migration
+        .transaction_groups()
+        .last()
+        .ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_manifest_without_group",
+                "verified migration manifest has no transaction group",
+            )
+        })?
+        .ordinal();
     Ok(ordinal)
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
-        DiagnosticCode::new(code)
-            .expect("static migration coordinator diagnostic code"),
+        DiagnosticCode::new(code).expect("static migration coordinator diagnostic code"),
         message,
     )
 }

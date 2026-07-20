@@ -53,9 +53,7 @@ pub struct ManagedFactSelection(BTreeSet<SchemaFactId>);
 
 impl ManagedFactSelection {
     /// Build a bounded selection, rejecting duplicate fact identities.
-    pub fn new(
-        fact_ids: impl IntoIterator<Item = SchemaFactId>,
-    ) -> Result<Self, Diagnostic> {
+    pub fn new(fact_ids: impl IntoIterator<Item = SchemaFactId>) -> Result<Self, Diagnostic> {
         let mut selection = BTreeSet::new();
         for fact_id in fact_ids {
             if !selection.insert(fact_id) {
@@ -188,12 +186,16 @@ pub enum SchemaOperationKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum SchemaOperationData {
-    Define { facts: Vec<SchemaFact> },
-    Redefine {
-        expected: SchemaFact,
-        replacement: SchemaFact,
+    Define {
+        facts: Vec<SchemaFact>,
     },
-    Undefine { fact: SchemaFact },
+    Redefine {
+        expected: Box<SchemaFact>,
+        replacement: Box<SchemaFact>,
+    },
+    Undefine {
+        fact: SchemaFact,
+    },
 }
 
 /// One validated schema transition with an exact offline inverse.
@@ -230,10 +232,7 @@ impl SchemaOperation {
     }
 
     /// Redefine an existing fact without changing its stable identity.
-    pub fn redefine(
-        expected: SchemaFact,
-        replacement: SchemaFact,
-    ) -> Result<Self, Diagnostic> {
+    pub fn redefine(expected: SchemaFact, replacement: SchemaFact) -> Result<Self, Diagnostic> {
         if expected.id() != replacement.id() {
             return Err(delta_diagnostic(
                 DiagnosticCategory::InvalidContract,
@@ -249,8 +248,8 @@ impl SchemaOperation {
             ));
         }
         Ok(Self(SchemaOperationData::Redefine {
-            expected,
-            replacement,
+            expected: Box::new(expected),
+            replacement: Box::new(replacement),
         }))
     }
 
@@ -279,7 +278,7 @@ impl SchemaOperation {
     }
 
     /// Return the expected current fact when this is a redefinition.
-    pub const fn expected_fact(&self) -> Option<&SchemaFact> {
+    pub fn expected_fact(&self) -> Option<&SchemaFact> {
         match &self.0 {
             SchemaOperationData::Redefine { expected, .. } => Some(expected),
             _ => None,
@@ -287,7 +286,7 @@ impl SchemaOperation {
     }
 
     /// Return the replacement fact when this is a redefinition.
-    pub const fn replacement_fact(&self) -> Option<&SchemaFact> {
+    pub fn replacement_fact(&self) -> Option<&SchemaFact> {
         match &self.0 {
             SchemaOperationData::Redefine { replacement, .. } => Some(replacement),
             _ => None,
@@ -316,19 +315,20 @@ impl SchemaOperation {
     #[must_use]
     pub fn inverse(&self) -> Vec<Self> {
         match &self.0 {
-            SchemaOperationData::Define { facts } => facts
-                .iter()
-                .rev()
-                .cloned()
-                .map(Self::undefine)
-                .collect(),
+            SchemaOperationData::Define { facts } => {
+                facts.iter().rev().cloned().map(Self::undefine).collect()
+            }
             SchemaOperationData::Redefine {
                 expected,
                 replacement,
-            } => vec![Self::redefine(replacement.clone(), expected.clone())
-                .expect("an inverse redefinition preserves a validated unequal identity")],
-            SchemaOperationData::Undefine { fact } => vec![Self::define(vec![fact.clone()])
-                .expect("a singleton inverse definition is always non-empty and unique")],
+            } => vec![
+                Self::redefine(replacement.as_ref().clone(), expected.as_ref().clone())
+                    .expect("an inverse redefinition preserves a validated unequal identity"),
+            ],
+            SchemaOperationData::Undefine { fact } => vec![
+                Self::define(vec![fact.clone()])
+                    .expect("a singleton inverse definition is always non-empty and unique"),
+            ],
         }
     }
 }

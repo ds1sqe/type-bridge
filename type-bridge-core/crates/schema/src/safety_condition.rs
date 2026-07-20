@@ -4,19 +4,14 @@ use std::cmp::Ordering;
 
 use serde::Serialize;
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
-use type_bridge_contract::fingerprint::{
-    CanonicalizationVersion, Fingerprint, FingerprintDomain,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::managed_scope::SemanticProfileBinding;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
-    CanonicalValueSet, DeclaredIdentityFingerprint, DeclaredSchema, OwnsFactId,
-    SchemaAnnotationValue, SchemaFact, SchemaFactId, SchemaOperation,
-    SchemaOperationKind, ValueFactId,
+    AnnotationFact, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange, CanonicalValueSet,
+    DeclaredIdentityFingerprint, DeclaredSchema, OwnsFactId, SchemaAnnotationValue, SchemaFact,
+    SchemaFactId, SchemaOperation, SchemaOperationKind, ValueFactId,
 };
 use type_bridge_contract::schema_lowering::SchemaLoweringProfileBinding;
 use type_bridge_contract::semantic_profile::{InterfaceKind, SemanticProfile};
@@ -25,11 +20,9 @@ use type_bridge_contract::value::{CanonicalValue, Cardinality};
 use crate::{SafetyClass, classify_schema_operation_safety};
 
 /// Fingerprint domain for verifier-derived safety-condition identities.
-pub const SAFETY_CONDITION_FINGERPRINT_DOMAIN: &str =
-    "typebridge.schema.safety-condition";
+pub const SAFETY_CONDITION_FINGERPRINT_DOMAIN: &str = "typebridge.schema.safety-condition";
 /// Canonicalization identifier for verifier-derived safety conditions.
-pub const SAFETY_CONDITION_CANONICALIZATION: &str =
-    "typebridge.safety-condition/v1";
+pub const SAFETY_CONDITION_CANONICALIZATION: &str = "typebridge.safety-condition/v1";
 
 /// Registry-owned profiles which affect safety derivation and lowering identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -154,18 +147,10 @@ impl UnresolvableSafetyReason {
             Self::OwnsMinimumRequiresDistinctAttributes => {
                 "owns_minimum_requires_distinct_attributes"
             }
-            Self::RegexNarrowingRequiresValueRegex => {
-                "regex_narrowing_requires_value_regex"
-            }
-            Self::ValueTypeConversionRequiresBackfill => {
-                "value_type_conversion_requires_backfill"
-            }
-            Self::SubtypeTransitionRequiresBackfill => {
-                "subtype_transition_requires_backfill"
-            }
-            Self::RoleSpecializationRequiresBackfill => {
-                "role_specialization_requires_backfill"
-            }
+            Self::RegexNarrowingRequiresValueRegex => "regex_narrowing_requires_value_regex",
+            Self::ValueTypeConversionRequiresBackfill => "value_type_conversion_requires_backfill",
+            Self::SubtypeTransitionRequiresBackfill => "subtype_transition_requires_backfill",
+            Self::RoleSpecializationRequiresBackfill => "role_specialization_requires_backfill",
             Self::ConditionalTransitionRequiresBackfill => {
                 "conditional_transition_requires_backfill"
             }
@@ -443,7 +428,9 @@ pub fn derive_safety_conditions(
             }
         }
         SchemaOperationKind::Redefine => derive_redefinition(
-            operation.expected_fact().expect("redefine exposes expected fact"),
+            operation
+                .expected_fact()
+                .expect("redefine exposes expected fact"),
             operation
                 .replacement_fact()
                 .expect("redefine exposes replacement fact"),
@@ -538,18 +525,16 @@ fn derive_defined_fact(
             )
         }
         SchemaFact::Sub(_) => Ok(()),
-        SchemaFact::Relates(relates) if relates.specializes().is_some() => {
-            push_unresolvable(
-                conditions,
-                operation_index,
-                policy,
-                UnresolvableSafetyReason::RoleSpecializationRequiresBackfill,
-                SafetyConditionUnlock::Backfill,
-                source,
-                target,
-                profile,
-            )
-        }
+        SchemaFact::Relates(relates) if relates.specializes().is_some() => push_unresolvable(
+            conditions,
+            operation_index,
+            policy,
+            UnresolvableSafetyReason::RoleSpecializationRequiresBackfill,
+            SafetyConditionUnlock::Backfill,
+            source,
+            target,
+            profile,
+        ),
         _ => Ok(()),
     }
 }
@@ -567,19 +552,17 @@ fn derive_redefinition(
     conditions: &mut Vec<RequiredSafetyCondition>,
 ) -> Result<(), Diagnostic> {
     match (old, new) {
-        (SchemaFact::Annotation(old), SchemaFact::Annotation(new)) => {
-            derive_annotation_transition(
-                Some(old),
-                Some(new),
-                operation_index,
-                policy,
-                source,
-                target,
-                profile,
-                semantic,
-                conditions,
-            )
-        }
+        (SchemaFact::Annotation(old), SchemaFact::Annotation(new)) => derive_annotation_transition(
+            Some(old),
+            Some(new),
+            operation_index,
+            policy,
+            source,
+            target,
+            profile,
+            semantic,
+            conditions,
+        ),
         (SchemaFact::Value(old), SchemaFact::Value(new))
             if old.value_type() != new.value_type() =>
         {
@@ -653,18 +636,16 @@ fn derive_undefined_fact(
             semantic,
             conditions,
         ),
-        SchemaFact::Relates(relates) if relates.specializes().is_some() => {
-            push_unresolvable(
-                conditions,
-                operation_index,
-                policy,
-                UnresolvableSafetyReason::RoleSpecializationRequiresBackfill,
-                SafetyConditionUnlock::Backfill,
-                source,
-                target,
-                profile,
-            )
-        }
+        SchemaFact::Relates(relates) if relates.specializes().is_some() => push_unresolvable(
+            conditions,
+            operation_index,
+            policy,
+            UnresolvableSafetyReason::RoleSpecializationRequiresBackfill,
+            SafetyConditionUnlock::Backfill,
+            source,
+            target,
+            profile,
+        ),
         _ => Ok(()),
     }
 }
@@ -753,13 +734,10 @@ fn derive_annotation_transition(
             if let Some(new) = new {
                 let range = range_payload(new)?;
                 let old_range = old.map(range_payload).transpose()?;
-                let (lower_narrows, upper_narrows) =
-                    range_narrowing(old_range, range)?;
+                let (lower_narrows, upper_narrows) = range_narrowing(old_range, range)?;
                 let subject = scalar_subject(subject)?;
                 if lower_narrows {
-                    let lower = range
-                        .lower()
-                        .expect("a narrowing lower bound is present");
+                    let lower = range.lower().expect("a narrowing lower bound is present");
                     push_condition(
                         conditions,
                         operation_index,
@@ -774,9 +752,7 @@ fn derive_annotation_transition(
                     )?;
                 }
                 if upper_narrows {
-                    let upper = range
-                        .upper()
-                        .expect("a narrowing upper bound is present");
+                    let upper = range.upper().expect("a narrowing upper bound is present");
                     push_condition(
                         conditions,
                         operation_index,
@@ -838,7 +814,9 @@ fn is_proven_condition_free_constraint_transition(
         return Ok(false);
     }
     let (SchemaFact::Annotation(old), SchemaFact::Annotation(new)) = (
-        operation.expected_fact().expect("redefine exposes expected fact"),
+        operation
+            .expected_fact()
+            .expect("redefine exposes expected fact"),
         operation
             .replacement_fact()
             .expect("redefine exposes replacement fact"),
@@ -867,10 +845,7 @@ fn is_proven_condition_free_constraint_transition(
 /// annotation, struct, or specializing-relates fact deliberately fails the
 /// proof — those keep the conservative backfill catch-all even when their own
 /// derivation produced no condition.
-fn is_proven_condition_free_define(
-    operation: &SchemaOperation,
-    source: &DeclaredSchema,
-) -> bool {
+fn is_proven_condition_free_define(operation: &SchemaOperation, source: &DeclaredSchema) -> bool {
     let Some(facts) = operation.defined_facts() else {
         return false;
     };
@@ -1117,11 +1092,12 @@ fn effective_cardinality(
             ));
         }
     };
-    let explicit = annotation(declared, subject, &AnnotationKindId::Card)
-        .and_then(|annotation| match annotation.value() {
+    let explicit = annotation(declared, subject, &AnnotationKindId::Card).and_then(|annotation| {
+        match annotation.value() {
             SchemaAnnotationValue::Cardinality(cardinality) => Some(*cardinality),
             _ => None,
-        });
+        }
+    });
     let key = matches!(subject, AnnotationSubjectId::Owns(_))
         && annotation(declared, subject, &AnnotationKindId::Key).is_some();
     Ok(semantic.effective_cardinality(kind, explicit, key))
@@ -1220,7 +1196,9 @@ fn validate_exact_transition(
             }
         }
         SchemaOperationKind::Redefine => {
-            let expected = operation.expected_fact().expect("redefine exposes expected fact");
+            let expected = operation
+                .expected_fact()
+                .expect("redefine exposes expected fact");
             let replacement = operation
                 .replacement_fact()
                 .expect("redefine exposes replacement fact");
@@ -1258,10 +1236,7 @@ fn validate_exact_transition(
     Ok(())
 }
 
-fn find_fact<'a>(
-    declared: &'a DeclaredSchema,
-    id: &SchemaFactId,
-) -> Option<&'a SchemaFact> {
+fn find_fact<'a>(declared: &'a DeclaredSchema, id: &SchemaFactId) -> Option<&'a SchemaFact> {
     declared.facts().find(|fact| fact.id() == id.clone())
 }
 
@@ -1269,11 +1244,7 @@ fn transition_failure(code: &'static str, message: &'static str) -> Diagnostic {
     failure(DiagnosticCategory::Integrity, code, message)
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static safety-condition diagnostic code is canonical"),
@@ -1288,11 +1259,11 @@ mod tests {
     use type_bridge_contract::id::TypeKind;
     use type_bridge_contract::managed_scope::SemanticProfileBinding;
     use type_bridge_contract::schema::{
-        AnnotationFactId, CanonicalValueRange, CanonicalValueSet, DocumentId,
-        OwnsFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact,
+        AnnotationFactId, CanonicalValueRange, CanonicalValueSet, DocumentId, OwnsFact, SourceSpan,
+        SourcedSchemaFact, TypeFact, ValueFact,
     };
-    use type_bridge_contract::value::ValueTypeTag;
     use type_bridge_contract::schema_lowering::SchemaLoweringProfileBinding;
+    use type_bridge_contract::value::ValueTypeTag;
 
     use super::*;
 
@@ -1351,13 +1322,8 @@ mod tests {
         (
             vec![
                 SchemaFact::Type(TypeFact::new(person).expect("type")),
-                SchemaFact::Type(
-                    TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type"),
-                ),
-                SchemaFact::Value(ValueFact::new(
-                    ValueFactId::new(age),
-                    ValueTypeTag::Long,
-                )),
+                SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type")),
+                SchemaFact::Value(ValueFact::new(ValueFactId::new(age), ValueTypeTag::Long)),
                 SchemaFact::Owns(OwnsFact::new(owns.clone())),
             ],
             owns,
@@ -1372,37 +1338,21 @@ mod tests {
         let old = annotation_fact(
             subject.clone(),
             AnnotationKindId::Card,
-            SchemaAnnotationValue::Cardinality(
-                Cardinality::new(0, Some(3)).expect("old card"),
-            ),
+            SchemaAnnotationValue::Cardinality(Cardinality::new(0, Some(3)).expect("old card")),
         );
         let new = annotation_fact(
             subject,
             AnnotationKindId::Card,
-            SchemaAnnotationValue::Cardinality(
-                Cardinality::new(1, Some(1)).expect("new card"),
-            ),
+            SchemaAnnotationValue::Cardinality(Cardinality::new(1, Some(1)).expect("new card")),
         );
         let source = declared(base.iter().cloned().chain([old.clone()]).collect());
         let target = declared(base.iter().cloned().chain([new.clone()]).collect());
         let operation = SchemaOperation::redefine(old, new).expect("operation");
 
-        let first = derive_safety_conditions(
-            7,
-            &operation,
-            &source,
-            &target,
-            &profile,
-        )
-        .expect("conditions");
-        let second = derive_safety_conditions(
-            7,
-            &operation,
-            &source,
-            &target,
-            &profile,
-        )
-        .expect("conditions");
+        let first = derive_safety_conditions(7, &operation, &source, &target, &profile)
+            .expect("conditions");
+        let second = derive_safety_conditions(7, &operation, &source, &target, &profile)
+            .expect("conditions");
         assert_eq!(first, second);
         assert_eq!(first.conditions().len(), 2);
         assert!(matches!(
@@ -1413,10 +1363,7 @@ mod tests {
             first.conditions()[1].condition(),
             SafetyCondition::OwnsMaximum { maximum: 1, .. }
         ));
-        assert_eq!(
-            first.conditions()[0].id(),
-            second.conditions()[0].id()
-        );
+        assert_eq!(first.conditions()[0].id(), second.conditions()[0].id());
         assert_eq!(
             first.conditions()[0]
                 .canonical_identity_bytes()
@@ -1425,14 +1372,8 @@ mod tests {
                 .canonical_identity_bytes()
                 .expect("identity bytes")
         );
-        let moved = derive_safety_conditions(
-            8,
-            &operation,
-            &source,
-            &target,
-            &profile,
-        )
-        .expect("moved condition");
+        let moved = derive_safety_conditions(8, &operation, &source, &target, &profile)
+            .expect("moved condition");
         assert_ne!(first.conditions()[0].id(), moved.conditions()[0].id());
         assert_eq!(
             derive_safety_conditions(7, &operation, &source, &source, &profile)
@@ -1456,7 +1397,12 @@ mod tests {
             SchemaAnnotationValue::Presence,
         );
         let source = declared(base.clone());
-        let target = declared(base.iter().cloned().chain([abstract_fact.clone()]).collect());
+        let target = declared(
+            base.iter()
+                .cloned()
+                .chain([abstract_fact.clone()])
+                .collect(),
+        );
         let abstract_conditions = derive_safety_conditions(
             0,
             &SchemaOperation::define(vec![abstract_fact]).expect("abstract operation"),
@@ -1502,9 +1448,7 @@ mod tests {
 
         let age = AttributeId::new("age").expect("attribute");
         let scalar_base = vec![
-            SchemaFact::Type(
-                TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type"),
-            ),
+            SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type")),
             SchemaFact::Value(ValueFact::new(
                 ValueFactId::new(age.clone()),
                 ValueTypeTag::Long,
@@ -1538,11 +1482,8 @@ mod tests {
             AnnotationSubjectId::Value(ValueFactId::new(age.clone())),
             AnnotationKindId::Values,
             SchemaAnnotationValue::Values(
-                CanonicalValueSet::new([
-                    CanonicalValue::Long(2),
-                    CanonicalValue::Long(4),
-                ])
-                .expect("values"),
+                CanonicalValueSet::new([CanonicalValue::Long(2), CanonicalValue::Long(4)])
+                    .expect("values"),
             ),
         );
         let values_target = declared(
@@ -1567,9 +1508,7 @@ mod tests {
 
         let code = AttributeId::new("code").expect("attribute");
         let regex_base = vec![
-            SchemaFact::Type(
-                TypeFact::new(type_id(TypeKind::Attribute, "code")).expect("type"),
-            ),
+            SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "code")).expect("type")),
             SchemaFact::Value(ValueFact::new(
                 ValueFactId::new(code.clone()),
                 ValueTypeTag::String,
@@ -1618,7 +1557,10 @@ mod tests {
         .expect("undefine guard");
         assert_eq!(conditions.policy(), SafetyClass::Destructive);
         assert!(!conditions.resolves_conditional_requirements());
-        assert_eq!(conditions.conditions()[0].policy(), SafetyClass::Destructive);
+        assert_eq!(
+            conditions.conditions()[0].policy(),
+            SafetyClass::Destructive
+        );
         assert!(matches!(
             conditions.conditions()[0].condition(),
             SafetyCondition::NoInstances {
@@ -1633,14 +1575,9 @@ mod tests {
         let profile = test_safety_profile();
         let age = AttributeId::new("age").expect("attribute");
         let subject = AnnotationSubjectId::Value(ValueFactId::new(age.clone()));
-        let base = vec![
-            SchemaFact::Type(
-                TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type"),
-            ),
-            SchemaFact::Value(ValueFact::new(
-                ValueFactId::new(age),
-                ValueTypeTag::Long,
-            )),
+        let base = [
+            SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type")),
+            SchemaFact::Value(ValueFact::new(ValueFactId::new(age), ValueTypeTag::Long)),
         ];
         let range = |lower: Option<i64>, upper: Option<i64>| {
             annotation_fact(
@@ -1689,7 +1626,10 @@ mod tests {
             }
         ));
         let repeated = derive_range(range(Some(1), Some(9)), range(Some(2), Some(8)));
-        assert_eq!(narrowing.conditions()[0].id(), repeated.conditions()[0].id());
+        assert_eq!(
+            narrowing.conditions()[0].id(),
+            repeated.conditions()[0].id()
+        );
 
         let mixed = derive_range(range(Some(2), None), range(None, Some(8)));
         assert_eq!(mixed.conditions().len(), 1);
@@ -1706,10 +1646,8 @@ mod tests {
                 subject.clone(),
                 AnnotationKindId::Values,
                 SchemaAnnotationValue::Values(
-                    CanonicalValueSet::new(
-                        members.iter().copied().map(CanonicalValue::Long),
-                    )
-                    .expect("values"),
+                    CanonicalValueSet::new(members.iter().copied().map(CanonicalValue::Long))
+                        .expect("values"),
                 ),
             )
         };
