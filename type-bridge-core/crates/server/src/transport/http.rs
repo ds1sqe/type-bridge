@@ -290,6 +290,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_failure_body_pins_released_v1_bytes() {
+        // Golden merge-base contract: a commit rejection surfaces as HTTP 400
+        // with exactly this body. Released 1.5.x clients match on these bytes;
+        // the runtime-to-pipeline conversion producing this message is pinned
+        // in typedb::real_driver's tests.
+        let error = PipelineError::QueryExecution("Commit failed: constraint violated".into());
+        let resp = error.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            bytes.as_ref(),
+            br#"{"status":"error","error":{"code":"QUERY_EXECUTION_ERROR","message":"Query execution error: Commit failed: constraint violated"}}"#
+        );
+    }
+
+    #[tokio::test]
     async fn into_response_body_structure() {
         let resp = PipelineError::Config("bad config".into()).into_response();
         let json = body_json(resp).await;

@@ -152,7 +152,13 @@ impl From<runtime::RuntimeError> for PipelineError {
             runtime::RuntimeError::Connection(message) => Self::Connection(message),
             runtime::RuntimeError::QueryExecution(message) => Self::QueryExecution(message),
             runtime::RuntimeError::Transaction(message) => Self::QueryExecution(message),
-            error @ runtime::RuntimeError::Commit { .. } => Self::QueryExecution(error.to_string()),
+            // The V1 HTTP contract pins the exact released body bytes
+            // "Query execution error: Commit failed: {driver text}"; going
+            // through the runtime Display would inject a "Transaction error:"
+            // prefix the released clients never saw.
+            runtime::RuntimeError::Commit { message, .. } => {
+                Self::QueryExecution(format!("Commit failed: {message}"))
+            }
             error @ runtime::RuntimeError::ResourceLimit { .. } => {
                 Self::QueryExecution(error.to_string())
             }
@@ -177,6 +183,25 @@ mod tests {
             PipelineError::QueryExecution(message)
                 if message == "Resource limit [solution_scan_limit]: selected query exceeded its solution scan ceiling"
         ));
+    }
+
+    #[test]
+    fn commit_failure_preserves_released_v1_response_bytes() {
+        let error = runtime::RuntimeError::Commit {
+            certainty: runtime::CommitFailureCertainty::DefinitelyAborted,
+            message: "constraint violated".to_string(),
+        };
+
+        let pipeline = PipelineError::from(error);
+        assert!(matches!(
+            &pipeline,
+            PipelineError::QueryExecution(message) if message == "Commit failed: constraint violated"
+        ));
+        // Golden released body message: the merge-base V1 HTTP contract.
+        assert_eq!(
+            pipeline.to_string(),
+            "Query execution error: Commit failed: constraint violated"
+        );
     }
 
     #[test]
