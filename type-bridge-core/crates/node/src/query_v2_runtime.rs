@@ -5,6 +5,9 @@
 //! and small JSON payloads for invocations and typed outcomes. Local
 //! execution and the remote envelope share one authority, so a prepared
 //! plan runs identically through either path.
+//!
+//! Plans are authored in Rust in 2.0.0; the typed binding authoring
+//! facade over this surface is tracked in issue #195.
 
 use std::sync::Arc;
 
