@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-workspace"
-version = "1.5.10"
+version = "1.5.11"
 edition = "2024"
 description = "Validated programmatic workspace configuration for type-bridge"
 license.workspace = true
@@ -15,10 +15,10 @@ path = "src/lib.rs"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-type-bridge-contract = { path = "../contract", version = "1.5.10" }
-type-bridge-schema = { path = "../schema", version = "1.5.10" }
-type-bridge-schema-compat = { path = "../schema-compat", version = "1.5.10" }
-type-bridge-schema-migration = { path = "../schema-migration", version = "1.5.10" }
+type-bridge-contract = { path = "../contract", version = "1.5.11" }
+type-bridge-schema = { path = "../schema", version = "1.5.11" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "1.5.11" }
+type-bridge-schema-migration = { path = "../schema-migration", version = "1.5.11" }
 
 [lints]
 workspace = true

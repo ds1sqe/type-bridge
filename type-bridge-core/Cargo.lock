@@ -2614,7 +2614,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge-cli"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "clap",
  "serde_json",
@@ -2632,7 +2632,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-contract"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -2745,7 +2745,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-query"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -2753,7 +2753,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2767,7 +2767,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-codegen"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -2775,7 +2775,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-compat"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -2788,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -2799,7 +2799,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration-typedb"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -2937,7 +2937,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-workspace"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "serde",
  "serde_json",
