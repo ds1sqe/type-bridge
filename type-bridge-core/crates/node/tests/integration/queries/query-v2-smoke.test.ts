@@ -146,12 +146,13 @@ test("prepared plan executes locally and remotely", async () => {
     const plan = Buffer.from(PLAN_B64, "base64");
     const invocation = JSON.stringify({ operation: "rows", rows: [] });
     const authority = native.queryV2Authority(declared, SCOPE, PROFILE);
-    const local = native.queryV2ExecuteLocal(
+    const local = (await native.queryV2ExecuteLocal(
       db,
       authority,
       plan,
       invocation,
-    ) as string;
+      30_000n,
+    )) as string;
     assert.ok(local.includes('"ada"'), local);
     assert.ok(local.includes('"bob"'), local);
 
@@ -186,15 +187,26 @@ test("prepared plan executes locally and remotely", async () => {
     );
     try {
       await waitForPort(port, server, 300_000);
+      const advertisementResponse = await fetch(
+        `http://127.0.0.1:${port}/v2/capabilities`,
+      );
+      const advertisement = Buffer.from(
+        await advertisementResponse.arrayBuffer(),
+      );
+      const capabilities = native.queryV2RemoteCapabilities(
+        advertisement,
+      ) as string[];
+      assert.ok(capabilities.includes("query.plan"), String(capabilities));
       const nonce = `binding-smoke-node-${process.pid}-${Date.now()}`;
       const request = native.queryV2EncodeRemoteRequest(
         authority,
         plan,
         invocation,
+        advertisement,
         nonce,
-        100,
-        1 << 20,
-        30_000,
+        100n,
+        BigInt(1 << 20),
+        30_000n,
       ) as Buffer;
       const response = await fetch(`http://127.0.0.1:${port}/v2/query`, {
         method: "POST",
@@ -208,12 +220,17 @@ test("prepared plan executes locally and remotely", async () => {
         invocation,
         body,
         nonce,
-        100,
-        1 << 20,
+        100n,
+        BigInt(1 << 20),
+        30_000n,
       ) as string;
       assert.equal(remote, local);
     } finally {
+      // Wait for the server process to die before deleting the shared
+      // database: a lingering connection makes the delete fail as in-use.
+      const exited = new Promise((resolve) => server.once("exit", resolve));
       server.kill("SIGKILL");
+      await exited;
     }
   } finally {
     db.deleteDatabase();
