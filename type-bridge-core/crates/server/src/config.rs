@@ -11,6 +11,30 @@ pub struct ServerConfig {
     pub interceptors: InterceptorsSection,
     #[serde(default)]
     pub logging: LoggingSection,
+    #[serde(default)]
+    pub v2: V2Section,
+}
+
+/// Optional versioned V2 query surface served beside the V1 routes.
+///
+/// Requires a binary built with `--features v2-query`; enabling it on a
+/// build without the feature aborts startup instead of silently serving
+/// 404s.
+#[derive(Debug, Default, Deserialize)]
+pub struct V2Section {
+    /// Serve `/v2/query` and `/v2/capabilities`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to canonical declared-schema bytes (a generated
+    /// `declared-schema.json`) V2 plans validate against.
+    #[serde(default)]
+    pub declared_schema_file: String,
+    /// Exclusive managed scope identity plans bind against.
+    #[serde(default)]
+    pub scope: String,
+    /// Semantic profile identifier, e.g. `typedb-3.12.1/v1`.
+    #[serde(default)]
+    pub profile: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,6 +243,35 @@ database = "mydb"
         assert_eq!(audit.file_path, "/tmp/audit.log");
         assert_eq!(config.logging.level, "debug");
         assert_eq!(config.logging.format, "text");
+    }
+
+    #[test]
+    fn v2_section_defaults_to_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(&path, MINIMAL_CONFIG).unwrap();
+
+        let config = ServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
+        assert!(!config.v2.enabled);
+        assert!(config.v2.declared_schema_file.is_empty());
+    }
+
+    #[test]
+    fn v2_section_parses_when_configured() {
+        let config_text = format!(
+            "{MINIMAL_CONFIG}\n[v2]\nenabled = true\n\
+             declared_schema_file = \"declared-schema.json\"\n\
+             scope = \"prod\"\nprofile = \"typedb-3.12.1/v1\"\n"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(&path, config_text).unwrap();
+
+        let config = ServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
+        assert!(config.v2.enabled);
+        assert_eq!(config.v2.declared_schema_file, "declared-schema.json");
+        assert_eq!(config.v2.scope, "prod");
+        assert_eq!(config.v2.profile, "typedb-3.12.1/v1");
     }
 
     #[test]
