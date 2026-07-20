@@ -60,17 +60,18 @@ symbolic credentials.
 
 Move desired-schema authoring to the split-YAML workspace when ready:
 
-- **From TOML**: the read-only converter renders your `schema.toml`
-  into canonical TypeQL (`toml_to_typeql`) and imports it into the
-  canonical schema graph (`toml_to_declared`). TOML authoring is
-  deprecated; the converter and its frozen parser are permanent.
-- **From TypeQL**: `typeql_to_declared` imports an existing `define`
-  block into the same canonical graph. TypeQL import is a permanent
-  surface.
-- **From Python declarations / fused `Role[T]`**: the canonical graph
-  generates split-YAML-equivalent projections with explicit
-  `relates()`/`plays()`; declarations converted through either importer
-  above land in the same one canonical schema.
+- **From TOML**: the public read-only converter
+  `type_bridge_core.toml_to_typeql` renders your `schema.toml` into
+  canonical TypeQL for review; it and its frozen parser are permanent.
+  TOML authoring itself is deprecated. Translate the reviewed schema
+  into split-YAML fragments by hand following the workspace format
+  below — an automated TOML/TypeQL-to-YAML converter is planned but is
+  **not** part of 2.0.0.
+- **From Python declarations / fused `Role[T]`**: run your existing
+  declarations unchanged (Step 1) until you author the equivalent
+  split-YAML fragments; the generated projections from
+  `type-bridge schema generate` then replace hand-written models with
+  explicit `relates()`/`plays()`.
 
 A V2 workspace is a `typebridge.yaml` manifest, a schema-set manifest
 (`format: typebridge.schema-set/v1`) listing fragment documents, and
@@ -82,9 +83,13 @@ projections from the one canonical schema.
 
 New code uses prepared V2 plans: reusable, capability-gated,
 schema-validated read programs with typed inputs, executed locally or
-through the versioned remote envelope with identical semantics. V1
-queries continue to work throughout `2.0.x`; the adapter migration can
-proceed one query at a time.
+through the versioned remote envelope with identical semantics. Plan
+authoring is a Rust surface in 2.0.0; the Python and Node bindings
+execute prepared plans (canonical plan bytes plus invocation) but do
+not yet offer idiomatic plan-builder facades — those ship in a later
+`2.0.x` release. V1 queries continue to work throughout `2.0.x` and
+migrate one query at a time as the V2 authoring surface reaches your
+binding.
 
 ## One semantic engine on every V2 path
 

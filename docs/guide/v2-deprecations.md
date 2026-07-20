@@ -20,10 +20,11 @@ is removed under a catch-all.
 - Direct `schema.toml` desired-schema authoring.
 - `generate_models(..., format="toml")`.
 - Python `.toml` generator auto-routing.
-- The public TOML transpiler entry point.
 
-Read-only TOML conversion is **not** removed: the frozen parser and the
-one-way TOML-to-YAML converter remain so existing schemas can migrate.
+Read-only TOML conversion is **not** removed: the public
+`type_bridge_core.toml_to_typeql` converter and its frozen parser are
+permanent so existing schemas can always be rendered for migration. No
+automated TOML-to-YAML converter ships in 2.0.0.
 
 ### V1 schema and model facades
 
@@ -69,7 +70,7 @@ These surfaces are not deprecated and carry no removal schedule:
 
 - TypeQL import, inspection, generated migrations, and engine-boundary
   support.
-- Read-only TOML/schema converters and their frozen parser.
+- `type_bridge_core.toml_to_typeql` and its frozen TOML parser.
 - Legacy Python/JSON migration readers and the legacy-frontier bridge.
 - Frozen fixtures that prove conversion fidelity.
 - The V2 `/v1` wire and document format versions
@@ -81,8 +82,8 @@ These surfaces are not deprecated and carry no removal schedule:
 
 | Deprecated surface | Replacement | Converter |
 | --- | --- | --- |
-| `schema.toml` authoring | Split YAML schema documents | Read-only TOML-to-YAML converter |
-| Fused `Role[T]` | Split YAML + generated `relates()`/`plays()` | Schema converter output |
+| `schema.toml` authoring | Split YAML schema documents | `toml_to_typeql` review output + manual YAML translation |
+| Fused `Role[T]` | Split YAML + generated `relates()`/`plays()` | `type-bridge schema generate` projections |
 | Python/Rust/Node V1 queries | V2 query plans (prepared, capability-gated) | Manual per-query rewrite (no automated converter yet) |
 | Legacy `NNNN_*.py` migrations | Generated migration manifests | `migration adopt` (legacy-frontier bridge + ledger import) |
 | TypeDB 3.8/3.10 bands | TypeDB 3.12 baseline | Band upgrade before 2.1.0 |
