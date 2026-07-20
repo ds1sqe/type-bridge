@@ -38,8 +38,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use type_bridge_orm::{CommitFailureCertainty, OrmError, TxType};
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
+use type_bridge_orm::{CommitFailureCertainty, OrmError, TxType};
 
 // ── Event log ─────────────────────────────────────────────────────────────────
 
@@ -130,9 +130,7 @@ impl MockMigrationBackend {
     }
 
     /// Create a backend whose selected commit is known to have been aborted.
-    pub fn with_definitely_aborted_commit_failure(
-        fail_on_commit_index: usize,
-    ) -> (Self, EventLog) {
+    pub fn with_definitely_aborted_commit_failure(fail_on_commit_index: usize) -> (Self, EventLog) {
         let (mut backend, log) = Self::new(None);
         backend.fail_on_commit_index = Some(fail_on_commit_index);
         backend.commit_failure_certainty = Some(CommitFailureCertainty::DefinitelyAborted);

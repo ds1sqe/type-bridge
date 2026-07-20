@@ -33,10 +33,8 @@ fn function_signature_preserves_order_and_body_bytes() {
 
 #[test]
 fn function_contract_rejects_invalid_shapes() {
-    let parameter = FunctionParameter::new(
-        Label::new("value").unwrap(),
-        value(ValueTypeTag::String),
-    );
+    let parameter =
+        FunctionParameter::new(Label::new("value").unwrap(), value(ValueTypeTag::String));
     let returns = FunctionReturnMode::scalar(FunctionReturnElement::new(
         value(ValueTypeTag::String),
         false,

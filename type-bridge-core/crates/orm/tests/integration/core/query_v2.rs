@@ -12,26 +12,19 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm,
-    QueryInvocation, QueryOperand, QueryOperation, QueryOutput, QueryPattern,
-    QueryPlan, ReadStage,
+    InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryInvocation, QueryOperand,
+    QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
+    TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 use type_bridge_orm::TxType;
-use type_bridge_orm::query_v2::{
-    QueryRowValue, QueryV2Outcome, execute_validated_query,
-};
+use type_bridge_orm::query_v2::{QueryRowValue, QueryV2Outcome, execute_validated_query};
 use type_bridge_orm::session::backend::{AnswerCancellation, BoundedAnswerLimits};
-use type_bridge_query::{
-    MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan,
-};
-use type_bridge_schema::{
-    ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve,
-};
+use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
+use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
 
 struct LiveQueryFixture {
     managed: type_bridge_contract::schema_delta::ManagedSchemaState,
@@ -84,8 +77,7 @@ fn live_fixture(suffix: &str) -> LiveQueryFixture {
         )
     });
     let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .unwrap();
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
@@ -132,8 +124,12 @@ fn validated_query(
                     },
                     QueryPattern::Value {
                         comparator: ValueComparator::GreaterOrEqual,
-                        left: QueryOperand::Binding { binding: binding_id(1) },
-                        right: QueryOperand::Input { column: InputColumnId::new(0) },
+                        left: QueryOperand::Binding {
+                            binding: binding_id(1),
+                        },
+                        right: QueryOperand::Input {
+                            column: InputColumnId::new(0),
+                        },
                     },
                 ],
             },
@@ -227,8 +223,10 @@ async fn validated_queries_execute_rows_count_and_exists_live() {
     .expect("live query data");
 
     let (ascending, plan) = validated_query(&fixture, OrderDirection::Ascending);
-    let mut transaction =
-        db.read_transaction().await.expect("borrowed read transaction");
+    let mut transaction = db
+        .read_transaction()
+        .await
+        .expect("borrowed read transaction");
 
     let rows = execute_validated_query(
         &mut transaction,
@@ -241,8 +239,7 @@ async fn validated_queries_execute_rows_count_and_exists_live() {
     .expect("ascending rows");
     assert_eq!(row_names(&rows), vec!["Alan", "Grace"]);
 
-    let (descending, descending_plan) =
-        validated_query(&fixture, OrderDirection::Descending);
+    let (descending, descending_plan) = validated_query(&fixture, OrderDirection::Descending);
     let rows = execute_validated_query(
         &mut transaction,
         &descending,
@@ -286,8 +283,8 @@ async fn scalar_schema_function_calls_execute_live() {
     use type_bridge_contract::id::{FunctionId, Label};
     use type_bridge_contract::query_plan::QueryOperation;
     use type_bridge_contract::schema::{
-        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
-        FunctionReturnMode, FunctionSignature, TypeReference,
+        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement, FunctionReturnMode,
+        FunctionSignature, TypeReference,
     };
     use type_bridge_orm::query_v2::lower_validated_query;
 
@@ -341,10 +338,7 @@ async fn scalar_schema_function_calls_execute_live() {
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap()).unwrap(),
         ),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(age.clone()),
@@ -388,28 +382,21 @@ async fn scalar_schema_function_calls_execute_live() {
             .unwrap(),
         )
     });
-    let declared = DeclaredSchema::from_facts(
-        FormatVersion::V1,
-        CapabilitySet::new(),
-        sourced,
-    )
-    .unwrap();
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile =
-        type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.12.1/v1")
-            .unwrap();
+        type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = type_bridge_schema::resolve(&declared, &profile).unwrap();
     let managed = type_bridge_schema::managed_schema_state(
         &declared,
         &type_bridge_schema::ManagedDeltaContext::new(
-            type_bridge_contract::managed_scope::ManagedScopeId::new("query-v2-fn-live")
-                .unwrap(),
+            type_bridge_contract::managed_scope::ManagedScopeId::new("query-v2-fn-live").unwrap(),
             profile,
             CapabilitySet::new(),
         ),
     )
     .unwrap();
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     // Zero-argument call: one row carrying the counted value.
     let count_plan = QueryPlan::new(
@@ -425,15 +412,19 @@ async fn scalar_schema_function_calls_execute_live() {
                 function: count_fn,
             }],
         }],
-        QueryOutput::Rows { columns: vec![binding_id(0)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
         managed.managed_semantic_schema().clone(),
     )
     .unwrap();
-    let validated =
-        validate_query_plan(&count_plan, &validation_context, StructuralLimits::CANONICAL)
-            .unwrap();
-    let invocation =
-        QueryInvocation::new(&count_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let validated = validate_query_plan(
+        &count_plan,
+        &validation_context,
+        StructuralLimits::CANONICAL,
+    )
+    .unwrap();
+    let invocation = QueryInvocation::new(&count_plan, QueryOperation::Rows, Vec::new()).unwrap();
     let lowered = lower_validated_query(&validated, &invocation).unwrap();
     assert!(
         lowered.typeql().contains("let $person_count = "),
@@ -441,14 +432,9 @@ async fn scalar_schema_function_calls_execute_live() {
         lowered.typeql(),
     );
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("count function execution");
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("count function execution");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };
@@ -464,10 +450,7 @@ async fn scalar_schema_function_calls_execute_live() {
     let sum_plan = QueryPlan::new(
         vec![
             AssertionBinding::new(binding_id(0), QueryVariable::new("person").unwrap()),
-            AssertionBinding::new(
-                binding_id(1),
-                QueryVariable::new("age_sum").unwrap(),
-            ),
+            AssertionBinding::new(binding_id(1), QueryVariable::new("age_sum").unwrap()),
         ],
         Vec::new(),
         vec![
@@ -479,11 +462,9 @@ async fn scalar_schema_function_calls_execute_live() {
                         type_id: person,
                     },
                     QueryPattern::FunctionCall {
-                        arguments: vec![
-                            type_bridge_contract::query_plan::QueryOperand::Binding {
-                                binding: binding_id(0),
-                            },
-                        ],
+                        arguments: vec![type_bridge_contract::query_plan::QueryOperand::Binding {
+                            binding: binding_id(0),
+                        }],
                         assigned: binding_id(1),
                         function: sum_fn,
                     },
@@ -496,23 +477,18 @@ async fn scalar_schema_function_calls_execute_live() {
                 terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
             },
         ],
-        QueryOutput::Rows { columns: vec![binding_id(1)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(1)],
+        },
         managed.managed_semantic_schema().clone(),
     )
     .unwrap();
     let validated =
-        validate_query_plan(&sum_plan, &validation_context, StructuralLimits::CANONICAL)
-            .unwrap();
-    let invocation =
-        QueryInvocation::new(&sum_plan, QueryOperation::Rows, Vec::new()).unwrap();
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("sum function execution");
+        validate_query_plan(&sum_plan, &validation_context, StructuralLimits::CANONICAL).unwrap();
+    let invocation = QueryInvocation::new(&sum_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("sum function execution");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };
@@ -530,9 +506,7 @@ async fn scalar_schema_function_calls_execute_live() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reduce_stages_group_and_total_live() {
-    use type_bridge_contract::query_plan::{
-        QueryOperation, ReduceAssignment, Reducer,
-    };
+    use type_bridge_contract::query_plan::{QueryOperation, ReduceAssignment, Reducer};
     use type_bridge_contract::value::CanonicalValue;
 
     let _guard = crate::common::integration_test_guard().await;
@@ -568,10 +542,7 @@ async fn reduce_stages_group_and_total_live() {
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap()).unwrap(),
         ),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(age.clone()),
@@ -598,12 +569,8 @@ async fn reduce_stages_group_and_total_live() {
             .unwrap(),
         )
     });
-    let declared = DeclaredSchema::from_facts(
-        FormatVersion::V1,
-        CapabilitySet::new(),
-        sourced,
-    )
-    .unwrap();
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
@@ -615,8 +582,7 @@ async fn reduce_stages_group_and_total_live() {
         ),
     )
     .unwrap();
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     let match_stage = ReadStage::Match {
         patterns: vec![
@@ -646,16 +612,8 @@ async fn reduce_stages_group_and_total_live() {
             match_stage.clone(),
             ReadStage::Reduce {
                 assignments: vec![
-                    ReduceAssignment::new(
-                        binding_id(2),
-                        Reducer::Sum,
-                        Some(binding_id(1)),
-                    ),
-                    ReduceAssignment::new(
-                        binding_id(3),
-                        Reducer::Count,
-                        Some(binding_id(1)),
-                    ),
+                    ReduceAssignment::new(binding_id(2), Reducer::Sum, Some(binding_id(1))),
+                    ReduceAssignment::new(binding_id(3), Reducer::Count, Some(binding_id(1))),
                 ],
                 groups: vec![binding_id(0)],
             },
@@ -675,17 +633,11 @@ async fn reduce_stages_group_and_total_live() {
         StructuralLimits::CANONICAL,
     )
     .unwrap();
-    let invocation =
-        QueryInvocation::new(&grouped_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let invocation = QueryInvocation::new(&grouped_plan, QueryOperation::Rows, Vec::new()).unwrap();
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("grouped reduce execution");
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("grouped reduce execution");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };
@@ -696,7 +648,9 @@ async fn reduce_stages_group_and_total_live() {
                 panic!("group key is the person entity: {row:?}");
             };
             let long = |value: &QueryRowValue| match value {
-                QueryRowValue::Value { value: CanonicalValue::Long(value) } => *value,
+                QueryRowValue::Value {
+                    value: CanonicalValue::Long(value),
+                } => *value,
                 other => panic!("expected long value: {other:?}"),
             };
             (long(&row.values()[1]), long(&row.values()[2]))
@@ -706,24 +660,18 @@ async fn reduce_stages_group_and_total_live() {
 
     // Global: one bare count row totals every match row.
     let global_plan = QueryPlan::new(
-        vec![
-            binding(0, "person"),
-            binding(1, "age"),
-            binding(2, "total"),
-        ],
+        vec![binding(0, "person"), binding(1, "age"), binding(2, "total")],
         Vec::new(),
         vec![
             match_stage,
             ReadStage::Reduce {
-                assignments: vec![ReduceAssignment::new(
-                    binding_id(2),
-                    Reducer::Count,
-                    None,
-                )],
+                assignments: vec![ReduceAssignment::new(binding_id(2), Reducer::Count, None)],
                 groups: Vec::new(),
             },
         ],
-        QueryOutput::Rows { columns: vec![binding_id(2)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(2)],
+        },
         managed.managed_semantic_schema().clone(),
     )
     .unwrap();
@@ -733,31 +681,25 @@ async fn reduce_stages_group_and_total_live() {
         StructuralLimits::CANONICAL,
     )
     .unwrap();
-    let invocation =
-        QueryInvocation::new(&global_plan, QueryOperation::Rows, Vec::new()).unwrap();
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("global count execution");
+    let invocation = QueryInvocation::new(&global_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("global count execution");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };
     assert_eq!(rows.len(), 1);
     assert_eq!(
         rows[0].values()[0],
-        QueryRowValue::Value { value: CanonicalValue::Long(3) },
+        QueryRowValue::Value {
+            value: CanonicalValue::Long(3)
+        },
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn try_blocks_carry_optional_columns_live() {
-    use type_bridge_contract::query_plan::{
-        QueryOperation, ReduceAssignment, Reducer,
-    };
+    use type_bridge_contract::query_plan::{QueryOperation, ReduceAssignment, Reducer};
     use type_bridge_contract::value::CanonicalValue;
 
     let _guard = crate::common::integration_test_guard().await;
@@ -797,16 +739,11 @@ async fn try_blocks_carry_optional_columns_live() {
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap())
+                .unwrap(),
         ),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap()).unwrap(),
         ),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
@@ -840,12 +777,8 @@ async fn try_blocks_carry_optional_columns_live() {
             .unwrap(),
         )
     });
-    let declared = DeclaredSchema::from_facts(
-        FormatVersion::V1,
-        CapabilitySet::new(),
-        sourced,
-    )
-    .unwrap();
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
@@ -857,8 +790,7 @@ async fn try_blocks_carry_optional_columns_live() {
         ),
     )
     .unwrap();
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     let match_stage = ReadStage::Match {
         patterns: vec![
@@ -884,11 +816,7 @@ async fn try_blocks_carry_optional_columns_live() {
 
     // Projection: rows carry the age where present and absence where not.
     let plan = QueryPlan::new(
-        vec![
-            binding(0, "person"),
-            binding(1, "name"),
-            binding(2, "age"),
-        ],
+        vec![binding(0, "person"), binding(1, "name"), binding(2, "age")],
         Vec::new(),
         vec![
             match_stage.clone(),
@@ -903,22 +831,20 @@ async fn try_blocks_carry_optional_columns_live() {
     )
     .unwrap();
     let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .unwrap();
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL).unwrap();
     assert!(
-        validated.output_schema().rows().expect("row plan").columns()[1].optional()
+        validated
+            .output_schema()
+            .rows()
+            .expect("row plan")
+            .columns()[1]
+            .optional()
     );
-    let invocation =
-        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("optional projection execution");
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("optional projection execution");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };
@@ -949,7 +875,9 @@ async fn try_blocks_carry_optional_columns_live() {
                 groups: Vec::new(),
             },
         ],
-        QueryOutput::Rows { columns: vec![binding_id(3)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(3)],
+        },
         managed.managed_semantic_schema().clone(),
     )
     .unwrap();
@@ -959,23 +887,19 @@ async fn try_blocks_carry_optional_columns_live() {
         StructuralLimits::CANONICAL,
     )
     .unwrap();
-    let invocation =
-        QueryInvocation::new(&count_plan, QueryOperation::Rows, Vec::new()).unwrap();
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("optional count execution");
+    let invocation = QueryInvocation::new(&count_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("optional count execution");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };
     assert_eq!(rows.len(), 1);
     assert_eq!(
         rows[0].values()[0],
-        QueryRowValue::Value { value: CanonicalValue::Long(1) },
+        QueryRowValue::Value {
+            value: CanonicalValue::Long(1)
+        },
     );
 }
 
@@ -1036,8 +960,12 @@ async fn multi_row_given_invocations_correlate_inputs_live() {
                     },
                     QueryPattern::Value {
                         comparator: ValueComparator::Equal,
-                        left: QueryOperand::Binding { binding: binding_id(1) },
-                        right: QueryOperand::Input { column: InputColumnId::new(0) },
+                        left: QueryOperand::Binding {
+                            binding: binding_id(1),
+                        },
+                        right: QueryOperand::Input {
+                            column: InputColumnId::new(0),
+                        },
                     },
                 ],
             },
@@ -1066,14 +994,9 @@ async fn multi_row_given_invocations_correlate_inputs_live() {
     )
     .expect("multi-row invocation");
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("multi-row given execution");
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("multi-row given execution");
     let names = row_names(&outcome);
     assert_eq!(names, vec!["ada".to_owned(), "eve".to_owned()]);
 
@@ -1084,22 +1007,15 @@ async fn multi_row_given_invocations_correlate_inputs_live() {
         vec![string_row("eve"), string_row("ada"), string_row("nobody")],
     )
     .expect("count invocation");
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &count,
-        limits(),
-    )
-    .await
-    .expect("multi-row count execution");
+    let outcome = execute_validated_query(&mut transaction, &validated, &count, limits())
+        .await
+        .expect("multi-row count execution");
     assert_eq!(outcome, QueryV2Outcome::Count(2));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn document_fetch_returns_typed_documents_live() {
-    use type_bridge_contract::query_plan::{
-        DocumentField, DocumentSource, QueryOperation,
-    };
+    use type_bridge_contract::query_plan::{DocumentField, DocumentSource, QueryOperation};
     use type_bridge_orm::query_v2::DocumentFieldValue;
 
     let _guard = crate::common::integration_test_guard().await;
@@ -1139,16 +1055,11 @@ async fn document_fetch_returns_typed_documents_live() {
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap())
+                .unwrap(),
         ),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap()).unwrap(),
         ),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
@@ -1182,12 +1093,8 @@ async fn document_fetch_returns_typed_documents_live() {
             .unwrap(),
         )
     });
-    let declared = DeclaredSchema::from_facts(
-        FormatVersion::V1,
-        CapabilitySet::new(),
-        sourced,
-    )
-    .unwrap();
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
@@ -1199,8 +1106,7 @@ async fn document_fetch_returns_typed_documents_live() {
         ),
     )
     .unwrap();
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     let plan = QueryPlan::new(
         vec![binding(0, "person"), binding(1, "name")],
@@ -1228,7 +1134,9 @@ async fn document_fetch_returns_typed_documents_live() {
             fields: vec![
                 DocumentField::new(
                     QueryVariable::new("name").unwrap(),
-                    DocumentSource::Binding { binding: binding_id(1) },
+                    DocumentSource::Binding {
+                        binding: binding_id(1),
+                    },
                 ),
                 DocumentField::new(
                     QueryVariable::new("ages").unwrap(),
@@ -1243,27 +1151,18 @@ async fn document_fetch_returns_typed_documents_live() {
     )
     .unwrap();
     let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .unwrap();
-    let invocation =
-        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL).unwrap();
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("document fetch execution");
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("document fetch execution");
     let QueryV2Outcome::Documents(documents) = &outcome else {
         panic!("documents outcome: {outcome:?}");
     };
     assert_eq!(documents.len(), 2);
     let scalar = |value: &DocumentFieldValue| match value {
-        DocumentFieldValue::Scalar(CanonicalValue::String(value)) => {
-            value.as_str().to_owned()
-        }
+        DocumentFieldValue::Scalar(CanonicalValue::String(value)) => value.as_str().to_owned(),
         other => panic!("expected string scalar: {other:?}"),
     };
     let longs = |value: &DocumentFieldValue| match value {
@@ -1287,9 +1186,7 @@ async fn document_fetch_returns_typed_documents_live() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_functions_execute_per_row_live() {
     use type_bridge_contract::id::{FunctionId, Label};
-    use type_bridge_contract::query_plan::{
-        LocalFunction, LocalReturn, QueryOperation, Reducer,
-    };
+    use type_bridge_contract::query_plan::{LocalFunction, LocalReturn, QueryOperation, Reducer};
     use type_bridge_contract::value::CanonicalValue;
 
     let _guard = crate::common::integration_test_guard().await;
@@ -1329,16 +1226,11 @@ async fn local_functions_execute_per_row_live() {
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap())
+                .unwrap(),
         ),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap()).unwrap(),
         ),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
@@ -1372,12 +1264,8 @@ async fn local_functions_execute_per_row_live() {
             .unwrap(),
         )
     });
-    let declared = DeclaredSchema::from_facts(
-        FormatVersion::V1,
-        CapabilitySet::new(),
-        sourced,
-    )
-    .unwrap();
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
@@ -1389,8 +1277,7 @@ async fn local_functions_execute_per_row_live() {
         ),
     )
     .unwrap();
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     let person_label = Label::new(person.label().as_str()).unwrap();
     let local = |fun_name: &str, reducer, value_type| {
@@ -1407,7 +1294,9 @@ async fn local_functions_execute_per_row_live() {
         )
     };
     let call = |fun_name: &str, assigned: u16| QueryPattern::FunctionCall {
-        arguments: vec![QueryOperand::Binding { binding: binding_id(0) }],
+        arguments: vec![QueryOperand::Binding {
+            binding: binding_id(0),
+        }],
         assigned: binding_id(assigned),
         function: FunctionId::new(fun_name).unwrap(),
     };
@@ -1455,24 +1344,19 @@ async fn local_functions_execute_per_row_live() {
     )
     .unwrap();
     let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .unwrap();
-    let invocation =
-        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL).unwrap();
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("local function execution");
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("local function execution");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };
     let long = |value: &QueryRowValue| match value {
-        QueryRowValue::Value { value: CanonicalValue::Long(value) } => *value,
+        QueryRowValue::Value {
+            value: CanonicalValue::Long(value),
+        } => *value,
         other => panic!("expected long value: {other:?}"),
     };
     let reduced = rows
@@ -1486,9 +1370,7 @@ async fn local_functions_execute_per_row_live() {
 async fn bounded_reachability_executes_live() {
     use type_bridge_contract::id::RoleId;
     use type_bridge_contract::query_plan::QueryOperation;
-    use type_bridge_contract::schema::{
-        PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
-    };
+    use type_bridge_contract::schema::{PlaysFact, PlaysFactId, RelatesFact, RelatesFactId};
     use type_bridge_contract::value::CanonicalValue;
 
     let _guard = crate::common::integration_test_guard().await;
@@ -1535,10 +1417,8 @@ async fn bounded_reachability_executes_live() {
     let facts = vec![
         SchemaFact::Type(TypeFact::new(node.clone()).unwrap()),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap())
+                .unwrap(),
         ),
         SchemaFact::Type(TypeFact::new(edge.clone()).unwrap()),
         SchemaFact::Value(ValueFact::new(
@@ -1556,11 +1436,7 @@ async fn bounded_reachability_executes_live() {
             .unwrap(),
         ),
         SchemaFact::Relates(
-            RelatesFact::new(
-                RelatesFactId::new(edge.clone(), to.clone()).unwrap(),
-                None,
-            )
-            .unwrap(),
+            RelatesFact::new(RelatesFactId::new(edge.clone(), to.clone()).unwrap(), None).unwrap(),
         ),
         SchemaFact::Plays(PlaysFact::new(
             PlaysFactId::new(node.clone(), from.clone()).unwrap(),
@@ -1586,12 +1462,8 @@ async fn bounded_reachability_executes_live() {
             .unwrap(),
         )
     });
-    let declared = DeclaredSchema::from_facts(
-        FormatVersion::V1,
-        CapabilitySet::new(),
-        sourced,
-    )
-    .unwrap();
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
@@ -1603,8 +1475,7 @@ async fn bounded_reachability_executes_live() {
         ),
     )
     .unwrap();
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     // Every node within two hops of "na", in one provider query.
     let plan = QueryPlan::new(
@@ -1625,11 +1496,11 @@ async fn bounded_reachability_executes_live() {
                     },
                     QueryPattern::Value {
                         comparator: ValueComparator::Equal,
-                        left: QueryOperand::Binding { binding: binding_id(1) },
+                        left: QueryOperand::Binding {
+                            binding: binding_id(1),
+                        },
                         right: QueryOperand::Literal {
-                            value: CanonicalValue::String(
-                                CanonicalString::new("na").unwrap(),
-                            ),
+                            value: CanonicalValue::String(CanonicalString::new("na").unwrap()),
                         },
                     },
                     QueryPattern::Reachable {
@@ -1651,24 +1522,19 @@ async fn bounded_reachability_executes_live() {
                 terms: vec![OrderTerm::new(binding_id(3), OrderDirection::Ascending)],
             },
         ],
-        QueryOutput::Rows { columns: vec![binding_id(3)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(3)],
+        },
         managed.managed_semantic_schema().clone(),
     )
     .unwrap();
     let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .unwrap();
-    let invocation =
-        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL).unwrap();
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let outcome = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("reachability execution");
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("reachability execution");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };
@@ -1726,20 +1592,14 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
     .expect("live remote data");
 
     let (validated, plan) = validated_query(&fixture, OrderDirection::Ascending);
-    let invocation =
-        QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("b")])
-            .expect("invocation");
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("b")])
+        .expect("invocation");
 
     // Local execution is the semantic reference.
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let local = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits(),
-    )
-    .await
-    .expect("local execution");
+    let local = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("local execution");
     assert_eq!(row_names(&local), vec!["bob".to_owned(), "eve".to_owned()]);
 
     // The same invocation travels the envelope and returns equal results.
@@ -1751,12 +1611,8 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
     };
     let request = encode_remote_request(&validated, &invocation, caller_limits, nonce)
         .expect("request envelope");
-    let context = MigrationAssertionValidationContext::new(
-        &fixture.resolved,
-        &fixture.managed,
-    );
-    let mut server_transaction =
-        db.read_transaction().await.expect("server transaction");
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let mut server_transaction = db.read_transaction().await.expect("server transaction");
     let response = execute_remote_envelope(
         &request,
         &context,
@@ -1841,9 +1697,8 @@ async fn remote_envelope_parity_corpus_live() {
     use type_bridge_contract::query_plan_capability_vocabulary;
     use type_bridge_contract::query_remote::RemoteLimits;
     use type_bridge_contract::schema::{
-        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
-        FunctionReturnMode, FunctionSignature, PlaysFact, PlaysFactId, RelatesFact,
-        RelatesFactId, TypeReference,
+        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement, FunctionReturnMode,
+        FunctionSignature, PlaysFact, PlaysFactId, RelatesFact, RelatesFactId, TypeReference,
     };
     use type_bridge_orm::query_v2_remote::{
         decode_remote_outcome, encode_remote_request, execute_remote_envelope,
@@ -1858,8 +1713,7 @@ async fn remote_envelope_parity_corpus_live() {
     let edge = TypeId::new(TypeKind::Relation, format!("{suffix}-edge")).unwrap();
     let origin = RoleId::new(edge.label().as_str(), "origin").unwrap();
     let destination = RoleId::new(edge.label().as_str(), "destination").unwrap();
-    let age_sum = FunctionId::new(format!("{}_age_sum", suffix.replace('-', "_")))
-        .unwrap();
+    let age_sum = FunctionId::new(format!("{}_age_sum", suffix.replace('-', "_"))).unwrap();
 
     db.execute_raw(
         &format!(
@@ -1903,16 +1757,11 @@ async fn remote_envelope_parity_corpus_live() {
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap())
+                .unwrap(),
         ),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap()).unwrap(),
         ),
         SchemaFact::Type(TypeFact::new(edge.clone()).unwrap()),
         SchemaFact::Value(ValueFact::new(
@@ -1982,12 +1831,8 @@ async fn remote_envelope_parity_corpus_live() {
             .unwrap(),
         )
     });
-    let declared = DeclaredSchema::from_facts(
-        FormatVersion::V1,
-        CapabilitySet::new(),
-        sourced,
-    )
-    .unwrap();
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
@@ -2019,7 +1864,10 @@ async fn remote_envelope_parity_corpus_live() {
         ReadStage::Match { patterns }
     };
     let sort_by = |binding: u16| ReadStage::Sort {
-        terms: vec![OrderTerm::new(binding_id(binding), OrderDirection::Ascending)],
+        terms: vec![OrderTerm::new(
+            binding_id(binding),
+            OrderDirection::Ascending,
+        )],
     };
 
     // The corpus: one plan per Phase 6 capability family.
@@ -2027,11 +1875,7 @@ async fn remote_envelope_parity_corpus_live() {
         (
             "optional-projection",
             QueryPlan::new(
-                vec![
-                    binding(0, "person"),
-                    binding(1, "name"),
-                    binding(2, "age"),
-                ],
+                vec![binding(0, "person"), binding(1, "name"), binding(2, "age")],
                 Vec::new(),
                 vec![
                     match_person_name(vec![QueryPattern::Try {
@@ -2095,7 +1939,9 @@ async fn remote_envelope_parity_corpus_live() {
                     fields: vec![
                         DocumentField::new(
                             QueryVariable::new("name").unwrap(),
-                            DocumentSource::Binding { binding: binding_id(1) },
+                            DocumentSource::Binding {
+                                binding: binding_id(1),
+                            },
                         ),
                         DocumentField::new(
                             QueryVariable::new("ages").unwrap(),
@@ -2124,8 +1970,12 @@ async fn remote_envelope_parity_corpus_live() {
                 vec![
                     match_person_name(vec![QueryPattern::Value {
                         comparator: ValueComparator::Equal,
-                        left: QueryOperand::Binding { binding: binding_id(1) },
-                        right: QueryOperand::Input { column: InputColumnId::new(0) },
+                        left: QueryOperand::Binding {
+                            binding: binding_id(1),
+                        },
+                        right: QueryOperand::Input {
+                            column: InputColumnId::new(0),
+                        },
                     }]),
                     sort_by(1),
                 ],
@@ -2164,7 +2014,9 @@ async fn remote_envelope_parity_corpus_live() {
                     ]),
                     sort_by(3),
                 ],
-                QueryOutput::Rows { columns: vec![binding_id(3)] },
+                QueryOutput::Rows {
+                    columns: vec![binding_id(3)],
+                },
                 semantics.clone(),
             )
             .unwrap(),
@@ -2222,11 +2074,11 @@ async fn remote_envelope_parity_corpus_live() {
                     match_person_name(vec![
                         QueryPattern::Value {
                             comparator: ValueComparator::Equal,
-                            left: QueryOperand::Binding { binding: binding_id(1) },
+                            left: QueryOperand::Binding {
+                                binding: binding_id(1),
+                            },
                             right: QueryOperand::Literal {
-                                value: CanonicalValue::String(
-                                    CanonicalString::new("ada").unwrap(),
-                                ),
+                                value: CanonicalValue::String(CanonicalString::new("ada").unwrap()),
                             },
                         },
                         QueryPattern::Reachable {
@@ -2245,7 +2097,9 @@ async fn remote_envelope_parity_corpus_live() {
                     ]),
                     sort_by(3),
                 ],
-                QueryOutput::Rows { columns: vec![binding_id(3)] },
+                QueryOutput::Rows {
+                    columns: vec![binding_id(3)],
+                },
                 semantics.clone(),
             )
             .unwrap(),
@@ -2259,28 +2113,19 @@ async fn remote_envelope_parity_corpus_live() {
         max_items: 1000,
     };
     let mut transaction = db.read_transaction().await.expect("local transaction");
-    let mut server_transaction =
-        db.read_transaction().await.expect("server transaction");
+    let mut server_transaction = db.read_transaction().await.expect("server transaction");
     for (index, (label, plan, rows)) in corpus.iter().enumerate() {
-        let validated =
-            validate_query_plan(plan, &context, StructuralLimits::CANONICAL)
-                .unwrap_or_else(|error| panic!("{label}: validation: {error}"));
-        let invocation =
-            QueryInvocation::new(plan, QueryOperation::Rows, rows.clone())
-                .unwrap_or_else(|error| panic!("{label}: invocation: {error}"));
-        let local = execute_validated_query(
-            &mut transaction,
-            &validated,
-            &invocation,
-            limits(),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{label}: local execution: {error}"));
+        let validated = validate_query_plan(plan, &context, StructuralLimits::CANONICAL)
+            .unwrap_or_else(|error| panic!("{label}: validation: {error}"));
+        let invocation = QueryInvocation::new(plan, QueryOperation::Rows, rows.clone())
+            .unwrap_or_else(|error| panic!("{label}: invocation: {error}"));
+        let local = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+            .await
+            .unwrap_or_else(|error| panic!("{label}: local execution: {error}"));
 
         let nonce = format!("corpus-parity-nonce-{index:04}");
-        let request =
-            encode_remote_request(&validated, &invocation, caller_limits, &nonce)
-                .unwrap_or_else(|error| panic!("{label}: request: {error}"));
+        let request = encode_remote_request(&validated, &invocation, caller_limits, &nonce)
+            .unwrap_or_else(|error| panic!("{label}: request: {error}"));
         let response = execute_remote_envelope(
             &request,
             &context,
@@ -2308,9 +2153,7 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
     use type_bridge_contract::query_plan::QueryOperation;
     use type_bridge_contract::query_plan_capability_vocabulary;
     use type_bridge_contract::query_remote::{RemoteLimits, RemoteQueryFailure};
-    use type_bridge_orm::query_v2_remote::{
-        encode_remote_request, execute_remote_envelope,
-    };
+    use type_bridge_orm::query_v2_remote::{encode_remote_request, execute_remote_envelope};
     use type_bridge_orm::session::backend::AnswerCancellation;
 
     let _guard = crate::common::integration_test_guard().await;
@@ -2343,9 +2186,8 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
     .expect("live deadline data");
 
     let (validated, plan) = validated_query(&fixture, OrderDirection::Ascending);
-    let invocation =
-        QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("a")])
-            .expect("invocation");
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("a")])
+        .expect("invocation");
 
     // Local: an already-expired deadline rejects before streaming.
     let mut transaction = db.read_transaction().await.expect("read transaction");
@@ -2355,14 +2197,9 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
         deadline: Some(Instant::now() - Duration::from_secs(1)),
         cancellation: AnswerCancellation::default(),
     };
-    let error = execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        expired,
-    )
-    .await
-    .expect_err("expired local deadline");
+    let error = execute_validated_query(&mut transaction, &validated, &invocation, expired)
+        .await
+        .expect_err("expired local deadline");
     assert!(
         error.to_string().contains("deadline"),
         "local deadline error: {error}",
@@ -2378,10 +2215,7 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
     };
     let request = encode_remote_request(&validated, &invocation, caller_limits, nonce)
         .expect("request envelope");
-    let context = MigrationAssertionValidationContext::new(
-        &fixture.resolved,
-        &fixture.managed,
-    );
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let response = execute_remote_envelope(
         &request,
         &context,
@@ -2443,8 +2277,7 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
     let declared_bytes = {
         // live_fixture derives its state from these facts; rebuild the
         // declared document the same way to encode it.
-        let name_type =
-            TypeId::new(TypeKind::Attribute, fixture.name.label().as_str()).unwrap();
+        let name_type = TypeId::new(TypeKind::Attribute, fixture.name.label().as_str()).unwrap();
         let facts = vec![
             SchemaFact::Type(TypeFact::new(fixture.person.clone()).unwrap()),
             SchemaFact::Type(TypeFact::new(name_type).unwrap()),
@@ -2453,8 +2286,7 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
                 ValueTypeTag::String,
             )),
             SchemaFact::Owns(OwnsFact::new(
-                OwnsFactId::new(fixture.person.clone(), fixture.name.clone())
-                    .unwrap(),
+                OwnsFactId::new(fixture.person.clone(), fixture.name.clone()).unwrap(),
             )),
         ];
         let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
@@ -2474,20 +2306,13 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
                 .unwrap(),
             )
         });
-        let declared = DeclaredSchema::from_facts(
-            FormatVersion::V1,
-            CapabilitySet::new(),
-            sourced,
-        )
-        .unwrap();
+        let declared =
+            DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
         encode_declared_schema(&declared).unwrap()
     };
-    let authority = QueryAuthority::from_declared_bytes(
-        &declared_bytes,
-        "query-v2-live",
-        "typedb-3.12.1/v1",
-    )
-    .expect("authority from declared bytes");
+    let authority =
+        QueryAuthority::from_declared_bytes(&declared_bytes, "query-v2-live", "typedb-3.12.1/v1")
+            .expect("authority from declared bytes");
 
     let (_, plan) = validated_query(&fixture, OrderDirection::Ascending);
     let plan_bytes = plan.canonical_bytes().expect("plan bytes");
@@ -2498,15 +2323,10 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
     .to_string();
 
     // Local execution through the facade.
-    let local_json = execute_prepared_local(
-        &db,
-        &authority,
-        &plan_bytes,
-        &invocation_json,
-        limits(),
-    )
-    .await
-    .expect("prepared local outcome");
+    let local_json =
+        execute_prepared_local(&db, &authority, &plan_bytes, &invocation_json, limits())
+            .await
+            .expect("prepared local outcome");
     assert!(local_json.contains("\"ada\""), "{local_json}");
     assert!(local_json.contains("\"bob\""), "{local_json}");
 
@@ -2525,12 +2345,8 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
         nonce,
     )
     .expect("prepared request");
-    let context = MigrationAssertionValidationContext::new(
-        &fixture.resolved,
-        &fixture.managed,
-    );
-    let mut server_transaction =
-        db.read_transaction().await.expect("server transaction");
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let mut server_transaction = db.read_transaction().await.expect("server transaction");
     let response = execute_remote_envelope(
         &request,
         &context,

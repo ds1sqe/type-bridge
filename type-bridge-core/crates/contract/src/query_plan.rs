@@ -20,14 +20,11 @@ use serde::Serialize;
 use crate::capability::{CapabilityId, CapabilitySet};
 use crate::codec::to_canonical_json;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use crate::fingerprint::{
-    CanonicalizationVersion, Fingerprint, FingerprintDomain,
-};
+use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use crate::id::{AttributeId, FunctionId, Label, RoleId, TypeId};
 use crate::limits::StructuralLimits;
 use crate::migration_assertion::{
-    AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable,
-    ValueComparator,
+    AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable, ValueComparator,
 };
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
@@ -369,11 +366,7 @@ pub struct ReduceAssignment {
 impl ReduceAssignment {
     /// Assign one reducer result to a fresh declared binding.
     #[must_use]
-    pub const fn new(
-        assigned: BindingId,
-        reducer: Reducer,
-        input: Option<BindingId>,
-    ) -> Self {
+    pub const fn new(assigned: BindingId, reducer: Reducer, input: Option<BindingId>) -> Self {
         Self {
             assigned,
             input,
@@ -481,11 +474,7 @@ pub struct LocalReturn {
 impl LocalReturn {
     /// Declare one total reducer return over a body binding.
     #[must_use]
-    pub const fn new(
-        reducer: Reducer,
-        input: BindingId,
-        value_type: ValueTypeTag,
-    ) -> Self {
+    pub const fn new(reducer: Reducer, input: BindingId, value_type: ValueTypeTag) -> Self {
         Self {
             input,
             reducer,
@@ -754,13 +743,11 @@ impl QueryPlan {
 
         let (mandatory, optional, has_sort) =
             validate_pipeline(&pipeline, bindings.len(), inputs.len(), limits)?;
-        let visible: BTreeSet<BindingId> =
-            mandatory.union(&optional).copied().collect();
+        let visible: BTreeSet<BindingId> = mandatory.union(&optional).copied().collect();
 
         match &output {
             QueryOutput::Rows { columns } => {
-                if columns.is_empty() || !limits.allows_selected_slots(columns.len())
-                {
+                if columns.is_empty() || !limits.allows_selected_slots(columns.len()) {
                     return Err(failure(
                         DiagnosticCategory::ResourceLimit,
                         "query_plan_output_limit",
@@ -831,9 +818,9 @@ impl QueryPlan {
         // sort there is no stable total order to consume. Fail closed rather
         // than inherit provider iteration order.
         if !has_sort
-            && pipeline.iter().any(|stage| {
-                matches!(stage, ReadStage::Offset { .. } | ReadStage::Limit { .. })
-            })
+            && pipeline
+                .iter()
+                .any(|stage| matches!(stage, ReadStage::Offset { .. } | ReadStage::Limit { .. }))
         {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
@@ -842,8 +829,7 @@ impl QueryPlan {
             ));
         }
 
-        let required_capabilities =
-            derive_capabilities(&pipeline, &functions, &inputs, &output)?;
+        let required_capabilities = derive_capabilities(&pipeline, &functions, &inputs, &output)?;
         Ok(Self {
             bindings,
             format: QUERY_PLAN_FORMAT_V1.to_owned(),
@@ -1136,17 +1122,14 @@ fn validate_local_functions(
                 ));
             }
         }
-        if function.parameters().is_empty()
-            || function.parameters().len() > bindings.len()
-        {
+        if function.parameters().is_empty() || function.parameters().len() > bindings.len() {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "query_plan_local_function_parameters",
                 "parameters must be a non-empty prefix of the local bindings",
             ));
         }
-        if function.body().is_empty() || function.body().len() > limits.boolean_terms
-        {
+        if function.body().is_empty() || function.body().len() > limits.boolean_terms {
             return Err(failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_pattern_limit",
@@ -1267,8 +1250,7 @@ fn validate_pipeline(
         }
         optional.extend(body_refs.difference(&root_mandatory).copied());
     }
-    let mut mandatory: BTreeSet<BindingId> =
-        pattern_bound.difference(&optional).copied().collect();
+    let mut mandatory: BTreeSet<BindingId> = pattern_bound.difference(&optional).copied().collect();
     let mut previous_ordinal = 0u8;
     let mut has_sort = false;
     for stage in rest {
@@ -1284,8 +1266,7 @@ fn validate_pipeline(
         match stage {
             ReadStage::Match { .. } => unreachable!("ordinal zero cannot follow"),
             ReadStage::Select { bindings } => {
-                let union: BTreeSet<BindingId> =
-                    mandatory.union(&optional).copied().collect();
+                let union: BTreeSet<BindingId> = mandatory.union(&optional).copied().collect();
                 let selected = canonical_stage_set(bindings, &union, "select")?;
                 mandatory.retain(|id| selected.contains(id));
                 optional.retain(|id| selected.contains(id));
@@ -1294,8 +1275,7 @@ fn validate_pipeline(
                 // The provider contract for requiring an optional binding is
                 // unproven (TypeDB 3.12.1 stalls on it); the first optional
                 // vocabulary reserves require to mandatory bindings.
-                let union: BTreeSet<BindingId> =
-                    mandatory.union(&optional).copied().collect();
+                let union: BTreeSet<BindingId> = mandatory.union(&optional).copied().collect();
                 let required = canonical_stage_set(bindings, &union, "require")?;
                 if required.iter().any(|id| optional.contains(id)) {
                     return Err(failure(
@@ -1306,7 +1286,10 @@ fn validate_pipeline(
                 }
             }
             ReadStage::Distinct => {}
-            ReadStage::Reduce { assignments, groups } => {
+            ReadStage::Reduce {
+                assignments,
+                groups,
+            } => {
                 if assignments.is_empty()
                     || assignments.len() > limits.boolean_terms
                     || groups.len() > limits.boolean_terms
@@ -1320,8 +1303,7 @@ fn validate_pipeline(
                 let mut previous = None;
                 let mut next_visible = BTreeSet::new();
                 for group in groups {
-                    if previous.is_some_and(|previous: BindingId| previous >= *group)
-                    {
+                    if previous.is_some_and(|previous: BindingId| previous >= *group) {
                         return Err(failure(
                             DiagnosticCategory::InvalidContract,
                             "query_plan_stage_set_not_canonical",
@@ -1353,9 +1335,7 @@ fn validate_pipeline(
                     }
                     match assignment.input() {
                         Some(input) => {
-                            if !mandatory.contains(&input)
-                                && !optional.contains(&input)
-                            {
+                            if !mandatory.contains(&input) && !optional.contains(&input) {
                                 return Err(failure(
                                     DiagnosticCategory::InvalidContract,
                                     "query_plan_stage_unknown_binding",
@@ -1385,9 +1365,7 @@ fn validate_pipeline(
                             }
                         }
                     }
-                    if groups.is_empty()
-                        && !assignment.reducer().total_without_groups()
-                    {
+                    if groups.is_empty() && !assignment.reducer().total_without_groups() {
                         return Err(failure(
                             DiagnosticCategory::InvalidContract,
                             "query_plan_reduce_requires_groups",
@@ -1493,11 +1471,15 @@ fn inspect_pattern(
     }
     match pattern {
         QueryPattern::Isa { binding, .. } => check_binding(*binding, binding_count),
-        QueryPattern::Has { owner, attribute, .. } => {
+        QueryPattern::Has {
+            owner, attribute, ..
+        } => {
             check_binding(*owner, binding_count)?;
             check_binding(*attribute, binding_count)
         }
-        QueryPattern::Links { relation, players, .. } => {
+        QueryPattern::Links {
+            relation, players, ..
+        } => {
             check_binding(*relation, binding_count)?;
             if players.is_empty() || players.len() > limits.boolean_terms {
                 return Err(failure(
@@ -1524,14 +1506,7 @@ fn inspect_pattern(
                 ));
             }
             for child in patterns {
-                inspect_pattern(
-                    child,
-                    depth + 1,
-                    binding_count,
-                    input_count,
-                    limits,
-                    nodes,
-                )?;
+                inspect_pattern(child, depth + 1, binding_count, input_count, limits, nodes)?;
             }
             Ok(())
         }
@@ -1564,14 +1539,7 @@ fn inspect_pattern(
                         "the first optional vocabulary admits only isa, has, links, and value patterns",
                     ));
                 }
-                inspect_pattern(
-                    child,
-                    depth + 1,
-                    binding_count,
-                    input_count,
-                    limits,
-                    nodes,
-                )?;
+                inspect_pattern(child, depth + 1, binding_count, input_count, limits, nodes)?;
             }
             Ok(())
         }
@@ -1588,9 +1556,7 @@ fn inspect_pattern(
                     "bounded reachability is admitted only in the root conjunction",
                 ));
             }
-            if *max_depth == 0
-                || !limits.allows_predicate_depth(usize::from(*max_depth))
-            {
+            if *max_depth == 0 || !limits.allows_predicate_depth(usize::from(*max_depth)) {
                 return Err(failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_plan_reachable_depth",
@@ -1627,10 +1593,7 @@ fn inspect_pattern(
     }
 }
 
-fn collect_pattern_bindings(
-    pattern: &QueryPattern,
-    bindings: &mut BTreeSet<BindingId>,
-) {
+fn collect_pattern_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<BindingId>) {
     let mut operand = |operand: &QueryOperand| {
         if let QueryOperand::Binding { binding } = operand {
             bindings.insert(*binding);
@@ -1640,11 +1603,15 @@ fn collect_pattern_bindings(
         QueryPattern::Isa { binding, .. } => {
             bindings.insert(*binding);
         }
-        QueryPattern::Has { owner, attribute, .. } => {
+        QueryPattern::Has {
+            owner, attribute, ..
+        } => {
             bindings.insert(*owner);
             bindings.insert(*attribute);
         }
-        QueryPattern::Links { relation, players, .. } => {
+        QueryPattern::Links {
+            relation, players, ..
+        } => {
             bindings.insert(*relation);
             for player in players {
                 bindings.insert(player.player());
@@ -1775,7 +1742,9 @@ fn collect_pattern_capabilities(
     capabilities: &mut CapabilitySet,
 ) -> Result<(), Diagnostic> {
     match pattern {
-        QueryPattern::Isa { include_subtypes, .. } => {
+        QueryPattern::Isa {
+            include_subtypes, ..
+        } => {
             insert_capability(capabilities, CAP_ISA)?;
             if *include_subtypes {
                 insert_capability(capabilities, CAP_ISA_SUBTYPES)?;

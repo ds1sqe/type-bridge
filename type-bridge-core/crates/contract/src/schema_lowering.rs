@@ -13,14 +13,11 @@ use crate::fingerprint::{
 };
 
 /// The only schema-lowering profile admitted by this V2 contract revision.
-pub const TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID: &str =
-    "typedb-3.12.1-schema-lowering/v1";
+pub const TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID: &str = "typedb-3.12.1-schema-lowering/v1";
 /// Fingerprint domain for schema-lowering profile documents.
-pub const SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN: &str =
-    "typebridge.schema.lowering-profile";
+pub const SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN: &str = "typebridge.schema.lowering-profile";
 /// Canonicalization version for schema-lowering profile documents.
-pub const SCHEMA_LOWERING_PROFILE_CANONICALIZATION: &str =
-    "typebridge.schema-lowering-profile/v1";
+pub const SCHEMA_LOWERING_PROFILE_CANONICALIZATION: &str = "typebridge.schema-lowering-profile/v1";
 
 /// Validation failure for a schema-lowering profile identity or fingerprint.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -10,18 +10,15 @@ mod function_references;
 mod literal;
 
 pub use adopted_genesis::{
-    ADOPTED_GENESIS_FILE_NAME, LEGACY_LEDGER_SCHEMA_TYPEQL,
-    is_legacy_ledger_label, parse_adopted_genesis,
+    ADOPTED_GENESIS_FILE_NAME, LEGACY_LEDGER_SCHEMA_TYPEQL, is_legacy_ledger_label,
+    parse_adopted_genesis,
 };
-pub use function_references::{
-    FunctionBodyReferences, SchemaReference, TypeqlDeclaredSchema,
-};
+pub use function_references::{FunctionBodyReferences, SchemaReference, TypeqlDeclaredSchema};
 
 pub use descriptor::{
     GENERATED_DECLARED_DESCRIPTOR_PATH, GENERATED_DECLARED_DESCRIPTOR_V1,
     GeneratedDeclaredDescriptorSetV1, attach_declared_descriptors,
-    empty_generated_declared_descriptors_json,
-    generate_package_with_declared_descriptors,
+    empty_generated_declared_descriptors_json, generate_package_with_declared_descriptors,
     generated_declared_descriptors_json, generated_descriptors_to_declared,
     typeql_to_generated_descriptors,
 };
@@ -31,10 +28,8 @@ pub mod shadow;
 
 pub use shadow::{
     ShadowCompared, ShadowComparison, ShadowCoverage, ShadowCoverageState, ShadowDimension,
-    ShadowFinding,
-    ShadowLaneNotRun, ShadowLaneOutcome, ShadowLaneRejection, ShadowLaneSummary,
-    ShadowUnavailableLane, ShadowVerdict, V1ShadowInternalError, V1ShadowReport,
-    v1_shadow_report,
+    ShadowFinding, ShadowLaneNotRun, ShadowLaneOutcome, ShadowLaneRejection, ShadowLaneSummary,
+    ShadowUnavailableLane, ShadowVerdict, V1ShadowInternalError, V1ShadowReport, v1_shadow_report,
 };
 
 use std::collections::BTreeMap;
@@ -46,15 +41,16 @@ use type_bridge_contract::id::{
 };
 use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-    CanonicalValueRange, CanonicalValueSet, DeclaredSchema, DocText, DocumentId, FunctionBody,
-    FunctionFact, FunctionParameter, FunctionReturnElement, FunctionReturnMode,
-    FunctionSignature, OwnsFact, OwnsFactId, PlaysFactId, RegexPattern, RelatesFactId,
-    SchemaAnnotationValue, SchemaDiagnostic, SchemaDiagnostics, SchemaFact, SourceSpan, StructFact,
-    StructField, SubFact, SubFactId, TypeFact, TypeReference, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
+    CanonicalValueSet, DeclaredSchema, DocText, DocumentId, FunctionBody, FunctionFact,
+    FunctionParameter, FunctionReturnElement, FunctionReturnMode, FunctionSignature, OwnsFact,
+    OwnsFactId, PlaysFactId, RegexPattern, RelatesFactId, SchemaAnnotationValue, SchemaDiagnostic,
+    SchemaDiagnostics, SchemaFact, SourceSpan, StructFact, StructField, SubFact, SubFactId,
+    TypeFact, TypeReference, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, Cardinality, ValueTypeTag};
 use type_bridge_schema::FactAssembler;
+use typeql::Annotation;
 use typeql::annotation::CardinalityRange;
 use typeql::common::{Span, Spanned};
 use typeql::query::{QueryStructure, schema::SchemaQuery};
@@ -65,7 +61,6 @@ use typeql::schema::definable::{
     type_::{Capability, CapabilityBase, Type as TypeDeclaration},
 };
 use typeql::type_::{NamedType, NamedTypeAny, TypeRef, TypeRefAny};
-use typeql::Annotation;
 
 use crate::literal::{canonical_literal, validate_quoted_string};
 
@@ -164,7 +159,9 @@ pub fn typeql_to_declared_with_references(
                 DiagnosticCategory::InvalidContract,
                 "unknown_typeql_type",
                 format!("TypeQL declaration `{label}` has no inferred type identity"),
-                query_span(&document, source, declaration.span).ok().flatten(),
+                query_span(&document, source, declaration.span)
+                    .ok()
+                    .flatten(),
             )
         })?;
         insert_annotations(
@@ -175,14 +172,7 @@ pub fn typeql_to_declared_with_references(
             source,
         )?;
         for capability in &declaration.capabilities {
-            insert_capability(
-                &mut assembler,
-                &ids,
-                &id,
-                capability,
-                &document,
-                source,
-            )?;
+            insert_capability(&mut assembler, &ids, &id, capability, &document, source)?;
         }
     }
 
@@ -241,16 +231,15 @@ pub fn toml_to_declared(
     rendered_typeql_document: DocumentId,
     toml_source: &str,
 ) -> Result<DeclaredSchema, SchemaDiagnostics> {
-    let rendered_typeql = type_bridge_toml_transpiler::toml_to_typeql(toml_source).map_err(
-        |transpile_error| {
+    let rendered_typeql =
+        type_bridge_toml_transpiler::toml_to_typeql(toml_source).map_err(|transpile_error| {
             error(
                 DiagnosticCategory::InvalidContract,
                 "invalid_toml_schema",
                 format!("TOML schema transpilation failed: {transpile_error}"),
                 None,
             )
-        },
-    )?;
+        })?;
     typeql_to_declared(rendered_typeql_document, &rendered_typeql)
 }
 
@@ -278,7 +267,15 @@ fn infer_type_kinds(
             .as_ref()
             .map(|kind| kind_from_token(&kind.to_string()))
             .transpose()
-            .map_err(|message| at(document, source, declaration.span, "unsupported_typeql_kind", message))?;
+            .map_err(|message| {
+                at(
+                    document,
+                    source,
+                    declaration.span,
+                    "unsupported_typeql_kind",
+                    message,
+                )
+            })?;
         for capability in &declaration.capabilities {
             let hint = match &capability.base {
                 CapabilityBase::ValueType(_) => Some(TypeKind::Attribute),
@@ -288,7 +285,13 @@ fn infer_type_kinds(
             };
             if let Some(hint) = hint {
                 merge_kind(&mut kind, hint).map_err(|message| {
-                    at(document, source, capability.span, "conflicting_typeql_kind", message)
+                    at(
+                        document,
+                        source,
+                        capability.span,
+                        "conflicting_typeql_kind",
+                        message,
+                    )
                 })?;
             }
         }
@@ -394,7 +397,13 @@ fn insert_capability(
         }
         CapabilityBase::ValueType(value) => {
             let value_type = named_value_type(&value.value_type).map_err(|message| {
-                at(document, source, value.span, "unsupported_typeql_value_type", message)
+                at(
+                    document,
+                    source,
+                    value.span,
+                    "unsupported_typeql_value_type",
+                    message,
+                )
             })?;
             let attribute = AttributeId::new(owner.label().as_str())
                 .map_err(|diagnostic| contract(diagnostic, capability_span.clone()))?;
@@ -407,7 +416,13 @@ fn insert_capability(
         }
         CapabilityBase::Owns(owns) => {
             let attribute_label = plain_type_ref(&owns.owned).map_err(|message| {
-                at(document, source, owns.span, "unsupported_typeql_owns", message)
+                at(
+                    document,
+                    source,
+                    owns.span,
+                    "unsupported_typeql_owns",
+                    message,
+                )
             })?;
             let attribute_type = ids.get(&attribute_label).ok_or_else(|| {
                 at(
@@ -436,7 +451,13 @@ fn insert_capability(
         }
         CapabilityBase::Relates(relates) => {
             let role_label = plain_type_ref(&relates.related).map_err(|message| {
-                at(document, source, relates.span, "unsupported_typeql_relates", message)
+                at(
+                    document,
+                    source,
+                    relates.span,
+                    "unsupported_typeql_relates",
+                    message,
+                )
             })?;
             let role = RoleId::new(owner.label().as_str(), &role_label)
                 .map_err(|diagnostic| contract(diagnostic, capability_span.clone()))?;
@@ -474,7 +495,12 @@ fn insert_capability(
                 .map_err(|diagnostic| contract(diagnostic, capability_span.clone()))?;
             let role = Label::new(&role_label)
                 .map_err(|diagnostic| contract(diagnostic, capability_span.clone()))?;
-            assembler.insert_plays(owner.label().clone(), relation, role, capability_span.clone());
+            assembler.insert_plays(
+                owner.label().clone(),
+                relation,
+                role,
+                capability_span.clone(),
+            );
             let role_id = RoleId::new(relation_label, role_label)
                 .map_err(|diagnostic| contract(diagnostic, capability_span.clone()))?;
             let id = PlaysFactId::new(owner.clone(), role_id)
@@ -531,10 +557,22 @@ fn insert_struct(
             ));
         }
         let (named, optional) = simple_or_optional_named(&field.type_).map_err(|message| {
-            at(document, source, field.span, "unsupported_typeql_struct_field", message)
+            at(
+                document,
+                source,
+                field.span,
+                "unsupported_typeql_struct_field",
+                message,
+            )
         })?;
         let value_type = named_value_type(named).map_err(|message| {
-            at(document, source, field.span, "unsupported_typeql_struct_field", message)
+            at(
+                document,
+                source,
+                field.span,
+                "unsupported_typeql_struct_field",
+                message,
+            )
         })?;
         let field_span = source_span(document, source, field.span)?;
         let name = Label::new(field.key.as_str_unchecked())
@@ -558,7 +596,13 @@ fn insert_function(
     let mut parameters = Vec::with_capacity(function.signature.args.len());
     for argument in &function.signature.args {
         let (named, optional) = simple_or_optional_named(&argument.type_).map_err(|message| {
-            at(document, source, argument.span, "unsupported_typeql_function_parameter", message)
+            at(
+                document,
+                source,
+                argument.span,
+                "unsupported_typeql_function_parameter",
+                message,
+            )
         })?;
         if optional {
             return Err(at(
@@ -579,8 +623,7 @@ fn insert_function(
             )
         })?;
         let argument_span = source_span(document, source, argument.span)?;
-        let name = Label::new(name)
-            .map_err(|diagnostic| contract(diagnostic, argument_span))?;
+        let name = Label::new(name).map_err(|diagnostic| contract(diagnostic, argument_span))?;
         parameters.push(FunctionParameter::new(name, type_reference(named)?));
     }
     let returns = match &function.signature.output {
@@ -611,17 +654,19 @@ fn insert_function(
             Some(function_span.clone()),
         )
     })?;
-    let body_text = source.get(block_span.begin_offset..block_span.end_offset).ok_or_else(|| {
-        error(
-            DiagnosticCategory::InvalidContract,
-            "invalid_typeql_function_body_span",
-            "TypeQL function body span is outside the original source",
-            Some(function_span.clone()),
-        )
-    })?;
+    let body_text = source
+        .get(block_span.begin_offset..block_span.end_offset)
+        .ok_or_else(|| {
+            error(
+                DiagnosticCategory::InvalidContract,
+                "invalid_typeql_function_body_span",
+                "TypeQL function body span is outside the original source",
+                Some(function_span.clone()),
+            )
+        })?;
     let body_span = source_span(document, source, Some(block_span))?;
-    let body = FunctionBody::new(body_text)
-        .map_err(|diagnostic| contract(diagnostic, body_span))?;
+    let body =
+        FunctionBody::new(body_text).map_err(|diagnostic| contract(diagnostic, body_span))?;
     assembler.insert_fact(
         SchemaFact::Function(FunctionFact::new(id.clone(), signature, body)),
         function_span,
@@ -644,8 +689,15 @@ fn return_elements(
     types
         .iter()
         .map(|type_| {
-            let (named, optional) = simple_or_optional_named(type_)
-                .map_err(|message| at(document, source, span, "unsupported_typeql_function_return", message))?;
+            let (named, optional) = simple_or_optional_named(type_).map_err(|message| {
+                at(
+                    document,
+                    source,
+                    span,
+                    "unsupported_typeql_function_return",
+                    message,
+                )
+            })?;
             Ok(FunctionReturnElement::new(type_reference(named)?, optional))
         })
         .collect()
@@ -661,10 +713,13 @@ fn insert_annotations(
     for annotation in annotations {
         let annotation_span = source_span(document, source, annotation.span())?;
         let (kind, value) = match annotation {
-            Annotation::Abstract(_) => (AnnotationKindId::Abstract, SchemaAnnotationValue::Presence),
-            Annotation::Independent(_) => {
-                (AnnotationKindId::Independent, SchemaAnnotationValue::Presence)
+            Annotation::Abstract(_) => {
+                (AnnotationKindId::Abstract, SchemaAnnotationValue::Presence)
             }
+            Annotation::Independent(_) => (
+                AnnotationKindId::Independent,
+                SchemaAnnotationValue::Presence,
+            ),
             Annotation::Key(_) => (AnnotationKindId::Key, SchemaAnnotationValue::Presence),
             Annotation::Unique(_) => (AnnotationKindId::Unique, SchemaAnnotationValue::Presence),
             Annotation::Cardinality(cardinality) => {
@@ -682,14 +737,13 @@ fn insert_annotations(
                     ),
                 }
                 .map_err(|diagnostic| contract(diagnostic, annotation_span.clone()))?;
-                (AnnotationKindId::Card, SchemaAnnotationValue::Cardinality(cardinality))
+                (
+                    AnnotationKindId::Card,
+                    SchemaAnnotationValue::Cardinality(cardinality),
+                )
             }
             Annotation::Regex(regex) => {
-                validate_annotation_string(
-                    &regex.regex,
-                    "regex",
-                    annotation_span.clone(),
-                )?;
+                validate_annotation_string(&regex.regex, "regex", annotation_span.clone())?;
                 let text = regex.regex.unescape_regex().map_err(|unescape_error| {
                     error(
                         DiagnosticCategory::InvalidContract,
@@ -700,14 +754,13 @@ fn insert_annotations(
                 })?;
                 let pattern = RegexPattern::new(text)
                     .map_err(|diagnostic| contract(diagnostic, annotation_span.clone()))?;
-                (AnnotationKindId::Regex, SchemaAnnotationValue::Regex(pattern))
+                (
+                    AnnotationKindId::Regex,
+                    SchemaAnnotationValue::Regex(pattern),
+                )
             }
             Annotation::Doc(doc) => {
-                validate_annotation_string(
-                    &doc.doc,
-                    "doc",
-                    annotation_span.clone(),
-                )?;
+                validate_annotation_string(&doc.doc, "doc", annotation_span.clone())?;
                 let text = doc.doc.unescape().map_err(|unescape_error| {
                     error(
                         DiagnosticCategory::InvalidContract,
@@ -721,11 +774,7 @@ fn insert_annotations(
                 (AnnotationKindId::Doc, SchemaAnnotationValue::Doc(text))
             }
             Annotation::Meta(meta) => {
-                validate_annotation_string(
-                    &meta.key,
-                    "meta_key",
-                    annotation_span.clone(),
-                )?;
+                validate_annotation_string(&meta.key, "meta_key", annotation_span.clone())?;
                 let key = meta.key.unescape().map_err(|unescape_error| {
                     error(
                         DiagnosticCategory::InvalidContract,
@@ -734,11 +783,7 @@ fn insert_annotations(
                         Some(annotation_span.clone()),
                     )
                 })?;
-                validate_annotation_string(
-                    &meta.value,
-                    "meta_value",
-                    annotation_span.clone(),
-                )?;
+                validate_annotation_string(&meta.value, "meta_value", annotation_span.clone())?;
                 let value = meta.value.unescape().map_err(|unescape_error| {
                     error(
                         DiagnosticCategory::InvalidContract,
@@ -751,7 +796,10 @@ fn insert_annotations(
                     .map_err(|diagnostic| contract(diagnostic, annotation_span.clone()))?;
                 let value = CanonicalString::new(value)
                     .map_err(|diagnostic| contract(diagnostic, annotation_span.clone()))?;
-                (kind, SchemaAnnotationValue::Meta(CanonicalValue::String(value)))
+                (
+                    kind,
+                    SchemaAnnotationValue::Meta(CanonicalValue::String(value)),
+                )
             }
             Annotation::Cascade(_) | Annotation::Distinct(_) | Annotation::Subkey(_) => {
                 return Err(error(
@@ -795,7 +843,10 @@ fn insert_annotations(
                     .collect::<Result<Vec<_>, _>>()?;
                 let values = CanonicalValueSet::new(values)
                     .map_err(|diagnostic| contract(diagnostic, annotation_span.clone()))?;
-                (AnnotationKindId::Values, SchemaAnnotationValue::Values(values))
+                (
+                    AnnotationKindId::Values,
+                    SchemaAnnotationValue::Values(values),
+                )
             }
         };
         let id = AnnotationFactId::new(subject.clone(), kind);
@@ -1032,7 +1083,12 @@ fn at(
     message: impl Into<String>,
 ) -> SchemaDiagnostics {
     match source_span(document, source, span) {
-        Ok(span) => error(DiagnosticCategory::InvalidContract, code, message, Some(span)),
+        Ok(span) => error(
+            DiagnosticCategory::InvalidContract,
+            code,
+            message,
+            Some(span),
+        ),
         Err(error) => error,
     }
 }

@@ -17,15 +17,13 @@ use std::process::Command;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-use type_bridge_contract::migration_assertion::{
-    AssertionBinding, BindingId, QueryVariable,
-};
+use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
 use type_bridge_contract::query_plan::{
     OrderDirection, OrderTerm, QueryOutput, QueryPattern, QueryPlan, ReadStage,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId, encode_declared_schema,
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
+    TypeFact, ValueFact, ValueFactId, encode_declared_schema,
 };
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::TxType;
@@ -79,9 +77,7 @@ fn declared_bytes_with_nickname(include_nickname: bool) -> Vec<u8> {
     let name = AttributeId::new("name").unwrap();
     let mut facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
-        SchemaFact::Type(
-            TypeFact::new(TypeId::new(TypeKind::Attribute, "name").unwrap()).unwrap(),
-        ),
+        SchemaFact::Type(TypeFact::new(TypeId::new(TypeKind::Attribute, "name").unwrap()).unwrap()),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -93,8 +89,7 @@ fn declared_bytes_with_nickname(include_nickname: bool) -> Vec<u8> {
     if include_nickname {
         let nickname = AttributeId::new("nickname").unwrap();
         facts.push(SchemaFact::Type(
-            TypeFact::new(TypeId::new(TypeKind::Attribute, "nickname").unwrap())
-                .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, "nickname").unwrap()).unwrap(),
         ));
         facts.push(SchemaFact::Value(ValueFact::new(
             ValueFactId::new(nickname.clone()),
@@ -122,8 +117,7 @@ fn declared_bytes_with_nickname(include_nickname: bool) -> Vec<u8> {
         )
     });
     let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .unwrap();
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     encode_declared_schema(&declared).unwrap()
 }
 
@@ -162,7 +156,11 @@ fn person_name_plan_bytes(authority: &QueryAuthority) -> Vec<u8> {
         QueryOutput::Rows {
             columns: vec![BindingId::new(0).unwrap(), BindingId::new(1).unwrap()],
         },
-        authority.context().managed_state().managed_semantic_schema().clone(),
+        authority
+            .context()
+            .managed_state()
+            .managed_semantic_schema()
+            .clone(),
     )
     .unwrap();
     plan.canonical_bytes().unwrap()
@@ -171,13 +169,10 @@ fn person_name_plan_bytes(authority: &QueryAuthority) -> Vec<u8> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn empty_workspace_to_replayed_history_live() {
-    let address =
-        std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
-    let http_port =
-        std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
     let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
-    let password =
-        std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
     // SAFETY: test process, set before any CLI child spawns.
     unsafe {
         std::env::set_var("TYPEDB_USERNAME", &username);
@@ -228,7 +223,10 @@ async fn empty_workspace_to_replayed_history_live() {
         &run_cli(root, &["migration", "make", "--name", "init"]),
         "migration make init",
     );
-    assert!(root.join("migrations/v2/0001_init.tbmigration.json").exists());
+    assert!(
+        root.join("migrations/v2/0001_init.tbmigration.json")
+            .exists()
+    );
     assert_success(
         &run_cli(root, &["migration", "apply", "--environment", "live"]),
         "migration apply init",
@@ -239,10 +237,9 @@ async fn empty_workspace_to_replayed_history_live() {
     );
 
     // Run a typed V2 query against the migrated database.
-    let database =
-        Database::connect(&address, &primary, &username, &password)
-            .await
-            .expect("primary connects");
+    let database = Database::connect(&address, &primary, &username, &password)
+        .await
+        .expect("primary connects");
     database
         .execute_raw(
             "insert $a isa person, has name \"ada\"; \
@@ -283,7 +280,8 @@ async fn empty_workspace_to_replayed_history_live() {
         "migration make nickname",
     );
     assert!(
-        root.join("migrations/v2/0002_nickname.tbmigration.json").exists(),
+        root.join("migrations/v2/0002_nickname.tbmigration.json")
+            .exists(),
     );
     assert_success(
         &run_cli(root, &["migration", "apply", "--environment", "live"]),
@@ -330,10 +328,9 @@ async fn empty_workspace_to_replayed_history_live() {
         &run_cli(root, &["migration", "verify", "--environment", "replay"]),
         "migration replay verify",
     );
-    let replayed =
-        Database::connect(&address, &replay, &username, &password)
-            .await
-            .expect("replay connects");
+    let replayed = Database::connect(&address, &replay, &username, &password)
+        .await
+        .expect("replay connects");
     replayed
         .execute_raw(
             "insert $a isa person, has name \"eve\", has nickname \"ev\";",
@@ -359,13 +356,10 @@ async fn empty_workspace_to_replayed_history_live() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn verify_never_creates_databases_live() {
-    let address =
-        std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
-    let http_port =
-        std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
     let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
-    let password =
-        std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
     // SAFETY: test process, set before any CLI child spawns.
     unsafe {
         std::env::set_var("TYPEDB_USERNAME", &username);
@@ -445,13 +439,10 @@ fn write_legacy_migration(
 async fn adopt_legacy_history_then_evolve_live() {
     use type_bridge_migration::MigrationStateStore;
 
-    let address =
-        std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
-    let http_port =
-        std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
     let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
-    let password =
-        std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
     // SAFETY: test process, set before any CLI child spawns.
     unsafe {
         std::env::set_var("TYPEDB_USERNAME", &username);
@@ -501,8 +492,7 @@ async fn adopt_legacy_history_then_evolve_live() {
         "0001_initial",
         "class Migration:\n    operations = []\n",
     );
-    let state_store =
-        type_bridge_migration::TypeDbStateStore::new(std::sync::Arc::clone(&v1));
+    let state_store = type_bridge_migration::TypeDbStateStore::new(std::sync::Arc::clone(&v1));
     state_store
         .ensure_schema()
         .await
@@ -541,7 +531,8 @@ async fn adopt_legacy_history_then_evolve_live() {
     );
     assert!(root.join("migrations/v2/adopted-genesis.typeql").exists());
     assert!(
-        root.join("migrations/v2/0000_legacy_frontier.tbmigration.json").exists(),
+        root.join("migrations/v2/0000_legacy_frontier.tbmigration.json")
+            .exists(),
     );
     assert_success(
         &run_cli(root, &["migration", "verify", "--environment", "live"]),
@@ -580,7 +571,8 @@ async fn adopt_legacy_history_then_evolve_live() {
         "post-adoption make",
     );
     assert!(
-        root.join("migrations/v2/0001_nickname.tbmigration.json").exists(),
+        root.join("migrations/v2/0001_nickname.tbmigration.json")
+            .exists(),
     );
     assert_success(
         &run_cli(root, &["migration", "apply", "--environment", "live"]),

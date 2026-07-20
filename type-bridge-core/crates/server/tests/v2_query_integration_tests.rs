@@ -15,18 +15,16 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
-use type_bridge_contract::migration_assertion::{
-    AssertionBinding, BindingId, QueryVariable,
-};
+use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
 use type_bridge_contract::query_plan::{
-    OrderDirection, OrderTerm, QueryInvocation, QueryOperation, QueryOutput,
-    QueryPattern, QueryPlan, ReadStage,
+    OrderDirection, OrderTerm, QueryInvocation, QueryOperation, QueryOutput, QueryPattern,
+    QueryPlan, ReadStage,
 };
 use type_bridge_contract::query_plan_capability_vocabulary;
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteLimits};
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
+    TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_orm::TxType;
@@ -54,11 +52,9 @@ fn binding_id(id: u16) -> BindingId {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn v2_envelope_endpoints_serve_beside_v1() {
-    let address =
-        std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
     let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
-    let password =
-        std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
     let database_name = format!("tb_server_v2_query_{}", std::process::id());
     ensure_database_exists(
         &address,
@@ -104,10 +100,8 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).unwrap()),
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap(),
-            )
-            .unwrap(),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap())
+                .unwrap(),
         ),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
@@ -134,12 +128,8 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
             .unwrap(),
         )
     });
-    let declared = DeclaredSchema::from_facts(
-        FormatVersion::V1,
-        CapabilitySet::new(),
-        sourced,
-    )
-    .unwrap();
+    let declared =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
@@ -180,13 +170,10 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
         managed.managed_semantic_schema().clone(),
     )
     .unwrap();
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
     let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .unwrap();
-    let invocation =
-        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
+        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL).unwrap();
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).unwrap();
 
     let state = Arc::new(V2QueryState {
         advertised: query_plan_capability_vocabulary(),
@@ -195,10 +182,7 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
         managed,
         resolved,
     });
-    let router = create_router_with_v2(
-        Arc::new(make_pipeline(MockExecutor::new(), false)),
-        state,
-    );
+    let router = create_router_with_v2(Arc::new(make_pipeline(MockExecutor::new(), false)), state);
 
     // The retained V1 surface still answers.
     let response = router
@@ -238,8 +222,8 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
         max_bytes: 1 << 20,
         max_items: 100,
     };
-    let request = encode_remote_request(&validated, &invocation, limits, nonce)
-        .expect("request envelope");
+    let request =
+        encode_remote_request(&validated, &invocation, limits, nonce).expect("request envelope");
     let response = router
         .oneshot(
             Request::builder()
@@ -253,14 +237,8 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let outcome = decode_remote_outcome(
-        &bytes,
-        &validated,
-        QueryOperation::Rows,
-        nonce,
-        limits,
-    )
-    .expect("typed outcome");
+    let outcome = decode_remote_outcome(&bytes, &validated, QueryOperation::Rows, nonce, limits)
+        .expect("typed outcome");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };

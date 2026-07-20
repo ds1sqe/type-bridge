@@ -6,28 +6,25 @@ use type_bridge_contract::managed_scope::{
     ManagedScopeBinding, ManagedScopeId, SemanticProfileBinding,
 };
 use type_bridge_contract::migration::{
-    CONDITIONAL_RESOLUTION_CAPABILITY, MIGRATION_FORMAT_V1, MigrationFormat,
-    MigrationId, MigrationManifestDigest,
-    MigrationPlanFingerprint, MigrationStep, MigrationStepId, RecoveryPolicy, RetryPolicy,
-    SchemaDeltaFingerprint, SchemaDeltaStep,
+    CONDITIONAL_RESOLUTION_CAPABILITY, MIGRATION_FORMAT_V1, MigrationFormat, MigrationId,
+    MigrationManifestDigest, MigrationPlanFingerprint, MigrationStep, MigrationStepId,
+    RecoveryPolicy, RetryPolicy, SchemaDeltaFingerprint, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::{
-    AssertionBinding, AssertionExpectation, AssertionPattern, BindingId,
-    MigrationAssertionPlan, QueryVariable,
-};
-use type_bridge_contract::schema_delta::{
-    ManagedFactSelection, ManagedSchemaState, PatchFormatVersion, SchemaDelta,
+    AssertionBinding, AssertionExpectation, AssertionPattern, BindingId, MigrationAssertionPlan,
+    QueryVariable,
 };
 use type_bridge_contract::schema::{
     DeclaredIdentityFingerprint, DeclaredSchema, DocumentId, SchemaFact, SourceSpan,
     SourcedSchemaFact, TypeFact,
 };
+use type_bridge_contract::schema_delta::{
+    ManagedFactSelection, ManagedSchemaState, PatchFormatVersion, SchemaDelta,
+};
 use type_bridge_contract::schema_fingerprint::{
     ManagedDeclaredIdentityFingerprint, ManagedSemanticSchemaFingerprint,
 };
-use type_bridge_contract::schema_lowering::{
-    SchemaLoweringProfileBinding,
-};
+use type_bridge_contract::schema_lowering::SchemaLoweringProfileBinding;
 
 fn capability(value: &str) -> CapabilityId {
     CapabilityId::new(value).unwrap()
@@ -59,21 +56,15 @@ fn declared_identity() -> DeclaredIdentityFingerprint {
     .clone()
 }
 
-fn state(
-    scope: ManagedScopeBinding,
-    marker: &str,
-    capability_id: &str,
-) -> ManagedSchemaState {
+fn state(scope: ManagedScopeBinding, marker: &str, capability_id: &str) -> ManagedSchemaState {
     ManagedSchemaState::new(
         FormatVersion::V1,
         CapabilitySet::from_iter([capability(capability_id)]),
         scope,
         ManagedFactSelection::empty(),
         declared_identity(),
-        ManagedDeclaredIdentityFingerprint::compute(
-            format!("declared-{marker}").as_bytes(),
-        )
-        .unwrap(),
+        ManagedDeclaredIdentityFingerprint::compute(format!("declared-{marker}").as_bytes())
+            .unwrap(),
         ManagedSemanticSchemaFingerprint::compute(
             SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
             format!("semantic-{marker}").as_bytes(),
@@ -84,10 +75,9 @@ fn state(
 }
 
 fn capability_delta() -> SchemaDelta {
-    let scope = ManagedScopeBinding::exclusive(
-        ManagedScopeId::new("migration-primitives").unwrap(),
-    )
-    .unwrap();
+    let scope =
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("migration-primitives").unwrap())
+            .unwrap();
     SchemaDelta::new(
         PatchFormatVersion::V1,
         state(scope.clone(), "source", "schema.source"),
@@ -115,11 +105,7 @@ fn compound_id_and_ledger_key_have_exact_canonical_goldens() {
         br#"{"app_label":"example","name":"0002_add_display_name"}"#,
     );
     assert_eq!(
-        id.ledger_key()
-            .unwrap()
-            .as_fingerprint()
-            .digest()
-            .to_hex(),
+        id.ledger_key().unwrap().as_fingerprint().digest().to_hex(),
         "03d2cd952e323a5d9b6a24ead08182132c7ca8deaaa3cd8168dfb2b5ff251551",
     );
     assert!(
@@ -127,8 +113,7 @@ fn compound_id_and_ledger_key_have_exact_canonical_goldens() {
             < MigrationId::new("example", "0003_a").unwrap()
     );
     assert!(
-        MigrationId::new("alpha", "9999_z").unwrap()
-            < MigrationId::new("beta", "0001_a").unwrap()
+        MigrationId::new("alpha", "9999_z").unwrap() < MigrationId::new("beta", "0001_a").unwrap()
     );
 }
 
@@ -146,7 +131,10 @@ fn identity_and_format_constructors_fail_closed() {
     }
     assert!(MigrationStepId::new("define-display-name").is_ok());
     assert!(MigrationStepId::new("Define").is_err());
-    assert_eq!(MigrationFormat::new(MIGRATION_FORMAT_V1).unwrap(), MigrationFormat::V1);
+    assert_eq!(
+        MigrationFormat::new(MIGRATION_FORMAT_V1).unwrap(),
+        MigrationFormat::V1
+    );
     assert_eq!(
         to_canonical_json(&MigrationFormat::V1).unwrap(),
         br#""typebridge.migration/v1""#,
@@ -180,11 +168,7 @@ fn registry_owned_profile_bindings_are_exact_and_closed() {
     let semantic = SemanticProfileBinding::typedb_3_12_1().unwrap();
     assert_eq!(semantic.id().as_str(), "typedb-3.12.1/v1");
     assert_eq!(
-        semantic
-            .fingerprint()
-            .as_fingerprint()
-            .domain()
-            .as_str(),
+        semantic.fingerprint().as_fingerprint().domain().as_str(),
         "typebridge.schema.semantic-profile",
     );
 
@@ -192,20 +176,15 @@ fn registry_owned_profile_bindings_are_exact_and_closed() {
         br#"{"id":"typedb-3.12.1-schema-lowering/v1","rules":[]}"#,
     )
     .unwrap();
-    assert_eq!(
-        lowering.id().as_str(),
-        "typedb-3.12.1-schema-lowering/v1",
+    assert_eq!(lowering.id().as_str(), "typedb-3.12.1-schema-lowering/v1",);
+    assert!(
+        SchemaLoweringProfileBinding::from_canonical_profile_bytes(
+            br#"{"id":"typedb-3.12.0-schema-lowering/v1","rules":[]}"#,
+        )
+        .is_err()
     );
-    assert!(SchemaLoweringProfileBinding::from_canonical_profile_bytes(
-        br#"{"id":"typedb-3.12.0-schema-lowering/v1","rules":[]}"#,
-    )
-    .is_err());
     assert_eq!(
-        lowering
-            .fingerprint()
-            .as_fingerprint()
-            .domain()
-            .as_str(),
+        lowering.fingerprint().as_fingerprint().domain().as_str(),
         "typebridge.schema.lowering-profile",
     );
 
@@ -226,10 +205,7 @@ fn schema_step_derives_contract_and_checks_exact_inverse() {
 
     assert_eq!(step.delta(), &delta);
     assert_eq!(step.contract().retry(), RetryPolicy::Never);
-    assert_eq!(
-        step.contract().recovery(),
-        RecoveryPolicy::OperatorRequired,
-    );
+    assert_eq!(step.contract().recovery(), RecoveryPolicy::OperatorRequired,);
     assert_eq!(step.contract().reverse(), Some(&reverse));
     assert_eq!(
         step.contract().required_capabilities(),
@@ -285,18 +261,10 @@ fn plan_fingerprint_is_golden_and_order_sensitive() {
     );
 
     let delta = capability_delta();
-    let first = SchemaDeltaStep::new(
-        MigrationStepId::new("first").unwrap(),
-        delta.clone(),
-        None,
-    )
-    .unwrap();
-    let second = SchemaDeltaStep::new(
-        MigrationStepId::new("second").unwrap(),
-        delta,
-        None,
-    )
-    .unwrap();
+    let first =
+        SchemaDeltaStep::new(MigrationStepId::new("first").unwrap(), delta.clone(), None).unwrap();
+    let second =
+        SchemaDeltaStep::new(MigrationStepId::new("second").unwrap(), delta, None).unwrap();
     let forward = MigrationPlanFingerprint::compute(&[
         MigrationStep::from(first.clone()),
         MigrationStep::from(second.clone()),
@@ -347,17 +315,18 @@ fn assertion_step_derives_closed_contract_and_heterogeneous_plan_identity() {
     assert_eq!(contract.retry(), RetryPolicy::Never);
     assert_eq!(contract.recovery(), RecoveryPolicy::OperatorRequired);
     assert_eq!(contract.reverse(), None);
-    assert!(contract.required_capabilities().contains(
-        &CapabilityId::new(CONDITIONAL_RESOLUTION_CAPABILITY).unwrap()
-    ));
+    assert!(
+        contract
+            .required_capabilities()
+            .contains(&CapabilityId::new(CONDITIONAL_RESOLUTION_CAPABILITY).unwrap())
+    );
     let value: serde_json::Value =
         serde_json::from_slice(&assertion.canonical_bytes().unwrap()).unwrap();
     assert_eq!(value["kind"], "assertion");
     assert_eq!(value["expected"], "no_rows");
 
     let schema = MigrationStep::from(
-        SchemaDeltaStep::new(MigrationStepId::new("schema").unwrap(), delta, None)
-            .unwrap(),
+        SchemaDeltaStep::new(MigrationStepId::new("schema").unwrap(), delta, None).unwrap(),
     );
     assert_ne!(
         MigrationPlanFingerprint::compute(&[assertion.clone(), schema.clone()]).unwrap(),

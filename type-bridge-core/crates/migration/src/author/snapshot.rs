@@ -94,9 +94,8 @@ pub fn render_snapshot(request: &SnapshotRenderRequest<'_>) -> crate::Result<Ren
     let package = if is_empty_schema {
         let mut package =
             BindgenPlan::from_schema(&type_schema).render(TargetLanguage::Python, &options);
-        let descriptors =
-            type_bridge_schema_compat::empty_generated_declared_descriptors_json()
-                .map_err(|message| MigrationError::SchemaGeneration { message })?;
+        let descriptors = type_bridge_schema_compat::empty_generated_declared_descriptors_json()
+            .map_err(|message| MigrationError::SchemaGeneration { message })?;
         type_bridge_schema_compat::attach_declared_descriptors(
             &mut package,
             descriptors,

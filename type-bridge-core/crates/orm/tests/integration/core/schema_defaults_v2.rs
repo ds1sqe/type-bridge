@@ -217,9 +217,7 @@ async fn key_owns_enforces_exactly_one_on_typedb_3_12_1() {
     .expect("@key accepts an owner with exactly one key value");
     let two = db
         .execute_raw(
-            &format!(
-                "insert $x isa {owner}, has {attribute} \"left\", has {attribute} \"right\";"
-            ),
+            &format!("insert $x isa {owner}, has {attribute} \"left\", has {attribute} \"right\";"),
             TxType::Write,
         )
         .await
@@ -227,7 +225,10 @@ async fn key_owns_enforces_exactly_one_on_typedb_3_12_1() {
 
     for error in [zero, two] {
         let message = error.to_string();
-        assert!(message.contains("[CNT5]"), "unexpected TypeDB error: {message}");
+        assert!(
+            message.contains("[CNT5]"),
+            "unexpected TypeDB error: {message}"
+        );
         assert!(
             message.contains("[CNT5] Constraint '@card(1..1)'"),
             "TypeDB did not render the exact-one constraint: {message}"

@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Stable high-level contract failure categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -63,11 +63,17 @@ impl DiagnosticCode {
         let valid = value.len() <= 128
             && bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
             && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
-        if valid { Ok(Self(value)) } else { Err(DiagnosticCodeError) }
+        if valid {
+            Ok(Self(value))
+        } else {
+            Err(DiagnosticCodeError)
+        }
     }
 
     /// Return the canonical code spelling.
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl fmt::Display for DiagnosticCode {
@@ -78,12 +84,18 @@ impl fmt::Display for DiagnosticCode {
 
 impl Serialize for DiagnosticCode {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer { serializer.serialize_str(self.as_str()) }
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
 }
 
 impl<'de> Deserialize<'de> for DiagnosticCode {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
     }
 }
@@ -107,15 +119,21 @@ pub struct DiagnosticPath(Vec<DiagnosticPathSegment>);
 
 impl DiagnosticPath {
     /// Construct an empty root path.
-    pub const fn new() -> Self { Self(Vec::new()) }
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
     /// Construct a path from typed segments.
     pub fn from_segments(segments: impl IntoIterator<Item = DiagnosticPathSegment>) -> Self {
         Self(segments.into_iter().collect())
     }
     /// Return the ordered segments.
-    pub fn segments(&self) -> &[DiagnosticPathSegment] { &self.0 }
+    pub fn segments(&self) -> &[DiagnosticPathSegment] {
+        &self.0
+    }
     /// Append one segment.
-    pub fn push(&mut self, segment: DiagnosticPathSegment) { self.0.push(segment); }
+    pub fn push(&mut self, segment: DiagnosticPathSegment) {
+        self.0.push(segment);
+    }
 }
 
 /// A deterministic typed diagnostic detail value.
@@ -142,7 +160,9 @@ enum DetailWire {
 
 impl Serialize for DiagnosticDetailValue {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
+    where
+        S: Serializer,
+    {
         let wire = match self {
             Self::Text(value) => DetailWire::Text(value.clone()),
             Self::Long(value) => DetailWire::Long(value.to_string()),
@@ -155,7 +175,9 @@ impl Serialize for DiagnosticDetailValue {
 
 impl<'de> Deserialize<'de> for DiagnosticDetailValue {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         match DetailWire::deserialize(deserializer)? {
             DetailWire::Text(value) => Ok(Self::Text(value)),
             DetailWire::Boolean(value) => Ok(Self::Boolean(value)),
@@ -172,19 +194,29 @@ impl<'de> Deserialize<'de> for DiagnosticDetailValue {
 }
 
 impl From<&str> for DiagnosticDetailValue {
-    fn from(value: &str) -> Self { Self::Text(value.to_owned()) }
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_owned())
+    }
 }
 impl From<String> for DiagnosticDetailValue {
-    fn from(value: String) -> Self { Self::Text(value) }
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
 }
 impl From<i64> for DiagnosticDetailValue {
-    fn from(value: i64) -> Self { Self::Long(value) }
+    fn from(value: i64) -> Self {
+        Self::Long(value)
+    }
 }
 impl From<bool> for DiagnosticDetailValue {
-    fn from(value: bool) -> Self { Self::Boolean(value) }
+    fn from(value: bool) -> Self {
+        Self::Boolean(value)
+    }
 }
 impl From<Vec<String>> for DiagnosticDetailValue {
-    fn from(value: Vec<String>) -> Self { Self::TextList(value) }
+    fn from(value: Vec<String>) -> Self {
+        Self::TextList(value)
+    }
 }
 
 /// One stable structured contract failure.
@@ -199,38 +231,81 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     /// Construct a diagnostic from a validated code.
-    pub fn new(category: DiagnosticCategory, code: DiagnosticCode, message: impl Into<String>) -> Self {
-        Self { category, code, message: message.into(), path: DiagnosticPath::new(), details: BTreeMap::new() }
+    pub fn new(
+        category: DiagnosticCategory,
+        code: DiagnosticCode,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            category,
+            code,
+            message: message.into(),
+            path: DiagnosticPath::new(),
+            details: BTreeMap::new(),
+        }
     }
 
     /// Construct an implementation-owned diagnostic with a static valid code.
-    pub(crate) fn stable(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Self {
-        Self::new(category, DiagnosticCode::new(code).expect("static diagnostic code is valid"), message)
+    pub(crate) fn stable(
+        category: DiagnosticCategory,
+        code: &'static str,
+        message: &'static str,
+    ) -> Self {
+        Self::new(
+            category,
+            DiagnosticCode::new(code).expect("static diagnostic code is valid"),
+            message,
+        )
     }
 
     /// Attach a complete typed path.
-    pub fn with_path(mut self, path: DiagnosticPath) -> Self { self.path = path; self }
+    pub fn with_path(mut self, path: DiagnosticPath) -> Self {
+        self.path = path;
+        self
+    }
     /// Append one path segment.
-    pub fn at(mut self, segment: DiagnosticPathSegment) -> Self { self.path.push(segment); self }
+    pub fn at(mut self, segment: DiagnosticPathSegment) -> Self {
+        self.path.push(segment);
+        self
+    }
     /// Attach one deterministic detail.
-    pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<DiagnosticDetailValue>) -> Self {
-        self.details.insert(key.into(), value.into()); self
+    pub fn with_detail(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<DiagnosticDetailValue>,
+    ) -> Self {
+        self.details.insert(key.into(), value.into());
+        self
     }
     /// Return the stable category.
-    pub const fn category(&self) -> DiagnosticCategory { self.category }
+    pub const fn category(&self) -> DiagnosticCategory {
+        self.category
+    }
     /// Return the stable code.
-    pub fn code(&self) -> &DiagnosticCode { &self.code }
+    pub fn code(&self) -> &DiagnosticCode {
+        &self.code
+    }
     /// Return the human-readable message.
-    pub fn message(&self) -> &str { &self.message }
+    pub fn message(&self) -> &str {
+        &self.message
+    }
     /// Return the typed path.
-    pub fn path(&self) -> &DiagnosticPath { &self.path }
+    pub fn path(&self) -> &DiagnosticPath {
+        &self.path
+    }
     /// Return deterministic details.
-    pub fn details(&self) -> &BTreeMap<String, DiagnosticDetailValue> { &self.details }
+    pub fn details(&self) -> &BTreeMap<String, DiagnosticDetailValue> {
+        &self.details
+    }
 }
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} [{}]: {}", self.category, self.code, self.message)
+        write!(
+            formatter,
+            "{} [{}]: {}",
+            self.category, self.code, self.message
+        )
     }
 }
 

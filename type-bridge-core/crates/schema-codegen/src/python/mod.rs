@@ -22,7 +22,9 @@ pub struct PythonEmitter;
 impl PythonEmitter {
     /// Construct the emitter.
     #[must_use]
-    pub const fn new() -> Self { Self }
+    pub const fn new() -> Self {
+        Self
+    }
 
     /// Return its exact projection-handler evidence.
     #[must_use]

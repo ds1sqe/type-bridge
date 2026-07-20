@@ -5,9 +5,9 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
-    ProjectedContainer, ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity,
-    ProjectedTypeRef, RuntimeProjection,
+    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection, ProjectedContainer,
+    ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
+    RuntimeProjection,
 };
 use type_bridge_contract::value::ValueTypeTag;
 
@@ -40,10 +40,7 @@ const MODEL_RESERVED_NAMES: &[&str] = &[
 ];
 
 macro_rules! canonical_text {
-    ($value:expr) => {{
-        String::from_utf8(to_canonical_json($value)?)
-            .expect("canonical JSON output is UTF-8")
-    }};
+    ($value:expr) => {{ String::from_utf8(to_canonical_json($value)?).expect("canonical JSON output is UTF-8") }};
 }
 
 pub(super) fn render(
@@ -54,10 +51,22 @@ pub(super) fn render(
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
     GeneratedPackage::try_new([
-        ("__init__.py".to_owned(), finish(render_init(projection, false))),
-        ("__init__.pyi".to_owned(), finish(render_init(projection, true))),
-        ("_models.py".to_owned(), finish(render_models(projection, false)?)),
-        ("_models.pyi".to_owned(), finish(render_models(projection, true)?)),
+        (
+            "__init__.py".to_owned(),
+            finish(render_init(projection, false)),
+        ),
+        (
+            "__init__.pyi".to_owned(),
+            finish(render_init(projection, true)),
+        ),
+        (
+            "_models.py".to_owned(),
+            finish(render_models(projection, false)?),
+        ),
+        (
+            "_models.pyi".to_owned(),
+            finish(render_models(projection, true)?),
+        ),
         ("_runtime.py".to_owned(), runtime_source.to_vec()),
         ("_runtime.pyi".to_owned(), runtime_stub.to_vec()),
         ("_schema.py".to_owned(), finish(render_schema(projection)?)),
@@ -171,10 +180,7 @@ fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     Ok(output)
 }
 
-fn render_models(
-    projection: &RuntimeProjection,
-    stub: bool,
-) -> Result<String, Diagnostic> {
+fn render_models(projection: &RuntimeProjection, stub: bool) -> Result<String, Diagnostic> {
     let mut body = String::new();
     for id in projection.emission().model_shells() {
         render_model(&mut body, projection, &projection.models()[id], stub)?;
@@ -232,41 +238,91 @@ fn render_model_header(body: &str, stub: bool) -> String {
         String::from("from __future__ import annotations\n\n")
     };
     let mut collections = Vec::new();
-    if body.contains("Iterator[") { collections.push("Iterator"); }
-    if body.contains("Sequence[") { collections.push("Sequence"); }
+    if body.contains("Iterator[") {
+        collections.push("Iterator");
+    }
+    if body.contains("Sequence[") {
+        collections.push("Sequence");
+    }
     if !collections.is_empty() {
-        let _ = writeln!(output, "from collections.abc import {}", collections.join(", "));
+        let _ = writeln!(
+            output,
+            "from collections.abc import {}",
+            collections.join(", ")
+        );
     }
     let mut temporal = Vec::new();
-    if body.contains(": date") || body.contains("[date") { temporal.push("date"); }
-    if body.contains("datetime") { temporal.push("datetime"); }
-    if body.contains("timedelta") { temporal.push("timedelta"); }
+    if body.contains(": date") || body.contains("[date") {
+        temporal.push("date");
+    }
+    if body.contains("datetime") {
+        temporal.push("datetime");
+    }
+    if body.contains("timedelta") {
+        temporal.push("timedelta");
+    }
     if !temporal.is_empty() {
         let _ = writeln!(output, "from datetime import {}", temporal.join(", "));
     }
-    if body.contains("Decimal") { output.push_str("from decimal import Decimal\n"); }
+    if body.contains("Decimal") {
+        output.push_str("from decimal import Decimal\n");
+    }
     let mut typing = Vec::new();
-    if body.contains("Final[") { typing.push("Final"); }
-    if body.contains("Never") { typing.push("Never"); }
+    if body.contains("Final[") {
+        typing.push("Final");
+    }
+    if body.contains("Never") {
+        typing.push("Never");
+    }
     if !typing.is_empty() {
         let _ = writeln!(output, "from typing import {}", typing.join(", "));
     }
     let mut runtime = Vec::new();
-    if body.contains("FunctionRef") { runtime.push("FunctionRef"); }
-    if body.contains("(_Attribute)") { runtime.push("AttributeBase as _Attribute"); }
-    if body.contains("(_Entity)") { runtime.push("EntityBase as _Entity"); }
-    if body.contains("_FieldDescriptor[") { runtime.push("FieldDescriptor as _FieldDescriptor"); }
-    if body.contains("(_Reference)") { runtime.push("ReferenceBase as _Reference"); }
-    if body.contains("(_Relation)") { runtime.push("RelationBase as _Relation"); }
-    if body.contains("_RoleDescriptor[") { runtime.push("RoleDescriptor as _RoleDescriptor"); }
-    if body.contains("(_StructValue)") { runtime.push("StructValueBase as _StructValue"); }
-    if body.contains("_freeze_struct(") { runtime.push("freeze_struct as _freeze_struct"); }
-    if body.contains("_initialize(") { runtime.push("initialize_model as _initialize"); }
-    if body.contains("_initialize_attribute(") { runtime.push("initialize_attribute as _initialize_attribute"); }
-    if body.contains("_initialize_reference(") { runtime.push("initialize_reference as _initialize_reference"); }
-    if body.contains("_install_model(") { runtime.push("install_model as _install_model"); }
-    if body.contains("_install_runtime_projection(") { runtime.push("install_runtime_projection as _install_runtime_projection"); }
-    if body.contains("_load_mapping(") { runtime.push("load_mapping as _load_mapping"); }
+    if body.contains("FunctionRef") {
+        runtime.push("FunctionRef");
+    }
+    if body.contains("(_Attribute)") {
+        runtime.push("AttributeBase as _Attribute");
+    }
+    if body.contains("(_Entity)") {
+        runtime.push("EntityBase as _Entity");
+    }
+    if body.contains("_FieldDescriptor[") {
+        runtime.push("FieldDescriptor as _FieldDescriptor");
+    }
+    if body.contains("(_Reference)") {
+        runtime.push("ReferenceBase as _Reference");
+    }
+    if body.contains("(_Relation)") {
+        runtime.push("RelationBase as _Relation");
+    }
+    if body.contains("_RoleDescriptor[") {
+        runtime.push("RoleDescriptor as _RoleDescriptor");
+    }
+    if body.contains("(_StructValue)") {
+        runtime.push("StructValueBase as _StructValue");
+    }
+    if body.contains("_freeze_struct(") {
+        runtime.push("freeze_struct as _freeze_struct");
+    }
+    if body.contains("_initialize(") {
+        runtime.push("initialize_model as _initialize");
+    }
+    if body.contains("_initialize_attribute(") {
+        runtime.push("initialize_attribute as _initialize_attribute");
+    }
+    if body.contains("_initialize_reference(") {
+        runtime.push("initialize_reference as _initialize_reference");
+    }
+    if body.contains("_install_model(") {
+        runtime.push("install_model as _install_model");
+    }
+    if body.contains("_install_runtime_projection(") {
+        runtime.push("install_runtime_projection as _install_runtime_projection");
+    }
+    if body.contains("_load_mapping(") {
+        runtime.push("load_mapping as _load_mapping");
+    }
     if !runtime.is_empty() {
         let _ = writeln!(output, "from ._runtime import {}", runtime.join(", "));
     }
@@ -347,8 +403,14 @@ fn render_attribute_constructor(
         .ok_or_else(|| facet_error("attribute projection has no scalar value type"))?;
     if stub {
         let scalar = scalar_type(value_type);
-        let _ = writeln!(output, "    @property\n    def value(self) -> {scalar}: ...");
-        let _ = writeln!(output, "    def __init__(self, value: {scalar}) -> None: ...");
+        let _ = writeln!(
+            output,
+            "    @property\n    def value(self) -> {scalar}: ..."
+        );
+        let _ = writeln!(
+            output,
+            "    def __init__(self, value: {scalar}) -> None: ..."
+        );
     } else {
         let scalar = scalar_type(value_type);
         let _ = writeln!(
@@ -436,7 +498,11 @@ fn render_descriptors(
             .map(|id| projection.models()[id].target_name().as_str())
             .collect::<Vec<_>>()
             .join(" | ");
-        let logical = if logical.is_empty() { "Never" } else { &logical };
+        let logical = if logical.is_empty() {
+            "Never"
+        } else {
+            &logical
+        };
         let _ = writeln!(
             output,
             "    {}: _RoleDescriptor[{owner}, {logical}, {read}, {assign}]",
@@ -777,8 +843,7 @@ fn scalar_type(tag: ValueTypeTag) -> &'static str {
 }
 
 fn python_string(value: &str) -> Result<String, Diagnostic> {
-    Ok(String::from_utf8(to_canonical_json(&value)?)
-        .expect("canonical JSON output is UTF-8"))
+    Ok(String::from_utf8(to_canonical_json(&value)?).expect("canonical JSON output is UTF-8"))
 }
 
 fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic> {
@@ -845,12 +910,22 @@ fn validate_model(
     projection: &RuntimeProjection,
     model: &ModelProjection,
 ) -> Result<(), Diagnostic> {
-    let mut members = MODEL_RESERVED_NAMES.iter().copied().collect::<BTreeSet<_>>();
+    let mut members = MODEL_RESERVED_NAMES
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     for (id, token) in model.query_tokens().fields() {
         if !members.insert(token.target_name().as_str()) {
-            return Err(name_error("projected model member collides with a reserved name"));
+            return Err(name_error(
+                "projected model member collides with a reserved name",
+            ));
         }
-        if let Some(create) = model.create().fields().iter().find(|field| field.token() == id) {
+        if let Some(create) = model
+            .create()
+            .fields()
+            .iter()
+            .find(|field| field.token() == id)
+        {
             if create.multiplicity() != token.multiplicity() {
                 return Err(facet_error("create field disagrees with its query token"));
             }

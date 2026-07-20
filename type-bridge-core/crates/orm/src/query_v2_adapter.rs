@@ -13,30 +13,25 @@
 
 use std::collections::BTreeSet;
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{
-    AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable,
-    ValueComparator,
+    AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    OrderDirection, OrderTerm, QueryOperand, QueryOperation, QueryOutput,
-    QueryPattern, QueryPlan, ReadStage,
+    OrderDirection, OrderTerm, QueryOperand, QueryOperation, QueryOutput, QueryPattern, QueryPlan,
+    ReadStage,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
-use type_bridge_contract::value::{
-    CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue,
-};
+use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
 
 use crate::AttributeValue;
 use crate::match_request::{
-    BoundFieldId, ComparisonOp, MatchExpr, MatchMode, MatchOperation,
-    MatchRequest, MatchRequestVersion, SortDirection, ThingKind,
+    BoundFieldId, ComparisonOp, MatchExpr, MatchMode, MatchOperation, MatchRequest,
+    MatchRequestVersion, SortDirection, ThingKind,
 };
 
 /// The V2 program one V1 request adapts to.
@@ -139,8 +134,7 @@ pub fn adapt_match_request(
         }
         patterns.push(QueryPattern::Has {
             attribute: field_binding(field)?,
-            attribute_id: AttributeId::new(field.field.name.clone())
-                ?,
+            attribute_id: AttributeId::new(field.field.name.clone())?,
             owner: BindingId::new(field.binding.get())?,
         });
     }
@@ -236,7 +230,9 @@ pub fn adapt_match_request(
             ));
         }
         if window.offset > 0 {
-            pipeline.push(ReadStage::Offset { rows: window.offset });
+            pipeline.push(ReadStage::Offset {
+                rows: window.offset,
+            });
         }
         pipeline.push(ReadStage::Limit { rows: window.limit });
     }
@@ -337,11 +333,7 @@ fn adapt_expression(
             }
             vec![QueryPattern::Links {
                 players: vec![AssertionRolePlayer::new(
-                    RoleId::new(
-                        relation_id.label().as_str().to_owned(),
-                        role.name.clone(),
-                    )
-                    ?,
+                    RoleId::new(relation_id.label().as_str().to_owned(), role.name.clone())?,
                     BindingId::new(player.get())?,
                 )],
                 relation: BindingId::new(relation.get())?,
@@ -400,28 +392,34 @@ fn adapt_value(value: &AttributeValue) -> Result<CanonicalValue, Diagnostic> {
         )
     };
     Ok(match value {
-        AttributeValue::String(value) => CanonicalValue::String(
-            CanonicalString::new(value.as_str()).map_err(|_| malformed())?,
-        ),
+        AttributeValue::String(value) => {
+            CanonicalValue::String(CanonicalString::new(value.as_str()).map_err(|_| malformed())?)
+        }
         AttributeValue::Long(value) => CanonicalValue::Long(*value),
-        AttributeValue::Double(value) => CanonicalValue::Double(
-            CanonicalDouble::new(*value).map_err(|_| malformed())?,
-        ),
+        AttributeValue::Double(value) => {
+            CanonicalValue::Double(CanonicalDouble::new(*value).map_err(|_| malformed())?)
+        }
         AttributeValue::Boolean(value) => CanonicalValue::Boolean(*value),
-        AttributeValue::Date(value) => CanonicalValue::Date(
-            value.parse::<CanonicalDate>().map_err(|_| malformed())?,
-        ),
+        AttributeValue::Date(value) => {
+            CanonicalValue::Date(value.parse::<CanonicalDate>().map_err(|_| malformed())?)
+        }
         AttributeValue::DateTime(value) => CanonicalValue::DateTime(
-            value.parse::<CanonicalDateTime>().map_err(|_| malformed())?,
+            value
+                .parse::<CanonicalDateTime>()
+                .map_err(|_| malformed())?,
         ),
         AttributeValue::DateTimeTZ(value) => CanonicalValue::DateTimeTz(
-            value.parse::<CanonicalDateTimeTz>().map_err(|_| malformed())?,
+            value
+                .parse::<CanonicalDateTimeTz>()
+                .map_err(|_| malformed())?,
         ),
-        AttributeValue::Decimal(value) => CanonicalValue::Decimal(
-            DecimalValue::new(value.as_str()).map_err(|_| malformed())?,
-        ),
+        AttributeValue::Decimal(value) => {
+            CanonicalValue::Decimal(DecimalValue::new(value.as_str()).map_err(|_| malformed())?)
+        }
         AttributeValue::Duration(value) => CanonicalValue::Duration(
-            value.parse::<CanonicalDuration>().map_err(|_| malformed())?,
+            value
+                .parse::<CanonicalDuration>()
+                .map_err(|_| malformed())?,
         ),
     })
 }

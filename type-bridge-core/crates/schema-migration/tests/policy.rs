@@ -4,12 +4,18 @@ use type_bridge_schema_migration::{MigrationSafetyPolicy, SafetyPolicyDecision};
 #[test]
 fn default_policy_gates_destructive_work_and_rejects_unresolved_classes() {
     let policy = MigrationSafetyPolicy::default_policy();
-    assert_eq!(policy.decision(SafetyClass::FormalOnly), SafetyPolicyDecision::Allow);
+    assert_eq!(
+        policy.decision(SafetyClass::FormalOnly),
+        SafetyPolicyDecision::Allow
+    );
     assert_eq!(
         policy.decision(SafetyClass::SchemaMetadata),
         SafetyPolicyDecision::Allow
     );
-    assert_eq!(policy.decision(SafetyClass::Additive), SafetyPolicyDecision::Allow);
+    assert_eq!(
+        policy.decision(SafetyClass::Additive),
+        SafetyPolicyDecision::Allow
+    );
     assert_eq!(
         policy.decision(SafetyClass::Conditional),
         SafetyPolicyDecision::Allow
@@ -45,7 +51,10 @@ fn standing_allowance_for_destructive_or_opaque_work_is_invalid() {
 #[test]
 fn unresolvable_classes_cannot_be_admitted_by_policy() {
     for class in [SafetyClass::BackfillRequired, SafetyClass::Unsupported] {
-        for decision in [SafetyPolicyDecision::Allow, SafetyPolicyDecision::RequireApproval] {
+        for decision in [
+            SafetyPolicyDecision::Allow,
+            SafetyPolicyDecision::RequireApproval,
+        ] {
             let error = MigrationSafetyPolicy::default_policy()
                 .with_decision(class, decision)
                 .expect_err("unverifiable work cannot be admitted");
@@ -69,5 +78,8 @@ fn policy_tightening_is_recorded_per_class() {
         policy.decision(SafetyClass::Destructive),
         SafetyPolicyDecision::Reject
     );
-    assert_eq!(policy.decision(SafetyClass::Additive), SafetyPolicyDecision::Allow);
+    assert_eq!(
+        policy.decision(SafetyClass::Additive),
+        SafetyPolicyDecision::Allow
+    );
 }

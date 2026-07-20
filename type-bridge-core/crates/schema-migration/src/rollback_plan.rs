@@ -9,30 +9,22 @@
 use std::collections::BTreeSet;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
-use type_bridge_contract::migration::{
-    MigrationId, MigrationManifestDigest, MigrationStepId,
-};
+use type_bridge_contract::migration::{MigrationId, MigrationManifestDigest, MigrationStepId};
 use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState, SchemaDelta};
 use type_bridge_schema::{
-    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta,
-    classify_delta_safety,
+    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta, classify_delta_safety,
 };
 
-use crate::apply_plan::{
-    MigrationApplyPlanError, coherent_frontier_state, contract_failure,
-};
+use crate::apply_plan::{MigrationApplyPlanError, coherent_frontier_state, contract_failure};
 use crate::history::MigrationHistoryGraph;
 use crate::lowering::{
     SchemaFactCatalog, SchemaLoweringBinding, SchemaLoweringPlan,
     lower_schema_delta_with_verified_assertions,
 };
 use crate::manifest::{
-    VerifiedSchemaMigrationManifest, verified_manifest_digest,
-    verify_assertion_coverage,
+    VerifiedSchemaMigrationManifest, verified_manifest_digest, verify_assertion_coverage,
 };
-use crate::policy::{
-    MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision,
-};
+use crate::policy::{MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision};
 
 /// One lowered reverse program for one forward schema step.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -184,10 +176,8 @@ pub fn build_verified_migration_rollback_plan(
     }
     let ordered_ids = graph.plan_rollback(applied, removals)?;
     let applied_frontier = graph.applied_frontier(applied)?;
-    let (frontier_schema, frontier_state) =
-        coherent_frontier_state(graph, &applied_frontier)?;
-    let (Some(mut current_schema), Some(mut current_state)) =
-        (frontier_schema, frontier_state)
+    let (frontier_schema, frontier_state) = coherent_frontier_state(graph, &applied_frontier)?;
+    let (Some(mut current_schema), Some(mut current_state)) = (frontier_schema, frontier_state)
     else {
         return Err(contract_failure(
             DiagnosticCategory::InvalidContract,
@@ -208,8 +198,7 @@ pub fn build_verified_migration_rollback_plan(
             )
         })?;
         if manifest.lowering_profile().id() != lowering_binding.profile_id()
-            || manifest.lowering_profile().fingerprint()
-                != lowering_binding.profile_fingerprint()
+            || manifest.lowering_profile().fingerprint() != lowering_binding.profile_fingerprint()
         {
             return Err(contract_failure(
                 DiagnosticCategory::InvalidContract,
@@ -292,13 +281,8 @@ pub fn build_verified_migration_rollback_plan(
             let report = classify_delta_safety(reverse);
             rollback_safety = rollback_safety.max(report.classification());
 
-            let coverage = verify_assertion_coverage(
-                &[],
-                reverse,
-                step_target,
-                &restored,
-                &safety_profile,
-            )?;
+            let coverage =
+                verify_assertion_coverage(&[], reverse, step_target, &restored, &safety_profile)?;
             let source_catalog = SchemaFactCatalog::new(step_target.facts().cloned())?;
             let target_catalog = SchemaFactCatalog::new(restored.facts().cloned())?;
             steps.push((

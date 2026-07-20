@@ -14,10 +14,15 @@ fn exclusive_managed_scope_profile_has_fixed_bytes_binding_and_digest() {
         br#"{"internal_facts":"excluded","non_internal_facts":"managed","profile_id":"typebridge.managed-scope/exclusive/v1"}"#,
     );
 
-    let binding = ManagedScopeBinding::exclusive(ManagedScopeId::new("example-schema").unwrap())
-        .unwrap();
+    let binding =
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("example-schema").unwrap()).unwrap();
     assert_eq!(
-        binding.profile().fingerprint().as_fingerprint().digest().to_hex(),
+        binding
+            .profile()
+            .fingerprint()
+            .as_fingerprint()
+            .digest()
+            .to_hex(),
         "833c78025a775fdad6803a4f399a9edc4c7dd6b79fdb2efd3f48b6e1f751cf74",
     );
     assert_eq!(

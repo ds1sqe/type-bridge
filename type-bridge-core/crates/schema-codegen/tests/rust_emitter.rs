@@ -10,10 +10,9 @@ fn projected(
     source: &str,
     resources: &[CodeResourceDigest],
 ) -> type_bridge_contract::projection::RuntimeProjection {
-    let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("rust-emitter.yaml").unwrap(),
-        source,
-    )]).unwrap();
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("rust-emitter.yaml").unwrap(), source)])
+            .unwrap();
     let declared = normalize_documents(&documents).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
@@ -23,7 +22,8 @@ fn projected(
         &ProjectionConfig::rust(),
         &RustEmitter::new().generator_handlers(),
         resources,
-    ).unwrap()
+    )
+    .unwrap()
 }
 
 #[test]
@@ -35,7 +35,11 @@ fn emits_exact_deterministic_dependency_free_crate() {
     let second = emitter.emit(&projection).unwrap();
     assert_eq!(first, second);
     assert_eq!(
-        first.files().keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        first
+            .files()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([
             "Cargo.toml",
             "src/create.rs",
@@ -50,9 +54,12 @@ fn emits_exact_deterministic_dependency_free_crate() {
             "src/tokens.rs",
         ]),
     );
-    let declarations = String::from_utf8(first.get("src/declaration.rs").unwrap().to_vec()).unwrap();
-    assert!(declarations.find("impl Model for Membership").unwrap()
-        < declarations.find("impl Model for Employment").unwrap());
+    let declarations =
+        String::from_utf8(first.get("src/declaration.rs").unwrap().to_vec()).unwrap();
+    assert!(
+        declarations.find("impl Model for Membership").unwrap()
+            < declarations.find("impl Model for Employment").unwrap()
+    );
     assert!(declarations.contains("RoleUpcast<EmploymentEmployeePlayer, MembershipMemberPlayer>"));
     let create = String::from_utf8(first.get("src/create.rs").unwrap().to_vec()).unwrap();
     assert!(create.contains("pub struct ContainerCreate"));

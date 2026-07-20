@@ -1,9 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use type_bridge_contract::diagnostic::DiagnosticCategory;
-use type_bridge_contract::schema::{
-    DocumentFingerprint, DocumentId, SchemaDiagnostics,
-};
+use type_bridge_contract::schema::{DocumentFingerprint, DocumentId, SchemaDiagnostics};
 
 use crate::diagnostic::diagnostic;
 use crate::{SchemaComment, SchemaDocument, SchemaParseLimits, YamlMapping, YamlNode};
@@ -69,10 +67,9 @@ impl SchemaSetManifestDocument {
         })?;
         let document = match SchemaDocument::parse_with_limits(document_id, source, limits) {
             Err(error)
-                if error
-                    .iter()
-                    .next()
-                    .is_some_and(|item| item.diagnostic().code().as_str() == "yaml_root_not_mapping") =>
+                if error.iter().next().is_some_and(|item| {
+                    item.diagnostic().code().as_str() == "yaml_root_not_mapping"
+                }) =>
             {
                 let primary = error.iter().next().and_then(|item| item.primary()).cloned();
                 return Err(diagnostic(

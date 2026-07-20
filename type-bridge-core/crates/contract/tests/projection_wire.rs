@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::fingerprint::{SemanticProfileId};
+use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    BindingTarget, CompleteReadProjection, CreateProjection, DeclarationProjection,
-    EmissionPlan, ModelProjection, ProjectedMultiplicity, ProjectionConfig,
-    ProjectionHandler, QueryTokenProjection, ReadRoleProjection, ReferenceReadProjection,
-    RuntimeProjection, TargetIdentifier,
+    BindingTarget, CompleteReadProjection, CreateProjection, DeclarationProjection, EmissionPlan,
+    ModelProjection, ProjectedMultiplicity, ProjectionConfig, ProjectionHandler,
+    QueryTokenProjection, ReadRoleProjection, ReferenceReadProjection, RuntimeProjection,
+    TargetIdentifier,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
@@ -18,30 +18,56 @@ fn fixture() -> RuntimeProjection {
     let model = ModelProjection::new(
         person.clone(),
         TargetIdentifier::python("Person").unwrap(),
-        DeclarationProjection::new(None, None, false, true, BTreeMap::new(), vec![], BTreeMap::new(), BTreeSet::new()).unwrap(),
+        DeclarationProjection::new(
+            None,
+            None,
+            false,
+            true,
+            BTreeMap::new(),
+            vec![],
+            BTreeMap::new(),
+            BTreeSet::new(),
+        )
+        .unwrap(),
         CreateProjection::new(true, vec![], BTreeMap::new()).unwrap(),
         CompleteReadProjection::new(vec![], BTreeMap::new(), vec![]).unwrap(),
-        ReferenceReadProjection::new(Some(TargetIdentifier::python("PersonRef").unwrap()), vec![]).unwrap(),
+        ReferenceReadProjection::new(Some(TargetIdentifier::python("PersonRef").unwrap()), vec![])
+            .unwrap(),
         QueryTokenProjection::new(person.clone(), BTreeMap::new(), BTreeMap::new()).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     RuntimeProjection::try_new(
         BindingTarget::Python,
         ProjectionConfig::python(),
-        SemanticSchemaFingerprint::compute(SemanticProfileId::new("typedb-3.12.1/v1").unwrap(), b"schema").unwrap(),
+        SemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            b"schema",
+        )
+        .unwrap(),
         &[ProjectionHandler::python_v1()],
         &[],
         BTreeMap::from([(person.clone(), model)]),
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
-        EmissionPlan::new(vec![person.clone()], vec![BTreeSet::from([person])], vec![], vec![]).unwrap(),
-    ).unwrap()
+        EmissionPlan::new(
+            vec![person.clone()],
+            vec![BTreeSet::from([person])],
+            vec![],
+            vec![],
+        )
+        .unwrap(),
+    )
+    .unwrap()
 }
 
-fn rust_fixture(explicit_names: bool) -> Result<RuntimeProjection, type_bridge_contract::diagnostic::Diagnostic> {
+fn rust_fixture(
+    explicit_names: bool,
+) -> Result<RuntimeProjection, type_bridge_contract::diagnostic::Diagnostic> {
     let person = TypeId::new(TypeKind::Entity, "person").unwrap();
     let mut create = CreateProjection::new(true, vec![], BTreeMap::new()).unwrap();
-    let mut query = QueryTokenProjection::new(person.clone(), BTreeMap::new(), BTreeMap::new()).unwrap();
+    let mut query =
+        QueryTokenProjection::new(person.clone(), BTreeMap::new(), BTreeMap::new()).unwrap();
     if explicit_names {
         create = create.with_target_name(TargetIdentifier::rust("PersonCreate").unwrap());
         query = query.with_target_name(TargetIdentifier::rust("PersonType").unwrap());
@@ -49,23 +75,45 @@ fn rust_fixture(explicit_names: bool) -> Result<RuntimeProjection, type_bridge_c
     let model = ModelProjection::new(
         person.clone(),
         TargetIdentifier::rust("Person").unwrap(),
-        DeclarationProjection::new(None, None, false, true, BTreeMap::new(), vec![], BTreeMap::new(), BTreeSet::new()).unwrap(),
+        DeclarationProjection::new(
+            None,
+            None,
+            false,
+            true,
+            BTreeMap::new(),
+            vec![],
+            BTreeMap::new(),
+            BTreeSet::new(),
+        )
+        .unwrap(),
         create,
         CompleteReadProjection::new(vec![], BTreeMap::new(), vec![]).unwrap(),
-        ReferenceReadProjection::new(Some(TargetIdentifier::rust("PersonRef").unwrap()), vec![]).unwrap(),
+        ReferenceReadProjection::new(Some(TargetIdentifier::rust("PersonRef").unwrap()), vec![])
+            .unwrap(),
         query,
-    ).unwrap();
+    )
+    .unwrap();
     RuntimeProjection::try_new(
         BindingTarget::Rust,
         ProjectionConfig::rust(),
-        SemanticSchemaFingerprint::compute(SemanticProfileId::new("typedb-3.12.1/v1").unwrap(), b"rust-schema").unwrap(),
+        SemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            b"rust-schema",
+        )
+        .unwrap(),
         &[ProjectionHandler::rust_v1()],
         &[],
         BTreeMap::from([(person.clone(), model)]),
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
-        EmissionPlan::new(vec![person.clone()], vec![BTreeSet::from([person])], vec![], vec![]).unwrap(),
+        EmissionPlan::new(
+            vec![person.clone()],
+            vec![BTreeSet::from([person])],
+            vec![],
+            vec![],
+        )
+        .unwrap(),
     )
 }
 
@@ -76,7 +124,8 @@ fn canonical_projection_rebuilds_and_verifies_detached_fingerprints() {
         &to_canonical_json(&runtime).unwrap(),
         &to_canonical_json(runtime.semantic_fingerprint()).unwrap(),
         &to_canonical_json(runtime.projection_fingerprint()).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(decoded, runtime);
 }
 
@@ -87,7 +136,8 @@ fn rust_projection_rebuilds_with_explicit_surface_names() {
         &to_canonical_json(&runtime).unwrap(),
         &to_canonical_json(runtime.semantic_fingerprint()).unwrap(),
         &to_canonical_json(runtime.projection_fingerprint()).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(decoded, runtime);
 }
 
@@ -109,7 +159,10 @@ fn noncanonical_and_tampered_projection_bytes_fail_closed() {
     let mut noncanonical = vec![b' '];
     noncanonical.extend_from_slice(&bytes);
     assert_eq!(
-        decode_runtime_projection_verified(&noncanonical, &semantic, &binding).unwrap_err().code().as_str(),
+        decode_runtime_projection_verified(&noncanonical, &semantic, &binding)
+            .unwrap_err()
+            .code()
+            .as_str(),
         "non_canonical_json",
     );
 
@@ -117,7 +170,10 @@ fn noncanonical_and_tampered_projection_bytes_fail_closed() {
     value["models"][0]["target_name"] = serde_json::Value::String("ChangedPerson".into());
     let tampered = to_canonical_json(&value).unwrap();
     assert_eq!(
-        decode_runtime_projection_verified(&tampered, &semantic, &binding).unwrap_err().code().as_str(),
+        decode_runtime_projection_verified(&tampered, &semantic, &binding)
+            .unwrap_err()
+            .code()
+            .as_str(),
         "runtime_projection_fingerprint_mismatch",
     );
 }
@@ -130,9 +186,16 @@ fn role_upcast_wire_carries_the_active_role_identity() {
         child.clone(),
         BTreeSet::new(),
         ProjectedMultiplicity::from_cardinality(Cardinality::new(1, Some(1)).unwrap()),
-    ).unwrap();
-    let read = CompleteReadProjection::new(vec![], BTreeMap::from([(child.clone(), role)]), vec![]).unwrap()
-        .with_role_upcasts(BTreeMap::from([(child.clone(), vec![parent])])).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&to_canonical_json(&read).unwrap()).unwrap();
-    assert_eq!(value["role_upcasts"][0]["role"], serde_json::to_value(child).unwrap());
+    )
+    .unwrap();
+    let read = CompleteReadProjection::new(vec![], BTreeMap::from([(child.clone(), role)]), vec![])
+        .unwrap()
+        .with_role_upcasts(BTreeMap::from([(child.clone(), vec![parent])]))
+        .unwrap();
+    let value: serde_json::Value =
+        serde_json::from_slice(&to_canonical_json(&read).unwrap()).unwrap();
+    assert_eq!(
+        value["role_upcasts"][0]["role"],
+        serde_json::to_value(child).unwrap()
+    );
 }

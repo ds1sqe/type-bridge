@@ -5,19 +5,15 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 
 use type_bridge_contract::capability::CapabilitySet;
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::schema::ManagedSchemaState;
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, ExecutionFuture, ExecutionScope,
-    GroupCommitFuture, GroupEventRecord, GroupJournalEventKind, JournalEntry,
-    JournalSequence, LeaseHolderId, MigrationExecutionJournal,
-    MigrationExecutionProvider, MigrationLease, MigrationLeaseStore,
-    OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord, PreparedMigrationGroup,
-    RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord,
-    StatementUnit, active_applied_entries,
+    AppliedRecord, ExecutionFence, ExecutionFuture, ExecutionScope, GroupCommitFuture,
+    GroupEventRecord, GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId,
+    MigrationExecutionJournal, MigrationExecutionProvider, MigrationLease, MigrationLeaseStore,
+    OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord, PreparedMigrationGroup, RollbackPlanRecord,
+    RollbackStepEventRecord, RolledBackRecord, StatementUnit, active_applied_entries,
 };
 
 #[derive(Default)]
@@ -52,9 +48,7 @@ impl CoordinatorStore {
         Ok(state)
     }
 
-    fn sequence(
-        state: &mut CoordinatorStoreState,
-    ) -> Result<JournalSequence, Diagnostic> {
+    fn sequence(state: &mut CoordinatorStoreState) -> Result<JournalSequence, Diagnostic> {
         state.next_sequence += 1;
         JournalSequence::new(state.next_sequence)
     }
@@ -136,11 +130,12 @@ impl MigrationExecutionJournal for CoordinatorStore {
             Self::checked(&mut state, lease)?;
             let entry = JournalEntry::from_store(Self::sequence(&mut state)?, record);
             state.applied.push(entry.clone());
-            let active =
-                active_applied_entries(state.applied.clone(), &state.rolled_back)?;
+            let active = active_applied_entries(state.applied.clone(), &state.rolled_back)?;
             let complete = state.open.as_ref().is_some_and(|open| {
                 open.record().migration_ids().iter().all(|id| {
-                    active.iter().any(|applied| applied.record().migration_id() == id)
+                    active
+                        .iter()
+                        .any(|applied| applied.record().migration_id() == id)
                 })
             });
             if complete {
@@ -169,8 +164,13 @@ impl MigrationExecutionJournal for CoordinatorStore {
         Box::pin(async move {
             let mut state = self.state.lock().expect("coordinator store");
             Self::checked(&mut state, lease)?;
-            let Some(open) = state.open.clone() else { return Ok(None) };
-            Ok(Some(OpenPlanRecord::from_store(open, state.events.clone())?))
+            let Some(open) = state.open.clone() else {
+                return Ok(None);
+            };
+            Ok(Some(OpenPlanRecord::from_store(
+                open,
+                state.events.clone(),
+            )?))
         })
     }
 
@@ -227,19 +227,19 @@ impl MigrationExecutionJournal for CoordinatorStore {
                 .iter()
                 .zip(plan.record().manifest_digests())
                 .any(|(id, digest)| {
-                    id == record.migration_id()
-                        && *digest == record.manifest_digest()
+                    id == record.migration_id() && *digest == record.manifest_digest()
                 });
             if !member {
                 return Err(test_diagnostic("coordinator_foreign_retirement"));
             }
             let entry = JournalEntry::from_store(Self::sequence(&mut state)?, record);
             state.rolled_back.push(entry.clone());
-            let active =
-                active_applied_entries(state.applied.clone(), &state.rolled_back)?;
+            let active = active_applied_entries(state.applied.clone(), &state.rolled_back)?;
             let complete = state.open_rollback.as_ref().is_some_and(|plan| {
                 plan.record().rollback_ids().iter().all(|id| {
-                    !active.iter().any(|applied| applied.record().migration_id() == id)
+                    !active
+                        .iter()
+                        .any(|applied| applied.record().migration_id() == id)
                 })
             });
             if complete {
@@ -310,8 +310,10 @@ impl MigrationExecutionProvider for CoordinatorProvider {
     ) -> ExecutionFuture<'a, Box<dyn PreparedMigrationGroup + 'a>> {
         Box::pin(async move {
             self.calls.lock().expect("provider calls").push("prepare");
-            Ok(Box::new(CoordinatorTransaction { provider: self, target })
-                as Box<dyn PreparedMigrationGroup + 'a>)
+            Ok(Box::new(CoordinatorTransaction {
+                provider: self,
+                target,
+            }) as Box<dyn PreparedMigrationGroup + 'a>)
         })
     }
 }
@@ -327,7 +329,11 @@ impl PreparedMigrationGroup for CoordinatorTransaction<'_> {
         _plan: &'a ValidatedMigrationAssertionPlan,
     ) -> ExecutionFuture<'a, ()> {
         Box::pin(async move {
-            self.provider.calls.lock().expect("provider calls").push("assertion");
+            self.provider
+                .calls
+                .lock()
+                .expect("provider calls")
+                .push("assertion");
             Ok(())
         })
     }
@@ -337,20 +343,25 @@ impl PreparedMigrationGroup for CoordinatorTransaction<'_> {
         _unit: &'a StatementUnit,
     ) -> ExecutionFuture<'a, ()> {
         Box::pin(async move {
-            self.provider.calls.lock().expect("provider calls").push("statement");
+            self.provider
+                .calls
+                .lock()
+                .expect("provider calls")
+                .push("statement");
             Ok(())
         })
     }
 
-    fn commit<'a>(
-        self: Box<Self>,
-        _lease: &'a MigrationLease,
-    ) -> GroupCommitFuture<'a>
+    fn commit<'a>(self: Box<Self>, _lease: &'a MigrationLease) -> GroupCommitFuture<'a>
     where
         Self: 'a,
     {
         Box::pin(async move {
-            self.provider.calls.lock().expect("provider calls").push("commit");
+            self.provider
+                .calls
+                .lock()
+                .expect("provider calls")
+                .push("commit");
             *self.provider.observed.lock().expect("provider state") = self.target.clone();
             Ok(())
         })
@@ -361,7 +372,11 @@ impl PreparedMigrationGroup for CoordinatorTransaction<'_> {
         Self: 'a,
     {
         Box::pin(async move {
-            self.provider.calls.lock().expect("provider calls").push("rollback");
+            self.provider
+                .calls
+                .lock()
+                .expect("provider calls")
+                .push("rollback");
             Ok(())
         })
     }

@@ -2,8 +2,8 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 
@@ -20,7 +20,9 @@ impl Label {
         let value = value.into();
         let mut chars = value.chars();
         let valid = value.len() <= MAX_LABEL_BYTES
-            && chars.next().is_some_and(|ch| ch == '_' || ch.is_alphabetic())
+            && chars
+                .next()
+                .is_some_and(|ch| ch == '_' || ch.is_alphabetic())
             && chars.all(|ch| ch == '_' || ch == '-' || ch.is_alphanumeric());
         if valid {
             Ok(Self(value))
@@ -29,23 +31,37 @@ impl Label {
                 DiagnosticCategory::InvalidContract,
                 "malformed_id",
                 "identifier label is empty, oversized, or contains invalid characters",
-            ).with_detail("maximum_bytes", i64::try_from(MAX_LABEL_BYTES).unwrap_or(i64::MAX)))
+            )
+            .with_detail(
+                "maximum_bytes",
+                i64::try_from(MAX_LABEL_BYTES).unwrap_or(i64::MAX),
+            ))
         }
     }
     /// Return the canonical label spelling.
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl fmt::Display for Label {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { formatter.write_str(self.as_str()) }
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 impl Serialize for Label {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
         serializer.serialize_str(self.as_str())
     }
 }
 impl<'de> Deserialize<'de> for Label {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: Deserializer<'de> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
         Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
     }
 }
@@ -74,12 +90,19 @@ pub struct TypeId {
 impl TypeId {
     /// Construct a typed identity from a validated label spelling.
     pub fn new(kind: TypeKind, label: impl Into<String>) -> Result<Self, Diagnostic> {
-        Ok(Self { kind, label: Label::new(label)? })
+        Ok(Self {
+            kind,
+            label: Label::new(label)?,
+        })
     }
     /// Return the type kind.
-    pub const fn kind(&self) -> TypeKind { self.kind }
+    pub const fn kind(&self) -> TypeKind {
+        self.kind
+    }
     /// Return the type label.
-    pub fn label(&self) -> &Label { &self.label }
+    pub fn label(&self) -> &Label {
+        &self.label
+    }
 }
 
 /// A relation-qualified role identity.
@@ -91,13 +114,23 @@ pub struct RoleId {
 
 impl RoleId {
     /// Construct a role identity. Equal role labels under different relations remain unequal.
-    pub fn new(declaring_relation: impl Into<String>, label: impl Into<String>) -> Result<Self, Diagnostic> {
-        Ok(Self { declaring_relation: Label::new(declaring_relation)?, label: Label::new(label)? })
+    pub fn new(
+        declaring_relation: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Result<Self, Diagnostic> {
+        Ok(Self {
+            declaring_relation: Label::new(declaring_relation)?,
+            label: Label::new(label)?,
+        })
     }
     /// Return the declaring relation label.
-    pub fn declaring_relation(&self) -> &Label { &self.declaring_relation }
+    pub fn declaring_relation(&self) -> &Label {
+        &self.declaring_relation
+    }
     /// Return the role label.
-    pub fn label(&self) -> &Label { &self.label }
+    pub fn label(&self) -> &Label {
+        &self.label
+    }
 }
 
 macro_rules! label_id {
@@ -108,12 +141,18 @@ macro_rules! label_id {
         pub struct $name(Label);
         impl $name {
             /// Validate and construct this identity.
-            pub fn new(label: impl Into<String>) -> Result<Self, Diagnostic> { Ok(Self(Label::new(label)?)) }
+            pub fn new(label: impl Into<String>) -> Result<Self, Diagnostic> {
+                Ok(Self(Label::new(label)?))
+            }
             /// Return the validated label.
-            pub fn label(&self) -> &Label { &self.0 }
+            pub fn label(&self) -> &Label {
+                &self.0
+            }
         }
         impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
         }
     };
 }
@@ -129,25 +168,24 @@ mod tests {
     #[test]
     fn labels_reject_malformed_input_during_deserialization() {
         for value in ["", "9person", "person name", "person."] {
-            assert_eq!(Label::new(value).unwrap_err().code().as_str(), "malformed_id");
+            assert_eq!(
+                Label::new(value).unwrap_err().code().as_str(),
+                "malformed_id"
+            );
         }
         assert!(serde_json::from_str::<Label>(r#""person name""#).is_err());
     }
 
     #[test]
     fn malformed_typed_id_wires_fail_closed() {
+        assert!(serde_json::from_str::<TypeId>(r#"{"kind":"entity","label":"9person"}"#).is_err());
+        assert!(serde_json::from_str::<TypeId>(r#"{"kind":"future","label":"person"}"#).is_err());
         assert!(
-            serde_json::from_str::<TypeId>(r#"{"kind":"entity","label":"9person"}"#)
-                .is_err()
+            serde_json::from_str::<RoleId>(
+                r#"{"declaring_relation":"9employment","label":"employee"}"#
+            )
+            .is_err()
         );
-        assert!(
-            serde_json::from_str::<TypeId>(r#"{"kind":"future","label":"person"}"#)
-                .is_err()
-        );
-        assert!(serde_json::from_str::<RoleId>(
-            r#"{"declaring_relation":"9employment","label":"employee"}"#
-        )
-        .is_err());
     }
 
     #[test]

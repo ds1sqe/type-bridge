@@ -506,7 +506,11 @@ pub(crate) fn entity_fetch_exact_clauses(
     filters: &[Filter],
     var: &str,
 ) -> Vec<Clause> {
-    with_exact_type(entity_fetch_clauses(descriptor, filters, var), var, &descriptor.type_name)
+    with_exact_type(
+        entity_fetch_clauses(descriptor, filters, var),
+        var,
+        &descriptor.type_name,
+    )
 }
 
 pub(crate) fn entity_expr_fetch_clauses(
@@ -557,7 +561,11 @@ pub(crate) fn entity_fetch_by_iid_exact_clauses(
     iid: &str,
     var: &str,
 ) -> Vec<Clause> {
-    with_exact_type(entity_fetch_by_iid_clauses(descriptor, iid, var), var, &descriptor.type_name)
+    with_exact_type(
+        entity_fetch_by_iid_clauses(descriptor, iid, var),
+        var,
+        &descriptor.type_name,
+    )
 }
 
 fn entity_fetch_with_constraints_clauses(
@@ -887,7 +895,11 @@ pub(crate) fn relation_fetch_exact_clauses(
     filters: &[Filter],
     var: &str,
 ) -> Vec<Clause> {
-    with_exact_type(relation_fetch_clauses(descriptor, filters, var), var, &descriptor.type_name)
+    with_exact_type(
+        relation_fetch_clauses(descriptor, filters, var),
+        var,
+        &descriptor.type_name,
+    )
 }
 
 pub(crate) fn relation_fetch_with_role_filters_clauses(
@@ -1025,7 +1037,11 @@ pub(crate) fn relation_fetch_by_iid_exact_clauses(
     iid: &str,
     var: &str,
 ) -> Vec<Clause> {
-    with_exact_type(relation_fetch_by_iid_clauses(descriptor, iid, var), var, &descriptor.type_name)
+    with_exact_type(
+        relation_fetch_by_iid_clauses(descriptor, iid, var),
+        var,
+        &descriptor.type_name,
+    )
 }
 
 fn with_exact_type(mut clauses: Vec<Clause>, var: &str, type_name: &str) -> Vec<Clause> {

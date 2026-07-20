@@ -17,19 +17,17 @@ use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
 };
 use type_bridge_schema::{
-    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed,
-    inverse_delta,
+    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta,
 };
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, ExecutionScope, GroupJournalEventKind,
-    JournalEntry, JournalSequence, LeaseHolderId, MigrationApplyApproval,
-    MigrationApplyPlanError, MigrationApplyTarget, MigrationHistoryGraph,
-    MigrationLease, MigrationRollbackOutcome, MigrationSafetyPolicy,
-    RollbackPlanRecord, RollbackStepEventRecord, SafetyPolicyDecision,
+    AppliedRecord, ExecutionFence, ExecutionScope, GroupJournalEventKind, JournalEntry,
+    JournalSequence, LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError,
+    MigrationApplyTarget, MigrationHistoryGraph, MigrationLease, MigrationRollbackOutcome,
+    MigrationSafetyPolicy, RollbackPlanRecord, RollbackStepEventRecord, SafetyPolicyDecision,
     SchemaLoweringBinding, SchemaMigrationDraft, VerifiedMigrationRollbackPlan,
-    VerifiedSchemaMigrationManifest, build_verified_manifest,
-    build_verified_migration_apply_plan, build_verified_migration_rollback_plan,
-    execute_verified_migration_rollback_plan, typedb_3_12_1_profile,
+    VerifiedSchemaMigrationManifest, build_verified_manifest, build_verified_migration_apply_plan,
+    build_verified_migration_rollback_plan, execute_verified_migration_rollback_plan,
+    typedb_3_12_1_profile,
 };
 
 fn migration_id(name: &str) -> MigrationId {
@@ -104,16 +102,15 @@ fn manifest(
     with_reverse: bool,
 ) -> VerifiedSchemaMigrationManifest {
     let delta = diff_managed(source, target, context).expect("fixture delta");
-    let reverse = with_reverse
-        .then(|| inverse_delta(&delta).expect("fixture inverse"));
+    let reverse = with_reverse.then(|| inverse_delta(&delta).expect("fixture inverse"));
     let step = SchemaDeltaStep::new(
         MigrationStepId::new(format!("step-{name}")).expect("fixture step id"),
         delta,
         reverse,
     )
     .expect("fixture step");
-    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step])
-        .expect("fixture draft");
+    let draft =
+        SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("fixture draft");
     build_verified_manifest(draft, (source, context)).expect("fixture manifest")
 }
 
@@ -139,11 +136,10 @@ fn two_step_chain() -> Chain {
         &context,
         true,
     );
-    let graph = MigrationHistoryGraph::from_verified([first.clone(), second.clone()])
-        .expect("history");
+    let graph =
+        MigrationHistoryGraph::from_verified([first.clone(), second.clone()]).expect("history");
     let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone())
-            .expect("lowering");
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
     Chain {
         context,
         lowering,
@@ -187,13 +183,11 @@ fn rollback_requires_an_approval_bound_to_the_reverse_transition() {
     );
 
     // A forward approval never authorizes the reverse transition.
-    let forward =
-        MigrationApplyApproval::for_manifest(&chain.second).expect("forward approval");
+    let forward = MigrationApplyApproval::for_manifest(&chain.second).expect("forward approval");
     assert!(build(&[forward]).is_err());
 
-    let approval =
-        MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
-            .expect("rollback approval");
+    let approval = MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
+        .expect("rollback approval");
     assert!(
         approval
             .binds_rollback(&chain.second, SafetyClass::Destructive)
@@ -248,15 +242,12 @@ fn irreversible_manifests_stay_manually_reversible() {
     let base = declared(&[]);
     let top = declared(&["person"]);
     let context = context();
-    let irreversible =
-        manifest("0001_person", Vec::new(), &base, &top, &context, false);
+    let irreversible = manifest("0001_person", Vec::new(), &base, &top, &context, false);
     let applied = BTreeSet::from([irreversible.id().clone()]);
     let removals = applied.clone();
-    let graph =
-        MigrationHistoryGraph::from_verified([irreversible]).expect("history");
+    let graph = MigrationHistoryGraph::from_verified([irreversible]).expect("history");
     let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone())
-            .expect("lowering");
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
     let approval_free = build_verified_migration_rollback_plan(
         &graph,
         &applied,
@@ -270,7 +261,10 @@ fn irreversible_manifests_stay_manually_reversible() {
     let MigrationApplyPlanError::Contract(diagnostic) = approval_free else {
         panic!("irreversible rejection must surface as a contract diagnostic");
     };
-    assert_eq!(diagnostic.code().as_str(), "migration_rollback_irreversible");
+    assert_eq!(
+        diagnostic.code().as_str(),
+        "migration_rollback_irreversible"
+    );
 }
 
 #[test]
@@ -325,13 +319,13 @@ fn seed_applied(
     let mut state = store.state.lock().expect("coordinator store");
     state.fence = 1;
     for (index, manifest) in manifests.iter().enumerate() {
-        let record =
-            AppliedRecord::from_verified_manifest_contract(&seed_lease, manifest)
-                .expect("seed applied record");
+        let record = AppliedRecord::from_verified_manifest_contract(&seed_lease, manifest)
+            .expect("seed applied record");
         let sequence =
-            JournalSequence::new(u64::try_from(index + 1).expect("sequence"))
-                .expect("sequence");
-        state.applied.push(JournalEntry::from_store(sequence, record));
+            JournalSequence::new(u64::try_from(index + 1).expect("sequence")).expect("sequence");
+        state
+            .applied
+            .push(JournalEntry::from_store(sequence, record));
         state.next_sequence = sequence.get();
     }
 }
@@ -362,7 +356,11 @@ fn full_chain_rollback_executes_reverse_programs_and_retires_the_ledger() {
     .expect("full rollback plan");
 
     let store = CoordinatorStore::default();
-    seed_applied(&store, &rollback_scope(&plan), &[&chain.first, &chain.second]);
+    seed_applied(
+        &store,
+        &rollback_scope(&plan),
+        &[&chain.first, &chain.second],
+    );
     let provider = CoordinatorProvider {
         available: chain.context.available_capabilities().clone(),
         calls: Mutex::new(Vec::new()),
@@ -412,9 +410,8 @@ fn partial_rollback_reopens_the_head_for_a_fresh_apply_plan() {
     let chain = two_step_chain();
     let applied = applied_both(&chain);
     let removals = BTreeSet::from([chain.second.id().clone()]);
-    let approval =
-        MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
-            .expect("rollback approval");
+    let approval = MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
+        .expect("rollback approval");
     let plan = build_verified_migration_rollback_plan(
         &chain.graph,
         &applied,
@@ -427,7 +424,11 @@ fn partial_rollback_reopens_the_head_for_a_fresh_apply_plan() {
     .expect("head rollback plan");
 
     let store = CoordinatorStore::default();
-    seed_applied(&store, &rollback_scope(&plan), &[&chain.first, &chain.second]);
+    seed_applied(
+        &store,
+        &rollback_scope(&plan),
+        &[&chain.first, &chain.second],
+    );
     let provider = CoordinatorProvider {
         available: chain.context.available_capabilities().clone(),
         calls: Mutex::new(Vec::new()),
@@ -476,9 +477,8 @@ fn rollback_execution_rejects_a_stale_applied_ledger() {
     let chain = two_step_chain();
     let applied = applied_both(&chain);
     let removals = BTreeSet::from([chain.second.id().clone()]);
-    let approval =
-        MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
-            .expect("rollback approval");
+    let approval = MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
+        .expect("rollback approval");
     let plan = build_verified_migration_rollback_plan(
         &chain.graph,
         &applied,
@@ -505,7 +505,10 @@ fn rollback_execution_rejects_a_stale_applied_ledger() {
         &plan,
     ))
     .expect_err("a stale ledger must reject the rollback plan");
-    assert_eq!(error.code().as_str(), "migration_execution_stale_applied_set");
+    assert_eq!(
+        error.code().as_str(),
+        "migration_execution_stale_applied_set"
+    );
     let calls = provider.calls.lock().expect("provider calls").clone();
     assert!(!calls.contains(&"prepare"), "calls: {calls:?}");
 }
@@ -515,9 +518,8 @@ fn rollback_resumes_from_a_committed_checkpoint_without_replaying() {
     let chain = two_step_chain();
     let applied = applied_both(&chain);
     let removals = BTreeSet::from([chain.second.id().clone()]);
-    let approval =
-        MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
-            .expect("rollback approval");
+    let approval = MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
+        .expect("rollback approval");
     let plan = build_verified_migration_rollback_plan(
         &chain.graph,
         &applied,
@@ -601,24 +603,21 @@ fn rejecting_policy_wins_over_a_valid_rollback_approval() {
     let chain = two_step_chain();
     let applied = applied_both(&chain);
     let removals = BTreeSet::from([chain.second.id().clone()]);
-    let approval =
-        MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
-            .expect("rollback approval");
+    let approval = MigrationApplyApproval::for_rollback(&chain.second, SafetyClass::Destructive)
+        .expect("rollback approval");
     let policy = MigrationSafetyPolicy::default_policy()
         .with_decision(SafetyClass::Destructive, SafetyPolicyDecision::Reject)
         .expect("rejecting policy");
-    let MigrationApplyPlanError::Contract(rejected) =
-        build_verified_migration_rollback_plan(
-            &chain.graph,
-            &applied,
-            &removals,
-            &chain.context,
-            &chain.lowering,
-            &policy,
-            &[approval],
-        )
-        .expect_err("a rejecting policy ignores rollback approvals")
-    else {
+    let MigrationApplyPlanError::Contract(rejected) = build_verified_migration_rollback_plan(
+        &chain.graph,
+        &applied,
+        &removals,
+        &chain.context,
+        &chain.lowering,
+        &policy,
+        &[approval],
+    )
+    .expect_err("a rejecting policy ignores rollback approvals") else {
         panic!("policy rejection must surface as a contract diagnostic");
     };
     assert_eq!(

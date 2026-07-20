@@ -6,12 +6,12 @@ use type_bridge_contract::schema::{
     DocumentFingerprint, DocumentId, SchemaDiagnostic, SchemaDiagnostics, SourceSpan,
 };
 
+pub(crate) use crate::diagnostic::{diagnostic, diagnostic_with_related};
 use crate::document::{
     CommentPlacement, SchemaComment, SchemaDocument, SchemaParseLimits, YamlCollectionStyle,
     YamlMapping, YamlMappingEntry, YamlNode, YamlScalar, YamlScalarStyle, YamlSequence,
     resource_diagnostic,
 };
-pub(crate) use crate::diagnostic::{diagnostic, diagnostic_with_related};
 
 #[derive(Clone, Debug)]
 enum StructuralEvent {
@@ -181,13 +181,7 @@ pub(crate) fn parse_document_with_limits(
         }
     };
 
-    Ok(SchemaDocument::new(
-        id,
-        source,
-        fingerprint,
-        root,
-        comments,
-    ))
+    Ok(SchemaDocument::new(id, source, fingerprint, root, comments))
 }
 
 struct Cursor {

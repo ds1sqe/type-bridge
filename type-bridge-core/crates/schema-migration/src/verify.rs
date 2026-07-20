@@ -84,16 +84,12 @@ impl MigrationVerifyReport {
     }
 
     /// Return the semantics the applied frontier records, when valid.
-    pub const fn frontier_semantics(
-        &self,
-    ) -> Option<&ManagedSemanticSchemaFingerprint> {
+    pub const fn frontier_semantics(&self) -> Option<&ManagedSemanticSchemaFingerprint> {
         self.frontier_semantics.as_ref()
     }
 
     /// Return the observed live managed semantics, when supplied.
-    pub const fn observed_semantics(
-        &self,
-    ) -> Option<&ManagedSemanticSchemaFingerprint> {
+    pub const fn observed_semantics(&self) -> Option<&ManagedSemanticSchemaFingerprint> {
         self.observed_semantics.as_ref()
     }
 }
@@ -116,22 +112,19 @@ pub fn verify_migration_state(
 ) -> Result<MigrationVerifyReport, Diagnostic> {
     let mut findings = Vec::new();
 
-    let genesis_state =
-        managed_schema_state(genesis_source, context).map_err(delta_diagnostic)?;
+    let genesis_state = managed_schema_state(genesis_source, context).map_err(delta_diagnostic)?;
     let mut applied_frontier = Vec::new();
     let mut frontier_state = None;
     match graph.applied_frontier(applied) {
-        Ok(frontier) => {
-            match crate::apply_plan::coherent_frontier_state(graph, &frontier) {
-                Ok((_, state)) => {
-                    applied_frontier = frontier;
-                    frontier_state = Some(state.unwrap_or(genesis_state));
-                }
-                Err(error) => findings.push(MigrationDriftFinding::AppliedLedger {
-                    diagnostic: plan_error_diagnostic(error),
-                }),
+        Ok(frontier) => match crate::apply_plan::coherent_frontier_state(graph, &frontier) {
+            Ok((_, state)) => {
+                applied_frontier = frontier;
+                frontier_state = Some(state.unwrap_or(genesis_state));
             }
-        }
+            Err(error) => findings.push(MigrationDriftFinding::AppliedLedger {
+                diagnostic: plan_error_diagnostic(error),
+            }),
+        },
         Err(diagnostic) => {
             findings.push(MigrationDriftFinding::AppliedLedger { diagnostic });
         }
@@ -140,8 +133,7 @@ pub fn verify_migration_state(
     let frontier_semantics = frontier_state
         .as_ref()
         .map(|state| state.managed_semantic_schema().clone());
-    let observed_semantics =
-        observed_live.map(|state| state.managed_semantic_schema().clone());
+    let observed_semantics = observed_live.map(|state| state.managed_semantic_schema().clone());
     if let (Some(recorded), Some(observed)) =
         (frontier_semantics.as_ref(), observed_semantics.as_ref())
         && recorded != observed
@@ -159,11 +151,8 @@ pub fn verify_migration_state(
         None => Some(managed_schema_state(genesis_source, context).map_err(delta_diagnostic)?),
     };
     if let (Some(desired), Some(head_state)) = (desired, head_state.as_ref()) {
-        let desired_state =
-            managed_schema_state(desired, context).map_err(delta_diagnostic)?;
-        if desired_state.managed_semantic_schema()
-            != head_state.managed_semantic_schema()
-        {
+        let desired_state = managed_schema_state(desired, context).map_err(delta_diagnostic)?;
+        if desired_state.managed_semantic_schema() != head_state.managed_semantic_schema() {
             findings.push(MigrationDriftFinding::DesiredDivergence {
                 head: head_state.managed_semantic_schema().clone(),
                 desired: desired_state.managed_semantic_schema().clone(),
@@ -202,8 +191,7 @@ fn plan_error_diagnostic(error: MigrationApplyPlanError) -> Diagnostic {
         MigrationApplyPlanError::Schema(delta) => delta_diagnostic(delta),
         MigrationApplyPlanError::Lowering(lowering) => Diagnostic::new(
             DiagnosticCategory::InvalidContract,
-            DiagnosticCode::new(lowering.code())
-                .expect("lowering diagnostic codes are canonical"),
+            DiagnosticCode::new(lowering.code()).expect("lowering diagnostic codes are canonical"),
             "frontier verification failed in provider lowering",
         ),
     }

@@ -3,12 +3,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
-use type_bridge_contract::managed_scope::{
-    ManagedScopeId, SemanticProfileFingerprint,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileFingerprint};
 use type_bridge_contract::migration::{
     MigrationId, MigrationManifestDigest, MigrationPlanFingerprint,
 };
@@ -19,16 +15,14 @@ use type_bridge_contract::schema_fingerprint::{
 use type_bridge_contract::schema_lowering::SchemaLoweringProfileFingerprint;
 
 use crate::{
-    VerifiedMigrationApplyManifest, VerifiedMigrationApplyPlan,
-    VerifiedMigrationRollbackManifest, VerifiedMigrationRollbackPlan,
-    VerifiedMigrationTransactionGroup,
+    VerifiedMigrationApplyManifest, VerifiedMigrationApplyPlan, VerifiedMigrationRollbackManifest,
+    VerifiedMigrationRollbackPlan, VerifiedMigrationTransactionGroup,
 };
 
 const MAX_LEASE_HOLDER_BYTES: usize = 128;
 
 /// Boxed future returned by provider-neutral execution stores.
-pub type ExecutionFuture<'a, T> =
-    Pin<Box<dyn Future<Output = Result<T, Diagnostic>> + Send + 'a>>;
+pub type ExecutionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Diagnostic>> + Send + 'a>>;
 
 /// A monotonically increasing store-issued migration fencing token.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -91,9 +85,9 @@ impl LeaseHolderId {
         let value = value.into();
         if value.is_empty()
             || value.len() > MAX_LEASE_HOLDER_BYTES
-            || !value.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-            })
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
         {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
@@ -120,11 +114,7 @@ pub struct MigrationLease {
 
 impl MigrationLease {
     /// Construct the lease returned by a store after atomic acquisition.
-    pub const fn new(
-        scope: ExecutionScope,
-        holder: LeaseHolderId,
-        fence: ExecutionFence,
-    ) -> Self {
+    pub const fn new(scope: ExecutionScope, holder: LeaseHolderId, fence: ExecutionFence) -> Self {
         Self {
             scope,
             holder,
@@ -234,37 +224,22 @@ pub fn decide_group_recovery(
         (None, true, ObservedRelation::Source)
         | (Some(GroupJournalEventKind::DefinitelyAborted), true, ObservedRelation::Source)
         | (None, false, ObservedRelation::Both)
-        | (
-            Some(GroupJournalEventKind::DefinitelyAborted),
-            false,
-            ObservedRelation::Both,
-        ) => GroupRecoveryDecision::ExecuteNormally,
+        | (Some(GroupJournalEventKind::DefinitelyAborted), false, ObservedRelation::Both) => {
+            GroupRecoveryDecision::ExecuteNormally
+        }
         (
-            Some(
-                GroupJournalEventKind::BeforeCommit
-                | GroupJournalEventKind::CommitOutcomeUnknown,
-            ),
+            Some(GroupJournalEventKind::BeforeCommit | GroupJournalEventKind::CommitOutcomeUnknown),
             true,
             ObservedRelation::Source,
         ) => GroupRecoveryDecision::ExecuteNormally,
         (
-            Some(
-                GroupJournalEventKind::BeforeCommit
-                | GroupJournalEventKind::CommitOutcomeUnknown,
-            ),
+            Some(GroupJournalEventKind::BeforeCommit | GroupJournalEventKind::CommitOutcomeUnknown),
             true,
             ObservedRelation::Target,
         )
+        | (Some(GroupJournalEventKind::Committed), true, ObservedRelation::Target)
         | (
-            Some(GroupJournalEventKind::Committed),
-            true,
-            ObservedRelation::Target,
-        )
-        | (
-            Some(
-                GroupJournalEventKind::Committed
-                | GroupJournalEventKind::FormalOnlyAdvanced,
-            ),
+            Some(GroupJournalEventKind::Committed | GroupJournalEventKind::FormalOnlyAdvanced),
             false,
             ObservedRelation::Both,
         ) => GroupRecoveryDecision::RepairCheckpoint,
@@ -363,8 +338,7 @@ impl OpenPlanRecord {
                 || event.record().scope() != plan.record().scope()
                 || event.record().fence() < previous_fence
                 || manifest_index.is_none_or(|index| {
-                    plan.record().migration_ids().get(index)
-                        != Some(event.record().migration_id())
+                    plan.record().migration_ids().get(index) != Some(event.record().migration_id())
                 })
             {
                 return Err(failure(
@@ -465,10 +439,8 @@ impl PlanRecord {
         let lowering_profile = first.manifest().lowering_profile().fingerprint().clone();
         for migration in plan.migrations() {
             if migration.manifest().managed_scope().id() != scope.managed_scope_id()
-                || migration.manifest().semantic_profile().fingerprint()
-                    != &semantic_profile
-                || migration.manifest().lowering_profile().fingerprint()
-                    != &lowering_profile
+                || migration.manifest().semantic_profile().fingerprint() != &semantic_profile
+                || migration.manifest().lowering_profile().fingerprint() != &lowering_profile
             {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
@@ -509,19 +481,33 @@ impl PlanRecord {
     }
 
     /// Return the execution scope.
-    pub const fn scope(&self) -> &ExecutionScope { &self.scope }
+    pub const fn scope(&self) -> &ExecutionScope {
+        &self.scope
+    }
     /// Return the fence bound into this record.
-    pub const fn fence(&self) -> ExecutionFence { self.fence }
+    pub const fn fence(&self) -> ExecutionFence {
+        self.fence
+    }
     /// Return the planned source frontier.
-    pub fn source_frontier(&self) -> &[MigrationId] { &self.source_frontier }
+    pub fn source_frontier(&self) -> &[MigrationId] {
+        &self.source_frontier
+    }
     /// Return the complete canonically ordered source applied set.
-    pub fn source_applied(&self) -> &[MigrationId] { &self.source_applied }
+    pub fn source_applied(&self) -> &[MigrationId] {
+        &self.source_applied
+    }
     /// Return the planned target frontier.
-    pub fn target_frontier(&self) -> &[MigrationId] { &self.target_frontier }
+    pub fn target_frontier(&self) -> &[MigrationId] {
+        &self.target_frontier
+    }
     /// Return ordered migration identities.
-    pub fn migration_ids(&self) -> &[MigrationId] { &self.migration_ids }
+    pub fn migration_ids(&self) -> &[MigrationId] {
+        &self.migration_ids
+    }
     /// Return ordered canonical manifest digests.
-    pub fn manifest_digests(&self) -> &[MigrationManifestDigest] { &self.manifest_digests }
+    pub fn manifest_digests(&self) -> &[MigrationManifestDigest] {
+        &self.manifest_digests
+    }
     /// Return ordered manifest plan fingerprints.
     pub fn manifest_plan_fingerprints(&self) -> &[MigrationPlanFingerprint] {
         &self.manifest_plan_fingerprints
@@ -625,8 +611,7 @@ impl GroupEventRecord {
         }
         match kind {
             GroupJournalEventKind::Committed
-                if observed_target.as_ref()
-                    == Some(delta.target().managed_semantic_schema()) => {}
+                if observed_target.as_ref() == Some(delta.target().managed_semantic_schema()) => {}
             GroupJournalEventKind::Committed => {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
@@ -671,23 +656,41 @@ impl GroupEventRecord {
     }
 
     /// Return the execution scope.
-    pub const fn scope(&self) -> &ExecutionScope { &self.scope }
+    pub const fn scope(&self) -> &ExecutionScope {
+        &self.scope
+    }
     /// Return the event fence.
-    pub const fn fence(&self) -> ExecutionFence { self.fence }
+    pub const fn fence(&self) -> ExecutionFence {
+        self.fence
+    }
     /// Return the canonical manifest digest.
-    pub const fn manifest_digest(&self) -> MigrationManifestDigest { self.manifest_digest }
+    pub const fn manifest_digest(&self) -> MigrationManifestDigest {
+        self.manifest_digest
+    }
     /// Return the migration identity.
-    pub const fn migration_id(&self) -> &MigrationId { &self.migration_id }
+    pub const fn migration_id(&self) -> &MigrationId {
+        &self.migration_id
+    }
     /// Return the group ordinal.
-    pub const fn group_ordinal(&self) -> u32 { self.group_ordinal }
+    pub const fn group_ordinal(&self) -> u32 {
+        self.group_ordinal
+    }
     /// Return the first group step index.
-    pub const fn first_step_index(&self) -> u32 { self.first_step_index }
+    pub const fn first_step_index(&self) -> u32 {
+        self.first_step_index
+    }
     /// Return the terminal delta step index.
-    pub const fn schema_delta_step_index(&self) -> u32 { self.schema_delta_step_index }
+    pub const fn schema_delta_step_index(&self) -> u32 {
+        self.schema_delta_step_index
+    }
     /// Return the exclusive group step end.
-    pub const fn end_step_index(&self) -> u32 { self.end_step_index }
+    pub const fn end_step_index(&self) -> u32 {
+        self.end_step_index
+    }
     /// Return the event kind.
-    pub const fn kind(&self) -> GroupJournalEventKind { self.kind }
+    pub const fn kind(&self) -> GroupJournalEventKind {
+        self.kind
+    }
     /// Return exact target evidence carried only by committed events.
     pub const fn observed_target(&self) -> Option<&ManagedSemanticSchemaFingerprint> {
         self.observed_target.as_ref()
@@ -748,13 +751,21 @@ impl AppliedRecord {
     }
 
     /// Return the execution scope.
-    pub const fn scope(&self) -> &ExecutionScope { &self.scope }
+    pub const fn scope(&self) -> &ExecutionScope {
+        &self.scope
+    }
     /// Return the record fence.
-    pub const fn fence(&self) -> ExecutionFence { self.fence }
+    pub const fn fence(&self) -> ExecutionFence {
+        self.fence
+    }
     /// Return the migration identity.
-    pub const fn migration_id(&self) -> &MigrationId { &self.migration_id }
+    pub const fn migration_id(&self) -> &MigrationId {
+        &self.migration_id
+    }
     /// Return the canonical manifest digest.
-    pub const fn manifest_digest(&self) -> MigrationManifestDigest { self.manifest_digest }
+    pub const fn manifest_digest(&self) -> MigrationManifestDigest {
+        self.manifest_digest
+    }
     /// Return source managed-declared identity.
     pub const fn source_declared(&self) -> &ManagedDeclaredIdentityFingerprint {
         &self.source_declared
@@ -828,25 +839,19 @@ impl RollbackPlanRecord {
             ));
         }
         let scope = ExecutionScope::new(plan.source_state().scope().id().clone());
-        if lease.scope() != &scope
-            || plan.target_state().scope() != plan.source_state().scope()
-        {
+        if lease.scope() != &scope || plan.target_state().scope() != plan.source_state().scope() {
             return Err(failure(
                 DiagnosticCategory::Integrity,
                 "migration_execution_scope_mismatch",
                 "lease, source, and target must bind the same managed scope",
             ));
         }
-        let semantic_profile =
-            first.manifest().semantic_profile().fingerprint().clone();
-        let lowering_profile =
-            first.manifest().lowering_profile().fingerprint().clone();
+        let semantic_profile = first.manifest().semantic_profile().fingerprint().clone();
+        let lowering_profile = first.manifest().lowering_profile().fingerprint().clone();
         for rollback in plan.rollbacks() {
             if rollback.manifest().managed_scope().id() != scope.managed_scope_id()
-                || rollback.manifest().semantic_profile().fingerprint()
-                    != &semantic_profile
-                || rollback.manifest().lowering_profile().fingerprint()
-                    != &lowering_profile
+                || rollback.manifest().semantic_profile().fingerprint() != &semantic_profile
+                || rollback.manifest().lowering_profile().fingerprint() != &lowering_profile
             {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
@@ -875,40 +880,44 @@ impl RollbackPlanRecord {
                 .map(|rollback| rollback.manifest().plan_fingerprint().clone())
                 .collect(),
             remaining_applied: plan.remaining_applied().to_vec(),
-            source_declared: plan
-                .source_state()
-                .managed_declared_identity()
-                .clone(),
-            target_declared: plan
-                .target_state()
-                .managed_declared_identity()
-                .clone(),
+            source_declared: plan.source_state().managed_declared_identity().clone(),
+            target_declared: plan.target_state().managed_declared_identity().clone(),
             source_semantics: plan.source_state().managed_semantic_schema().clone(),
             target_semantics: plan.target_state().managed_semantic_schema().clone(),
             semantic_profile,
             lowering_profile,
-            observed_live_source: observed_live_source
-                .managed_semantic_schema()
-                .clone(),
+            observed_live_source: observed_live_source.managed_semantic_schema().clone(),
         })
     }
 
     /// Return the execution scope.
-    pub const fn scope(&self) -> &ExecutionScope { &self.scope }
+    pub const fn scope(&self) -> &ExecutionScope {
+        &self.scope
+    }
     /// Return the fence bound into this record.
-    pub const fn fence(&self) -> ExecutionFence { self.fence }
+    pub const fn fence(&self) -> ExecutionFence {
+        self.fence
+    }
     /// Return the complete canonically ordered pre-rollback applied set.
-    pub fn source_applied(&self) -> &[MigrationId] { &self.source_applied }
+    pub fn source_applied(&self) -> &[MigrationId] {
+        &self.source_applied
+    }
     /// Return rolled-back identities in reverse-topological execution order.
-    pub fn rollback_ids(&self) -> &[MigrationId] { &self.rollback_ids }
+    pub fn rollback_ids(&self) -> &[MigrationId] {
+        &self.rollback_ids
+    }
     /// Return ordered canonical manifest digests.
-    pub fn manifest_digests(&self) -> &[MigrationManifestDigest] { &self.manifest_digests }
+    pub fn manifest_digests(&self) -> &[MigrationManifestDigest] {
+        &self.manifest_digests
+    }
     /// Return ordered manifest plan fingerprints.
     pub fn manifest_plan_fingerprints(&self) -> &[MigrationPlanFingerprint] {
         &self.manifest_plan_fingerprints
     }
     /// Return the applied identities that survive the rollback, in order.
-    pub fn remaining_applied(&self) -> &[MigrationId] { &self.remaining_applied }
+    pub fn remaining_applied(&self) -> &[MigrationId] {
+        &self.remaining_applied
+    }
     /// Return planned pre-rollback managed-declared identity.
     pub const fn source_declared(&self) -> &ManagedDeclaredIdentityFingerprint {
         &self.source_declared
@@ -972,8 +981,7 @@ impl RollbackStepEventRecord {
             )
         })?;
         let reverse = rollback.reverse_delta(step)?;
-        let scope =
-            ExecutionScope::new(rollback.manifest().managed_scope().id().clone());
+        let scope = ExecutionScope::new(rollback.manifest().managed_scope().id().clone());
         if lease.scope() != &scope {
             return Err(failure(
                 DiagnosticCategory::Integrity,
@@ -983,8 +991,8 @@ impl RollbackStepEventRecord {
         }
         match kind {
             GroupJournalEventKind::Committed
-                if observed_target.as_ref()
-                    == Some(reverse.target().managed_semantic_schema()) => {}
+                if observed_target.as_ref() == Some(reverse.target().managed_semantic_schema()) => {
+            }
             GroupJournalEventKind::Committed => {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
@@ -1025,17 +1033,29 @@ impl RollbackStepEventRecord {
     }
 
     /// Return the execution scope.
-    pub const fn scope(&self) -> &ExecutionScope { &self.scope }
+    pub const fn scope(&self) -> &ExecutionScope {
+        &self.scope
+    }
     /// Return the event fence.
-    pub const fn fence(&self) -> ExecutionFence { self.fence }
+    pub const fn fence(&self) -> ExecutionFence {
+        self.fence
+    }
     /// Return the canonical digest of the manifest being rolled back.
-    pub const fn manifest_digest(&self) -> MigrationManifestDigest { self.manifest_digest }
+    pub const fn manifest_digest(&self) -> MigrationManifestDigest {
+        self.manifest_digest
+    }
     /// Return the migration identity.
-    pub const fn migration_id(&self) -> &MigrationId { &self.migration_id }
+    pub const fn migration_id(&self) -> &MigrationId {
+        &self.migration_id
+    }
     /// Return the rollback step position in execution order.
-    pub const fn step_ordinal(&self) -> u32 { self.step_ordinal }
+    pub const fn step_ordinal(&self) -> u32 {
+        self.step_ordinal
+    }
     /// Return the event kind.
-    pub const fn kind(&self) -> GroupJournalEventKind { self.kind }
+    pub const fn kind(&self) -> GroupJournalEventKind {
+        self.kind
+    }
     /// Return exact target evidence carried only by committed events.
     pub const fn observed_target(&self) -> Option<&ManagedSemanticSchemaFingerprint> {
         self.observed_target.as_ref()
@@ -1100,13 +1120,21 @@ impl RolledBackRecord {
     }
 
     /// Return the execution scope.
-    pub const fn scope(&self) -> &ExecutionScope { &self.scope }
+    pub const fn scope(&self) -> &ExecutionScope {
+        &self.scope
+    }
     /// Return the record fence.
-    pub const fn fence(&self) -> ExecutionFence { self.fence }
+    pub const fn fence(&self) -> ExecutionFence {
+        self.fence
+    }
     /// Return the retired migration identity.
-    pub const fn migration_id(&self) -> &MigrationId { &self.migration_id }
+    pub const fn migration_id(&self) -> &MigrationId {
+        &self.migration_id
+    }
     /// Return the canonical manifest digest.
-    pub const fn manifest_digest(&self) -> MigrationManifestDigest { self.manifest_digest }
+    pub const fn manifest_digest(&self) -> MigrationManifestDigest {
+        self.manifest_digest
+    }
     /// Return pre-rollback managed-declared identity.
     pub const fn source_declared(&self) -> &ManagedDeclaredIdentityFingerprint {
         &self.source_declared
@@ -1153,8 +1181,7 @@ impl OpenRollbackPlanRecord {
                 || event.record().scope() != plan.record().scope()
                 || event.record().fence() < previous_fence
                 || manifest_index.is_none_or(|index| {
-                    plan.record().rollback_ids().get(index)
-                        != Some(event.record().migration_id())
+                    plan.record().rollback_ids().get(index) != Some(event.record().migration_id())
                 })
             {
                 return Err(failure(
@@ -1312,10 +1339,8 @@ pub fn active_applied_entries(
             .filter(|(index, entry)| {
                 !retired[*index]
                     && entry.sequence() < retirement.sequence()
-                    && entry.record().migration_id()
-                        == retirement.record().migration_id()
-                    && entry.record().manifest_digest()
-                        == retirement.record().manifest_digest()
+                    && entry.record().migration_id() == retirement.record().migration_id()
+                    && entry.record().manifest_digest() == retirement.record().manifest_digest()
             })
             .max_by_key(|(_, entry)| entry.sequence())
             .map(|(index, _)| index);
@@ -1345,11 +1370,7 @@ fn position(value: usize) -> Result<u32, Diagnostic> {
     })
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static migration execution diagnostic code"),
@@ -1365,12 +1386,8 @@ mod tests {
     use std::task::{Context, Poll, Wake, Waker};
 
     use type_bridge_contract::fingerprint::SemanticProfileId;
-    use type_bridge_contract::managed_scope::{
-        ManagedScopeId, SemanticProfileBinding,
-    };
-    use type_bridge_contract::migration::{
-        MigrationAppLabel, MigrationName,
-    };
+    use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileBinding};
+    use type_bridge_contract::migration::{MigrationAppLabel, MigrationName};
 
     use super::*;
     use crate::schema_lowering_profile_binding;
@@ -1539,8 +1556,7 @@ mod tests {
                 if record.scope() != lease.scope() || record.fence() != lease.fence() {
                     return Err(stale_fence());
                 }
-                let active =
-                    active_applied_entries(state.applied.clone(), &state.rolled_back)?;
+                let active = active_applied_entries(state.applied.clone(), &state.rolled_back)?;
                 if let Some(existing) = active
                     .iter()
                     .find(|entry| entry.record().migration_id() == record.migration_id())
@@ -1568,8 +1584,7 @@ mod tests {
                     .iter()
                     .position(|id| id == record.migration_id());
                 if manifest_index.is_none_or(|index| {
-                    plan.record().manifest_digests().get(index)
-                        != Some(&record.manifest_digest())
+                    plan.record().manifest_digests().get(index) != Some(&record.manifest_digest())
                 }) {
                     return Err(failure(
                         DiagnosticCategory::Integrity,
@@ -1579,8 +1594,7 @@ mod tests {
                 }
                 let entry = JournalEntry::from_store(Self::sequence(state)?, record);
                 state.applied.push(entry.clone());
-                let active =
-                    active_applied_entries(state.applied.clone(), &state.rolled_back)?;
+                let active = active_applied_entries(state.applied.clone(), &state.rolled_back)?;
                 let complete = state.open_plan.as_ref().is_some_and(|plan| {
                     plan.record().migration_ids().iter().all(|id| {
                         active
@@ -1616,8 +1630,13 @@ mod tests {
                 let mut scopes = self.scopes.lock().expect("store mutex");
                 let state = scopes.get_mut(lease.scope()).ok_or_else(stale_fence)?;
                 Self::check_lease(state, lease)?;
-                let Some(plan) = state.open_plan.clone() else { return Ok(None) };
-                Ok(Some(OpenPlanRecord::from_store(plan, state.events.clone())?))
+                let Some(plan) = state.open_plan.clone() else {
+                    return Ok(None);
+                };
+                Ok(Some(OpenPlanRecord::from_store(
+                    plan,
+                    state.events.clone(),
+                )?))
             })
         }
 
@@ -1694,16 +1713,14 @@ mod tests {
                 if record.scope() != lease.scope() || record.fence() != lease.fence() {
                     return Err(stale_fence());
                 }
-                let active =
-                    active_applied_entries(state.applied.clone(), &state.rolled_back)?;
+                let active = active_applied_entries(state.applied.clone(), &state.rolled_back)?;
                 let is_active = active.iter().any(|entry| {
                     entry.record().migration_id() == record.migration_id()
                         && entry.record().manifest_digest() == record.manifest_digest()
                 });
                 if !is_active {
                     if let Some(existing) = state.rolled_back.iter().find(|entry| {
-                        entry.record() == &record
-                            && entry.record().fence() == lease.fence()
+                        entry.record() == &record && entry.record().fence() == lease.fence()
                     }) {
                         return Ok(existing.clone());
                     }
@@ -1726,8 +1743,7 @@ mod tests {
                     .iter()
                     .position(|id| id == record.migration_id());
                 if manifest_index.is_none_or(|index| {
-                    plan.record().manifest_digests().get(index)
-                        != Some(&record.manifest_digest())
+                    plan.record().manifest_digests().get(index) != Some(&record.manifest_digest())
                 }) {
                     return Err(failure(
                         DiagnosticCategory::Integrity,
@@ -1737,8 +1753,7 @@ mod tests {
                 }
                 let entry = JournalEntry::from_store(Self::sequence(state)?, record);
                 state.rolled_back.push(entry.clone());
-                let active =
-                    active_applied_entries(state.applied.clone(), &state.rolled_back)?;
+                let active = active_applied_entries(state.applied.clone(), &state.rolled_back)?;
                 let complete = state.open_rollback_plan.as_ref().is_some_and(|plan| {
                     plan.record().rollback_ids().iter().all(|id| {
                         !active
@@ -1882,33 +1897,25 @@ mod tests {
         assert!(block_on(store.acquire(&scope, &holder_b)).is_err());
         let plan_a = fake_plan(&lease_a);
         let plan_entry = block_on(store.begin_plan(&lease_a, plan_a.clone())).expect("plan");
-        let event_entry = block_on(store.record_group_event(
-            &lease_a,
-            fake_event(&lease_a, &plan_a),
-        ))
-        .expect("event");
+        let event_entry =
+            block_on(store.record_group_event(&lease_a, fake_event(&lease_a, &plan_a)))
+                .expect("event");
         assert_eq!(plan_entry.sequence().get(), 1);
         assert_eq!(event_entry.sequence().get(), 2);
         block_on(store.release(&lease_a)).expect("release a");
         let lease_b = block_on(store.acquire(&scope, &holder_b)).expect("lease b");
         assert!(lease_b.fence() > lease_a.fence());
         assert!(block_on(store.begin_plan(&lease_a, plan_a.clone())).is_err());
-        assert!(block_on(store.record_group_event(
-            &lease_a,
-            fake_event(&lease_a, &plan_a),
-        ))
-        .is_err());
-        assert!(block_on(store.record_applied(
-            &lease_a,
-            fake_applied(&lease_a, &plan_a),
-        ))
-        .is_err());
+        assert!(
+            block_on(store.record_group_event(&lease_a, fake_event(&lease_a, &plan_a),)).is_err()
+        );
+        assert!(
+            block_on(store.record_applied(&lease_a, fake_applied(&lease_a, &plan_a),)).is_err()
+        );
         assert!(block_on(store.release(&lease_a)).is_err());
-        let recovery_event = block_on(store.record_group_event(
-            &lease_b,
-            fake_event(&lease_b, &plan_a),
-        ))
-        .expect("recovery event");
+        let recovery_event =
+            block_on(store.record_group_event(&lease_b, fake_event(&lease_b, &plan_a)))
+                .expect("recovery event");
         assert_eq!(recovery_event.sequence().get(), 3);
         block_on(store.release(&lease_b)).expect("release recovery lease");
         let holder_c = LeaseHolderId::new("owner-c").expect("holder");
@@ -1943,19 +1950,18 @@ mod tests {
         let duplicate = block_on(store.record_applied(&lease, applied))
             .expect("same-fence duplicate is idempotent");
         assert_eq!(duplicate, first);
-        assert!(block_on(store.load_open_plan(&lease))
-            .expect("load completed plan")
-            .is_none());
+        assert!(
+            block_on(store.load_open_plan(&lease))
+                .expect("load completed plan")
+                .is_none()
+        );
         assert_eq!(
             block_on(store.load_applied(&lease)).expect("load applied ledger"),
             vec![first],
         );
     }
 
-    fn fake_rollback_plan(
-        lease: &MigrationLease,
-        plan: &PlanRecord,
-    ) -> RollbackPlanRecord {
+    fn fake_rollback_plan(lease: &MigrationLease, plan: &PlanRecord) -> RollbackPlanRecord {
         RollbackPlanRecord {
             scope: lease.scope().clone(),
             fence: lease.fence(),
@@ -2005,12 +2011,14 @@ mod tests {
         );
         block_on(store.record_applied(&lease, fake_applied(&lease, &plan)))
             .expect("apply planned manifest");
-        assert_eq!(block_on(store.load_applied(&lease)).expect("active").len(), 1);
+        assert_eq!(
+            block_on(store.load_applied(&lease)).expect("active").len(),
+            1
+        );
 
         // Retiring outside an open rollback plan fails closed.
         assert!(block_on(store.record_rolled_back(&lease, retirement.clone())).is_err());
-        block_on(store.begin_rollback_plan(&lease, rollback_plan))
-            .expect("open rollback plan");
+        block_on(store.begin_rollback_plan(&lease, rollback_plan)).expect("open rollback plan");
         assert!(
             block_on(store.begin_plan(&lease, plan.clone())).is_err(),
             "an open rollback plan must block a new apply plan"
@@ -2020,12 +2028,20 @@ mod tests {
         let duplicate = block_on(store.record_rolled_back(&lease, retirement))
             .expect("same-fence duplicate retirement is idempotent");
         assert_eq!(duplicate, first);
-        assert!(block_on(store.load_open_rollback_plan(&lease))
-            .expect("closed rollback plan")
-            .is_none());
-        assert!(block_on(store.load_applied(&lease)).expect("active").is_empty());
+        assert!(
+            block_on(store.load_open_rollback_plan(&lease))
+                .expect("closed rollback plan")
+                .is_none()
+        );
+        assert!(
+            block_on(store.load_applied(&lease))
+                .expect("active")
+                .is_empty()
+        );
         assert_eq!(
-            block_on(store.load_rolled_back(&lease)).expect("retired").len(),
+            block_on(store.load_rolled_back(&lease))
+                .expect("retired")
+                .len(),
             1,
         );
 
@@ -2033,7 +2049,10 @@ mod tests {
         block_on(store.begin_plan(&lease, plan.clone())).expect("reopen plan");
         block_on(store.record_applied(&lease, fake_applied(&lease, &plan)))
             .expect("re-apply retired migration");
-        assert_eq!(block_on(store.load_applied(&lease)).expect("active").len(), 1);
+        assert_eq!(
+            block_on(store.load_applied(&lease)).expect("active").len(),
+            1
+        );
     }
 
     #[test]
@@ -2114,8 +2133,7 @@ mod tests {
                 GroupRecoveryDecision::ExecuteNormally
             }
             Some(
-                GroupJournalEventKind::BeforeCommit
-                | GroupJournalEventKind::CommitOutcomeUnknown,
+                GroupJournalEventKind::BeforeCommit | GroupJournalEventKind::CommitOutcomeUnknown,
             ) if source_seen => GroupRecoveryDecision::ExecuteNormally,
             Some(
                 GroupJournalEventKind::BeforeCommit
@@ -2139,10 +2157,9 @@ mod tests {
             None | Some(GroupJournalEventKind::DefinitelyAborted) => {
                 GroupRecoveryDecision::ExecuteNormally
             }
-            Some(
-                GroupJournalEventKind::Committed
-                | GroupJournalEventKind::FormalOnlyAdvanced,
-            ) => GroupRecoveryDecision::RepairCheckpoint,
+            Some(GroupJournalEventKind::Committed | GroupJournalEventKind::FormalOnlyAdvanced) => {
+                GroupRecoveryDecision::RepairCheckpoint
+            }
             _ => GroupRecoveryDecision::RequiresExplicitRecovery,
         }
     }

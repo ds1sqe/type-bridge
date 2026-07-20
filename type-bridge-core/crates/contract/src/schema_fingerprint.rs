@@ -42,10 +42,7 @@ pub struct SemanticSchemaFingerprint(Fingerprint);
 
 impl SemanticSchemaFingerprint {
     /// Compute a semantic schema fingerprint from canonical direct-semantic bytes.
-    pub fn compute(
-        profile: SemanticProfileId,
-        canonical_bytes: &[u8],
-    ) -> Result<Self, Diagnostic> {
+    pub fn compute(profile: SemanticProfileId, canonical_bytes: &[u8]) -> Result<Self, Diagnostic> {
         Ok(Self(Fingerprint::compute(
             FingerprintDomain::new("typebridge.schema.semantic")?,
             CanonicalizationVersion::new(SCHEMA_CANONICALIZATION)?,
@@ -105,10 +102,7 @@ pub struct ManagedSemanticSchemaFingerprint(Fingerprint);
 
 impl ManagedSemanticSchemaFingerprint {
     /// Compute a managed semantic fingerprint from canonical filtered bytes.
-    pub fn compute(
-        profile: SemanticProfileId,
-        canonical_bytes: &[u8],
-    ) -> Result<Self, Diagnostic> {
+    pub fn compute(profile: SemanticProfileId, canonical_bytes: &[u8]) -> Result<Self, Diagnostic> {
         Ok(Self(Fingerprint::compute(
             FingerprintDomain::new("typebridge.schema.managed-semantic")?,
             CanonicalizationVersion::new(MANAGED_SEMANTIC_CANONICALIZATION)?,

@@ -16,7 +16,9 @@ fn descriptors(source: &str) -> Value {
 }
 
 fn closed_world(set: &Value) -> bool {
-    set["closed_world"].as_bool().expect("closed_world is a bool")
+    set["closed_world"]
+        .as_bool()
+        .expect("closed_world is a bool")
 }
 
 fn unsupported(set: &Value) -> Vec<String> {
@@ -102,9 +104,8 @@ fn kindless_reopening_is_order_independent() {
 #[test]
 fn conflicting_kinds_still_fail_closed() {
     let document = DocumentId::new("schema/main.tql").expect("valid test document");
-    let diagnostics =
-        typeql_to_declared(document, "define\nentity person;\nrelation person;\n")
-            .expect_err("kind conflict must fail");
+    let diagnostics = typeql_to_declared(document, "define\nentity person;\nrelation person;\n")
+        .expect_err("kind conflict must fail");
     let diagnostic = diagnostics.iter().next().expect("one diagnostic");
     assert_eq!(
         diagnostic.diagnostic().code().as_str(),
@@ -120,7 +121,10 @@ fn cascade_and_subkey_are_recorded_not_fatal() {
          entity company, owns name @subkey(primary);\n",
     );
     assert!(!closed_world(&set));
-    assert_eq!(unsupported(&set), vec!["@cascade".to_string(), "@subkey(primary)".to_string()]);
+    assert_eq!(
+        unsupported(&set),
+        vec!["@cascade".to_string(), "@subkey(primary)".to_string()]
+    );
     assert_eq!(section_len(&set, "entities"), 2);
 }
 

@@ -1,6 +1,4 @@
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,8 +101,5 @@ pub(crate) fn validate_source_pattern(
 
 fn is_windows_absolute(value: &str) -> bool {
     let bytes = value.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && bytes[2] == b'/'
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
 }

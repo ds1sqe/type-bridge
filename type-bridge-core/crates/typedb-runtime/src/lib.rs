@@ -105,10 +105,7 @@ pub enum RuntimeError {
     AnswerConsumer,
 }
 
-fn commit_failure(
-    certainty: CommitFailureCertainty,
-    message: impl Into<String>,
-) -> RuntimeError {
+fn commit_failure(certainty: CommitFailureCertainty, message: impl Into<String>) -> RuntimeError {
     RuntimeError::Commit {
         certainty,
         message: message.into(),

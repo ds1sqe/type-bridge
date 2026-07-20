@@ -3,13 +3,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use type_bridge_contract::capability::CapabilitySet;
-use type_bridge_contract::codec::{
-    from_canonical_json_with_limits, to_canonical_json_with_limits,
-};
+use type_bridge_contract::codec::{from_canonical_json_with_limits, to_canonical_json_with_limits};
 use type_bridge_contract::diagnostic::Diagnostic;
-use type_bridge_contract::fingerprint::{
-    CanonicalizationVersion, Fingerprint, FingerprintDomain,
-};
+use type_bridge_contract::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use type_bridge_contract::limits::CodecLimits;
 use type_bridge_contract::managed_scope::SemanticProfileBinding;
 
@@ -21,8 +17,7 @@ pub const TYPEBRIDGE_WORKSPACE_LOCK_V1: &str = "typebridge.workspace-lock/v1";
 pub const MAX_WORKSPACE_LOCK_BYTES: usize = 1024 * 1024;
 
 const WORKSPACE_CONFIG_IDENTITY_DOMAIN: &str = "typebridge.workspace.config-identity";
-const WORKSPACE_CONFIG_IDENTITY_CANONICALIZATION: &str =
-    "typebridge.workspace-config-identity/v1";
+const WORKSPACE_CONFIG_IDENTITY_CANONICALIZATION: &str = "typebridge.workspace-config-identity/v1";
 const WORKSPACE_LOCK_LIMITS: CodecLimits = CodecLimits {
     max_bytes: MAX_WORKSPACE_LOCK_BYTES,
     max_depth: 16,
@@ -126,8 +121,12 @@ impl fmt::Display for WorkspaceLockError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Contract(error) => write!(formatter, "workspace lock contract failed: {error}"),
-            Self::UnsupportedVersion => formatter.write_str("workspace lock version is unsupported"),
-            Self::Stale => formatter.write_str("workspace lock does not match the source workspace"),
+            Self::UnsupportedVersion => {
+                formatter.write_str("workspace lock version is unsupported")
+            }
+            Self::Stale => {
+                formatter.write_str("workspace lock does not match the source workspace")
+            }
         }
     }
 }
@@ -192,8 +191,7 @@ pub fn verify_workspace_lock(
     bytes: &[u8],
     workspace: &TypeBridgeWorkspace,
 ) -> Result<VerifiedWorkspaceLock, WorkspaceLockError> {
-    let decoded: WorkspaceLockWire =
-        from_canonical_json_with_limits(bytes, WORKSPACE_LOCK_LIMITS)?;
+    let decoded: WorkspaceLockWire = from_canonical_json_with_limits(bytes, WORKSPACE_LOCK_LIMITS)?;
     if decoded.lock_version != TYPEBRIDGE_WORKSPACE_LOCK_V1 {
         return Err(WorkspaceLockError::UnsupportedVersion);
     }
@@ -216,15 +214,17 @@ fn derive_lock_wire(
     let scope = workspace.bound_managed_scope().binding();
     let semantic_profile =
         SemanticProfileBinding::resolve(workspace.config().semantic_profile().clone())?;
-    let authored_config = workspace.located_config().map(|located| AuthoredConfigWire {
-        fingerprint: located.spec().fingerprint().as_fingerprint().clone(),
-        path: located
-            .origin()
-            .manifest_path()
-            .to_str()
-            .expect("ConfigOrigin validates UTF-8 paths")
-            .to_owned(),
-    });
+    let authored_config = workspace
+        .located_config()
+        .map(|located| AuthoredConfigWire {
+            fingerprint: located.spec().fingerprint().as_fingerprint().clone(),
+            path: located
+                .origin()
+                .manifest_path()
+                .to_str()
+                .expect("ConfigOrigin validates UTF-8 paths")
+                .to_owned(),
+        });
     let sources = evidence
         .sources()
         .iter()
@@ -237,40 +237,24 @@ fn derive_lock_wire(
     Ok(WorkspaceLockWire {
         authored_config,
         bound_scope_id: scope.id().as_str().to_owned(),
-        declared_identity_fingerprint: managed_state
-            .declared_identity()
-            .as_fingerprint()
-            .clone(),
+        declared_identity_fingerprint: managed_state.declared_identity().as_fingerprint().clone(),
         derived_capability_requirements: workspace.required_capabilities().clone(),
         discovery_version: evidence.discovery_version().as_str().to_owned(),
-        document_set_fingerprint: evidence
-            .document_set_fingerprint()
-            .as_fingerprint()
-            .clone(),
+        document_set_fingerprint: evidence.document_set_fingerprint().as_fingerprint().clone(),
         lock_version: TYPEBRIDGE_WORKSPACE_LOCK_V1.to_owned(),
         managed_declared_identity_fingerprint: managed_state
             .managed_declared_identity()
             .as_fingerprint()
             .clone(),
-        managed_scope_profile_fingerprint: scope
-            .profile()
-            .fingerprint()
-            .as_fingerprint()
-            .clone(),
+        managed_scope_profile_fingerprint: scope.profile().fingerprint().as_fingerprint().clone(),
         managed_scope_profile_id: scope.profile().id().as_str().to_owned(),
         managed_semantic_schema_fingerprint: managed_state
             .managed_semantic_schema()
             .as_fingerprint()
             .clone(),
         resolved_config_identity: resolved_config_identity(workspace.config())?,
-        schema_set_manifest_fingerprint: evidence
-            .manifest_fingerprint()
-            .as_fingerprint()
-            .clone(),
-        semantic_profile_fingerprint: semantic_profile
-            .fingerprint()
-            .as_fingerprint()
-            .clone(),
+        schema_set_manifest_fingerprint: evidence.manifest_fingerprint().as_fingerprint().clone(),
+        semantic_profile_fingerprint: semantic_profile.fingerprint().as_fingerprint().clone(),
         semantic_profile_id: semantic_profile.id().as_str().to_owned(),
         semantic_schema_fingerprint: workspace
             .resolved_schema()
@@ -290,12 +274,7 @@ fn resolved_config_identity(config: &TypeBridgeConfig) -> Result<Fingerprint, Wo
             .map(|capability| capability.as_str().to_owned())
             .collect(),
         managed_scope_id: config.managed_scope().id().as_str().to_owned(),
-        managed_scope_profile_id: config
-            .managed_scope()
-            .profile()
-            .id()
-            .as_str()
-            .to_owned(),
+        managed_scope_profile_id: config.managed_scope().profile().id().as_str().to_owned(),
         migration_v2_directory: config
             .migration_v2_directory()
             .as_path()

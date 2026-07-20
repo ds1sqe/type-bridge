@@ -10,11 +10,9 @@ fn projected(
     source: &str,
     resources: &[CodeResourceDigest],
 ) -> type_bridge_contract::projection::RuntimeProjection {
-    let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("typescript-emitter.yaml").unwrap(),
-        source,
-    )])
-    .unwrap();
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("typescript-emitter.yaml").unwrap(), source)])
+            .unwrap();
     let declared = normalize_documents(&documents).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
@@ -37,7 +35,11 @@ fn emits_exact_deterministic_es_module_package() {
     let second = emitter.emit(&projection).unwrap();
     assert_eq!(first, second);
     assert_eq!(
-        first.files().keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        first
+            .files()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([
             "package.json",
             "src/functions.ts",
@@ -50,7 +52,9 @@ fn emits_exact_deterministic_es_module_package() {
         ])
     );
     let models = String::from_utf8(first.get("src/models.ts").unwrap().to_vec()).unwrap();
-    assert!(models.find("export let Person:").unwrap() < models.find("Person = defineModel").unwrap());
+    assert!(
+        models.find("export let Person:").unwrap() < models.find("Person = defineModel").unwrap()
+    );
     assert!(models.contains("Link one dependency component"));
     assert!(models.contains("readonly value: string;"));
     assert!(models.contains("export type IdentifierCreate = string;"));
@@ -70,15 +74,27 @@ fn emits_exact_deterministic_es_module_package() {
         schema.find("export const playsPersonMembershipMember"),
         schema.find("export const playsRobotMembershipMember")
     );
-    assert!(String::from_utf8(first.get("package.json").unwrap().to_vec()).unwrap().contains("\"type\": \"module\""));
-    assert!(String::from_utf8(first.get("tsconfig.json").unwrap().to_vec()).unwrap().contains("\"module\": \"NodeNext\""));
+    assert!(
+        String::from_utf8(first.get("package.json").unwrap().to_vec())
+            .unwrap()
+            .contains("\"type\": \"module\"")
+    );
+    assert!(
+        String::from_utf8(first.get("tsconfig.json").unwrap().to_vec())
+            .unwrap()
+            .contains("\"module\": \"NodeNext\"")
+    );
 }
 
 #[test]
 fn rejects_projection_without_exact_resource_evidence() {
     let projection = projected(include_str!("acceptance/schema.yaml"), &[]);
     let error = TypeScriptEmitter::new().emit(&projection).unwrap_err();
-    assert!(error.to_string().contains("typescript_emitter_evidence_mismatch"));
+    assert!(
+        error
+            .to_string()
+            .contains("typescript_emitter_evidence_mismatch")
+    );
 }
 
 #[test]
@@ -90,6 +106,10 @@ fn rejects_schema_name_colliding_with_runtime_export() {
         &resources,
     );
     let error = emitter.emit(&projection).unwrap_err();
-    assert!(error.to_string().contains("typescript_emitter_name_collision"));
+    assert!(
+        error
+            .to_string()
+            .contains("typescript_emitter_name_collision")
+    );
     assert!(error.to_string().contains("Cardinality"));
 }

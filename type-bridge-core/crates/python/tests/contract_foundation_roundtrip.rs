@@ -4,9 +4,7 @@ use pyo3::types::{PyBytes, PyModule};
 use serde::{Deserialize, Serialize};
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
-use type_bridge_contract::fingerprint::{
-    CanonicalizationVersion, Fingerprint, FingerprintDomain,
-};
+use type_bridge_contract::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::value::{CanonicalValue, Cardinality};
 
@@ -69,7 +67,10 @@ fn foundation_bytes_round_trip_through_an_in_memory_python_module() {
             .call1((PyBytes::new(py, &encoded),))?;
         let returned: Vec<u8> = returned.extract()?;
         assert_eq!(returned, encoded);
-        assert_eq!(from_canonical_json::<FoundationProbe>(&returned).unwrap(), original);
+        assert_eq!(
+            from_canonical_json::<FoundationProbe>(&returned).unwrap(),
+            original
+        );
         Ok(())
     })
     .unwrap();

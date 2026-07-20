@@ -8,14 +8,12 @@ use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::id::{AttributeId, FunctionId, Label};
 use crate::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
 use crate::migration_assertion_wire::{
-    AssertionRolePlayerWire, FingerprintWire, RoleIdWire, TypeIdWire,
-    ValueComparatorWire,
+    AssertionRolePlayerWire, FingerprintWire, RoleIdWire, TypeIdWire, ValueComparatorWire,
 };
 use crate::query_plan::{
-    DocumentField, DocumentSource, InputColumn, InputColumnId, LocalFunction,
-    LocalReturn, OrderDirection, OrderTerm, QUERY_PLAN_FORMAT_V1, QueryOperand,
-    QueryOutput, QueryPattern, QueryPlan, ReadStage, ReduceAssignment, Reducer,
-    failure,
+    DocumentField, DocumentSource, InputColumn, InputColumnId, LocalFunction, LocalReturn,
+    OrderDirection, OrderTerm, QUERY_PLAN_FORMAT_V1, QueryOperand, QueryOutput, QueryPattern,
+    QueryPlan, ReadStage, ReduceAssignment, Reducer, failure,
 };
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
@@ -73,9 +71,7 @@ impl QueryPlanWire {
                 .map(ReadStageWire::rebuild)
                 .collect::<Result<Vec<_>, _>>()?,
             self.output.rebuild()?,
-            ManagedSemanticSchemaFingerprint::from_wire(
-                self.managed_semantics.rebuild()?,
-            )?,
+            ManagedSemanticSchemaFingerprint::from_wire(self.managed_semantics.rebuild()?)?,
         )?;
         if self.required_capabilities != *trusted.required_capabilities() {
             return Err(failure(
@@ -229,17 +225,29 @@ impl DocumentFieldWire {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ReadStageWire {
-    Match { patterns: Vec<QueryPatternWire> },
-    Select { bindings: Vec<u16> },
-    Require { bindings: Vec<u16> },
+    Match {
+        patterns: Vec<QueryPatternWire>,
+    },
+    Select {
+        bindings: Vec<u16>,
+    },
+    Require {
+        bindings: Vec<u16>,
+    },
     Distinct,
     Reduce {
         assignments: Vec<ReduceAssignmentWire>,
         groups: Vec<u16>,
     },
-    Sort { terms: Vec<OrderTermWire> },
-    Offset { rows: u64 },
-    Limit { rows: u64 },
+    Sort {
+        terms: Vec<OrderTermWire>,
+    },
+    Offset {
+        rows: u64,
+    },
+    Limit {
+        rows: u64,
+    },
 }
 
 impl ReadStageWire {
@@ -369,8 +377,12 @@ enum QueryPatternWire {
         left: QueryOperandWire,
         right: QueryOperandWire,
     },
-    Not { patterns: Vec<QueryPatternWire> },
-    Try { patterns: Vec<QueryPatternWire> },
+    Not {
+        patterns: Vec<QueryPatternWire>,
+    },
+    Try {
+        patterns: Vec<QueryPatternWire>,
+    },
     Reachable {
         max_depth: u8,
         relation: TypeIdWire,

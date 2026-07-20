@@ -5,19 +5,13 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use type_bridge_contract::capability::CapabilitySet;
-use type_bridge_contract::codec::{
-    from_canonical_json, to_canonical_json,
-};
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
-use type_bridge_contract::managed_scope::{
-    ManagedScopeBinding, SemanticProfileBinding,
-};
+use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::limits::{MAX_CANONICAL_COLLECTION_LEN, StructuralLimits};
+use type_bridge_contract::managed_scope::{ManagedScopeBinding, SemanticProfileBinding};
 use type_bridge_contract::migration::{
-    MigrationAppLabel, MigrationFormat, MigrationId, MigrationManifestDigest,
-    MigrationName, MigrationPlanFingerprint, MigrationStep, MigrationStepId,
-    SchemaDeltaStep,
+    MigrationAppLabel, MigrationFormat, MigrationId, MigrationManifestDigest, MigrationName,
+    MigrationPlanFingerprint, MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::{
     AssertionExpectation, decode_migration_assertion_plan,
@@ -30,20 +24,16 @@ use type_bridge_contract::schema_fingerprint::{
     ManagedDeclaredIdentityFingerprint, ManagedSemanticSchemaFingerprint,
 };
 use type_bridge_contract::schema_lowering::SchemaLoweringProfileBinding;
-use type_bridge_contract::limits::{MAX_CANONICAL_COLLECTION_LEN, StructuralLimits};
 use type_bridge_query::{
-    MigrationAssertionValidationContext, ValidatedMigrationAssertionPlan,
-    lower_condition_to_plan,
+    MigrationAssertionValidationContext, ValidatedMigrationAssertionPlan, lower_condition_to_plan,
 };
 use type_bridge_schema::{
-    DeltaError, ManagedDeltaContext, RequiredSafetyCondition, SafetyClass,
-    SafetyCondition, SafetyDerivationProfile, apply_delta, classify_delta_safety,
-    derive_safety_conditions, managed_schema_state, plan_schema_operations, resolve,
+    DeltaError, ManagedDeltaContext, RequiredSafetyCondition, SafetyClass, SafetyCondition,
+    SafetyDerivationProfile, apply_delta, classify_delta_safety, derive_safety_conditions,
+    managed_schema_state, plan_schema_operations, resolve,
 };
 
-use crate::legacy::{
-    LEGACY_CHECKSUM_ALGORITHM, LegacyMigrationChecksum, LegacyMigrationReference,
-};
+use crate::legacy::{LEGACY_CHECKSUM_ALGORITHM, LegacyMigrationChecksum, LegacyMigrationReference};
 use crate::profile::schema_lowering_profile_binding;
 
 const MANIFEST_SCHEMA_CANONICALIZATION: &str = "typebridge.schema-c14n/v2";
@@ -276,8 +266,8 @@ pub fn build_verified_manifest(
     context: (&DeclaredSchema, &ManagedDeltaContext),
 ) -> Result<VerifiedSchemaMigrationManifest, Diagnostic> {
     let (source_schema, delta_context) = context;
-    let source_state = managed_schema_state(source_schema, delta_context)
-        .map_err(delta_diagnostic)?;
+    let source_state =
+        managed_schema_state(source_schema, delta_context).map_err(delta_diagnostic)?;
     let managed_scope = ManagedScopeBinding::exclusive(delta_context.scope_id().clone())?;
     if source_state.scope() != &managed_scope {
         return Err(failure(
@@ -289,10 +279,8 @@ pub fn build_verified_manifest(
     let semantic_profile =
         SemanticProfileBinding::resolve(delta_context.semantic_profile().clone())?;
     let lowering_profile = schema_lowering_profile_binding()?;
-    let safety_profile = SafetyDerivationProfile::new(
-        semantic_profile.clone(),
-        lowering_profile.clone(),
-    )?;
+    let safety_profile =
+        SafetyDerivationProfile::new(semantic_profile.clone(), lowering_profile.clone())?;
 
     let SchemaMigrationDraft {
         id,
@@ -434,8 +422,8 @@ pub fn build_verified_manifest(
         ));
     }
 
-    let target_state = managed_schema_state(&current_schema, delta_context)
-        .map_err(delta_diagnostic)?;
+    let target_state =
+        managed_schema_state(&current_schema, delta_context).map_err(delta_diagnostic)?;
     let plan_fingerprint = MigrationPlanFingerprint::compute(&steps)?;
     Ok(VerifiedSchemaMigrationManifest {
         format: MigrationFormat::V1,
@@ -506,7 +494,9 @@ pub fn encode_verified_manifest(
 pub fn verified_manifest_digest(
     manifest: &VerifiedSchemaMigrationManifest,
 ) -> Result<MigrationManifestDigest, Diagnostic> {
-    Ok(MigrationManifestDigest::compute(&encode_verified_manifest(manifest)?))
+    Ok(MigrationManifestDigest::compute(&encode_verified_manifest(
+        manifest,
+    )?))
 }
 
 fn reject_forward_safety(safety: SafetyClass) -> Result<(), Diagnostic> {
@@ -516,13 +506,13 @@ fn reject_forward_safety(safety: SafetyClass) -> Result<(), Diagnostic> {
         | SafetyClass::Additive
         | SafetyClass::Conditional
         | SafetyClass::Destructive => Ok(()),
-        SafetyClass::BackfillRequired
-        | SafetyClass::Opaque
-        | SafetyClass::Unsupported => Err(failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_manifest_unresolved_safety",
-            "migration manifest cannot carry unresolved backfill, opaque, or unsupported work",
-        )),
+        SafetyClass::BackfillRequired | SafetyClass::Opaque | SafetyClass::Unsupported => {
+            Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_unresolved_safety",
+                "migration manifest cannot carry unresolved backfill, opaque, or unsupported work",
+            ))
+        }
     }
 }
 
@@ -554,13 +544,8 @@ pub(crate) fn verify_assertion_coverage(
     let mut conditional_operation_indices = Vec::new();
     for (operation_index, operation) in delta.operations().iter().enumerate() {
         let mut operation_requires_assertion = false;
-        let derived = derive_safety_conditions(
-            operation_index,
-            operation,
-            source,
-            target,
-            profile,
-        )?;
+        let derived =
+            derive_safety_conditions(operation_index, operation, source, target, profile)?;
         for condition in derived.conditions() {
             match condition.policy() {
                 SafetyClass::Conditional => {
@@ -584,9 +569,7 @@ pub(crate) fn verify_assertion_coverage(
         // A conditional operation is discharged either by assertion coverage
         // or by the verifier's condition-free proof (zero derived conditions
         // survive derivation only when the transition is proven safe).
-        if operation_requires_assertion
-            || derived.policy() == SafetyClass::Conditional
-        {
+        if operation_requires_assertion || derived.policy() == SafetyClass::Conditional {
             conditional_operation_indices.push(operation_index);
         }
     }
@@ -639,11 +622,7 @@ pub(crate) fn verify_assertion_coverage(
     let context = MigrationAssertionValidationContext::new(&resolved, delta.source());
     let mut validated_plans = Vec::with_capacity(expected.len());
     for (actual, condition) in assertions.iter().zip(expected) {
-        let validated = lower_condition_to_plan(
-            condition,
-            &context,
-            StructuralLimits::CANONICAL,
-        )?;
+        let validated = lower_condition_to_plan(condition, &context, StructuralLimits::CANONICAL)?;
         let (contract, plan, expected) = actual.as_assertion().ok_or_else(|| {
             failure(
                 DiagnosticCategory::InvalidContract,
@@ -699,13 +678,8 @@ fn reject_reverse_assertion_requirement(
         _ => {}
     }
     for (operation_index, operation) in reverse.operations().iter().enumerate() {
-        let derived = derive_safety_conditions(
-            operation_index,
-            operation,
-            source,
-            target,
-            profile,
-        )?;
+        let derived =
+            derive_safety_conditions(operation_index, operation, source, target, profile)?;
         if derived.policy() == SafetyClass::Conditional && !derived.conditions().is_empty() {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
@@ -734,11 +708,7 @@ pub(crate) fn delta_diagnostic(error: DeltaError) -> Diagnostic {
     }
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static manifest diagnostic code is canonical"),

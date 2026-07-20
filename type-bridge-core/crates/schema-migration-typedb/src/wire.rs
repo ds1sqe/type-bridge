@@ -2,17 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use type_bridge_contract::codec::{
-    from_canonical_json_with_limits, to_canonical_json_with_limits,
-};
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::codec::{from_canonical_json_with_limits, to_canonical_json_with_limits};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::limits::CodecLimits;
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, GroupEventRecord, GroupJournalEventKind,
-    PlanRecord, RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord,
+    AppliedRecord, ExecutionFence, GroupEventRecord, GroupJournalEventKind, PlanRecord,
+    RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord,
 };
 
 const EXECUTION_RECORD_V1: &str = "typebridge.migration-execution-record/v1";
@@ -159,10 +155,7 @@ pub(crate) fn encode_plan(record: &PlanRecord) -> Result<Vec<u8>, Diagnostic> {
     to_canonical_json_with_limits(&view, EXECUTION_RECORD_LIMITS)
 }
 
-pub(crate) fn decode_plan(
-    bytes: &[u8],
-    expected: PlanRecord,
-) -> Result<PlanRecord, Diagnostic> {
+pub(crate) fn decode_plan(bytes: &[u8], expected: PlanRecord) -> Result<PlanRecord, Diagnostic> {
     let wire: PlanWire = from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
     ensure_header(
         &wire.format,
@@ -346,9 +339,7 @@ struct RolledBackWire {
     target_semantics: Value,
 }
 
-pub(crate) fn encode_rollback_plan(
-    record: &RollbackPlanRecord,
-) -> Result<Vec<u8>, Diagnostic> {
+pub(crate) fn encode_rollback_plan(record: &RollbackPlanRecord) -> Result<Vec<u8>, Diagnostic> {
     let view = RollbackPlanView {
         fence: record.fence().get(),
         format: EXECUTION_RECORD_V1,
@@ -382,8 +373,7 @@ pub(crate) fn decode_rollback_plan(
     bytes: &[u8],
     expected: RollbackPlanRecord,
 ) -> Result<RollbackPlanRecord, Diagnostic> {
-    let wire: RollbackPlanWire =
-        from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+    let wire: RollbackPlanWire = from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
     ensure_header(
         &wire.format,
         &wire.kind,
@@ -420,8 +410,7 @@ pub(crate) fn decode_rollback_event(
     bytes: &[u8],
     expected: RollbackStepEventRecord,
 ) -> Result<RollbackStepEventRecord, Diagnostic> {
-    let wire: RollbackEventWire =
-        from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+    let wire: RollbackEventWire = from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
     ensure_header(
         &wire.format,
         &wire.kind,
@@ -435,9 +424,7 @@ pub(crate) fn decode_rollback_event(
     Ok(expected)
 }
 
-pub(crate) fn encode_rolled_back(
-    record: &RolledBackRecord,
-) -> Result<Vec<u8>, Diagnostic> {
+pub(crate) fn encode_rolled_back(record: &RolledBackRecord) -> Result<Vec<u8>, Diagnostic> {
     let view = RolledBackView {
         fence: record.fence().get(),
         format: EXECUTION_RECORD_V1,
@@ -457,8 +444,7 @@ pub(crate) fn decode_rolled_back(
     bytes: &[u8],
     expected: RolledBackRecord,
 ) -> Result<RolledBackRecord, Diagnostic> {
-    let wire: RolledBackWire =
-        from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+    let wire: RolledBackWire = from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
     ensure_header(
         &wire.format,
         &wire.kind,
@@ -484,13 +470,16 @@ pub(crate) fn persisted_fence(
             "persisted migration record has no canonical object header",
         )
     })?;
-    let format = object.get("format").and_then(Value::as_str).ok_or_else(|| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_typedb_record_header_invalid",
-            "persisted migration record has no canonical format discriminator",
-        )
-    })?;
+    let format = object
+        .get("format")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_typedb_record_header_invalid",
+                "persisted migration record has no canonical format discriminator",
+            )
+        })?;
     if format != EXECUTION_RECORD_V1 {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -551,10 +540,7 @@ fn ensure_header(
     Ok(())
 }
 
-fn ensure_expected_bytes(
-    actual: &[u8],
-    expected: &[u8],
-) -> Result<(), Diagnostic> {
+fn ensure_expected_bytes(actual: &[u8], expected: &[u8]) -> Result<(), Diagnostic> {
     if actual == expected {
         Ok(())
     } else {
@@ -570,11 +556,7 @@ fn identity_mismatch() -> Diagnostic {
     )
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static diagnostic code is valid"),

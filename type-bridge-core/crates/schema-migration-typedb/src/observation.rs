@@ -2,22 +2,17 @@
 
 use serde_json::Value;
 use type_bridge_contract::capability::CapabilitySet;
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, ManagedSchemaState, SourcedSchemaFact,
 };
 use type_bridge_schema::{DeltaError, ManagedDeltaContext, managed_schema_state};
 use type_bridge_schema_compat::{
-    LEGACY_LEDGER_SCHEMA_TYPEQL, SchemaReference, TypeqlDeclaredSchema,
-    is_legacy_ledger_label, typeql_to_declared,
-    typeql_to_declared_with_references,
+    LEGACY_LEDGER_SCHEMA_TYPEQL, SchemaReference, TypeqlDeclaredSchema, is_legacy_ledger_label,
+    typeql_to_declared, typeql_to_declared_with_references,
 };
 
-use crate::control_schema::{
-    MANAGED_FENCE_SCHEMA_TYPEQL, TYPEBRIDGE_INTERNAL_PREFIX,
-};
+use crate::control_schema::{MANAGED_FENCE_SCHEMA_TYPEQL, TYPEBRIDGE_INTERNAL_PREFIX};
 use crate::is_typebridge_internal_label;
 
 /// One parsed TypeDB export partitioned into managed-user and internal facts.
@@ -102,39 +97,32 @@ pub(crate) fn partition_declared_schema(
         }
     }
 
-    let user = DeclaredSchema::from_facts(full.format(), CapabilitySet::new(), user).map_err(
-        |_| {
+    let user =
+        DeclaredSchema::from_facts(full.format(), CapabilitySet::new(), user).map_err(|_| {
             failure(
                 DiagnosticCategory::Integrity,
                 "reserved_schema_cross_reference",
                 "user schema facts reference the reserved TypeDB control namespace",
             )
-        },
-    )?;
-    let internal = DeclaredSchema::from_facts(
-        full.format(),
-        CapabilitySet::new(),
-        internal,
-    )
-    .map_err(|_| {
-        failure(
-            DiagnosticCategory::Integrity,
-            "reserved_schema_cross_reference",
-            "reserved TypeDB control facts reference user schema declarations",
-        )
-    })?;
-    let legacy_control = DeclaredSchema::from_facts(
-        full.format(),
-        CapabilitySet::new(),
-        legacy_control,
-    )
-    .map_err(|_| {
-        failure(
-            DiagnosticCategory::Integrity,
-            "reserved_schema_cross_reference",
-            "legacy migration-ledger facts reference user schema declarations",
-        )
-    })?;
+        })?;
+    let internal = DeclaredSchema::from_facts(full.format(), CapabilitySet::new(), internal)
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "reserved_schema_cross_reference",
+                "reserved TypeDB control facts reference user schema declarations",
+            )
+        })?;
+    let legacy_control =
+        DeclaredSchema::from_facts(full.format(), CapabilitySet::new(), legacy_control).map_err(
+            |_| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "reserved_schema_cross_reference",
+                    "legacy migration-ledger facts reference user schema declarations",
+                )
+            },
+        )?;
 
     Ok(PartitionedDeclaredSchema {
         full,
@@ -160,14 +148,13 @@ pub fn observe_managed_state_from_export(
     source_candidate: &ManagedSchemaState,
     target_candidate: &ManagedSchemaState,
 ) -> Result<ManagedSchemaState, Diagnostic> {
-    let parsed =
-        typeql_to_declared_with_references(document, export).map_err(|_| {
-            failure(
-                DiagnosticCategory::InvalidContract,
-                "migration_typedb_export_invalid",
-                "TypeDB schema export cannot be normalized into V2 facts",
-            )
-        })?;
+    let parsed = typeql_to_declared_with_references(document, export).map_err(|_| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_export_invalid",
+            "TypeDB schema export cannot be normalized into V2 facts",
+        )
+    })?;
     reject_reserved_function_references(&parsed)?;
     let partitioned = partition_declared_schema(parsed.into_declared())?;
     verify_fence_mirror_partition(partitioned.internal())?;
@@ -175,8 +162,7 @@ pub fn observe_managed_state_from_export(
 
     let mut matched: Vec<ManagedSchemaState> = Vec::new();
     for candidate in [source_candidate, target_candidate] {
-        let Ok(rebuilt) =
-            rebuild_candidate_state(&partitioned, available_capabilities, candidate)
+        let Ok(rebuilt) = rebuild_candidate_state(&partitioned, available_capabilities, candidate)
         else {
             continue;
         };
@@ -191,10 +177,7 @@ pub fn observe_managed_state_from_export(
             "migration_typedb_observation_no_candidate_match",
             "live managed schema state equals neither supplied candidate",
         )
-        .with_detail(
-            "scope",
-            source_candidate.scope().id().as_str().to_owned(),
-        )),
+        .with_detail("scope", source_candidate.scope().id().as_str().to_owned())),
         _ => Err(failure(
             DiagnosticCategory::Integrity,
             "migration_typedb_observation_ambiguous",
@@ -216,44 +199,35 @@ pub fn rebuild_live_managed_state(
     context_schema: &DeclaredSchema,
     context: &ManagedDeltaContext,
 ) -> Result<ManagedSchemaState, Diagnostic> {
-    let donor = managed_schema_state(context_schema, context).map_err(|error| {
-        match error {
-            DeltaError::Contract(diagnostic) => diagnostic,
-            DeltaError::Schema(diagnostics) => diagnostics
-                .iter()
-                .next()
-                .map(|entry| entry.diagnostic().clone())
-                .unwrap_or_else(|| {
-                    failure(
-                        DiagnosticCategory::Integrity,
-                        "migration_typedb_observation_rebuild_failed",
-                        "verification context schema does not resolve",
-                    )
-                }),
-        }
+    let donor = managed_schema_state(context_schema, context).map_err(|error| match error {
+        DeltaError::Contract(diagnostic) => diagnostic,
+        DeltaError::Schema(diagnostics) => diagnostics
+            .iter()
+            .next()
+            .map(|entry| entry.diagnostic().clone())
+            .unwrap_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_typedb_observation_rebuild_failed",
+                    "verification context schema does not resolve",
+                )
+            }),
     })?;
-    let parsed =
-        typeql_to_declared_with_references(document, export).map_err(|_| {
-            failure(
-                DiagnosticCategory::InvalidContract,
-                "migration_typedb_export_invalid",
-                "TypeDB schema export cannot be normalized into V2 facts",
-            )
-        })?;
+    let parsed = typeql_to_declared_with_references(document, export).map_err(|_| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_export_invalid",
+            "TypeDB schema export cannot be normalized into V2 facts",
+        )
+    })?;
     reject_reserved_function_references(&parsed)?;
     let partitioned = partition_declared_schema(parsed.into_declared())?;
     verify_fence_mirror_partition(partitioned.internal())?;
     verify_legacy_control_partition(partitioned.legacy_control())?;
-    rebuild_candidate_state(
-        &partitioned,
-        context.available_capabilities(),
-        &donor,
-    )
+    rebuild_candidate_state(&partitioned, context.available_capabilities(), &donor)
 }
 
-fn reject_reserved_function_references(
-    parsed: &TypeqlDeclaredSchema,
-) -> Result<(), Diagnostic> {
+fn reject_reserved_function_references(parsed: &TypeqlDeclaredSchema) -> Result<(), Diagnostic> {
     for (function, references) in parsed.function_body_references() {
         if references.has_dynamic_type_reference() {
             return Err(failure(
@@ -265,10 +239,8 @@ fn reject_reserved_function_references(
             .with_detail("function", function.label().as_str().to_owned()));
         }
         for reference in references.references() {
-            let control_label = |label: &str| {
-                is_typebridge_internal_label(label)
-                    || is_legacy_ledger_label(label)
-            };
+            let control_label =
+                |label: &str| is_typebridge_internal_label(label) || is_legacy_ledger_label(label);
             let reserved = match reference {
                 SchemaReference::Label(label) => control_label(label.as_str()),
                 SchemaReference::Scoped { scope, name } => {
@@ -290,19 +262,16 @@ fn reject_reserved_function_references(
 }
 
 fn verify_fence_mirror_partition(internal: &DeclaredSchema) -> Result<(), Diagnostic> {
-    let expected_document =
-        DocumentId::new("typebridge-managed-fence-schema.typeql")?;
-    let expected = typeql_to_declared(expected_document, MANAGED_FENCE_SCHEMA_TYPEQL)
-        .map_err(|_| {
+    let expected_document = DocumentId::new("typebridge-managed-fence-schema.typeql")?;
+    let expected =
+        typeql_to_declared(expected_document, MANAGED_FENCE_SCHEMA_TYPEQL).map_err(|_| {
             failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_typedb_frozen_schema_invalid",
                 "frozen TypeDB fence-mirror schema cannot be normalized",
             )
         })?;
-    if internal.declared_identity_fingerprint()
-        != expected.declared_identity_fingerprint()
-    {
+    if internal.declared_identity_fingerprint() != expected.declared_identity_fingerprint() {
         return Err(failure(
             DiagnosticCategory::Integrity,
             "migration_typedb_control_schema_mismatch",
@@ -319,28 +288,20 @@ fn verify_fence_mirror_partition(internal: &DeclaredSchema) -> Result<(), Diagno
 /// partial install, or a user schema that happens to reuse a frozen legacy
 /// label — is indistinguishable from corruption and fails closed instead of
 /// silently reclassifying user content as control state.
-fn verify_legacy_control_partition(
-    legacy_control: &DeclaredSchema,
-) -> Result<(), Diagnostic> {
+fn verify_legacy_control_partition(legacy_control: &DeclaredSchema) -> Result<(), Diagnostic> {
     if legacy_control.facts().next().is_none() {
         return Ok(());
     }
-    let expected_document =
-        DocumentId::new("typebridge-legacy-ledger-schema.typeql")?;
-    let expected = typeql_to_declared(
-        expected_document,
-        LEGACY_LEDGER_SCHEMA_TYPEQL,
-    )
-    .map_err(|_| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_typedb_frozen_schema_invalid",
-            "frozen legacy migration-ledger schema cannot be normalized",
-        )
-    })?;
-    if legacy_control.declared_identity_fingerprint()
-        != expected.declared_identity_fingerprint()
-    {
+    let expected_document = DocumentId::new("typebridge-legacy-ledger-schema.typeql")?;
+    let expected =
+        typeql_to_declared(expected_document, LEGACY_LEDGER_SCHEMA_TYPEQL).map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_typedb_frozen_schema_invalid",
+                "frozen legacy migration-ledger schema cannot be normalized",
+            )
+        })?;
+    if legacy_control.declared_identity_fingerprint() != expected.declared_identity_fingerprint() {
         return Err(failure(
             DiagnosticCategory::Integrity,
             "migration_typedb_legacy_ledger_mismatch",
@@ -428,18 +389,12 @@ fn value_mentions_legacy_control_label(value: &Value) -> bool {
     match value {
         Value::String(value) => is_legacy_ledger_label(value.as_str()),
         Value::Array(values) => values.iter().any(value_mentions_legacy_control_label),
-        Value::Object(values) => {
-            values.values().any(value_mentions_legacy_control_label)
-        }
+        Value::Object(values) => values.values().any(value_mentions_legacy_control_label),
         Value::Null | Value::Bool(_) | Value::Number(_) => false,
     }
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static diagnostic code is valid"),
@@ -564,9 +519,7 @@ mod tests {
 
     #[test]
     fn partial_legacy_ledger_facts_fail_closed() {
-        let export = export_with_user(
-            "attribute migration_id, value string;\nentity person;\n",
-        );
+        let export = export_with_user("attribute migration_id, value string;\nentity person;\n");
         let candidate = candidate_state("define\nentity person;\n");
         let error = observe_managed_state_from_export(
             observation_document(),

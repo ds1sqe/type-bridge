@@ -8,21 +8,17 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    InputColumn, InputColumnId, OrderDirection, OrderTerm, QueryOperand,
-    QueryOutput, QueryPattern, QueryPlan, ReadStage,
+    InputColumn, InputColumnId, OrderDirection, OrderTerm, QueryOperand, QueryOutput, QueryPattern,
+    QueryPlan, ReadStage,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
+    TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
-use type_bridge_query::{
-    MigrationAssertionValidationContext, validate_query_plan,
-};
-use type_bridge_schema::{
-    ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve,
-};
+use type_bridge_query::{MigrationAssertionValidationContext, validate_query_plan};
+use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
 
 fn type_id(kind: TypeKind, label: &str) -> TypeId {
     TypeId::new(kind, label).expect("fixture type")
@@ -57,9 +53,7 @@ fn schema_fixture() -> SchemaFixture {
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -85,9 +79,8 @@ fn schema_fixture() -> SchemaFixture {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-plan-scope").expect("scope"),
@@ -104,10 +97,7 @@ fn person_name_plan(
     fixture: &SchemaFixture,
     pipeline_tail: Vec<ReadStage>,
     output: QueryOutput,
-) -> Result<
-    type_bridge_query::ValidatedQuery,
-    type_bridge_contract::diagnostic::Diagnostic,
-> {
+) -> Result<type_bridge_query::ValidatedQuery, type_bridge_contract::diagnostic::Diagnostic> {
     let mut pipeline = vec![ReadStage::Match {
         patterns: vec![
             QueryPattern::Isa {
@@ -122,8 +112,12 @@ fn person_name_plan(
             },
             QueryPattern::Value {
                 comparator: ValueComparator::Equal,
-                left: QueryOperand::Binding { binding: binding_id(1) },
-                right: QueryOperand::Input { column: InputColumnId::new(0) },
+                left: QueryOperand::Binding {
+                    binding: binding_id(1),
+                },
+                right: QueryOperand::Input {
+                    column: InputColumnId::new(0),
+                },
             },
         ],
     }];
@@ -140,8 +134,7 @@ fn person_name_plan(
         output,
         fixture.managed.managed_semantic_schema().clone(),
     )?;
-    let context =
-        MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     validate_query_plan(&plan, &context, StructuralLimits::CANONICAL)
 }
 
@@ -151,7 +144,9 @@ fn a_full_pipeline_validates_to_typed_output_columns() {
     let validated = person_name_plan(
         &fixture,
         vec![
-            ReadStage::Select { bindings: vec![binding_id(0), binding_id(1)] },
+            ReadStage::Select {
+                bindings: vec![binding_id(0), binding_id(1)],
+            },
             ReadStage::Distinct,
             ReadStage::Sort {
                 terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
@@ -159,11 +154,17 @@ fn a_full_pipeline_validates_to_typed_output_columns() {
             ReadStage::Offset { rows: 0 },
             ReadStage::Limit { rows: 10 },
         ],
-        QueryOutput::Rows { columns: vec![binding_id(0), binding_id(1)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
     )
     .expect("validated query");
 
-    let columns = validated.output_schema().rows().expect("row plan").columns();
+    let columns = validated
+        .output_schema()
+        .rows()
+        .expect("row plan")
+        .columns();
     assert_eq!(columns.len(), 2);
     assert_eq!(columns[0].variable().as_str(), "person");
     assert_eq!(columns[1].variable().as_str(), "name");
@@ -188,7 +189,9 @@ fn sort_keys_require_a_uniform_scalar_domain() {
         vec![ReadStage::Sort {
             terms: vec![OrderTerm::new(binding_id(0), OrderDirection::Ascending)],
         }],
-        QueryOutput::Rows { columns: vec![binding_id(0)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
     )
     .expect_err("entity bindings carry no scalar order");
     assert_eq!(error.code().as_str(), "query_plan_sort_not_scalar");
@@ -219,17 +222,22 @@ fn input_operands_type_check_against_their_declarations() {
                 },
                 QueryPattern::Value {
                     comparator: ValueComparator::Equal,
-                    left: QueryOperand::Binding { binding: binding_id(1) },
-                    right: QueryOperand::Input { column: InputColumnId::new(0) },
+                    left: QueryOperand::Binding {
+                        binding: binding_id(1),
+                    },
+                    right: QueryOperand::Input {
+                        column: InputColumnId::new(0),
+                    },
                 },
             ],
         }],
-        QueryOutput::Rows { columns: vec![binding_id(0)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
         fixture.managed.managed_semantic_schema().clone(),
     )
     .expect("structurally valid plan");
-    let context =
-        MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let error = validate_query_plan(&plan, &context, StructuralLimits::CANONICAL)
         .expect_err("a long input cannot compare with a string attribute");
     assert_eq!(error.code().as_str(), "query_plan_value_domain_mismatch");
@@ -248,7 +256,9 @@ fn stale_semantics_and_unknown_types_fail_closed() {
                 type_id: type_id(TypeKind::Entity, "person"),
             }],
         }],
-        QueryOutput::Rows { columns: vec![binding_id(0)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
         type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint::compute(
             SemanticProfileId::new("typedb-3.12.1/v1").expect("profile"),
             b"foreign-semantics",
@@ -256,11 +266,13 @@ fn stale_semantics_and_unknown_types_fail_closed() {
         .expect("foreign fingerprint"),
     )
     .expect("foreign plan");
-    let context =
-        MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let stale = validate_query_plan(&foreign, &context, StructuralLimits::CANONICAL)
         .expect_err("semantic fingerprints must match the validation state");
-    assert_eq!(stale.code().as_str(), "query_plan_managed_semantic_mismatch");
+    assert_eq!(
+        stale.code().as_str(),
+        "query_plan_managed_semantic_mismatch"
+    );
 
     let unknown = QueryPlan::new(
         vec![binding(0, "ghost")],
@@ -272,7 +284,9 @@ fn stale_semantics_and_unknown_types_fail_closed() {
                 type_id: type_id(TypeKind::Entity, "ghost"),
             }],
         }],
-        QueryOutput::Rows { columns: vec![binding_id(0)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
         fixture.managed.managed_semantic_schema().clone(),
     )
     .expect("structurally valid unknown-type plan");
@@ -285,8 +299,8 @@ fn stale_semantics_and_unknown_types_fail_closed() {
 fn scalar_function_calls_validate_and_type_their_value_bindings() {
     use type_bridge_contract::id::{FunctionId, Label};
     use type_bridge_contract::schema::{
-        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
-        FunctionReturnMode, FunctionSignature, TypeReference,
+        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement, FunctionReturnMode,
+        FunctionSignature, TypeReference,
     };
 
     // Extend the fixture with a scalar long-returning schema function.
@@ -305,16 +319,12 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
             )),
         )
         .expect("function signature"),
-        FunctionBody::new(
-            "match $subject has name $n; let $l = length($n); return first $l;",
-        )
-        .expect("function body"),
+        FunctionBody::new("match $subject has name $n; let $l = length($n); return first $l;")
+            .expect("function body"),
     );
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -341,12 +351,8 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
             .expect("span"),
         )
     });
-    let declared = DeclaredSchema::from_facts(
-        FormatVersion::V1,
-        CapabilitySet::new(),
-        sourced,
-    )
-    .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-plan-scope").expect("scope"),
@@ -354,25 +360,23 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
         CapabilitySet::new(),
     );
     let managed =
-        type_bridge_schema::managed_schema_state(&declared, &context)
-            .expect("managed state");
-    let resolved =
-        type_bridge_schema::resolve(&declared, &profile).expect("resolved schema");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+        type_bridge_schema::managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = type_bridge_schema::resolve(&declared, &profile).expect("resolved schema");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     let call = |function: &str, arguments, assigned| QueryPattern::FunctionCall {
         arguments,
         assigned: binding_id(assigned),
-        function: type_bridge_contract::id::FunctionId::new(function)
-            .expect("function id"),
+        function: type_bridge_contract::id::FunctionId::new(function).expect("function id"),
     };
     let plan = |patterns| {
         QueryPlan::new(
             vec![binding(0, "person"), binding(1, "name_length")],
             Vec::new(),
             vec![ReadStage::Match { patterns }],
-            QueryOutput::Rows { columns: vec![binding_id(0), binding_id(1)] },
+            QueryOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
             managed.managed_semantic_schema().clone(),
         )
         .expect("structurally valid plan")
@@ -383,7 +387,9 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
             person_isa(0),
             call(
                 "person_name_length",
-                vec![QueryOperand::Binding { binding: binding_id(0) }],
+                vec![QueryOperand::Binding {
+                    binding: binding_id(0),
+                }],
                 1,
             ),
         ]),
@@ -391,8 +397,11 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
         StructuralLimits::CANONICAL,
     )
     .expect("scalar function call validates");
-    let value_column =
-        &validated.output_schema().rows().expect("row plan").columns()[1];
+    let value_column = &validated
+        .output_schema()
+        .rows()
+        .expect("row plan")
+        .columns()[1];
     assert!(value_column.domain().type_ids().is_empty());
     assert_eq!(value_column.domain().value_type(), Some(ValueTypeTag::Long));
 
@@ -401,7 +410,9 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
             person_isa(0),
             call(
                 "missing_function",
-                vec![QueryOperand::Binding { binding: binding_id(0) }],
+                vec![QueryOperand::Binding {
+                    binding: binding_id(0),
+                }],
                 1,
             ),
         ]),
@@ -427,7 +438,9 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
             person_isa(0),
             call(
                 "person_name_length",
-                vec![QueryOperand::Literal { value: CanonicalValue::Long(1) }],
+                vec![QueryOperand::Literal {
+                    value: CanonicalValue::Long(1),
+                }],
                 1,
             ),
         ]),
@@ -435,7 +448,10 @@ fn scalar_function_calls_validate_and_type_their_value_bindings() {
         StructuralLimits::CANONICAL,
     )
     .expect_err("schema-typed parameters require thing bindings");
-    assert_eq!(argument.code().as_str(), "query_plan_function_argument_type");
+    assert_eq!(
+        argument.code().as_str(),
+        "query_plan_function_argument_type"
+    );
 }
 
 #[test]
@@ -447,12 +463,8 @@ fn reduce_stages_type_grouped_and_global_results() {
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact"),
-        ),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(age.clone()),
             ValueTypeTag::Long,
@@ -485,9 +497,8 @@ fn reduce_stages_type_grouped_and_global_results() {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-plan-reduce-scope").expect("scope"),
@@ -496,8 +507,7 @@ fn reduce_stages_type_grouped_and_global_results() {
     );
     let managed = managed_schema_state(&declared, &context).expect("managed state");
     let resolved = resolve(&declared, &profile).expect("resolved schema");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     let grouped = |input: &AttributeId,
                    bindings: Vec<AssertionBinding>,
@@ -522,10 +532,7 @@ fn reduce_stages_type_grouped_and_global_results() {
                     groups: vec![binding_id(0)],
                 },
                 ReadStage::Sort {
-                    terms: vec![OrderTerm::new(
-                        binding_id(2),
-                        OrderDirection::Ascending,
-                    )],
+                    terms: vec![OrderTerm::new(binding_id(2), OrderDirection::Ascending)],
                 },
             ],
             QueryOutput::Rows { columns },
@@ -551,7 +558,11 @@ fn reduce_stages_type_grouped_and_global_results() {
         vec![binding_id(0), binding_id(2), binding_id(3)],
     )
     .expect("grouped numeric reduce");
-    let columns = validated.output_schema().rows().expect("row plan").columns();
+    let columns = validated
+        .output_schema()
+        .rows()
+        .expect("row plan")
+        .columns();
     assert!(!columns[0].domain().type_ids().is_empty());
     assert!(columns[1].domain().type_ids().is_empty());
     assert_eq!(columns[1].domain().value_type(), Some(ValueTypeTag::Long));
@@ -575,7 +586,11 @@ fn reduce_stages_type_grouped_and_global_results() {
     )
     .expect("grouped count over strings");
     assert_eq!(
-        validated.output_schema().rows().expect("row plan").columns()[1]
+        validated
+            .output_schema()
+            .rows()
+            .expect("row plan")
+            .columns()[1]
             .domain()
             .value_type(),
         Some(ValueTypeTag::Long),
@@ -625,12 +640,8 @@ fn try_blocks_type_optional_columns_and_fail_closed() {
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact"),
-        ),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(age.clone()),
             ValueTypeTag::Long,
@@ -663,9 +674,8 @@ fn try_blocks_type_optional_columns_and_fail_closed() {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-plan-try-scope").expect("scope"),
@@ -674,8 +684,7 @@ fn try_blocks_type_optional_columns_and_fail_closed() {
     );
     let managed = managed_schema_state(&declared, &context).expect("managed state");
     let resolved = resolve(&declared, &profile).expect("resolved schema");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     let has_age = QueryPattern::Has {
         attribute: binding_id(1),
@@ -687,10 +696,7 @@ fn try_blocks_type_optional_columns_and_fail_closed() {
             vec![binding(0, "person"), binding(1, "age")],
             Vec::new(),
             vec![ReadStage::Match {
-                patterns: vec![
-                    person_isa(0),
-                    QueryPattern::Try { patterns: try_body },
-                ],
+                patterns: vec![person_isa(0), QueryPattern::Try { patterns: try_body }],
             }],
             QueryOutput::Rows {
                 columns: vec![binding_id(0), binding_id(1)],
@@ -703,7 +709,11 @@ fn try_blocks_type_optional_columns_and_fail_closed() {
 
     // The optional column is typed from its refined body domain.
     let validated = build(vec![has_age.clone()]).expect("optional projection");
-    let columns = validated.output_schema().rows().expect("row plan").columns();
+    let columns = validated
+        .output_schema()
+        .rows()
+        .expect("row plan")
+        .columns();
     assert!(!columns[0].optional());
     assert!(columns[1].optional());
     assert_eq!(columns[1].domain().value_type(), Some(ValueTypeTag::Long));
@@ -733,8 +743,12 @@ fn try_blocks_type_optional_columns_and_fail_closed() {
     // Every body reference is established in the body or the root.
     let error = build(vec![QueryPattern::Value {
         comparator: ValueComparator::Equal,
-        left: QueryOperand::Binding { binding: binding_id(1) },
-        right: QueryOperand::Literal { value: CanonicalValue::Long(1) },
+        left: QueryOperand::Binding {
+            binding: binding_id(1),
+        },
+        right: QueryOperand::Literal {
+            value: CanonicalValue::Long(1),
+        },
     }])
     .expect_err("unbound try reference");
     assert_eq!(error.code().as_str(), "query_plan_try_unbound_binding");
@@ -767,10 +781,7 @@ fn document_outputs_derive_typed_field_schemas() {
         .expect("document plan");
         validate_query_plan(
             &plan,
-            &MigrationAssertionValidationContext::new(
-                &fixture.resolved,
-                &fixture.managed,
-            ),
+            &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
             StructuralLimits::CANONICAL,
         )
     };
@@ -779,7 +790,9 @@ fn document_outputs_derive_typed_field_schemas() {
     let validated = build(vec![
         DocumentField::new(
             key("name"),
-            DocumentSource::Binding { binding: binding_id(1) },
+            DocumentSource::Binding {
+                binding: binding_id(1),
+            },
         ),
         DocumentField::new(
             key("names"),
@@ -805,16 +818,24 @@ fn document_outputs_derive_typed_field_schemas() {
     );
     assert!(matches!(
         schema[1].shape(),
-        DocumentColumnShape::List { element_type: ValueTypeTag::String, .. },
+        DocumentColumnShape::List {
+            element_type: ValueTypeTag::String,
+            ..
+        },
     ));
 
     // A thing binding has no scalar to fetch.
     let error = build(vec![DocumentField::new(
         key("person"),
-        DocumentSource::Binding { binding: binding_id(0) },
+        DocumentSource::Binding {
+            binding: binding_id(0),
+        },
     )])
     .expect_err("entity binding as a scalar field");
-    assert_eq!(error.code().as_str(), "query_plan_document_field_not_scalar");
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_document_field_not_scalar"
+    );
 
     // A list of an attribute no owner-domain type owns is unreachable.
     let error = build(vec![DocumentField::new(
@@ -831,9 +852,7 @@ fn document_outputs_derive_typed_field_schemas() {
 #[test]
 fn local_functions_type_their_calls_and_fail_closed() {
     use type_bridge_contract::id::{FunctionId, Label};
-    use type_bridge_contract::query_plan::{
-        LocalFunction, LocalReturn, Reducer,
-    };
+    use type_bridge_contract::query_plan::{LocalFunction, LocalReturn, Reducer};
 
     let fixture = schema_fixture();
     let name_count = |body_owner_label: &str| {
@@ -862,8 +881,7 @@ fn local_functions_type_their_calls_and_fail_closed() {
                             binding: binding_id(0),
                         }],
                         assigned: binding_id(1),
-                        function: FunctionId::new("name_count_of")
-                            .expect("function id"),
+                        function: FunctionId::new("name_count_of").expect("function id"),
                     },
                 ],
             }],
@@ -875,17 +893,18 @@ fn local_functions_type_their_calls_and_fail_closed() {
         .expect("local function plan");
         validate_query_plan(
             &plan,
-            &MigrationAssertionValidationContext::new(
-                &fixture.resolved,
-                &fixture.managed,
-            ),
+            &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
             StructuralLimits::CANONICAL,
         )
     };
 
     // The call assigns a typed value binding from the local signature.
     let validated = build(vec![name_count("person")]).expect("validated local call");
-    let columns = validated.output_schema().rows().expect("row plan").columns();
+    let columns = validated
+        .output_schema()
+        .rows()
+        .expect("row plan")
+        .columns();
     assert!(columns[1].domain().type_ids().is_empty());
     assert_eq!(columns[1].domain().value_type(), Some(ValueTypeTag::Long));
 
@@ -944,9 +963,7 @@ fn local_functions_type_their_calls_and_fail_closed() {
 #[test]
 fn bounded_reachability_narrows_endpoints_to_role_players() {
     use type_bridge_contract::id::RoleId;
-    use type_bridge_contract::schema::{
-        PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
-    };
+    use type_bridge_contract::schema::{PlaysFact, PlaysFactId, RelatesFact, RelatesFactId};
 
     let node = type_id(TypeKind::Entity, "node");
     let island = type_id(TypeKind::Entity, "island");
@@ -995,9 +1012,8 @@ fn bounded_reachability_narrows_endpoints_to_role_players() {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-plan-reachable-scope").expect("scope"),
@@ -1006,8 +1022,7 @@ fn bounded_reachability_narrows_endpoints_to_role_players() {
     );
     let managed = managed_schema_state(&declared, &context).expect("managed state");
     let resolved = resolve(&declared, &profile).expect("resolved schema");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     let build = |role_to: RoleId| {
         let plan = QueryPlan::new(
@@ -1034,7 +1049,11 @@ fn bounded_reachability_narrows_endpoints_to_role_players() {
 
     // Both endpoints narrow to the node type; the island never plays.
     let validated = build(to.clone()).expect("validated reachability");
-    let columns = validated.output_schema().rows().expect("row plan").columns();
+    let columns = validated
+        .output_schema()
+        .rows()
+        .expect("row plan")
+        .columns();
     assert_eq!(
         columns[0].domain().type_ids().iter().collect::<Vec<_>>(),
         vec![&node],
@@ -1045,7 +1064,6 @@ fn bounded_reachability_narrows_endpoints_to_role_players() {
     );
 
     // A role outside the relation fails closed.
-    let error = build(RoleId::new("edge", "witness").expect("role"))
-        .expect_err("unknown role");
+    let error = build(RoleId::new("edge", "witness").expect("role")).expect_err("unknown role");
     assert_eq!(error.code().as_str(), "query_plan_unknown_role");
 }

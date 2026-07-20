@@ -100,12 +100,16 @@ pub fn adopt_observed_schema(
                 "the canonical managed selection references an absent direct fact",
             )
         })?;
-        let source = observed.direct_schema().source(id).cloned().ok_or_else(|| {
-            adoption_failure(
-                "adoption_scope_source_mismatch",
-                "the canonical managed selection references a fact without provenance",
-            )
-        })?;
+        let source = observed
+            .direct_schema()
+            .source(id)
+            .cloned()
+            .ok_or_else(|| {
+                adoption_failure(
+                    "adoption_scope_source_mismatch",
+                    "the canonical managed selection references a fact without provenance",
+                )
+            })?;
         sourced.push(SourcedSchemaFact::new(fact.clone(), source));
     }
 
@@ -122,10 +126,8 @@ pub fn adopt_observed_schema(
         ));
     }
 
-    let bound_scope =
-        ManagedSchemaScope::bind_exclusive(scope_id.clone(), &declared_schema)?;
-    if bound_scope.binding().id() != &scope_id
-        || bound_scope.selection().iter().ne(selected.iter())
+    let bound_scope = ManagedSchemaScope::bind_exclusive(scope_id.clone(), &declared_schema)?;
+    if bound_scope.binding().id() != &scope_id || bound_scope.selection().iter().ne(selected.iter())
     {
         return Err(adoption_failure(
             "adoption_exclusive_scope_mismatch",
@@ -138,15 +140,12 @@ pub fn adopt_observed_schema(
         semantic_profile,
         available_capabilities,
     )?;
-    let selection = ManagedFactSelection::new(bound_scope.selection().iter().cloned())
-        .map_err(no_source)?;
+    let selection =
+        ManagedFactSelection::new(bound_scope.selection().iter().cloned()).map_err(no_source)?;
     let declared_fingerprint =
         managed_declared_identity_fingerprint(&declared_schema, &bound_scope)?;
-    let semantic_fingerprint = managed_semantic_schema_fingerprint(
-        &declared_schema,
-        semantic_profile,
-        &bound_scope,
-    )?;
+    let semantic_fingerprint =
+        managed_semantic_schema_fingerprint(&declared_schema, semantic_profile, &bound_scope)?;
     let managed_state = ManagedSchemaState::new(
         declared_schema.format(),
         declared_schema.required_capabilities().clone(),

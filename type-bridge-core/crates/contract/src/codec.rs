@@ -1,7 +1,7 @@
 //! Bounded canonical JSON encoding and fail-closed decoding.
 
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
@@ -16,9 +16,13 @@ impl FormatVersion {
     /// Initial version value for owning formats.
     pub const V1: Self = Self(1);
     /// Preserve an unvalidated raw version.
-    pub const fn from_raw(value: u16) -> Self { Self(value) }
+    pub const fn from_raw(value: u16) -> Self {
+        Self(value)
+    }
     /// Return the raw number.
-    pub const fn get(self) -> u16 { self.0 }
+    pub const fn get(self) -> u16 {
+        self.0
+    }
 }
 
 /// Version of the canonical JSON codec itself.
@@ -30,24 +34,48 @@ impl CodecVersion {
     /// The Phase 1 canonical JSON codec.
     pub const V1: Self = Self(1);
     /// Preserve an unvalidated raw version.
-    pub const fn from_raw(value: u16) -> Self { Self(value) }
+    pub const fn from_raw(value: u16) -> Self {
+        Self(value)
+    }
     /// Return the raw number.
-    pub const fn get(self) -> u16 { self.0 }
+    pub const fn get(self) -> u16 {
+        self.0
+    }
 }
 
 /// Require an exact owning-format version before payload construction.
-pub fn ensure_format_version(actual: FormatVersion, supported: FormatVersion) -> Result<(), Diagnostic> {
-    if actual == supported { Ok(()) } else {
-        Err(Diagnostic::stable(DiagnosticCategory::InvalidContract, "unsupported_format_version", "contract format version is not supported")
-            .with_detail("actual", i64::from(actual.get())).with_detail("supported", i64::from(supported.get())))
+pub fn ensure_format_version(
+    actual: FormatVersion,
+    supported: FormatVersion,
+) -> Result<(), Diagnostic> {
+    if actual == supported {
+        Ok(())
+    } else {
+        Err(Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "unsupported_format_version",
+            "contract format version is not supported",
+        )
+        .with_detail("actual", i64::from(actual.get()))
+        .with_detail("supported", i64::from(supported.get())))
     }
 }
 
 /// Require an exact codec version before payload construction.
-pub fn ensure_codec_version(actual: CodecVersion, supported: CodecVersion) -> Result<(), Diagnostic> {
-    if actual == supported { Ok(()) } else {
-        Err(Diagnostic::stable(DiagnosticCategory::InvalidContract, "unsupported_codec_version", "canonical codec version is not supported")
-            .with_detail("actual", i64::from(actual.get())).with_detail("supported", i64::from(supported.get())))
+pub fn ensure_codec_version(
+    actual: CodecVersion,
+    supported: CodecVersion,
+) -> Result<(), Diagnostic> {
+    if actual == supported {
+        Ok(())
+    } else {
+        Err(Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "unsupported_codec_version",
+            "canonical codec version is not supported",
+        )
+        .with_detail("actual", i64::from(actual.get()))
+        .with_detail("supported", i64::from(supported.get())))
     }
 }
 
@@ -57,49 +85,103 @@ pub fn to_canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, Diagnostic>
 }
 
 /// Encode one value under explicit structural limits.
-pub fn to_canonical_json_with_limits<T: Serialize>(value: &T, limits: CodecLimits) -> Result<Vec<u8>, Diagnostic> {
-    let value = serde_json::to_value(value).map_err(|_| Diagnostic::stable(DiagnosticCategory::InvalidContract, "canonical_json_encode_failed", "value cannot be represented as canonical JSON"))?;
+pub fn to_canonical_json_with_limits<T: Serialize>(
+    value: &T,
+    limits: CodecLimits,
+) -> Result<Vec<u8>, Diagnostic> {
+    let value = serde_json::to_value(value).map_err(|_| {
+        Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "canonical_json_encode_failed",
+            "value cannot be represented as canonical JSON",
+        )
+    })?;
     inspect(&value, 1, limits)?;
-    let bytes = serde_json::to_vec(&value).map_err(|_| Diagnostic::stable(DiagnosticCategory::InvalidContract, "canonical_json_encode_failed", "value cannot be encoded as canonical JSON"))?;
+    let bytes = serde_json::to_vec(&value).map_err(|_| {
+        Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "canonical_json_encode_failed",
+            "value cannot be encoded as canonical JSON",
+        )
+    })?;
     ensure_bytes(bytes.len(), limits)?;
     Ok(bytes)
 }
 
 /// Decode only exact canonical bytes, checking limits before constructing `T`.
 pub fn from_canonical_json<T>(bytes: &[u8]) -> Result<T, Diagnostic>
-where T: DeserializeOwned + Serialize {
+where
+    T: DeserializeOwned + Serialize,
+{
     from_canonical_json_with_limits(bytes, CANONICAL_CODEC_LIMITS)
 }
 
 /// Decode exact canonical bytes under explicit structural limits.
-pub fn from_canonical_json_with_limits<T>(bytes: &[u8], limits: CodecLimits) -> Result<T, Diagnostic>
-where T: DeserializeOwned + Serialize {
+pub fn from_canonical_json_with_limits<T>(
+    bytes: &[u8],
+    limits: CodecLimits,
+) -> Result<T, Diagnostic>
+where
+    T: DeserializeOwned + Serialize,
+{
     ensure_bytes(bytes.len(), limits)?;
-    let value: Value = serde_json::from_slice(bytes).map_err(|_| Diagnostic::stable(DiagnosticCategory::InvalidContract, "malformed_canonical_json", "input is not valid canonical JSON"))?;
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| {
+        Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "malformed_canonical_json",
+            "input is not valid canonical JSON",
+        )
+    })?;
     inspect(&value, 1, limits)?;
-    let canonical = serde_json::to_vec(&value).map_err(|_| Diagnostic::stable(DiagnosticCategory::InvalidContract, "canonical_json_encode_failed", "decoded JSON cannot be re-encoded"))?;
+    let canonical = serde_json::to_vec(&value).map_err(|_| {
+        Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "canonical_json_encode_failed",
+            "decoded JSON cannot be re-encoded",
+        )
+    })?;
     if canonical != bytes {
-        return Err(Diagnostic::stable(DiagnosticCategory::InvalidContract, "non_canonical_json", "input is valid JSON but not the canonical encoding")
-            .with_detail("actual_bytes", count(bytes.len())).with_detail("canonical_bytes", count(canonical.len())));
+        return Err(Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "non_canonical_json",
+            "input is valid JSON but not the canonical encoding",
+        )
+        .with_detail("actual_bytes", count(bytes.len()))
+        .with_detail("canonical_bytes", count(canonical.len())));
     }
-    serde_json::from_value(value).map_err(|_| Diagnostic::stable(DiagnosticCategory::InvalidContract, "invalid_canonical_value", "canonical JSON does not satisfy the requested contract type"))
+    serde_json::from_value(value).map_err(|_| {
+        Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "invalid_canonical_value",
+            "canonical JSON does not satisfy the requested contract type",
+        )
+    })
 }
 
 fn inspect(value: &Value, depth: usize, limits: CodecLimits) -> Result<(), Diagnostic> {
     if depth > limits.max_depth {
-        return Err(Diagnostic::stable(DiagnosticCategory::ResourceLimit, "canonical_json_too_deep", "canonical JSON exceeds the nesting-depth ceiling")
-            .with_detail("maximum_depth", count(limits.max_depth)));
+        return Err(Diagnostic::stable(
+            DiagnosticCategory::ResourceLimit,
+            "canonical_json_too_deep",
+            "canonical JSON exceeds the nesting-depth ceiling",
+        )
+        .with_detail("maximum_depth", count(limits.max_depth)));
     }
     match value {
         Value::String(value) => ensure_string(value.len(), limits),
         Value::Array(values) => {
             ensure_collection(values.len(), limits)?;
-            for value in values { inspect(value, depth + 1, limits)?; }
+            for value in values {
+                inspect(value, depth + 1, limits)?;
+            }
             Ok(())
         }
         Value::Object(values) => {
             ensure_collection(values.len(), limits)?;
-            for (key, value) in values { ensure_string(key.len(), limits)?; inspect(value, depth + 1, limits)?; }
+            for (key, value) in values {
+                ensure_string(key.len(), limits)?;
+                inspect(value, depth + 1, limits)?;
+            }
             Ok(())
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => Ok(()),
@@ -107,24 +189,47 @@ fn inspect(value: &Value, depth: usize, limits: CodecLimits) -> Result<(), Diagn
 }
 
 fn ensure_bytes(actual: usize, limits: CodecLimits) -> Result<(), Diagnostic> {
-    if actual <= limits.max_bytes { Ok(()) } else {
-        Err(Diagnostic::stable(DiagnosticCategory::ResourceLimit, "canonical_json_too_large", "canonical JSON exceeds the byte ceiling")
-            .with_detail("actual_bytes", count(actual)).with_detail("maximum_bytes", count(limits.max_bytes)))
+    if actual <= limits.max_bytes {
+        Ok(())
+    } else {
+        Err(Diagnostic::stable(
+            DiagnosticCategory::ResourceLimit,
+            "canonical_json_too_large",
+            "canonical JSON exceeds the byte ceiling",
+        )
+        .with_detail("actual_bytes", count(actual))
+        .with_detail("maximum_bytes", count(limits.max_bytes)))
     }
 }
 fn ensure_collection(actual: usize, limits: CodecLimits) -> Result<(), Diagnostic> {
-    if actual <= limits.max_collection_len { Ok(()) } else {
-        Err(Diagnostic::stable(DiagnosticCategory::ResourceLimit, "canonical_collection_too_large", "canonical JSON collection exceeds its member ceiling")
-            .with_detail("actual_items", count(actual)).with_detail("maximum_items", count(limits.max_collection_len)))
+    if actual <= limits.max_collection_len {
+        Ok(())
+    } else {
+        Err(Diagnostic::stable(
+            DiagnosticCategory::ResourceLimit,
+            "canonical_collection_too_large",
+            "canonical JSON collection exceeds its member ceiling",
+        )
+        .with_detail("actual_items", count(actual))
+        .with_detail("maximum_items", count(limits.max_collection_len)))
     }
 }
 fn ensure_string(actual: usize, limits: CodecLimits) -> Result<(), Diagnostic> {
-    if actual <= limits.max_string_bytes { Ok(()) } else {
-        Err(Diagnostic::stable(DiagnosticCategory::ResourceLimit, "canonical_string_too_large", "canonical JSON string exceeds its byte ceiling")
-            .with_detail("actual_bytes", count(actual)).with_detail("maximum_bytes", count(limits.max_string_bytes)))
+    if actual <= limits.max_string_bytes {
+        Ok(())
+    } else {
+        Err(Diagnostic::stable(
+            DiagnosticCategory::ResourceLimit,
+            "canonical_string_too_large",
+            "canonical JSON string exceeds its byte ceiling",
+        )
+        .with_detail("actual_bytes", count(actual))
+        .with_detail("maximum_bytes", count(limits.max_string_bytes)))
     }
 }
-fn count(value: usize) -> i64 { i64::try_from(value).unwrap_or(i64::MAX) }
+fn count(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
 
 #[cfg(test)]
 mod tests {
@@ -134,9 +239,21 @@ mod tests {
 
     #[test]
     fn canonical_decoder_distinguishes_malformed_and_noncanonical_input() {
-        assert_eq!(from_canonical_json::<CanonicalValue>(b"{").unwrap_err().code().as_str(), "malformed_canonical_json");
+        assert_eq!(
+            from_canonical_json::<CanonicalValue>(b"{")
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "malformed_canonical_json"
+        );
         let spaced = br#"{ "kind":"long","value":"1"}"#;
-        assert_eq!(from_canonical_json::<CanonicalValue>(spaced).unwrap_err().code().as_str(), "non_canonical_json");
+        assert_eq!(
+            from_canonical_json::<CanonicalValue>(spaced)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "non_canonical_json"
+        );
     }
 
     #[test]
@@ -147,7 +264,13 @@ mod tests {
         limits.max_bytes = bytes.len();
         assert!(from_canonical_json_with_limits::<CanonicalValue>(&bytes, limits).is_ok());
         limits.max_bytes -= 1;
-        assert_eq!(from_canonical_json_with_limits::<CanonicalValue>(&bytes, limits).unwrap_err().code().as_str(), "canonical_json_too_large");
+        assert_eq!(
+            from_canonical_json_with_limits::<CanonicalValue>(&bytes, limits)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "canonical_json_too_large"
+        );
     }
 
     #[test]
@@ -182,7 +305,10 @@ mod tests {
             max_string_bytes: 8,
         };
 
-        let depth = CodecLimits { max_depth: 2, ..base };
+        let depth = CodecLimits {
+            max_depth: 2,
+            ..base
+        };
         assert_eq!(
             from_canonical_json_with_limits::<Value>(b"[[0]]", depth)
                 .unwrap_err()
@@ -191,7 +317,10 @@ mod tests {
             "canonical_json_too_deep",
         );
 
-        let members = CodecLimits { max_collection_len: 1, ..base };
+        let members = CodecLimits {
+            max_collection_len: 1,
+            ..base
+        };
         assert_eq!(
             from_canonical_json_with_limits::<Value>(b"[0,1]", members)
                 .unwrap_err()
@@ -200,7 +329,10 @@ mod tests {
             "canonical_collection_too_large",
         );
 
-        let strings = CodecLimits { max_string_bytes: 3, ..base };
+        let strings = CodecLimits {
+            max_string_bytes: 3,
+            ..base
+        };
         for bytes in [br#""abcd""# as &[u8], br#"{"abcd":0}"# as &[u8]] {
             assert_eq!(
                 from_canonical_json_with_limits::<Value>(bytes, strings)

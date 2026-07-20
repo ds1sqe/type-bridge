@@ -14,9 +14,7 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_schema::SafetyClass;
-use type_bridge_schema_compat::{
-    ADOPTED_GENESIS_FILE_NAME, parse_adopted_genesis,
-};
+use type_bridge_schema_compat::{ADOPTED_GENESIS_FILE_NAME, parse_adopted_genesis};
 use type_bridge_schema_migration::{
     GeneratedMigration, MigrationGenerationOutcome, MigrationGenerationRequest,
     MigrationHistoryGraph, MigrationPreviewError, discover_verified_migration_chain,
@@ -68,9 +66,7 @@ impl TypeBridgeWorkspace {
     }
 
     /// Discover and replay-verify the workspace's canonical migration chain.
-    pub fn discover_migrations(
-        &self,
-    ) -> Result<MigrationHistoryGraph, TypeBridgeWorkspaceError> {
+    pub fn discover_migrations(&self) -> Result<MigrationHistoryGraph, TypeBridgeWorkspaceError> {
         Ok(discover_verified_migration_chain(
             &self.migration_directory_absolute_path(),
             &self.migration_genesis()?,
@@ -156,9 +152,7 @@ impl TypeBridgeWorkspace {
     /// every offline and connected operation, so the legacy-frontier bridge
     /// and everything chained onto it replay-verify against the exact head
     /// the adoption recorded.
-    pub fn migration_genesis(
-        &self,
-    ) -> Result<DeclaredSchema, TypeBridgeWorkspaceError> {
+    pub fn migration_genesis(&self) -> Result<DeclaredSchema, TypeBridgeWorkspaceError> {
         let path = self.adopted_genesis_absolute_path();
         let source = match std::fs::read_to_string(&path) {
             Ok(source) => source,
@@ -181,8 +175,7 @@ impl TypeBridgeWorkspace {
             }
         };
         let document = DocumentId::new(ADOPTED_GENESIS_FILE_NAME)?;
-        parse_adopted_genesis(document, &source)
-            .map_err(TypeBridgeWorkspaceError::Contract)
+        parse_adopted_genesis(document, &source).map_err(TypeBridgeWorkspaceError::Contract)
     }
 }
 
@@ -191,13 +184,13 @@ fn preview_diagnostic(error: MigrationPreviewError) -> TypeBridgeWorkspaceError 
         MigrationPreviewError::Diagnostic(diagnostic) => {
             TypeBridgeWorkspaceError::Contract(diagnostic)
         }
-        MigrationPreviewError::Lowering(lowering) => TypeBridgeWorkspaceError::Contract(
-            Diagnostic::new(
+        MigrationPreviewError::Lowering(lowering) => {
+            TypeBridgeWorkspaceError::Contract(Diagnostic::new(
                 type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
                 type_bridge_contract::diagnostic::DiagnosticCode::new(lowering.code())
                     .expect("lowering diagnostic codes are canonical"),
                 "migration preview lowering failed",
-            ),
-        ),
+            ))
+        }
     }
 }

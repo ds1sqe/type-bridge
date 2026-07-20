@@ -33,7 +33,9 @@ impl CodecLimits {
 }
 
 impl Default for CodecLimits {
-    fn default() -> Self { Self::CANONICAL }
+    fn default() -> Self {
+        Self::CANONICAL
+    }
 }
 
 /// Canonical limits used by every contract codec consumer.

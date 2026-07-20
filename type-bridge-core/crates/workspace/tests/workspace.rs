@@ -8,15 +8,14 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_schema::{
-    SchemaSourceCapture, SchemaSourceObservation, SchemaSourceService,
-    SchemaSourceServiceError, SystemSchemaSourceService,
+    SchemaSourceCapture, SchemaSourceObservation, SchemaSourceService, SchemaSourceServiceError,
+    SystemSchemaSourceService,
 };
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
     SchemaSetPath, SecretReference, SecretReferenceService, TypeBridgeConfig,
-    TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace,
-    TypeBridgeWorkspaceError, TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode,
-    WorkspaceRoot, WorkspaceServiceError,
+    TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace, TypeBridgeWorkspaceError,
+    TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode, WorkspaceRoot, WorkspaceServiceError,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -121,10 +120,7 @@ impl SchemaSourceService for CountingSource {
         self.system.symlink_metadata(path)
     }
 
-    fn read_directory_names(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<OsString>, SchemaSourceServiceError> {
+    fn read_directory_names(&self, path: &Path) -> Result<Vec<OsString>, SchemaSourceServiceError> {
         self.system.read_directory_names(path)
     }
 
@@ -160,10 +156,7 @@ impl SchemaSourceService for MutatingSource {
         self.system.symlink_metadata(path)
     }
 
-    fn read_directory_names(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<OsString>, SchemaSourceServiceError> {
+    fn read_directory_names(&self, path: &Path) -> Result<Vec<OsString>, SchemaSourceServiceError> {
         self.system.read_directory_names(path)
     }
 
@@ -174,8 +167,11 @@ impl SchemaSourceService for MutatingSource {
     ) -> Result<SchemaSourceCapture, SchemaSourceServiceError> {
         let captured = self.system.capture_file(path, maximum_bytes)?;
         if path == self.target && self.captures.fetch_add(1, Ordering::SeqCst) == 0 {
-            fs::write(path, "format: typebridge.schema/v2\nentities: {changed: {}}\n")
-                .map_err(|_| SchemaSourceServiceError)?;
+            fs::write(
+                path,
+                "format: typebridge.schema/v2\nentities: {changed: {}}\n",
+            )
+            .map_err(|_| SchemaSourceServiceError)?;
         }
         Ok(captured)
     }
@@ -203,10 +199,7 @@ impl SchemaSourceService for ReselectingSource {
         self.system.symlink_metadata(path)
     }
 
-    fn read_directory_names(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<OsString>, SchemaSourceServiceError> {
+    fn read_directory_names(&self, path: &Path) -> Result<Vec<OsString>, SchemaSourceServiceError> {
         let names = self.system.read_directory_names(path)?;
         if path == self.directory && !self.mutated.swap(true, Ordering::SeqCst) {
             fs::write(
@@ -307,7 +300,10 @@ fn located_and_programmatic_configs_converge_on_one_source_workspace_state() {
         programmatic.discovery_evidence(),
         located.discovery_evidence()
     );
-    assert_eq!(programmatic.required_capabilities(), located.required_capabilities());
+    assert_eq!(
+        programmatic.required_capabilities(),
+        located.required_capabilities()
+    );
     assert!(programmatic.located_config().is_none());
     assert_eq!(
         located.located_config().unwrap().spec().source(),
@@ -373,9 +369,7 @@ fn unknown_references_and_inheritance_cycles_remain_source_aware_failures() {
     let available = capabilities();
 
     let unknown = TempDirectory::new();
-    unknown.schema(
-        "format: typebridge.schema/v2\nentities:\n  child: {sub: missing}\n",
-    );
+    unknown.schema("format: typebridge.schema/v2\nentities:\n  child: {sub: missing}\n");
     let config = programmatic_config(unknown.root(), &source, &secrets, &extensions);
     let error = TypeBridgeWorkspace::from_config(
         config,
@@ -396,9 +390,7 @@ fn unknown_references_and_inheritance_cycles_remain_source_aware_failures() {
     );
 
     let cycle = TempDirectory::new();
-    cycle.schema(
-        "format: typebridge.schema/v2\nentities:\n  a: {sub: b}\n  b: {sub: a}\n",
-    );
+    cycle.schema("format: typebridge.schema/v2\nentities:\n  a: {sub: b}\n  b: {sub: a}\n");
     let config = programmatic_config(cycle.root(), &source, &secrets, &extensions);
     let error = TypeBridgeWorkspace::from_config(
         config,
@@ -420,20 +412,10 @@ fn unavailable_config_constraints_fail_before_schema_capture() {
         reject: false,
     };
     let missing = CapabilitySet::new();
-    let config = programmatic_config(
-        directory.root(),
-        &source,
-        &secrets,
-        &accept_extensions,
-    );
+    let config = programmatic_config(directory.root(), &source, &secrets, &accept_extensions);
     let error = TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(
-            &source,
-            &secrets,
-            &accept_extensions,
-            &missing,
-        ),
+        &TypeBridgeWorkspaceServices::new(&source, &secrets, &accept_extensions, &missing),
     )
     .err()
     .expect("missing configured capability must reject before capture");
@@ -462,12 +444,7 @@ fn unavailable_config_constraints_fail_before_schema_capture() {
     };
     let error = TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(
-            &source,
-            &secrets,
-            &reject_extensions,
-            &capabilities(),
-        ),
+        &TypeBridgeWorkspaceServices::new(&source, &secrets, &reject_extensions, &capabilities()),
     )
     .err()
     .expect("missing extension must reject before capture");
@@ -490,12 +467,7 @@ fn located_manifest_cannot_overlap_schema_history_or_output_authority() {
     let overlapping = workspace_yaml().replace("root: schema/schema.yaml", "root: schema.yaml");
     let located = TypeBridgeConfigSpec::parse_yaml(
         overlapping,
-        ConfigOrigin::new(
-            directory.root(),
-            "schema/schema.yaml",
-            "overlap fixture",
-        )
-        .unwrap(),
+        ConfigOrigin::new(directory.root(), "schema/schema.yaml", "overlap fixture").unwrap(),
     )
     .unwrap();
     let error = located

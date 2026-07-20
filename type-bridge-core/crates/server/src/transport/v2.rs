@@ -17,9 +17,7 @@ use axum::http::header::CONTENT_TYPE;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use type_bridge_contract::capability::CapabilitySet;
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteQueryFailure};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_orm::query_v2_remote::execute_remote_envelope;
@@ -53,17 +51,11 @@ pub fn create_v2_router(state: Arc<V2QueryState>) -> Router {
 }
 
 /// Build the complete router: retained V1 routes beside the V2 surface.
-pub fn create_router_with_v2(
-    pipeline: Arc<QueryPipeline>,
-    v2: Arc<V2QueryState>,
-) -> Router {
+pub fn create_router_with_v2(pipeline: Arc<QueryPipeline>, v2: Arc<V2QueryState>) -> Router {
     super::http::create_router(pipeline).merge(create_v2_router(v2))
 }
 
-async fn handle_v2_query(
-    State(state): State<Arc<V2QueryState>>,
-    body: Bytes,
-) -> Response {
+async fn handle_v2_query(State(state): State<Arc<V2QueryState>>, body: Bytes) -> Response {
     let mut transaction = match state.database.read_transaction().await {
         Ok(transaction) => transaction,
         Err(_) => {
@@ -74,8 +66,7 @@ async fn handle_v2_query(
             );
         }
     };
-    let context =
-        MigrationAssertionValidationContext::new(&state.resolved, &state.managed);
+    let context = MigrationAssertionValidationContext::new(&state.resolved, &state.managed);
     let bytes = execute_remote_envelope(
         &body,
         &context,
@@ -102,8 +93,7 @@ fn envelope_response(bytes: Vec<u8>) -> Response {
 fn unavailable() -> Diagnostic {
     Diagnostic::new(
         DiagnosticCategory::Integrity,
-        DiagnosticCode::new("query_remote_provider_unavailable")
-            .expect("static remote code"),
+        DiagnosticCode::new("query_remote_provider_unavailable").expect("static remote code"),
         "the executor could not open a read transaction",
     )
 }

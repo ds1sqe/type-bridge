@@ -8,19 +8,16 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm,
-    QueryInvocation, QueryOperand, QueryOperation, QueryOutput, QueryPattern,
-    QueryPlan, ReadStage,
+    InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryInvocation, QueryOperand,
+    QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
+    TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2::lower_validated_query;
-use type_bridge_query::{
-    MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan,
-};
+use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
 
 fn type_id(kind: TypeKind, label: &str) -> TypeId {
@@ -43,9 +40,7 @@ fn validated_person_query() -> (ValidatedQuery, QueryPlan) {
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -71,9 +66,8 @@ fn validated_person_query() -> (ValidatedQuery, QueryPlan) {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-v2-scope").expect("scope"),
@@ -107,7 +101,9 @@ fn validated_person_query() -> (ValidatedQuery, QueryPlan) {
                     QueryPattern::Not {
                         patterns: vec![QueryPattern::Value {
                             comparator: ValueComparator::Equal,
-                            left: QueryOperand::Binding { binding: binding_id(1) },
+                            left: QueryOperand::Binding {
+                                binding: binding_id(1),
+                            },
                             right: QueryOperand::Input {
                                 column: InputColumnId::new(0),
                             },
@@ -131,11 +127,9 @@ fn validated_person_query() -> (ValidatedQuery, QueryPlan) {
         managed.managed_semantic_schema().clone(),
     )
     .expect("query plan");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
-    let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .expect("validated query");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated query");
     (validated, plan)
 }
 
@@ -148,11 +142,9 @@ fn string_row(value: &str) -> InputRow {
 #[test]
 fn single_row_inline_lowering_is_deterministic_golden_text() {
     let (validated, plan) = validated_person_query();
-    let invocation =
-        QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-            .expect("invocation");
-    let lowered =
-        lower_validated_query(&validated, &invocation).expect("lowered query");
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
+        .expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
         "match\n\
@@ -170,12 +162,16 @@ fn single_row_inline_lowering_is_deterministic_golden_text() {
     );
     assert_eq!(lowered.operation(), QueryOperation::Rows);
     assert_eq!(
-        lowered.output_schema().rows().expect("row plan").columns().len(),
+        lowered
+            .output_schema()
+            .rows()
+            .expect("row plan")
+            .columns()
+            .len(),
         2,
     );
 
-    let repeat =
-        lower_validated_query(&validated, &invocation).expect("repeat lowering");
+    let repeat = lower_validated_query(&validated, &invocation).expect("repeat lowering");
     assert_eq!(repeat, lowered);
 }
 
@@ -190,10 +186,11 @@ fn multi_row_and_absent_values_reject_before_data_io() {
     .expect("rectangular batch");
     // Multi-row batches lower onto the driver-transported given stage:
     // a typed header in the query text, values outside it.
-    let lowered =
-        lower_validated_query(&validated, &multi).expect("given lowering");
+    let lowered = lower_validated_query(&validated, &multi).expect("given lowering");
     assert!(
-        lowered.typeql().starts_with("given $wanted_name: string;\nmatch\n"),
+        lowered
+            .typeql()
+            .starts_with("given $wanted_name: string;\nmatch\n"),
         "{}",
         lowered.typeql(),
     );
@@ -206,19 +203,15 @@ fn multi_row_and_absent_values_reject_before_data_io() {
     let foreign_plan = QueryPlan::new(
         plan.bindings().to_vec(),
         plan.inputs().to_vec(),
-        vec![
-            plan.pipeline()[0].clone(),
-            ReadStage::Distinct,
-        ],
+        vec![plan.pipeline()[0].clone(), ReadStage::Distinct],
         plan.output().clone(),
         plan.managed_semantics().clone(),
     )
     .expect("foreign plan");
-    let foreign =
-        QueryInvocation::new(&foreign_plan, QueryOperation::Rows, vec![string_row("x")])
-            .expect("foreign invocation");
-    let error = lower_validated_query(&validated, &foreign)
-        .expect_err("invocations bind exactly one plan");
+    let foreign = QueryInvocation::new(&foreign_plan, QueryOperation::Rows, vec![string_row("x")])
+        .expect("foreign invocation");
+    let error =
+        lower_validated_query(&validated, &foreign).expect_err("invocations bind exactly one plan");
     assert_eq!(error.code().as_str(), "query_v2_invocation_plan_mismatch");
 }
 
@@ -226,8 +219,8 @@ fn multi_row_and_absent_values_reject_before_data_io() {
 fn scalar_function_calls_lower_to_deterministic_let_assignments() {
     use type_bridge_contract::id::{FunctionId, Label};
     use type_bridge_contract::schema::{
-        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
-        FunctionReturnMode, FunctionSignature, TypeReference,
+        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement, FunctionReturnMode,
+        FunctionSignature, TypeReference,
     };
 
     let person = type_id(TypeKind::Entity, "person");
@@ -246,10 +239,8 @@ fn scalar_function_calls_lower_to_deterministic_let_assignments() {
                 )),
             )
             .expect("signature"),
-            FunctionBody::new(
-                "match $subject has name $n; let $l = length($n); return first $l;",
-            )
-            .expect("body"),
+            FunctionBody::new("match $subject has name $n; let $l = length($n); return first $l;")
+                .expect("body"),
         )),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
@@ -269,9 +260,8 @@ fn scalar_function_calls_lower_to_deterministic_let_assignments() {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-v2-fn-scope").expect("scope"),
@@ -297,8 +287,7 @@ fn scalar_function_calls_lower_to_deterministic_let_assignments() {
                             binding: binding_id(0),
                         }],
                         assigned: binding_id(1),
-                        function: FunctionId::new("person_name_length")
-                            .expect("function id"),
+                        function: FunctionId::new("person_name_length").expect("function id"),
                     },
                 ],
             },
@@ -312,15 +301,12 @@ fn scalar_function_calls_lower_to_deterministic_let_assignments() {
         managed.managed_semantic_schema().clone(),
     )
     .expect("query plan");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
-    let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .expect("validated query");
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
-        .expect("invocation");
-    let lowered =
-        lower_validated_query(&validated, &invocation).expect("lowered query");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated query");
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
         "match\n\
@@ -329,8 +315,7 @@ fn scalar_function_calls_lower_to_deterministic_let_assignments() {
          sort $name_length asc;\n",
     );
 
-    let repeat =
-        lower_validated_query(&validated, &invocation).expect("repeat lowering");
+    let repeat = lower_validated_query(&validated, &invocation).expect("repeat lowering");
     assert_eq!(repeat, lowered);
 }
 
@@ -342,9 +327,7 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -370,9 +353,8 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-v2-reduce-scope").expect("scope"),
@@ -381,8 +363,7 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
     );
     let managed = managed_schema_state(&declared, &context).expect("managed state");
     let resolved = resolve(&declared, &profile).expect("resolved schema");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
     let plan = QueryPlan::new(
         vec![
@@ -424,13 +405,11 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
         managed.managed_semantic_schema().clone(),
     )
     .expect("reduce plan");
-    let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .expect("validated query");
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
-        .expect("invocation");
-    let lowered =
-        lower_validated_query(&validated, &invocation).expect("lowered query");
+    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated query");
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
         "match\n\
@@ -454,25 +433,21 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
                 }],
             },
             ReadStage::Reduce {
-                assignments: vec![ReduceAssignment::new(
-                    binding_id(1),
-                    Reducer::Count,
-                    None,
-                )],
+                assignments: vec![ReduceAssignment::new(binding_id(1), Reducer::Count, None)],
                 groups: Vec::new(),
             },
         ],
-        QueryOutput::Rows { columns: vec![binding_id(1)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(1)],
+        },
         managed.managed_semantic_schema().clone(),
     )
     .expect("global count plan");
-    let validated =
-        validate_query_plan(&global, &validation_context, StructuralLimits::CANONICAL)
-            .expect("validated global count");
-    let invocation = QueryInvocation::new(&global, QueryOperation::Rows, Vec::new())
-        .expect("invocation");
-    let lowered =
-        lower_validated_query(&validated, &invocation).expect("lowered query");
+    let validated = validate_query_plan(&global, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated global count");
+    let invocation =
+        QueryInvocation::new(&global, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
         "match\n\
@@ -487,9 +462,7 @@ fn try_blocks_lower_to_indented_optional_bodies() {
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -515,9 +488,8 @@ fn try_blocks_lower_to_indented_optional_bodies() {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-v2-try-scope").expect("scope"),
@@ -552,18 +524,20 @@ fn try_blocks_lower_to_indented_optional_bodies() {
         managed_try.managed_semantic_schema().clone(),
     )
     .expect("try plan");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed_try);
-    let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .expect("validated query");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed_try);
+    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated query");
     assert!(
-        validated.output_schema().rows().expect("row plan").columns()[1].optional()
+        validated
+            .output_schema()
+            .rows()
+            .expect("row plan")
+            .columns()[1]
+            .optional()
     );
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
-        .expect("invocation");
-    let lowered =
-        lower_validated_query(&validated, &invocation).expect("lowered query");
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
         "match\n\
@@ -583,9 +557,7 @@ fn document_outputs_lower_to_deterministic_fetch_blocks() {
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -611,9 +583,8 @@ fn document_outputs_lower_to_deterministic_fetch_blocks() {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-v2-fetch-scope").expect("scope"),
@@ -644,7 +615,9 @@ fn document_outputs_lower_to_deterministic_fetch_blocks() {
             fields: vec![
                 DocumentField::new(
                     QueryVariable::new("name").expect("key"),
-                    DocumentSource::Binding { binding: binding_id(1) },
+                    DocumentSource::Binding {
+                        binding: binding_id(1),
+                    },
                 ),
                 DocumentField::new(
                     QueryVariable::new("all_names").expect("key"),
@@ -658,15 +631,12 @@ fn document_outputs_lower_to_deterministic_fetch_blocks() {
         managed.managed_semantic_schema().clone(),
     )
     .expect("document plan");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
-    let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .expect("validated query");
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
-        .expect("invocation");
-    let lowered =
-        lower_validated_query(&validated, &invocation).expect("lowered query");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated query");
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
         "match\n\
@@ -684,17 +654,13 @@ fn document_outputs_lower_to_deterministic_fetch_blocks() {
 #[test]
 fn local_functions_lower_to_with_fun_preambles() {
     use type_bridge_contract::id::{FunctionId, Label};
-    use type_bridge_contract::query_plan::{
-        LocalFunction, LocalReturn, Reducer,
-    };
+    use type_bridge_contract::query_plan::{LocalFunction, LocalReturn, Reducer};
 
     let person = type_id(TypeKind::Entity, "person");
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -720,9 +686,8 @@ fn local_functions_lower_to_with_fun_preambles() {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-v2-local-fn-scope").expect("scope"),
@@ -759,8 +724,7 @@ fn local_functions_lower_to_with_fun_preambles() {
                             binding: binding_id(0),
                         }],
                         assigned: binding_id(1),
-                        function: FunctionId::new("name_count_of")
-                            .expect("function id"),
+                        function: FunctionId::new("name_count_of").expect("function id"),
                     },
                 ],
             },
@@ -774,15 +738,12 @@ fn local_functions_lower_to_with_fun_preambles() {
         managed.managed_semantic_schema().clone(),
     )
     .expect("local function plan");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
-    let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .expect("validated query");
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
-        .expect("invocation");
-    let lowered =
-        lower_validated_query(&validated, &invocation).expect("lowered query");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated query");
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
         "with fun name_count_of($subject: person) -> integer:\n\
@@ -800,9 +761,7 @@ fn local_functions_lower_to_with_fun_preambles() {
 #[test]
 fn bounded_reachability_lowers_to_unrolled_disjunctions() {
     use type_bridge_contract::id::RoleId;
-    use type_bridge_contract::schema::{
-        PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
-    };
+    use type_bridge_contract::schema::{PlaysFact, PlaysFactId, RelatesFact, RelatesFactId};
 
     let node = type_id(TypeKind::Entity, "node");
     let edge = type_id(TypeKind::Relation, "edge");
@@ -849,9 +808,8 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-v2-reachable-scope").expect("scope"),
@@ -880,15 +838,12 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
         managed.managed_semantic_schema().clone(),
     )
     .expect("reachability plan");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &managed);
-    let validated =
-        validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-            .expect("validated query");
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
-        .expect("invocation");
-    let lowered =
-        lower_validated_query(&validated, &invocation).expect("lowered query");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated query");
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
         "match\n\

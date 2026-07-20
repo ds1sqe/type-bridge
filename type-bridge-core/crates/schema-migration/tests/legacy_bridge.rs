@@ -10,25 +10,21 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::{
-    MigrationAppLabel, MigrationId, MigrationName, MigrationStep,
-    MigrationStepId, SchemaDeltaStep,
+    MigrationAppLabel, MigrationId, MigrationName, MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::migration_assertion_capability_vocabulary;
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
 };
 use type_bridge_schema::{
-    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed,
-    inverse_delta,
+    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta,
 };
 use type_bridge_schema_migration::{
-    LegacyMigrationChecksum, LegacyMigrationReference, LeaseHolderId,
-    MigrationApplyTarget, MigrationExecutionOutcome, MigrationHistoryGraph,
-    MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
-    VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge,
-    build_verified_manifest, build_verified_migration_apply_plan,
-    decode_verified_manifest, encode_verified_manifest,
-    execute_verified_migration_apply_plan, typedb_3_12_1_profile,
+    LeaseHolderId, LegacyMigrationChecksum, LegacyMigrationReference, MigrationApplyTarget,
+    MigrationExecutionOutcome, MigrationHistoryGraph, MigrationSafetyPolicy, SchemaLoweringBinding,
+    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge,
+    build_verified_manifest, build_verified_migration_apply_plan, decode_verified_manifest,
+    encode_verified_manifest, execute_verified_migration_apply_plan, typedb_3_12_1_profile,
     verified_manifest_digest,
 };
 
@@ -117,8 +113,8 @@ fn ordinary_manifest(
         Some(reverse),
     )
     .expect("fixture step");
-    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step])
-        .expect("fixture draft");
+    let draft =
+        SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("fixture draft");
     build_verified_manifest(draft, (source, context)).expect("fixture manifest")
 }
 
@@ -157,8 +153,7 @@ fn bridge_builds_round_trips_and_binds_the_frontier() {
     );
 
     let bytes = encode_verified_manifest(&bridge).expect("bridge encoding");
-    let decoded =
-        decode_verified_manifest(&bytes, (&head, &context)).expect("bridge decoding");
+    let decoded = decode_verified_manifest(&bytes, (&head, &context)).expect("bridge decoding");
     assert_eq!(decoded, bridge);
 
     // The recorded frontier is digest-bound: a different tagged checksum is
@@ -184,12 +179,13 @@ fn bridge_invariants_fail_closed() {
     let head = declared(&["person"]);
     let context = context();
 
-    let empty = SchemaMigrationDraft::legacy_bridge(
-        migration_id("0000_legacy_frontier"),
-        Vec::new(),
-    )
-    .expect_err("an empty legacy frontier is not a bridge");
-    assert_eq!(empty.code().as_str(), "migration_manifest_empty_legacy_frontier");
+    let empty =
+        SchemaMigrationDraft::legacy_bridge(migration_id("0000_legacy_frontier"), Vec::new())
+            .expect_err("an empty legacy frontier is not a bridge");
+    assert_eq!(
+        empty.code().as_str(),
+        "migration_manifest_empty_legacy_frontier"
+    );
 
     let duplicated = SchemaMigrationDraft::legacy_bridge(
         migration_id("0000_legacy_frontier"),
@@ -214,7 +210,10 @@ fn bridge_invariants_fail_closed() {
         (&head, &context),
     )
     .expect_err("an ordinary manifest requires at least one step");
-    assert_eq!(empty_program.code().as_str(), "migration_manifest_empty_program");
+    assert_eq!(
+        empty_program.code().as_str(),
+        "migration_manifest_empty_program"
+    );
 
     for invalid in ["0123456789ABCDEF", "0123", "0123456789abcdef00"] {
         assert!(
@@ -292,9 +291,8 @@ fn bridge_applies_as_a_pure_ledger_checkpoint() {
     );
     let graph = MigrationHistoryGraph::from_verified([bridge.clone(), child.clone()])
         .expect("bridged lineage");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone())
-            .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),

@@ -8,11 +8,8 @@ use type_bridge_contract::projection::{
 use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
 
 fn semantic(bytes: &[u8]) -> SemanticSchemaFingerprint {
-    SemanticSchemaFingerprint::compute(
-        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-        bytes,
-    )
-    .unwrap()
+    SemanticSchemaFingerprint::compute(SemanticProfileId::new("typedb-3.12.1/v1").unwrap(), bytes)
+        .unwrap()
 }
 
 #[test]
@@ -21,11 +18,11 @@ fn python_projection_has_byte_exact_config_preimage_and_fingerprint_goldens() {
     let config = ProjectionConfig::python();
     let semantic = semantic(b"schema-golden");
     let handlers = [ProjectionHandler::python_v1()];
-    let resources = [CodeResourceDigest::from_bytes(
-        "typebridge.python.runtime-support",
-        b"runtime-v1",
-    )
-    .unwrap()];
+    let resources =
+        [
+            CodeResourceDigest::from_bytes("typebridge.python.runtime-support", b"runtime-v1")
+                .unwrap(),
+        ];
 
     assert_eq!(to_canonical_json(&target).unwrap(), br#""python""#);
     assert_eq!(
@@ -33,27 +30,17 @@ fn python_projection_has_byte_exact_config_preimage_and_fingerprint_goldens() {
         br#"{"binding":"python","naming_policy":"typebridge.python/v1"}"#,
     );
 
-    let canonical = canonical_binding_projection_bytes(
-        target,
-        &semantic,
-        &config,
-        &handlers,
-        &resources,
-    )
-    .unwrap();
+    let canonical =
+        canonical_binding_projection_bytes(target, &semantic, &config, &handlers, &resources)
+            .unwrap();
     assert_eq!(
         String::from_utf8(canonical).unwrap(),
         r#"{"config":{"binding":"python","naming_policy":"typebridge.python/v1"},"format_version":1,"generator_handlers":[{"id":"typebridge.generator.python","version":1}],"referenced_code_resources":[{"content_fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.raw-bytes/v1","digest":"03a67069f51f5ea767249959c1fd48f0500290671d251c09a8bca3a974cc9215","domain":"typebridge.binding.code-resource"},"id":"typebridge.python.runtime-support"}],"semantic_schema_fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.schema-canonical-json/v1","digest":"ac1cccede374d406fc8e5aa6d20adbd3a13f0454906d888784f9a2be50bb08cc","domain":"typebridge.schema.semantic","semantic_profile":"typedb-3.12.1/v1"},"target":"python"}"#,
     );
 
-    let fingerprint = BindingProjectionFingerprint::compute(
-        target,
-        &semantic,
-        &config,
-        &handlers,
-        &resources,
-    )
-    .unwrap();
+    let fingerprint =
+        BindingProjectionFingerprint::compute(target, &semantic, &config, &handlers, &resources)
+            .unwrap();
     assert_eq!(
         fingerprint.as_fingerprint().digest().to_hex(),
         "e4ed154eff79c451cac8164a9afe5b8fe46a5c2d350cbc7cedc1d266cacd958a",
@@ -71,10 +58,8 @@ fn evidence_order_is_nonsemantic_and_empty_resources_are_valid() {
     let semantic_schema = semantic(b"schema");
     let python = ProjectionHandler::python_v1();
     let extension = ProjectionHandler::new("typebridge.generator.docs", 1).unwrap();
-    let first_resource =
-        CodeResourceDigest::from_bytes("typebridge.python.a", b"a").unwrap();
-    let second_resource =
-        CodeResourceDigest::from_bytes("typebridge.python.z", b"z").unwrap();
+    let first_resource = CodeResourceDigest::from_bytes("typebridge.python.a", b"a").unwrap();
+    let second_resource = CodeResourceDigest::from_bytes("typebridge.python.z", b"z").unwrap();
 
     let first = BindingProjectionFingerprint::compute(
         target,
@@ -124,33 +109,23 @@ fn malformed_or_ambiguous_reproducibility_evidence_fails_closed() {
     let target = BindingTarget::Python;
     let config = ProjectionConfig::python();
     let semantic = semantic(b"schema");
-    let error = BindingProjectionFingerprint::compute(target, &semantic, &config, &[], &[])
-        .unwrap_err();
+    let error =
+        BindingProjectionFingerprint::compute(target, &semantic, &config, &[], &[]).unwrap_err();
     assert_eq!(error.code().as_str(), "missing_target_projection_handler");
 
     let unrelated = ProjectionHandler::new("typebridge.generator.docs", 1).unwrap();
-    let error = BindingProjectionFingerprint::compute(
-        target,
-        &semantic,
-        &config,
-        &[unrelated],
-        &[],
-    )
-    .unwrap_err();
+    let error =
+        BindingProjectionFingerprint::compute(target, &semantic, &config, &[unrelated], &[])
+            .unwrap_err();
     assert_eq!(error.code().as_str(), "missing_target_projection_handler");
 
     let duplicate_handlers = [
         ProjectionHandler::python_v1(),
         ProjectionHandler::new("typebridge.generator.python", 2).unwrap(),
     ];
-    let error = BindingProjectionFingerprint::compute(
-        target,
-        &semantic,
-        &config,
-        &duplicate_handlers,
-        &[],
-    )
-    .unwrap_err();
+    let error =
+        BindingProjectionFingerprint::compute(target, &semantic, &config, &duplicate_handlers, &[])
+            .unwrap_err();
     assert_eq!(error.code().as_str(), "duplicate_projection_handler_id");
 
     let duplicate_resources = [
@@ -175,12 +150,10 @@ fn every_projection_affecting_input_changes_the_fingerprint() {
     let semantic_schema = semantic(b"schema");
     let handler_v1 = [ProjectionHandler::python_v1()];
     let handler_v2 = [ProjectionHandler::new("typebridge.generator.python", 2).unwrap()];
-    let resource_v1 = [
-        CodeResourceDigest::from_bytes("typebridge.python.runtime-support", b"v1").unwrap(),
-    ];
-    let resource_v2 = [
-        CodeResourceDigest::from_bytes("typebridge.python.runtime-support", b"v2").unwrap(),
-    ];
+    let resource_v1 =
+        [CodeResourceDigest::from_bytes("typebridge.python.runtime-support", b"v1").unwrap()];
+    let resource_v2 =
+        [CodeResourceDigest::from_bytes("typebridge.python.runtime-support", b"v2").unwrap()];
 
     let baseline = BindingProjectionFingerprint::compute(
         target,
@@ -227,11 +200,23 @@ fn canonical_projection_content_changes_the_runtime_fingerprint() {
     let semantic_schema = semantic(b"schema");
     let handlers = [ProjectionHandler::python_v1()];
     let first = BindingProjectionFingerprint::compute_with_projection(
-        target, &semantic_schema, &config, &handlers, &[], br#"{"models":[]}"#,
-    ).unwrap();
+        target,
+        &semantic_schema,
+        &config,
+        &handlers,
+        &[],
+        br#"{"models":[]}"#,
+    )
+    .unwrap();
     let second = BindingProjectionFingerprint::compute_with_projection(
-        target, &semantic_schema, &config, &handlers, &[], br#"{"models":[{"id":"changed"}]}"#,
-    ).unwrap();
+        target,
+        &semantic_schema,
+        &config,
+        &handlers,
+        &[],
+        br#"{"models":[{"id":"changed"}]}"#,
+    )
+    .unwrap();
     assert_ne!(first, second);
 }
 
@@ -239,9 +224,15 @@ fn canonical_projection_content_changes_the_runtime_fingerprint() {
 fn python_target_identifiers_reject_keywords_and_malformed_names() {
     use type_bridge_contract::projection::TargetIdentifier;
 
-    assert_eq!(TargetIdentifier::python("valid_name").unwrap().as_str(), "valid_name");
+    assert_eq!(
+        TargetIdentifier::python("valid_name").unwrap().as_str(),
+        "valid_name"
+    );
     for value in ["class", "has-hyphen", "9starts_with_digit"] {
-        assert_eq!(TargetIdentifier::python(value).unwrap_err().code().as_str(), "invalid_python_projection_identifier");
+        assert_eq!(
+            TargetIdentifier::python(value).unwrap_err().code().as_str(),
+            "invalid_python_projection_identifier"
+        );
     }
 }
 
@@ -264,10 +255,16 @@ fn typescript_projection_has_versioned_config_handler_and_identifiers() {
         &[],
     )
     .expect("TypeScript handler satisfies target evidence");
-    assert_eq!(TargetIdentifier::typescript("validName").unwrap().as_str(), "validName");
+    assert_eq!(
+        TargetIdentifier::typescript("validName").unwrap().as_str(),
+        "validName"
+    );
     for value in ["class", "has-hyphen", "9startsWithDigit"] {
         assert_eq!(
-            TargetIdentifier::typescript(value).unwrap_err().code().as_str(),
+            TargetIdentifier::typescript(value)
+                .unwrap_err()
+                .code()
+                .as_str(),
             "invalid_typescript_projection_identifier",
         );
     }
@@ -284,7 +281,10 @@ fn rust_projection_has_versioned_config_create_policy_handler_and_identifiers() 
         to_canonical_json(&config).unwrap(),
         br#"{"binding":"rust","create_policy":"typebridge.rust.validated-create-input/v1","naming_policy":"typebridge.rust/v1"}"#,
     );
-    assert_eq!(config.rust_create_policy(), Some(RustCreatePolicy::ValidatedInputV1));
+    assert_eq!(
+        config.rust_create_policy(),
+        Some(RustCreatePolicy::ValidatedInputV1)
+    );
     let rust = BindingProjectionFingerprint::compute(
         target,
         &semantic(b"rust-schema"),
@@ -302,7 +302,10 @@ fn rust_projection_has_versioned_config_create_policy_handler_and_identifiers() 
     )
     .unwrap();
     assert_ne!(rust, python);
-    assert_eq!(TargetIdentifier::rust("PersonCreate").unwrap().as_str(), "PersonCreate");
+    assert_eq!(
+        TargetIdentifier::rust("PersonCreate").unwrap().as_str(),
+        "PersonCreate"
+    );
     for value in ["type", "self", "has-hyphen", "9starts_with_digit", "_"] {
         assert_eq!(
             TargetIdentifier::rust(value).unwrap_err().code().as_str(),

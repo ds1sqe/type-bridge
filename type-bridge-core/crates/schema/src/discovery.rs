@@ -9,8 +9,8 @@ use std::time::UNIX_EPOCH;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::schema::{
-    DocumentFingerprint, DocumentId, SchemaDiagnostic, SchemaDiagnostics,
-    SchemaDocumentSetFingerprint, MAX_DOCUMENT_ID_BYTES,
+    DocumentFingerprint, DocumentId, MAX_DOCUMENT_ID_BYTES, SchemaDiagnostic, SchemaDiagnostics,
+    SchemaDocumentSetFingerprint,
 };
 use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
@@ -158,7 +158,11 @@ impl SchemaSourceCapture {
         before: SchemaSourceObservation,
         after: SchemaSourceObservation,
     ) -> Self {
-        Self { bytes, before, after }
+        Self {
+            bytes,
+            before,
+            after,
+        }
     }
 
     /// Returns the exact captured bytes.
@@ -199,10 +203,7 @@ pub trait SchemaSourceService {
     ) -> Result<SchemaSourceObservation, SchemaSourceServiceError>;
 
     /// Returns direct entry names in ascending platform byte order.
-    fn read_directory_names(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<OsString>, SchemaSourceServiceError>;
+    fn read_directory_names(&self, path: &Path) -> Result<Vec<OsString>, SchemaSourceServiceError>;
 
     /// Captures at most `maximum_bytes + 1` bytes with before/after observations.
     fn capture_file(
@@ -222,7 +223,10 @@ impl SchemaSourceService for SystemSchemaSourceService {
     }
 
     fn metadata(&self, path: &Path) -> Result<SchemaSourceObservation, SchemaSourceServiceError> {
-        observation(&fs::metadata(path).map_err(|_| SchemaSourceServiceError)?, path)
+        observation(
+            &fs::metadata(path).map_err(|_| SchemaSourceServiceError)?,
+            path,
+        )
     }
 
     fn symlink_metadata(
@@ -235,10 +239,7 @@ impl SchemaSourceService for SystemSchemaSourceService {
         )
     }
 
-    fn read_directory_names(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<OsString>, SchemaSourceServiceError> {
+    fn read_directory_names(&self, path: &Path) -> Result<Vec<OsString>, SchemaSourceServiceError> {
         let mut names = fs::read_dir(path)
             .map_err(|_| SchemaSourceServiceError)?
             .map(|entry| {
@@ -509,12 +510,7 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    discover_schema_documents_with_source(
-        manifest,
-        patterns,
-        limits,
-        &SystemSchemaSourceService,
-    )
+    discover_schema_documents_with_source(manifest, patterns, limits, &SystemSchemaSourceService)
 }
 
 fn discover_schema_documents_with_source<I, P, S>(
@@ -569,26 +565,16 @@ where
         ));
     }
 
-    let selected = select_sources(
-        source,
-        &root,
-        &canonical_manifest,
-        &patterns,
-        limits,
-    )?;
+    let selected = select_sources(source, &root, &canonical_manifest, &patterns, limits)?;
     let captured = capture_sources(source, &selected, limits.parse_limits())?;
 
     if !manifest_state.matches(source, manifest_input, &canonical_manifest) {
-        return Err(snapshot_changed("schema-set manifest changed during source discovery"));
+        return Err(snapshot_changed(
+            "schema-set manifest changed during source discovery",
+        ));
     }
-    let reselected = select_sources(
-        source,
-        &root,
-        &canonical_manifest,
-        &patterns,
-        limits,
-    )
-    .map_err(|_| snapshot_changed("schema source selection changed during discovery"))?;
+    let reselected = select_sources(source, &root, &canonical_manifest, &patterns, limits)
+        .map_err(|_| snapshot_changed("schema source selection changed during discovery"))?;
     reject_snapshot_change(&selected, &reselected)?;
     if !manifest_state.matches(source, manifest_input, &canonical_manifest) {
         return Err(snapshot_changed(
@@ -667,7 +653,9 @@ where
         limits.parse_limits(),
     )?;
     if !manifest_state.matches(source, manifest_input, &canonical_manifest) {
-        return Err(snapshot_changed("schema-set manifest changed while it was parsed"));
+        return Err(snapshot_changed(
+            "schema-set manifest changed while it was parsed",
+        ));
     }
     let manifest_document = SchemaSetManifestDocument::parse(
         canonical_manifest.clone(),
@@ -676,25 +664,15 @@ where
     )?;
     let patterns = validate_patterns(manifest_document.sources().iter().cloned(), limits)?;
 
-    let selected = select_sources(
-        source,
-        &root,
-        &canonical_manifest,
-        &patterns,
-        limits,
-    )?;
+    let selected = select_sources(source, &root, &canonical_manifest, &patterns, limits)?;
     let captured = capture_sources(source, &selected, limits.parse_limits())?;
     if !manifest_state.matches(source, manifest_input, &canonical_manifest) {
-        return Err(snapshot_changed("schema-set manifest changed during source discovery"));
+        return Err(snapshot_changed(
+            "schema-set manifest changed during source discovery",
+        ));
     }
-    let reselected = select_sources(
-        source,
-        &root,
-        &canonical_manifest,
-        &patterns,
-        limits,
-    )
-    .map_err(|_| snapshot_changed("schema source selection changed during discovery"))?;
+    let reselected = select_sources(source, &root, &canonical_manifest, &patterns, limits)
+        .map_err(|_| snapshot_changed("schema source selection changed during discovery"))?;
     reject_snapshot_change(&selected, &reselected)?;
     if !manifest_state.matches(source, manifest_input, &canonical_manifest) {
         return Err(snapshot_changed(
@@ -747,10 +725,9 @@ where
             ));
         }
         validated.push(
-            validate_source_pattern(value.into(), limits.max_pattern_bytes())
-                .map_err(|diagnostic| {
-                    SchemaDiagnostics::one(SchemaDiagnostic::new(diagnostic, None))
-                })?,
+            validate_source_pattern(value.into(), limits.max_pattern_bytes()).map_err(
+                |diagnostic| SchemaDiagnostics::one(SchemaDiagnostic::new(diagnostic, None)),
+            )?,
         );
     }
     Ok(validated)
@@ -832,7 +809,9 @@ fn select_sources<S: SchemaSourceService + ?Sized>(
                         [("path", candidate.portable.clone())],
                     ));
                 }
-                CandidateKind::Directory | CandidateKind::NonRegular | CandidateKind::Unavailable => {
+                CandidateKind::Directory
+                | CandidateKind::NonRegular
+                | CandidateKind::Unavailable => {
                     return Err(failure(
                         DiagnosticCategory::InvalidContract,
                         "schema_source_not_regular",
@@ -888,10 +867,7 @@ fn select_sources<S: SchemaSourceService + ?Sized>(
             "discovered schema document count exceeds its configured limit",
             [
                 ("actual", selected.len().to_string()),
-                (
-                    "maximum",
-                    limits.parse_limits().max_documents().to_string(),
-                ),
+                ("maximum", limits.parse_limits().max_documents().to_string()),
             ],
         ));
     }
@@ -921,14 +897,16 @@ fn walk_directory<S: SchemaSourceService + ?Sized>(
             [("maximum", limits.max_depth().to_string())],
         ));
     }
-    let mut entries = source.read_directory_names(physical_directory).map_err(|_| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "schema_directory_unavailable",
-            "schema source directory cannot be read",
-            [("path", display_path(physical_directory))],
-        )
-    })?;
+    let mut entries = source
+        .read_directory_names(physical_directory)
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "schema_directory_unavailable",
+                "schema source directory cannot be read",
+                [("path", display_path(physical_directory))],
+            )
+        })?;
     entries.sort();
 
     for file_name in entries {
@@ -1127,7 +1105,10 @@ fn reject_file_aliases(selected: &[SelectedSource]) -> Result<(), SchemaDiagnost
                 ],
             ));
         }
-        identities.insert(source.state.target.identity.clone(), source.portable.clone());
+        identities.insert(
+            source.state.target.identity.clone(),
+            source.portable.clone(),
+        );
     }
     Ok(())
 }
@@ -1165,7 +1146,9 @@ fn capture_sources<S: SchemaSourceService + ?Sized>(
             .capture_file(&source.canonical, limits.max_document_bytes())
             .map_err(|_| snapshot_changed("schema source became unavailable while being read"))?;
         if before != source.state.target {
-            return Err(snapshot_changed("schema source identity changed before it was read"));
+            return Err(snapshot_changed(
+                "schema source identity changed before it was read",
+            ));
         }
         if bytes.len() > limits.max_document_bytes() {
             return Err(resource_failure(
@@ -1271,12 +1254,12 @@ mod content_integrity_tests {
     fn discovery_revalidation_detects_same_length_content_replacement() {
         let directory = TempDirectory::new();
         let root = fs::canonicalize(&directory.0).expect("canonicalize test root");
-        let manifest = fs::canonicalize(directory.0.join("schema.yaml"))
-            .expect("canonicalize test manifest");
+        let manifest =
+            fs::canonicalize(directory.0.join("schema.yaml")).expect("canonicalize test manifest");
         let limits = SchemaDiscoveryLimits::default();
         let service = SystemSchemaSourceService;
-        let patterns = validate_patterns(["fragments/a.yaml"], limits)
-            .expect("validate test source pattern");
+        let patterns =
+            validate_patterns(["fragments/a.yaml"], limits).expect("validate test source pattern");
         let mut selected = select_sources(&service, &root, &manifest, &patterns, limits)
             .expect("select initial schema source");
         let captured = capture_sources(&service, &selected, limits.parse_limits())
@@ -1286,19 +1269,12 @@ mod content_integrity_tests {
             .expect("replace schema source with same-length content");
         assert_eq!(captured[0].1.len(), "root: b\n".len());
 
-        selected[0].state = PathState::capture(
-            &service,
-            &selected[0].lexical,
-            &selected[0].canonical,
-        )
-        .expect("neutralize metadata detection to exercise the content guard");
-        let error = revalidate_captured_sources(
-            &service,
-            &selected,
-            &captured,
-            limits.parse_limits(),
-        )
-        .expect_err("same-length content replacement must fail discovery");
+        selected[0].state =
+            PathState::capture(&service, &selected[0].lexical, &selected[0].canonical)
+                .expect("neutralize metadata detection to exercise the content guard");
+        let error =
+            revalidate_captured_sources(&service, &selected, &captured, limits.parse_limits())
+                .expect_err("same-length content replacement must fail discovery");
 
         assert_eq!(
             error
@@ -1321,7 +1297,9 @@ fn capture_manifest_source<S: SchemaSourceService + ?Sized>(
     limits: SchemaParseLimits,
 ) -> Result<String, SchemaDiagnostics> {
     if !state.matches(source, lexical, canonical) {
-        return Err(snapshot_changed("schema-set manifest changed before it was read"));
+        return Err(snapshot_changed(
+            "schema-set manifest changed before it was read",
+        ));
     }
     if state.target.len > limits.max_document_bytes() as u64 {
         return Err(resource_failure(
@@ -1338,7 +1316,9 @@ fn capture_manifest_source<S: SchemaSourceService + ?Sized>(
         .capture_file(canonical, limits.max_document_bytes())
         .map_err(|_| snapshot_changed("schema-set manifest became unavailable while being read"))?;
     if before != state.target {
-        return Err(snapshot_changed("schema-set manifest identity changed before it was read"));
+        return Err(snapshot_changed(
+            "schema-set manifest identity changed before it was read",
+        ));
     }
     if bytes.len() > limits.max_document_bytes() {
         return Err(resource_failure(
@@ -1348,7 +1328,9 @@ fn capture_manifest_source<S: SchemaSourceService + ?Sized>(
         ));
     }
     if before != after || !state.matches(source, lexical, canonical) {
-        return Err(snapshot_changed("schema-set manifest changed while it was read"));
+        return Err(snapshot_changed(
+            "schema-set manifest changed while it was read",
+        ));
     }
     String::from_utf8(bytes).map_err(|_| {
         failure(
@@ -1372,9 +1354,9 @@ impl PathState {
         lexical: &Path,
         canonical: &Path,
     ) -> Result<Self, SchemaDiagnostics> {
-        let lexical_metadata = source.symlink_metadata(lexical).map_err(|_| {
-            snapshot_changed("schema source path metadata became unavailable")
-        })?;
+        let lexical_metadata = source
+            .symlink_metadata(lexical)
+            .map_err(|_| snapshot_changed("schema source path metadata became unavailable"))?;
         let target_metadata = metadata(source, canonical, "schema_source_unavailable")?;
         Ok(Self {
             lexical: lexical_metadata,
@@ -1457,7 +1439,9 @@ fn reject_snapshot_change<T: PartialEq>(
     if before == after {
         Ok(())
     } else {
-        Err(snapshot_changed("schema source selection changed during discovery"))
+        Err(snapshot_changed(
+            "schema source selection changed during discovery",
+        ))
     }
 }
 

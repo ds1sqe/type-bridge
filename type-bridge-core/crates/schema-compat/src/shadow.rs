@@ -14,8 +14,8 @@ use type_bridge_contract::schema::{
 use type_bridge_contract::value::{CanonicalValue, Cardinality as V2Cardinality, ValueTypeTag};
 use type_bridge_core_lib::parser;
 use type_bridge_core_lib::schema::{
-    Cardinality as V1Cardinality, FunctionType as V1Function, OwnedAttribute, PlayedRole,
-    RoleSpec, SchemaError, StructType as V1Struct, TypeSchema,
+    Cardinality as V1Cardinality, FunctionType as V1Function, OwnedAttribute, PlayedRole, RoleSpec,
+    SchemaError, StructType as V1Struct, TypeSchema,
 };
 use type_bridge_schema::{ResolvedSchema, resolve};
 
@@ -629,7 +629,10 @@ fn project_v1(schema: &TypeSchema, profile: &SemanticProfile) -> SchemaProjectio
             &mut documentation_and_metadata,
             format!("type {}", entity.name),
             entity.doc.as_deref(),
-            entity.meta.iter().map(|(key, value)| (key.as_str(), value.as_str())),
+            entity
+                .meta
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
         );
         project_v1_interface_docs(
             &mut documentation_and_metadata,
@@ -657,7 +660,10 @@ fn project_v1(schema: &TypeSchema, profile: &SemanticProfile) -> SchemaProjectio
             &mut documentation_and_metadata,
             format!("type {}", relation.name),
             relation.doc.as_deref(),
-            relation.meta.iter().map(|(key, value)| (key.as_str(), value.as_str())),
+            relation
+                .meta
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
         );
         project_v1_interface_docs(
             &mut documentation_and_metadata,
@@ -783,11 +789,7 @@ fn project_v2(schema: &ResolvedSchema) -> SchemaProjection {
                         .map(|owns| {
                             (
                                 owns.id().attribute().label().as_str().to_owned(),
-                                format_owns(
-                                    owns.cardinality(),
-                                    owns.is_key(),
-                                    owns.is_unique(),
-                                ),
+                                format_owns(owns.cardinality(), owns.is_key(), owns.is_unique()),
                             )
                         })
                         .collect(),
@@ -1015,9 +1017,7 @@ fn insert_difference(
     v2_value: Option<String>,
 ) {
     if v1_value != v2_value {
-        findings.insert(ShadowFinding::new(
-            dimension, label, v1_value, v2_value,
-        ));
+        findings.insert(ShadowFinding::new(dimension, label, v1_value, v2_value));
     }
 }
 
@@ -1056,16 +1056,11 @@ fn coverage() -> ShadowCoverage {
     }
 }
 
-fn project_v1_owns(
-    owns: &[OwnedAttribute],
-    profile: &SemanticProfile,
-) -> BTreeMap<String, String> {
-    owns
-        .iter()
+fn project_v1_owns(owns: &[OwnedAttribute], profile: &SemanticProfile) -> BTreeMap<String, String> {
+    owns.iter()
         .map(|owns| {
             let cardinality = if owns.is_key {
-                V2Cardinality::new(1, Some(1))
-                    .expect("the effective key cardinality is exact-one")
+                V2Cardinality::new(1, Some(1)).expect("the effective key cardinality is exact-one")
             } else {
                 v1_cardinality(owns.cardinality.as_ref(), profile, InterfaceKind::Owns)
             };
@@ -1077,10 +1072,7 @@ fn project_v1_owns(
         .collect()
 }
 
-fn project_v1_plays(
-    plays: &[PlayedRole],
-    profile: &SemanticProfile,
-) -> BTreeMap<String, String> {
+fn project_v1_plays(plays: &[PlayedRole], profile: &SemanticProfile) -> BTreeMap<String, String> {
     plays
         .iter()
         .map(|plays| {
@@ -1096,10 +1088,7 @@ fn project_v1_plays(
         .collect()
 }
 
-fn project_v1_relates(
-    roles: &[RoleSpec],
-    profile: &SemanticProfile,
-) -> BTreeMap<String, String> {
+fn project_v1_relates(roles: &[RoleSpec], profile: &SemanticProfile) -> BTreeMap<String, String> {
     roles
         .iter()
         .map(|role| {
@@ -1227,9 +1216,7 @@ fn insert_v2_doc_meta(
             return None;
         };
         let value = match value {
-            SchemaAnnotationValue::Meta(CanonicalValue::String(value)) => {
-                value.as_str().to_owned()
-            }
+            SchemaAnnotationValue::Meta(CanonicalValue::String(value)) => value.as_str().to_owned(),
             SchemaAnnotationValue::Meta(value) => format!("{value:?}"),
             _ => return None,
         };

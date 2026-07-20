@@ -18,22 +18,47 @@ impl CanonicalDecimal<'_> {
     /// Compare two validated decimals by numeric value.
     pub fn compare(&self, other: &Self) -> Ordering {
         if self.negative != other.negative {
-            return if self.negative { Ordering::Less } else { Ordering::Greater };
+            return if self.negative {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
         }
         let width = self.fraction.len().max(other.fraction.len());
-        let magnitude = self.whole.len().cmp(&other.whole.len())
+        let magnitude = self
+            .whole
+            .len()
+            .cmp(&other.whole.len())
             .then_with(|| self.whole.cmp(other.whole))
-            .then_with(|| self.fraction.bytes().chain(std::iter::repeat_n(b'0', width - self.fraction.len()))
-                .cmp(other.fraction.bytes().chain(std::iter::repeat_n(b'0', width - other.fraction.len()))));
-        if self.negative { magnitude.reverse() } else { magnitude }
+            .then_with(|| {
+                self.fraction
+                    .bytes()
+                    .chain(std::iter::repeat_n(b'0', width - self.fraction.len()))
+                    .cmp(
+                        other
+                            .fraction
+                            .bytes()
+                            .chain(std::iter::repeat_n(b'0', width - other.fraction.len())),
+                    )
+            });
+        if self.negative {
+            magnitude.reverse()
+        } else {
+            magnitude
+        }
     }
 
     /// Render the normalized allocation-owned decimal spelling.
     pub fn canonical_string(&self) -> String {
         let mut value = String::with_capacity(self.whole.len() + self.fraction.len() + 2);
-        if self.negative { value.push('-'); }
+        if self.negative {
+            value.push('-');
+        }
         value.push_str(self.whole);
-        if !self.fraction.is_empty() { value.push('.'); value.push_str(self.fraction); }
+        if !self.fraction.is_empty() {
+            value.push('.');
+            value.push_str(self.fraction);
+        }
         value
     }
 }
@@ -52,18 +77,32 @@ pub fn parse_decimal(value: &str) -> Option<CanonicalDecimal<'_>> {
     };
     if raw_whole.is_empty()
         || !raw_whole.bytes().all(|byte| byte.is_ascii_digit())
-        || raw_fraction.is_some_and(|fraction| fraction.is_empty() || fraction.len() > 19 || !fraction.bytes().all(|byte| byte.is_ascii_digit()))
-    { return None; }
+        || raw_fraction.is_some_and(|fraction| {
+            fraction.is_empty()
+                || fraction.len() > 19
+                || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    {
+        return None;
+    }
     let whole = raw_whole.trim_start_matches('0');
     let whole = if whole.is_empty() { "0" } else { whole };
     let fraction = raw_fraction.unwrap_or_default().trim_end_matches('0');
-    let limit = if negative { "9223372036854775808" } else { "9223372036854775807" };
+    let limit = if negative {
+        "9223372036854775808"
+    } else {
+        "9223372036854775807"
+    };
     match whole.len().cmp(&limit.len()).then_with(|| whole.cmp(limit)) {
         Ordering::Greater => return None,
         Ordering::Equal if negative && !fraction.is_empty() => return None,
         Ordering::Less | Ordering::Equal => {}
     }
-    Some(CanonicalDecimal { negative: negative && !(whole == "0" && fraction.is_empty()), whole, fraction })
+    Some(CanonicalDecimal {
+        negative: negative && !(whole == "0" && fraction.is_empty()),
+        whole,
+        fraction,
+    })
 }
 
 #[cfg(test)]
@@ -82,11 +121,32 @@ mod tests {
 
     #[test]
     fn enforces_fraction_width_and_decimal_range() {
-        for valid in ["-9223372036854775808", "-9223372036854775808.0000000000000000000", "9223372036854775807.9999999999999999999dec"] {
-            assert!(parse_decimal(valid).is_some(), "expected {valid:?} to parse");
+        for valid in [
+            "-9223372036854775808",
+            "-9223372036854775808.0000000000000000000",
+            "9223372036854775807.9999999999999999999dec",
+        ] {
+            assert!(
+                parse_decimal(valid).is_some(),
+                "expected {valid:?} to parse"
+            );
         }
-        for invalid in ["", "dec", "1.", ".1", "1.00000000000000000000", "1.0DEC", "1.0decdec", "9223372036854775808", "-9223372036854775808.0000000000000000001", "-9223372036854775809"] {
-            assert!(parse_decimal(invalid).is_none(), "expected {invalid:?} to fail");
+        for invalid in [
+            "",
+            "dec",
+            "1.",
+            ".1",
+            "1.00000000000000000000",
+            "1.0DEC",
+            "1.0decdec",
+            "9223372036854775808",
+            "-9223372036854775808.0000000000000000001",
+            "-9223372036854775809",
+        ] {
+            assert!(
+                parse_decimal(invalid).is_none(),
+                "expected {invalid:?} to fail"
+            );
         }
     }
 }

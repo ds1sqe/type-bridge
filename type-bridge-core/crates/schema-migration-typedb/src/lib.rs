@@ -16,13 +16,13 @@ mod store;
 mod wire;
 
 pub use control_schema::{
-    JOURNAL_CONTROL_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL,
-    TYPEBRIDGE_INTERNAL_PREFIX, control_schema_labels, is_typebridge_internal_label,
+    JOURNAL_CONTROL_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL, TYPEBRIDGE_INTERNAL_PREFIX,
+    control_schema_labels, is_typebridge_internal_label,
 };
 pub use legacy_import::{extract_legacy_frontier, verify_legacy_continuity};
 pub use observation::{
-    PartitionedDeclaredSchema, observe_managed_state_from_export,
-    partition_typeql_export, rebuild_live_managed_state,
+    PartitionedDeclaredSchema, observe_managed_state_from_export, partition_typeql_export,
+    rebuild_live_managed_state,
 };
 pub use provider::{TypeDbMigrationProvider, execution_capability_vocabulary};
 pub use runner::{
@@ -30,6 +30,6 @@ pub use runner::{
     MigrationDirectoryRollbackOutcome, TypeDbMigrationRunner,
 };
 pub use store::{
-    TypeDbMigrationStore, VerifiedMigrationCatalog,
-    derived_journal_database_name, require_active_managed_fence,
+    TypeDbMigrationStore, VerifiedMigrationCatalog, derived_journal_database_name,
+    require_active_managed_fence,
 };

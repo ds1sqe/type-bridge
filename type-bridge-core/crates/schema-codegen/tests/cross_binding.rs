@@ -8,9 +8,7 @@ use type_bridge_contract::projection::{
 };
 use type_bridge_contract::schema::{DocumentId, OwnsFactId, PlaysFactId};
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
-use type_bridge_schema_codegen::{
-    GeneratedPackage, PythonEmitter, RustEmitter, TypeScriptEmitter,
-};
+use type_bridge_schema_codegen::{GeneratedPackage, PythonEmitter, RustEmitter, TypeScriptEmitter};
 
 #[derive(Debug, Eq, PartialEq)]
 struct CanonicalProjectionIds {
@@ -48,12 +46,18 @@ fn canonical_ids(projection: &RuntimeProjection) -> CanonicalProjectionIds {
 }
 
 fn missing_resource(resources: &[CodeResourceDigest]) -> Vec<CodeResourceDigest> {
-    assert!(!resources.is_empty(), "emitter must declare fixed resource evidence");
+    assert!(
+        !resources.is_empty(),
+        "emitter must declare fixed resource evidence"
+    );
     resources.iter().skip(1).cloned().collect()
 }
 
 fn mutated_resource(resources: &[CodeResourceDigest]) -> Vec<CodeResourceDigest> {
-    assert!(!resources.is_empty(), "emitter must declare fixed resource evidence");
+    assert!(
+        !resources.is_empty(),
+        "emitter must declare fixed resource evidence"
+    );
     let mut mutated = resources.to_vec();
     let id = mutated[0].id().as_str().to_owned();
     mutated[0] = CodeResourceDigest::from_bytes(id, b"mutated cross-binding evidence").unwrap();
@@ -66,8 +70,12 @@ fn assert_embeds_fingerprints(
     schema_path: &str,
     projection: &RuntimeProjection,
 ) {
-    let source = str::from_utf8(package.get(schema_path).expect("schema evidence file is emitted"))
-        .expect("generated schema evidence is UTF-8");
+    let source = str::from_utf8(
+        package
+            .get(schema_path)
+            .expect("schema evidence file is emitted"),
+    )
+    .expect("generated schema evidence is UTF-8");
     let semantic_digest = projection
         .semantic_fingerprint()
         .as_fingerprint()
@@ -136,11 +144,23 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
     let python_ids = canonical_ids(&python);
     assert_eq!(python_ids, canonical_ids(&typescript));
     assert_eq!(python_ids, canonical_ids(&rust));
-    assert_eq!(python.semantic_fingerprint(), typescript.semantic_fingerprint());
+    assert_eq!(
+        python.semantic_fingerprint(),
+        typescript.semantic_fingerprint()
+    );
     assert_eq!(python.semantic_fingerprint(), rust.semantic_fingerprint());
-    assert_ne!(python.projection_fingerprint(), typescript.projection_fingerprint());
-    assert_ne!(python.projection_fingerprint(), rust.projection_fingerprint());
-    assert_ne!(typescript.projection_fingerprint(), rust.projection_fingerprint());
+    assert_ne!(
+        python.projection_fingerprint(),
+        typescript.projection_fingerprint()
+    );
+    assert_ne!(
+        python.projection_fingerprint(),
+        rust.projection_fingerprint()
+    );
+    assert_ne!(
+        typescript.projection_fingerprint(),
+        rust.projection_fingerprint()
+    );
 
     let python_package = python_emitter.emit(&python).unwrap();
     let typescript_package = typescript_emitter.emit(&typescript).unwrap();

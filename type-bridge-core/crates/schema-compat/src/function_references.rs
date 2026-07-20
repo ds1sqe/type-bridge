@@ -8,16 +8,16 @@ use typeql::{
     expression::{Expression, FunctionCall, FunctionName},
     pattern::Pattern,
     query::stage::{
+        Stage,
         delete::DeletableKind,
         fetch::{FetchObjectBody, FetchSingle, FetchSome, FetchStream},
         modifier::Operator,
-        Stage,
     },
     schema::definable::function::{FunctionBlock, ReturnStatement},
     statement::{
+        Statement,
         thing::{Constraint as ThingConstraint, HasValue, Head as ThingHead, Relation, RolePlayer},
         type_::{ConstraintBase as TypeConstraintBase, LabelConstraint},
-        Statement,
     },
     type_::{
         Label as TypeqlLabel, NamedType, NamedTypeAny, ScopedLabel as TypeqlScopedLabel, TypeRef,
@@ -57,9 +57,7 @@ impl TypeqlDeclaredSchema {
     }
 
     #[must_use]
-    pub const fn function_body_references(
-        &self,
-    ) -> &BTreeMap<FunctionId, FunctionBodyReferences> {
+    pub const fn function_body_references(&self) -> &BTreeMap<FunctionId, FunctionBodyReferences> {
         &self.function_body_references
     }
 }

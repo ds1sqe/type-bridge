@@ -54,8 +54,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     )])
     .expect("shared acceptance schema parses");
     let declared = normalize_documents(&documents).expect("acceptance schema normalizes");
-    let profile =
-        SemanticProfileId::new("typedb-3.12.1/v1").expect("semantic profile is valid");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("semantic profile is valid");
     let resolved = resolve(&declared, &profile).expect("acceptance schema resolves");
     let emitter = RustEmitter::new();
     let handlers = emitter.generator_handlers();
@@ -87,7 +86,9 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         .expect("provider fixture is written");
 
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let crates_dir = crate_dir.parent().expect("schema-codegen has a crates parent");
+    let crates_dir = crate_dir
+        .parent()
+        .expect("schema-codegen has a crates parent");
     let manifest = format!(
         r#"[package]
 name = "type-bridge-rust-projection-live-consumer"

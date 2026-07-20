@@ -2,10 +2,10 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{
-    ManagedSchemaScope, SchemaDocumentSet, canonical_managed_declared_identity_bytes,
-    canonical_managed_semantic_schema_bytes, canonical_semantic_schema_bytes,
-    managed_declared_identity_fingerprint, managed_semantic_schema_fingerprint,
-    normalize_documents, semantic_schema_fingerprint, TYPEDB_3_12_1_TIMEZONE_POLICY_ID,
+    ManagedSchemaScope, SchemaDocumentSet, TYPEDB_3_12_1_TIMEZONE_POLICY_ID,
+    canonical_managed_declared_identity_bytes, canonical_managed_semantic_schema_bytes,
+    canonical_semantic_schema_bytes, managed_declared_identity_fingerprint,
+    managed_semantic_schema_fingerprint, normalize_documents, semantic_schema_fingerprint,
 };
 
 fn document(source: &str) -> SchemaDocumentSet {
@@ -61,10 +61,9 @@ entities:
       identifier: { key: true }
 "#;
     let declared = normalize_documents(&document(source)).expect("key schema normalizes");
-    let bytes = canonical_semantic_schema_bytes(&declared, &profile())
-        .expect("semantic bytes compute");
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).expect("semantic bytes are JSON");
+    let bytes =
+        canonical_semantic_schema_bytes(&declared, &profile()).expect("semantic bytes compute");
+    let value: serde_json::Value = serde_json::from_slice(&bytes).expect("semantic bytes are JSON");
     let cardinality = value["facts"]
         .as_array()
         .expect("semantic facts are an array")
@@ -104,7 +103,10 @@ fn comments_change_document_but_not_semantic_fingerprint() {
     let commented_documents = document(commented_source);
     let id = DocumentId::new("schema.yaml").expect("fixture document identifier is valid");
     assert_ne!(
-        plain_documents.get(&id).expect("document exists").fingerprint(),
+        plain_documents
+            .get(&id)
+            .expect("document exists")
+            .fingerprint(),
         commented_documents
             .get(&id)
             .expect("document exists")
@@ -112,8 +114,7 @@ fn comments_change_document_but_not_semantic_fingerprint() {
     );
 
     let plain = normalize_documents(&plain_documents).expect("plain schema normalizes");
-    let commented =
-        normalize_documents(&commented_documents).expect("commented schema normalizes");
+    let commented = normalize_documents(&commented_documents).expect("commented schema normalizes");
     assert_eq!(
         semantic_schema_fingerprint(&plain, &profile()).expect("fingerprint computes"),
         semantic_schema_fingerprint(&commented, &profile()).expect("fingerprint computes")
@@ -124,11 +125,9 @@ fn comments_change_document_but_not_semantic_fingerprint() {
 fn managed_fingerprints_bind_scope_profile_and_semantic_profile() {
     let source = "format: typebridge.schema/v2\nentities:\n  person: {}\n";
     let declared = normalize_documents(&document(source)).expect("schema normalizes");
-    let first_scope = ManagedSchemaScope::bind_exclusive(
-        ManagedScopeId::new("first-schema").unwrap(),
-        &declared,
-    )
-    .unwrap();
+    let first_scope =
+        ManagedSchemaScope::bind_exclusive(ManagedScopeId::new("first-schema").unwrap(), &declared)
+            .unwrap();
     let second_scope = ManagedSchemaScope::bind_exclusive(
         ManagedScopeId::new("second-schema").unwrap(),
         &declared,
@@ -250,10 +249,8 @@ structs:
     let optional = normalize_documents(&document(optional)).unwrap();
 
     let first = semantic_schema_fingerprint(&first, &profile()).unwrap();
-    let reordered =
-        semantic_schema_fingerprint(&reordered, &profile()).unwrap();
-    let optional =
-        semantic_schema_fingerprint(&optional, &profile()).unwrap();
+    let reordered = semantic_schema_fingerprint(&reordered, &profile()).unwrap();
+    let optional = semantic_schema_fingerprint(&optional, &profile()).unwrap();
 
     assert_ne!(first, reordered);
     assert_ne!(first, optional);

@@ -1,8 +1,6 @@
 use chrono::{LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::temporal::{
-    CanonicalDateTime, CanonicalDateTimeTz, TimeZoneDesignator,
-};
+use type_bridge_contract::temporal::{CanonicalDateTime, CanonicalDateTimeTz, TimeZoneDesignator};
 
 /// Exact named-timezone database policy used by the TypeDB 3.12.1 schema profile.
 ///
@@ -53,12 +51,12 @@ fn resolve_named(
         .copied()
         .find(|timezone| timezone.name().eq_ignore_ascii_case(authored_name))
         .ok_or_else(|| {
-        timezone_diagnostic(
-            "unknown_named_timezone",
-            "named timezone is not present in the pinned IANA database",
-        )
-        .with_detail("zone", authored_name)
-    })?;
+            timezone_diagnostic(
+                "unknown_named_timezone",
+                "named timezone is not present in the pinned IANA database",
+            )
+            .with_detail("zone", authored_name)
+        })?;
     let naive = chrono_datetime(local)?;
     let resolved = match timezone.from_local_datetime(&naive) {
         LocalResult::Single(value) => value,
@@ -110,7 +108,7 @@ fn timezone_diagnostic(code: &'static str, message: &'static str) -> Diagnostic 
         DiagnosticCode::new(code).expect("static timezone diagnostic code is valid"),
         message,
     )
-        .with_detail("timezone_policy", TYPEDB_3_12_1_TIMEZONE_POLICY_ID)
+    .with_detail("timezone_policy", TYPEDB_3_12_1_TIMEZONE_POLICY_ID)
 }
 
 #[cfg(test)]
@@ -139,7 +137,10 @@ mod tests {
             TimeZoneDesignator::Named("Europe/London".to_owned()),
         )
         .expect_err("gap has no UTC instant");
-        assert_eq!(gap.code().as_str(), "nonexistent_named_timezone_local_datetime");
+        assert_eq!(
+            gap.code().as_str(),
+            "nonexistent_named_timezone_local_datetime"
+        );
 
         let overlap = resolve_provider_datetime_tz(
             local("2024-10-27T01:30:00"),

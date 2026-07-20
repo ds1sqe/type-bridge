@@ -14,14 +14,12 @@ use crate::limits::MAX_CANONICAL_STRING_BYTES;
 use crate::semantic_profile::{InterfaceKind, SemanticProfile};
 
 /// The only managed-scope profile supported by the first workspace format.
-pub const EXCLUSIVE_MANAGED_SCOPE_PROFILE_ID: &str =
-    "typebridge.managed-scope/exclusive/v1";
+pub const EXCLUSIVE_MANAGED_SCOPE_PROFILE_ID: &str = "typebridge.managed-scope/exclusive/v1";
 /// Fingerprint domain for frozen managed-scope profile definitions.
 pub const MANAGED_SCOPE_PROFILE_FINGERPRINT_DOMAIN: &str =
     "typebridge.schema.managed-scope-profile";
 /// Canonicalization contract for frozen managed-scope profile definitions.
-pub const MANAGED_SCOPE_PROFILE_CANONICALIZATION: &str =
-    "typebridge.managed-scope-profile/v1";
+pub const MANAGED_SCOPE_PROFILE_CANONICALIZATION: &str = "typebridge.managed-scope-profile/v1";
 /// Fingerprint domain for frozen semantic-profile definitions.
 pub const SEMANTIC_PROFILE_FINGERPRINT_DOMAIN: &str = "typebridge.schema.semantic-profile";
 /// Canonicalization contract for frozen semantic-profile definitions.
@@ -235,9 +233,7 @@ struct SemanticProfileView<'a> {
 }
 
 /// Return byte-exact content for one frozen semantic profile.
-pub fn semantic_profile_canonical_bytes(
-    profile: &SemanticProfile,
-) -> Result<Vec<u8>, Diagnostic> {
+pub fn semantic_profile_canonical_bytes(profile: &SemanticProfile) -> Result<Vec<u8>, Diagnostic> {
     to_canonical_json(&SemanticProfileView {
         id: profile.id(),
         key_owns_default: profile.effective_cardinality(InterfaceKind::Owns, None, true),

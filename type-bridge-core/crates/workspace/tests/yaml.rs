@@ -1,4 +1,4 @@
-use std::cell:: Cell;
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
@@ -45,10 +45,7 @@ extensions:
 struct CanonicalSource(Cell<usize>);
 
 impl WorkspaceSourceService for CanonicalSource {
-    fn canonicalize_workspace_root(
-        &self,
-        root: &Path,
-    ) -> Result<PathBuf, WorkspaceServiceError> {
+    fn canonicalize_workspace_root(&self, root: &Path) -> Result<PathBuf, WorkspaceServiceError> {
         self.0.set(self.0.get() + 1);
         Ok(root.to_path_buf())
     }
@@ -156,12 +153,18 @@ fn bytes_text_and_programmatic_builder_resolve_to_the_same_config() {
 fn located_spec_retains_exact_source_comments_spans_and_origin() {
     let located = TypeBridgeConfigSpec::parse_yaml(WORKSPACE_YAML, origin()).unwrap();
     assert_eq!(located.spec().source(), WORKSPACE_YAML);
-    assert_eq!(located.origin().manifest_path(), Path::new("config/typebridge.yaml"));
+    assert_eq!(
+        located.origin().manifest_path(),
+        Path::new("config/typebridge.yaml")
+    );
     assert_eq!(
         located.origin().manifest_absolute_path(),
         PathBuf::from("/virtual/project/config/typebridge.yaml")
     );
-    assert_eq!(located.origin().diagnostic_name(), "virtual workspace config");
+    assert_eq!(
+        located.origin().diagnostic_name(),
+        "virtual workspace config"
+    );
     assert_eq!(located.spec().comments().len(), 1);
     assert!(
         located.spec().comments()[0]
@@ -181,7 +184,10 @@ fn manifest_relative_paths_are_normalized_but_cannot_escape_workspace_root() {
         .unwrap()
         .resolve(&services(&source, &secrets, &extensions))
         .unwrap();
-    assert_eq!(config.schema_set().as_path(), Path::new("schema/schema.yaml"));
+    assert_eq!(
+        config.schema_set().as_path(),
+        Path::new("schema/schema.yaml")
+    );
     assert_eq!(
         config.migration_v2_directory().as_path(),
         Path::new("migrations/v2")
@@ -222,7 +228,10 @@ fn closed_wire_rejects_unknown_duplicate_missing_and_wrong_types_with_spans() {
 
     let missing = WORKSPACE_YAML.replace("  app-label: example\n", "");
     let error = TypeBridgeConfigSpec::parse_yaml(missing, origin()).unwrap_err();
-    assert_eq!(error.code(), WorkspaceConfigErrorCode::MissingWorkspaceField);
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::MissingWorkspaceField
+    );
     assert_eq!(error.detail(), Some("migrations.app-label"));
     assert!(error.source_span().is_some());
 
@@ -231,17 +240,17 @@ fn closed_wire_rejects_unknown_duplicate_missing_and_wrong_types_with_spans() {
         "schema: []",
     );
     let error = TypeBridgeConfigSpec::parse_yaml(wrong_type, origin()).unwrap_err();
-    assert_eq!(error.code(), WorkspaceConfigErrorCode::InvalidWorkspaceValue);
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::InvalidWorkspaceValue
+    );
     assert_eq!(error.detail(), Some("schema"));
     assert!(error.source_span().is_some());
 }
 
 #[test]
 fn format_encoding_and_origin_are_explicit_and_fail_closed() {
-    let unsupported = WORKSPACE_YAML.replace(
-        "typebridge.workspace/v1",
-        "typebridge.workspace/v2",
-    );
+    let unsupported = WORKSPACE_YAML.replace("typebridge.workspace/v1", "typebridge.workspace/v2");
     let error = TypeBridgeConfigSpec::parse_yaml(unsupported, origin()).unwrap_err();
     assert_eq!(
         error.code(),
@@ -270,7 +279,10 @@ fn secret_literals_and_unknown_binding_targets_are_rejected_before_resolution() 
         "  typedb.credential: committed-secret",
     );
     let error = TypeBridgeConfigSpec::parse_yaml(literal, origin()).unwrap_err();
-    assert_eq!(error.code(), WorkspaceConfigErrorCode::InvalidWorkspaceValue);
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::InvalidWorkspaceValue
+    );
     assert_eq!(error.detail(), Some("secrets.*"));
     assert!(error.source_span().is_some());
 

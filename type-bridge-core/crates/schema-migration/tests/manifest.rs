@@ -7,30 +7,24 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::CANONICAL_CODEC_LIMITS;
 use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileBinding};
 use type_bridge_contract::migration::{
-    CONDITIONAL_RESOLUTION_CAPABILITY, MigrationAppLabel, MigrationId,
-    MigrationName, MigrationPlanFingerprint, MigrationStep, MigrationStepId,
-    SchemaDeltaStep,
+    CONDITIONAL_RESOLUTION_CAPABILITY, MigrationAppLabel, MigrationId, MigrationName,
+    MigrationPlanFingerprint, MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-    CanonicalValueRange, DeclaredSchema, DocumentId, SchemaAnnotationValue,
-    SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId, TypeFact,
-    ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
+    DeclaredSchema, DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact,
+    SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
-    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile,
-    derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
-    resolve,
-};
-use type_bridge_query::{
-    MigrationAssertionValidationContext, lower_condition_to_plan,
+    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, derive_safety_conditions,
+    diff_managed, inverse_delta, managed_schema_state, resolve,
 };
 use type_bridge_schema_migration::{
     SchemaMigrationDraft, build_verified_manifest, decode_verified_manifest,
-    encode_verified_manifest, schema_lowering_profile_binding,
-    verified_manifest_digest,
+    encode_verified_manifest, schema_lowering_profile_binding, verified_manifest_digest,
 };
 
 fn type_fact(label: &str) -> SchemaFact {
@@ -90,8 +84,7 @@ fn assertion_capabilities() -> CapabilitySet {
     ]
     .into_iter()
     .map(|capability| {
-        type_bridge_contract::capability::CapabilityId::new(capability)
-            .expect("fixture capability")
+        type_bridge_contract::capability::CapabilityId::new(capability).expect("fixture capability")
     })
     .collect()
 }
@@ -122,10 +115,7 @@ fn abstract_fact(label: &str) -> SchemaFact {
     let id = TypeId::new(TypeKind::Entity, label).expect("fixture type");
     SchemaFact::Annotation(
         AnnotationFact::new(
-            AnnotationFactId::new(
-                AnnotationSubjectId::Type(id),
-                AnnotationKindId::Abstract,
-            ),
+            AnnotationFactId::new(AnnotationSubjectId::Type(id), AnnotationKindId::Abstract),
             SchemaAnnotationValue::Presence,
         )
         .expect("abstract annotation"),
@@ -141,14 +131,8 @@ fn derived_assertion(
     context: &ManagedDeltaContext,
 ) -> MigrationStep {
     let profiles = safety_derivation_profile();
-    let derived = derive_safety_conditions(
-        operation_index,
-        operation,
-        source,
-        target,
-        &profiles,
-    )
-    .expect("derived condition");
+    let derived = derive_safety_conditions(operation_index, operation, source, target, &profiles)
+        .expect("derived condition");
     let resolved = resolve(source, context.semantic_profile()).expect("resolved source");
     let managed = managed_schema_state(source, context).expect("managed source");
     let validation = MigrationAssertionValidationContext::new(&resolved, &managed);
@@ -210,12 +194,8 @@ fn additive_fixture() -> (
         Some(reverse),
     )
     .expect("fixture step");
-    let draft = SchemaMigrationDraft::new(
-        migration_id("0002_add_company"),
-        Vec::new(),
-        vec![step],
-    )
-    .expect("fixture draft");
+    let draft = SchemaMigrationDraft::new(migration_id("0002_add_company"), Vec::new(), vec![step])
+        .expect("fixture draft");
     let verified = build_verified_manifest(draft, (&source, &context)).expect("verified fixture");
     (source, context, verified)
 }
@@ -268,7 +248,10 @@ fn exact_wire_golden_roundtrips_and_has_external_raw_digest() {
     assert_eq!(decoded.source_schema(), &source);
     let digest = verified_manifest_digest(&verified).expect("external digest");
     assert_eq!(digest.to_hex().len(), 64);
-    assert_eq!(digest, type_bridge_contract::migration::MigrationManifestDigest::compute(&bytes));
+    assert_eq!(
+        digest,
+        type_bridge_contract::migration::MigrationManifestDigest::compute(&bytes)
+    );
 }
 
 #[test]
@@ -289,11 +272,13 @@ fn tamper_unknown_noncanonical_and_resource_inputs_fail_closed() {
 
     let mut unknown: Value = serde_json::from_slice(&bytes).expect("fixture JSON");
     unknown["unknown"] = json!(true);
-    assert!(decode_verified_manifest(
-        &serde_json::to_vec(&unknown).expect("canonical unknown"),
-        (&source, &context)
-    )
-    .is_err());
+    assert!(
+        decode_verified_manifest(
+            &serde_json::to_vec(&unknown).expect("canonical unknown"),
+            (&source, &context)
+        )
+        .is_err()
+    );
 
     let mut spaced = bytes.clone();
     spaced.insert(0, b' ');
@@ -334,19 +319,23 @@ fn limits_profiles_and_capability_claims_fail_closed() {
 
     let mut profile: Value = serde_json::from_slice(&bytes).expect("fixture JSON");
     profile["contract"]["semantic_profile"]["id"] = json!("typedb-9.9.9/v1");
-    assert!(decode_verified_manifest(
-        &serde_json::to_vec(&profile).expect("canonical profile tamper"),
-        (&source, &context)
-    )
-    .is_err());
+    assert!(
+        decode_verified_manifest(
+            &serde_json::to_vec(&profile).expect("canonical profile tamper"),
+            (&source, &context)
+        )
+        .is_err()
+    );
 
     let mut capability: Value = serde_json::from_slice(&bytes).expect("fixture JSON");
     capability["required_capabilities"] = json!(["schema.future"]);
-    assert!(decode_verified_manifest(
-        &serde_json::to_vec(&capability).expect("canonical capability tamper"),
-        (&source, &context)
-    )
-    .is_err());
+    assert!(
+        decode_verified_manifest(
+            &serde_json::to_vec(&capability).expect("canonical capability tamper"),
+            (&source, &context)
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -372,12 +361,8 @@ fn new_subtype_sub_edge_is_provably_condition_free() {
         None,
     )
     .expect("subtype step");
-    let draft = SchemaMigrationDraft::new(
-        migration_id("0003_new_subtype"),
-        Vec::new(),
-        vec![step],
-    )
-    .expect("subtype draft");
+    let draft = SchemaMigrationDraft::new(migration_id("0003_new_subtype"), Vec::new(), vec![step])
+        .expect("subtype draft");
     let manifest = build_verified_manifest(draft, (&source, &context))
         .expect("a same-transition subtype needs no assertion coverage");
     assert_eq!(manifest.safety(), SafetyClass::Conditional);
@@ -439,12 +424,9 @@ fn unresolved_safety_and_broken_step_chains_are_rejected_but_destructive_is_veri
         None,
     )
     .expect("second step");
-    let broken = SchemaMigrationDraft::new(
-        migration_id("0004_broken"),
-        Vec::new(),
-        vec![first, second],
-    )
-    .expect("broken draft shape");
+    let broken =
+        SchemaMigrationDraft::new(migration_id("0004_broken"), Vec::new(), vec![first, second])
+            .expect("broken draft shape");
     assert_eq!(
         build_verified_manifest(broken, (&source, &context))
             .expect_err("broken chain")
@@ -476,11 +458,13 @@ fn unresolved_safety_and_broken_step_chains_are_rejected_but_destructive_is_veri
     let mut inverse_tamper: Value =
         serde_json::from_slice(&destructive_bytes).expect("destructive JSON");
     inverse_tamper["steps"][0]["contract"]["reverse"] = Value::Null;
-    assert!(decode_verified_manifest(
-        &serde_json::to_vec(&inverse_tamper).expect("canonical inverse tamper"),
-        (&additive_target, &context)
-    )
-    .is_err());
+    assert!(
+        decode_verified_manifest(
+            &serde_json::to_vec(&inverse_tamper).expect("canonical inverse tamper"),
+            (&additive_target, &context)
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -492,8 +476,8 @@ fn conditional_assertions_are_exact_ordered_and_canonical() {
         vec![assertion, MigrationStep::from(schema)],
     )
     .expect("conditional draft");
-    let verified = build_verified_manifest(draft, (&source, &context))
-        .expect("conditional manifest");
+    let verified =
+        build_verified_manifest(draft, (&source, &context)).expect("conditional manifest");
     assert_eq!(verified.safety(), SafetyClass::Conditional);
     assert_eq!(
         verified.target_schema().declared_identity_fingerprint(),
@@ -576,10 +560,9 @@ fn missing_extra_reordered_and_tampered_assertions_fail_closed() {
     )
     .expect("valid draft");
     let verified = build_verified_manifest(valid, (&source, &context)).expect("verified");
-    let mut value: Value = serde_json::from_slice(
-        &encode_verified_manifest(&verified).expect("manifest bytes"),
-    )
-    .expect("manifest JSON");
+    let mut value: Value =
+        serde_json::from_slice(&encode_verified_manifest(&verified).expect("manifest bytes"))
+            .expect("manifest JSON");
     value["steps"][0]["kind"] = json!("future");
     assert_eq!(
         decode_verified_manifest(
@@ -632,11 +615,13 @@ fn assertion_capabilities_are_gated_before_coverage_trust() {
         )
         .expect("conditional draft")
     };
-    assert!(build_verified_manifest(
-        draft("0012_missing_all_assertion_caps"),
-        (&source, &context()),
-    )
-    .is_err());
+    assert!(
+        build_verified_manifest(
+            draft("0012_missing_all_assertion_caps"),
+            (&source, &context()),
+        )
+        .is_err()
+    );
 
     let without_isa = [
         CONDITIONAL_RESOLUTION_CAPABILITY,
@@ -644,15 +629,16 @@ fn assertion_capabilities_are_gated_before_coverage_trust() {
     ]
     .into_iter()
     .map(|capability| {
-        type_bridge_contract::capability::CapabilityId::new(capability)
-            .expect("fixture capability")
+        type_bridge_contract::capability::CapabilityId::new(capability).expect("fixture capability")
     })
     .collect();
-    assert!(build_verified_manifest(
-        draft("0013_missing_pattern_cap"),
-        (&source, &context_with_capabilities(without_isa)),
-    )
-    .is_err());
+    assert!(
+        build_verified_manifest(
+            draft("0013_missing_pattern_cap"),
+            (&source, &context_with_capabilities(without_isa)),
+        )
+        .is_err()
+    );
 
     let without_resolution = ["query.migration-assertion", "query.pattern.isa"]
         .into_iter()
@@ -661,11 +647,13 @@ fn assertion_capabilities_are_gated_before_coverage_trust() {
                 .expect("fixture capability")
         })
         .collect();
-    assert!(build_verified_manifest(
-        draft("0014_missing_conditional_resolution"),
-        (&source, &context_with_capabilities(without_resolution)),
-    )
-    .is_err());
+    assert!(
+        build_verified_manifest(
+            draft("0014_missing_conditional_resolution"),
+            (&source, &context_with_capabilities(without_resolution)),
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -678,10 +666,8 @@ fn assertions_may_be_adjacent_to_their_chunk_between_state_changes() {
         abstract_fact("person"),
     ]);
     let context = assertion_context();
-    let first_delta =
-        diff_managed(&source, &intermediate, &context).expect("first delta");
-    let second_delta =
-        diff_managed(&intermediate, &target, &context).expect("second delta");
+    let first_delta = diff_managed(&source, &intermediate, &context).expect("first delta");
+    let second_delta = diff_managed(&intermediate, &target, &context).expect("second delta");
     let assertion = derived_assertion(
         "assert-between-chunks",
         0,
@@ -712,8 +698,8 @@ fn assertions_may_be_adjacent_to_their_chunk_between_state_changes() {
         ],
     )
     .expect("multi-chunk draft");
-    let verified = build_verified_manifest(draft, (&source, &context))
-        .expect("multi-chunk verification");
+    let verified =
+        build_verified_manifest(draft, (&source, &context)).expect("multi-chunk verification");
     assert_eq!(
         verified.target_schema().declared_identity_fingerprint(),
         target.declared_identity_fingerprint(),
@@ -730,17 +716,15 @@ fn canonical_plan_tamper_with_recomputed_outer_claims_is_rejected() {
     )
     .expect("valid draft");
     let verified = build_verified_manifest(valid, (&source, &context)).expect("verified");
-    let mut manifest: Value = serde_json::from_slice(
-        &encode_verified_manifest(&verified).expect("manifest bytes"),
-    )
-    .expect("manifest JSON");
+    let mut manifest: Value =
+        serde_json::from_slice(&encode_verified_manifest(&verified).expect("manifest bytes"))
+            .expect("manifest JSON");
     let mut plan = manifest["steps"][0]["plan"].clone();
     plan["bindings"][0]["variable"] = json!("tampered_instance");
-    let tampered_plan =
-        type_bridge_contract::migration_assertion::decode_migration_assertion_plan(
-            &to_canonical_json(&plan).expect("tampered canonical plan"),
-        )
-        .expect("tampered plan remains a valid contract");
+    let tampered_plan = type_bridge_contract::migration_assertion::decode_migration_assertion_plan(
+        &to_canonical_json(&plan).expect("tampered canonical plan"),
+    )
+    .expect("tampered plan remains a valid contract");
     let tampered_assertion = MigrationStep::assertion(
         assertion.id().clone(),
         tampered_plan,
@@ -756,10 +740,9 @@ fn canonical_plan_tamper_with_recomputed_outer_claims_is_rejected() {
             .expect("tampered assertion bytes"),
     )
     .expect("tampered assertion JSON");
-    manifest["fingerprints"]["plan"] = serde_json::from_slice(
-        &to_canonical_json(&outer_plan).expect("outer plan bytes"),
-    )
-    .expect("outer plan JSON");
+    manifest["fingerprints"]["plan"] =
+        serde_json::from_slice(&to_canonical_json(&outer_plan).expect("outer plan bytes"))
+            .expect("outer plan JSON");
     assert_eq!(
         decode_verified_manifest(
             &serde_json::to_vec(&manifest).expect("tampered manifest bytes"),
@@ -778,15 +761,10 @@ fn reordered_assertions_have_a_stable_plan_mismatch_diagnostic() {
     let subject = AnnotationSubjectId::Value(ValueFactId::new(age.clone()));
     let base = vec![
         SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, "age").expect("attribute type"),
-            )
-            .expect("type fact"),
+            TypeFact::new(TypeId::new(TypeKind::Attribute, "age").expect("attribute type"))
+                .expect("type fact"),
         ),
-        SchemaFact::Value(ValueFact::new(
-            ValueFactId::new(age),
-            ValueTypeTag::Long,
-        )),
+        SchemaFact::Value(ValueFact::new(ValueFactId::new(age), ValueTypeTag::Long)),
     ];
     let range = SchemaFact::Annotation(
         AnnotationFact::new(
@@ -806,14 +784,8 @@ fn reordered_assertions_have_a_stable_plan_mismatch_diagnostic() {
     let context = assertion_context();
     let delta = diff_managed(&source, &target, &context).expect("range delta");
     let profiles = safety_derivation_profile();
-    let derived = derive_safety_conditions(
-        0,
-        &delta.operations()[0],
-        &source,
-        &target,
-        &profiles,
-    )
-    .expect("range conditions");
+    let derived = derive_safety_conditions(0, &delta.operations()[0], &source, &target, &profiles)
+        .expect("range conditions");
     assert_eq!(derived.conditions().len(), 2);
     let resolved = resolve(&source, context.semantic_profile()).expect("resolved source");
     let managed = managed_schema_state(&source, &context).expect("managed source");
@@ -830,8 +802,7 @@ fn reordered_assertions_have_a_stable_plan_mismatch_diagnostic() {
             )
             .expect("lowered range condition");
             MigrationStep::assertion(
-                MigrationStepId::new(format!("range-assertion-{index}"))
-                    .expect("assertion id"),
+                MigrationStepId::new(format!("range-assertion-{index}")).expect("assertion id"),
                 validated.plan().clone(),
                 AssertionExpectation::NoRows,
             )

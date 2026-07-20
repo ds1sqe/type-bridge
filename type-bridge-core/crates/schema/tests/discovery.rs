@@ -1,13 +1,13 @@
-use std::fs;
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use type_bridge_schema::{
-    SchemaDiscoveryLimits, SchemaParseLimits, SchemaSourceCapture,
-    SchemaSourceObservation, SchemaSourceService, SchemaSourceServiceError,
-    SystemSchemaSourceService, discover_schema_documents,
-    discover_schema_documents_with_limits, load_schema_set, load_schema_set_with_source,
+    SchemaDiscoveryLimits, SchemaParseLimits, SchemaSourceCapture, SchemaSourceObservation,
+    SchemaSourceService, SchemaSourceServiceError, SystemSchemaSourceService,
+    discover_schema_documents, discover_schema_documents_with_limits, load_schema_set,
+    load_schema_set_with_source,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -38,8 +38,7 @@ impl TempDirectory {
 
     fn write_source(&self, relative: &str, source: &str) {
         let path = self.path().join(relative);
-        fs::create_dir_all(path.parent().expect("source parent"))
-            .expect("create source parent");
+        fs::create_dir_all(path.parent().expect("source parent")).expect("create source parent");
         fs::write(path, source).expect("write schema source");
     }
 }
@@ -69,10 +68,7 @@ impl SchemaSourceService for ForwardingSource {
         self.0.symlink_metadata(path)
     }
 
-    fn read_directory_names(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<OsString>, SchemaSourceServiceError> {
+    fn read_directory_names(&self, path: &Path) -> Result<Vec<OsString>, SchemaSourceServiceError> {
         self.0.read_directory_names(path)
     }
 
@@ -107,10 +103,7 @@ impl SchemaSourceService for MutatingSource {
         self.system.symlink_metadata(path)
     }
 
-    fn read_directory_names(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<OsString>, SchemaSourceServiceError> {
+    fn read_directory_names(&self, path: &Path) -> Result<Vec<OsString>, SchemaSourceServiceError> {
         self.system.read_directory_names(path)
     }
 
@@ -186,8 +179,8 @@ fn portable_patterns_reject_traversal_absolute_and_extended_globs() {
     }
 
     let decomposed = "fragments/cafe\u{301}.yaml";
-    let error = discover_schema_documents(&manifest, [decomposed])
-        .expect_err("non-NFC pattern must fail");
+    let error =
+        discover_schema_documents(&manifest, [decomposed]).expect_err("non-NFC pattern must fail");
     assert_eq!(code(&error), "schema_source_pattern_not_nfc");
 }
 
@@ -197,15 +190,12 @@ fn every_pattern_must_match_and_overlaps_are_not_deduplicated() {
     let manifest = directory.manifest();
     directory.write_source("fragments/a.yaml", "root: a\n");
 
-    let empty = discover_schema_documents(&manifest, ["missing/*.yaml"])
-        .expect_err("empty glob must fail");
+    let empty =
+        discover_schema_documents(&manifest, ["missing/*.yaml"]).expect_err("empty glob must fail");
     assert_eq!(code(&empty), "empty_schema_source_pattern");
 
-    let overlap = discover_schema_documents(
-        &manifest,
-        ["fragments/*.yaml", "fragments/a.yaml"],
-    )
-    .expect_err("overlapping patterns must fail");
+    let overlap = discover_schema_documents(&manifest, ["fragments/*.yaml", "fragments/a.yaml"])
+        .expect_err("overlapping patterns must fail");
     assert_eq!(code(&overlap), "overlapping_schema_source_patterns");
 }
 
@@ -219,7 +209,10 @@ fn manifest_non_yaml_and_non_regular_matches_fail_closed() {
 
     let selected_manifest = discover_schema_documents(&manifest, ["schema.yaml"])
         .expect_err("manifest cannot select itself");
-    assert_eq!(code(&selected_manifest), "schema_manifest_selected_as_source");
+    assert_eq!(
+        code(&selected_manifest),
+        "schema_manifest_selected_as_source"
+    );
 
     let non_yaml = discover_schema_documents(&manifest, ["fragments/readme.txt"])
         .expect_err("non-yaml source must fail");
@@ -251,21 +244,13 @@ fn document_and_walk_limits_apply_before_unbounded_loading() {
 
     let parse_limits = SchemaParseLimits::new(1, 64, 64, 8, 32, 32);
     let limits = SchemaDiscoveryLimits::new(parse_limits, 4, 64, 16, 8);
-    let documents = discover_schema_documents_with_limits(
-        &manifest,
-        ["fragments/*.yaml"],
-        limits,
-    )
-    .expect_err("document ceiling must fail");
+    let documents = discover_schema_documents_with_limits(&manifest, ["fragments/*.yaml"], limits)
+        .expect_err("document ceiling must fail");
     assert_eq!(code(&documents), "schema_document_count_limit");
 
     let limits = SchemaDiscoveryLimits::new(parse_limits, 4, 64, 1, 8);
-    let entries = discover_schema_documents_with_limits(
-        &manifest,
-        ["fragments/a.yaml"],
-        limits,
-    )
-    .expect_err("walk ceiling must fail");
+    let entries = discover_schema_documents_with_limits(&manifest, ["fragments/a.yaml"], limits)
+        .expect_err("walk ceiling must fail");
     assert_eq!(code(&entries), "schema_discovery_entry_limit");
 }
 
@@ -300,12 +285,8 @@ fn injected_source_mutation_fails_full_recapture() {
         captures: AtomicUsize::new(0),
     };
 
-    let error = load_schema_set_with_source(
-        &manifest,
-        &source,
-        SchemaDiscoveryLimits::default(),
-    )
-    .expect_err("mutation after first capture must fail");
+    let error = load_schema_set_with_source(&manifest, &source, SchemaDiscoveryLimits::default())
+        .expect_err("mutation after first capture must fail");
     assert_eq!(code(&error), "schema_discovery_snapshot_changed");
 }
 
@@ -330,11 +311,8 @@ fn symlink_escape_and_file_aliases_are_rejected() {
     fs::remove_file(directory.path().join("fragments/alias.yaml")).expect("remove alias");
     let outside = TempDirectory::new();
     outside.write_source("escaped.yaml", "root: escaped\n");
-    symlink(
-        outside.path(),
-        directory.path().join("fragments/outside"),
-    )
-    .expect("create escaping directory link");
+    symlink(outside.path(), directory.path().join("fragments/outside"))
+        .expect("create escaping directory link");
 
     let escape = discover_schema_documents(&manifest, ["fragments/**/*.yaml"])
         .expect_err("root escape must fail");
@@ -366,11 +344,8 @@ fn injected_source_preserves_escape_and_alias_rejections() {
     fs::remove_file(directory.path().join("fragments/alias.yaml")).expect("remove alias");
     let outside = TempDirectory::new();
     outside.write_source("escaped.yaml", "root: escaped\n");
-    symlink(
-        outside.path(),
-        directory.path().join("fragments/outside"),
-    )
-    .expect("create injected escape");
+    symlink(outside.path(), directory.path().join("fragments/outside"))
+        .expect("create injected escape");
     let manifest = write_loadable_manifest(&directory, "fragments/**/*.yaml");
 
     let escape = load_schema_set_with_source(

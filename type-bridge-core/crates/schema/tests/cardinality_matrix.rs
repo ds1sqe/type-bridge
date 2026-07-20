@@ -187,8 +187,14 @@ entities:
             "format: typebridge.schema/v2\nattributes:\n  name: {{ value: string }}\nentities:\n  person:\n    owns:\n      name: {{ card: {card} }}\n"
         );
         let diagnostics = normalize(&source).expect_err("invalid cardinality must fail");
-        let diagnostic = diagnostics.iter().next().expect("one diagnostic is emitted");
-        assert_eq!(diagnostic.diagnostic().code().as_str(), "invalid_cardinality");
+        let diagnostic = diagnostics
+            .iter()
+            .next()
+            .expect("one diagnostic is emitted");
+        assert_eq!(
+            diagnostic.diagnostic().code().as_str(),
+            "invalid_cardinality"
+        );
         assert!(diagnostic.primary().is_some());
     }
 }

@@ -9,35 +9,28 @@ use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
-use type_bridge_contract::managed_scope::{
-    ManagedScopeId, SemanticProfileBinding,
-};
+use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileBinding};
 use type_bridge_contract::migration::{
-    CONDITIONAL_RESOLUTION_CAPABILITY, MigrationAppLabel, MigrationId,
-    MigrationName, MigrationStep, MigrationStepId, SchemaDeltaStep,
+    CONDITIONAL_RESOLUTION_CAPABILITY, MigrationAppLabel, MigrationId, MigrationName,
+    MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-    DeclaredSchema, DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-    SourcedSchemaFact, SubFact, SubFactId, TypeFact,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact,
+    SubFactId, TypeFact,
 };
-use type_bridge_query::{
-    MigrationAssertionValidationContext, lower_condition_to_plan,
-};
+use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
-    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile,
-    derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state,
-    resolve,
+    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, derive_safety_conditions,
+    diff_managed, inverse_delta, managed_schema_state, resolve,
 };
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, ExecutionScope, GroupEventRecord,
-    GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId,
-    MigrationApplyApproval, MigrationApplyPlanError, MigrationApplyTarget,
-    MigrationExecutionOutcome, MigrationHistoryGraph, MigrationLease,
-    MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision,
-    SchemaLoweringBinding, SchemaMigrationDraft, StatementUnit,
-    VerifiedMigrationApplyStep, build_verified_manifest,
+    AppliedRecord, ExecutionFence, ExecutionScope, GroupEventRecord, GroupJournalEventKind,
+    JournalEntry, JournalSequence, LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError,
+    MigrationApplyTarget, MigrationExecutionOutcome, MigrationHistoryGraph, MigrationLease,
+    MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision, SchemaLoweringBinding,
+    SchemaMigrationDraft, StatementUnit, VerifiedMigrationApplyStep, build_verified_manifest,
     build_verified_migration_apply_plan, execute_verified_migration_apply_plan,
     schema_lowering_profile_binding, typedb_3_12_1_profile,
 };
@@ -97,10 +90,7 @@ fn abstract_fact(label: &str) -> SchemaFact {
     let id = TypeId::new(TypeKind::Entity, label).expect("fixture type");
     SchemaFact::Annotation(
         AnnotationFact::new(
-            AnnotationFactId::new(
-                AnnotationSubjectId::Type(id),
-                AnnotationKindId::Abstract,
-            ),
+            AnnotationFactId::new(AnnotationSubjectId::Type(id), AnnotationKindId::Abstract),
             SchemaAnnotationValue::Presence,
         )
         .expect("abstract annotation"),
@@ -126,9 +116,7 @@ fn assertion_context() -> ManagedDeltaContext {
         "query.pattern.negation",
         "query.pattern.value",
     ] {
-        available.insert(
-            CapabilityId::new(capability).expect("fixture assertion capability"),
-        );
+        available.insert(CapabilityId::new(capability).expect("fixture assertion capability"));
     }
     ManagedDeltaContext::new(
         ManagedScopeId::new("example-schema").expect("scope"),
@@ -159,8 +147,7 @@ fn manifest(
         Some(reverse),
     )
     .expect("schema step");
-    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step])
-        .expect("draft");
+    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("draft");
     build_verified_manifest(draft, (source, context)).expect("verified manifest")
 }
 
@@ -176,21 +163,13 @@ fn derived_assertion_step(
         schema_lowering_profile_binding().expect("lowering profile binding"),
     )
     .expect("safety profile");
-    let derived = derive_safety_conditions(
-        0,
-        &delta.operations()[0],
-        source,
-        target,
-        &safety_profile,
-    )
-    .expect("conditional safety condition");
+    let derived =
+        derive_safety_conditions(0, &delta.operations()[0], source, target, &safety_profile)
+            .expect("conditional safety condition");
     assert_eq!(derived.conditions().len(), 1);
-    let resolved = resolve(source, context.semantic_profile())
-        .expect("resolved assertion source");
-    let source_state =
-        managed_schema_state(source, context).expect("managed assertion source");
-    let validation_context =
-        MigrationAssertionValidationContext::new(&resolved, &source_state);
+    let resolved = resolve(source, context.semantic_profile()).expect("resolved assertion source");
+    let source_state = managed_schema_state(source, context).expect("managed assertion source");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &source_state);
     let validated = lower_condition_to_plan(
         &derived.conditions()[0],
         &validation_context,
@@ -225,10 +204,10 @@ fn linear_apply_plan_is_deterministic_relowered_and_frontier_bound() {
         &target,
         &context,
     );
-    let graph = MigrationHistoryGraph::from_verified([first.clone(), second.clone()])
-        .expect("history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering");
+    let graph =
+        MigrationHistoryGraph::from_verified([first.clone(), second.clone()]).expect("history");
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
     let build = || {
         build_verified_migration_apply_plan(
             &graph,
@@ -302,13 +281,7 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
     let second_target = declared(&["person", "company", "team"]);
     let final_target = declared(&["person", "company", "team", "project"]);
     let context = context();
-    let first = manifest(
-        "0001_company",
-        Vec::new(),
-        &base,
-        &first_target,
-        &context,
-    );
+    let first = manifest("0001_company", Vec::new(), &base, &first_target, &context);
     let second = manifest(
         "0002_team",
         vec![first.id().clone()],
@@ -323,16 +296,11 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
         &final_target,
         &context,
     );
-    let graph = MigrationHistoryGraph::from_verified([
-        first.clone(),
-        second.clone(),
-        third.clone(),
-    ])
-    .expect("history");
-    let lowering = SchemaLoweringBinding::current(
-        context.available_capabilities().clone(),
-    )
-    .expect("lowering");
+    let graph =
+        MigrationHistoryGraph::from_verified([first.clone(), second.clone(), third.clone()])
+            .expect("history");
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
     let complete = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -360,7 +328,12 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
     let store = CoordinatorStore::default();
     let seed_lease = MigrationLease::new(
         ExecutionScope::new(
-            remaining.source_state().expect("source").scope().id().clone(),
+            remaining
+                .source_state()
+                .expect("source")
+                .scope()
+                .id()
+                .clone(),
         ),
         LeaseHolderId::new("seed-ledger").expect("holder"),
         ExecutionFence::new(1).expect("fence"),
@@ -371,11 +344,11 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
         for (index, migration) in complete.migrations()[..2].iter().enumerate() {
             let record = AppliedRecord::from_verified_manifest(&seed_lease, migration)
                 .expect("seed applied record");
-            let sequence = JournalSequence::new(
-                u64::try_from(index + 1).expect("sequence"),
-            )
-            .expect("sequence");
-            state.applied.push(JournalEntry::from_store(sequence, record));
+            let sequence = JournalSequence::new(u64::try_from(index + 1).expect("sequence"))
+                .expect("sequence");
+            state
+                .applied
+                .push(JournalEntry::from_store(sequence, record));
             state.next_sequence = sequence.get();
         }
     }
@@ -415,10 +388,8 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
         Some(additive_reverse),
     )
     .expect("additive schema step");
-    let conditional_delta =
-        diff_managed(&middle, &target, &context).expect("conditional delta");
-    let assertion =
-        derived_assertion_step(&middle, &target, &context, &conditional_delta);
+    let conditional_delta = diff_managed(&middle, &target, &context).expect("conditional delta");
+    let assertion = derived_assertion_step(&middle, &target, &context, &conditional_delta);
     let conditional_source_state = conditional_delta.source().clone();
     let conditional_reverse = inverse_delta(&conditional_delta).expect("conditional inverse");
     let conditional_step = SchemaDeltaStep::new(
@@ -437,13 +408,10 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
         ],
     )
     .expect("migration draft");
-    let manifest =
-        build_verified_manifest(draft, (&source, &context)).expect("verified manifest");
-    let graph = MigrationHistoryGraph::from_verified([manifest.clone()])
-        .expect("history graph");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone())
-            .expect("lowering binding");
+    let manifest = build_verified_manifest(draft, (&source, &context)).expect("verified manifest");
+    let graph = MigrationHistoryGraph::from_verified([manifest.clone()]).expect("history graph");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -472,8 +440,7 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
     let VerifiedMigrationApplyStep::Assertion { step, validated } = &steps[1] else {
         panic!("second positional step must be an execution-ready assertion");
     };
-    let (contract, persisted_plan, expectation) =
-        step.as_assertion().expect("assertion contract");
+    let (contract, persisted_plan, expectation) = step.as_assertion().expect("assertion contract");
     assert_eq!(expectation, AssertionExpectation::NoRows);
     assert_eq!(validated.source_state(), &conditional_source_state);
     assert_ne!(validated.source_state(), manifest.source_state());
@@ -487,7 +454,10 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
     );
     assert_eq!(contract.source_semantics(), contract.target_semantics());
     assert_eq!(
-        validated.plan().fingerprint().expect("validated fingerprint"),
+        validated
+            .plan()
+            .fingerprint()
+            .expect("validated fingerprint"),
         contract.plan_fingerprint().clone(),
     );
     assert_eq!(
@@ -495,8 +465,14 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
         persisted_plan.canonical_bytes().expect("persisted bytes"),
     );
     assert_eq!(validated.structural_limits(), StructuralLimits::CANONICAL);
-    assert!(matches!(&steps[0], VerifiedMigrationApplyStep::SchemaDelta { .. }));
-    assert!(matches!(&steps[2], VerifiedMigrationApplyStep::SchemaDelta { .. }));
+    assert!(matches!(
+        &steps[0],
+        VerifiedMigrationApplyStep::SchemaDelta { .. }
+    ));
+    assert!(matches!(
+        &steps[2],
+        VerifiedMigrationApplyStep::SchemaDelta { .. }
+    ));
 
     let lease = MigrationLease::new(
         ExecutionScope::new(
@@ -518,20 +494,24 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
     .expect("plan record");
     assert_eq!(record.manifest_digests(), &[apply_manifest.digest()]);
     assert_eq!(record.migration_ids(), &[manifest.id().clone()]);
-    assert!(PlanRecord::from_verified_plan(
-        &lease,
-        &plan,
-        &[migration_id("stale_frontier")],
-        plan.source_state().expect("plan source state"),
-    )
-    .is_err());
-    assert!(PlanRecord::from_verified_plan(
-        &lease,
-        &plan,
-        plan.applied_migrations(),
-        plan.target_state().expect("plan target state"),
-    )
-    .is_err());
+    assert!(
+        PlanRecord::from_verified_plan(
+            &lease,
+            &plan,
+            &[migration_id("stale_frontier")],
+            plan.source_state().expect("plan source state"),
+        )
+        .is_err()
+    );
+    assert!(
+        PlanRecord::from_verified_plan(
+            &lease,
+            &plan,
+            plan.applied_migrations(),
+            plan.target_state().expect("plan target state"),
+        )
+        .is_err()
+    );
 
     let first_delta = steps[groups[0].schema_delta_step_index()]
         .step()
@@ -548,14 +528,16 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
     .expect("before-commit event");
     assert_eq!(before.first_step_index(), 0);
     assert_eq!(before.end_step_index(), 1);
-    assert!(GroupEventRecord::new(
-        &lease,
-        apply_manifest,
-        &groups[0],
-        GroupJournalEventKind::Committed,
-        None,
-    )
-    .is_err());
+    assert!(
+        GroupEventRecord::new(
+            &lease,
+            apply_manifest,
+            &groups[0],
+            GroupJournalEventKind::Committed,
+            None,
+        )
+        .is_err()
+    );
     let committed = GroupEventRecord::new(
         &lease,
         apply_manifest,
@@ -568,8 +550,8 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
         committed.observed_target(),
         Some(first_delta.target().managed_semantic_schema()),
     );
-    let applied = AppliedRecord::from_verified_manifest(&lease, apply_manifest)
-        .expect("applied record");
+    let applied =
+        AppliedRecord::from_verified_manifest(&lease, apply_manifest).expect("applied record");
     assert_eq!(applied.migration_id(), manifest.id());
     assert_eq!(applied.manifest_digest(), apply_manifest.digest());
 
@@ -590,14 +572,20 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
     let calls = provider.calls.lock().expect("provider calls").clone();
     assert_eq!(calls.iter().filter(|call| **call == "prepare").count(), 2);
     assert_eq!(calls.iter().filter(|call| **call == "commit").count(), 2);
-    let assertion_position = calls.iter().position(|call| *call == "assertion")
+    let assertion_position = calls
+        .iter()
+        .position(|call| *call == "assertion")
         .expect("assertion call");
-    let second_prepare = calls.iter().enumerate()
+    let second_prepare = calls
+        .iter()
+        .enumerate()
         .filter(|(_, call)| **call == "prepare")
         .nth(1)
         .map(|(index, _)| index)
         .expect("second prepare");
-    let later_statement = calls.iter().enumerate()
+    let later_statement = calls
+        .iter()
+        .enumerate()
         .find(|(index, call)| *index > assertion_position && **call == "statement")
         .map(|(index, _)| index)
         .expect("statement after assertion");
@@ -626,20 +614,22 @@ fn explicit_safety_policy_rejects_before_execution_evidence_is_returned() {
     let context = context();
     let migration = manifest("0001_company", Vec::new(), &base, &target, &context);
     let graph = MigrationHistoryGraph::from_verified([migration]).expect("history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering");
-    assert!(build_verified_migration_apply_plan(
-        &graph,
-        &BTreeSet::new(),
-        &MigrationApplyTarget::DefaultHead,
-        &context,
-        &lowering,
-        &MigrationSafetyPolicy::default_policy()
-            .with_decision(SafetyClass::Additive, SafetyPolicyDecision::Reject)
-            .expect("policy rejecting additive"),
-        &[],
-    )
-    .is_err());
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    assert!(
+        build_verified_migration_apply_plan(
+            &graph,
+            &BTreeSet::new(),
+            &MigrationApplyTarget::DefaultHead,
+            &context,
+            &lowering,
+            &MigrationSafetyPolicy::default_policy()
+                .with_decision(SafetyClass::Additive, SafetyPolicyDecision::Reject)
+                .expect("policy rejecting additive"),
+            &[],
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -652,18 +642,20 @@ fn divergent_branch_sources_are_not_guessed_into_one_apply_chain() {
     let second = manifest("0002_right", Vec::new(), &base, &right, &context);
     let targets = BTreeSet::from([first.id().clone(), second.id().clone()]);
     let graph = MigrationHistoryGraph::from_verified([first, second]).expect("history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering");
-    assert!(build_verified_migration_apply_plan(
-        &graph,
-        &BTreeSet::new(),
-        &MigrationApplyTarget::Explicit(targets),
-        &context,
-        &lowering,
-        &additive_policy(),
-        &[],
-    )
-    .is_err());
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    assert!(
+        build_verified_migration_apply_plan(
+            &graph,
+            &BTreeSet::new(),
+            &MigrationApplyTarget::Explicit(targets),
+            &context,
+            &lowering,
+            &additive_policy(),
+            &[],
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -689,12 +681,9 @@ fn new_subtype_migration_lowers_without_assertion_coverage() {
         &target,
         &context,
     );
-    let graph = MigrationHistoryGraph::from_verified([verified])
-        .expect("verified history");
-    let lowering = SchemaLoweringBinding::current(
-        context.available_capabilities().clone(),
-    )
-    .expect("lowering binding");
+    let graph = MigrationHistoryGraph::from_verified([verified]).expect("verified history");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -731,10 +720,9 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
     let context = context();
     let migration = manifest("0001_drop_company", Vec::new(), &base, &target, &context);
     assert_eq!(migration.safety(), SafetyClass::Destructive);
-    let graph =
-        MigrationHistoryGraph::from_verified([migration.clone()]).expect("history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering");
+    let graph = MigrationHistoryGraph::from_verified([migration.clone()]).expect("history");
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
     let policy = MigrationSafetyPolicy::default_policy();
     let build = |approvals: &[MigrationApplyApproval]| {
         build_verified_migration_apply_plan(
@@ -753,7 +741,10 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
     else {
         panic!("missing approval must surface as a contract diagnostic");
     };
-    assert_eq!(unapproved.code().as_str(), "migration_apply_approval_required");
+    assert_eq!(
+        unapproved.code().as_str(),
+        "migration_apply_approval_required"
+    );
 
     // An approval bound to a different verified transition never matches.
     let other = manifest(
@@ -763,8 +754,7 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
         &declared(&["person", "team"]),
         &context,
     );
-    let foreign =
-        MigrationApplyApproval::for_manifest(&other).expect("foreign approval");
+    let foreign = MigrationApplyApproval::for_manifest(&other).expect("foreign approval");
     let MigrationApplyPlanError::Contract(still_unapproved) =
         build(&[foreign]).expect_err("a foreign approval must not match")
     else {
@@ -776,8 +766,7 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
     );
 
     // The exact binding admits the manifest and its destructive lowering.
-    let approval =
-        MigrationApplyApproval::for_manifest(&migration).expect("bound approval");
+    let approval = MigrationApplyApproval::for_manifest(&migration).expect("bound approval");
     assert!(approval.binds(&migration).expect("binding check"));
     let plan = build(std::slice::from_ref(&approval)).expect("approved plan");
     let rendered_undefine = plan.migrations()[0].steps().iter().any(|step| match step {
@@ -797,11 +786,10 @@ fn destructive_reject_policy_wins_over_a_valid_approval() {
     let target = declared(&["person"]);
     let context = context();
     let migration = manifest("0001_drop_company", Vec::new(), &base, &target, &context);
-    let approval =
-        MigrationApplyApproval::for_manifest(&migration).expect("bound approval");
+    let approval = MigrationApplyApproval::for_manifest(&migration).expect("bound approval");
     let graph = MigrationHistoryGraph::from_verified([migration]).expect("history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering");
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
     let policy = MigrationSafetyPolicy::default_policy()
         .with_decision(SafetyClass::Destructive, SafetyPolicyDecision::Reject)
         .expect("rejecting policy");

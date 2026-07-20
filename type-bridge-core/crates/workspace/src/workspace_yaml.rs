@@ -10,15 +10,13 @@ use type_bridge_contract::schema::{
     DocumentFingerprint, DocumentId, SchemaDiagnostics, SourceSpan,
 };
 use type_bridge_schema::{SchemaComment, SchemaDocument, YamlMapping, YamlNode};
-use type_bridge_schema_migration::{
-    MigrationSafetyPolicy, SafetyClass, SafetyPolicyDecision,
-};
+use type_bridge_schema_migration::{MigrationSafetyPolicy, SafetyClass, SafetyPolicyDecision};
 
 use crate::{
-    ExtensionRequirement, MigrationV2Directory, OutputDirectory, SchemaSetPath,
-    SecretReference, SecretSlot, TypeBridgeConfig, TypeBridgeConfigServices,
-    WorkspaceConfigError, WorkspaceConfigErrorCode, WorkspaceEnvironment,
-    WorkspaceRoot, confined_relative_path, workspace_paths_overlap,
+    ExtensionRequirement, MigrationV2Directory, OutputDirectory, SchemaSetPath, SecretReference,
+    SecretSlot, TypeBridgeConfig, TypeBridgeConfigServices, WorkspaceConfigError,
+    WorkspaceConfigErrorCode, WorkspaceEnvironment, WorkspaceRoot, confined_relative_path,
+    workspace_paths_overlap,
 };
 
 /// The only accepted language-neutral workspace manifest discriminator.
@@ -46,7 +44,11 @@ impl ConfigOrigin {
         diagnostic_name: impl Into<String>,
     ) -> Result<Self, WorkspaceConfigError> {
         let manifest_path = confined_relative_path(manifest_path, "workspace_manifest")?;
-        if manifest_path.extension().and_then(|extension| extension.to_str()) != Some("yaml") {
+        if manifest_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            != Some("yaml")
+        {
             return Err(WorkspaceConfigError::new(
                 WorkspaceConfigErrorCode::InvalidConfigOrigin,
                 "workspace manifest origin must end in lowercase .yaml",
@@ -245,22 +247,33 @@ impl LocatedConfigSpec {
         let Self { origin, spec } = self;
         let TypeBridgeConfigSpec { document, wire } = spec;
         let schema_path = resolve_owned_path(&origin, &wire.schema_root, "schema.root")?;
-        let migration_path = resolve_owned_path(
-            &origin,
-            &wire.migration_directory,
-            "migrations.directory",
-        )?;
+        let migration_path =
+            resolve_owned_path(&origin, &wire.migration_directory, "migrations.directory")?;
 
         let schema_set = SchemaSetPath::new(schema_path)
             .map_err(|error| sourced(error, &origin, &wire.schema_root.span))?;
         let migration_v2_directory = MigrationV2Directory::new(migration_path)
             .map_err(|error| sourced(error, &origin, &wire.migration_directory.span))?;
-        let app_label = MigrationAppLabel::new(wire.app_label.value)
-            .map_err(|error| contract_value(error, "migrations.app-label", &wire.app_label.span, &origin))?;
-        let managed_scope = ManagedScopeId::new(wire.managed_scope.value)
-            .map_err(|error| contract_value(error, "schema.managed-scope", &wire.managed_scope.span, &origin))?;
-        let semantic_profile = SemanticProfileId::new(wire.semantic_profile.value)
-            .map_err(|error| contract_value(error, "compatibility.semantic-profile", &wire.semantic_profile.span, &origin))?;
+        let app_label = MigrationAppLabel::new(wire.app_label.value).map_err(|error| {
+            contract_value(error, "migrations.app-label", &wire.app_label.span, &origin)
+        })?;
+        let managed_scope = ManagedScopeId::new(wire.managed_scope.value).map_err(|error| {
+            contract_value(
+                error,
+                "schema.managed-scope",
+                &wire.managed_scope.span,
+                &origin,
+            )
+        })?;
+        let semantic_profile =
+            SemanticProfileId::new(wire.semantic_profile.value).map_err(|error| {
+                contract_value(
+                    error,
+                    "compatibility.semantic-profile",
+                    &wire.semantic_profile.span,
+                    &origin,
+                )
+            })?;
 
         let mut builder = TypeBridgeConfig::builder(origin.workspace_root.clone())
             .schema_set(schema_set)
@@ -295,12 +308,7 @@ impl LocatedConfigSpec {
 
         for capability in wire.capabilities {
             let value = CapabilityId::new(capability.value).map_err(|error| {
-                contract_value(
-                    error,
-                    "compatibility.require",
-                    &capability.span,
-                    &origin,
-                )
+                contract_value(error, "compatibility.require", &capability.span, &origin)
             })?;
             builder = builder.require_capability(value);
         }
@@ -318,22 +326,16 @@ impl LocatedConfigSpec {
             builder = builder.secret(slot, reference);
         }
         for extension in wire.extensions {
-            let requirement = ExtensionRequirement::new(
-                extension.handler.value,
-                extension.version.value,
-            )
-            .map_err(|error| sourced(error, &origin, &extension.handler.span))?;
+            let requirement =
+                ExtensionRequirement::new(extension.handler.value, extension.version.value)
+                    .map_err(|error| sourced(error, &origin, &extension.handler.span))?;
             builder = builder.require_extension(requirement);
         }
         for (name, wire_environment) in wire.environments {
             let username = SecretReference::parse_symbolic(&wire_environment.username.value)
-                .map_err(|error| {
-                    sourced(error, &origin, &wire_environment.username.span)
-                })?;
+                .map_err(|error| sourced(error, &origin, &wire_environment.username.span))?;
             let password = SecretReference::parse_symbolic(&wire_environment.password.value)
-                .map_err(|error| {
-                    sourced(error, &origin, &wire_environment.password.span)
-                })?;
+                .map_err(|error| sourced(error, &origin, &wire_environment.password.span))?;
             let mut environment = WorkspaceEnvironment::new(
                 wire_environment.uri.value,
                 wire_environment.database.value,
@@ -433,10 +435,7 @@ fn validate_manifest_path_disjointness(
     Ok(())
 }
 
-fn yaml_diagnostics(
-    diagnostics: SchemaDiagnostics,
-    origin: &ConfigOrigin,
-) -> WorkspaceConfigError {
+fn yaml_diagnostics(diagnostics: SchemaDiagnostics, origin: &ConfigOrigin) -> WorkspaceConfigError {
     let first = diagnostics
         .iter()
         .next()
@@ -591,11 +590,7 @@ fn parse_wire(
         }
     }
 
-    let format = scalar(
-        required(format, "format", root, origin)?,
-        "format",
-        origin,
-    )?;
+    let format = scalar(required(format, "format", root, origin)?, "format", origin)?;
     if format.value != TYPEBRIDGE_WORKSPACE_V1_FORMAT {
         return Err(sourced(
             WorkspaceConfigError::new(
@@ -609,11 +604,7 @@ fn parse_wire(
     }
 
     let (schema_root, managed_scope) = parse_schema(
-        mapping(
-            required(schema, "schema", root, origin)?,
-            "schema",
-            origin,
-        )?,
+        mapping(required(schema, "schema", root, origin)?, "schema", origin)?,
         origin,
     )?;
     let (semantic_profile, capabilities) = parse_compatibility(
@@ -633,7 +624,9 @@ fn parse_wire(
         origin,
     )?;
     let outputs = bindings
-        .map(|node| mapping(node, "bindings", origin).and_then(|value| parse_bindings(value, origin)))
+        .map(|node| {
+            mapping(node, "bindings", origin).and_then(|value| parse_bindings(value, origin))
+        })
         .transpose()?
         .unwrap_or_default();
     let secrets = secrets
@@ -642,8 +635,7 @@ fn parse_wire(
         .unwrap_or_default();
     let extensions = extensions
         .map(|node| {
-            mapping(node, "extensions", origin)
-                .and_then(|value| parse_extensions(value, origin))
+            mapping(node, "extensions", origin).and_then(|value| parse_extensions(value, origin))
         })
         .transpose()?
         .unwrap_or_default();
@@ -707,12 +699,7 @@ fn parse_schema(
         ));
     }
     let managed_scope = scalar(
-        required(
-            managed_scope,
-            "schema.managed-scope",
-            value,
-            origin,
-        )?,
+        required(managed_scope, "schema.managed-scope", value, origin)?,
         "schema.managed-scope",
         origin,
     )?;
@@ -759,8 +746,7 @@ fn parse_compatibility(
 fn parse_migrations(
     value: &YamlMapping,
     origin: &ConfigOrigin,
-) -> Result<(SpannedString, SpannedString, Option<SpannedString>), WorkspaceConfigError>
-{
+) -> Result<(SpannedString, SpannedString, Option<SpannedString>), WorkspaceConfigError> {
     let mut directory = None;
     let mut app_label = None;
     let mut destructive = None;
@@ -875,7 +861,12 @@ fn parse_environment(
             .map(|node| scalar(node, "environments.migrate", origin))
             .transpose()?,
         password: scalar(
-            required(password, "environments.credential.password", credential, origin)?,
+            required(
+                password,
+                "environments.credential.password",
+                credential,
+                origin,
+            )?,
             "environments.credential.password",
             origin,
         )?,
@@ -889,7 +880,12 @@ fn parse_environment(
             origin,
         )?,
         username: scalar(
-            required(username, "environments.credential.username", credential, origin)?,
+            required(
+                username,
+                "environments.credential.username",
+                credential,
+                origin,
+            )?,
             "environments.credential.username",
             origin,
         )?,

@@ -4,20 +4,18 @@ use std::fmt;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::managed_scope::ManagedScopeProfileId;
-use type_bridge_contract::schema::{
-    DeclaredSchema, ManagedSchemaState, SchemaDiagnostics,
-};
+use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState, SchemaDiagnostics};
 use type_bridge_schema::{
-    BoundManagedSchemaScope, DeltaError, ManagedDeltaContext, ManagedSchemaScope,
-    ResolvedSchema, SchemaDiscoveryEvidence, SchemaDiscoveryLimits, SchemaDiscoverySnapshot,
-    SchemaDocumentSet, SchemaSourceService, load_schema_set_with_source, managed_schema_state,
-    normalize_documents, resolve_schema_with_capabilities,
+    BoundManagedSchemaScope, DeltaError, ManagedDeltaContext, ManagedSchemaScope, ResolvedSchema,
+    SchemaDiscoveryEvidence, SchemaDiscoveryLimits, SchemaDiscoverySnapshot, SchemaDocumentSet,
+    SchemaSourceService, load_schema_set_with_source, managed_schema_state, normalize_documents,
+    resolve_schema_with_capabilities,
 };
 
 use crate::{
-    ExtensionRegistryService, LocatedConfigSpec, SecretReferenceService, TypeBridgeConfig,
-    TypeBridgeConfigServices, WorkspaceConfigError, WorkspaceConfigErrorCode,
-    WorkspaceSourceService, TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID,
+    ExtensionRegistryService, LocatedConfigSpec, SecretReferenceService,
+    TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID, TypeBridgeConfig, TypeBridgeConfigServices,
+    WorkspaceConfigError, WorkspaceConfigErrorCode, WorkspaceSourceService,
 };
 
 /// Explicit local services and capabilities used to construct a source workspace.
@@ -104,7 +102,9 @@ impl fmt::Display for TypeBridgeWorkspaceError {
         match self {
             Self::Config(error) => write!(formatter, "workspace config is invalid: {error}"),
             Self::Contract(error) => write!(formatter, "workspace contract is invalid: {error}"),
-            Self::Schema(_) => formatter.write_str("workspace schema source or semantics are invalid"),
+            Self::Schema(_) => {
+                formatter.write_str("workspace schema source or semantics are invalid")
+            }
         }
     }
 }

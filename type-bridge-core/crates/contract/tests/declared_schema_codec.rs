@@ -4,27 +4,22 @@ use serde_json::{Value, json};
 
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
-use type_bridge_contract::fingerprint::{
-    CanonicalizationVersion, Fingerprint, FingerprintDomain,
-};
+use type_bridge_contract::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use type_bridge_contract::id::{
     AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKind,
 };
 use type_bridge_contract::limits::CANONICAL_CODEC_LIMITS;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-    DeclaredSchema, DocText, DocumentId, FunctionBody, FunctionFact,
-    FunctionParameter, FunctionReturnElement, FunctionReturnMode,
-    FunctionSignature, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
-    RelatesFact, RelatesFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-    SourcedSchemaFact, StructFact, StructField, SubFact, SubFactId, TypeFact,
-    TypeReference, ValueFact, ValueFactId, decode_declared_schema,
-    encode_declared_schema,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocText, DocumentId, FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
+    FunctionReturnMode, FunctionSignature, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
+    RelatesFact, RelatesFactId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact,
+    StructFact, StructField, SubFact, SubFactId, TypeFact, TypeReference, ValueFact, ValueFactId,
+    decode_declared_schema, encode_declared_schema,
 };
 use type_bridge_contract::value::ValueTypeTag;
 
-const COMPILED_PROVENANCE_DOCUMENT: &str =
-    "__typebridge_compiled__/declared-schema-v1";
+const COMPILED_PROVENANCE_DOCUMENT: &str = "__typebridge_compiled__/declared-schema-v1";
 
 fn capability(value: &str) -> CapabilityId {
     CapabilityId::new(value).unwrap()
@@ -72,9 +67,7 @@ fn declared_schema() -> DeclaredSchema {
                     AnnotationSubjectId::Type(person.clone()),
                     AnnotationKindId::Doc,
                 ),
-                SchemaAnnotationValue::Doc(
-                    DocText::new("Person documentation").unwrap(),
-                ),
+                SchemaAnnotationValue::Doc(DocText::new("Person documentation").unwrap()),
             )
             .unwrap(),
         ),
@@ -92,23 +85,14 @@ fn declared_schema() -> DeclaredSchema {
                 .unwrap(),
             )
             .unwrap(),
-            FunctionBody::new("match $input isa person; return { $input }; ")
-                .unwrap(),
+            FunctionBody::new("match $input isa person; return { $input }; ").unwrap(),
         )),
         SchemaFact::Struct(
             StructFact::new(
                 StructId::new("name_record").unwrap(),
                 vec![
-                    StructField::new(
-                        Label::new("value").unwrap(),
-                        ValueTypeTag::String,
-                        false,
-                    ),
-                    StructField::new(
-                        Label::new("alias").unwrap(),
-                        ValueTypeTag::String,
-                        true,
-                    ),
+                    StructField::new(Label::new("value").unwrap(), ValueTypeTag::String, false),
+                    StructField::new(Label::new("alias").unwrap(), ValueTypeTag::String, true),
                 ],
             )
             .unwrap(),
@@ -120,24 +104,12 @@ fn declared_schema() -> DeclaredSchema {
         let column = u32::try_from(index + 1).unwrap();
         SourcedSchemaFact::new(
             fact,
-            SourceSpan::new(
-                document.clone(),
-                byte,
-                byte + 1,
-                1,
-                column,
-                1,
-                column + 1,
-            )
-            .unwrap(),
+            SourceSpan::new(document.clone(), byte, byte + 1, 1, column, 1, column + 1).unwrap(),
         )
     });
     DeclaredSchema::from_facts(
         FormatVersion::V1,
-        CapabilitySet::from_iter([
-            capability("schema.functions"),
-            capability("schema.structs"),
-        ]),
+        CapabilitySet::from_iter([capability("schema.functions"), capability("schema.structs")]),
         sourced,
     )
     .unwrap()
@@ -156,8 +128,7 @@ fn rehash_declared_identity(value: &mut Value) {
     let bytes = to_canonical_json(&identity).unwrap();
     let fingerprint = Fingerprint::compute(
         FingerprintDomain::new("typebridge.schema.declared-identity").unwrap(),
-        CanonicalizationVersion::new("typebridge.schema-canonical-json/v1")
-            .unwrap(),
+        CanonicalizationVersion::new("typebridge.schema-canonical-json/v1").unwrap(),
         None,
         &bytes,
     );
@@ -169,7 +140,10 @@ fn all_fact_variants_round_trip_with_stable_bytes_and_compiled_provenance() {
     let schema = declared_schema();
     let first = encode_declared_schema(&schema).unwrap();
     assert_eq!(encode_declared_schema(&schema).unwrap(), first);
-    assert_eq!(serde_json::to_value(&schema).unwrap(), canonical_value(&schema));
+    assert_eq!(
+        serde_json::to_value(&schema).unwrap(),
+        canonical_value(&schema)
+    );
 
     let value: Value = serde_json::from_slice(&first).unwrap();
     assert_eq!(
@@ -230,21 +204,18 @@ fn invalid_but_rehashed_facts_still_reenter_validating_constructors() {
     let facts = missing_reference["facts"].as_array_mut().unwrap();
     let index = facts
         .iter()
-        .position(|fact| {
-            fact["kind"] == "type"
-                && fact["value"]["id"]["label"] == "person"
-        })
+        .position(|fact| fact["kind"] == "type" && fact["value"]["id"]["label"] == "person")
         .unwrap();
     facts.remove(index);
     rehash_declared_identity(&mut missing_reference);
-    assert!(
-        decode_declared_schema(&to_canonical_json(&missing_reference).unwrap())
-            .is_err()
-    );
+    assert!(decode_declared_schema(&to_canonical_json(&missing_reference).unwrap()).is_err());
 
     let mut duplicate = canonical_value(&schema);
     let duplicate_fact = duplicate["facts"][0].clone();
-    duplicate["facts"].as_array_mut().unwrap().push(duplicate_fact);
+    duplicate["facts"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate_fact);
     rehash_declared_identity(&mut duplicate);
     assert_eq!(
         decode_declared_schema(&to_canonical_json(&duplicate).unwrap())
@@ -372,8 +343,7 @@ fn decoder_rejects_order_payload_capability_and_fingerprint_tampering() {
     );
 
     let mut capabilities = canonical_value(&schema);
-    capabilities["required_capabilities"][0] =
-        Value::String("schema.changed".to_owned());
+    capabilities["required_capabilities"][0] = Value::String("schema.changed".to_owned());
     assert_eq!(
         decode_declared_schema(&to_canonical_json(&capabilities).unwrap())
             .unwrap_err()

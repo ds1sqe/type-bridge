@@ -13,19 +13,19 @@ use type_bridge_contract::migration_assertion::{
     MigrationAssertionPlan, QueryVariable, ValueComparator, ValueOperand,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
-    RelatesFact, RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact,
-    SubFactId, TypeFact, ValueFact, ValueFactId,
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact,
+    RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId, TypeFact,
+    ValueFact, ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+use type_bridge_orm::TxType;
 use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,
     execute_migration_assertion, lower_migration_assertion,
 };
 use type_bridge_orm::session::backend::QueryResult;
-use type_bridge_orm::TxType;
 use type_bridge_query::{
     MigrationAssertionValidationContext, ValidatedMigrationAssertionPlan,
     validate_migration_assertion_plan,
@@ -263,15 +263,24 @@ async fn validated_assertions_execute_on_one_borrowed_real_transaction() {
     let empty = validated_plan(&fixture, "Missing");
     let violating = validated_plan(&fixture, "Ada");
     let lowered = lower_migration_assertion(&violating).expect("provider lowering");
-    for syntax in [" isa ", " isa! ", " has ", "links (", " == ", " != ", " < ", " <= ", " > ", " >= ", "not {"] {
-        assert!(lowered.typeql().contains(syntax), "missing lowered syntax {syntax:?}");
+    for syntax in [
+        " isa ", " isa! ", " has ", "links (", " == ", " != ", " < ", " <= ", " > ", " >= ",
+        "not {",
+    ] {
+        assert!(
+            lowered.typeql().contains(syntax),
+            "missing lowered syntax {syntax:?}"
+        );
     }
     assert!(lowered.typeql().ends_with("limit 1;\n"));
 
     let available = violating.plan().required_capabilities().clone();
     let missing = CapabilitySet::new();
     let wrong_state = wrong_source_state(&fixture.managed);
-    let mut transaction = db.read_transaction().await.expect("borrowed read transaction");
+    let mut transaction = db
+        .read_transaction()
+        .await
+        .expect("borrowed read transaction");
     assert_eq!(transaction.tx_type(), TxType::Read);
 
     let capability_error = execute_migration_assertion(
@@ -361,7 +370,10 @@ async fn validated_assertions_execute_on_one_borrowed_real_transaction() {
         .await
         .expect("borrowed transaction remains usable after assertion failure");
     assert!(matches!(reuse, QueryResult::Rows(rows) if rows.len() == 1));
-    transaction.close().await.expect("caller closes borrowed transaction");
+    transaction
+        .close()
+        .await
+        .expect("caller closes borrowed transaction");
 }
 
 #[tokio::test]
@@ -484,7 +496,10 @@ async fn schema_transaction_excludes_fence_takeover_until_commit() {
     .await
     .expect("initial fenced lease");
 
-    let mut stale = db.schema_transaction().await.expect("stale schema transaction");
+    let mut stale = db
+        .schema_transaction()
+        .await
+        .expect("stale schema transaction");
     let fence_read = stale
         .query(&format!(
             "match $lease isa {lease_type},\n\
@@ -539,10 +554,7 @@ async fn schema_transaction_excludes_fence_takeover_until_commit() {
         ))
         .await
         .expect("replace lease with higher fence");
-    assert!(matches!(
-        replaced,
-        QueryResult::Ok | QueryResult::Rows(_)
-    ));
+    assert!(matches!(replaced, QueryResult::Ok | QueryResult::Rows(_)));
     takeover.commit().await.expect("commit lease takeover");
 
     let mut verify = db.read_transaction().await.expect("verify takeover");

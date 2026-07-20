@@ -9,9 +9,7 @@
 use std::sync::Arc;
 
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration::CONDITIONAL_RESOLUTION_CAPABILITY;
 use type_bridge_contract::migration_assertion_capability_vocabulary;
@@ -21,15 +19,13 @@ use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,
     execute_migration_assertion,
 };
-use type_bridge_orm::{
-    CommitFailureCertainty, Database, OrmError, Transaction,
-};
+use type_bridge_orm::{CommitFailureCertainty, Database, OrmError, Transaction};
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 use type_bridge_schema::BUILTIN_SCHEMA_CAPABILITY_IDS;
 use type_bridge_schema_migration::{
-    ExecutionFuture, GroupCommitCertainty, GroupCommitFailure,
-    GroupCommitFuture, MigrationExecutionProvider, MigrationLease,
-    PreparedMigrationGroup, StatementUnit, typedb_3_12_1_profile,
+    ExecutionFuture, GroupCommitCertainty, GroupCommitFailure, GroupCommitFuture,
+    MigrationExecutionProvider, MigrationLease, PreparedMigrationGroup, StatementUnit,
+    typedb_3_12_1_profile,
 };
 
 use crate::observation::observe_managed_state_from_export;
@@ -91,12 +87,7 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
                 .await
                 .map_err(map_orm_error)?;
             let observed = self
-                .observe_in_transaction(
-                    &mut transaction,
-                    lease,
-                    source_candidate,
-                    target_candidate,
-                )
+                .observe_in_transaction(&mut transaction, lease, source_candidate, target_candidate)
                 .await;
             let _ = transaction.rollback().await;
             observed
@@ -183,18 +174,13 @@ impl PreparedMigrationGroup for TypeDbPreparedGroup<'_> {
         })
     }
 
-    fn commit<'a>(
-        self: Box<Self>,
-        lease: &'a MigrationLease,
-    ) -> GroupCommitFuture<'a>
+    fn commit<'a>(self: Box<Self>, lease: &'a MigrationLease) -> GroupCommitFuture<'a>
     where
         Self: 'a,
     {
         Box::pin(async move {
             let mut this = *self;
-            if let Err(error) =
-                require_active_managed_fence(&mut this.transaction, lease).await
-            {
+            if let Err(error) = require_active_managed_fence(&mut this.transaction, lease).await {
                 let _ = this.transaction.rollback().await;
                 return Err(GroupCommitFailure::new(
                     GroupCommitCertainty::DefinitelyAborted,
@@ -206,9 +192,7 @@ impl PreparedMigrationGroup for TypeDbPreparedGroup<'_> {
                     Some(CommitFailureCertainty::DefinitelyAborted) => {
                         GroupCommitCertainty::DefinitelyAborted
                     }
-                    Some(CommitFailureCertainty::Unknown) | None => {
-                        GroupCommitCertainty::Unknown
-                    }
+                    Some(CommitFailureCertainty::Unknown) | None => GroupCommitCertainty::Unknown,
                 };
                 GroupCommitFailure::new(certainty, map_orm_error(error))
             })
@@ -287,11 +271,7 @@ fn map_orm_error(error: OrmError) -> Diagnostic {
     .with_detail("provider", error.to_string())
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static diagnostic code is valid"),
@@ -305,8 +285,7 @@ mod tests {
 
     #[test]
     fn execution_capability_vocabulary_is_a_closed_superset() {
-        let capabilities =
-            execution_capability_vocabulary().expect("capability vocabulary");
+        let capabilities = execution_capability_vocabulary().expect("capability vocabulary");
         for capability in typedb_3_12_1_profile().required_capabilities.iter() {
             assert!(capabilities.contains(capability));
         }
@@ -317,7 +296,10 @@ mod tests {
         for capability in migration_assertion_capability_vocabulary().iter() {
             assert!(capabilities.contains(capability));
         }
-        for extra in [SCHEMA_REDEFINE_CAPABILITY, CONDITIONAL_RESOLUTION_CAPABILITY] {
+        for extra in [
+            SCHEMA_REDEFINE_CAPABILITY,
+            CONDITIONAL_RESOLUTION_CAPABILITY,
+        ] {
             let id = CapabilityId::new(extra).expect("extra capability");
             assert!(capabilities.contains(&id));
         }
@@ -325,16 +307,23 @@ mod tests {
             .required_capabilities
             .iter()
             .map(ToString::to_string)
-            .chain(BUILTIN_SCHEMA_CAPABILITY_IDS.iter().map(ToString::to_string))
+            .chain(
+                BUILTIN_SCHEMA_CAPABILITY_IDS
+                    .iter()
+                    .map(ToString::to_string),
+            )
             .chain(
                 migration_assertion_capability_vocabulary()
                     .iter()
                     .map(ToString::to_string),
             )
             .chain(
-                [SCHEMA_REDEFINE_CAPABILITY, CONDITIONAL_RESOLUTION_CAPABILITY]
-                    .iter()
-                    .map(ToString::to_string),
+                [
+                    SCHEMA_REDEFINE_CAPABILITY,
+                    CONDITIONAL_RESOLUTION_CAPABILITY,
+                ]
+                .iter()
+                .map(ToString::to_string),
             )
             .collect();
         let actual: std::collections::BTreeSet<String> =

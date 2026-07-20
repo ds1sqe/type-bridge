@@ -10,7 +10,8 @@ fn document_id(value: &str) -> DocumentId {
 
 #[test]
 fn retains_source_comments_and_block_scalar_style() {
-    let source = "# schema heading\nformat: typebridge.schema/v2\nmessage: |\n  first line\n  second line\n";
+    let source =
+        "# schema heading\nformat: typebridge.schema/v2\nmessage: |\n  first line\n  second line\n";
     let document = SchemaDocument::parse(document_id("lossless.yaml"), source)
         .expect("lossless fixture parses");
 
@@ -38,8 +39,14 @@ fn rejects_closed_grammar_violations() {
         ("anchor.yaml", "format: &format typebridge.schema/v2\n"),
         ("alias.yaml", "format: *format\n"),
         ("tag.yaml", "format: !schema typebridge.schema/v2\n"),
-        ("merge.yaml", "format: typebridge.schema/v2\ntarget:\n  <<:\n    doc: base\n"),
-        ("directive.yaml", "%YAML 1.2\n---\nformat: typebridge.schema/v2\n"),
+        (
+            "merge.yaml",
+            "format: typebridge.schema/v2\ntarget:\n  <<:\n    doc: base\n",
+        ),
+        (
+            "directive.yaml",
+            "%YAML 1.2\n---\nformat: typebridge.schema/v2\n",
+        ),
         ("documents.yaml", "format: one\n---\nformat: two\n"),
         ("key.yaml", "? [format]\n: typebridge.schema/v2\n"),
         ("yes.yaml", "format: yes\n"),
@@ -88,14 +95,17 @@ functions:
     let documents = SchemaDocumentSet::parse([(id.clone(), source)])
         .expect("function document parses losslessly");
     assert_eq!(
-        documents.get(&id).expect("document exists").source().as_bytes(),
+        documents
+            .get(&id)
+            .expect("document exists")
+            .source()
+            .as_bytes(),
         source.as_bytes()
     );
 
     let declared = normalize_documents(&documents).expect("function schema normalizes");
     let function_id = FunctionId::new("answer").expect("function identifier is valid");
-    let Some(SchemaFact::Function(function)) =
-        declared.fact(&SchemaFactId::Function(function_id))
+    let Some(SchemaFact::Function(function)) = declared.fact(&SchemaFactId::Function(function_id))
     else {
         panic!("function fact exists");
     };

@@ -1,10 +1,7 @@
 use type_bridge_contract::temporal::{
-    CanonicalDate, CanonicalDateTime, CanonicalDuration, CanonicalTime,
-    TimeZoneDesignator,
+    CanonicalDate, CanonicalDateTime, CanonicalDuration, CanonicalTime, TimeZoneDesignator,
 };
-use type_bridge_contract::value::{
-    CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue,
-};
+use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
 use typeql::value::{
     DateFragment, DurationDate, DurationLiteral, DurationTime, Literal, Sign, SignedDecimalLiteral,
     SignedDoubleLiteral, SignedIntegerLiteral, StringLiteral, TimeFragment, TimeZone, ValueLiteral,
@@ -40,7 +37,10 @@ pub(crate) fn canonical_literal(
         ValueLiteral::Boolean(value) => match value.value.as_str() {
             "true" => Ok(CanonicalValue::Boolean(true)),
             "false" => Ok(CanonicalValue::Boolean(false)),
-            _ => Err(invalid("boolean", "boolean literal must be `true` or `false`")),
+            _ => Err(invalid(
+                "boolean",
+                "boolean literal must be `true` or `false`",
+            )),
         },
         ValueLiteral::Integer(value) => canonical_integer(value),
         ValueLiteral::Double(value) => canonical_double(value),
@@ -69,14 +69,15 @@ fn canonical_integer(
     value: &SignedIntegerLiteral,
 ) -> Result<CanonicalValue, LiteralConversionError> {
     let text = signed_text(value.sign, &value.integral);
-    text.parse::<i64>()
-        .map(CanonicalValue::Long)
-        .map_err(|_| invalid("integer", "integer literal is outside the signed 64-bit domain"))
+    text.parse::<i64>().map(CanonicalValue::Long).map_err(|_| {
+        invalid(
+            "integer",
+            "integer literal is outside the signed 64-bit domain",
+        )
+    })
 }
 
-fn canonical_double(
-    value: &SignedDoubleLiteral,
-) -> Result<CanonicalValue, LiteralConversionError> {
+fn canonical_double(value: &SignedDoubleLiteral) -> Result<CanonicalValue, LiteralConversionError> {
     let text = signed_text(value.sign, &value.double);
     let parsed = text
         .parse::<f64>()
@@ -131,8 +132,7 @@ fn canonical_date(value: &DateFragment) -> Result<CanonicalDate, LiteralConversi
     let day = parse_unsigned(&value.day, "date", "day")?
         .try_into()
         .map_err(|_| invalid("date", "date day is outside the u8 domain"))?;
-    CanonicalDate::new(year, month, day)
-        .map_err(|error| invalid("date", error.to_string()))
+    CanonicalDate::new(year, month, day).map_err(|error| invalid("date", error.to_string()))
 }
 
 fn parse_date_year(value: &str) -> Result<i32, LiteralConversionError> {
@@ -197,7 +197,10 @@ fn canonical_timezone(value: &TimeZone) -> Result<TimeZoneDesignator, LiteralCon
     match value {
         TimeZone::IANA(name) => {
             if name.is_empty() || name.len() > 255 {
-                return Err(invalid("datetime_tz", "named timezone is empty or too long"));
+                return Err(invalid(
+                    "datetime_tz",
+                    "named timezone is empty or too long",
+                ));
             }
             Ok(TimeZoneDesignator::Named(name.clone()))
         }
@@ -378,12 +381,18 @@ mod defensive_tests {
 }
 
 fn duration_date(value: &DurationDate) -> Result<(u64, u64), LiteralConversionError> {
-    let years = optional_unsigned(value.years.as_ref().map(|value| value.value.as_str()), "years")?;
+    let years = optional_unsigned(
+        value.years.as_ref().map(|value| value.value.as_str()),
+        "years",
+    )?;
     let months = optional_unsigned(
         value.months.as_ref().map(|value| value.value.as_str()),
         "months",
     )?;
-    let days = optional_unsigned(value.days.as_ref().map(|value| value.value.as_str()), "days")?;
+    let days = optional_unsigned(
+        value.days.as_ref().map(|value| value.value.as_str()),
+        "days",
+    )?;
     let months = years
         .checked_mul(12)
         .and_then(|years| years.checked_add(months))
@@ -392,7 +401,10 @@ fn duration_date(value: &DurationDate) -> Result<(u64, u64), LiteralConversionEr
 }
 
 fn duration_time(value: &DurationTime) -> Result<(u64, u32), LiteralConversionError> {
-    let hours = optional_unsigned(value.hours.as_ref().map(|value| value.value.as_str()), "hours")?;
+    let hours = optional_unsigned(
+        value.hours.as_ref().map(|value| value.value.as_str()),
+        "hours",
+    )?;
     let minutes = optional_unsigned(
         value.minutes.as_ref().map(|value| value.value.as_str()),
         "minutes",
@@ -405,7 +417,11 @@ fn duration_time(value: &DurationTime) -> Result<(u64, u32), LiteralConversionEr
         .unwrap_or((0, 0));
     let seconds = hours
         .checked_mul(3600)
-        .and_then(|hours| minutes.checked_mul(60).and_then(|minutes| hours.checked_add(minutes)))
+        .and_then(|hours| {
+            minutes
+                .checked_mul(60)
+                .and_then(|minutes| hours.checked_add(minutes))
+        })
         .and_then(|seconds| seconds.checked_add(literal_seconds))
         .ok_or_else(|| invalid("duration", "duration time conversion overflow"))?;
     Ok((seconds, nanosecond))
@@ -439,11 +455,20 @@ fn decimal_seconds(value: &str) -> Result<(u64, u32), LiteralConversionError> {
     let exponent = exponent_text
         .map(|value| value.parse::<i64>())
         .transpose()
-        .map_err(|_| invalid("duration", "duration seconds exponent is outside the supported domain"))?
+        .map_err(|_| {
+            invalid(
+                "duration",
+                "duration seconds exponent is outside the supported domain",
+            )
+        })?
         .unwrap_or(0);
     let leading = digits.bytes().take_while(|digit| *digit == b'0').count();
     digits.drain(..leading);
-    let trailing = digits.bytes().rev().take_while(|digit| *digit == b'0').count();
+    let trailing = digits
+        .bytes()
+        .rev()
+        .take_while(|digit| *digit == b'0')
+        .count();
     if trailing != 0 {
         digits.truncate(digits.len() - trailing);
     }
@@ -483,9 +508,11 @@ fn decimal_seconds(value: &str) -> Result<(u64, u32), LiteralConversionError> {
             .checked_add(digits.len() as u32)
             .ok_or_else(|| invalid("duration", "duration fractional scale overflow"))?;
         let nanos = fraction
-            .checked_mul(10_u64.checked_pow(9 - total_places).ok_or_else(|| {
-                invalid("duration", "duration fractional scale overflow")
-            })?)
+            .checked_mul(
+                10_u64
+                    .checked_pow(9 - total_places)
+                    .ok_or_else(|| invalid("duration", "duration fractional scale overflow"))?,
+            )
             .ok_or_else(|| invalid("duration", "duration nanosecond overflow"))?;
         (0, nanos)
     } else {
@@ -503,8 +530,8 @@ fn decimal_seconds(value: &str) -> Result<(u64, u32), LiteralConversionError> {
             .ok_or_else(|| invalid("duration", "duration nanosecond overflow"))?;
         (whole, nanos)
     };
-    let nanosecond = u32::try_from(fraction)
-        .map_err(|_| invalid("duration", "duration nanosecond overflow"))?;
+    let nanosecond =
+        u32::try_from(fraction).map_err(|_| invalid("duration", "duration nanosecond overflow"))?;
     Ok((whole, nanosecond))
 }
 
@@ -512,13 +539,19 @@ fn split_exponent(value: &str) -> Result<(&str, Option<&str>), LiteralConversion
     let mut indices = value.match_indices(['e', 'E']);
     let first = indices.next();
     if indices.next().is_some() {
-        return Err(invalid("duration", "duration seconds contain multiple exponents"));
+        return Err(invalid(
+            "duration",
+            "duration seconds contain multiple exponents",
+        ));
     }
     match first {
         Some((index, _)) if index != 0 && index + 1 < value.len() => {
             Ok((&value[..index], Some(&value[index + 1..])))
         }
-        Some(_) => Err(invalid("duration", "duration seconds exponent is incomplete")),
+        Some(_) => Err(invalid(
+            "duration",
+            "duration seconds exponent is incomplete",
+        )),
         None => Ok((value, None)),
     }
 }
@@ -551,11 +584,17 @@ fn parse_unsigned(
     component: &str,
 ) -> Result<u64, LiteralConversionError> {
     if value.is_empty() || !value.bytes().all(|digit| digit.is_ascii_digit()) {
-        return Err(invalid(domain, format!("{component} must contain decimal digits")));
+        return Err(invalid(
+            domain,
+            format!("{component} must contain decimal digits"),
+        ));
     }
-    value
-        .parse::<u64>()
-        .map_err(|_| invalid(domain, format!("{component} is outside the unsigned 64-bit domain")))
+    value.parse::<u64>().map_err(|_| {
+        invalid(
+            domain,
+            format!("{component} is outside the unsigned 64-bit domain"),
+        )
+    })
 }
 
 fn parse_digit_u64(value: &str, component: &str) -> Result<u64, LiteralConversionError> {
@@ -613,7 +652,10 @@ mod tests {
 
     #[test]
     fn numeric_domains_preserve_exact_contract_values() {
-        assert_eq!(parsed("-9223372036854775808").unwrap(), CanonicalValue::Long(i64::MIN));
+        assert_eq!(
+            parsed("-9223372036854775808").unwrap(),
+            CanonicalValue::Long(i64::MIN)
+        );
         let CanonicalValue::Double(double) = parsed("-0.0").unwrap() else {
             panic!("expected double")
         };
@@ -627,7 +669,10 @@ mod tests {
 
     #[test]
     fn temporal_domains_validate_and_normalize_components() {
-        assert_eq!(parsed("2024-02-29").unwrap().to_string_for_test(), "2024-02-29");
+        assert_eq!(
+            parsed("2024-02-29").unwrap().to_string_for_test(),
+            "2024-02-29"
+        );
         assert!(parsed("2023-02-29").is_err());
         let timezone = ValueLiteral::DateTimeTz(DateTimeTZLiteral {
             date: DateFragment {
@@ -643,7 +688,11 @@ mod tests {
             },
             timezone: TimeZone::ISO("+09".to_owned()),
         });
-        let value = canonical_literal(&Literal { span: None, inner: timezone }).unwrap();
+        let value = canonical_literal(&Literal {
+            span: None,
+            inner: timezone,
+        })
+        .unwrap();
         let CanonicalValue::DateTimeTz(value) = value else {
             panic!("expected timezone datetime")
         };
@@ -664,7 +713,11 @@ mod tests {
             },
             timezone: TimeZone::IANA("europe/paris".to_owned()),
         });
-        let value = canonical_literal(&Literal { span: None, inner: named }).unwrap();
+        let value = canonical_literal(&Literal {
+            span: None,
+            inner: named,
+        })
+        .unwrap();
         let CanonicalValue::DateTimeTz(value) = value else {
             panic!("expected named timezone datetime")
         };

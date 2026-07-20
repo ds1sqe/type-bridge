@@ -14,16 +14,14 @@ use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::fingerprint::FingerprintDigest;
 use crate::id::TypeId;
 use crate::query_plan::{
-    InputRow, QueryInvocation, QueryOperation, QueryPlan, QueryPlanFingerprint,
-    decode_query_plan,
+    InputRow, QueryInvocation, QueryOperation, QueryPlan, QueryPlanFingerprint, decode_query_plan,
 };
 use crate::value::CanonicalValue;
 
 /// The exact wire discriminator for first-format remote requests.
 pub const QUERY_REMOTE_REQUEST_FORMAT_V1: &str = "typebridge.query-remote-request/v1";
 /// The exact wire discriminator for first-format remote responses.
-pub const QUERY_REMOTE_RESPONSE_FORMAT_V1: &str =
-    "typebridge.query-remote-response/v1";
+pub const QUERY_REMOTE_RESPONSE_FORMAT_V1: &str = "typebridge.query-remote-response/v1";
 /// The exact wire discriminator for first-format remote failures.
 pub const QUERY_REMOTE_FAILURE_FORMAT_V1: &str = "typebridge.query-remote-failure/v1";
 
@@ -99,14 +97,13 @@ impl RemoteQueryRequest {
         }
         let nonce = nonce.into();
         check_nonce(&nonce)?;
-        let plan_text =
-            String::from_utf8(plan.canonical_bytes()?).map_err(|_| {
-                envelope_failure(
-                    DiagnosticCategory::Integrity,
-                    "query_remote_plan_not_utf8",
-                    "canonical plan bytes are not UTF-8",
-                )
-            })?;
+        let plan_text = String::from_utf8(plan.canonical_bytes()?).map_err(|_| {
+            envelope_failure(
+                DiagnosticCategory::Integrity,
+                "query_remote_plan_not_utf8",
+                "canonical plan bytes are not UTF-8",
+            )
+        })?;
         Ok(Self {
             format: QUERY_REMOTE_REQUEST_FORMAT_V1.to_owned(),
             limits,
@@ -150,7 +147,10 @@ impl RemoteQueryRequest {
         QueryInvocation::new(
             plan,
             self.operation.operation(),
-            self.rows.iter().map(|row| InputRow::new(row.clone())).collect(),
+            self.rows
+                .iter()
+                .map(|row| InputRow::new(row.clone()))
+                .collect(),
         )
     }
 
@@ -375,8 +375,7 @@ impl RemoteQueryFailure {
 }
 
 /// The exact wire discriminator for first-format capability advertisements.
-pub const QUERY_REMOTE_CAPABILITIES_FORMAT_V1: &str =
-    "typebridge.query-remote-capabilities/v1";
+pub const QUERY_REMOTE_CAPABILITIES_FORMAT_V1: &str = "typebridge.query-remote-capabilities/v1";
 
 /// One executor capability advertisement for pre-flight negotiation.
 ///

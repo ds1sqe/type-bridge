@@ -21,16 +21,14 @@ use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_migration::{
     ExecutionScope, LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError,
     MigrationApplyTarget, MigrationExecutionJournal, MigrationExecutionOutcome,
-    MigrationHistoryGraph, MigrationLeaseStore, MigrationRollbackOutcome,
-    MigrationSafetyPolicy, MigrationVerifyReport, SchemaLoweringBinding,
-    build_verified_migration_apply_plan, build_verified_migration_rollback_plan,
-    discover_verified_migration_chain, execute_verified_migration_apply_plan,
-    execute_verified_migration_rollback_plan, verify_migration_state,
+    MigrationHistoryGraph, MigrationLeaseStore, MigrationRollbackOutcome, MigrationSafetyPolicy,
+    MigrationVerifyReport, SchemaLoweringBinding, build_verified_migration_apply_plan,
+    build_verified_migration_rollback_plan, discover_verified_migration_chain,
+    execute_verified_migration_apply_plan, execute_verified_migration_rollback_plan,
+    verify_migration_state,
 };
 
-use type_bridge_migration::{
-    MigrationStateStore, TypeDbStateStore, load_dir_checked,
-};
+use type_bridge_migration::{MigrationStateStore, TypeDbStateStore, load_dir_checked};
 
 use crate::legacy_import::{extract_legacy_frontier, verify_legacy_continuity};
 use crate::observation::rebuild_live_managed_state;
@@ -124,15 +122,8 @@ impl TypeDbMigrationRunner {
     }
 
     /// Discover and replay-verify the canonical chain in one directory.
-    pub fn discover(
-        &self,
-        directory: &Path,
-    ) -> Result<MigrationHistoryGraph, Diagnostic> {
-        discover_verified_migration_chain(
-            directory,
-            &self.genesis_source,
-            &self.context,
-        )
+    pub fn discover(&self, directory: &Path) -> Result<MigrationHistoryGraph, Diagnostic> {
+        discover_verified_migration_chain(directory, &self.genesis_source, &self.context)
     }
 
     /// Apply the discovered chain up to `target` through the live pair.
@@ -149,8 +140,7 @@ impl TypeDbMigrationRunner {
         approvals: &[MigrationApplyApproval],
     ) -> Result<MigrationDirectoryApplyOutcome, MigrationDirectoryApplyError> {
         let graph = self.discover(directory)?;
-        let catalog =
-            VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
+        let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
         let store = TypeDbMigrationStore::new(
             Arc::clone(&self.managed_database),
             Arc::clone(&self.journal_database),
@@ -160,12 +150,8 @@ impl TypeDbMigrationRunner {
 
         let basis = self.load_applied_basis(&store, holder).await?;
         let pending = match target {
-            MigrationApplyTarget::DefaultHead => {
-                graph.plan_apply_to_default_head(&basis)?
-            }
-            MigrationApplyTarget::Explicit(targets) => {
-                graph.plan_apply(&basis, targets)?
-            }
+            MigrationApplyTarget::DefaultHead => graph.plan_apply_to_default_head(&basis)?,
+            MigrationApplyTarget::Explicit(targets) => graph.plan_apply(&basis, targets)?,
         };
         if pending.is_empty() {
             return Ok(MigrationDirectoryApplyOutcome::UpToDate);
@@ -181,11 +167,9 @@ impl TypeDbMigrationRunner {
             approvals,
         )?;
         let store = store.bind_plan(&plan)?;
-        let provider =
-            TypeDbMigrationProvider::new(Arc::clone(&self.managed_database))?;
+        let provider = TypeDbMigrationProvider::new(Arc::clone(&self.managed_database))?;
         let outcome =
-            execute_verified_migration_apply_plan(&store, &provider, holder, &plan)
-                .await?;
+            execute_verified_migration_apply_plan(&store, &provider, holder, &plan).await?;
         Ok(MigrationDirectoryApplyOutcome::Executed(outcome))
     }
 
@@ -204,8 +188,7 @@ impl TypeDbMigrationRunner {
         desired: Option<&DeclaredSchema>,
     ) -> Result<MigrationVerifyReport, MigrationDirectoryApplyError> {
         let graph = self.discover(directory)?;
-        let catalog =
-            VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
+        let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
         let store = TypeDbMigrationStore::new(
             Arc::clone(&self.managed_database),
             Arc::clone(&self.journal_database),
@@ -219,24 +202,16 @@ impl TypeDbMigrationRunner {
             .map(|entry| entry.record().migration_id().clone())
             .collect();
 
-        let export = self
-            .managed_database
-            .schema_text()
-            .await
-            .map_err(|error| {
-                legacy_import_failure(
-                    "migration_typedb_export_unreadable",
-                    "managed database schema export failed during verification",
-                )
-                .with_detail("provider", error.to_string())
-            })?;
+        let export = self.managed_database.schema_text().await.map_err(|error| {
+            legacy_import_failure(
+                "migration_typedb_export_unreadable",
+                "managed database schema export failed during verification",
+            )
+            .with_detail("provider", error.to_string())
+        })?;
         let document = DocumentId::new("typebridge-verify-live-export.typeql")?;
-        let live = rebuild_live_managed_state(
-            document,
-            &export,
-            &self.genesis_source,
-            &self.context,
-        )?;
+        let live =
+            rebuild_live_managed_state(document, &export, &self.genesis_source, &self.context)?;
 
         Ok(verify_migration_state(
             &graph,
@@ -301,8 +276,7 @@ impl TypeDbMigrationRunner {
             .into());
         }
 
-        let target =
-            MigrationApplyTarget::Explicit(BTreeSet::from([bridge.id().clone()]));
+        let target = MigrationApplyTarget::Explicit(BTreeSet::from([bridge.id().clone()]));
         self.apply(canonical_directory, &target, holder, &[]).await
     }
 
@@ -321,8 +295,7 @@ impl TypeDbMigrationRunner {
         approvals: &[MigrationApplyApproval],
     ) -> Result<MigrationDirectoryRollbackOutcome, MigrationDirectoryApplyError> {
         let graph = self.discover(directory)?;
-        let catalog =
-            VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
+        let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
         let store = TypeDbMigrationStore::new(
             Arc::clone(&self.managed_database),
             Arc::clone(&self.journal_database),
@@ -345,12 +318,9 @@ impl TypeDbMigrationRunner {
             approvals,
         )?;
         let store = store.bind_rollback_plan(&plan)?;
-        let provider =
-            TypeDbMigrationProvider::new(Arc::clone(&self.managed_database))?;
-        let outcome = execute_verified_migration_rollback_plan(
-            &store, &provider, holder, &plan,
-        )
-        .await?;
+        let provider = TypeDbMigrationProvider::new(Arc::clone(&self.managed_database))?;
+        let outcome =
+            execute_verified_migration_rollback_plan(&store, &provider, holder, &plan).await?;
         Ok(MigrationDirectoryRollbackOutcome::Executed(outcome))
     }
 

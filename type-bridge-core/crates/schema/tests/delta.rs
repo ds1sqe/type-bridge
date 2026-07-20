@@ -10,11 +10,10 @@ use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
     DocText, DocumentId, FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
     FunctionReturnMode, FunctionSignature, ManagedFactSelection, ManagedSchemaState,
-    ManagedScopeId, OwnsFact, OwnsFactId, PatchFormatVersion, PlaysFact, PlaysFactId,
+    ManagedScopeId, OwnsFact, OwnsFactId, PatchFormatVersion, PlaysFact, PlaysFactId, RegexPattern,
     RelatesFact, RelatesFactId, SchemaAnnotationValue, SchemaDelta, SchemaDiagnostics, SchemaFact,
-    SchemaFactId, SchemaOperation, SchemaOperationKind, SourceSpan, SourcedSchemaFact,
-    RegexPattern, StructFact, StructField, SubFact, SubFactId, TypeFact, TypeReference, ValueFact,
-    ValueFactId,
+    SchemaFactId, SchemaOperation, SchemaOperationKind, SourceSpan, SourcedSchemaFact, StructFact,
+    StructField, SubFact, SubFactId, TypeFact, TypeReference, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 use type_bridge_schema::{
@@ -114,28 +113,18 @@ fn relates_id(relation: &str, role: &str) -> RelatesFactId {
 }
 
 fn plays_id(player: &str, relation: &str, role: &str) -> PlaysFactId {
-    PlaysFactId::new(
-        type_id(TypeKind::Entity, player),
-        role_id(relation, role),
-    )
-    .expect("test plays identity")
+    PlaysFactId::new(type_id(TypeKind::Entity, player), role_id(relation, role))
+        .expect("test plays identity")
 }
 
 fn card_annotation(subject: OwnsFactId) -> SchemaFact {
     card_annotation_with_bounds(subject, 0, Some(1))
 }
 
-fn card_annotation_with_bounds(
-    subject: OwnsFactId,
-    min: u64,
-    max: Option<u64>,
-) -> SchemaFact {
+fn card_annotation_with_bounds(subject: OwnsFactId, min: u64, max: Option<u64>) -> SchemaFact {
     SchemaFact::Annotation(
         AnnotationFact::new(
-            AnnotationFactId::new(
-                AnnotationSubjectId::Owns(subject),
-                AnnotationKindId::Card,
-            ),
+            AnnotationFactId::new(AnnotationSubjectId::Owns(subject), AnnotationKindId::Card),
             SchemaAnnotationValue::Cardinality(
                 Cardinality::new(min, max).expect("test cardinality"),
             ),
@@ -221,11 +210,7 @@ fn variant_cases() -> Vec<VariantCase> {
     let relates = SchemaFact::Relates(
         RelatesFact::new(relates_id("friendship", "friend"), None).expect("test relates"),
     );
-    let plays = SchemaFact::Plays(PlaysFact::new(plays_id(
-        "person",
-        "friendship",
-        "friend",
-    )));
+    let plays = SchemaFact::Plays(PlaysFact::new(plays_id("person", "friendship", "friend")));
     let annotation = card_annotation(owns_id("person", "name"));
     let function = person_function();
     let structure = struct_fact();
@@ -392,7 +377,9 @@ fn all_fact_variants_have_exact_dependencies_and_closed_migration_behavior() {
             );
             let applied = apply_delta(&case.source, &delta, &context).expect(case.name);
             assert_eq!(
-                applied.canonical_identity_bytes().expect("applied identity"),
+                applied
+                    .canonical_identity_bytes()
+                    .expect("applied identity"),
                 case.target
                     .canonical_identity_bytes()
                     .expect("target identity"),
@@ -428,8 +415,12 @@ fn explicit_default_is_a_formal_change_but_semantically_equal() {
     );
     let applied = apply_delta(&omitted, &delta, &context).expect("explicit default replay");
     assert_eq!(
-        applied.canonical_identity_bytes().expect("applied identity"),
-        explicit.canonical_identity_bytes().expect("explicit identity")
+        applied
+            .canonical_identity_bytes()
+            .expect("applied identity"),
+        explicit
+            .canonical_identity_bytes()
+            .expect("explicit identity")
     );
 }
 
@@ -456,7 +447,9 @@ fn capability_only_transition_applies_and_inverts() {
     assert!(inverse.operations().is_empty());
     let restored = apply_delta(&applied, &inverse, &context).expect("inverse replay");
     assert_eq!(
-        restored.canonical_identity_bytes().expect("restored identity"),
+        restored
+            .canonical_identity_bytes()
+            .expect("restored identity"),
         source.canonical_identity_bytes().expect("source identity")
     );
     assert_eq!(
@@ -533,11 +526,7 @@ fn undefines_reverse_owns_value_and_plays_relates_dependencies() {
     let relates = SchemaFact::Relates(
         RelatesFact::new(relates_id("friendship", "friend"), None).expect("test relates"),
     );
-    let plays = SchemaFact::Plays(PlaysFact::new(plays_id(
-        "person",
-        "friendship",
-        "friend",
-    )));
+    let plays = SchemaFact::Plays(PlaysFact::new(plays_id("person", "friendship", "friend")));
     let plays_source = declared(vec![
         type_fact(TypeKind::Entity, "person"),
         type_fact(TypeKind::Relation, "friendship"),
@@ -550,8 +539,7 @@ fn undefines_reverse_owns_value_and_plays_relates_dependencies() {
     ]);
     let plays_delta = diff_managed(&plays_source, &plays_target, &context).expect("plays removal");
     assert!(
-        operation_index(&plays_delta, &plays.id())
-            < operation_index(&plays_delta, &relates.id())
+        operation_index(&plays_delta, &plays.id()) < operation_index(&plays_delta, &relates.id())
     );
     apply_delta(&plays_source, &plays_delta, &context).expect("plays removal replay");
 }
@@ -654,8 +642,8 @@ fn survivor_dependencies_and_function_signature_removal_are_rejected() {
         type_fact(TypeKind::Entity, "person"),
         function.clone(),
     ]);
-    let function_without_type = try_declared(vec![function])
-        .expect_err("invalid function authoring target");
+    let function_without_type =
+        try_declared(vec![function]).expect_err("invalid function authoring target");
     assert_eq!(
         function_without_type
             .iter()
@@ -690,7 +678,9 @@ fn inverse_roundtrip_and_safety_classes_are_deterministic() {
     );
     let restored = apply_delta(&applied, &inverse, &context).expect("inverse apply");
     assert_eq!(
-        restored.canonical_identity_bytes().expect("restored identity"),
+        restored
+            .canonical_identity_bytes()
+            .expect("restored identity"),
         source.canonical_identity_bytes().expect("source identity")
     );
 }
@@ -761,9 +751,8 @@ fn safety_lattice_matches_the_live_lowering_registry() {
         .expect("test sub"),
     ));
     let relates = relates_id("friendship", "child");
-    let unspecialized = SchemaFact::Relates(
-        RelatesFact::new(relates.clone(), None).expect("test relates"),
-    );
+    let unspecialized =
+        SchemaFact::Relates(RelatesFact::new(relates.clone(), None).expect("test relates"));
     let specialized = SchemaFact::Relates(
         RelatesFact::new(relates, Some(role_id("friendship", "parent")))
             .expect("test specialization"),
@@ -809,8 +798,7 @@ fn safety_lattice_matches_the_live_lowering_registry() {
         ),
         (
             "cardinality-widen",
-            SchemaOperation::redefine(explicit_default.clone(), widened_card)
-                .expect("operation"),
+            SchemaOperation::redefine(explicit_default.clone(), widened_card).expect("operation"),
             DeltaSafety::Additive,
         ),
         (

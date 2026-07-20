@@ -6,18 +6,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use type_bridge_contract::codec::from_canonical_json;
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration::{MIGRATION_FORMAT_V1, MigrationId};
 use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_schema::ManagedDeltaContext;
 
 use crate::manifest::peek_manifest_identity;
-use crate::{
-    VerifiedSchemaMigrationManifest, decode_verified_manifest,
-    encode_verified_manifest,
-};
+use crate::{VerifiedSchemaMigrationManifest, decode_verified_manifest, encode_verified_manifest};
 
 const CANONICAL_MIGRATION_SUFFIX: &str = ".tbmigration.json";
 
@@ -161,10 +156,7 @@ impl MigrationHistoryGraph {
     }
 
     /// Require an applied set to contain every ancestor of every applied node.
-    pub fn validate_applied(
-        &self,
-        applied: &BTreeSet<MigrationId>,
-    ) -> Result<(), Diagnostic> {
+    pub fn validate_applied(&self, applied: &BTreeSet<MigrationId>) -> Result<(), Diagnostic> {
         for id in applied {
             let direct = self.parents.get(id).ok_or_else(|| {
                 graph_failure(
@@ -351,9 +343,7 @@ pub fn discover_verified_migration_chain(
             Some((first, rest)) => {
                 let first_parent = &verified_by_id[first];
                 for parent in rest {
-                    if verified_by_id[parent].target_state()
-                        != first_parent.target_state()
-                    {
+                    if verified_by_id[parent].target_state() != first_parent.target_state() {
                         return Err(discovery_failure(
                             "migration_discovery_divergent_merge_sources",
                             "merge manifest parents reached different verified target states",
@@ -367,9 +357,7 @@ pub fn discover_verified_migration_chain(
         require_stem_binding(&manifest, &candidate.stem)?;
         verified_by_id.insert(id, manifest);
     }
-    MigrationHistoryGraph::from_verified(
-        verified_by_id.into_values().collect::<Vec<_>>(),
-    )
+    MigrationHistoryGraph::from_verified(verified_by_id.into_values().collect::<Vec<_>>())
 }
 
 fn require_stem_binding(
@@ -414,9 +402,7 @@ struct CanonicalCandidate {
     bytes: Vec<u8>,
 }
 
-fn collect_canonical_candidates(
-    directory: &Path,
-) -> Result<Vec<CanonicalCandidate>, Diagnostic> {
+fn collect_canonical_candidates(directory: &Path) -> Result<Vec<CanonicalCandidate>, Diagnostic> {
     let read_dir = fs::read_dir(directory).map_err(|_| {
         discovery_failure(
             "migration_discovery_directory_unreadable",
@@ -615,11 +601,7 @@ fn discovery_failure(code: &'static str, message: &'static str) -> Diagnostic {
     failure(DiagnosticCategory::InvalidContract, code, message)
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static history diagnostic code is canonical"),

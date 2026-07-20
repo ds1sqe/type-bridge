@@ -76,7 +76,9 @@ impl NodeRuntimeProjection {
         )
         .map_err(diagnostic_error)?;
         if runtime.target() != BindingTarget::TypeScript {
-            return Err(invalid_error("runtime projection does not target TypeScript"));
+            return Err(invalid_error(
+                "runtime projection does not target TypeScript",
+            ));
         }
         let registrations: Vec<ModelRegistration> = serde_json::from_str(&registrations_json)
             .map_err(|error| invalid_error(format!("invalid projection registrations: {error}")))?;
@@ -93,19 +95,22 @@ impl NodeRuntimeProjection {
             if !covered.insert(id.clone()) {
                 return Err(invalid_error("duplicate projected model registration"));
             }
-            let model = runtime
-                .models()
-                .get(&id)
-                .ok_or_else(|| invalid_error("registration references an unknown projected model"))?;
+            let model = runtime.models().get(&id).ok_or_else(|| {
+                invalid_error("registration references an unknown projected model")
+            })?;
             if registration.target_name != model.target_name().as_str()
                 || registration.create != model.create().enabled()
                 || registration.reference != model.reference_read().target_name().is_some()
             {
-                return Err(invalid_error("registration does not match the projected token facets"));
+                return Err(invalid_error(
+                    "registration does not match the projected token facets",
+                ));
             }
         }
         if covered.len() != runtime.models().len() {
-            return Err(invalid_error("projection model registration coverage is incomplete"));
+            return Err(invalid_error(
+                "projection model registration coverage is incomplete",
+            ));
         }
         let mut types_by_label = BTreeMap::new();
         for id in runtime.models().keys() {
@@ -113,12 +118,17 @@ impl NodeRuntimeProjection {
                 .insert(id.label().as_str().to_owned(), id.clone())
                 .is_some()
             {
-                return Err(invalid_error("projection contains duplicate provider type labels"));
+                return Err(invalid_error(
+                    "projection contains duplicate provider type labels",
+                ));
             }
         }
         let projection = InstalledRuntimeProjection::try_new(runtime).map_err(orm_error)?;
         Ok(Self {
-            package: Arc::new(InstalledPackage { projection, types_by_label }),
+            package: Arc::new(InstalledPackage {
+                projection,
+                types_by_label,
+            }),
         })
     }
 
@@ -178,15 +188,28 @@ impl NodeProjectedModelManager {
         ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
         let iid = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
-                let attributes = lower_attributes(self.package.as_ref(), &descriptor.owned_attributes, &instance)?;
+                let attributes = lower_attributes(
+                    self.package.as_ref(),
+                    &descriptor.owned_attributes,
+                    &instance,
+                )?;
                 let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime.block_on(manager.insert(&attributes)).map_err(orm_error)?
+                self.runtime
+                    .block_on(manager.insert(&attributes))
+                    .map_err(orm_error)?
             }
             TypeDescriptor::Relation(descriptor) => {
-                let attributes = lower_attributes(self.package.as_ref(), &descriptor.owned_attributes, &instance)?;
-                let roles = lower_roles(self.package.as_ref(), &self.type_id, &descriptor, &instance)?;
+                let attributes = lower_attributes(
+                    self.package.as_ref(),
+                    &descriptor.owned_attributes,
+                    &instance,
+                )?;
+                let roles =
+                    lower_roles(self.package.as_ref(), &self.type_id, &descriptor, &instance)?;
                 let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime.block_on(manager.insert(&attributes, &roles)).map_err(orm_error)?
+                self.runtime
+                    .block_on(manager.insert(&attributes, &roles))
+                    .map_err(orm_error)?
             }
         };
         instance.iid = Some(iid);
@@ -215,7 +238,11 @@ impl NodeProjectedModelManager {
                 match rows.as_slice() {
                     [] => None,
                     [row] => Some(hydrate_relation(self.package.as_ref(), &self.type_id, row)?),
-                    _ => return Err(runtime_error("exact IID relation query returned multiple rows")),
+                    _ => {
+                        return Err(runtime_error(
+                            "exact IID relation query returned multiple rows",
+                        ));
+                    }
                 }
             }
         };
@@ -258,9 +285,15 @@ impl NodeProjectedModelManager {
             .map_err(orm_error)
     }
 
-    fn entity_manager(&self, descriptor: Arc<EntityDescriptor>) -> napi::Result<DynamicEntityManager<'_>> {
+    fn entity_manager(
+        &self,
+        descriptor: Arc<EntityDescriptor>,
+    ) -> napi::Result<DynamicEntityManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicEntityManager::with_transaction(transaction.clone(), descriptor));
+            return Ok(DynamicEntityManager::with_transaction(
+                transaction.clone(),
+                descriptor,
+            ));
         }
         let database = self
             .database
@@ -269,9 +302,15 @@ impl NodeProjectedModelManager {
         Ok(DynamicEntityManager::new(database.as_ref(), descriptor))
     }
 
-    fn relation_manager(&self, descriptor: Arc<RelationDescriptor>) -> napi::Result<DynamicRelationManager<'_>> {
+    fn relation_manager(
+        &self,
+        descriptor: Arc<RelationDescriptor>,
+    ) -> napi::Result<DynamicRelationManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicRelationManager::with_transaction(transaction.clone(), descriptor));
+            return Ok(DynamicRelationManager::with_transaction(
+                transaction.clone(),
+                descriptor,
+            ));
         }
         let database = self
             .database
@@ -315,7 +354,8 @@ fn manageable_type(package: &InstalledPackage, type_key: &str) -> napi::Result<T
 }
 
 fn parse_wire(value: &str) -> napi::Result<ProjectedWire> {
-    serde_json::from_str(value).map_err(|error| invalid_error(format!("invalid projected value wire: {error}")))
+    serde_json::from_str(value)
+        .map_err(|error| invalid_error(format!("invalid projected value wire: {error}")))
 }
 
 fn nested_wire(value: &Value) -> napi::Result<ProjectedWire> {
@@ -344,10 +384,14 @@ fn ensure_root_wire(
     expected: &TypeId,
 ) -> napi::Result<()> {
     if wire.form != WireForm::Complete || type_id_from_key(&wire.type_key)? != *expected {
-        return Err(invalid_error("insert requires the manager's exact complete projected model"));
+        return Err(invalid_error(
+            "insert requires the manager's exact complete projected model",
+        ));
     }
     if wire.value.is_some() {
-        return Err(invalid_error("entity and relation wires cannot carry scalar values"));
+        return Err(invalid_error(
+            "entity and relation wires cannot carry scalar values",
+        ));
     }
     ensure_wire_members(package, expected, wire)
 }
@@ -385,17 +429,22 @@ fn ensure_wire_members(
         }
         WireForm::Reference => {
             for field in model.reference_read().key_fields() {
-                let token = model
-                    .query_tokens()
-                    .fields()
-                    .get(field)
-                    .ok_or_else(|| runtime_error("projected reference key has no query token"))?;
+                let token =
+                    model.query_tokens().fields().get(field).ok_or_else(|| {
+                        runtime_error("projected reference key has no query token")
+                    })?;
                 allowed.insert(token.target_name().as_str());
             }
         }
     }
-    if wire.values.keys().any(|name| !allowed.contains(name.as_str())) {
-        return Err(invalid_error("projected wire contains an unprojected member"));
+    if wire
+        .values
+        .keys()
+        .any(|name| !allowed.contains(name.as_str()))
+    {
+        return Err(invalid_error(
+            "projected wire contains an unprojected member",
+        ));
     }
     Ok(())
 }
@@ -420,7 +469,9 @@ fn lower_attributes(
                 || attribute.iid.is_some()
                 || !attribute.values.is_empty()
             {
-                return Err(invalid_error("owned field requires its exact complete attribute wrapper"));
+                return Err(invalid_error(
+                    "owned field requires its exact complete attribute wrapper",
+                ));
             }
             let scalar = attribute
                 .value
@@ -467,7 +518,9 @@ fn lower_roles(
                 allowed.id() == &player_id && wire_form(allowed.form()) == player.form
             });
             if !allowed {
-                return Err(invalid_error("role received an incompatible projected player"));
+                return Err(invalid_error(
+                    "role received an incompatible projected player",
+                ));
             }
             let iid = player.iid.clone();
             if let Some(iid) = &iid {
@@ -479,7 +532,9 @@ fn lower_roles(
                 None
             };
             if iid.is_none() && key.is_none() {
-                return Err(invalid_error("role player requires an IID or complete projected key"));
+                return Err(invalid_error(
+                    "role player requires an IID or complete projected key",
+                ));
             }
             inputs.push(DynamicRolePlayerInput {
                 role_name: create.role().label().as_str().to_owned(),
@@ -504,14 +559,20 @@ fn projected_key(
     let Some(key) = descriptor.key_attribute() else {
         return Ok(None);
     };
-    let Some(value) = wire.values.get(&key.field_name).filter(|value| !value.is_null()) else {
+    let Some(value) = wire
+        .values
+        .get(&key.field_name)
+        .filter(|value| !value.is_null())
+    else {
         return Ok(None);
     };
     let wrapper = nested_wire(value)?;
     let expected = package.type_by_label(&key.attr_name)?;
     ensure_wire_members(package, expected, &wrapper)?;
     if wrapper.form != WireForm::Complete || type_id_from_key(&wrapper.type_key)? != *expected {
-        return Err(invalid_error("projected key uses the wrong complete attribute wrapper"));
+        return Err(invalid_error(
+            "projected key uses the wrong complete attribute wrapper",
+        ));
     }
     let scalar = wrapper
         .value
@@ -531,13 +592,22 @@ fn normalized_values(
     let values = match value {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(values)) if maximum != Some(1) => values.iter().collect(),
-        Some(Value::Array(_)) => return Err(invalid_error("scalar projected member received a sequence")),
+        Some(Value::Array(_)) => {
+            return Err(invalid_error("scalar projected member received a sequence"));
+        }
         Some(value) if maximum == Some(1) => vec![value],
-        Some(_) => return Err(invalid_error("multi-value projected member requires a sequence")),
+        Some(_) => {
+            return Err(invalid_error(
+                "multi-value projected member requires a sequence",
+            ));
+        }
     };
-    let count = u32::try_from(values.len()).map_err(|_| invalid_error("projected member count exceeds u32"))?;
+    let count = u32::try_from(values.len())
+        .map_err(|_| invalid_error("projected member count exceeds u32"))?;
     if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
-        return Err(invalid_error("projected member violates resolved cardinality"));
+        return Err(invalid_error(
+            "projected member violates resolved cardinality",
+        ));
     }
     Ok(values)
 }
@@ -548,7 +618,10 @@ fn hydrate_entity(
     row: &DynamicEntityRow,
 ) -> napi::Result<ProjectedWire> {
     ensure_row_type(id, row.type_name.as_deref())?;
-    let descriptor = package.projection.entity_descriptor(id).map_err(orm_error)?;
+    let descriptor = package
+        .projection
+        .entity_descriptor(id)
+        .map_err(orm_error)?;
     Ok(ProjectedWire {
         type_key: canonical_type_key(id)?,
         form: WireForm::Complete,
@@ -564,7 +637,10 @@ fn hydrate_relation(
     row: &DynamicRelationRow,
 ) -> napi::Result<ProjectedWire> {
     ensure_row_type(id, row.type_name.as_deref())?;
-    let descriptor = package.projection.relation_descriptor(id).map_err(orm_error)?;
+    let descriptor = package
+        .projection
+        .relation_descriptor(id)
+        .map_err(orm_error)?;
     let mut values = hydrate_attributes(package, &descriptor.owned_attributes, &row.attributes)?;
     let projection = package.projection.projection();
     let model = projection
@@ -613,7 +689,9 @@ fn hydrate_player(
     let projected = allowed
         .iter()
         .find(|projected| projected.id() == id)
-        .ok_or_else(|| runtime_error("role-player row type is not accepted by the projected role"))?;
+        .ok_or_else(|| {
+            runtime_error("role-player row type is not accepted by the projected role")
+        })?;
     let attributes = package
         .projection
         .role_player_attributes(id, &player.attributes)
@@ -621,7 +699,9 @@ fn hydrate_player(
     match projected.form() {
         ProjectedModelForm::Complete => {
             if id.kind() != TypeKind::Entity {
-                return Err(runtime_error("nested complete relations are forbidden; project a reference"));
+                return Err(runtime_error(
+                    "nested complete relations are forbidden; project a reference",
+                ));
             }
             hydrate_entity(
                 package,
@@ -699,7 +779,8 @@ fn projected_member_value(
     cardinality: (u32, Option<u32>),
 ) -> napi::Result<Value> {
     let (minimum, maximum) = cardinality;
-    let count = u32::try_from(values.len()).map_err(|_| runtime_error("hydrated value count exceeds u32"))?;
+    let count = u32::try_from(values.len())
+        .map_err(|_| runtime_error("hydrated value count exceeds u32"))?;
     if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
         return Err(runtime_error("provider row violates projected cardinality"));
     }
@@ -718,14 +799,22 @@ fn projected_member_value(
 
 fn scalar_to_attribute(wire: &ScalarWire, expected: ValueType) -> napi::Result<AttributeValue> {
     if wire.value_type != value_type_tag(expected) {
-        return Err(invalid_error("scalar envelope value_type disagrees with the projection"));
+        return Err(invalid_error(
+            "scalar envelope value_type disagrees with the projection",
+        ));
     }
-    let text = || wire.value.as_str().ok_or_else(|| invalid_error("scalar envelope requires a string value"));
+    let text = || {
+        wire.value
+            .as_str()
+            .ok_or_else(|| invalid_error("scalar envelope requires a string value"))
+    };
     match expected {
         ValueType::String => text().map(|value| AttributeValue::String(value.to_owned())),
         ValueType::Long => {
             let value = text()?;
-            let parsed = value.parse::<i64>().map_err(|_| invalid_error("long envelope is outside i64"))?;
+            let parsed = value
+                .parse::<i64>()
+                .map_err(|_| invalid_error("long envelope is outside i64"))?;
             if parsed.to_string() != value {
                 return Err(invalid_error("long envelope is not canonical"));
             }
@@ -743,8 +832,12 @@ fn scalar_to_attribute(wire: &ScalarWire, expected: ValueType) -> napi::Result<A
             .map(AttributeValue::Boolean)
             .ok_or_else(|| invalid_error("boolean envelope requires a boolean")),
         ValueType::Date => canonical_temporal::<CanonicalDate>(text()?, AttributeValue::Date),
-        ValueType::DateTime => canonical_temporal::<CanonicalDateTime>(text()?, AttributeValue::DateTime),
-        ValueType::DateTimeTz => canonical_temporal::<CanonicalDateTimeTz>(text()?, AttributeValue::DateTimeTZ),
+        ValueType::DateTime => {
+            canonical_temporal::<CanonicalDateTime>(text()?, AttributeValue::DateTime)
+        }
+        ValueType::DateTimeTz => {
+            canonical_temporal::<CanonicalDateTimeTz>(text()?, AttributeValue::DateTimeTZ)
+        }
         ValueType::Decimal => {
             let value = text()?;
             let canonical = DecimalValue::new(value).map_err(diagnostic_error)?;
@@ -753,7 +846,9 @@ fn scalar_to_attribute(wire: &ScalarWire, expected: ValueType) -> napi::Result<A
             }
             Ok(AttributeValue::Decimal(value.to_owned()))
         }
-        ValueType::Duration => canonical_temporal::<CanonicalDuration>(text()?, AttributeValue::Duration),
+        ValueType::Duration => {
+            canonical_temporal::<CanonicalDuration>(text()?, AttributeValue::Duration)
+        }
     }
 }
 
@@ -773,19 +868,41 @@ where
 
 fn attribute_to_scalar(value: &AttributeValue, expected: ValueType) -> napi::Result<ScalarWire> {
     let (value_type, value) = match (value, expected) {
-        (AttributeValue::String(value), ValueType::String) => (ValueTypeTag::String, Value::String(value.clone())),
-        (AttributeValue::Long(value), ValueType::Long) => (ValueTypeTag::Long, Value::String(value.to_string())),
+        (AttributeValue::String(value), ValueType::String) => {
+            (ValueTypeTag::String, Value::String(value.clone()))
+        }
+        (AttributeValue::Long(value), ValueType::Long) => {
+            (ValueTypeTag::Long, Value::String(value.to_string()))
+        }
         (AttributeValue::Double(value), ValueType::Double) if value.is_finite() => (
             ValueTypeTag::Double,
-            serde_json::Number::from_f64(*value).map(Value::Number).ok_or_else(|| runtime_error("provider returned a non-finite double"))?,
+            serde_json::Number::from_f64(*value)
+                .map(Value::Number)
+                .ok_or_else(|| runtime_error("provider returned a non-finite double"))?,
         ),
-        (AttributeValue::Boolean(value), ValueType::Boolean) => (ValueTypeTag::Boolean, Value::Bool(*value)),
-        (AttributeValue::Date(value), ValueType::Date) => (ValueTypeTag::Date, Value::String(value.clone())),
-        (AttributeValue::DateTime(value), ValueType::DateTime) => (ValueTypeTag::DateTime, Value::String(value.clone())),
-        (AttributeValue::DateTimeTZ(value), ValueType::DateTimeTz) => (ValueTypeTag::DateTimeTz, Value::String(value.clone())),
-        (AttributeValue::Decimal(value), ValueType::Decimal) => (ValueTypeTag::Decimal, Value::String(value.clone())),
-        (AttributeValue::Duration(value), ValueType::Duration) => (ValueTypeTag::Duration, Value::String(value.clone())),
-        _ => return Err(runtime_error("provider attribute value type disagrees with the projection")),
+        (AttributeValue::Boolean(value), ValueType::Boolean) => {
+            (ValueTypeTag::Boolean, Value::Bool(*value))
+        }
+        (AttributeValue::Date(value), ValueType::Date) => {
+            (ValueTypeTag::Date, Value::String(value.clone()))
+        }
+        (AttributeValue::DateTime(value), ValueType::DateTime) => {
+            (ValueTypeTag::DateTime, Value::String(value.clone()))
+        }
+        (AttributeValue::DateTimeTZ(value), ValueType::DateTimeTz) => {
+            (ValueTypeTag::DateTimeTz, Value::String(value.clone()))
+        }
+        (AttributeValue::Decimal(value), ValueType::Decimal) => {
+            (ValueTypeTag::Decimal, Value::String(value.clone()))
+        }
+        (AttributeValue::Duration(value), ValueType::Duration) => {
+            (ValueTypeTag::Duration, Value::String(value.clone()))
+        }
+        _ => {
+            return Err(runtime_error(
+                "provider attribute value type disagrees with the projection",
+            ));
+        }
     };
     Ok(ScalarWire { value_type, value })
 }
@@ -812,7 +929,9 @@ const fn wire_form(value: ProjectedModelForm) -> WireForm {
 }
 
 fn descriptor_cardinality(descriptor: &OwnedAttributeDescriptor) -> (u32, Option<u32>) {
-    descriptor.cardinality().unwrap_or((u32::from(!descriptor.is_optional), Some(1)))
+    descriptor
+        .cardinality()
+        .unwrap_or((u32::from(!descriptor.is_optional), Some(1)))
 }
 
 fn role_cardinality(descriptor: &RoleDescriptor) -> (u32, Option<u32>) {
@@ -821,7 +940,9 @@ fn role_cardinality(descriptor: &RoleDescriptor) -> (u32, Option<u32>) {
 
 fn ensure_row_type(id: &TypeId, actual: Option<&str>) -> napi::Result<()> {
     if actual.is_some_and(|actual| actual != id.label().as_str()) {
-        return Err(runtime_error("exact provider row returned a different concrete type"));
+        return Err(runtime_error(
+            "exact provider row returned a different concrete type",
+        ));
     }
     Ok(())
 }
@@ -864,13 +985,31 @@ mod tests {
 
     #[test]
     fn scalar_envelopes_preserve_long_and_reject_noncanonical_domains() {
-        let long = ScalarWire { value_type: ValueTypeTag::Long, value: Value::String("9007199254740993".into()) };
-        assert_eq!(scalar_to_attribute(&long, ValueType::Long).unwrap(), AttributeValue::Long(9_007_199_254_740_993));
-        let leading_zero = ScalarWire { value_type: ValueTypeTag::Long, value: Value::String("01".into()) };
+        let long = ScalarWire {
+            value_type: ValueTypeTag::Long,
+            value: Value::String("9007199254740993".into()),
+        };
+        assert_eq!(
+            scalar_to_attribute(&long, ValueType::Long).unwrap(),
+            AttributeValue::Long(9_007_199_254_740_993)
+        );
+        let leading_zero = ScalarWire {
+            value_type: ValueTypeTag::Long,
+            value: Value::String("01".into()),
+        };
         assert!(scalar_to_attribute(&leading_zero, ValueType::Long).is_err());
-        let date = ScalarWire { value_type: ValueTypeTag::Date, value: Value::String("2024-02-29".into()) };
-        assert_eq!(scalar_to_attribute(&date, ValueType::Date).unwrap(), AttributeValue::Date("2024-02-29".into()));
-        let bad_date = ScalarWire { value_type: ValueTypeTag::Date, value: Value::String("2023-02-29".into()) };
+        let date = ScalarWire {
+            value_type: ValueTypeTag::Date,
+            value: Value::String("2024-02-29".into()),
+        };
+        assert_eq!(
+            scalar_to_attribute(&date, ValueType::Date).unwrap(),
+            AttributeValue::Date("2024-02-29".into())
+        );
+        let bad_date = ScalarWire {
+            value_type: ValueTypeTag::Date,
+            value: Value::String("2023-02-29".into()),
+        };
         assert!(scalar_to_attribute(&bad_date, ValueType::Date).is_err());
     }
 }

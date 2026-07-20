@@ -67,19 +67,11 @@ async fn low1_redefine_is_singleton_and_rejection_preserves_every_prior_change()
     .expect("LOW1 fixture schema must be accepted by TypeDB 3.12.1");
 
     for (case, query) in [
-        (
-            "sub",
-            format!("redefine\n{child} sub {root_b};"),
-        ),
-        (
-            "value",
-            format!("redefine\n{scalar} value integer;"),
-        ),
+        ("sub", format!("redefine\n{child} sub {root_b};")),
+        ("value", format!("redefine\n{scalar} value integer;")),
         (
             "relates specialization",
-            format!(
-                "redefine\n{child_relation} relates {child_role} as {parent_role_b};"
-            ),
+            format!("redefine\n{child_relation} relates {child_role} as {parent_role_b};"),
         ),
         (
             "ordinary parameterized annotation",
@@ -109,13 +101,9 @@ async fn low1_redefine_is_singleton_and_rejection_preserves_every_prior_change()
     assert!(child_declaration.contains(&format!("sub {root_b}")));
     let scalar_declaration = declaration(&before_rejection, &format!("attribute {scalar}"));
     assert!(scalar_declaration.contains("value integer"));
-    let relation_declaration = declaration(
-        &before_rejection,
-        &format!("relation {child_relation}"),
-    );
-    assert!(relation_declaration.contains(&format!(
-        "relates {child_role} as {parent_role_b}"
-    )));
+    let relation_declaration =
+        declaration(&before_rejection, &format!("relation {child_relation}"));
+    assert!(relation_declaration.contains(&format!("relates {child_role} as {parent_role_b}")));
     let owner_declaration = declaration(&before_rejection, &format!("entity {owner}"));
     assert!(owner_declaration.contains(&format!("owns {owned} @card(0..2)")));
     assert!(
@@ -185,9 +173,7 @@ async fn low2_relates_specialization_transitions_preserve_existing_data() {
     .expect("LOW2 fixture data must commit before specialization transitions");
 
     db.execute_raw(
-        &format!(
-            "define\nrelation {child_relation}, relates {child_role} as {parent_role_a};"
-        ),
+        &format!("define\nrelation {child_relation}, relates {child_role} as {parent_role_a};"),
         TxType::Schema,
     )
     .await
@@ -211,9 +197,7 @@ async fn low2_relates_specialization_transitions_preserve_existing_data() {
     );
 
     db.execute_raw(
-        &format!(
-            "redefine\n{child_relation} relates {child_role} as {parent_role_b};"
-        ),
+        &format!("redefine\n{child_relation} relates {child_role} as {parent_role_b};"),
         TxType::Schema,
     )
     .await
@@ -237,9 +221,7 @@ async fn low2_relates_specialization_transitions_preserve_existing_data() {
     );
 
     db.execute_raw(
-        &format!(
-            "undefine\nas {parent_role_b} from {child_relation} relates {child_role};"
-        ),
+        &format!("undefine\nas {parent_role_b} from {child_relation} relates {child_role};"),
         TxType::Schema,
     )
     .await
@@ -310,15 +292,23 @@ async fn low3_annotations_add_change_and_remove_on_every_ordinary_subject() {
         .schema_text()
         .await
         .expect("LOW3 added annotations must export");
-    assert!(declaration(&added, &format!("entity {documented}"))
-        .contains(&format!("@doc(\"{doc_added}\")")));
+    assert!(
+        declaration(&added, &format!("entity {documented}"))
+            .contains(&format!("@doc(\"{doc_added}\")"))
+    );
     assert!(declaration(&added, &format!("attribute {value}")).contains("@regex(\"^a+$\")"));
-    assert!(declaration(&added, &format!("entity {owner}"))
-        .contains(&format!("owns {value} @card(0..2)")));
-    assert!(declaration(&added, &format!("relation {relation}"))
-        .contains(&format!("relates {role} @card(0..2)")));
-    assert!(declaration(&added, &format!("entity {player}"))
-        .contains(&format!("plays {relation}:{role} @card(0..2)")));
+    assert!(
+        declaration(&added, &format!("entity {owner}"))
+            .contains(&format!("owns {value} @card(0..2)"))
+    );
+    assert!(
+        declaration(&added, &format!("relation {relation}"))
+            .contains(&format!("relates {role} @card(0..2)"))
+    );
+    assert!(
+        declaration(&added, &format!("entity {player}"))
+            .contains(&format!("plays {relation}:{role} @card(0..2)"))
+    );
 
     for (subject, query) in [
         (
@@ -350,15 +340,23 @@ async fn low3_annotations_add_change_and_remove_on_every_ordinary_subject() {
         .schema_text()
         .await
         .expect("LOW3 changed annotations must export");
-    assert!(declaration(&changed, &format!("entity {documented}"))
-        .contains(&format!("@doc(\"{doc_changed}\")")));
+    assert!(
+        declaration(&changed, &format!("entity {documented}"))
+            .contains(&format!("@doc(\"{doc_changed}\")"))
+    );
     assert!(declaration(&changed, &format!("attribute {value}")).contains("@regex(\"^b+$\")"));
-    assert!(declaration(&changed, &format!("entity {owner}"))
-        .contains(&format!("owns {value} @card(0..3)")));
-    assert!(declaration(&changed, &format!("relation {relation}"))
-        .contains(&format!("relates {role} @card(0..3)")));
-    assert!(declaration(&changed, &format!("entity {player}"))
-        .contains(&format!("plays {relation}:{role} @card(0..3)")));
+    assert!(
+        declaration(&changed, &format!("entity {owner}"))
+            .contains(&format!("owns {value} @card(0..3)"))
+    );
+    assert!(
+        declaration(&changed, &format!("relation {relation}"))
+            .contains(&format!("relates {role} @card(0..3)"))
+    );
+    assert!(
+        declaration(&changed, &format!("entity {player}"))
+            .contains(&format!("plays {relation}:{role} @card(0..3)"))
+    );
 
     db.execute_raw(
         &format!(
@@ -415,15 +413,11 @@ async fn low4_sub_annotations_require_atomic_replace_and_rollback_restores_them(
     for (kind, query) in [
         (
             "doc",
-            format!(
-                "redefine\n{child} sub {base} @doc(\"{rejected_doc}\");"
-            ),
+            format!("redefine\n{child} sub {base} @doc(\"{rejected_doc}\");"),
         ),
         (
             "meta",
-            format!(
-                "redefine\n{child} sub {base} @meta(\"owner\", \"{rejected_meta}\");"
-            ),
+            format!("redefine\n{child} sub {base} @meta(\"owner\", \"{rejected_meta}\");"),
         ),
     ] {
         let error = db
@@ -443,9 +437,7 @@ async fn low4_sub_annotations_require_atomic_replace_and_rollback_restores_them(
         .expect("LOW4 schema must export after direct-redefine rejections");
     let child_declaration = declaration(&after_rejections, &format!("entity {child}"));
     assert!(child_declaration.contains(&format!("@doc(\"{original_doc}\")")));
-    assert!(child_declaration.contains(&format!(
-        "@meta(\"owner\", \"{original_meta}\")"
-    )));
+    assert!(child_declaration.contains(&format!("@meta(\"owner\", \"{original_meta}\")")));
 
     let committed = db
         .transaction_context(TxType::Schema)
@@ -478,9 +470,7 @@ async fn low4_sub_annotations_require_atomic_replace_and_rollback_restores_them(
         .expect("LOW4 committed fallback must export");
     let child_declaration = declaration(&after_commit, &format!("entity {child}"));
     assert!(child_declaration.contains(&format!("@doc(\"{committed_doc}\")")));
-    assert!(child_declaration.contains(&format!(
-        "@meta(\"owner\", \"{committed_meta}\")"
-    )));
+    assert!(child_declaration.contains(&format!("@meta(\"owner\", \"{committed_meta}\")")));
     assert!(!child_declaration.contains(&original_doc));
     assert!(!child_declaration.contains(&original_meta));
 
@@ -542,9 +532,7 @@ async fn low5_meta_redefine_and_undefine_are_isolated_by_key() {
     .expect("LOW5 fixture with two meta keys must be accepted by TypeDB 3.12.1");
 
     db.execute_raw(
-        &format!(
-            "redefine\n{subject} @meta(\"owner\", \"{owner_changed}\");"
-        ),
+        &format!("redefine\n{subject} @meta(\"owner\", \"{owner_changed}\");"),
         TxType::Schema,
     )
     .await
@@ -554,9 +542,7 @@ async fn low5_meta_redefine_and_undefine_are_isolated_by_key() {
         .await
         .expect("LOW5 redefined meta keys must export");
     let subject_declaration = declaration(&changed, &format!("entity {subject}"));
-    assert!(subject_declaration.contains(&format!(
-        "@meta(\"owner\", \"{owner_changed}\")"
-    )));
+    assert!(subject_declaration.contains(&format!("@meta(\"owner\", \"{owner_changed}\")")));
     assert!(subject_declaration.contains(&format!("@meta(\"source\", \"{source}\")")));
     assert!(!subject_declaration.contains(&owner_original));
 
@@ -855,7 +841,10 @@ async fn low7_user_defined_struct_transitions_are_unavailable() {
                 "LOW7 TypeDB 3.12.1 must reject unavailable {case}: {query}"
             ));
         let message = error.to_string();
-        assert!(!message.is_empty(), "LOW7 {case} returned an empty diagnostic");
+        assert!(
+            !message.is_empty(),
+            "LOW7 {case} returned an empty diagnostic"
+        );
         assert!(
             message.contains(&record),
             "LOW7 {case} diagnostic omitted stable marker {record:?}: {message}"
@@ -969,9 +958,7 @@ async fn low8_populated_data_guards_reject_unsafe_schema_transitions() {
     .expect("LOW8 independent removal must commit on TypeDB 3.12.1");
     let orphan_probe = db
         .execute_raw(
-            &format!(
-                "match\n$orphan isa {independent_attribute} \"orphan\";\nselect $orphan;"
-            ),
+            &format!("match\n$orphan isa {independent_attribute} \"orphan\";\nselect $orphan;"),
             TxType::Read,
         )
         .await
@@ -1002,23 +989,17 @@ async fn low8_populated_data_guards_reject_unsafe_schema_transitions() {
         (
             "unique add",
             unique_owner.as_str(),
-            format!(
-                "define\nentity {unique_owner}, owns {unique_attribute} @unique;"
-            ),
+            format!("define\nentity {unique_owner}, owns {unique_attribute} @unique;"),
         ),
         (
             "cardinality narrowing",
             card_owner.as_str(),
-            format!(
-                "redefine\n{card_owner} owns {card_attribute} @card(0..1);"
-            ),
+            format!("redefine\n{card_owner} owns {card_attribute} @card(0..1);"),
         ),
         (
             "regex narrowing",
             regex_attribute.as_str(),
-            format!(
-                "define\n{regex_attribute} value string @regex(\"^good$\");"
-            ),
+            format!("define\n{regex_attribute} value string @regex(\"^good$\");"),
         ),
         (
             "range narrowing",
@@ -1038,9 +1019,7 @@ async fn low8_populated_data_guards_reject_unsafe_schema_transitions() {
         (
             "relates specialization change",
             child_relation.as_str(),
-            format!(
-                "redefine\n{child_relation} relates {child_role} as {narrow_role};"
-            ),
+            format!("redefine\n{child_relation} relates {child_role} as {narrow_role};"),
         ),
         (
             "value-type change",
@@ -1057,7 +1036,10 @@ async fn low8_populated_data_guards_reject_unsafe_schema_transitions() {
                 "LOW8 {case} must be rejected against populated data: {query}"
             ));
         let message = error.to_string();
-        assert!(!message.is_empty(), "LOW8 {case} returned an empty diagnostic");
+        assert!(
+            !message.is_empty(),
+            "LOW8 {case} returned an empty diagnostic"
+        );
         assert!(
             message.contains(marker),
             "LOW8 {case} diagnostic omitted stable marker {marker:?}: {message}"
@@ -1134,7 +1116,10 @@ async fn low9_cardinality_removal_rejects_implicit_default_narrowing() {
                 "LOW9 removing explicit {case} cardinality must reject the implicit 0..1 default"
             ));
         let message = error.to_string();
-        assert!(!message.is_empty(), "LOW9 {case} returned an empty diagnostic");
+        assert!(
+            !message.is_empty(),
+            "LOW9 {case} returned an empty diagnostic"
+        );
         assert!(
             message.contains(marker) && message.contains("@card(0..1)"),
             "LOW9 {case} rejection omitted marker/default evidence: {message}"

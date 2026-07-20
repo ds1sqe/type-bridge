@@ -41,14 +41,14 @@ pub mod reserved;
 
 mod query_plan_wire;
 
-pub mod schema;
 mod declared_schema_wire;
-pub mod schema_lowering;
+pub mod schema;
 /// Trusted, reversible schema transitions over one durable managed scope.
 pub mod schema_delta;
 mod schema_delta_wire;
 /// Domain-safe schema fingerprint wrappers.
 pub mod schema_fingerprint;
+pub mod schema_lowering;
 /// Versioned server-semantic defaults shared by resolution and fingerprints.
 pub mod semantic_profile;
 /// Canonical temporal component values.

@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::schema::{DocumentId, SchemaFact};
+use type_bridge_core_lib::bindgen::{BindgenOptions, TargetLanguage};
 use type_bridge_schema_compat::{
     GENERATED_DECLARED_DESCRIPTOR_PATH, generate_package_with_declared_descriptors,
     generated_descriptors_to_declared, typeql_to_declared, typeql_to_generated_descriptors,
 };
-use type_bridge_core_lib::bindgen::{BindgenOptions, TargetLanguage};
 
 fn source() -> Value {
     json!({
@@ -156,7 +156,13 @@ fn effective_partial_and_unsupported_snapshots_fail_closed() {
         )
         .expect_err("dishonest snapshot must fail");
         assert_eq!(
-            diagnostics.iter().next().unwrap().diagnostic().code().as_str(),
+            diagnostics
+                .iter()
+                .next()
+                .unwrap()
+                .diagnostic()
+                .code()
+                .as_str(),
             code,
         );
     }
@@ -173,7 +179,13 @@ fn non_direct_member_provenance_fails_before_fact_construction() {
     )
     .expect_err("effective member provenance must fail");
     assert_eq!(
-        diagnostics.iter().next().unwrap().diagnostic().code().as_str(),
+        diagnostics
+            .iter()
+            .next()
+            .unwrap()
+            .diagnostic()
+            .code()
+            .as_str(),
         "generated_descriptor_provenance_not_direct",
     );
 }
@@ -213,11 +225,8 @@ fn generation_time_snapshot_and_native_package_share_declared_identity() {
     let source_document = DocumentId::new("schema/generated-overlap.tql").unwrap();
     let expected = typeql_to_declared(source_document.clone(), generated_overlap_schema())
         .expect("shared overlap TypeQL adapts");
-    let snapshot = typeql_to_generated_descriptors(
-        source_document,
-        generated_overlap_schema(),
-    )
-    .expect("generation-time snapshot emits");
+    let snapshot = typeql_to_generated_descriptors(source_document, generated_overlap_schema())
+        .expect("generation-time snapshot emits");
     let adapted = generated_descriptors_to_declared(
         DocumentId::new("generated/declared-schema.json").unwrap(),
         snapshot.as_bytes(),
@@ -242,10 +251,10 @@ fn generation_time_snapshot_and_native_package_share_declared_identity() {
         .file(GENERATED_DECLARED_DESCRIPTOR_PATH)
         .expect("package exports the direct snapshot");
     let registry = package.file("registry.py").expect("Python registry exists");
-    assert_eq!(generated_snapshot.contents, snapshot.replace(
-        "schema/generated-overlap.tql",
-        "generated/schema.tql",
-    ));
+    assert_eq!(
+        generated_snapshot.contents,
+        snapshot.replace("schema/generated-overlap.tql", "generated/schema.tql",)
+    );
     assert!(
         registry
             .contents

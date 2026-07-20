@@ -7,25 +7,22 @@ use type_bridge_contract::id::{
     AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKind,
 };
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-    CanonicalValueRange, CanonicalValueSet, DeclaredSchema, DocText,
-    FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement, FunctionReturnMode,
-    FunctionSignature, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RegexPattern,
-    RelatesFact, RelatesFactId, SchemaAnnotationValue, SchemaDiagnostic, SchemaDiagnostics,
-    SchemaFact, SchemaFactId, SourceSpan, SourcedSchemaFact, StructFact, StructField, SubFact,
-    SubFactId, TypeFact, TypeReference, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
+    CanonicalValueSet, DeclaredSchema, DocText, FunctionBody, FunctionFact, FunctionParameter,
+    FunctionReturnElement, FunctionReturnMode, FunctionSignature, OwnsFact, OwnsFactId, PlaysFact,
+    PlaysFactId, RegexPattern, RelatesFact, RelatesFactId, SchemaAnnotationValue, SchemaDiagnostic,
+    SchemaDiagnostics, SchemaFact, SchemaFactId, SourceSpan, SourcedSchemaFact, StructFact,
+    StructField, SubFact, SubFactId, TypeFact, TypeReference, ValueFact, ValueFactId,
 };
-use type_bridge_contract::temporal::{
-    CanonicalDate, CanonicalDateTime, CanonicalDuration,
-};
+use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDuration};
 use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue, ValueTypeTag,
 };
 
-use crate::{FactAssembler, SchemaDocument, SchemaDocumentSet, YamlMapping, YamlNode, YamlScalar};
 use crate::discovery::DEFAULT_MAX_SOURCE_PATTERN_BYTES;
 use crate::parse_provider_datetime_tz;
 use crate::source_pattern::validate_source_pattern;
+use crate::{FactAssembler, SchemaDocument, SchemaDocumentSet, YamlMapping, YamlNode, YamlScalar};
 
 /// Exact discriminator for the first YAML Schema V2 document grammar.
 pub const SCHEMA_V2_FORMAT: &str = "typebridge.schema/v2";
@@ -84,9 +81,7 @@ impl Normalizer {
         if format.value() != SCHEMA_V2_FORMAT {
             return Err(error(
                 "unsupported_schema_document_format",
-                format!(
-                    "schema document format must be exactly `{SCHEMA_V2_FORMAT}`"
-                ),
+                format!("schema document format must be exactly `{SCHEMA_V2_FORMAT}`"),
                 Some(format.span().clone()),
             ));
         }
@@ -141,16 +136,11 @@ impl Normalizer {
                 let name = scalar(required_entry(field_body, "name")?.value())?;
                 let name_id = contract(Label::new(name.value()), name.span())?;
 
-                if let Some(previous) =
-                    field_sources.insert(name_id.clone(), name.span().clone())
-                {
+                if let Some(previous) = field_sources.insert(name_id.clone(), name.span().clone()) {
                     return Err(crate::yaml::diagnostic_with_related(
                         DiagnosticCategory::InvalidContract,
                         "duplicate_struct_field",
-                        format!(
-                            "struct field `{}` is declared more than once",
-                            name.value()
-                        ),
+                        format!("struct field `{}` is declared more than once", name.value()),
                         name.span().clone(),
                         previous,
                         "first field declaration is here",
@@ -181,10 +171,7 @@ impl Normalizer {
             let sequence = sequence(required.value())?;
             for item in sequence.items() {
                 let capability = scalar(item)?;
-                let id = contract(
-                    CapabilityId::new(capability.value()),
-                    capability.span(),
-                )?;
+                let id = contract(CapabilityId::new(capability.value()), capability.span())?;
                 self.insert_capability(id, capability.span().clone())?;
             }
         }
@@ -249,7 +236,10 @@ impl Normalizer {
             )?;
             self.register_type(id.clone(), declaration.key().span().clone())?;
             self.push(
-                SchemaFact::Type(contract(TypeFact::new(id.clone()), declaration.key().span())?),
+                SchemaFact::Type(contract(
+                    TypeFact::new(id.clone()),
+                    declaration.key().span(),
+                )?),
                 declaration.key().span().clone(),
             );
 
@@ -259,14 +249,17 @@ impl Normalizer {
                     &["sub", "value", "abstract", "independent", "doc", "meta"][..]
                 }
                 TypeKind::Entity => &["sub", "owns", "abstract", "doc", "meta"][..],
-                TypeKind::Relation => {
-                    &["sub", "owns", "relates", "abstract", "doc", "meta"][..]
-                }
+                TypeKind::Relation => &["sub", "owns", "relates", "abstract", "doc", "meta"][..],
                 TypeKind::Struct => &[][..],
             };
             check_keys(body, allowed)?;
 
-            self.queue_presence(body, "abstract", AnnotationSubjectId::Type(id.clone()), AnnotationKindId::Abstract)?;
+            self.queue_presence(
+                body,
+                "abstract",
+                AnnotationSubjectId::Type(id.clone()),
+                AnnotationKindId::Abstract,
+            )?;
             if kind == TypeKind::Attribute {
                 self.queue_presence(
                     body,
@@ -279,18 +272,10 @@ impl Normalizer {
 
             if let Some(sub) = entry(body, "sub") {
                 let parent = scalar(sub.value())?;
-                let parent_id = contract(
-                    TypeId::new(kind, parent.value()),
-                    parent.span(),
-                )?;
-                let sub_id = contract(
-                    SubFactId::new(id.clone(), parent_id.clone()),
-                    parent.span(),
-                )?;
-                self.push(
-                    SchemaFact::Sub(SubFact::new(sub_id)),
-                    parent.span().clone(),
-                );
+                let parent_id = contract(TypeId::new(kind, parent.value()), parent.span())?;
+                let sub_id =
+                    contract(SubFactId::new(id.clone(), parent_id.clone()), parent.span())?;
+                self.push(SchemaFact::Sub(SubFact::new(sub_id)), parent.span().clone());
             }
 
             if kind == TypeKind::Attribute
@@ -328,7 +313,11 @@ impl Normalizer {
         Ok(())
     }
 
-    fn normalize_value(&mut self, attribute: &TypeId, node: &YamlNode) -> Result<(), SchemaDiagnostics> {
+    fn normalize_value(
+        &mut self,
+        attribute: &TypeId,
+        node: &YamlNode,
+    ) -> Result<(), SchemaDiagnostics> {
         let (value_type, source, annotations) = match node {
             YamlNode::Scalar(value) => (parse_value_type(value)?, value.span().clone(), None),
             YamlNode::Mapping(body) => {
@@ -362,18 +351,29 @@ impl Normalizer {
     fn normalize_owns(&mut self, owner: &TypeId, node: &YamlNode) -> Result<(), SchemaDiagnostics> {
         for named in named_bodies(node)? {
             let attribute = contract(AttributeId::new(named.name.value()), named.name.span())?;
-            let id = contract(
-                OwnsFactId::new(owner.clone(), attribute),
-                &named.source,
-            )?;
-            self.push(SchemaFact::Owns(OwnsFact::new(id.clone())), named.source.clone());
+            let id = contract(OwnsFactId::new(owner.clone(), attribute), &named.source)?;
+            self.push(
+                SchemaFact::Owns(OwnsFact::new(id.clone())),
+                named.source.clone(),
+            );
 
             if let Some(body) = &named.body {
-                check_keys(body, &["key", "unique", "card", "regex", "range", "values", "doc", "meta"])?;
+                check_keys(
+                    body,
+                    &[
+                        "key", "unique", "card", "regex", "range", "values", "doc", "meta",
+                    ],
+                )?;
                 let subject = AnnotationSubjectId::Owns(id);
                 self.queue_presence(body, "key", subject.clone(), AnnotationKindId::Key)?;
                 self.queue_presence(body, "unique", subject.clone(), AnnotationKindId::Unique)?;
-                self.queue_if_present(body, "card", subject.clone(), AnnotationKindId::Card, PendingInput::Card)?;
+                self.queue_if_present(
+                    body,
+                    "card",
+                    subject.clone(),
+                    AnnotationKindId::Card,
+                    PendingInput::Card,
+                )?;
                 self.queue_value_annotations(body, subject.clone())?;
                 self.queue_doc_meta(body, subject)?;
             }
@@ -401,10 +401,7 @@ impl Normalizer {
             } else {
                 None
             };
-            let id = contract(
-                RelatesFactId::new(relation.clone(), role),
-                &named.source,
-            )?;
+            let id = contract(RelatesFactId::new(relation.clone(), role), &named.source)?;
             self.pending_relates.push(PendingRelates {
                 id: id.clone(),
                 specializes,
@@ -414,8 +411,19 @@ impl Normalizer {
             if let Some(body) = &named.body {
                 check_keys(body, &["as", "abstract", "card", "doc", "meta"])?;
                 let subject = AnnotationSubjectId::Relates(id);
-                self.queue_presence(body, "abstract", subject.clone(), AnnotationKindId::Abstract)?;
-                self.queue_if_present(body, "card", subject.clone(), AnnotationKindId::Card, PendingInput::Card)?;
+                self.queue_presence(
+                    body,
+                    "abstract",
+                    subject.clone(),
+                    AnnotationKindId::Abstract,
+                )?;
+                self.queue_if_present(
+                    body,
+                    "card",
+                    subject.clone(),
+                    AnnotationKindId::Card,
+                    PendingInput::Card,
+                )?;
                 self.queue_doc_meta(body, subject)?;
             }
         }
@@ -425,7 +433,8 @@ impl Normalizer {
     fn normalize_plays(&mut self, node: &YamlNode) -> Result<(), SchemaDiagnostics> {
         let players = mapping(node)?;
         for player_entry in players.entries() {
-            let Some((player, _)) = self.type_labels.get(player_entry.key().value()).cloned() else {
+            let Some((player, _)) = self.type_labels.get(player_entry.key().value()).cloned()
+            else {
                 return Err(error(
                     "unknown_schema_player",
                     "root plays declaration references an unknown player type",
@@ -441,7 +450,9 @@ impl Normalizer {
             }
             let relations = mapping(player_entry.value())?;
             for relation_entry in relations.entries() {
-                let Some((relation, _)) = self.type_labels.get(relation_entry.key().value()).cloned() else {
+                let Some((relation, _)) =
+                    self.type_labels.get(relation_entry.key().value()).cloned()
+                else {
                     return Err(error(
                         "unknown_schema_relation",
                         "root plays declaration references an unknown relation type",
@@ -460,15 +471,21 @@ impl Normalizer {
                         RoleId::new(relation.label().as_str(), named.name.value()),
                         named.name.span(),
                     )?;
-                    let id = contract(
-                        PlaysFactId::new(player.clone(), role),
-                        &named.source,
-                    )?;
-                    self.push(SchemaFact::Plays(PlaysFact::new(id.clone())), named.source.clone());
+                    let id = contract(PlaysFactId::new(player.clone(), role), &named.source)?;
+                    self.push(
+                        SchemaFact::Plays(PlaysFact::new(id.clone())),
+                        named.source.clone(),
+                    );
                     if let Some(body) = &named.body {
                         check_keys(body, &["card", "doc", "meta"])?;
                         let subject = AnnotationSubjectId::Plays(id);
-                        self.queue_if_present(body, "card", subject.clone(), AnnotationKindId::Card, PendingInput::Card)?;
+                        self.queue_if_present(
+                            body,
+                            "card",
+                            subject.clone(),
+                            AnnotationKindId::Card,
+                            PendingInput::Card,
+                        )?;
                         self.queue_doc_meta(body, subject)?;
                     }
                 }
@@ -532,19 +549,15 @@ impl Normalizer {
                 return_elements.push(FunctionReturnElement::new(type_ref, false));
             }
 
-            let id = contract(FunctionId::new(declaration.key().value()), declaration.key().span())?;
-            let returns = contract(FunctionReturnMode::stream(return_elements), returns.span())?;
-            let signature = contract(
-                FunctionSignature::new(parameters_out, returns),
-                body.span(),
+            let id = contract(
+                FunctionId::new(declaration.key().value()),
+                declaration.key().span(),
             )?;
+            let returns = contract(FunctionReturnMode::stream(return_elements), returns.span())?;
+            let signature = contract(FunctionSignature::new(parameters_out, returns), body.span())?;
             let function_body = contract(FunctionBody::new(body_text.value()), body_text.span())?;
             self.push(
-                SchemaFact::Function(FunctionFact::new(
-                    id.clone(),
-                    signature,
-                    function_body,
-                )),
+                SchemaFact::Function(FunctionFact::new(id.clone(), signature, function_body)),
                 body.span().clone(),
             );
             self.queue_doc_meta(body, AnnotationSubjectId::Function(id))?;
@@ -602,9 +615,27 @@ impl Normalizer {
         body: &YamlMapping,
         subject: AnnotationSubjectId,
     ) -> Result<(), SchemaDiagnostics> {
-        self.queue_if_present(body, "regex", subject.clone(), AnnotationKindId::Regex, PendingInput::Regex)?;
-        self.queue_if_present(body, "range", subject.clone(), AnnotationKindId::Range, PendingInput::Range)?;
-        self.queue_if_present(body, "values", subject, AnnotationKindId::Values, PendingInput::Values)
+        self.queue_if_present(
+            body,
+            "regex",
+            subject.clone(),
+            AnnotationKindId::Regex,
+            PendingInput::Regex,
+        )?;
+        self.queue_if_present(
+            body,
+            "range",
+            subject.clone(),
+            AnnotationKindId::Range,
+            PendingInput::Range,
+        )?;
+        self.queue_if_present(
+            body,
+            "values",
+            subject,
+            AnnotationKindId::Values,
+            PendingInput::Values,
+        )
     }
 
     fn queue_doc_meta(
@@ -612,11 +643,20 @@ impl Normalizer {
         body: &YamlMapping,
         subject: AnnotationSubjectId,
     ) -> Result<(), SchemaDiagnostics> {
-        self.queue_if_present(body, "doc", subject.clone(), AnnotationKindId::Doc, PendingInput::Doc)?;
+        self.queue_if_present(
+            body,
+            "doc",
+            subject.clone(),
+            AnnotationKindId::Doc,
+            PendingInput::Doc,
+        )?;
         if let Some(meta) = entry(body, "meta") {
             let meta = mapping(meta.value())?;
             for item in meta.entries() {
-                let kind = contract(AnnotationKindId::meta(item.key().value()), item.key().span())?;
+                let kind = contract(
+                    AnnotationKindId::meta(item.key().value()),
+                    item.key().span(),
+                )?;
                 self.pending.push(PendingAnnotation {
                     subject: subject.clone(),
                     kind,
@@ -784,10 +824,7 @@ impl PendingAnnotation {
             }
         };
         let fact = contract(
-            AnnotationFact::new(
-                AnnotationFactId::new(self.subject, self.kind),
-                value,
-            ),
+            AnnotationFact::new(AnnotationFactId::new(self.subject, self.kind), value),
             &self.source,
         )?;
         Ok(SourcedSchemaFact::new(
@@ -806,11 +843,7 @@ struct NamedBody {
 
 fn named_bodies(node: &YamlNode) -> Result<Vec<NamedBody>, SchemaDiagnostics> {
     match node {
-        YamlNode::Mapping(mapping) => mapping
-            .entries()
-            .iter()
-            .map(named_mapping_entry)
-            .collect(),
+        YamlNode::Mapping(mapping) => mapping.entries().iter().map(named_mapping_entry).collect(),
         YamlNode::Sequence(sequence) => sequence
             .items()
             .iter()
@@ -838,9 +871,7 @@ fn named_bodies(node: &YamlNode) -> Result<Vec<NamedBody>, SchemaDiagnostics> {
     }
 }
 
-fn named_mapping_entry(
-    entry: &crate::YamlMappingEntry,
-) -> Result<NamedBody, SchemaDiagnostics> {
+fn named_mapping_entry(entry: &crate::YamlMappingEntry) -> Result<NamedBody, SchemaDiagnostics> {
     let (body, source) = match entry.value() {
         YamlNode::Mapping(body) => (Some(body.clone()), body.span().clone()),
         YamlNode::Scalar(value) if value.value().is_empty() => (None, entry.key().span().clone()),
@@ -896,8 +927,7 @@ fn subject_value_type(
             let SchemaFact::Sub(sub) = fact else {
                 return None;
             };
-            (sub.id().subtype() == &type_id
-                && sub.id().supertype().kind() == TypeKind::Attribute)
+            (sub.id().subtype() == &type_id && sub.id().supertype().kind() == TypeKind::Attribute)
                 .then(|| sub.id().supertype().clone())
         }) else {
             return Err(error(
@@ -1056,16 +1086,13 @@ fn normalize_sources(node: &YamlNode) -> Result<(), SchemaDiagnostics> {
     let mut seen = BTreeMap::<String, SourceSpan>::new();
     for item in sources.items() {
         let source = scalar(item)?;
-        validate_source_pattern(
-            source.value().to_owned(),
-            DEFAULT_MAX_SOURCE_PATTERN_BYTES,
-        )
-        .map_err(|diagnostic| {
-            SchemaDiagnostics::one(SchemaDiagnostic::new(
-                diagnostic,
-                Some(source.span().clone()),
-            ))
-        })?;
+        validate_source_pattern(source.value().to_owned(), DEFAULT_MAX_SOURCE_PATTERN_BYTES)
+            .map_err(|diagnostic| {
+                SchemaDiagnostics::one(SchemaDiagnostic::new(
+                    diagnostic,
+                    Some(source.span().clone()),
+                ))
+            })?;
         if let Some(previous) = seen.get(source.value()) {
             return Err(crate::yaml::diagnostic_with_related(
                 DiagnosticCategory::InvalidContract,

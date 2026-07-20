@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectionConfig,
-    ProjectionHandler, ReferenceConstructionPolicy,
+    BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectionConfig, ProjectionHandler,
+    ReferenceConstructionPolicy,
 };
 use type_bridge_contract::schema::{
     AnnotationKindId, AnnotationSubjectId, DocumentId, RelatesFactId,
@@ -27,14 +27,14 @@ fn projection_for(
     handler: ProjectionHandler,
 ) -> type_bridge_contract::projection::RuntimeProjection {
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("schema.yaml").expect("document identifier is valid"), source,
-    )]).expect("fixture YAML parses");
+        DocumentId::new("schema.yaml").expect("document identifier is valid"),
+        source,
+    )])
+    .expect("fixture YAML parses");
     let declared = normalize_documents(&documents).expect("fixture normalizes");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is valid");
     let resolved = resolve(&declared, &profile).expect("fixture resolves");
-    project(
-        &resolved, target, &config, &[handler], &[],
-    ).expect("fixture projects")
+    project(&resolved, target, &config, &[handler], &[]).expect("fixture projects")
 }
 
 #[test]
@@ -76,35 +76,59 @@ functions:
     );
 
     let attribute = TypeId::new(TypeKind::Attribute, "display-name").unwrap();
-    assert_eq!(projected.models()[&attribute].target_name().as_str(), "DisplayName");
-    assert!(projected.models()[&attribute]
-        .declaration().value_annotations().values()
-        .any(|annotation| annotation.id().kind() == &AnnotationKindId::Regex));
+    assert_eq!(
+        projected.models()[&attribute].target_name().as_str(),
+        "DisplayName"
+    );
+    assert!(
+        projected.models()[&attribute]
+            .declaration()
+            .value_annotations()
+            .values()
+            .any(|annotation| annotation.id().kind() == &AnnotationKindId::Regex)
+    );
 
     let container = TypeId::new(TypeKind::Relation, "container").unwrap();
     let event = TypeId::new(TypeKind::Relation, "event").unwrap();
     let item = RoleId::new("container", "item").unwrap();
     let create_forms = projected.models()[&container].create().roles()[&item]
-        .players().iter().filter(|player| player.id() == &event)
-        .map(|player| player.form()).collect::<BTreeSet<_>>();
-    assert_eq!(create_forms, BTreeSet::from([
-        ProjectedModelForm::Complete,
-        ProjectedModelForm::Reference,
-    ]));
+        .players()
+        .iter()
+        .filter(|player| player.id() == &event)
+        .map(|player| player.form())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        create_forms,
+        BTreeSet::from([ProjectedModelForm::Complete, ProjectedModelForm::Reference,])
+    );
     let read_forms = projected.models()[&container].complete_read().roles()[&item]
-        .players().iter().map(|player| player.form()).collect::<BTreeSet<_>>();
+        .players()
+        .iter()
+        .map(|player| player.form())
+        .collect::<BTreeSet<_>>();
     assert_eq!(read_forms, BTreeSet::from([ProjectedModelForm::Reference]));
     assert_eq!(
-        projected.models()[&event].reference_read().construction_policy(),
+        projected.models()[&event]
+            .reference_read()
+            .construction_policy(),
         ReferenceConstructionPolicy::IidOnly,
     );
-    let playing = projected.playing_facts().values().find(|playing| playing.id().player() == &event).unwrap();
-    assert_eq!(playing.target_name().unwrap().as_str(), "playsEventContainerItem");
+    let playing = projected
+        .playing_facts()
+        .values()
+        .find(|playing| playing.id().player() == &event)
+        .unwrap();
+    assert_eq!(
+        playing.target_name().unwrap().as_str(),
+        "playsEventContainerItem"
+    );
 
     let specialized = TypeId::new(TypeKind::Relation, "specialized-container").unwrap();
     let special_item = RoleId::new("specialized-container", "special-item").unwrap();
     assert_eq!(
-        projected.models()[&specialized].complete_read().role_upcasts()[&special_item],
+        projected.models()[&specialized]
+            .complete_read()
+            .role_upcasts()[&special_item],
         vec![item],
     );
     let function = projected.functions()[&FunctionId::new("find-events").unwrap()].clone();
@@ -157,51 +181,102 @@ functions:
     let item = RoleId::new("container", "item").unwrap();
     let model = &projected.models()[&container];
     assert_eq!(model.target_name().as_str(), "Container");
-    assert_eq!(model.create().target_name().unwrap().as_str(), "ContainerCreate");
-    assert_eq!(model.reference_read().target_name().unwrap().as_str(), "ContainerRef");
-    assert_eq!(model.query_tokens().target_name().unwrap().as_str(), "ContainerType");
-    assert_eq!(model.query_tokens().roles()[&item].target_name().as_str(), "item");
     assert_eq!(
-        model.query_tokens().roles()[&item].player_union_target_name().unwrap().as_str(),
+        model.create().target_name().unwrap().as_str(),
+        "ContainerCreate"
+    );
+    assert_eq!(
+        model.reference_read().target_name().unwrap().as_str(),
+        "ContainerRef"
+    );
+    assert_eq!(
+        model.query_tokens().target_name().unwrap().as_str(),
+        "ContainerType"
+    );
+    assert_eq!(
+        model.query_tokens().roles()[&item].target_name().as_str(),
+        "item"
+    );
+    assert_eq!(
+        model.query_tokens().roles()[&item]
+            .player_union_target_name()
+            .unwrap()
+            .as_str(),
         "ContainerItemPlayer",
     );
-    let create_forms = model.create().roles()[&item].players().iter()
-        .map(|player| player.form()).collect::<BTreeSet<_>>();
-    assert_eq!(create_forms, BTreeSet::from([
-        ProjectedModelForm::Complete,
-        ProjectedModelForm::Reference,
-    ]));
+    let create_forms = model.create().roles()[&item]
+        .players()
+        .iter()
+        .map(|player| player.form())
+        .collect::<BTreeSet<_>>();
     assert_eq!(
-        model.complete_read().roles()[&item].players().iter()
-            .map(|player| player.form()).collect::<BTreeSet<_>>(),
+        create_forms,
+        BTreeSet::from([ProjectedModelForm::Complete, ProjectedModelForm::Reference,])
+    );
+    assert_eq!(
+        model.complete_read().roles()[&item]
+            .players()
+            .iter()
+            .map(|player| player.form())
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([ProjectedModelForm::Reference]),
     );
-    assert_eq!(model.reference_read().construction_policy(), ReferenceConstructionPolicy::IidOnly);
+    assert_eq!(
+        model.reference_read().construction_policy(),
+        ReferenceConstructionPolicy::IidOnly
+    );
 
     let specialized = TypeId::new(TypeKind::Relation, "specialized-container").unwrap();
     let special_item = RoleId::new("specialized-container", "special-item").unwrap();
     assert_eq!(
-        projected.models()[&specialized].complete_read().role_upcasts()[&special_item],
+        projected.models()[&specialized]
+            .complete_read()
+            .role_upcasts()[&special_item],
         vec![item],
     );
-    assert!(projected.emission().model_link_components().iter().any(|component| {
-        component == &BTreeSet::from([container.clone(), event.clone()])
-    }));
+    assert!(
+        projected
+            .emission()
+            .model_link_components()
+            .iter()
+            .any(|component| { component == &BTreeSet::from([container.clone(), event.clone()]) })
+    );
 
     let attribute = TypeId::new(TypeKind::Attribute, "display-name").unwrap();
     let actor = TypeId::new(TypeKind::Entity, "actor").unwrap();
-    let field = projected.models()[&actor].query_tokens().fields().values().next().unwrap();
+    let field = projected.models()[&actor]
+        .query_tokens()
+        .fields()
+        .values()
+        .next()
+        .unwrap();
     assert_eq!(field.target_name().as_str(), "display_name");
     assert!(field.is_key());
-    assert!(!projected.models()[&attribute].declaration().value_annotations().is_empty());
-    let playing = projected.playing_facts().values().find(|playing| playing.id().player() == &event).unwrap();
-    assert_eq!(playing.target_name().unwrap().as_str(), "plays_event_container_item");
+    assert!(
+        !projected.models()[&attribute]
+            .declaration()
+            .value_annotations()
+            .is_empty()
+    );
+    let playing = projected
+        .playing_facts()
+        .values()
+        .find(|playing| playing.id().player() == &event)
+        .unwrap();
     assert_eq!(
-        projected.structs()[&StructId::new("player-stats").unwrap()].target_name().as_str(),
+        playing.target_name().unwrap().as_str(),
+        "plays_event_container_item"
+    );
+    assert_eq!(
+        projected.structs()[&StructId::new("player-stats").unwrap()]
+            .target_name()
+            .as_str(),
         "PlayerStats",
     );
     assert_eq!(
-        projected.functions()[&FunctionId::new("find-events").unwrap()].target_name().as_str(),
+        projected.functions()[&FunctionId::new("find-events").unwrap()]
+            .target_name()
+            .as_str(),
         "find_events",
     );
 }
@@ -215,14 +290,26 @@ entities:
   person: {}
   person-create: {}
 "#,
-    )]).unwrap();
+    )])
+    .unwrap();
     let declared = normalize_documents(&documents).unwrap();
-    let resolved = resolve(&declared, &SemanticProfileId::new("typedb-3.12.1/v1").unwrap()).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
     let error = project(
-        &resolved, BindingTarget::Rust, &ProjectionConfig::rust(),
-        &[ProjectionHandler::rust_v1()], &[],
-    ).unwrap_err();
-    assert_eq!(error.iter().next().unwrap().diagnostic().code().as_str(), "projection_name_collision");
+        &resolved,
+        BindingTarget::Rust,
+        &ProjectionConfig::rust(),
+        &[ProjectionHandler::rust_v1()],
+        &[],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.iter().next().unwrap().diagnostic().code().as_str(),
+        "projection_name_collision"
+    );
 }
 
 #[test]
@@ -236,14 +323,26 @@ entities:
   account:
     owns: [try-new]
 "#,
-    )]).unwrap();
+    )])
+    .unwrap();
     let declared = normalize_documents(&documents).unwrap();
-    let resolved = resolve(&declared, &SemanticProfileId::new("typedb-3.12.1/v1").unwrap()).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
     let error = project(
-        &resolved, BindingTarget::Rust, &ProjectionConfig::rust(),
-        &[ProjectionHandler::rust_v1()], &[],
-    ).unwrap_err();
-    assert_eq!(error.iter().next().unwrap().diagnostic().code().as_str(), "reserved_rust_projection_identifier");
+        &resolved,
+        BindingTarget::Rust,
+        &ProjectionConfig::rust(),
+        &[ProjectionHandler::rust_v1()],
+        &[],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.iter().next().unwrap().diagnostic().code().as_str(),
+        "reserved_rust_projection_identifier"
+    );
 }
 
 #[test]
@@ -255,14 +354,26 @@ relations:
   bad:
     relates: [iid]
 "#,
-    )]).unwrap();
+    )])
+    .unwrap();
     let declared = normalize_documents(&documents).unwrap();
-    let resolved = resolve(&declared, &SemanticProfileId::new("typedb-3.12.1/v1").unwrap()).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
     let error = project(
-        &resolved, BindingTarget::TypeScript, &ProjectionConfig::typescript(),
-        &[ProjectionHandler::typescript_v1()], &[],
-    ).unwrap_err();
-    assert_eq!(error.iter().next().unwrap().diagnostic().code().as_str(), "reserved_typescript_projection_identifier");
+        &resolved,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &[ProjectionHandler::typescript_v1()],
+        &[],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.iter().next().unwrap().diagnostic().code().as_str(),
+        "reserved_typescript_projection_identifier"
+    );
 }
 
 #[test]
@@ -294,7 +405,10 @@ plays:
     let employee = RoleId::new("employment", "employee").unwrap();
     let model = &projected.models()[&employment];
     assert_eq!(model.target_name().as_str(), "Employment");
-    assert_eq!(model.declaration().parent().unwrap().label().as_str(), "membership");
+    assert_eq!(
+        model.declaration().parent().unwrap().label().as_str(),
+        "membership"
+    );
     assert!(!model.create().roles().contains_key(&member));
     assert!(model.create().roles().contains_key(&employee));
     let role = &model.query_tokens().roles()[&employee];
@@ -303,7 +417,12 @@ plays:
     assert_eq!(role.multiplicity().container(), ProjectedContainer::Scalar);
     assert!(role.multiplicity().required());
     assert_eq!(projected.playing_facts().len(), 2);
-    assert!(projected.playing_facts().values().any(|playing| playing.multiplicity().container() == ProjectedContainer::Sequence));
+    assert!(
+        projected
+            .playing_facts()
+            .values()
+            .any(|playing| playing.multiplicity().container() == ProjectedContainer::Sequence)
+    );
 }
 
 #[test]
@@ -424,10 +543,18 @@ functions:
     );
     let container = TypeId::new(TypeKind::Relation, "container").unwrap();
     let event = TypeId::new(TypeKind::Relation, "event").unwrap();
-    assert!(projected.emission().model_link_components().iter().any(|component| component == &BTreeSet::from([container.clone(), event.clone()])));
+    assert!(
+        projected
+            .emission()
+            .model_link_components()
+            .iter()
+            .any(|component| component == &BTreeSet::from([container.clone(), event.clone()]))
+    );
     let role = RoleId::new("container", "item").unwrap();
     let read_player = projected.models()[&container].complete_read().roles()[&role]
-        .players().first().expect("relation player is projected");
+        .players()
+        .first()
+        .expect("relation player is projected");
     assert_eq!(read_player.form(), ProjectedModelForm::Reference);
     let structure = &projected.structs()[&StructId::new("player-stats").unwrap()];
     assert_eq!(structure.fields()[0].name().as_str(), "wins");
@@ -445,14 +572,26 @@ entities:
   foo-bar: {}
   foo_bar: {}
 "#,
-    )]).unwrap();
+    )])
+    .unwrap();
     let declared = normalize_documents(&documents).unwrap();
-    let resolved = resolve(&declared, &SemanticProfileId::new("typedb-3.12.1/v1").unwrap()).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
     let error = project(
-        &resolved, BindingTarget::Python, &ProjectionConfig::python(),
-        &[ProjectionHandler::python_v1()], &[],
-    ).unwrap_err();
-    assert_eq!(error.iter().next().unwrap().diagnostic().code().as_str(), "projection_name_collision");
+        &resolved,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &[ProjectionHandler::python_v1()],
+        &[],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.iter().next().unwrap().diagnostic().code().as_str(),
+        "projection_name_collision"
+    );
 }
 
 #[test]

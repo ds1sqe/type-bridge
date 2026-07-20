@@ -182,9 +182,7 @@ fn validate_component_id(value: String) -> Result<String, Diagnostic> {
         let mut bytes = segment.bytes();
         bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
             && bytes.all(|byte| {
-                byte.is_ascii_lowercase()
-                    || byte.is_ascii_digit()
-                    || matches!(byte, b'-' | b'_')
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
             })
     };
     if value.len() <= MAX_PROJECTION_COMPONENT_ID_BYTES
@@ -387,10 +385,7 @@ fn ordered_handlers(
         Ordering::Equal => left.version().cmp(&right.version()),
         ordering => ordering,
     });
-    if ordered
-        .windows(2)
-        .any(|pair| pair[0].id() == pair[1].id())
-    {
+    if ordered.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
         return Err(Diagnostic::stable(
             DiagnosticCategory::InvalidContract,
             "duplicate_projection_handler_id",
@@ -415,10 +410,7 @@ fn ordered_resources(
 ) -> Result<Vec<&CodeResourceDigest>, Diagnostic> {
     let mut ordered = resources.iter().collect::<Vec<_>>();
     ordered.sort_by(|left, right| left.id().cmp(right.id()));
-    if ordered
-        .windows(2)
-        .any(|pair| pair[0].id() == pair[1].id())
-    {
+    if ordered.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
         return Err(Diagnostic::stable(
             DiagnosticCategory::InvalidContract,
             "duplicate_projection_resource_id",
@@ -882,10 +874,14 @@ impl ProjectedModelUse {
     }
     /// Return the model identity.
     #[must_use]
-    pub const fn id(&self) -> &TypeId { &self.id }
+    pub const fn id(&self) -> &TypeId {
+        &self.id
+    }
     /// Return the requested materialization form.
     #[must_use]
-    pub const fn form(&self) -> ProjectedModelForm { self.form }
+    pub const fn form(&self) -> ProjectedModelForm {
+        self.form
+    }
 }
 
 /// A fully resolved type position used by projected signatures.
@@ -926,17 +922,27 @@ impl ProjectedMultiplicity {
             Some(0 | 1) => ProjectedContainer::Scalar,
             Some(_) | None => ProjectedContainer::Sequence,
         };
-        Self { cardinality, required: cardinality.min() > 0, container }
+        Self {
+            cardinality,
+            required: cardinality.min() > 0,
+            container,
+        }
     }
     /// Return the exact resolved cardinality.
     #[must_use]
-    pub const fn cardinality(&self) -> Cardinality { self.cardinality }
+    pub const fn cardinality(&self) -> Cardinality {
+        self.cardinality
+    }
     /// Report whether the generated field is required.
     #[must_use]
-    pub const fn required(&self) -> bool { self.required }
+    pub const fn required(&self) -> bool {
+        self.required
+    }
     /// Return the generated container category.
     #[must_use]
-    pub const fn container(&self) -> ProjectedContainer { self.container }
+    pub const fn container(&self) -> ProjectedContainer {
+        self.container
+    }
 }
 
 /// One effective annotation retained in runtime projection metadata.
@@ -956,13 +962,19 @@ pub struct ProjectedAnnotation {
 impl ProjectedAnnotation {
     /// Construct one projected annotation from trusted resolved values.
     #[must_use]
-    pub const fn new(id: AnnotationFactId, value: SchemaAnnotationValue) -> Self { Self { id, value } }
+    pub const fn new(id: AnnotationFactId, value: SchemaAnnotationValue) -> Self {
+        Self { id, value }
+    }
     /// Return the effective-subject annotation identity.
     #[must_use]
-    pub const fn id(&self) -> &AnnotationFactId { &self.id }
+    pub const fn id(&self) -> &AnnotationFactId {
+        &self.id
+    }
     /// Return the effective annotation value.
     #[must_use]
-    pub const fn value(&self) -> &SchemaAnnotationValue { &self.value }
+    pub const fn value(&self) -> &SchemaAnnotationValue {
+        &self.value
+    }
 }
 
 /// One owner-branded owned-attribute query token.
@@ -988,26 +1000,45 @@ impl FieldTokenProjection {
         annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
     ) -> Result<Self, Diagnostic> {
         ensure_collection_limit(annotations.len(), "too_many_projected_annotations")?;
-        Ok(Self { id, target_name, multiplicity, key, unique, annotations })
+        Ok(Self {
+            id,
+            target_name,
+            multiplicity,
+            key,
+            unique,
+            annotations,
+        })
     }
     /// Return the effective ownership identity.
     #[must_use]
-    pub const fn id(&self) -> &OwnsFactId { &self.id }
+    pub const fn id(&self) -> &OwnsFactId {
+        &self.id
+    }
     /// Return the emitted member name.
     #[must_use]
-    pub const fn target_name(&self) -> &TargetIdentifier { &self.target_name }
+    pub const fn target_name(&self) -> &TargetIdentifier {
+        &self.target_name
+    }
     /// Return resolved requiredness and container shape.
     #[must_use]
-    pub const fn multiplicity(&self) -> ProjectedMultiplicity { self.multiplicity }
+    pub const fn multiplicity(&self) -> ProjectedMultiplicity {
+        self.multiplicity
+    }
     /// Report key semantics.
     #[must_use]
-    pub const fn is_key(&self) -> bool { self.key }
+    pub const fn is_key(&self) -> bool {
+        self.key
+    }
     /// Report independent uniqueness semantics.
     #[must_use]
-    pub const fn is_unique(&self) -> bool { self.unique }
+    pub const fn is_unique(&self) -> bool {
+        self.unique
+    }
     /// Return effective annotations.
     #[must_use]
-    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> { &self.annotations }
+    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> {
+        &self.annotations
+    }
 }
 
 /// One owner-branded related-role query token.
@@ -1040,7 +1071,9 @@ impl RoleTokenProjection {
         annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
     ) -> Result<Self, Diagnostic> {
         if owner.kind() != TypeKind::Relation
-            || accepted_players.iter().any(|id| !matches!(id.kind(), TypeKind::Entity | TypeKind::Relation))
+            || accepted_players
+                .iter()
+                .any(|id| !matches!(id.kind(), TypeKind::Entity | TypeKind::Relation))
         {
             return Err(invalid_projection(
                 "invalid_projected_role_token",
@@ -1049,7 +1082,17 @@ impl RoleTokenProjection {
         }
         ensure_collection_limit(accepted_players.len(), "too_many_projected_role_players")?;
         ensure_collection_limit(annotations.len(), "too_many_projected_annotations")?;
-        Ok(Self { owner, role, target_name, player_union_target_name: None, accepted_players, specializes, multiplicity, is_abstract, annotations })
+        Ok(Self {
+            owner,
+            role,
+            target_name,
+            player_union_target_name: None,
+            accepted_players,
+            specializes,
+            multiplicity,
+            is_abstract,
+            annotations,
+        })
     }
     /// Attach the explicit native player-union type name.
     #[must_use]
@@ -1059,47 +1102,74 @@ impl RoleTokenProjection {
     }
     /// Return the actual relation model that owns the token.
     #[must_use]
-    pub const fn owner(&self) -> &TypeId { &self.owner }
+    pub const fn owner(&self) -> &TypeId {
+        &self.owner
+    }
     /// Return the canonical declaring-role identity.
     #[must_use]
-    pub const fn role(&self) -> &RoleId { &self.role }
+    pub const fn role(&self) -> &RoleId {
+        &self.role
+    }
     /// Return the emitted member name.
     #[must_use]
-    pub const fn target_name(&self) -> &TargetIdentifier { &self.target_name }
+    pub const fn target_name(&self) -> &TargetIdentifier {
+        &self.target_name
+    }
     /// Return the explicit native player-union type name, when the target uses one.
     #[must_use]
-    pub const fn player_union_target_name(&self) -> Option<&TargetIdentifier> { self.player_union_target_name.as_ref() }
+    pub const fn player_union_target_name(&self) -> Option<&TargetIdentifier> {
+        self.player_union_target_name.as_ref()
+    }
     /// Return exact logical player identities.
     #[must_use]
-    pub const fn accepted_players(&self) -> &BTreeSet<TypeId> { &self.accepted_players }
+    pub const fn accepted_players(&self) -> &BTreeSet<TypeId> {
+        &self.accepted_players
+    }
     /// Return the immediate specialized role, if any.
     #[must_use]
-    pub const fn specializes(&self) -> Option<&RoleId> { self.specializes.as_ref() }
+    pub const fn specializes(&self) -> Option<&RoleId> {
+        self.specializes.as_ref()
+    }
     /// Return resolved role cardinality shape.
     #[must_use]
-    pub const fn multiplicity(&self) -> ProjectedMultiplicity { self.multiplicity }
+    pub const fn multiplicity(&self) -> ProjectedMultiplicity {
+        self.multiplicity
+    }
     /// Report whether the role is abstract.
     #[must_use]
-    pub const fn is_abstract(&self) -> bool { self.is_abstract }
+    pub const fn is_abstract(&self) -> bool {
+        self.is_abstract
+    }
     /// Return effective relates annotations.
     #[must_use]
-    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> { &self.annotations }
+    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> {
+        &self.annotations
+    }
 }
 
 /// One direct role declaration and its immediate specialization target.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct DeclaredRoleProjection { role: RoleId, specializes: Option<RoleId> }
+pub struct DeclaredRoleProjection {
+    role: RoleId,
+    specializes: Option<RoleId>,
+}
 
 impl DeclaredRoleProjection {
     /// Construct one direct projected role declaration.
     #[must_use]
-    pub const fn new(role: RoleId, specializes: Option<RoleId>) -> Self { Self { role, specializes } }
+    pub const fn new(role: RoleId, specializes: Option<RoleId>) -> Self {
+        Self { role, specializes }
+    }
     /// Return the declared role.
     #[must_use]
-    pub const fn role(&self) -> &RoleId { &self.role }
+    pub const fn role(&self) -> &RoleId {
+        &self.role
+    }
     /// Return its immediate specialization target.
     #[must_use]
-    pub const fn specializes(&self) -> Option<&RoleId> { self.specializes.as_ref() }
+    pub const fn specializes(&self) -> Option<&RoleId> {
+        self.specializes.as_ref()
+    }
 }
 
 /// The nominal declaration facet of one model.
@@ -1132,14 +1202,34 @@ impl DeclarationProjection {
         direct_roles: BTreeMap<RoleId, DeclaredRoleProjection>,
         direct_plays: BTreeSet<PlaysFactId>,
     ) -> Result<Self, Diagnostic> {
-        for length in [annotations.len(), direct_fields.len(), direct_roles.len(), direct_plays.len()] {
+        for length in [
+            annotations.len(),
+            direct_fields.len(),
+            direct_roles.len(),
+            direct_plays.len(),
+        ] {
             ensure_collection_limit(length, "projection_declaration_limit_exceeded")?;
         }
-        Ok(Self { parent, value_type, is_abstract, is_constructible, annotations, value_annotations: BTreeMap::new(), direct_fields, direct_roles, direct_plays })
+        Ok(Self {
+            parent,
+            value_type,
+            is_abstract,
+            is_constructible,
+            annotations,
+            value_annotations: BTreeMap::new(),
+            direct_fields,
+            direct_roles,
+            direct_plays,
+        })
     }
     /// Attach effective attribute-value constraints without changing legacy construction.
-    pub fn with_value_annotations(mut self, annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>) -> Result<Self, Diagnostic> {
-        if annotations.iter().any(|(key, value)| key != value.id() || !matches!(key.subject(), AnnotationSubjectId::Value(_))) {
+    pub fn with_value_annotations(
+        mut self,
+        annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
+    ) -> Result<Self, Diagnostic> {
+        if annotations.iter().any(|(key, value)| {
+            key != value.id() || !matches!(key.subject(), AnnotationSubjectId::Value(_))
+        }) {
             return Err(invalid_projection(
                 "invalid_projected_value_annotation",
                 "attribute value annotations require matching effective value subjects",
@@ -1151,71 +1241,127 @@ impl DeclarationProjection {
     }
     /// Return the direct nominal parent.
     #[must_use]
-    pub const fn parent(&self) -> Option<&TypeId> { self.parent.as_ref() }
+    pub const fn parent(&self) -> Option<&TypeId> {
+        self.parent.as_ref()
+    }
     /// Return an attribute's effective scalar domain.
     #[must_use]
-    pub const fn value_type(&self) -> Option<ValueTypeTag> { self.value_type }
+    pub const fn value_type(&self) -> Option<ValueTypeTag> {
+        self.value_type
+    }
     /// Report abstractness.
     #[must_use]
-    pub const fn is_abstract(&self) -> bool { self.is_abstract }
+    pub const fn is_abstract(&self) -> bool {
+        self.is_abstract
+    }
     /// Report constructibility.
     #[must_use]
-    pub const fn is_constructible(&self) -> bool { self.is_constructible }
+    pub const fn is_constructible(&self) -> bool {
+        self.is_constructible
+    }
     /// Return effective type annotations.
     #[must_use]
-    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> { &self.annotations }
+    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> {
+        &self.annotations
+    }
     /// Return effective attribute-value constraints.
     #[must_use]
-    pub const fn value_annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> { &self.value_annotations }
+    pub const fn value_annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> {
+        &self.value_annotations
+    }
     /// Return direct ownership attachment identities in semantic order.
     #[must_use]
-    pub fn direct_fields(&self) -> &[OwnsFactId] { &self.direct_fields }
+    pub fn direct_fields(&self) -> &[OwnsFactId] {
+        &self.direct_fields
+    }
     /// Return direct role declarations.
     #[must_use]
-    pub const fn direct_roles(&self) -> &BTreeMap<RoleId, DeclaredRoleProjection> { &self.direct_roles }
+    pub const fn direct_roles(&self) -> &BTreeMap<RoleId, DeclaredRoleProjection> {
+        &self.direct_roles
+    }
     /// Return direct role-playing attachments.
     #[must_use]
-    pub const fn direct_plays(&self) -> &BTreeSet<PlaysFactId> { &self.direct_plays }
+    pub const fn direct_plays(&self) -> &BTreeSet<PlaysFactId> {
+        &self.direct_plays
+    }
 }
 
 /// One owned-attribute input in a create facet.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct CreateFieldProjection { token: OwnsFactId, value: ProjectedTypeRef, multiplicity: ProjectedMultiplicity }
+pub struct CreateFieldProjection {
+    token: OwnsFactId,
+    value: ProjectedTypeRef,
+    multiplicity: ProjectedMultiplicity,
+}
 
 impl CreateFieldProjection {
     /// Construct one create input.
     #[must_use]
-    pub const fn new(token: OwnsFactId, value: ProjectedTypeRef, multiplicity: ProjectedMultiplicity) -> Self { Self { token, value, multiplicity } }
+    pub const fn new(
+        token: OwnsFactId,
+        value: ProjectedTypeRef,
+        multiplicity: ProjectedMultiplicity,
+    ) -> Self {
+        Self {
+            token,
+            value,
+            multiplicity,
+        }
+    }
     /// Return the field token identity.
     #[must_use]
-    pub const fn token(&self) -> &OwnsFactId { &self.token }
+    pub const fn token(&self) -> &OwnsFactId {
+        &self.token
+    }
     /// Return the accepted input value type.
     #[must_use]
-    pub const fn value(&self) -> &ProjectedTypeRef { &self.value }
+    pub const fn value(&self) -> &ProjectedTypeRef {
+        &self.value
+    }
     /// Return input requiredness/container shape.
     #[must_use]
-    pub const fn multiplicity(&self) -> ProjectedMultiplicity { self.multiplicity }
+    pub const fn multiplicity(&self) -> ProjectedMultiplicity {
+        self.multiplicity
+    }
 }
 
 /// One active related-role input in a create facet.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct CreateRoleProjection { role: RoleId, players: BTreeSet<ProjectedModelUse>, multiplicity: ProjectedMultiplicity }
+pub struct CreateRoleProjection {
+    role: RoleId,
+    players: BTreeSet<ProjectedModelUse>,
+    multiplicity: ProjectedMultiplicity,
+}
 
 impl CreateRoleProjection {
     /// Construct one role input from its exact accepted player uses.
-    pub fn new(role: RoleId, players: BTreeSet<ProjectedModelUse>, multiplicity: ProjectedMultiplicity) -> Result<Self, Diagnostic> {
+    pub fn new(
+        role: RoleId,
+        players: BTreeSet<ProjectedModelUse>,
+        multiplicity: ProjectedMultiplicity,
+    ) -> Result<Self, Diagnostic> {
         ensure_collection_limit(players.len(), "too_many_projected_role_players")?;
-        Ok(Self { role, players, multiplicity })
+        Ok(Self {
+            role,
+            players,
+            multiplicity,
+        })
     }
     /// Return the canonical role identity.
     #[must_use]
-    pub const fn role(&self) -> &RoleId { &self.role }
+    pub const fn role(&self) -> &RoleId {
+        &self.role
+    }
     /// Return exact accepted player forms.
     #[must_use]
-    pub const fn players(&self) -> &BTreeSet<ProjectedModelUse> { &self.players }
+    pub const fn players(&self) -> &BTreeSet<ProjectedModelUse> {
+        &self.players
+    }
     /// Return input requiredness/container shape.
     #[must_use]
-    pub const fn multiplicity(&self) -> ProjectedMultiplicity { self.multiplicity }
+    pub const fn multiplicity(&self) -> ProjectedMultiplicity {
+        self.multiplicity
+    }
 }
 
 /// The exact generated constructor facet.
@@ -1231,10 +1377,19 @@ pub struct CreateProjection {
 
 impl CreateProjection {
     /// Construct one exact constructor shape.
-    pub fn new(enabled: bool, fields: Vec<CreateFieldProjection>, roles: BTreeMap<RoleId, CreateRoleProjection>) -> Result<Self, Diagnostic> {
+    pub fn new(
+        enabled: bool,
+        fields: Vec<CreateFieldProjection>,
+        roles: BTreeMap<RoleId, CreateRoleProjection>,
+    ) -> Result<Self, Diagnostic> {
         ensure_collection_limit(fields.len(), "too_many_projected_create_fields")?;
         ensure_collection_limit(roles.len(), "too_many_projected_create_roles")?;
-        Ok(Self { target_name: None, enabled, fields, roles })
+        Ok(Self {
+            target_name: None,
+            enabled,
+            fields,
+            roles,
+        })
     }
     /// Attach the explicit generated create-input type name.
     #[must_use]
@@ -1244,56 +1399,102 @@ impl CreateProjection {
     }
     /// Return the generated create-input type name, when construction is exposed.
     #[must_use]
-    pub const fn target_name(&self) -> Option<&TargetIdentifier> { self.target_name.as_ref() }
+    pub const fn target_name(&self) -> Option<&TargetIdentifier> {
+        self.target_name.as_ref()
+    }
     /// Report whether generated construction is available.
     #[must_use]
-    pub const fn enabled(&self) -> bool { self.enabled }
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
     /// Return owned-attribute inputs in semantic order.
     #[must_use]
-    pub fn fields(&self) -> &[CreateFieldProjection] { &self.fields }
+    pub fn fields(&self) -> &[CreateFieldProjection] {
+        &self.fields
+    }
     /// Return active role inputs.
     #[must_use]
-    pub const fn roles(&self) -> &BTreeMap<RoleId, CreateRoleProjection> { &self.roles }
+    pub const fn roles(&self) -> &BTreeMap<RoleId, CreateRoleProjection> {
+        &self.roles
+    }
 }
 
 /// One owned-attribute field in a complete read facet.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ReadFieldProjection { token: OwnsFactId, value: ProjectedTypeRef, multiplicity: ProjectedMultiplicity }
+pub struct ReadFieldProjection {
+    token: OwnsFactId,
+    value: ProjectedTypeRef,
+    multiplicity: ProjectedMultiplicity,
+}
 
 impl ReadFieldProjection {
     /// Construct one complete-read field.
     #[must_use]
-    pub const fn new(token: OwnsFactId, value: ProjectedTypeRef, multiplicity: ProjectedMultiplicity) -> Self { Self { token, value, multiplicity } }
+    pub const fn new(
+        token: OwnsFactId,
+        value: ProjectedTypeRef,
+        multiplicity: ProjectedMultiplicity,
+    ) -> Self {
+        Self {
+            token,
+            value,
+            multiplicity,
+        }
+    }
     /// Return the field token identity.
     #[must_use]
-    pub const fn token(&self) -> &OwnsFactId { &self.token }
+    pub const fn token(&self) -> &OwnsFactId {
+        &self.token
+    }
     /// Return the read value type.
     #[must_use]
-    pub const fn value(&self) -> &ProjectedTypeRef { &self.value }
+    pub const fn value(&self) -> &ProjectedTypeRef {
+        &self.value
+    }
     /// Return read container shape.
     #[must_use]
-    pub const fn multiplicity(&self) -> ProjectedMultiplicity { self.multiplicity }
+    pub const fn multiplicity(&self) -> ProjectedMultiplicity {
+        self.multiplicity
+    }
 }
 
 /// One active role field in a complete read facet.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ReadRoleProjection { role: RoleId, players: BTreeSet<ProjectedModelUse>, multiplicity: ProjectedMultiplicity }
+pub struct ReadRoleProjection {
+    role: RoleId,
+    players: BTreeSet<ProjectedModelUse>,
+    multiplicity: ProjectedMultiplicity,
+}
 
 impl ReadRoleProjection {
     /// Construct one complete-read role field.
-    pub fn new(role: RoleId, players: BTreeSet<ProjectedModelUse>, multiplicity: ProjectedMultiplicity) -> Result<Self, Diagnostic> {
+    pub fn new(
+        role: RoleId,
+        players: BTreeSet<ProjectedModelUse>,
+        multiplicity: ProjectedMultiplicity,
+    ) -> Result<Self, Diagnostic> {
         ensure_collection_limit(players.len(), "too_many_projected_role_players")?;
-        Ok(Self { role, players, multiplicity })
+        Ok(Self {
+            role,
+            players,
+            multiplicity,
+        })
     }
     /// Return the canonical role identity.
     #[must_use]
-    pub const fn role(&self) -> &RoleId { &self.role }
+    pub const fn role(&self) -> &RoleId {
+        &self.role
+    }
     /// Return exact read player forms.
     #[must_use]
-    pub const fn players(&self) -> &BTreeSet<ProjectedModelUse> { &self.players }
+    pub const fn players(&self) -> &BTreeSet<ProjectedModelUse> {
+        &self.players
+    }
     /// Return read container shape.
     #[must_use]
-    pub const fn multiplicity(&self) -> ProjectedMultiplicity { self.multiplicity }
+    pub const fn multiplicity(&self) -> ProjectedMultiplicity {
+        self.multiplicity
+    }
 }
 
 /// The complete materialized read facet.
@@ -1309,14 +1510,26 @@ pub struct CompleteReadProjection {
 
 impl CompleteReadProjection {
     /// Construct one complete-read shape.
-    pub fn new(fields: Vec<ReadFieldProjection>, roles: BTreeMap<RoleId, ReadRoleProjection>, nominal_upcasts: Vec<TypeId>) -> Result<Self, Diagnostic> {
+    pub fn new(
+        fields: Vec<ReadFieldProjection>,
+        roles: BTreeMap<RoleId, ReadRoleProjection>,
+        nominal_upcasts: Vec<TypeId>,
+    ) -> Result<Self, Diagnostic> {
         for length in [fields.len(), roles.len(), nominal_upcasts.len()] {
             ensure_collection_limit(length, "projection_read_limit_exceeded")?;
         }
-        Ok(Self { fields, roles, nominal_upcasts, role_upcasts: BTreeMap::new() })
+        Ok(Self {
+            fields,
+            roles,
+            nominal_upcasts,
+            role_upcasts: BTreeMap::new(),
+        })
     }
     /// Attach active-child-role to ordered ancestor-role read mappings.
-    pub fn with_role_upcasts(mut self, role_upcasts: BTreeMap<RoleId, Vec<RoleId>>) -> Result<Self, Diagnostic> {
+    pub fn with_role_upcasts(
+        mut self,
+        role_upcasts: BTreeMap<RoleId, Vec<RoleId>>,
+    ) -> Result<Self, Diagnostic> {
         if role_upcasts.iter().any(|(role, ancestors)| {
             !self.roles.contains_key(role)
                 || ancestors.is_empty()
@@ -1333,16 +1546,24 @@ impl CompleteReadProjection {
     }
     /// Return owned-attribute fields in semantic order.
     #[must_use]
-    pub fn fields(&self) -> &[ReadFieldProjection] { &self.fields }
+    pub fn fields(&self) -> &[ReadFieldProjection] {
+        &self.fields
+    }
     /// Return active role fields.
     #[must_use]
-    pub const fn roles(&self) -> &BTreeMap<RoleId, ReadRoleProjection> { &self.roles }
+    pub const fn roles(&self) -> &BTreeMap<RoleId, ReadRoleProjection> {
+        &self.roles
+    }
     /// Return legal nominal upcast model identities, nearest first.
     #[must_use]
-    pub fn nominal_upcasts(&self) -> &[TypeId] { &self.nominal_upcasts }
+    pub fn nominal_upcasts(&self) -> &[TypeId] {
+        &self.nominal_upcasts
+    }
     /// Return specialized child-role to nearest-first ancestor-role mappings.
     #[must_use]
-    pub const fn role_upcasts(&self) -> &BTreeMap<RoleId, Vec<RoleId>> { &self.role_upcasts }
+    pub const fn role_upcasts(&self) -> &BTreeMap<RoleId, Vec<RoleId>> {
+        &self.role_upcasts
+    }
 }
 
 /// How a binding may construct a nonrecursive reference value.
@@ -1355,23 +1576,40 @@ pub enum ReferenceConstructionPolicy {
 
 /// The nonrecursive identity/reference read facet.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ReferenceReadProjection { target_name: Option<TargetIdentifier>, key_fields: Vec<OwnsFactId>, construction_policy: ReferenceConstructionPolicy }
+pub struct ReferenceReadProjection {
+    target_name: Option<TargetIdentifier>,
+    key_fields: Vec<OwnsFactId>,
+    construction_policy: ReferenceConstructionPolicy,
+}
 
 impl ReferenceReadProjection {
     /// Construct a reference shape; attributes deliberately have no reference class.
-    pub fn new(target_name: Option<TargetIdentifier>, key_fields: Vec<OwnsFactId>) -> Result<Self, Diagnostic> {
+    pub fn new(
+        target_name: Option<TargetIdentifier>,
+        key_fields: Vec<OwnsFactId>,
+    ) -> Result<Self, Diagnostic> {
         ensure_collection_limit(key_fields.len(), "too_many_projected_reference_keys")?;
-        Ok(Self { target_name, key_fields, construction_policy: ReferenceConstructionPolicy::IidOnly })
+        Ok(Self {
+            target_name,
+            key_fields,
+            construction_policy: ReferenceConstructionPolicy::IidOnly,
+        })
     }
     /// Return the generated reference type name, if supported.
     #[must_use]
-    pub const fn target_name(&self) -> Option<&TargetIdentifier> { self.target_name.as_ref() }
+    pub const fn target_name(&self) -> Option<&TargetIdentifier> {
+        self.target_name.as_ref()
+    }
     /// Return effective key fields in semantic order.
     #[must_use]
-    pub fn key_fields(&self) -> &[OwnsFactId] { &self.key_fields }
+    pub fn key_fields(&self) -> &[OwnsFactId] {
+        &self.key_fields
+    }
     /// Return the explicit checked reference-construction policy.
     #[must_use]
-    pub const fn construction_policy(&self) -> ReferenceConstructionPolicy { self.construction_policy }
+    pub const fn construction_policy(&self) -> ReferenceConstructionPolicy {
+        self.construction_policy
+    }
 }
 
 /// Schema-only query tokens for one projected model.
@@ -1388,10 +1626,19 @@ pub struct QueryTokenProjection {
 
 impl QueryTokenProjection {
     /// Construct schema-only tokens without query-plan or invocation state.
-    pub fn new(type_id: TypeId, fields: BTreeMap<OwnsFactId, FieldTokenProjection>, roles: BTreeMap<RoleId, RoleTokenProjection>) -> Result<Self, Diagnostic> {
+    pub fn new(
+        type_id: TypeId,
+        fields: BTreeMap<OwnsFactId, FieldTokenProjection>,
+        roles: BTreeMap<RoleId, RoleTokenProjection>,
+    ) -> Result<Self, Diagnostic> {
         ensure_collection_limit(fields.len(), "too_many_projected_field_tokens")?;
         ensure_collection_limit(roles.len(), "too_many_projected_role_tokens")?;
-        Ok(Self { type_id, target_name: None, fields, roles })
+        Ok(Self {
+            type_id,
+            target_name: None,
+            fields,
+            roles,
+        })
     }
     /// Attach the explicit nominal type/query-token name.
     #[must_use]
@@ -1401,16 +1648,24 @@ impl QueryTokenProjection {
     }
     /// Return the model type token.
     #[must_use]
-    pub const fn type_id(&self) -> &TypeId { &self.type_id }
+    pub const fn type_id(&self) -> &TypeId {
+        &self.type_id
+    }
     /// Return the explicit nominal type/query-token name, when the target uses one.
     #[must_use]
-    pub const fn target_name(&self) -> Option<&TargetIdentifier> { self.target_name.as_ref() }
+    pub const fn target_name(&self) -> Option<&TargetIdentifier> {
+        self.target_name.as_ref()
+    }
     /// Return owner-branded owned-attribute tokens.
     #[must_use]
-    pub const fn fields(&self) -> &BTreeMap<OwnsFactId, FieldTokenProjection> { &self.fields }
+    pub const fn fields(&self) -> &BTreeMap<OwnsFactId, FieldTokenProjection> {
+        &self.fields
+    }
     /// Return owner-branded role tokens.
     #[must_use]
-    pub const fn roles(&self) -> &BTreeMap<RoleId, RoleTokenProjection> { &self.roles }
+    pub const fn roles(&self) -> &BTreeMap<RoleId, RoleTokenProjection> {
+        &self.roles
+    }
 }
 
 /// All five runtime facets for one resolved schema type.
@@ -1438,119 +1693,231 @@ impl ModelProjection {
         query_tokens: QueryTokenProjection,
     ) -> Result<Self, Diagnostic> {
         if query_tokens.type_id() != &id
-            || query_tokens.fields().values().any(|field| field.id().owner() != &id)
-            || query_tokens.roles().values().any(|role| role.owner() != &id)
-            || create.fields().iter().any(|field| !query_tokens.fields().contains_key(field.token()))
-            || complete_read.fields().iter().any(|field| !query_tokens.fields().contains_key(field.token()))
-            || create.roles().iter().any(|(id, role)| id != role.role() || !query_tokens.roles().contains_key(id))
-            || complete_read.roles().iter().any(|(id, role)| id != role.role() || !query_tokens.roles().contains_key(id))
+            || query_tokens
+                .fields()
+                .values()
+                .any(|field| field.id().owner() != &id)
+            || query_tokens
+                .roles()
+                .values()
+                .any(|role| role.owner() != &id)
+            || create
+                .fields()
+                .iter()
+                .any(|field| !query_tokens.fields().contains_key(field.token()))
+            || complete_read
+                .fields()
+                .iter()
+                .any(|field| !query_tokens.fields().contains_key(field.token()))
+            || create
+                .roles()
+                .iter()
+                .any(|(id, role)| id != role.role() || !query_tokens.roles().contains_key(id))
+            || complete_read
+                .roles()
+                .iter()
+                .any(|(id, role)| id != role.role() || !query_tokens.roles().contains_key(id))
         {
             return Err(invalid_projection(
                 "invalid_model_projection_reference",
                 "model facets contain a mismatched owner or token reference",
             ));
         }
-        Ok(Self { id, target_name, declaration, create, complete_read, reference_read, query_tokens })
+        Ok(Self {
+            id,
+            target_name,
+            declaration,
+            create,
+            complete_read,
+            reference_read,
+            query_tokens,
+        })
     }
     /// Return the schema model identity.
     #[must_use]
-    pub const fn id(&self) -> &TypeId { &self.id }
+    pub const fn id(&self) -> &TypeId {
+        &self.id
+    }
     /// Return the emitted nominal name.
     #[must_use]
-    pub const fn target_name(&self) -> &TargetIdentifier { &self.target_name }
+    pub const fn target_name(&self) -> &TargetIdentifier {
+        &self.target_name
+    }
     /// Return the nominal declaration facet.
     #[must_use]
-    pub const fn declaration(&self) -> &DeclarationProjection { &self.declaration }
+    pub const fn declaration(&self) -> &DeclarationProjection {
+        &self.declaration
+    }
     /// Return the create facet.
     #[must_use]
-    pub const fn create(&self) -> &CreateProjection { &self.create }
+    pub const fn create(&self) -> &CreateProjection {
+        &self.create
+    }
     /// Return the complete-read facet.
     #[must_use]
-    pub const fn complete_read(&self) -> &CompleteReadProjection { &self.complete_read }
+    pub const fn complete_read(&self) -> &CompleteReadProjection {
+        &self.complete_read
+    }
     /// Return the reference-read facet.
     #[must_use]
-    pub const fn reference_read(&self) -> &ReferenceReadProjection { &self.reference_read }
+    pub const fn reference_read(&self) -> &ReferenceReadProjection {
+        &self.reference_read
+    }
     /// Return schema-only query tokens.
     #[must_use]
-    pub const fn query_tokens(&self) -> &QueryTokenProjection { &self.query_tokens }
+    pub const fn query_tokens(&self) -> &QueryTokenProjection {
+        &self.query_tokens
+    }
 }
 
 /// One ordered struct field and its emitted identifier.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct StructFieldProjection { name: Label, target_name: TargetIdentifier, value_type: ValueTypeTag, optional: bool }
+pub struct StructFieldProjection {
+    name: Label,
+    target_name: TargetIdentifier,
+    value_type: ValueTypeTag,
+    optional: bool,
+}
 
 impl StructFieldProjection {
     /// Construct one struct value field.
     #[must_use]
-    pub const fn new(name: Label, target_name: TargetIdentifier, value_type: ValueTypeTag, optional: bool) -> Self { Self { name, target_name, value_type, optional } }
+    pub const fn new(
+        name: Label,
+        target_name: TargetIdentifier,
+        value_type: ValueTypeTag,
+        optional: bool,
+    ) -> Self {
+        Self {
+            name,
+            target_name,
+            value_type,
+            optional,
+        }
+    }
     /// Return the schema field name.
     #[must_use]
-    pub const fn name(&self) -> &Label { &self.name }
+    pub const fn name(&self) -> &Label {
+        &self.name
+    }
     /// Return the emitted field name.
     #[must_use]
-    pub const fn target_name(&self) -> &TargetIdentifier { &self.target_name }
+    pub const fn target_name(&self) -> &TargetIdentifier {
+        &self.target_name
+    }
     /// Return the scalar value domain.
     #[must_use]
-    pub const fn value_type(&self) -> ValueTypeTag { self.value_type }
+    pub const fn value_type(&self) -> ValueTypeTag {
+        self.value_type
+    }
     /// Report optionality.
     #[must_use]
-    pub const fn optional(&self) -> bool { self.optional }
+    pub const fn optional(&self) -> bool {
+        self.optional
+    }
 }
 
 /// One projected schema struct value type.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct StructProjection { id: StructId, target_name: TargetIdentifier, fields: Vec<StructFieldProjection> }
+pub struct StructProjection {
+    id: StructId,
+    target_name: TargetIdentifier,
+    fields: Vec<StructFieldProjection>,
+}
 
 impl StructProjection {
     /// Construct one ordered struct projection.
-    pub fn new(id: StructId, target_name: TargetIdentifier, fields: Vec<StructFieldProjection>) -> Result<Self, Diagnostic> {
+    pub fn new(
+        id: StructId,
+        target_name: TargetIdentifier,
+        fields: Vec<StructFieldProjection>,
+    ) -> Result<Self, Diagnostic> {
         ensure_collection_limit(fields.len(), "too_many_projected_struct_fields")?;
-        Ok(Self { id, target_name, fields })
+        Ok(Self {
+            id,
+            target_name,
+            fields,
+        })
     }
     /// Return the struct identity.
     #[must_use]
-    pub const fn id(&self) -> &StructId { &self.id }
+    pub const fn id(&self) -> &StructId {
+        &self.id
+    }
     /// Return the emitted value-type name.
     #[must_use]
-    pub const fn target_name(&self) -> &TargetIdentifier { &self.target_name }
+    pub const fn target_name(&self) -> &TargetIdentifier {
+        &self.target_name
+    }
     /// Return fields in semantic declaration order.
     #[must_use]
-    pub fn fields(&self) -> &[StructFieldProjection] { &self.fields }
+    pub fn fields(&self) -> &[StructFieldProjection] {
+        &self.fields
+    }
 }
 
 /// One ordered projected function parameter.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct FunctionParameterProjection { name: Label, target_name: TargetIdentifier, type_ref: ProjectedTypeRef }
+pub struct FunctionParameterProjection {
+    name: Label,
+    target_name: TargetIdentifier,
+    type_ref: ProjectedTypeRef,
+}
 
 impl FunctionParameterProjection {
     /// Construct one typed function parameter.
     #[must_use]
-    pub const fn new(name: Label, target_name: TargetIdentifier, type_ref: ProjectedTypeRef) -> Self { Self { name, target_name, type_ref } }
+    pub const fn new(
+        name: Label,
+        target_name: TargetIdentifier,
+        type_ref: ProjectedTypeRef,
+    ) -> Self {
+        Self {
+            name,
+            target_name,
+            type_ref,
+        }
+    }
     /// Return the schema parameter name.
     #[must_use]
-    pub const fn name(&self) -> &Label { &self.name }
+    pub const fn name(&self) -> &Label {
+        &self.name
+    }
     /// Return the emitted parameter name.
     #[must_use]
-    pub const fn target_name(&self) -> &TargetIdentifier { &self.target_name }
+    pub const fn target_name(&self) -> &TargetIdentifier {
+        &self.target_name
+    }
     /// Return the exact resolved parameter type.
     #[must_use]
-    pub const fn type_ref(&self) -> &ProjectedTypeRef { &self.type_ref }
+    pub const fn type_ref(&self) -> &ProjectedTypeRef {
+        &self.type_ref
+    }
 }
 
 /// One projected function return element.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct FunctionReturnElementProjection { type_ref: ProjectedTypeRef, optional: bool }
+pub struct FunctionReturnElementProjection {
+    type_ref: ProjectedTypeRef,
+    optional: bool,
+}
 
 impl FunctionReturnElementProjection {
     /// Construct one return element.
     #[must_use]
-    pub const fn new(type_ref: ProjectedTypeRef, optional: bool) -> Self { Self { type_ref, optional } }
+    pub const fn new(type_ref: ProjectedTypeRef, optional: bool) -> Self {
+        Self { type_ref, optional }
+    }
     /// Return the exact resolved result type.
     #[must_use]
-    pub const fn type_ref(&self) -> &ProjectedTypeRef { &self.type_ref }
+    pub const fn type_ref(&self) -> &ProjectedTypeRef {
+        &self.type_ref
+    }
     /// Report optionality.
     #[must_use]
-    pub const fn optional(&self) -> bool { self.optional }
+    pub const fn optional(&self) -> bool {
+        self.optional
+    }
 }
 
 /// Projected scalar, tuple, or stream function return shape.
@@ -1567,17 +1934,40 @@ pub enum FunctionReturnProjection {
 
 /// A schema-only typed function token/reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct FunctionProjection { id: FunctionId, target_name: TargetIdentifier, parameters: Vec<FunctionParameterProjection>, returns: FunctionReturnProjection, #[serde(serialize_with = "serialize_map_values")] annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation> }
+pub struct FunctionProjection {
+    id: FunctionId,
+    target_name: TargetIdentifier,
+    parameters: Vec<FunctionParameterProjection>,
+    returns: FunctionReturnProjection,
+    #[serde(serialize_with = "serialize_map_values")]
+    annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
+}
 
 impl FunctionProjection {
     /// Construct a function token without translating its body.
-    pub fn new(id: FunctionId, target_name: TargetIdentifier, parameters: Vec<FunctionParameterProjection>, returns: FunctionReturnProjection) -> Result<Self, Diagnostic> {
+    pub fn new(
+        id: FunctionId,
+        target_name: TargetIdentifier,
+        parameters: Vec<FunctionParameterProjection>,
+        returns: FunctionReturnProjection,
+    ) -> Result<Self, Diagnostic> {
         ensure_collection_limit(parameters.len(), "too_many_projected_function_parameters")?;
-        Ok(Self { id, target_name, parameters, returns, annotations: BTreeMap::new() })
+        Ok(Self {
+            id,
+            target_name,
+            parameters,
+            returns,
+            annotations: BTreeMap::new(),
+        })
     }
     /// Attach effective function documentation and metadata.
-    pub fn with_annotations(mut self, annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>) -> Result<Self, Diagnostic> {
-        if annotations.iter().any(|(key, value)| key != value.id() || key.subject() != &AnnotationSubjectId::Function(self.id.clone())) {
+    pub fn with_annotations(
+        mut self,
+        annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
+    ) -> Result<Self, Diagnostic> {
+        if annotations.iter().any(|(key, value)| {
+            key != value.id() || key.subject() != &AnnotationSubjectId::Function(self.id.clone())
+        }) {
             return Err(invalid_projection(
                 "invalid_projected_function_annotation",
                 "function annotations require the projected function subject",
@@ -1589,19 +1979,29 @@ impl FunctionProjection {
     }
     /// Return the function identity.
     #[must_use]
-    pub const fn id(&self) -> &FunctionId { &self.id }
+    pub const fn id(&self) -> &FunctionId {
+        &self.id
+    }
     /// Return the emitted function-token name.
     #[must_use]
-    pub const fn target_name(&self) -> &TargetIdentifier { &self.target_name }
+    pub const fn target_name(&self) -> &TargetIdentifier {
+        &self.target_name
+    }
     /// Return parameters in signature order.
     #[must_use]
-    pub fn parameters(&self) -> &[FunctionParameterProjection] { &self.parameters }
+    pub fn parameters(&self) -> &[FunctionParameterProjection] {
+        &self.parameters
+    }
     /// Return the native return shape.
     #[must_use]
-    pub const fn returns(&self) -> &FunctionReturnProjection { &self.returns }
+    pub const fn returns(&self) -> &FunctionReturnProjection {
+        &self.returns
+    }
     /// Return function documentation and metadata.
     #[must_use]
-    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> { &self.annotations }
+    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> {
+        &self.annotations
+    }
 }
 
 /// Effective per-player metadata keyed independently from shared role tokens.
@@ -1617,9 +2017,16 @@ pub struct PlayingProjection {
 
 impl PlayingProjection {
     /// Construct metadata for one exact effective playing edge.
-    pub fn new(id: PlaysFactId, role: RoleId, multiplicity: ProjectedMultiplicity, annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>) -> Result<Self, Diagnostic> {
+    pub fn new(
+        id: PlaysFactId,
+        role: RoleId,
+        multiplicity: ProjectedMultiplicity,
+        annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
+    ) -> Result<Self, Diagnostic> {
         if id.role() != &role
-            || annotations.iter().any(|(key, value)| key != value.id() || key.subject() != &AnnotationSubjectId::Plays(id.clone()))
+            || annotations.iter().any(|(key, value)| {
+                key != value.id() || key.subject() != &AnnotationSubjectId::Plays(id.clone())
+            })
         {
             return Err(invalid_projection(
                 "invalid_playing_projection_reference",
@@ -1627,7 +2034,13 @@ impl PlayingProjection {
             ));
         }
         ensure_collection_limit(annotations.len(), "too_many_projected_annotations")?;
-        Ok(Self { id, role, target_name: None, multiplicity, annotations })
+        Ok(Self {
+            id,
+            role,
+            target_name: None,
+            multiplicity,
+            annotations,
+        })
     }
     /// Attach the owner-branded emitted plays-token name.
     #[must_use]
@@ -1637,45 +2050,83 @@ impl PlayingProjection {
     }
     /// Return the exact playing identity.
     #[must_use]
-    pub const fn id(&self) -> &PlaysFactId { &self.id }
+    pub const fn id(&self) -> &PlaysFactId {
+        &self.id
+    }
     /// Return the shared canonical role identity.
     #[must_use]
-    pub const fn role(&self) -> &RoleId { &self.role }
+    pub const fn role(&self) -> &RoleId {
+        &self.role
+    }
     /// Return the emitted owner-branded plays-token name when projected.
     #[must_use]
-    pub const fn target_name(&self) -> Option<&TargetIdentifier> { self.target_name.as_ref() }
+    pub const fn target_name(&self) -> Option<&TargetIdentifier> {
+        self.target_name.as_ref()
+    }
     /// Return the player-edge cardinality metadata.
     #[must_use]
-    pub const fn multiplicity(&self) -> ProjectedMultiplicity { self.multiplicity }
+    pub const fn multiplicity(&self) -> ProjectedMultiplicity {
+        self.multiplicity
+    }
     /// Return effective per-edge annotations.
     #[must_use]
-    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> { &self.annotations }
+    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> {
+        &self.annotations
+    }
 }
 
 /// Deterministic shells-first and SCC-link emission schedule.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct EmissionPlan { model_shells: Vec<TypeId>, model_link_components: Vec<BTreeSet<TypeId>>, structs: Vec<StructId>, functions: Vec<FunctionId> }
+pub struct EmissionPlan {
+    model_shells: Vec<TypeId>,
+    model_link_components: Vec<BTreeSet<TypeId>>,
+    structs: Vec<StructId>,
+    functions: Vec<FunctionId>,
+}
 
 impl EmissionPlan {
     /// Construct a deterministic two-phase emission schedule.
-    pub fn new(model_shells: Vec<TypeId>, model_link_components: Vec<BTreeSet<TypeId>>, structs: Vec<StructId>, functions: Vec<FunctionId>) -> Result<Self, Diagnostic> {
-        for length in [model_shells.len(), model_link_components.len(), structs.len(), functions.len()] {
+    pub fn new(
+        model_shells: Vec<TypeId>,
+        model_link_components: Vec<BTreeSet<TypeId>>,
+        structs: Vec<StructId>,
+        functions: Vec<FunctionId>,
+    ) -> Result<Self, Diagnostic> {
+        for length in [
+            model_shells.len(),
+            model_link_components.len(),
+            structs.len(),
+            functions.len(),
+        ] {
             ensure_collection_limit(length, "projection_emission_limit_exceeded")?;
         }
-        Ok(Self { model_shells, model_link_components, structs, functions })
+        Ok(Self {
+            model_shells,
+            model_link_components,
+            structs,
+            functions,
+        })
     }
     /// Return parent-first nominal model shell order.
     #[must_use]
-    pub fn model_shells(&self) -> &[TypeId] { &self.model_shells }
+    pub fn model_shells(&self) -> &[TypeId] {
+        &self.model_shells
+    }
     /// Return dependency-first SCC link components.
     #[must_use]
-    pub fn model_link_components(&self) -> &[BTreeSet<TypeId>] { &self.model_link_components }
+    pub fn model_link_components(&self) -> &[BTreeSet<TypeId>] {
+        &self.model_link_components
+    }
     /// Return stable struct emission order.
     #[must_use]
-    pub fn structs(&self) -> &[StructId] { &self.structs }
+    pub fn structs(&self) -> &[StructId] {
+        &self.structs
+    }
     /// Return stable function-token emission order.
     #[must_use]
-    pub fn functions(&self) -> &[FunctionId] { &self.functions }
+    pub fn functions(&self) -> &[FunctionId] {
+        &self.functions
+    }
 }
 
 /// A validated target-specific runtime projection derived from resolved semantics.
@@ -1737,19 +2188,28 @@ impl RuntimeProjection {
                 "runtime projection map keys or target configuration are inconsistent",
             ));
         }
-        for length in [models.len(), structs.len(), functions.len(), playing_facts.len()] {
+        for length in [
+            models.len(),
+            structs.len(),
+            functions.len(),
+            playing_facts.len(),
+        ] {
             ensure_collection_limit(length, "runtime_projection_limit_exceeded")?;
         }
         if target == BindingTarget::Rust {
             let rust_names_complete = models.values().all(|model| {
                 model.create().enabled() == model.create().target_name().is_some()
                     && model.query_tokens().target_name().is_some()
-                    && model.query_tokens().roles().values().all(|role| {
-                        role.player_union_target_name().is_some()
-                    })
+                    && model
+                        .query_tokens()
+                        .roles()
+                        .values()
+                        .all(|role| role.player_union_target_name().is_some())
                     && matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation)
                         == model.reference_read().target_name().is_some()
-            }) && playing_facts.values().all(|playing| playing.target_name().is_some());
+            }) && playing_facts
+                .values()
+                .all(|playing| playing.target_name().is_some());
             if !rust_names_complete {
                 return Err(invalid_projection(
                     "missing_rust_projection_identifier",
@@ -1758,10 +2218,26 @@ impl RuntimeProjection {
             }
         }
         let model_ids = models.keys().cloned().collect::<BTreeSet<_>>();
-        if emission.model_shells().iter().cloned().collect::<BTreeSet<_>>() != model_ids
+        if emission
+            .model_shells()
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            != model_ids
             || emission.model_shells().len() != model_ids.len()
-            || emission.model_link_components().iter().flat_map(BTreeSet::iter).cloned().collect::<BTreeSet<_>>() != model_ids
-            || emission.model_link_components().iter().map(BTreeSet::len).sum::<usize>() != model_ids.len()
+            || emission
+                .model_link_components()
+                .iter()
+                .flat_map(BTreeSet::iter)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                != model_ids
+            || emission
+                .model_link_components()
+                .iter()
+                .map(BTreeSet::len)
+                .sum::<usize>()
+                != model_ids.len()
             || emission.structs() != structs.keys().cloned().collect::<Vec<_>>()
             || emission.functions() != functions.keys().cloned().collect::<Vec<_>>()
         {
@@ -1771,9 +2247,19 @@ impl RuntimeProjection {
             ));
         }
         let all_model_refs_valid = models.values().all(|model| {
-            model.query_tokens().roles().values().all(|role| role.accepted_players().iter().all(|id| models.contains_key(id)))
-                && model.create().roles().values().all(|role| role.players().iter().all(|value| models.contains_key(value.id())))
-                && model.complete_read().roles().values().all(|role| role.players().iter().all(|value| models.contains_key(value.id())))
+            model.query_tokens().roles().values().all(|role| {
+                role.accepted_players()
+                    .iter()
+                    .all(|id| models.contains_key(id))
+            }) && model.create().roles().values().all(|role| {
+                role.players()
+                    .iter()
+                    .all(|value| models.contains_key(value.id()))
+            }) && model.complete_read().roles().values().all(|role| {
+                role.players()
+                    .iter()
+                    .all(|value| models.contains_key(value.id()))
+            })
         });
         if !all_model_refs_valid {
             return Err(invalid_projection(
@@ -1799,46 +2285,92 @@ impl RuntimeProjection {
                     && model.query_tokens().roles().contains_key(role)
             })
         };
-        let shell_positions = emission.model_shells().iter().enumerate()
-            .map(|(index, id)| (id.clone(), index)).collect::<BTreeMap<_, _>>();
+        let shell_positions = emission
+            .model_shells()
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.clone(), index))
+            .collect::<BTreeMap<_, _>>();
         let closed_models = models.values().all(|model| {
             let declaration = model.declaration();
             let parent_is_valid = declaration.parent().is_none_or(|parent| {
                 models.contains_key(parent) && shell_positions[parent] < shell_positions[model.id()]
             });
-            let direct_fields_are_valid = declaration.direct_fields().iter()
+            let direct_fields_are_valid = declaration
+                .direct_fields()
+                .iter()
                 .all(|id| model.query_tokens().fields().contains_key(id));
             let direct_roles_are_valid = declaration.direct_roles().iter().all(|(id, role)| {
-                id == role.role() && model.query_tokens().roles().contains_key(id)
+                id == role.role()
+                    && model.query_tokens().roles().contains_key(id)
                     && role.specializes().is_none_or(&role_exists)
             });
-            let direct_plays_are_valid = declaration.direct_plays().iter().all(|id| {
-                id.player() == model.id() && playing_facts.contains_key(id)
-            });
+            let direct_plays_are_valid = declaration
+                .direct_plays()
+                .iter()
+                .all(|id| id.player() == model.id() && playing_facts.contains_key(id));
             let fields_are_valid = model.query_tokens().fields().values().all(|field| {
-                models.keys().any(|id| id.kind() == TypeKind::Attribute && id.label() == field.id().attribute().label())
-            }) && model.create().fields().iter().all(|field| type_ref_is_valid(field.value()))
-                && model.complete_read().fields().iter().all(|field| type_ref_is_valid(field.value()));
-            let roles_are_valid = model.query_tokens().roles().values().all(|role| {
-                role.specializes().is_none_or(&role_exists)
-            }) && model.create().roles().values().all(|role| role.players().iter().all(&model_use_is_valid))
-                && model.complete_read().roles().values().all(|role| role.players().iter().all(&model_use_is_valid));
-            let role_upcasts_are_valid = model.complete_read().role_upcasts().iter().all(|(active, ancestors)| {
-                model.complete_read().roles().contains_key(active)
-                    && ancestors.iter().all(&role_exists)
-            });
+                models.keys().any(|id| {
+                    id.kind() == TypeKind::Attribute && id.label() == field.id().attribute().label()
+                })
+            }) && model
+                .create()
+                .fields()
+                .iter()
+                .all(|field| type_ref_is_valid(field.value()))
+                && model
+                    .complete_read()
+                    .fields()
+                    .iter()
+                    .all(|field| type_ref_is_valid(field.value()));
+            let roles_are_valid = model
+                .query_tokens()
+                .roles()
+                .values()
+                .all(|role| role.specializes().is_none_or(&role_exists))
+                && model
+                    .create()
+                    .roles()
+                    .values()
+                    .all(|role| role.players().iter().all(&model_use_is_valid))
+                && model
+                    .complete_read()
+                    .roles()
+                    .values()
+                    .all(|role| role.players().iter().all(&model_use_is_valid));
+            let role_upcasts_are_valid =
+                model
+                    .complete_read()
+                    .role_upcasts()
+                    .iter()
+                    .all(|(active, ancestors)| {
+                        model.complete_read().roles().contains_key(active)
+                            && ancestors.iter().all(&role_exists)
+                    });
             let references_are_valid = model.reference_read().key_fields().iter().all(|id| {
-                model.query_tokens().fields().get(id).is_some_and(FieldTokenProjection::is_key)
+                model
+                    .query_tokens()
+                    .fields()
+                    .get(id)
+                    .is_some_and(FieldTokenProjection::is_key)
             });
             let value_subject = model.id().kind() != TypeKind::Attribute
                 || model.declaration().value_annotations().keys().all(|id| {
-                    id.subject() == &AnnotationSubjectId::Value(ValueFactId::new(
-                        AttributeId::new(model.id().label().as_str()).expect("projected attribute label is valid")
-                    ))
+                    id.subject()
+                        == &AnnotationSubjectId::Value(ValueFactId::new(
+                            AttributeId::new(model.id().label().as_str())
+                                .expect("projected attribute label is valid"),
+                        ))
                 });
-            parent_is_valid && direct_fields_are_valid && direct_roles_are_valid
-                && direct_plays_are_valid && fields_are_valid && roles_are_valid
-                && role_upcasts_are_valid && references_are_valid && value_subject
+            parent_is_valid
+                && direct_fields_are_valid
+                && direct_roles_are_valid
+                && direct_plays_are_valid
+                && fields_are_valid
+                && roles_are_valid
+                && role_upcasts_are_valid
+                && references_are_valid
+                && value_subject
         });
         let closed_playing = playing_facts.values().all(|playing| {
             models.contains_key(playing.id().player())
@@ -1847,12 +2379,18 @@ impl RuntimeProjection {
                     || playing.target_name().is_some())
         });
         let closed_functions = functions.values().all(|function| {
-            function.parameters().iter().all(|parameter| type_ref_is_valid(parameter.type_ref()))
+            function
+                .parameters()
+                .iter()
+                .all(|parameter| type_ref_is_valid(parameter.type_ref()))
                 && match function.returns() {
-                    FunctionReturnProjection::Scalar(element) => type_ref_is_valid(element.type_ref()),
-                    FunctionReturnProjection::Tuple(elements) | FunctionReturnProjection::Stream(elements) => {
-                        elements.iter().all(|element| type_ref_is_valid(element.type_ref()))
+                    FunctionReturnProjection::Scalar(element) => {
+                        type_ref_is_valid(element.type_ref())
                     }
+                    FunctionReturnProjection::Tuple(elements)
+                    | FunctionReturnProjection::Stream(elements) => elements
+                        .iter()
+                        .all(|element| type_ref_is_valid(element.type_ref())),
                 }
         });
         if !closed_models || !closed_playing || !closed_functions {
@@ -1880,41 +2418,75 @@ impl RuntimeProjection {
         generator_handlers.sort_by(|left, right| left.id().cmp(right.id()));
         let mut code_resources = resources.to_vec();
         code_resources.sort_by(|left, right| left.id().cmp(right.id()));
-        Ok(Self { target, config, semantic_fingerprint, projection_fingerprint, generator_handlers, code_resources, models, structs, functions, playing_facts, emission })
+        Ok(Self {
+            target,
+            config,
+            semantic_fingerprint,
+            projection_fingerprint,
+            generator_handlers,
+            code_resources,
+            models,
+            structs,
+            functions,
+            playing_facts,
+            emission,
+        })
     }
     /// Return the binding target.
     #[must_use]
-    pub const fn target(&self) -> BindingTarget { self.target }
+    pub const fn target(&self) -> BindingTarget {
+        self.target
+    }
     /// Return the exact projection configuration.
     #[must_use]
-    pub const fn config(&self) -> &ProjectionConfig { &self.config }
+    pub const fn config(&self) -> &ProjectionConfig {
+        &self.config
+    }
     /// Return the source semantic schema fingerprint.
     #[must_use]
-    pub const fn semantic_fingerprint(&self) -> &SemanticSchemaFingerprint { &self.semantic_fingerprint }
+    pub const fn semantic_fingerprint(&self) -> &SemanticSchemaFingerprint {
+        &self.semantic_fingerprint
+    }
     /// Return the content-bound target projection fingerprint.
     #[must_use]
-    pub const fn projection_fingerprint(&self) -> &BindingProjectionFingerprint { &self.projection_fingerprint }
+    pub const fn projection_fingerprint(&self) -> &BindingProjectionFingerprint {
+        &self.projection_fingerprint
+    }
     /// Return the ordered handler evidence committed by the projection fingerprint.
     #[must_use]
-    pub fn generator_handlers(&self) -> &[ProjectionHandler] { &self.generator_handlers }
+    pub fn generator_handlers(&self) -> &[ProjectionHandler] {
+        &self.generator_handlers
+    }
     /// Return the ordered code-resource evidence committed by the projection fingerprint.
     #[must_use]
-    pub fn code_resources(&self) -> &[CodeResourceDigest] { &self.code_resources }
+    pub fn code_resources(&self) -> &[CodeResourceDigest] {
+        &self.code_resources
+    }
     /// Return projected models in canonical identity order.
     #[must_use]
-    pub const fn models(&self) -> &BTreeMap<TypeId, ModelProjection> { &self.models }
+    pub const fn models(&self) -> &BTreeMap<TypeId, ModelProjection> {
+        &self.models
+    }
     /// Return projected structs in canonical identity order.
     #[must_use]
-    pub const fn structs(&self) -> &BTreeMap<StructId, StructProjection> { &self.structs }
+    pub const fn structs(&self) -> &BTreeMap<StructId, StructProjection> {
+        &self.structs
+    }
     /// Return projected schema functions in canonical identity order.
     #[must_use]
-    pub const fn functions(&self) -> &BTreeMap<FunctionId, FunctionProjection> { &self.functions }
+    pub const fn functions(&self) -> &BTreeMap<FunctionId, FunctionProjection> {
+        &self.functions
+    }
     /// Return effective per-player metadata keyed by exact playing identity.
     #[must_use]
-    pub const fn playing_facts(&self) -> &BTreeMap<PlaysFactId, PlayingProjection> { &self.playing_facts }
+    pub const fn playing_facts(&self) -> &BTreeMap<PlaysFactId, PlayingProjection> {
+        &self.playing_facts
+    }
     /// Return the shells-first generation schedule.
     #[must_use]
-    pub const fn emission(&self) -> &EmissionPlan { &self.emission }
+    pub const fn emission(&self) -> &EmissionPlan {
+        &self.emission
+    }
 }
 
 impl CodeResourceDigest {

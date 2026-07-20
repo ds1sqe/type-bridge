@@ -2,12 +2,10 @@ use std::collections::BTreeSet;
 
 use type_bridge_contract::id::{FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
-use type_bridge_contract::schema::{
-    AnnotationSubjectId, RelatesFactId, SchemaFact, SchemaFactId,
-};
+use type_bridge_contract::schema::DocumentId;
+use type_bridge_contract::schema::{AnnotationSubjectId, RelatesFactId, SchemaFact, SchemaFactId};
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
-use type_bridge_contract::schema::DocumentId;
 
 fn documents(source: &str) -> SchemaDocumentSet {
     SchemaDocumentSet::parse([(
@@ -90,7 +88,8 @@ plays:
     friendship: [friend]
 "#;
 
-    let annotated = normalize_documents(&documents(annotated)).expect("annotated schema normalizes");
+    let annotated =
+        normalize_documents(&documents(annotated)).expect("annotated schema normalizes");
     let plain = normalize_documents(&documents(plain)).expect("plain schema normalizes");
     let annotated_structural = annotated
         .facts()
@@ -191,13 +190,14 @@ entities:
 #[test]
 fn sources_use_the_strict_discovery_pattern_grammar() {
     for (pattern, expected) in [
-        ("fragments/cafe\u{301}.yaml", "schema_source_pattern_not_nfc"),
+        (
+            "fragments/cafe\u{301}.yaml",
+            "schema_source_pattern_not_nfc",
+        ),
         ("fragments/[ab].yaml", "unsupported_schema_glob_syntax"),
         ("fragments/{a,b}.yaml", "unsupported_schema_glob_syntax"),
     ] {
-        let source = format!(
-            "format: typebridge.schema/v2\nsources:\n  - '{pattern}'\n"
-        );
+        let source = format!("format: typebridge.schema/v2\nsources:\n  - '{pattern}'\n");
         let error = normalize_documents(&documents(&source))
             .expect_err("invalid source pattern must fail normalization");
         assert_eq!(
@@ -230,9 +230,8 @@ structs:
 "#;
 
     let declared = normalize_documents(&documents(source)).expect("schema normalizes");
-    let id = SchemaFactId::Struct(
-        StructId::new("player-stats").expect("struct identifier is valid"),
-    );
+    let id =
+        SchemaFactId::Struct(StructId::new("player-stats").expect("struct identifier is valid"));
     let Some(SchemaFact::Struct(fact)) = declared.fact(&id) else {
         panic!("struct fact exists");
     };
@@ -385,9 +384,8 @@ functions:
 "#;
     let first = normalize_documents(&documents(first)).expect("first schema normalizes");
     let second = normalize_documents(&documents(second)).expect("second schema normalizes");
-    let id = SchemaFactId::Function(
-        FunctionId::new("answer").expect("function identifier is valid"),
-    );
+    let id =
+        SchemaFactId::Function(FunctionId::new("answer").expect("function identifier is valid"));
     let Some(SchemaFact::Function(first_function)) = first.fact(&id) else {
         panic!("first function exists");
     };
@@ -433,7 +431,10 @@ fn canonical_string_limits_apply_to_yaml_values_and_metadata() {
     for source in [value_source(&oversized), meta_source(&oversized)] {
         let diagnostics =
             normalize_documents(&documents(&source)).expect_err("oversized text must fail");
-        let diagnostic = diagnostics.iter().next().expect("one diagnostic is emitted");
+        let diagnostic = diagnostics
+            .iter()
+            .next()
+            .expect("one diagnostic is emitted");
         assert_eq!(
             diagnostic.diagnostic().code().as_str(),
             "canonical_string_limit_exceeded"
@@ -476,7 +477,13 @@ attributes:
         let diagnostics = normalize_documents(&documents(&source))
             .expect_err("provider-ambiguous local datetime must fail closed");
         assert_eq!(
-            diagnostics.iter().next().unwrap().diagnostic().code().as_str(),
+            diagnostics
+                .iter()
+                .next()
+                .unwrap()
+                .diagnostic()
+                .code()
+                .as_str(),
             code,
         );
     }

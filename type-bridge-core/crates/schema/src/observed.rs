@@ -7,9 +7,9 @@ use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::schema::{
-    AnnotationKindId, DeclaredIdentityFingerprint, DeclaredSchema, DocumentId, SchemaDiagnostic,
-    SchemaAnnotationValue, SchemaDiagnostics, SchemaFact, SchemaFactId, SourceSpan,
-    SourcedSchemaFact,
+    AnnotationKindId, DeclaredIdentityFingerprint, DeclaredSchema, DocumentId,
+    SchemaAnnotationValue, SchemaDiagnostic, SchemaDiagnostics, SchemaFact, SchemaFactId,
+    SourceSpan, SourcedSchemaFact,
 };
 use type_bridge_contract::semantic_profile::{InterfaceKind, SemanticProfile};
 
@@ -237,9 +237,9 @@ pub fn canonicalize_observed_schema(
     let direct_schema = DeclaredSchema::from_facts(
         observed.format(),
         observed.required_capabilities().clone(),
-        direct.into_values().map(|(fact, _)| {
-            SourcedSchemaFact::new(fact.clone(), synthetic_source.clone())
-        }),
+        direct
+            .into_values()
+            .map(|(fact, _)| SourcedSchemaFact::new(fact.clone(), synthetic_source.clone())),
     )?;
 
     Ok(CanonicalObservedSchema {

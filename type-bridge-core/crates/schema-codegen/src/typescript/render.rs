@@ -5,9 +5,9 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
-    ProjectedContainer, ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity,
-    ProjectedTypeRef, RuntimeProjection,
+    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection, ProjectedContainer,
+    ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
+    RuntimeProjection,
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::ValueTypeTag;
@@ -40,12 +40,27 @@ pub(super) fn render(
     validate_projection(projection)?;
     GeneratedPackage::try_new([
         ("package.json".to_owned(), package_json.to_vec()),
-        ("src/functions.ts".to_owned(), render_functions(projection)?.into_bytes()),
-        ("src/index.ts".to_owned(), render_index(projection)?.into_bytes()),
-        ("src/models.ts".to_owned(), render_models(projection)?.into_bytes()),
+        (
+            "src/functions.ts".to_owned(),
+            render_functions(projection)?.into_bytes(),
+        ),
+        (
+            "src/index.ts".to_owned(),
+            render_index(projection)?.into_bytes(),
+        ),
+        (
+            "src/models.ts".to_owned(),
+            render_models(projection)?.into_bytes(),
+        ),
         ("src/runtime.ts".to_owned(), runtime.to_vec()),
-        ("src/schema.ts".to_owned(), render_schema(projection)?.into_bytes()),
-        ("src/structs.ts".to_owned(), render_structs(projection)?.into_bytes()),
+        (
+            "src/schema.ts".to_owned(),
+            render_schema(projection)?.into_bytes(),
+        ),
+        (
+            "src/structs.ts".to_owned(),
+            render_structs(projection)?.into_bytes(),
+        ),
         ("tsconfig.json".to_owned(), tsconfig_json.to_vec()),
     ])
 }
@@ -117,7 +132,10 @@ fn render_model_shell(
             "export interface {name} extends CompleteFacet<{id}> {{\n  readonly value: {value};\n}}\n\nexport type {name}Create = {value};\n"
         );
     } else {
-        let _ = writeln!(output, "export interface {name} extends CompleteFacet<{id}> {{");
+        let _ = writeln!(
+            output,
+            "export interface {name} extends CompleteFacet<{id}> {{"
+        );
         for field in model.complete_read().fields() {
             let token = model
                 .query_tokens()
@@ -126,7 +144,11 @@ fn render_model_shell(
                 .ok_or_else(|| facet_error("complete-read field has no query token"))?;
             let value = projected_type(projection, field.value(), "", "Structs.")?;
             let value = apply_multiplicity(value, field.multiplicity(), Position::Read);
-            let _ = writeln!(output, "  readonly {}: {value};", token.target_name().as_str());
+            let _ = writeln!(
+                output,
+                "  readonly {}: {value};",
+                token.target_name().as_str()
+            );
         }
         for (role, read) in model.complete_read().roles() {
             let token = model
@@ -136,7 +158,11 @@ fn render_model_shell(
                 .ok_or_else(|| facet_error("complete-read role has no query token"))?;
             let value = projected_union(projection, read.players(), "")?;
             let value = apply_multiplicity(value, read.multiplicity(), Position::Read);
-            let _ = writeln!(output, "  readonly {}: {value};", token.target_name().as_str());
+            let _ = writeln!(
+                output,
+                "  readonly {}: {value};",
+                token.target_name().as_str()
+            );
         }
         output.push_str("}\n\n");
 
@@ -149,8 +175,16 @@ fn render_model_shell(
                 .ok_or_else(|| facet_error("create field has no query token"))?;
             let value = projected_type(projection, field.value(), "", "Structs.")?;
             let value = apply_multiplicity(value, field.multiplicity(), Position::Create);
-            let optional = if field.multiplicity().required() { "" } else { "?" };
-            let _ = writeln!(output, "  readonly {}{optional}: {value};", token.target_name().as_str());
+            let optional = if field.multiplicity().required() {
+                ""
+            } else {
+                "?"
+            };
+            let _ = writeln!(
+                output,
+                "  readonly {}{optional}: {value};",
+                token.target_name().as_str()
+            );
         }
         for (role, create) in model.create().roles() {
             let token = model
@@ -160,8 +194,16 @@ fn render_model_shell(
                 .ok_or_else(|| facet_error("create role has no query token"))?;
             let value = projected_union(projection, create.players(), "")?;
             let value = apply_multiplicity(value, create.multiplicity(), Position::Create);
-            let optional = if create.multiplicity().required() { "" } else { "?" };
-            let _ = writeln!(output, "  readonly {}{optional}: {value};", token.target_name().as_str());
+            let optional = if create.multiplicity().required() {
+                ""
+            } else {
+                "?"
+            };
+            let _ = writeln!(
+                output,
+                "  readonly {}{optional}: {value};",
+                token.target_name().as_str()
+            );
         }
         output.push_str("}\n\n");
     }
@@ -177,7 +219,11 @@ fn render_model_shell(
             let read = read_field(model, key)?;
             let value = projected_type(projection, read.value(), "", "Structs.")?;
             let value = apply_multiplicity(value, read.multiplicity(), Position::Read);
-            let _ = writeln!(output, "  readonly {}: {value};", token.target_name().as_str());
+            let _ = writeln!(
+                output,
+                "  readonly {}: {value};",
+                token.target_name().as_str()
+            );
         }
         let reference_name = reference_name.as_str();
         let _ = writeln!(
@@ -280,8 +326,16 @@ fn render_model_link(
         );
         let _ = writeln!(output, "      owner: {id},");
         let _ = writeln!(output, "      attribute: {attribute},");
-        let _ = writeln!(output, "      name: {},", js_string(token.target_name().as_str())?);
-        let _ = writeln!(output, "      multiplicity: {},", canonical_text!(&token.multiplicity()));
+        let _ = writeln!(
+            output,
+            "      name: {},",
+            js_string(token.target_name().as_str())?
+        );
+        let _ = writeln!(
+            output,
+            "      multiplicity: {},",
+            canonical_text!(&token.multiplicity())
+        );
         let _ = writeln!(output, "      key: {},", token.is_key());
         let _ = writeln!(output, "      unique: {},", token.is_unique());
         let _ = writeln!(output, "      metadata: {metadata},\n    }}),");
@@ -304,10 +358,22 @@ fn render_model_link(
         );
         let _ = writeln!(output, "      owner: {id},");
         let _ = writeln!(output, "      role: {role},");
-        let _ = writeln!(output, "      name: {},", js_string(token.target_name().as_str())?);
+        let _ = writeln!(
+            output,
+            "      name: {},",
+            js_string(token.target_name().as_str())?
+        );
         let _ = writeln!(output, "      acceptedPlayers: [{accepted}],");
-        let _ = writeln!(output, "      specializes: {},", canonical_text!(&token.specializes()));
-        let _ = writeln!(output, "      multiplicity: {},", canonical_text!(&token.multiplicity()));
+        let _ = writeln!(
+            output,
+            "      specializes: {},",
+            canonical_text!(&token.specializes())
+        );
+        let _ = writeln!(
+            output,
+            "      multiplicity: {},",
+            canonical_text!(&token.multiplicity())
+        );
         let _ = writeln!(output, "      abstract: {},", token.is_abstract());
         let _ = writeln!(output, "      metadata: {metadata},\n    }}),");
     }
@@ -344,7 +410,11 @@ fn render_model_link(
             canonical_text!(&read.multiplicity())
         );
     }
-    let _ = writeln!(output, "  ],\n  createEnabled: {},", model.create().enabled());
+    let _ = writeln!(
+        output,
+        "  ],\n  createEnabled: {},",
+        model.create().enabled()
+    );
     output.push_str("  createMembers: [\n");
     for field in model.create().fields() {
         let token = model
@@ -412,18 +482,37 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
             .ok_or_else(|| facet_error("emission plan references an absent struct"))?;
         let name = structure.target_name().as_str();
         let id = identity_literal!(structure.id());
-        let _ = writeln!(output, "export interface {name} extends StructValue<{id}> {{");
+        let _ = writeln!(
+            output,
+            "export interface {name} extends StructValue<{id}> {{"
+        );
         for field in structure.fields() {
             let value = scalar_type(field.value_type());
-            let value = if field.optional() { format!("{value} | null") } else { value.to_owned() };
-            let _ = writeln!(output, "  readonly {}: {value};", field.target_name().as_str());
+            let value = if field.optional() {
+                format!("{value} | null")
+            } else {
+                value.to_owned()
+            };
+            let _ = writeln!(
+                output,
+                "  readonly {}: {value};",
+                field.target_name().as_str()
+            );
         }
         let _ = writeln!(output, "}}\n\nexport interface {name}Input {{");
         for field in structure.fields() {
             let value = scalar_type(field.value_type());
-            let value = if field.optional() { format!("{value} | null") } else { value.to_owned() };
+            let value = if field.optional() {
+                format!("{value} | null")
+            } else {
+                value.to_owned()
+            };
             let optional = if field.optional() { "?" } else { "" };
-            let _ = writeln!(output, "  readonly {}{optional}: {value};", field.target_name().as_str());
+            let _ = writeln!(
+                output,
+                "  readonly {}{optional}: {value};",
+                field.target_name().as_str()
+            );
         }
         let _ = writeln!(
             output,
@@ -437,7 +526,11 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
                 field.optional()
             );
         }
-        let _ = writeln!(output, "  ],\n  metadata: {},\n}});\n", canonical_text!(structure));
+        let _ = writeln!(
+            output,
+            "  ],\n  metadata: {},\n}});\n",
+            canonical_text!(structure)
+        );
     }
     Ok(output)
 }
@@ -466,7 +559,12 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
                         Ok(format!(
                             "{}: {}",
                             parameter.target_name().as_str(),
-                            projected_type(projection, parameter.type_ref(), "Models.", "Structs.")?
+                            projected_type(
+                                projection,
+                                parameter.type_ref(),
+                                "Models.",
+                                "Structs."
+                            )?
                         ))
                     })
                     .collect::<Result<Vec<_>, Diagnostic>>()?
@@ -541,7 +639,12 @@ fn field_value<'a>(
     model: &'a ModelProjection,
     id: &OwnsFactId,
 ) -> Result<&'a ProjectedTypeRef, Diagnostic> {
-    if let Some(read) = model.complete_read().fields().iter().find(|field| field.token() == id) {
+    if let Some(read) = model
+        .complete_read()
+        .fields()
+        .iter()
+        .find(|field| field.token() == id)
+    {
         return Ok(read.value());
     }
     model
@@ -568,10 +671,11 @@ fn projected_type(
                 .ok_or_else(|| facet_error("projected type references an absent model"))?;
             let name = match model.form() {
                 ProjectedModelForm::Complete => target.target_name(),
-                ProjectedModelForm::Reference => target
-                    .reference_read()
-                    .target_name()
-                    .ok_or_else(|| facet_error("reference use targets a model without a reference facet"))?,
+                ProjectedModelForm::Reference => {
+                    target.reference_read().target_name().ok_or_else(|| {
+                        facet_error("reference use targets a model without a reference facet")
+                    })?
+                }
             };
             Ok(format!("{model_prefix}{}", name.as_str()))
         }
@@ -593,7 +697,14 @@ fn projected_union(
     }
     values
         .iter()
-        .map(|value| projected_type(projection, &ProjectedTypeRef::Model(value.clone()), prefix, "Structs."))
+        .map(|value| {
+            projected_type(
+                projection,
+                &ProjectedTypeRef::Model(value.clone()),
+                prefix,
+                "Structs.",
+            )
+        })
         .collect::<Result<Vec<_>, _>>()
         .map(|values| values.join(" | "))
 }
@@ -662,7 +773,11 @@ fn return_element(
     element: &FunctionReturnElementProjection,
 ) -> Result<String, Diagnostic> {
     let value = projected_type(projection, element.type_ref(), "Models.", "Structs.")?;
-    Ok(if element.optional() { format!("{value} | null") } else { value })
+    Ok(if element.optional() {
+        format!("{value} | null")
+    } else {
+        value
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -721,11 +836,23 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
         let name = model.target_name().as_str();
         register_name(&mut public, name, "model")?;
         register_name(&mut public, &format!("{name}Create"), "create facet")?;
-        register_name(&mut public, &format!("{name}FieldTokens"), "field-token facet")?;
-        register_name(&mut public, &format!("{name}RoleTokens"), "role-token facet")?;
+        register_name(
+            &mut public,
+            &format!("{name}FieldTokens"),
+            "field-token facet",
+        )?;
+        register_name(
+            &mut public,
+            &format!("{name}RoleTokens"),
+            "role-token facet",
+        )?;
         if let Some(reference) = model.reference_read().target_name() {
             register_name(&mut public, reference.as_str(), "reference facet")?;
-            register_name(&mut public, &format!("{name}ReferenceInput"), "reference input")?;
+            register_name(
+                &mut public,
+                &format!("{name}ReferenceInput"),
+                "reference input",
+            )?;
         }
         validate_model_names(model)?;
     }
@@ -769,17 +896,24 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
 }
 
 fn validate_model_names(model: &ModelProjection) -> Result<(), Diagnostic> {
-    let mut members = MODEL_RESERVED_NAMES.iter().copied().collect::<BTreeSet<_>>();
+    let mut members = MODEL_RESERVED_NAMES
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     for token in model.query_tokens().fields().values() {
         validate_identifier(token.target_name().as_str())?;
         if !members.insert(token.target_name().as_str()) {
-            return Err(name_error("projected model field collides with a reserved member"));
+            return Err(name_error(
+                "projected model field collides with a reserved member",
+            ));
         }
     }
     for token in model.query_tokens().roles().values() {
         validate_identifier(token.target_name().as_str())?;
         if !members.insert(token.target_name().as_str()) {
-            return Err(name_error("projected model role collides with a reserved member"));
+            return Err(name_error(
+                "projected model role collides with a reserved member",
+            ));
         }
     }
     Ok(())
@@ -787,7 +921,9 @@ fn validate_model_names(model: &ModelProjection) -> Result<(), Diagnostic> {
 
 fn validate_identifier(value: &str) -> Result<(), Diagnostic> {
     if is_typescript_keyword(value) {
-        return Err(name_error(format!("TypeScript strict-mode keyword {value} cannot be emitted")));
+        return Err(name_error(format!(
+            "TypeScript strict-mode keyword {value} cannot be emitted"
+        )));
     }
     Ok(())
 }

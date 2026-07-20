@@ -4,8 +4,8 @@
 //! migration dependencies. Trusted values are created only through validating
 //! constructors; canonical decoding will use explicit validated wire types.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -20,16 +20,16 @@ use crate::limits::{MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_STRING_BYTES};
 use crate::value::{CanonicalValue, Cardinality, ValueTypeTag};
 
 pub use crate::managed_scope::{
-    ManagedScopeBinding, ManagedScopeId, ManagedScopeProfileBinding, ManagedScopeProfileFingerprint,
-    ManagedScopeProfileId, SemanticProfileFingerprint,
+    ManagedScopeBinding, ManagedScopeId, ManagedScopeProfileBinding,
+    ManagedScopeProfileFingerprint, ManagedScopeProfileId, SemanticProfileFingerprint,
+};
+pub use crate::schema_delta::{
+    ManagedFactSelection, ManagedSchemaState, PatchFormatVersion, SchemaDelta, SchemaOperation,
+    SchemaOperationKind, decode_schema_delta, encode_schema_delta,
 };
 pub use crate::schema_fingerprint::{
     ManagedDeclaredIdentityFingerprint, ManagedSemanticSchemaFingerprint,
     SchemaDocumentSetFingerprint, SemanticSchemaFingerprint,
-};
-pub use crate::schema_delta::{
-    ManagedFactSelection, ManagedSchemaState, PatchFormatVersion, SchemaDelta,
-    SchemaOperation, SchemaOperationKind, decode_schema_delta, encode_schema_delta,
 };
 pub use crate::semantic_profile::{InterfaceKind, SemanticProfile};
 
@@ -373,9 +373,7 @@ pub struct RelatesFactId {
 impl RelatesFactId {
     /// Construct a related-role identity.
     pub fn new(relation: TypeId, role: RoleId) -> Result<Self, Diagnostic> {
-        if relation.kind() != TypeKind::Relation
-            || relation.label() != role.declaring_relation()
-        {
+        if relation.kind() != TypeKind::Relation || relation.label() != role.declaring_relation() {
             return Err(schema_diagnostic(
                 DiagnosticCategory::InvalidContract,
                 "invalid_relates_identity",
@@ -598,28 +596,53 @@ impl CanonicalValueSetViolation {
                 "empty_values_annotation",
                 "values annotations must contain at least one value",
             ),
-            Self::MemberLimitExceeded { maximum, first_excess_index } => schema_diagnostic(
+            Self::MemberLimitExceeded {
+                maximum,
+                first_excess_index,
+            } => schema_diagnostic(
                 DiagnosticCategory::ResourceLimit,
                 "values_annotation_member_limit_exceeded",
                 "values annotation exceeds the raw member ceiling",
             )
-            .with_detail("maximum_members", i64::try_from(maximum).expect("collection limit fits i64"))
-            .with_detail("first_excess_index", i64::try_from(first_excess_index).expect("collection index fits i64")),
-            Self::MixedDomain { expected, actual, member_index } => schema_diagnostic(
+            .with_detail(
+                "maximum_members",
+                i64::try_from(maximum).expect("collection limit fits i64"),
+            )
+            .with_detail(
+                "first_excess_index",
+                i64::try_from(first_excess_index).expect("collection index fits i64"),
+            ),
+            Self::MixedDomain {
+                expected,
+                actual,
+                member_index,
+            } => schema_diagnostic(
                 DiagnosticCategory::InvalidContract,
                 "mixed_values_annotation_domain",
                 "values annotations require one exact scalar domain",
             )
             .with_detail("expected_value_type", expected.as_str())
             .with_detail("actual_value_type", actual.as_str())
-            .with_detail("member_index", i64::try_from(member_index).expect("collection index fits i64")),
-            Self::Duplicate { first_index, duplicate_index } => schema_diagnostic(
+            .with_detail(
+                "member_index",
+                i64::try_from(member_index).expect("collection index fits i64"),
+            ),
+            Self::Duplicate {
+                first_index,
+                duplicate_index,
+            } => schema_diagnostic(
                 DiagnosticCategory::InvalidContract,
                 "duplicate_values_annotation_value",
                 "values annotations cannot contain duplicates",
             )
-            .with_detail("first_index", i64::try_from(first_index).expect("collection index fits i64"))
-            .with_detail("duplicate_index", i64::try_from(duplicate_index).expect("collection index fits i64")),
+            .with_detail(
+                "first_index",
+                i64::try_from(first_index).expect("collection index fits i64"),
+            )
+            .with_detail(
+                "duplicate_index",
+                i64::try_from(duplicate_index).expect("collection index fits i64"),
+            ),
         }
     }
 }
@@ -734,7 +757,11 @@ impl CanonicalValueRangeViolation {
             )
             .with_detail(
                 "ordering",
-                match ordering { Ordering::Less => "less", Ordering::Equal => "equal", Ordering::Greater => "greater" },
+                match ordering {
+                    Ordering::Less => "less",
+                    Ordering::Equal => "equal",
+                    Ordering::Greater => "greater",
+                },
             ),
         }
     }
@@ -765,7 +792,11 @@ impl CanonicalValueRange {
                 upper: upper.value_type(),
             });
         }
-        let value_type = lower.as_ref().or(upper.as_ref()).expect("non-empty range has one bound").value_type();
+        let value_type = lower
+            .as_ref()
+            .or(upper.as_ref())
+            .expect("non-empty range has one bound")
+            .value_type();
         if matches!(value_type, ValueTypeTag::Duration) {
             return Err(CanonicalValueRangeViolation::UnsupportedDomain { value_type });
         }
@@ -1187,11 +1218,7 @@ pub struct FunctionFact {
 
 impl FunctionFact {
     /// Construct a validated function declaration.
-    pub const fn new(
-        id: FunctionId,
-        signature: FunctionSignature,
-        body: FunctionBody,
-    ) -> Self {
+    pub const fn new(id: FunctionId, signature: FunctionSignature, body: FunctionBody) -> Self {
         Self {
             id,
             signature,
@@ -1454,8 +1481,7 @@ impl DeclaredIdentityFingerprint {
 
     pub(crate) fn from_wire(fingerprint: Fingerprint) -> Result<Self, Diagnostic> {
         if fingerprint.domain().as_str() != "typebridge.schema.declared-identity"
-            || fingerprint.canonicalization().as_str()
-                != "typebridge.schema-canonical-json/v1"
+            || fingerprint.canonicalization().as_str() != "typebridge.schema-canonical-json/v1"
             || fingerprint.semantic_profile().is_some()
         {
             return Err(Diagnostic::stable(
@@ -1546,8 +1572,9 @@ impl DeclaredSchema {
             return Err(SchemaDiagnostics::from_vec(diagnostics));
         }
 
-        let canonical = canonical_declared_identity_bytes(format, &required_capabilities, &facts)
-            .map_err(|error| SchemaDiagnostics::one(SchemaDiagnostic::new(error, None)))?;
+        let canonical =
+            canonical_declared_identity_bytes(format, &required_capabilities, &facts)
+                .map_err(|error| SchemaDiagnostics::one(SchemaDiagnostic::new(error, None)))?;
         let fingerprint = DeclaredIdentityFingerprint::compute(&canonical)
             .map_err(|error| SchemaDiagnostics::one(SchemaDiagnostic::new(error, None)))?;
         Ok(Self {
@@ -1586,11 +1613,7 @@ impl DeclaredSchema {
 
     /// Return canonical identity bytes with presentation provenance excluded.
     pub fn canonical_identity_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
-        canonical_declared_identity_bytes(
-            self.format,
-            &self.required_capabilities,
-            &self.facts,
-        )
+        canonical_declared_identity_bytes(self.format, &self.required_capabilities, &self.facts)
     }
 
     /// Return the declared identity fingerprint.
@@ -1641,8 +1664,10 @@ fn validate_annotation(
                 | AnnotationKindId::Key
                 | AnnotationKindId::Unique,
             SchemaAnnotationValue::Presence
-        ) | (AnnotationKindId::Card, SchemaAnnotationValue::Cardinality(_))
-            | (AnnotationKindId::Regex, SchemaAnnotationValue::Regex(_))
+        ) | (
+            AnnotationKindId::Card,
+            SchemaAnnotationValue::Cardinality(_)
+        ) | (AnnotationKindId::Regex, SchemaAnnotationValue::Regex(_))
             | (AnnotationKindId::Range, SchemaAnnotationValue::Range(_))
             | (AnnotationKindId::Values, SchemaAnnotationValue::Values(_))
             | (AnnotationKindId::Doc, SchemaAnnotationValue::Doc(_))
@@ -1761,9 +1786,9 @@ fn validate_annotation_value_domains(
                         .chain(range.upper())
                         .all(|bound| bound.value_type() == value_type)
             }
-            (AnnotationKindId::Values, SchemaAnnotationValue::Values(values)) => values
-                .iter()
-                .all(|value| value.value_type() == value_type),
+            (AnnotationKindId::Values, SchemaAnnotationValue::Values(values)) => {
+                values.iter().all(|value| value.value_type() == value_type)
+            }
             _ => false,
         };
 
@@ -1857,12 +1882,10 @@ fn validate_references(
         let valid = match fact {
             SchemaFact::Type(_) | SchemaFact::Struct(_) => true,
             SchemaFact::Function(fact) => fact.schema_references().all(|label| {
-                type_ids.iter().any(|id| id.label() == label)
-                    || struct_labels.contains(label)
+                type_ids.iter().any(|id| id.label() == label) || struct_labels.contains(label)
             }),
             SchemaFact::Sub(fact) => {
-                type_ids.contains(fact.id().subtype())
-                    && type_ids.contains(fact.id().supertype())
+                type_ids.contains(fact.id().subtype()) && type_ids.contains(fact.id().supertype())
             }
             SchemaFact::Value(fact) => type_ids.contains(&attribute_type_id(fact.id().attribute())),
             SchemaFact::Owns(fact) => {
@@ -1871,12 +1894,16 @@ fn validate_references(
             }
             SchemaFact::Relates(fact) => {
                 type_ids.contains(fact.id().relation())
-                    && fact.specializes().is_none_or(|role| role_ids.contains(role))
+                    && fact
+                        .specializes()
+                        .is_none_or(|role| role_ids.contains(role))
             }
             SchemaFact::Plays(fact) => {
                 type_ids.contains(fact.id().player()) && role_ids.contains(fact.id().role())
             }
-            SchemaFact::Annotation(fact) => facts.contains_key(&subject_fact_id(fact.id().subject())),
+            SchemaFact::Annotation(fact) => {
+                facts.contains_key(&subject_fact_id(fact.id().subject()))
+            }
         };
         if !valid {
             diagnostics.push(SchemaDiagnostic::new(
@@ -1910,10 +1937,8 @@ fn validate_annotation_combinations(
             && (kinds.contains(&AnnotationKindId::Unique)
                 || kinds.contains(&AnnotationKindId::Card))
         {
-            let key_id = SchemaFactId::Annotation(AnnotationFactId::new(
-                subject,
-                AnnotationKindId::Key,
-            ));
+            let key_id =
+                SchemaFactId::Annotation(AnnotationFactId::new(subject, AnnotationKindId::Key));
             diagnostics.push(SchemaDiagnostic::new(
                 schema_diagnostic(
                     DiagnosticCategory::InvalidContract,

@@ -18,8 +18,16 @@ relation friendship, relates friend;
 
     assert_eq!(declared.facts().len(), facts.len());
     assert!(facts.iter().any(|fact| matches!(fact, SchemaFact::Owns(_))));
-    assert!(facts.iter().any(|fact| matches!(fact, SchemaFact::Relates(_))));
-    assert!(facts.iter().any(|fact| matches!(fact, SchemaFact::Plays(_))));
+    assert!(
+        facts
+            .iter()
+            .any(|fact| matches!(fact, SchemaFact::Relates(_)))
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| matches!(fact, SchemaFact::Plays(_)))
+    );
 }
 
 #[test]
@@ -43,7 +51,10 @@ fn typeql_duplicate_fact_reports_both_source_locations() {
     let diagnostics = typeql_to_declared(document(), source).expect_err("duplicate must fail");
     let diagnostic = diagnostics.iter().next().expect("one diagnostic");
 
-    assert_eq!(diagnostic.diagnostic().code().as_str(), "duplicate_schema_fact");
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "duplicate_schema_fact"
+    );
     assert_eq!(diagnostic.related().len(), 1);
 }
 

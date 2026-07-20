@@ -9,15 +9,13 @@ use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::migration_assertion::migration_assertion_capability_vocabulary;
 use type_bridge_schema::{BUILTIN_SCHEMA_CAPABILITY_IDS, SystemSchemaSourceService};
 use type_bridge_schema_migration::{
-    MigrationGenerationOutcome, SafetyClass, SafetyPolicyDecision,
-    typedb_3_12_1_profile,
+    MigrationGenerationOutcome, SafetyClass, SafetyPolicyDecision, typedb_3_12_1_profile,
 };
 use type_bridge_workspace::{
-    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement,
-    MigrationV2Directory, SchemaSetPath, SecretReference, SecretReferenceService,
-    TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeConfigSpec,
-    TypeBridgeWorkspace, TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode,
-    WorkspaceRoot, WorkspaceServiceError,
+    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
+    SchemaSetPath, SecretReference, SecretReferenceService, TypeBridgeConfig,
+    TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace,
+    TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode, WorkspaceRoot, WorkspaceServiceError,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -118,8 +116,7 @@ fn load_workspace(
         .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
         .build(&TypeBridgeConfigServices::new(source, secrets, extensions))
         .unwrap();
-    let services =
-        TypeBridgeWorkspaceServices::new(source, secrets, extensions, available);
+    let services = TypeBridgeWorkspaceServices::new(source, secrets, extensions, available);
     TypeBridgeWorkspace::from_config(config, &services).unwrap()
 }
 
@@ -132,20 +129,15 @@ fn workspace_makes_writes_and_plans_migrations_offline() {
     let extensions = AcceptExtensions(AtomicUsize::new(0));
     let available = capabilities();
 
-    let workspace =
-        load_workspace(&directory, &source, &secrets, &extensions, &available);
-    let MigrationGenerationOutcome::Generated(first) =
-        workspace.migration_make("init").unwrap()
+    let workspace = load_workspace(&directory, &source, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(first) = workspace.migration_make("init").unwrap()
     else {
         panic!("an empty history with a non-empty desired schema generates");
     };
     assert_eq!(first.manifest().id().name().as_str(), "0001_init");
     let manifest_path = workspace.write_generated_migration(&first).unwrap();
     assert!(manifest_path.ends_with("migrations/v2/0001_init.tbmigration.json"));
-    let preview = fs::read_to_string(
-        directory.0.join("migrations/v2/0001_init.typeql"),
-    )
-    .unwrap();
+    let preview = fs::read_to_string(directory.0.join("migrations/v2/0001_init.typeql")).unwrap();
     assert!(preview.contains("entity person"), "{preview}");
 
     // The committed head now equals the desired schema.
@@ -155,11 +147,8 @@ fn workspace_makes_writes_and_plans_migrations_offline() {
     ));
 
     // Evolving the schema sources chains the next generated migration.
-    directory.schema(
-        "format: typebridge.schema/v2\nentities: {company: {}, person: {}}\n",
-    );
-    let workspace =
-        load_workspace(&directory, &source, &secrets, &extensions, &available);
+    directory.schema("format: typebridge.schema/v2\nentities: {company: {}, person: {}}\n");
+    let workspace = load_workspace(&directory, &source, &secrets, &extensions, &available);
     let MigrationGenerationOutcome::Generated(second) =
         workspace.migration_make("company").unwrap()
     else {
@@ -172,19 +161,18 @@ fn workspace_makes_writes_and_plans_migrations_offline() {
     assert_eq!(plan.len(), 2);
     assert_eq!(plan[0].id().name().as_str(), "0001_init");
     assert_eq!(plan[1].id().name().as_str(), "0002_company");
-    assert!(plan.iter().all(|entry| {
-        entry.safety() == SafetyClass::Additive && entry.reversible()
-    }));
+    assert!(
+        plan.iter()
+            .all(|entry| { entry.safety() == SafetyClass::Additive && entry.reversible() })
+    );
 }
 
 #[test]
 fn manifest_destructive_policy_tightens_but_never_forces() {
     let directory = TempDirectory::new();
     directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
-    let origin = || {
-        ConfigOrigin::new(directory.root(), "typebridge.yaml", "policy fixture")
-            .unwrap()
-    };
+    let origin =
+        || ConfigOrigin::new(directory.root(), "typebridge.yaml", "policy fixture").unwrap();
     let source = SystemSchemaSourceService;
     let secrets = AcceptSecrets(AtomicUsize::new(0));
     let extensions = AcceptExtensions(AtomicUsize::new(0));
@@ -203,19 +191,20 @@ fn manifest_destructive_policy_tightens_but_never_forces() {
         .resolve(&services)
         .unwrap();
     assert_eq!(
-        rejecting.migration_policy().decision(SafetyClass::Destructive),
+        rejecting
+            .migration_policy()
+            .decision(SafetyClass::Destructive),
         SafetyPolicyDecision::Reject,
     );
 
-    let default = TypeBridgeConfigSpec::parse_yaml(
-        manifest("require-approval"),
-        origin(),
-    )
-    .unwrap()
-    .resolve(&services)
-    .unwrap();
+    let default = TypeBridgeConfigSpec::parse_yaml(manifest("require-approval"), origin())
+        .unwrap()
+        .resolve(&services)
+        .unwrap();
     assert_eq!(
-        default.migration_policy().decision(SafetyClass::Destructive),
+        default
+            .migration_policy()
+            .decision(SafetyClass::Destructive),
         SafetyPolicyDecision::RequireApproval,
     );
 
@@ -224,17 +213,18 @@ fn manifest_destructive_policy_tightens_but_never_forces() {
         .unwrap()
         .resolve(&services)
         .expect_err("a standing destructive allowance is invalid");
-    assert_eq!(forced.code(), WorkspaceConfigErrorCode::InvalidWorkspaceValue);
+    assert_eq!(
+        forced.code(),
+        WorkspaceConfigErrorCode::InvalidWorkspaceValue
+    );
 }
 
 #[test]
 fn environments_parse_with_symbolic_credentials_and_optin_migrate() {
     let directory = TempDirectory::new();
     directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
-    let origin = || {
-        ConfigOrigin::new(directory.root(), "typebridge.yaml", "environment fixture")
-            .unwrap()
-    };
+    let origin =
+        || ConfigOrigin::new(directory.root(), "typebridge.yaml", "environment fixture").unwrap();
     let source = SystemSchemaSourceService;
     let secrets = AcceptSecrets(AtomicUsize::new(0));
     let extensions = AcceptExtensions(AtomicUsize::new(0));
@@ -264,8 +254,14 @@ fn environments_parse_with_symbolic_credentials_and_optin_migrate() {
     assert_eq!(environment.database(), "myapp_dev");
     assert_eq!(environment.http_port(), Some(32787));
     assert!(environment.migrate());
-    assert_eq!(environment.username().environment_variable(), "TYPEDB_USERNAME");
-    assert_eq!(environment.password().environment_variable(), "TYPEDB_PASSWORD");
+    assert_eq!(
+        environment.username().environment_variable(),
+        "TYPEDB_USERNAME"
+    );
+    assert_eq!(
+        environment.password().environment_variable(),
+        "TYPEDB_PASSWORD"
+    );
     // Credential validation went through the injected secret service.
     assert!(secrets.0.load(Ordering::Relaxed) >= 2);
 
@@ -280,7 +276,10 @@ fn environments_parse_with_symbolic_credentials_and_optin_migrate() {
     .unwrap()
     .resolve(&services)
     .expect_err("a committed credential literal is forbidden");
-    assert_eq!(literal.code(), WorkspaceConfigErrorCode::SecretLiteralRejected);
+    assert_eq!(
+        literal.code(),
+        WorkspaceConfigErrorCode::SecretLiteralRejected
+    );
 
     let vague = TypeBridgeConfigSpec::parse_yaml(
         manifest(
@@ -293,5 +292,8 @@ fn environments_parse_with_symbolic_credentials_and_optin_migrate() {
     .unwrap()
     .resolve(&services)
     .expect_err("migrate admits only true or false");
-    assert_eq!(vague.code(), WorkspaceConfigErrorCode::InvalidWorkspaceValue);
+    assert_eq!(
+        vague.code(),
+        WorkspaceConfigErrorCode::InvalidWorkspaceValue
+    );
 }

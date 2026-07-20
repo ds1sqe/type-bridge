@@ -2,9 +2,9 @@ use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
-    DocText, DocumentId, OwnsFact, OwnsFactId, RegexPattern, RelatesFactId,
-    SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId,
-    TypeFact, ValueFact, ValueFactId,
+    DocText, DocumentId, OwnsFact, OwnsFactId, RegexPattern, RelatesFactId, SchemaAnnotationValue,
+    SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId, TypeFact, ValueFact,
+    ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 

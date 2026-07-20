@@ -10,10 +10,10 @@ use type_bridge_contract::projection::BindingTarget;
 use type_bridge_schema::SystemSchemaSourceService;
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MAX_WORKSPACE_LOCK_BYTES,
-    MigrationV2Directory, OutputDirectory, SchemaSetPath, SecretReference,
-    SecretReferenceService, TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeConfigSpec,
-    TypeBridgeWorkspace, TypeBridgeWorkspaceServices, WorkspaceLockErrorCode, WorkspaceRoot,
-    WorkspaceServiceError, generate_workspace_lock, verify_workspace_lock,
+    MigrationV2Directory, OutputDirectory, SchemaSetPath, SecretReference, SecretReferenceService,
+    TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace,
+    TypeBridgeWorkspaceServices, WorkspaceLockErrorCode, WorkspaceRoot, WorkspaceServiceError,
+    generate_workspace_lock, verify_workspace_lock,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -117,12 +117,7 @@ fn programmatic_workspace(
         .unwrap();
     TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(
-            &source,
-            &secrets,
-            &extensions,
-            &available,
-        ),
+        &TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available),
     )
     .unwrap()
 }
@@ -133,7 +128,11 @@ fn workspace_yaml(comment: &str) -> String {
     )
 }
 
-fn located_workspace(directory: &TempDirectory, source_text: &str, bytes: bool) -> TypeBridgeWorkspace {
+fn located_workspace(
+    directory: &TempDirectory,
+    source_text: &str,
+    bytes: bool,
+) -> TypeBridgeWorkspace {
     let source = SystemSchemaSourceService;
     let secrets = Secrets;
     let extensions = Extensions;
@@ -146,12 +145,7 @@ fn located_workspace(directory: &TempDirectory, source_text: &str, bytes: bool) 
     };
     TypeBridgeWorkspace::from_located_config(
         located,
-        &TypeBridgeWorkspaceServices::new(
-            &source,
-            &secrets,
-            &extensions,
-            &available,
-        ),
+        &TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available),
     )
     .unwrap()
 }

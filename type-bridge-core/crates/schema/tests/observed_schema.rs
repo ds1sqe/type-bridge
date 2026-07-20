@@ -130,10 +130,9 @@ fn inherited_interfaces_and_proven_server_defaults_are_not_direct_facts() {
                 ObservedFactProvenance::Direct,
             ),
             observed(
-                SchemaFact::Type(TypeFact::new(
-                    TypeId::new(TypeKind::Attribute, "name").unwrap(),
-                )
-                .unwrap()),
+                SchemaFact::Type(
+                    TypeFact::new(TypeId::new(TypeKind::Attribute, "name").unwrap()).unwrap(),
+                ),
                 ObservedFactProvenance::Direct,
             ),
             observed(
@@ -181,8 +180,8 @@ fn ambiguous_provenance_fails_closed() {
         )],
     );
 
-    let error = canonicalize_observed_schema(&capture, &profile())
-        .expect_err("ambiguity is rejected");
+    let error =
+        canonicalize_observed_schema(&capture, &profile()).expect_err("ambiguity is rejected");
     assert_eq!(
         error.iter().next().unwrap().diagnostic().code().as_str(),
         "ambiguous_observed_provenance"
@@ -216,10 +215,7 @@ fn server_default_cardinality_must_match_selected_profile() {
     )
     .unwrap();
     let wrong_default = AnnotationFact::new(
-        AnnotationFactId::new(
-            AnnotationSubjectId::Owns(owns),
-            AnnotationKindId::Card,
-        ),
+        AnnotationFactId::new(AnnotationSubjectId::Owns(owns), AnnotationKindId::Card),
         SchemaAnnotationValue::Cardinality(Cardinality::new(0, Some(2)).unwrap()),
     )
     .unwrap();
@@ -308,8 +304,8 @@ fn duplicate_observed_fact_id_is_rejected() {
         ],
     );
 
-    let error = canonicalize_observed_schema(&capture, &profile())
-        .expect_err("duplicates are rejected");
+    let error =
+        canonicalize_observed_schema(&capture, &profile()).expect_err("duplicates are rejected");
     assert_eq!(
         error.iter().next().unwrap().diagnostic().code().as_str(),
         "duplicate_observed_fact"

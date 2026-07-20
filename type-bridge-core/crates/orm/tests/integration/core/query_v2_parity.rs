@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::common::dynamic_crud::{attr, setup_dynamic_database, DynamicCrudSchema};
+use crate::common::dynamic_crud::{DynamicCrudSchema, attr, setup_dynamic_database};
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -17,23 +17,17 @@ use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::QueryInvocation;
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
+    TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::ValueTypeTag;
-use type_bridge_orm::query_v2::{
-    QueryRowValue, QueryV2Outcome, execute_validated_query,
-};
+use type_bridge_orm::query_v2::{QueryRowValue, QueryV2Outcome, execute_validated_query};
 use type_bridge_orm::query_v2_adapter::adapt_match_request;
 use type_bridge_orm::session::backend::{AnswerCancellation, BoundedAnswerLimits};
 use type_bridge_orm::*;
-use type_bridge_query::{
-    MigrationAssertionValidationContext, validate_query_plan,
-};
-use type_bridge_schema::{
-    ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve,
-};
+use type_bridge_query::{MigrationAssertionValidationContext, validate_query_plan};
+use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
 
 struct ParityFixture {
     managed: ManagedSchemaState,
@@ -44,23 +38,20 @@ struct ParityFixture {
 }
 
 fn declared_fixture(schema: &DynamicCrudSchema) -> (ManagedSchemaState, ResolvedSchema) {
-    let person = TypeId::new(TypeKind::Entity, schema.person_type.as_str())
-        .expect("person type");
+    let person = TypeId::new(TypeKind::Entity, schema.person_type.as_str()).expect("person type");
     let name = AttributeId::new(schema.name_attr.as_str()).expect("name attribute");
     let age = AttributeId::new(schema.age_attr.as_str()).expect("age attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
         SchemaFact::Type(
             TypeFact::new(
-                TypeId::new(TypeKind::Attribute, schema.name_attr.as_str())
-                    .expect("type"),
+                TypeId::new(TypeKind::Attribute, schema.name_attr.as_str()).expect("type"),
             )
             .expect("type fact"),
         ),
         SchemaFact::Type(
             TypeFact::new(
-                TypeId::new(TypeKind::Attribute, schema.age_attr.as_str())
-                    .expect("type"),
+                TypeId::new(TypeKind::Attribute, schema.age_attr.as_str()).expect("type"),
             )
             .expect("type fact"),
         ),
@@ -96,9 +87,8 @@ fn declared_fixture(schema: &DynamicCrudSchema) -> (ManagedSchemaState, Resolved
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("query-v2-parity").expect("scope"),
@@ -152,7 +142,9 @@ fn rows_operation(
 ) -> MatchOperation {
     MatchOperation::FetchRows {
         output: FetchShape::Positional {
-            slots: vec![FetchSlot::One { binding: BindingId::new(0) }],
+            slots: vec![FetchSlot::One {
+                binding: BindingId::new(0),
+            }],
         },
         order: vec![MatchOrder {
             field: name_field(fixture),
@@ -164,11 +156,7 @@ fn rows_operation(
     }
 }
 
-async fn v1_row_iids(
-    db: &Database,
-    fixture: &ParityFixture,
-    request: MatchRequest,
-) -> Vec<String> {
+async fn v1_row_iids(db: &Database, fixture: &ParityFixture, request: MatchRequest) -> Vec<String> {
     let validated = validate_match_request(&fixture.registry, request)
         .expect("corpus request passes V1 validation");
     let result = db
@@ -193,17 +181,13 @@ async fn v2_outcome(
     fixture: &ParityFixture,
     request: &MatchRequest,
 ) -> QueryV2Outcome {
-    let adapted =
-        adapt_match_request(request, fixture.managed.managed_semantic_schema())
-            .expect("corpus request adapts");
-    let context =
-        MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
-    let validated =
-        validate_query_plan(adapted.plan(), &context, StructuralLimits::CANONICAL)
-            .expect("adapted corpus plan validates");
-    let invocation =
-        QueryInvocation::new(adapted.plan(), adapted.operation(), Vec::new())
-            .expect("input-free invocation");
+    let adapted = adapt_match_request(request, fixture.managed.managed_semantic_schema())
+        .expect("corpus request adapts");
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let validated = validate_query_plan(adapted.plan(), &context, StructuralLimits::CANONICAL)
+        .expect("adapted corpus plan validates");
+    let invocation = QueryInvocation::new(adapted.plan(), adapted.operation(), Vec::new())
+        .expect("input-free invocation");
     let mut transaction = db.read_transaction().await.expect("read transaction");
     execute_validated_query(
         &mut transaction,
@@ -245,7 +229,12 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
         is_abstract: false,
         parent_type: None,
         owned_attributes: vec![
-            attr(&schema.name_attr, &schema.name_attr, ValueType::String, true),
+            attr(
+                &schema.name_attr,
+                &schema.name_attr,
+                ValueType::String,
+                true,
+            ),
             attr(&schema.age_attr, &schema.age_attr, ValueType::Long, false),
         ],
         doc: None,
@@ -255,7 +244,10 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
     for (name, age) in [("Ada", 30i64), ("Grace", 40), ("Alan", 25)] {
         manager
             .insert(&vec![
-                (schema.name_attr.clone(), AttributeValue::String(name.into())),
+                (
+                    schema.name_attr.clone(),
+                    AttributeValue::String(name.into()),
+                ),
                 (schema.age_attr.clone(), AttributeValue::Long(age)),
             ])
             .await
@@ -333,7 +325,9 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
     // Count and exists agree with V1 distinct-root semantics.
     let count_request = MatchRequest::v1(
         person_plan(&fixture, None),
-        MatchOperation::CountBy { root: BindingId::new(0) },
+        MatchOperation::CountBy {
+            root: BindingId::new(0),
+        },
     );
     let v1_count = validate_match_request(&fixture.registry, count_request.clone())
         .expect("count request validates");
@@ -341,7 +335,10 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
         .execute_match(&fixture.registry, &v1_count)
         .await
         .expect("V1 count execution");
-    let MatchResult::Count { value: v1_count, .. } = v1_count.result() else {
+    let MatchResult::Count {
+        value: v1_count, ..
+    } = v1_count.result()
+    else {
         panic!("expected V1 count");
     };
     let v2_count = v2_outcome(&db, &fixture, &count_request).await;
@@ -358,7 +355,9 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
                     value: AttributeValue::String(value.into()),
                 }),
             ),
-            MatchOperation::ExistsBy { root: BindingId::new(0) },
+            MatchOperation::ExistsBy {
+                root: BindingId::new(0),
+            },
         )
     };
     for (value, expected) in [("Grace", true), ("Nobody", false)] {

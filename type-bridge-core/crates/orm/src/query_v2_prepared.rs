@@ -20,15 +20,11 @@ use type_bridge_contract::query_remote::RemoteLimits;
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::CanonicalValue;
-use type_bridge_query::{
-    MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan,
-};
+use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::ResolvedSchema;
 
 use crate::query_v2::{QueryV2ExecutionError, failure};
-use crate::query_v2_remote::{
-    decode_remote_outcome, encode_remote_request, remote_outcome,
-};
+use crate::query_v2_remote::{decode_remote_outcome, encode_remote_request, remote_outcome};
 use crate::session::backend::BoundedAnswerLimits;
 use crate::session::database::Database;
 
@@ -47,8 +43,8 @@ impl QueryAuthority {
     ) -> Result<Self, Diagnostic> {
         let declared = decode_declared_schema(bytes)?;
         let profile = SemanticProfileId::new(profile)?;
-        let resolved = type_bridge_schema::resolve(&declared, &profile)
-            .map_err(|_| schema_rejected())?;
+        let resolved =
+            type_bridge_schema::resolve(&declared, &profile).map_err(|_| schema_rejected())?;
         let managed = type_bridge_schema::managed_schema_state(
             &declared,
             &type_bridge_schema::ManagedDeltaContext::new(
@@ -67,13 +63,9 @@ impl QueryAuthority {
         MigrationAssertionValidationContext::new(&self.resolved, &self.managed)
     }
 
-    fn validate(
-        &self,
-        plan_bytes: &[u8],
-    ) -> Result<(QueryPlan, ValidatedQuery), Diagnostic> {
+    fn validate(&self, plan_bytes: &[u8]) -> Result<(QueryPlan, ValidatedQuery), Diagnostic> {
         let plan = decode_query_plan(plan_bytes)?;
-        let validated =
-            validate_query_plan(&plan, &self.context(), StructuralLimits::CANONICAL)?;
+        let validated = validate_query_plan(&plan, &self.context(), StructuralLimits::CANONICAL)?;
         Ok((plan, validated))
     }
 }
@@ -108,14 +100,13 @@ fn parse_invocation(
     plan: &QueryPlan,
     invocation_json: &str,
 ) -> Result<QueryInvocation, Diagnostic> {
-    let parsed: PreparedInvocation =
-        serde_json::from_str(invocation_json).map_err(|_| {
-            failure(
-                DiagnosticCategory::InvalidContract,
-                "query_prepared_invocation_malformed",
-                "invocation payloads carry an operation and rectangular rows",
-            )
-        })?;
+    let parsed: PreparedInvocation = serde_json::from_str(invocation_json).map_err(|_| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "query_prepared_invocation_malformed",
+            "invocation payloads carry an operation and rectangular rows",
+        )
+    })?;
     QueryInvocation::new(
         plan,
         parsed.operation.operation(),
@@ -143,21 +134,17 @@ pub async fn execute_prepared_local(
             "the executor could not open a read transaction",
         )
     })?;
-    let outcome = crate::query_v2::execute_validated_query(
-        &mut transaction,
-        &validated,
-        &invocation,
-        limits,
-    )
-    .await
-    .map_err(|error| match error {
-        QueryV2ExecutionError::Validation(diagnostic) => diagnostic,
-        QueryV2ExecutionError::Provider(_) => failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_provider_failed",
-            "the executor provider call failed",
-        ),
-    })?;
+    let outcome =
+        crate::query_v2::execute_validated_query(&mut transaction, &validated, &invocation, limits)
+            .await
+            .map_err(|error| match error {
+                QueryV2ExecutionError::Validation(diagnostic) => diagnostic,
+                QueryV2ExecutionError::Provider(_) => failure(
+                    DiagnosticCategory::Integrity,
+                    "query_prepared_provider_failed",
+                    "the executor provider call failed",
+                ),
+            })?;
     outcome_json(&outcome)
 }
 

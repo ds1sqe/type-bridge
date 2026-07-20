@@ -25,22 +25,19 @@ mod yaml;
 pub use adoption::{AdoptionBaseline, adopt_observed_schema};
 pub use assembler::FactAssembler;
 pub use delta::{
-    DeltaError, ManagedDeltaContext, apply_delta, diff_managed, inverse_delta,
-    managed_schema_state,
+    DeltaError, ManagedDeltaContext, apply_delta, diff_managed, inverse_delta, managed_schema_state,
 };
 pub use delta_dependencies::{FactDependencyGraph, plan_schema_operations};
 pub use delta_safety::{
-    DeltaSafety, DeltaSafetyReason, DeltaSafetyReport, SafetyClass,
-    SafetyClassificationError, classify_delta_safety, classify_operation_safety,
-    classify_schema_operation_safety,
+    DeltaSafety, DeltaSafetyReason, DeltaSafetyReport, SafetyClass, SafetyClassificationError,
+    classify_delta_safety, classify_operation_safety, classify_schema_operation_safety,
 };
 pub use discovery::{
     DEFAULT_MAX_DISCOVERY_DEPTH, DEFAULT_MAX_DISCOVERY_ENTRIES, DEFAULT_MAX_SOURCE_PATTERN_BYTES,
     DEFAULT_MAX_SOURCE_PATTERNS, SchemaDiscoveryEvidence, SchemaDiscoveryLimits,
     SchemaDiscoverySnapshot, SchemaPatternDiscoverySnapshot, SchemaSourceCapture,
     SchemaSourceEvidence, SchemaSourceIdentity, SchemaSourceKind, SchemaSourceObservation,
-    SchemaSourceRevision, SchemaSourceService, SchemaSourceServiceError,
-    SystemSchemaSourceService,
+    SchemaSourceRevision, SchemaSourceService, SchemaSourceServiceError, SystemSchemaSourceService,
     discover_schema_documents, discover_schema_documents_with_limits, load_schema_set,
     load_schema_set_with_limits, load_schema_set_with_source,
 };
@@ -63,9 +60,9 @@ pub use resolve::{
 };
 pub use safety_condition::{
     DerivedSafetyConditions, RequiredSafetyCondition, SAFETY_CONDITION_CANONICALIZATION,
-    SAFETY_CONDITION_FINGERPRINT_DOMAIN, SafetyCondition, SafetyConditionId,
-    SafetyConditionUnlock, SafetyDerivationProfile, ScalarSafetySubject,
-    UnresolvableSafetyReason, derive_safety_conditions,
+    SAFETY_CONDITION_FINGERPRINT_DOMAIN, SafetyCondition, SafetyConditionId, SafetyConditionUnlock,
+    SafetyDerivationProfile, ScalarSafetySubject, UnresolvableSafetyReason,
+    derive_safety_conditions,
 };
 pub use schema_set::{
     SCHEMA_DISCOVERY_V1, SCHEMA_SET_V1_FORMAT, SchemaDiscoveryVersion, SchemaSetManifest,
@@ -78,6 +75,5 @@ pub use semantic::{
     semantic_schema_fingerprint,
 };
 pub use timezone::{
-    TYPEDB_3_12_1_TIMEZONE_POLICY_ID, parse_provider_datetime_tz,
-    resolve_provider_datetime_tz,
+    TYPEDB_3_12_1_TIMEZONE_POLICY_ID, parse_provider_datetime_tz, resolve_provider_datetime_tz,
 };

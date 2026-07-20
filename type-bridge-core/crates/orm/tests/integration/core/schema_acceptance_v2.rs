@@ -241,9 +241,7 @@ async fn value_constraints_are_enforced_on_value_and_ownership_subjects() {
         TxType::Schema,
     )
     .await
-    .expect(
-        "TypeDB 3.12.1 must accept values/range on attribute-value and ownership subjects",
-    );
+    .expect("TypeDB 3.12.1 must accept values/range on attribute-value and ownership subjects");
 
     db.execute_raw(
         &format!(

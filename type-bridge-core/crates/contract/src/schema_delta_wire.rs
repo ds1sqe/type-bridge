@@ -9,24 +9,18 @@ use crate::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintAlgorithm, FingerprintDigest,
     FingerprintDomain, SemanticProfileId,
 };
-use crate::id::{
-    AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKind,
-};
-use crate::managed_scope::{
-    ManagedScopeBinding, ManagedScopeId, ManagedScopeProfileId,
-};
+use crate::id::{AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKind};
+use crate::managed_scope::{ManagedScopeBinding, ManagedScopeId, ManagedScopeProfileId};
 use crate::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-    CanonicalValueRange, CanonicalValueSet, DeclaredIdentityFingerprint, DocText,
-    FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
-    FunctionReturnMode, FunctionSignature, OwnsFact, OwnsFactId, PlaysFact,
-    PlaysFactId, RegexPattern, RelatesFact, RelatesFactId, SchemaAnnotationValue,
-    SchemaFact, SchemaFactId, StructFact, StructField, SubFact, SubFactId, TypeFact,
-    TypeReference, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
+    CanonicalValueSet, DeclaredIdentityFingerprint, DocText, FunctionBody, FunctionFact,
+    FunctionParameter, FunctionReturnElement, FunctionReturnMode, FunctionSignature, OwnsFact,
+    OwnsFactId, PlaysFact, PlaysFactId, RegexPattern, RelatesFact, RelatesFactId,
+    SchemaAnnotationValue, SchemaFact, SchemaFactId, StructFact, StructField, SubFact, SubFactId,
+    TypeFact, TypeReference, ValueFact, ValueFactId,
 };
 use crate::schema_delta::{
-    ManagedFactSelection, ManagedSchemaState, PatchFormatVersion, SchemaDelta,
-    SchemaOperation,
+    ManagedFactSelection, ManagedSchemaState, PatchFormatVersion, SchemaDelta, SchemaOperation,
 };
 use crate::schema_fingerprint::{
     ManagedDeclaredIdentityFingerprint, ManagedSemanticSchemaFingerprint,
@@ -102,15 +96,11 @@ impl ManagedSchemaStateWire {
                     .map(SchemaFactIdWire::rebuild)
                     .collect::<Result<Vec<_>, _>>()?,
             )?,
-            DeclaredIdentityFingerprint::from_wire(
-                self.declared_identity.rebuild()?,
-            )?,
+            DeclaredIdentityFingerprint::from_wire(self.declared_identity.rebuild()?)?,
             ManagedDeclaredIdentityFingerprint::from_wire(
                 self.managed_declared_identity.rebuild()?,
             )?,
-            ManagedSemanticSchemaFingerprint::from_wire(
-                self.managed_semantic_schema.rebuild()?,
-            )?,
+            ManagedSemanticSchemaFingerprint::from_wire(self.managed_semantic_schema.rebuild()?)?,
         )
     }
 }
@@ -179,12 +169,16 @@ impl FingerprintWire {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SchemaOperationWire {
-    Define { facts: Vec<SchemaFactWire> },
+    Define {
+        facts: Vec<SchemaFactWire>,
+    },
     Redefine {
         expected: SchemaFactWire,
         replacement: SchemaFactWire,
     },
-    Undefine { fact: SchemaFactWire },
+    Undefine {
+        fact: SchemaFactWire,
+    },
 }
 
 impl SchemaOperationWire {
@@ -206,7 +200,12 @@ impl SchemaOperationWire {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub(crate) enum SchemaFactWire {
     Type(TypeFactWire),
     Sub(SubFactWire),
@@ -224,10 +223,9 @@ impl SchemaFactWire {
         Ok(match self {
             Self::Type(wire) => SchemaFact::Type(TypeFact::new(wire.id.rebuild()?)?),
             Self::Sub(wire) => SchemaFact::Sub(SubFact::new(wire.id.rebuild()?)),
-            Self::Value(wire) => SchemaFact::Value(ValueFact::new(
-                ValueFactId::new(wire.id),
-                wire.value_type,
-            )),
+            Self::Value(wire) => {
+                SchemaFact::Value(ValueFact::new(ValueFactId::new(wire.id), wire.value_type))
+            }
             Self::Owns(wire) => SchemaFact::Owns(OwnsFact::new(wire.id.rebuild()?)),
             Self::Relates(wire) => SchemaFact::Relates(RelatesFact::new(
                 wire.id.rebuild()?,
@@ -396,7 +394,12 @@ impl PlaysFactIdWire {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 enum AnnotationSubjectWire {
     Type(TypeIdWire),
     Sub(SubFactIdWire),
@@ -422,7 +425,12 @@ impl AnnotationSubjectWire {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(tag = "kind", content = "key", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "key",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 enum AnnotationKindWire {
     Abstract,
     Independent,
@@ -470,7 +478,12 @@ impl AnnotationFactIdWire {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 enum AnnotationValueWire {
     Presence,
     Cardinality(CardinalityWire),
@@ -588,7 +601,12 @@ impl CanonicalValueWire {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 enum TypeReferenceWire {
     Value(ValueTypeTag),
     Schema(Label),
@@ -630,7 +648,12 @@ impl FunctionReturnElementWire {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(tag = "kind", content = "elements", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "elements",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 enum FunctionReturnModeWire {
     Scalar(FunctionReturnElementWire),
     Tuple(Vec<FunctionReturnElementWire>),
@@ -691,7 +714,12 @@ impl StructFieldWire {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 enum SchemaFactIdWire {
     Type(TypeIdWire),
     Sub(SubFactIdWire),

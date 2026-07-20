@@ -17,9 +17,9 @@ pub mod ast;
 pub mod author;
 pub mod match_runtime;
 pub mod migration_runtime;
-pub mod query_v2_runtime;
 pub mod orm;
 pub mod orm_runtime;
+pub mod query_v2_runtime;
 pub mod runtime_projection;
 pub mod schema;
 pub mod transpiler;
@@ -610,11 +610,9 @@ fn parse_bindgen_options(options_json: Option<&str>) -> PyResult<core::bindgen::
 fn render_models_json(input: &str, target: &str, options_json: Option<&str>) -> PyResult<String> {
     let target = parse_bindgen_target(target)?;
     let options = parse_bindgen_options(options_json)?;
-    type_bridge_schema_compat::generate_package_with_declared_descriptors(
-        input, target, &options,
-    )
-    .and_then(|package| package.to_json())
-    .map_err(pyo3::exceptions::PyValueError::new_err)
+    type_bridge_schema_compat::generate_package_with_declared_descriptors(input, target, &options)
+        .and_then(|package| package.to_json())
+        .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 /// Export the canonical direct declaration snapshot without rendering models.

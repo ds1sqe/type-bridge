@@ -7,11 +7,11 @@
 // `napi` generates public glue items that do not inherit Rustdoc comments.
 #![allow(missing_docs)]
 
+#[cfg(feature = "contract-test-adapter")]
+mod contract_test_adapter;
 mod match_runtime;
 pub mod query_v2_runtime;
 mod runtime_projection;
-#[cfg(feature = "contract-test-adapter")]
-mod contract_test_adapter;
 
 #[cfg(feature = "contract-test-adapter")]
 pub use contract_test_adapter::round_trip_contract_foundation;
@@ -1182,11 +1182,9 @@ pub fn render_models_json(
         }
         None => BindgenOptions::default(),
     };
-    type_bridge_schema_compat::generate_package_with_declared_descriptors(
-        &input, target, &options,
-    )
-    .and_then(|package| package.to_json())
-    .map_err(|e| Error::from_reason(format!("Failed to render models: {e}")))
+    type_bridge_schema_compat::generate_package_with_declared_descriptors(&input, target, &options)
+        .and_then(|package| package.to_json())
+        .map_err(|e| Error::from_reason(format!("Failed to render models: {e}")))
 }
 
 /// Export the canonical direct declaration snapshot without rendering models.

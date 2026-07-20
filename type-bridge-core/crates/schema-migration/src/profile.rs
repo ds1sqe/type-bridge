@@ -17,8 +17,7 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_contract::schema_lowering::{
     SCHEMA_LOWERING_PROFILE_CANONICALIZATION, SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN,
-    SchemaLoweringProfileBinding, SchemaLoweringProfileFingerprint,
-    SchemaLoweringProfileId,
+    SchemaLoweringProfileBinding, SchemaLoweringProfileFingerprint, SchemaLoweringProfileId,
 };
 use type_bridge_schema::{SafetyClass, SafetyClassificationError};
 
@@ -353,11 +352,7 @@ pub struct SchemaLoweringProfile {
 }
 
 impl SchemaLoweringProfile {
-    pub fn fact_rule(
-        &self,
-        fact: FactKind,
-        transition: FactTransition,
-    ) -> Option<&TransitionRule> {
+    pub fn fact_rule(&self, fact: FactKind, transition: FactTransition) -> Option<&TransitionRule> {
         self.fact_rules
             .iter()
             .find(|row| row.fact == fact && row.transition == transition)
@@ -381,7 +376,9 @@ impl SchemaLoweringProfile {
     }
 
     pub fn safety_rule(&self, scenario: SafetyScenario) -> Option<&SafetyScenarioRule> {
-        self.safety_rules.iter().find(|row| row.scenario == scenario)
+        self.safety_rules
+            .iter()
+            .find(|row| row.scenario == scenario)
     }
 }
 
@@ -411,7 +408,9 @@ pub(crate) fn classify_operation_transition(
             }
         }
         SchemaOperationKind::Redefine => rules.push(classify_redefinition(
-            operation.expected_fact().expect("redefine exposes expected fact"),
+            operation
+                .expected_fact()
+                .expect("redefine exposes expected fact"),
             operation
                 .replacement_fact()
                 .expect("redefine exposes replacement fact"),
@@ -448,7 +447,10 @@ fn classify_defined_fact(fact: &SchemaFact, functions: &BTreeSet<FunctionId>) ->
         SchemaFact::Annotation(annotation) => {
             if let AnnotationSubjectId::Function(function) = annotation.id().subject()
                 && functions.contains(function)
-                && matches!(annotation.id().kind(), AnnotationKindId::Doc | AnnotationKindId::Meta(_))
+                && matches!(
+                    annotation.id().kind(),
+                    AnnotationKindId::Doc | AnnotationKindId::Meta(_)
+                )
             {
                 return define(SafetyClass::SchemaMetadata, false);
             }
@@ -588,10 +590,7 @@ fn default_cardinality(subject: &AnnotationSubjectId) -> Option<(u64, Option<u64
         .map(|default| (default.min, default.max))
 }
 
-fn cardinality_transition_safety(
-    from: (u64, Option<u64>),
-    to: (u64, Option<u64>),
-) -> SafetyClass {
+fn cardinality_transition_safety(from: (u64, Option<u64>), to: (u64, Option<u64>)) -> SafetyClass {
     if from == to {
         SafetyClass::FormalOnly
     } else if interval_contains(to, from) {
@@ -628,9 +627,8 @@ fn safety_rank(safety: SafetyClass) -> u8 {
 fn capabilities(ids: &[&str]) -> CapabilitySet {
     let mut capabilities = CapabilitySet::new();
     for id in ids {
-        capabilities.insert(
-            CapabilityId::new(*id).expect("fixed schema-lowering capability id is valid"),
-        );
+        capabilities
+            .insert(CapabilityId::new(*id).expect("fixed schema-lowering capability id is valid"));
     }
     capabilities
 }
@@ -700,11 +698,9 @@ pub fn fact_transition_rule(fact: FactKind, transition: FactTransition) -> Trans
         (F::Owns | F::Relates | F::Plays, T::Redefine) => unsupported(false),
         (F::RelatesSpecialization, T::Define) => define(S::Conditional, false),
         (F::RelatesSpecialization, T::Undefine) => undefine(S::Conditional, false),
-        (F::RelatesSpecialization, T::Redefine) => redefine(
-            S::Conditional,
-            CAP_REDEFINE_RELATES_SPECIALIZATION,
-            false,
-        ),
+        (F::RelatesSpecialization, T::Redefine) => {
+            redefine(S::Conditional, CAP_REDEFINE_RELATES_SPECIALIZATION, false)
+        }
         (F::Function, T::Define) => define(S::Additive, false),
         (F::Function, T::Undefine) => undefine(S::Destructive, false),
         (F::Function, T::Redefine) => redefine(S::Opaque, CAP_REDEFINE_FUNCTION, false),
@@ -719,7 +715,10 @@ fn annotation_is_supported(subject: AnnotationSubjectKind, annotation: Annotatio
     match subject {
         S::Type => matches!(annotation, A::Abstract | A::Independent | A::Doc | A::Meta),
         S::Sub => matches!(annotation, A::Doc | A::Meta),
-        S::Value => matches!(annotation, A::Regex | A::Range | A::Values | A::Doc | A::Meta),
+        S::Value => matches!(
+            annotation,
+            A::Regex | A::Range | A::Values | A::Doc | A::Meta
+        ),
         S::Owns => matches!(
             annotation,
             A::Key | A::Unique | A::Card | A::Regex | A::Range | A::Values | A::Doc | A::Meta
@@ -807,17 +806,24 @@ fn safety_rule(scenario: SafetyScenario) -> SafetyScenarioRule {
     use SafetyScenario as S;
 
     let (safety, evidence) = match scenario {
-        S::ExplicitDefaultEquivalent | S::RemoveCardinalityToEqualDefault =>
-            (C::FormalOnly, E::None),
+        S::ExplicitDefaultEquivalent | S::RemoveCardinalityToEqualDefault => {
+            (C::FormalOnly, E::None)
+        }
         S::DocMetaTransition => (C::SchemaMetadata, E::None),
-        S::AddOptionalInterface | S::WidenCardinality | S::RemoveCardinalityToWiderDefault
-        | S::RemoveValueConstraint | S::RemoveAbstract | S::AddIndependent =>
-            (C::Additive, E::None),
-        S::AddRequiredCardinality | S::AddKeyOrUnique | S::NarrowCardinality
+        S::AddOptionalInterface
+        | S::WidenCardinality
+        | S::RemoveCardinalityToWiderDefault
+        | S::RemoveValueConstraint
+        | S::RemoveAbstract
+        | S::AddIndependent => (C::Additive, E::None),
+        S::AddRequiredCardinality
+        | S::AddKeyOrUnique
+        | S::NarrowCardinality
         | S::RemoveCardinalityToNarrowerDefault => (C::BackfillRequired, E::Backfill),
-        S::AddOrTightenValueConstraint | S::AddAbstract | S::ChangeSub
-        | S::ChangeRelatesSpecialization =>
-            (C::Conditional, E::ExistingDataSatisfiesTarget),
+        S::AddOrTightenValueConstraint
+        | S::AddAbstract
+        | S::ChangeSub
+        | S::ChangeRelatesSpecialization => (C::Conditional, E::ExistingDataSatisfiesTarget),
         S::RemoveIndependent | S::RemoveFact => (C::Destructive, E::OperatorApproval),
         S::ChangeValueType => (C::Destructive, E::ExplicitConversion),
         S::RedefineFunction => (C::Opaque, E::OperatorApproval),

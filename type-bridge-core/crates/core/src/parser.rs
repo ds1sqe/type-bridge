@@ -869,12 +869,14 @@ pub fn strip_function_definitions(source: &str) -> String {
         }
         let mut search_from = range.start.max(resume_at);
         while search_from < range.end {
-            let Some(offset) =
-                find_definition_token(source, search_from, range.end)
-            else {
+            let Some(offset) = find_definition_token(source, search_from, range.end) else {
                 break;
             };
-            let keyword = if source[offset..].starts_with("fun") { "fun" } else { "struct" };
+            let keyword = if source[offset..].starts_with("fun") {
+                "fun"
+            } else {
+                "struct"
+            };
             let mut cursor = &source[offset..];
             let consumed = match keyword {
                 "fun" => parse_function_def(&mut cursor).is_ok(),
@@ -913,8 +915,7 @@ fn find_keyword(source: &str, keyword: &str, from: usize, to: usize) -> Option<u
                 || bytes[position - 1] == b'_'
                 || bytes[position - 1] == b'-');
         let after = position + keyword.len();
-        let after_ok = after >= bytes.len()
-            || bytes[after].is_ascii_whitespace();
+        let after_ok = after >= bytes.len() || bytes[after].is_ascii_whitespace();
         if before_ok && after_ok {
             return Some(position);
         }

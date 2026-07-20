@@ -31,8 +31,7 @@ fn env(name: &str) -> String {
 fn decode_b64(text: &str) -> Vec<u8> {
     const TABLE: &[i8] = &{
         let mut table = [-1i8; 256];
-        let alphabet =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut index = 0;
         while index < alphabet.len() {
             table[alphabet[index] as usize] = index as i8;
@@ -62,8 +61,7 @@ fn decode_b64(text: &str) -> Vec<u8> {
 #[tokio::main]
 async fn main() {
     let declared_bytes = decode_b64(&env("SMOKE_DECLARED_B64"));
-    let declared =
-        decode_declared_schema(&declared_bytes).expect("declared schema decodes");
+    let declared = decode_declared_schema(&declared_bytes).expect("declared schema decodes");
     let profile = SemanticProfileId::new(env("SMOKE_PROFILE")).expect("profile");
     let resolved = resolve(&declared, &profile).expect("schema resolves");
     let managed = managed_schema_state(

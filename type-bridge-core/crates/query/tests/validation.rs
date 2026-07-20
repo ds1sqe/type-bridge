@@ -5,23 +5,18 @@ use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{
-    AssertionBinding, AssertionExpectation, AssertionPattern, AssertionRolePlayer,
-    BindingId, MigrationAssertionPlan, QueryVariable, ValueComparator, ValueOperand,
+    AssertionBinding, AssertionExpectation, AssertionPattern, AssertionRolePlayer, BindingId,
+    MigrationAssertionPlan, QueryVariable, ValueComparator, ValueOperand,
+};
+use type_bridge_contract::schema::{
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact,
+    RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
-use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
-    RelatesFact, RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
-    ValueFact, ValueFactId,
-};
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
-use type_bridge_query::{
-    MigrationAssertionValidationContext, validate_migration_assertion_plan,
-};
-use type_bridge_schema::{
-    ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve,
-};
+use type_bridge_query::{MigrationAssertionValidationContext, validate_migration_assertion_plan};
+use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
 
 fn type_id(kind: TypeKind, label: &str) -> TypeId {
     TypeId::new(kind, label).expect("fixture type")
@@ -48,9 +43,7 @@ fn schema_fixture_with_extra_type(extra_type: bool) -> SchemaFixture {
     let mut facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
         SchemaFact::Type(TypeFact::new(company).expect("type fact")),
-        SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact"),
-        ),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -72,8 +65,7 @@ fn schema_fixture_with_extra_type(extra_type: bool) -> SchemaFixture {
     ];
     if extra_type {
         facts.push(SchemaFact::Type(
-            TypeFact::new(type_id(TypeKind::Entity, "department"))
-                .expect("extra type fact"),
+            TypeFact::new(type_id(TypeKind::Entity, "department")).expect("extra type fact"),
         ));
     }
     let sourced = facts
@@ -97,9 +89,8 @@ fn schema_fixture_with_extra_type(extra_type: bool) -> SchemaFixture {
             )
         })
         .collect::<Vec<_>>();
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let resolved = resolve(&declared, &profile).expect("resolved schema");
     let managed = managed_schema_state(
@@ -118,9 +109,7 @@ fn schema_fixture() -> SchemaFixture {
     schema_fixture_with_extra_type(false)
 }
 
-fn valid_plan(
-    managed_semantics: &ManagedSemanticSchemaFingerprint,
-) -> MigrationAssertionPlan {
+fn valid_plan(managed_semantics: &ManagedSemanticSchemaFingerprint) -> MigrationAssertionPlan {
     let person = BindingId::new(0).expect("binding");
     let name = BindingId::new(1).expect("binding");
     let employment = BindingId::new(2).expect("binding");
@@ -168,10 +157,7 @@ fn valid_plan(
 #[test]
 fn resolved_ownership_roles_values_and_row_schema_validate() {
     let fixture = schema_fixture();
-    let context = MigrationAssertionValidationContext::new(
-        &fixture.resolved,
-        &fixture.managed,
-    );
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let validated = validate_migration_assertion_plan(
         &valid_plan(fixture.managed.managed_semantic_schema()),
         &context,
@@ -179,7 +165,10 @@ fn resolved_ownership_roles_values_and_row_schema_validate() {
     )
     .expect("validated assertion");
     assert_eq!(validated.row_schema().columns().len(), 1);
-    assert_eq!(validated.row_schema().columns()[0].variable().as_str(), "person");
+    assert_eq!(
+        validated.row_schema().columns()[0].variable().as_str(),
+        "person"
+    );
     assert_eq!(validated.witnesses().len(), 2);
     assert_eq!(
         validated
@@ -197,22 +186,16 @@ fn resolved_ownership_roles_values_and_row_schema_validate() {
         .expect("different managed fingerprint"),
     );
     assert_eq!(
-        validate_migration_assertion_plan(
-            &mismatched,
-            &context,
-            StructuralLimits::CANONICAL,
-        )
-        .expect_err("managed semantic mismatch")
-        .code()
-        .as_str(),
+        validate_migration_assertion_plan(&mismatched, &context, StructuralLimits::CANONICAL,)
+            .expect_err("managed semantic mismatch")
+            .code()
+            .as_str(),
         "migration_assertion_managed_semantic_mismatch"
     );
 
     let different = schema_fixture_with_extra_type(true);
-    let incoherent = MigrationAssertionValidationContext::new(
-        &different.resolved,
-        &fixture.managed,
-    );
+    let incoherent =
+        MigrationAssertionValidationContext::new(&different.resolved, &fixture.managed);
     assert_eq!(
         validate_migration_assertion_plan(
             &valid_plan(fixture.managed.managed_semantic_schema()),
@@ -229,10 +212,7 @@ fn resolved_ownership_roles_values_and_row_schema_validate() {
 #[test]
 fn negation_body_locals_support_completeness_and_do_not_escape() {
     let fixture = schema_fixture();
-    let context = MigrationAssertionValidationContext::new(
-        &fixture.resolved,
-        &fixture.managed,
-    );
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let person = BindingId::new(0).expect("binding");
     let name = BindingId::new(1).expect("binding");
     let has_name = AssertionPattern::Has {
@@ -269,12 +249,9 @@ fn negation_body_locals_support_completeness_and_do_not_escape() {
         AssertionExpectation::NoRows,
     )
     .expect("completeness assertion");
-    let validated = validate_migration_assertion_plan(
-        &completeness,
-        &context,
-        StructuralLimits::CANONICAL,
-    )
-    .expect("negation-local binding validates");
+    let validated =
+        validate_migration_assertion_plan(&completeness, &context, StructuralLimits::CANONICAL)
+            .expect("negation-local binding validates");
     assert!(validated.binding_domain(&name).is_none());
 
     let root_escape = MigrationAssertionPlan::new(
@@ -303,14 +280,10 @@ fn negation_body_locals_support_completeness_and_do_not_escape() {
     )
     .expect("contract-valid root escape");
     assert_eq!(
-        validate_migration_assertion_plan(
-            &root_escape,
-            &context,
-            StructuralLimits::CANONICAL,
-        )
-        .expect_err("local binding escaped to root")
-        .code()
-        .as_str(),
+        validate_migration_assertion_plan(&root_escape, &context, StructuralLimits::CANONICAL,)
+            .expect_err("local binding escaped to root")
+            .code()
+            .as_str(),
         "migration_assertion_binding_not_positive"
     );
 
@@ -344,14 +317,10 @@ fn negation_body_locals_support_completeness_and_do_not_escape() {
     )
     .expect("contract-valid nested escape");
     assert_eq!(
-        validate_migration_assertion_plan(
-            &nested_escape,
-            &context,
-            StructuralLimits::CANONICAL,
-        )
-        .expect_err("nested local binding escaped")
-        .code()
-        .as_str(),
+        validate_migration_assertion_plan(&nested_escape, &context, StructuralLimits::CANONICAL,)
+            .expect_err("nested local binding escaped")
+            .code()
+            .as_str(),
         "migration_assertion_negation_unbound_binding"
     );
 }
@@ -359,10 +328,7 @@ fn negation_body_locals_support_completeness_and_do_not_escape() {
 #[test]
 fn ownership_role_and_value_domain_mismatches_fail_closed() {
     let fixture = schema_fixture();
-    let context = MigrationAssertionValidationContext::new(
-        &fixture.resolved,
-        &fixture.managed,
-    );
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let owner = BindingId::new(0).expect("binding");
     let attribute = BindingId::new(1).expect("binding");
     let invalid_ownership = MigrationAssertionPlan::new(
@@ -385,12 +351,14 @@ fn ownership_role_and_value_domain_mismatches_fail_closed() {
         AssertionExpectation::NoRows,
     )
     .expect("contract-valid ownership");
-    assert!(validate_migration_assertion_plan(
-        &invalid_ownership,
-        &context,
-        StructuralLimits::CANONICAL
-    )
-    .is_err());
+    assert!(
+        validate_migration_assertion_plan(
+            &invalid_ownership,
+            &context,
+            StructuralLimits::CANONICAL
+        )
+        .is_err()
+    );
 
     let mut value_mismatch = valid_plan(fixture.managed.managed_semantic_schema());
     let bytes = value_mismatch.canonical_bytes().expect("bytes");
@@ -425,21 +393,16 @@ fn ownership_role_and_value_domain_mismatches_fail_closed() {
         AssertionExpectation::NoRows,
     )
     .expect("contract-valid mismatch");
-    assert!(validate_migration_assertion_plan(
-        &value_mismatch,
-        &context,
-        StructuralLimits::CANONICAL
-    )
-    .is_err());
+    assert!(
+        validate_migration_assertion_plan(&value_mismatch, &context, StructuralLimits::CANONICAL)
+            .is_err()
+    );
 }
 
 #[test]
 fn negation_witness_topology_and_caller_limits_fail_closed() {
     let fixture = schema_fixture();
-    let context = MigrationAssertionValidationContext::new(
-        &fixture.resolved,
-        &fixture.managed,
-    );
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let person = BindingId::new(0).expect("binding");
     let hidden = BindingId::new(1).expect("binding");
     let negation_only = MigrationAssertionPlan::new(
@@ -467,14 +430,10 @@ fn negation_witness_topology_and_caller_limits_fail_closed() {
     )
     .expect("contract-valid negation");
     assert_eq!(
-        validate_migration_assertion_plan(
-            &negation_only,
-            &context,
-            StructuralLimits::CANONICAL,
-        )
-        .expect_err("negation-only witness")
-        .code()
-        .as_str(),
+        validate_migration_assertion_plan(&negation_only, &context, StructuralLimits::CANONICAL,)
+            .expect_err("negation-only witness")
+            .code()
+            .as_str(),
         "migration_assertion_negation_unbound_binding"
     );
 
@@ -499,14 +458,10 @@ fn negation_witness_topology_and_caller_limits_fail_closed() {
     )
     .expect("contract-valid disconnected plan");
     assert_eq!(
-        validate_migration_assertion_plan(
-            &disconnected,
-            &context,
-            StructuralLimits::CANONICAL,
-        )
-        .expect_err("disconnected topology")
-        .code()
-        .as_str(),
+        validate_migration_assertion_plan(&disconnected, &context, StructuralLimits::CANONICAL,)
+            .expect_err("disconnected topology")
+            .code()
+            .as_str(),
         "migration_assertion_disconnected_topology"
     );
 
@@ -520,9 +475,9 @@ fn negation_witness_topology_and_caller_limits_fail_closed() {
             &context,
             limits,
         )
-            .expect_err("caller limit")
-            .code()
-            .as_str(),
+        .expect_err("caller limit")
+        .code()
+        .as_str(),
         "migration_assertion_validation_limit"
     );
 }

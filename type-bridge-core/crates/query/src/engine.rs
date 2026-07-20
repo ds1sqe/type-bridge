@@ -7,13 +7,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
-use type_bridge_contract::schema::{FunctionReturnMode, TypeReference};
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
+use type_bridge_contract::schema::{FunctionReturnMode, TypeReference};
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_schema::ResolvedSchema;
 
@@ -99,7 +97,9 @@ pub(crate) fn analyze_local_function(
     for (index, label) in function.parameters().iter().enumerate() {
         let allowed = schema_reference_domain(label.as_str(), schema, codes)?;
         intersect_mut(
-            domains.get_mut(&binding_ids[index]).expect("parameter binding"),
+            domains
+                .get_mut(&binding_ids[index])
+                .expect("parameter binding"),
             &allowed,
         );
     }
@@ -145,12 +145,10 @@ pub(crate) fn analyze_local_function(
     let returns = function.returns();
     let derived = match returns.reducer() {
         Reducer::Count => ValueTypeTag::Long,
-        Reducer::Sum => {
-            match uniform_value_type(&domains[&returns.input()], schema, codes)? {
-                Some(tag @ (ValueTypeTag::Long | ValueTypeTag::Double)) => tag,
-                _ => return Err(fail(codes.local_return_domain)),
-            }
-        }
+        Reducer::Sum => match uniform_value_type(&domains[&returns.input()], schema, codes)? {
+            Some(tag @ (ValueTypeTag::Long | ValueTypeTag::Double)) => tag,
+            _ => return Err(fail(codes.local_return_domain)),
+        },
         Reducer::Max | Reducer::Min | Reducer::Mean => {
             return Err(fail(codes.local_return_domain));
         }
@@ -290,10 +288,7 @@ fn analyze_function_calls(
                 if value_bindings.contains_key(binding) {
                     return Err(fail(codes.value_binding_misuse));
                 }
-                intersect_mut(
-                    domains.get_mut(binding).expect("declared binding"),
-                    allowed,
-                );
+                intersect_mut(domains.get_mut(binding).expect("declared binding"), allowed);
             }
             if value_bindings.insert(*assigned, local.returns).is_some() {
                 return Err(fail(codes.value_binding_misuse));
@@ -336,8 +331,7 @@ fn analyze_function_calls(
                     if value_bindings.contains_key(binding) {
                         return Err(fail(codes.value_binding_misuse));
                     }
-                    let allowed =
-                        schema_reference_domain(label.as_str(), schema, codes)?;
+                    let allowed = schema_reference_domain(label.as_str(), schema, codes)?;
                     intersect_mut(
                         domains.get_mut(binding).expect("declared binding"),
                         &allowed,
@@ -382,7 +376,10 @@ fn schema_reference_domain(
         let mut allowed = BTreeSet::from([candidate]);
         allowed.extend(resolved.subtypes().iter().cloned());
         allowed.retain(|id| {
-            schema.types().get(id).is_some_and(|ty| ty.is_constructible())
+            schema
+                .types()
+                .get(id)
+                .is_some_and(|ty| ty.is_constructible())
         });
         return Ok(allowed);
     }
@@ -397,11 +394,12 @@ fn ensure_value_bindings_stay_scalar(
     for pattern in patterns {
         let misuse = match pattern {
             QueryPattern::Isa { binding, .. } => value_bindings.contains_key(binding),
-            QueryPattern::Has { attribute, owner, .. } => {
-                value_bindings.contains_key(attribute)
-                    || value_bindings.contains_key(owner)
-            }
-            QueryPattern::Links { relation, players, .. } => {
+            QueryPattern::Has {
+                attribute, owner, ..
+            } => value_bindings.contains_key(attribute) || value_bindings.contains_key(owner),
+            QueryPattern::Links {
+                relation, players, ..
+            } => {
                 value_bindings.contains_key(relation)
                     || players
                         .iter()
@@ -409,8 +407,7 @@ fn ensure_value_bindings_stay_scalar(
             }
             QueryPattern::Value { .. } | QueryPattern::FunctionCall { .. } => false,
             QueryPattern::Reachable { source, target, .. } => {
-                value_bindings.contains_key(source)
-                    || value_bindings.contains_key(target)
+                value_bindings.contains_key(source) || value_bindings.contains_key(target)
             }
             QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
                 ensure_value_bindings_stay_scalar(patterns, value_bindings, codes)?;
@@ -432,7 +429,9 @@ pub(crate) fn uniform_value_type(
 ) -> Result<Option<ValueTypeTag>, Diagnostic> {
     let mut uniform: Option<Option<ValueTypeTag>> = None;
     for id in domain {
-        let value_type = schema.types()[id].value_type().map(|value| value.value_type());
+        let value_type = schema.types()[id]
+            .value_type()
+            .map(|value| value.value_type());
         match uniform {
             None => uniform = Some(value_type),
             Some(expected) if expected == value_type => {}
@@ -481,7 +480,10 @@ fn refine_pattern(
                 allowed.extend(resolved.subtypes().iter().cloned());
             }
             allowed.retain(|id| {
-                schema.types().get(id).is_some_and(|ty| ty.is_constructible())
+                schema
+                    .types()
+                    .get(id)
+                    .is_some_and(|ty| ty.is_constructible())
             });
             Ok(intersect_mut(
                 domains.get_mut(binding).expect("declared binding"),
@@ -523,8 +525,7 @@ fn refine_pattern(
             relation,
             relation_id,
         } => {
-            if relation_id.kind() != TypeKind::Relation
-                || !schema.types().contains_key(relation_id)
+            if relation_id.kind() != TypeKind::Relation || !schema.types().contains_key(relation_id)
             {
                 return Err(fail(codes.unknown_relation));
             }
@@ -547,7 +548,10 @@ fn refine_pattern(
                     .accepted_players()
                     .iter()
                     .filter(|id| {
-                        schema.types().get(*id).is_some_and(|ty| ty.is_constructible())
+                        schema
+                            .types()
+                            .get(*id)
+                            .is_some_and(|ty| ty.is_constructible())
                     })
                     .cloned()
                     .collect::<BTreeSet<_>>();
@@ -566,15 +570,15 @@ fn refine_pattern(
             target,
             ..
         } => {
-            if relation.kind() != TypeKind::Relation
-                || !schema.types().contains_key(relation)
-            {
+            if relation.kind() != TypeKind::Relation || !schema.types().contains_key(relation) {
                 return Err(fail(codes.unknown_relation));
             }
             let mut changed = false;
             for (role, binding) in [(role_from, source), (role_to, target)] {
-                let resolved =
-                    schema.roles().get(role).ok_or_else(|| fail(codes.unknown_role))?;
+                let resolved = schema
+                    .roles()
+                    .get(role)
+                    .ok_or_else(|| fail(codes.unknown_role))?;
                 if !schema.types()[relation].relates().contains_key(role) {
                     return Err(fail(codes.role_relation_mismatch));
                 }
@@ -582,7 +586,10 @@ fn refine_pattern(
                     .accepted_players()
                     .iter()
                     .filter(|id| {
-                        schema.types().get(*id).is_some_and(|ty| ty.is_constructible())
+                        schema
+                            .types()
+                            .get(*id)
+                            .is_some_and(|ty| ty.is_constructible())
                     })
                     .cloned()
                     .collect::<BTreeSet<_>>();
@@ -618,12 +625,16 @@ fn collect_scope_topology(
                 referenced.insert(*binding);
                 positive.insert(*binding);
             }
-            QueryPattern::Has { attribute, owner, .. } => {
+            QueryPattern::Has {
+                attribute, owner, ..
+            } => {
                 referenced.extend([*owner, *attribute]);
                 positive.extend([*owner, *attribute]);
                 connect(topology, *owner, *attribute);
             }
-            QueryPattern::Links { relation, players, .. } => {
+            QueryPattern::Links {
+                relation, players, ..
+            } => {
                 referenced.insert(*relation);
                 for player in players {
                     referenced.insert(player.player());
@@ -709,14 +720,7 @@ fn validate_negations(
             if body_positive.iter().any(|id| nested[id].is_empty()) {
                 return Err(fail(codes.empty_negated_domain));
             }
-            validate_values_shallow(
-                patterns,
-                &nested,
-                schema,
-                inputs,
-                value_bindings,
-                codes,
-            )?;
+            validate_values_shallow(patterns, &nested, schema, inputs, value_bindings, codes)?;
             topology.retain(|id, _| body_references.contains(id));
             ensure_connected(&topology, codes)?;
             scoped_positive.extend(body_positive.iter().copied());
@@ -815,16 +819,8 @@ fn validate_values_shallow(
 ) -> Result<(), Diagnostic> {
     for pattern in patterns {
         if let QueryPattern::Value { left, right, .. } = pattern {
-            let left =
-                operand_value_type(left, domains, schema, inputs, value_bindings, codes)?;
-            let right = operand_value_type(
-                right,
-                domains,
-                schema,
-                inputs,
-                value_bindings,
-                codes,
-            )?;
+            let left = operand_value_type(left, domains, schema, inputs, value_bindings, codes)?;
+            let right = operand_value_type(right, domains, schema, inputs, value_bindings, codes)?;
             if left != right {
                 return Err(fail(codes.value_domain_mismatch));
             }
@@ -863,10 +859,14 @@ fn collect_references(patterns: &[QueryPattern], output: &mut BTreeSet<BindingId
             QueryPattern::Isa { binding, .. } => {
                 output.insert(*binding);
             }
-            QueryPattern::Has { attribute, owner, .. } => {
+            QueryPattern::Has {
+                attribute, owner, ..
+            } => {
                 output.extend([*owner, *attribute]);
             }
-            QueryPattern::Links { relation, players, .. } => {
+            QueryPattern::Links {
+                relation, players, ..
+            } => {
                 output.insert(*relation);
                 output.extend(players.iter().map(|player| player.player()));
             }
@@ -906,8 +906,14 @@ fn connect(
     left: BindingId,
     right: BindingId,
 ) {
-    topology.get_mut(&left).expect("declared binding").insert(right);
-    topology.get_mut(&right).expect("declared binding").insert(left);
+    topology
+        .get_mut(&left)
+        .expect("declared binding")
+        .insert(right);
+    topology
+        .get_mut(&right)
+        .expect("declared binding")
+        .insert(left);
 }
 
 fn ensure_connected(

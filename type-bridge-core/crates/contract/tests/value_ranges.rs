@@ -28,19 +28,29 @@ fn ranges_use_domain_semantics_not_representation_order() {
     let positive_zero = CanonicalValue::Double(CanonicalDouble::new(0.0).unwrap());
     assert_eq!(
         CanonicalValueRange::new_detailed(Some(negative_zero), Some(positive_zero)),
-        Err(CanonicalValueRangeViolation::InvalidBounds { ordering: Ordering::Equal }),
+        Err(CanonicalValueRangeViolation::InvalidBounds {
+            ordering: Ordering::Equal
+        }),
     );
 
-    assert!(CanonicalValueRange::new(
-        Some(CanonicalValue::Boolean(false)),
-        Some(CanonicalValue::Boolean(true)),
-    )
-    .is_ok());
-    assert!(CanonicalValueRange::new(
-        Some(CanonicalValue::String(CanonicalString::new("alpha").unwrap())),
-        Some(CanonicalValue::String(CanonicalString::new("beta").unwrap())),
-    )
-    .is_ok());
+    assert!(
+        CanonicalValueRange::new(
+            Some(CanonicalValue::Boolean(false)),
+            Some(CanonicalValue::Boolean(true)),
+        )
+        .is_ok()
+    );
+    assert!(
+        CanonicalValueRange::new(
+            Some(CanonicalValue::String(
+                CanonicalString::new("alpha").unwrap()
+            )),
+            Some(CanonicalValue::String(
+                CanonicalString::new("beta").unwrap()
+            )),
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -61,14 +71,18 @@ fn temporal_ranges_are_chronological_and_timezone_independent() {
     );
     assert_eq!(
         CanonicalValueRange::new_detailed(Some(utc), Some(same_instant)),
-        Err(CanonicalValueRangeViolation::InvalidBounds { ordering: Ordering::Equal }),
+        Err(CanonicalValueRangeViolation::InvalidBounds {
+            ordering: Ordering::Equal
+        }),
     );
 
-    assert!(CanonicalValueRange::new(
-        Some(CanonicalValue::Date("-0001-12-31".parse().unwrap())),
-        Some(CanonicalValue::Date("0000-01-01".parse().unwrap())),
-    )
-    .is_ok());
+    assert!(
+        CanonicalValueRange::new(
+            Some(CanonicalValue::Date("-0001-12-31".parse().unwrap())),
+            Some(CanonicalValue::Date("0000-01-01".parse().unwrap())),
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -84,10 +98,13 @@ fn range_violations_preserve_compatibility_codes() {
         }),
     );
     assert_eq!(
-        CanonicalValueRange::new(Some(CanonicalValue::Long(1)), Some(CanonicalValue::Double(CanonicalDouble::new(2.0).unwrap())))
-            .unwrap_err()
-            .code()
-            .as_str(),
+        CanonicalValueRange::new(
+            Some(CanonicalValue::Long(1)),
+            Some(CanonicalValue::Double(CanonicalDouble::new(2.0).unwrap()))
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
         "mixed_range_annotation_domain",
     );
 
@@ -101,7 +118,10 @@ fn range_violations_preserve_compatibility_codes() {
 fn value_set_reports_raw_member_positions_and_limit() {
     assert_eq!(
         CanonicalValueSet::new_detailed([CanonicalValue::Long(7), CanonicalValue::Long(7)]),
-        Err(CanonicalValueSetViolation::Duplicate { first_index: 0, duplicate_index: 1 }),
+        Err(CanonicalValueSetViolation::Duplicate {
+            first_index: 0,
+            duplicate_index: 1
+        }),
     );
     assert_eq!(
         CanonicalValueSet::new_detailed([CanonicalValue::Long(7), CanonicalValue::Boolean(true)]),
@@ -114,5 +134,8 @@ fn value_set_reports_raw_member_positions_and_limit() {
 
     let error = CanonicalValueSet::new((0_i64..=65_536).map(CanonicalValue::Long)).unwrap_err();
     assert_eq!(error.category(), DiagnosticCategory::ResourceLimit);
-    assert_eq!(error.code().as_str(), "values_annotation_member_limit_exceeded");
+    assert_eq!(
+        error.code().as_str(),
+        "values_annotation_member_limit_exceeded"
+    );
 }

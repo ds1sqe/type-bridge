@@ -11,20 +11,16 @@ use type_bridge_contract::fingerprint::{
 };
 use type_bridge_contract::managed_scope::{ManagedScopeBinding, ManagedScopeId};
 use type_bridge_contract::migration::MigrationAppLabel;
-use type_bridge_contract::projection::{
-    BindingTarget, ProjectionConfig, ProjectionHandler,
-};
+use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
 use type_bridge_schema::SystemSchemaSourceService;
 use type_bridge_workspace::{
     BundleProjectionContext, BundleVerificationContext, ExtensionRegistryService,
-    ExtensionRequirement, MAX_SCHEMA_BUNDLE_BYTES, MigrationV2Directory,
-    OutputDirectory, SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION,
-    SCHEMA_BUNDLE_FINGERPRINT_DOMAIN, SchemaBundleErrorCode, SchemaSetPath,
-    SecretReference, SecretReferenceService, TYPEBRIDGE_SCHEMA_BUNDLE_V1,
-    TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeRuntime, TypeBridgeWorkspace,
-    TypeBridgeWorkspaceServices, WorkspaceRoot, WorkspaceServiceError,
-    build_verified_schema_bundle, decode_verified_schema_bundle,
-    encode_verified_schema_bundle,
+    ExtensionRequirement, MAX_SCHEMA_BUNDLE_BYTES, MigrationV2Directory, OutputDirectory,
+    SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION, SCHEMA_BUNDLE_FINGERPRINT_DOMAIN,
+    SchemaBundleErrorCode, SchemaSetPath, SecretReference, SecretReferenceService,
+    TYPEBRIDGE_SCHEMA_BUNDLE_V1, TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeRuntime,
+    TypeBridgeWorkspace, TypeBridgeWorkspaceServices, WorkspaceRoot, WorkspaceServiceError,
+    build_verified_schema_bundle, decode_verified_schema_bundle, encode_verified_schema_bundle,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -129,12 +125,7 @@ fn workspace(directory: &TempDirectory) -> TypeBridgeWorkspace {
         .unwrap();
     TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(
-            &source,
-            &secrets,
-            &extensions,
-            &available,
-        ),
+        &TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available),
     )
     .unwrap()
 }
@@ -142,8 +133,7 @@ fn workspace(directory: &TempDirectory) -> TypeBridgeWorkspace {
 fn context() -> BundleVerificationContext {
     BundleVerificationContext::new(
         SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-        ManagedScopeBinding::exclusive(ManagedScopeId::new("example-schema").unwrap())
-            .unwrap(),
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("example-schema").unwrap()).unwrap(),
         capabilities(),
         [extension()],
         [
@@ -189,8 +179,7 @@ fn rehash_declared(declared: &mut Value) {
 fn rehash_bundle(bundle: &mut Value) {
     let fingerprint = Fingerprint::compute(
         FingerprintDomain::new(SCHEMA_BUNDLE_FINGERPRINT_DOMAIN).unwrap(),
-        CanonicalizationVersion::new(SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION)
-            .unwrap(),
+        CanonicalizationVersion::new(SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION).unwrap(),
         None,
         &to_canonical_json(&bundle["content"]).unwrap(),
     );
@@ -226,7 +215,10 @@ fn build_twice_decode_roundtrip_and_source_free_runtime_are_exact() {
         workspace.resolved_schema().semantic_fingerprint(),
     );
     assert_eq!(runtime.managed_state(), workspace.managed_state());
-    assert_eq!(runtime.required_extensions(), &BTreeSet::from([extension()]));
+    assert_eq!(
+        runtime.required_extensions(),
+        &BTreeSet::from([extension()])
+    );
     for target in [
         BindingTarget::Python,
         BindingTarget::TypeScript,
@@ -241,10 +233,8 @@ fn build_twice_decode_roundtrip_and_source_free_runtime_are_exact() {
     assert!(!text.contains("source-only"));
     assert!(!text.contains("resolved_cache"));
     let first_fact = runtime.declared_schema().facts().next().unwrap();
-    let source = serde_json::to_value(
-        runtime.declared_schema().source(&first_fact.id()).unwrap(),
-    )
-    .unwrap();
+    let source =
+        serde_json::to_value(runtime.declared_schema().source(&first_fact.id()).unwrap()).unwrap();
     assert_eq!(
         source["document"],
         "__typebridge_compiled__/declared-schema-v1"
@@ -262,22 +252,15 @@ fn correct_outer_hash_does_not_trust_invalid_rehashed_declared_facts() {
     let facts = declared["facts"].as_array_mut().unwrap();
     let person = facts
         .iter()
-        .position(|fact| {
-            fact["kind"] == "type"
-                && fact["value"]["id"]["label"] == "person"
-        })
+        .position(|fact| fact["kind"] == "type" && fact["value"]["id"]["label"] == "person")
         .unwrap();
     facts.remove(person);
     rehash_declared(declared);
-    value["content"]["expected_declared_identity"] =
-        declared["declared_identity"].clone();
+    value["content"]["expected_declared_identity"] = declared["declared_identity"].clone();
     rehash_bundle(&mut value);
 
-    let error = decode_verified_schema_bundle(
-        &to_canonical_json(&value).unwrap(),
-        &context,
-    )
-    .unwrap_err();
+    let error =
+        decode_verified_schema_bundle(&to_canonical_json(&value).unwrap(), &context).unwrap_err();
     assert_eq!(error.code(), SchemaBundleErrorCode::Contract);
     assert!(error.contract().is_some());
 }
@@ -287,13 +270,11 @@ fn versions_profile_capabilities_extensions_and_unknown_cache_fail_closed() {
     let directory = TempDirectory::new();
     let workspace = workspace(&directory);
     let context = context();
-    let bytes = encode_verified_schema_bundle(
-        &build_verified_schema_bundle(&workspace, &context).unwrap(),
-    );
+    let bytes =
+        encode_verified_schema_bundle(&build_verified_schema_bundle(&workspace, &context).unwrap());
 
     let mut version = bundle_value(&bytes);
-    version["content"]["bundle_version"] =
-        Value::String("typebridge.schema-bundle/v2".to_owned());
+    version["content"]["bundle_version"] = Value::String("typebridge.schema-bundle/v2".to_owned());
     rehash_bundle(&mut version);
     assert_eq!(
         decode_verified_schema_bundle(&to_canonical_json(&version).unwrap(), &context)
@@ -303,8 +284,7 @@ fn versions_profile_capabilities_extensions_and_unknown_cache_fail_closed() {
     );
 
     let mut profile = bundle_value(&bytes);
-    profile["content"]["semantic_profile"]["id"] =
-        Value::String("typedb-9.9.9/v1".to_owned());
+    profile["content"]["semantic_profile"]["id"] = Value::String("typedb-9.9.9/v1".to_owned());
     rehash_bundle(&mut profile);
     assert_eq!(
         decode_verified_schema_bundle(&to_canonical_json(&profile).unwrap(), &context)
@@ -320,12 +300,9 @@ fn versions_profile_capabilities_extensions_and_unknown_cache_fail_closed() {
         .push(Value::String("schema.unknown".to_owned()));
     rehash_bundle(&mut capability);
     assert_eq!(
-        decode_verified_schema_bundle(
-            &to_canonical_json(&capability).unwrap(),
-            &context,
-        )
-        .unwrap_err()
-        .code(),
+        decode_verified_schema_bundle(&to_canonical_json(&capability).unwrap(), &context,)
+            .unwrap_err()
+            .code(),
         SchemaBundleErrorCode::Contract,
     );
 
@@ -358,9 +335,8 @@ fn stale_digest_fingerprints_projection_and_handler_evidence_are_rejected() {
     let directory = TempDirectory::new();
     let workspace = workspace(&directory);
     let context = context();
-    let bytes = encode_verified_schema_bundle(
-        &build_verified_schema_bundle(&workspace, &context).unwrap(),
-    );
+    let bytes =
+        encode_verified_schema_bundle(&build_verified_schema_bundle(&workspace, &context).unwrap());
 
     let mut digest = bundle_value(&bytes);
     digest["bundle_fingerprint"]["digest"] = Value::String("0".repeat(64));
@@ -372,36 +348,28 @@ fn stale_digest_fingerprints_projection_and_handler_evidence_are_rejected() {
     );
 
     let mut fingerprint = bundle_value(&bytes);
-    fingerprint["content"]["expected_semantic_schema"]["digest"] =
-        Value::String("0".repeat(64));
+    fingerprint["content"]["expected_semantic_schema"]["digest"] = Value::String("0".repeat(64));
     rehash_bundle(&mut fingerprint);
     assert_eq!(
-        decode_verified_schema_bundle(
-            &to_canonical_json(&fingerprint).unwrap(),
-            &context,
-        )
-        .unwrap_err()
-        .code(),
+        decode_verified_schema_bundle(&to_canonical_json(&fingerprint).unwrap(), &context,)
+            .unwrap_err()
+            .code(),
         SchemaBundleErrorCode::IntegrityMismatch,
     );
 
     let mut projection = bundle_value(&bytes);
-    python_projection(&mut projection)["canonical_projection"]
-        ["projection_fingerprint"]["digest"] = Value::String("0".repeat(64));
+    python_projection(&mut projection)["canonical_projection"]["projection_fingerprint"]["digest"] =
+        Value::String("0".repeat(64));
     rehash_bundle(&mut projection);
     assert_eq!(
-        decode_verified_schema_bundle(
-            &to_canonical_json(&projection).unwrap(),
-            &context,
-        )
-        .unwrap_err()
-        .code(),
+        decode_verified_schema_bundle(&to_canonical_json(&projection).unwrap(), &context,)
+            .unwrap_err()
+            .code(),
         SchemaBundleErrorCode::ProjectionMismatch,
     );
 
     let mut evidence = bundle_value(&bytes);
-    python_projection(&mut evidence)["handler_evidence"][0]["version"] =
-        Value::from(2);
+    python_projection(&mut evidence)["handler_evidence"][0]["version"] = Value::from(2);
     rehash_bundle(&mut evidence);
     assert_eq!(
         decode_verified_schema_bundle(&to_canonical_json(&evidence).unwrap(), &context)
@@ -417,12 +385,9 @@ fn stale_digest_fingerprints_projection_and_handler_evidence_are_rejected() {
         .pop();
     rehash_bundle(&mut missing_target);
     assert_eq!(
-        decode_verified_schema_bundle(
-            &to_canonical_json(&missing_target).unwrap(),
-            &context,
-        )
-        .unwrap_err()
-        .code(),
+        decode_verified_schema_bundle(&to_canonical_json(&missing_target).unwrap(), &context,)
+            .unwrap_err()
+            .code(),
         SchemaBundleErrorCode::ProjectionTargetMismatch,
     );
 
@@ -430,11 +395,9 @@ fn stale_digest_fingerprints_projection_and_handler_evidence_are_rejected() {
     malformed_extension["content"]["required_extensions"][0]["handler_id"] =
         Value::String(String::new());
     rehash_bundle(&mut malformed_extension);
-    let error = decode_verified_schema_bundle(
-        &to_canonical_json(&malformed_extension).unwrap(),
-        &context,
-    )
-    .unwrap_err();
+    let error =
+        decode_verified_schema_bundle(&to_canonical_json(&malformed_extension).unwrap(), &context)
+            .unwrap_err();
     assert_eq!(error.code(), SchemaBundleErrorCode::Contract);
     assert!(error.config().is_some());
 }

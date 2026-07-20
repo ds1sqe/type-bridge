@@ -140,10 +140,7 @@ fn server_default_is_filtered_before_adoption_without_changing_state() {
     ];
     let default = SchemaFact::Annotation(
         AnnotationFact::new(
-            AnnotationFactId::new(
-                AnnotationSubjectId::Owns(owns),
-                AnnotationKindId::Card,
-            ),
+            AnnotationFactId::new(AnnotationSubjectId::Owns(owns), AnnotationKindId::Card),
             SchemaAnnotationValue::Cardinality(
                 Cardinality::new(0, Some(1)).expect("profile default"),
             ),
@@ -209,8 +206,16 @@ fn exclusive_scope_is_complete_and_bound_to_requested_identity() {
         baseline.declared_schema().facts().len()
     );
     assert_eq!(
-        baseline.bound_scope().selection().iter().collect::<Vec<_>>(),
-        baseline.managed_state().selection().iter().collect::<Vec<_>>()
+        baseline
+            .bound_scope()
+            .selection()
+            .iter()
+            .collect::<Vec<_>>(),
+        baseline
+            .managed_state()
+            .selection()
+            .iter()
+            .collect::<Vec<_>>()
     );
 }
 

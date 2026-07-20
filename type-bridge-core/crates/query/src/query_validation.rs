@@ -7,12 +7,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::BindingId;
-use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::query_plan::{
     DocumentSource, QueryOutput, QueryPlan, ReadStage, Reducer,
 };
@@ -223,8 +221,7 @@ pub fn validate_query_plan(
                 "a plan-local function cannot shadow a schema function",
             ));
         }
-        let signature =
-            engine::analyze_local_function(function, schema, &QUERY_ENGINE_CODES)?;
+        let signature = engine::analyze_local_function(function, schema, &QUERY_ENGINE_CODES)?;
         locals.insert(function.name().clone(), signature);
     }
 
@@ -279,10 +276,7 @@ pub fn validate_query_plan(
                 "every declared binding must be referenced by a pattern",
             ));
         }
-        if projected.contains(&id)
-            && !positive.contains(&id)
-            && !optional_positive.contains(&id)
-        {
+        if projected.contains(&id) && !positive.contains(&id) && !optional_positive.contains(&id) {
             return Err(plan_failure(
                 DiagnosticCategory::InvalidContract,
                 "query_plan_binding_not_positive",
@@ -318,9 +312,7 @@ pub fn validate_query_plan(
         .map(|(id, type_ids)| {
             let value_type = match value_bindings.get(&id) {
                 Some(tag) => Some(*tag),
-                None => {
-                    engine::uniform_value_type(&type_ids, schema, &QUERY_ENGINE_CODES)?
-                }
+                None => engine::uniform_value_type(&type_ids, schema, &QUERY_ENGINE_CODES)?,
             };
             Ok((id, BindingDomain::new(type_ids, value_type)))
         })
@@ -330,9 +322,7 @@ pub fn validate_query_plan(
         match stage {
             ReadStage::Select { bindings } => {
                 for binding in bindings {
-                    if !positive.contains(binding)
-                        && !optional_positive.contains(binding)
-                    {
+                    if !positive.contains(binding) && !optional_positive.contains(binding) {
                         return Err(plan_failure(
                             DiagnosticCategory::InvalidContract,
                             "query_plan_binding_not_positive",
@@ -352,7 +342,10 @@ pub fn validate_query_plan(
                     }
                 }
             }
-            ReadStage::Reduce { assignments, groups } => {
+            ReadStage::Reduce {
+                assignments,
+                groups,
+            } => {
                 for group in groups {
                     if !positive.contains(group) {
                         return Err(plan_failure(
@@ -383,24 +376,18 @@ pub fn validate_query_plan(
                     };
                     let result_type = match assignment.reducer() {
                         Reducer::Count => ValueTypeTag::Long,
-                        Reducer::Sum | Reducer::Max | Reducer::Min => {
-                            match input_scalar {
-                                Some(
-                                    tag @ (ValueTypeTag::Long | ValueTypeTag::Double),
-                                ) => tag,
-                                _ => {
-                                    return Err(plan_failure(
-                                        DiagnosticCategory::InvalidContract,
-                                        "query_plan_reduce_input_domain",
-                                        "this reducer requires a uniform numeric scalar input",
-                                    ));
-                                }
+                        Reducer::Sum | Reducer::Max | Reducer::Min => match input_scalar {
+                            Some(tag @ (ValueTypeTag::Long | ValueTypeTag::Double)) => tag,
+                            _ => {
+                                return Err(plan_failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_reduce_input_domain",
+                                    "this reducer requires a uniform numeric scalar input",
+                                ));
                             }
-                        }
+                        },
                         Reducer::Mean => match input_scalar {
-                            Some(ValueTypeTag::Long | ValueTypeTag::Double) => {
-                                ValueTypeTag::Double
-                            }
+                            Some(ValueTypeTag::Long | ValueTypeTag::Double) => ValueTypeTag::Double,
                             _ => {
                                 return Err(plan_failure(
                                     DiagnosticCategory::InvalidContract,
@@ -461,9 +448,7 @@ pub fn validate_query_plan(
                 .map(|field| {
                     let shape = match field.source() {
                         DocumentSource::Binding { binding } => {
-                            let Some(value_type) =
-                                binding_domains[binding].value_type()
-                            else {
+                            let Some(value_type) = binding_domains[binding].value_type() else {
                                 return Err(plan_failure(
                                     DiagnosticCategory::InvalidContract,
                                     "query_plan_document_field_not_scalar",
@@ -492,14 +477,12 @@ pub fn validate_query_plan(
                                     "attribute list references no resolved scalar attribute",
                                 ));
                             };
-                            let reachable = binding_domains[owner]
-                                .type_ids()
-                                .iter()
-                                .any(|id| {
-                                    schema.types().get(id).is_some_and(|resolved| {
-                                        resolved.owns().contains_key(attribute)
-                                    })
-                                });
+                            let reachable = binding_domains[owner].type_ids().iter().any(|id| {
+                                schema
+                                    .types()
+                                    .get(id)
+                                    .is_some_and(|resolved| resolved.owns().contains_key(attribute))
+                            });
                             if !reachable {
                                 return Err(plan_failure(
                                     DiagnosticCategory::InvalidContract,

@@ -1,16 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKind};
+use type_bridge_contract::id::{
+    AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKind,
+};
 use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, CompleteReadProjection, CreateFieldProjection,
-    CreateProjection, CreateRoleProjection, DeclarationProjection, DeclaredRoleProjection, EmissionPlan,
-    FieldTokenProjection,
-    FunctionParameterProjection, FunctionProjection, FunctionReturnElementProjection,
-    FunctionReturnProjection, ModelProjection, PlayingProjection, ProjectedModelForm,
-    ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig,
-    QueryTokenProjection, ReadFieldProjection, ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection,
-    RuntimeProjection, StructFieldProjection, StructProjection, TargetIdentifier,
+    CreateProjection, CreateRoleProjection, DeclarationProjection, DeclaredRoleProjection,
+    EmissionPlan, FieldTokenProjection, FunctionParameterProjection, FunctionProjection,
+    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection, PlayingProjection,
+    ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
+    ProjectionConfig, QueryTokenProjection, ReadFieldProjection, ReadRoleProjection,
+    ReferenceReadProjection, RoleTokenProjection, RuntimeProjection, StructFieldProjection,
+    StructProjection, TargetIdentifier,
 };
 use type_bridge_contract::schema::{AnnotationFactId, OwnsFactId, PlaysFactId};
 use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
@@ -21,8 +23,8 @@ fn multiplicity(min: u64, max: Option<u64>) -> ProjectedMultiplicity {
     ProjectedMultiplicity::from_cardinality(Cardinality::new(min, max).unwrap())
 }
 
-fn annotations(
-) -> BTreeMap<AnnotationFactId, type_bridge_contract::projection::ProjectedAnnotation> {
+fn annotations() -> BTreeMap<AnnotationFactId, type_bridge_contract::projection::ProjectedAnnotation>
+{
     BTreeMap::new()
 }
 
@@ -38,11 +40,8 @@ fn compound_projection(resources: &[CodeResourceDigest]) -> RuntimeProjection {
     let plays_employee = PlaysFactId::new(person.clone(), employee.clone()).unwrap();
     let one = multiplicity(1, Some(1));
     let many = multiplicity(0, None);
-    let owns_identifier = OwnsFactId::new(
-        person.clone(),
-        AttributeId::new("identifier").unwrap(),
-    )
-    .unwrap();
+    let owns_identifier =
+        OwnsFactId::new(person.clone(), AttributeId::new("identifier").unwrap()).unwrap();
 
     let identifier_model = ModelProjection::new(
         identifier.clone(),
@@ -342,7 +341,12 @@ fn compound_projection(resources: &[CodeResourceDigest]) -> RuntimeProjection {
     let structs = BTreeMap::from([(stats_id.clone(), structure)]);
     let functions = BTreeMap::from([(function_id.clone(), function)]);
     let emission = EmissionPlan::new(
-        vec![identifier.clone(), person.clone(), membership.clone(), employment.clone()],
+        vec![
+            identifier.clone(),
+            person.clone(),
+            membership.clone(),
+            employment.clone(),
+        ],
         vec![
             BTreeSet::from([identifier]),
             BTreeSet::from([person]),
@@ -426,13 +430,11 @@ fn emits_exact_deterministic_eight_file_compound_package() {
     ));
     assert!(source.contains("_install_runtime_projection("));
     assert!(source.contains("_initialize_attribute(self, value,"));
-    assert!(stub.contains(
-        "employee: _RoleDescriptor[Employment, Person, PersonRef, Person]"
-    ));
+    assert!(stub.contains("employee: _RoleDescriptor[Employment, Person, PersonRef, Person]"));
     assert!(stub.contains("def __init__(self, *, employee: Person) -> None:"));
-    assert!(stub.contains(
-        "find_employment: Final[FunctionRef[[Person], Iterator[EmploymentRef]]]"
-    ));
+    assert!(
+        stub.contains("find_employment: Final[FunctionRef[[Person], Iterator[EmploymentRef]]]")
+    );
     assert!(schema.contains("SEMANTIC_SCHEMA_FINGERPRINT_JSON"));
     assert!(schema.contains("PROJECTION_FINGERPRINT_JSON"));
     assert!(schema.contains("PLAYING_FACTS = _MappingProxyType({"));
@@ -442,9 +444,8 @@ fn emits_exact_deterministic_eight_file_compound_package() {
 fn rejects_mutated_resource_evidence() {
     let emitter = PythonEmitter::new();
     let mut resources = emitter.code_resources().unwrap();
-    resources.retain(|resource| {
-        resource.id().as_str() != "typebridge.generator.python.runtime-source"
-    });
+    resources
+        .retain(|resource| resource.id().as_str() != "typebridge.generator.python.runtime-source");
     resources.push(
         CodeResourceDigest::from_bytes(
             "typebridge.generator.python.runtime-source",
@@ -525,9 +526,9 @@ fn rejects_public_name_collisions_and_missing_parents() {
             projection.playing_facts().clone(),
             projection.emission().clone(),
         )
-            .unwrap_err()
-            .code()
-            .as_str(),
+        .unwrap_err()
+        .code()
+        .as_str(),
         "invalid_projection_reference"
     );
 }

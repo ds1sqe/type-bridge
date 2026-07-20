@@ -1,7 +1,6 @@
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::schema::{
-    ManagedDeclaredIdentityFingerprint, ManagedSemanticSchemaFingerprint,
-    SemanticSchemaFingerprint,
+    ManagedDeclaredIdentityFingerprint, ManagedSemanticSchemaFingerprint, SemanticSchemaFingerprint,
 };
 
 fn profile() -> SemanticProfileId {
@@ -27,7 +26,10 @@ fn schema_fingerprint_domains_are_not_interchangeable() {
         "typebridge.schema.managed-declared-identity"
     );
     assert_eq!(
-        managed_declared.as_fingerprint().canonicalization().as_str(),
+        managed_declared
+            .as_fingerprint()
+            .canonicalization()
+            .as_str(),
         "typebridge.managed-declared/v1"
     );
     assert_eq!(
@@ -35,7 +37,10 @@ fn schema_fingerprint_domains_are_not_interchangeable() {
         "typebridge.schema.managed-semantic"
     );
     assert_eq!(
-        managed_semantic.as_fingerprint().canonicalization().as_str(),
+        managed_semantic
+            .as_fingerprint()
+            .canonicalization()
+            .as_str(),
         "typebridge.managed-semantic/v1"
     );
     assert_ne!(
@@ -47,8 +52,8 @@ fn schema_fingerprint_domains_are_not_interchangeable() {
 #[test]
 fn semantic_profile_participates_in_the_digest() {
     let bytes = br#"{"facts":[]}"#;
-    let first = SemanticSchemaFingerprint::compute(profile(), bytes)
-        .expect("first fingerprint computes");
+    let first =
+        SemanticSchemaFingerprint::compute(profile(), bytes).expect("first fingerprint computes");
     let second = SemanticSchemaFingerprint::compute(
         SemanticProfileId::new("typedb-3.13.0/v1").expect("fixture profile is valid"),
         bytes,

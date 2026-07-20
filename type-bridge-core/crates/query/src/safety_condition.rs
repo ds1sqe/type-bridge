@@ -1,17 +1,13 @@
 //! Lower verifier-derived safety conditions into validated assertion plans.
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::{
-    AssertionBinding, AssertionExpectation, AssertionPattern, BindingId,
-    MigrationAssertionPlan, QueryVariable, ValueComparator, ValueOperand,
+    AssertionBinding, AssertionExpectation, AssertionPattern, BindingId, MigrationAssertionPlan,
+    QueryVariable, ValueComparator, ValueOperand,
 };
-use type_bridge_schema::{
-    RequiredSafetyCondition, SafetyCondition, ScalarSafetySubject,
-};
+use type_bridge_schema::{RequiredSafetyCondition, SafetyCondition, ScalarSafetySubject};
 
 use crate::{
     MigrationAssertionValidationContext, ValidatedMigrationAssertionPlan,
@@ -56,13 +52,14 @@ pub fn lower_condition_to_plan(
         )?,
         SafetyCondition::ValuesNarrowed { subject, allowed } => {
             let value = scalar_value_binding(subject);
-            let comparisons = allowed.iter().cloned().map(|literal| {
-                AssertionPattern::Value {
+            let comparisons = allowed
+                .iter()
+                .cloned()
+                .map(|literal| AssertionPattern::Value {
                     comparator: ValueComparator::NotEqual,
                     left: ValueOperand::binding(value),
                     right: ValueOperand::literal(literal),
-                }
-            });
+                });
             scalar_conditions_plan(subject, comparisons, context)?
         }
         SafetyCondition::NoOrphanAttributes { attribute } => {
@@ -223,13 +220,7 @@ fn owns_maximum_plan(
             });
         }
     }
-    plan(
-        bindings,
-        patterns,
-        vec![owner],
-        attributes,
-        context,
-    )
+    plan(bindings, patterns, vec![owner], attributes, context)
 }
 
 fn scalar_value_binding(subject: &ScalarSafetySubject) -> BindingId {
@@ -262,10 +253,7 @@ fn scalar_conditions_plan(
             let mut patterns = vec![AssertionPattern::Isa {
                 binding: attribute,
                 include_subtypes: true,
-                type_id: TypeId::new(
-                    TypeKind::Attribute,
-                    value.attribute().label().as_str(),
-                )?,
+                type_id: TypeId::new(TypeKind::Attribute, value.attribute().label().as_str())?,
             }];
             patterns.extend(comparisons);
             plan(
@@ -343,10 +331,7 @@ fn plan(
         patterns,
         outputs,
         witnesses,
-        context
-            .managed_state()
-            .managed_semantic_schema()
-            .clone(),
+        context.managed_state().managed_semantic_schema().clone(),
         AssertionExpectation::NoRows,
     )
 }
@@ -369,11 +354,7 @@ fn binding_id(index: usize) -> Result<BindingId, Diagnostic> {
     BindingId::new(index)
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code)
@@ -394,13 +375,12 @@ mod tests {
         QueryVariable,
     };
     use type_bridge_contract::schema::{
-        AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
-        DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue,
-        SchemaFact, SchemaOperation, SourceSpan, SourcedSchemaFact, TypeFact,
-        ValueFact, ValueFactId,
+        AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+        DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SchemaOperation,
+        SourceSpan, SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
     };
-    use type_bridge_contract::value::{Cardinality, ValueTypeTag};
     use type_bridge_contract::schema_lowering::SchemaLoweringProfileBinding;
+    use type_bridge_contract::value::{Cardinality, ValueTypeTag};
     use type_bridge_schema::{
         ManagedDeltaContext, SafetyDerivationProfile, derive_safety_conditions,
         managed_schema_state, resolve,
@@ -451,8 +431,7 @@ mod tests {
         value: SchemaAnnotationValue,
     ) -> SchemaFact {
         SchemaFact::Annotation(
-            AnnotationFact::new(AnnotationFactId::new(subject, kind), value)
-                .expect("annotation"),
+            AnnotationFact::new(AnnotationFactId::new(subject, kind), value).expect("annotation"),
         )
     }
 
@@ -462,10 +441,8 @@ mod tests {
         type_bridge_schema::ResolvedSchema,
         type_bridge_contract::schema_delta::ManagedSchemaState,
     ) {
-        let profile = type_bridge_contract::fingerprint::SemanticProfileId::new(
-            "typedb-3.12.1/v1",
-        )
-        .expect("profile");
+        let profile = type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.12.1/v1")
+            .expect("profile");
         let resolved = resolve(source, &profile).expect("resolved source");
         let managed = managed_schema_state(
             source,
@@ -486,13 +463,8 @@ mod tests {
         (
             vec![
                 SchemaFact::Type(TypeFact::new(person).expect("type")),
-                SchemaFact::Type(
-                    TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type"),
-                ),
-                SchemaFact::Value(ValueFact::new(
-                    ValueFactId::new(age),
-                    ValueTypeTag::Long,
-                )),
+                SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type")),
+                SchemaFact::Value(ValueFact::new(ValueFactId::new(age), ValueTypeTag::Long)),
                 SchemaFact::Owns(OwnsFact::new(owns.clone())),
             ],
             owns,
@@ -571,16 +543,12 @@ mod tests {
         let old = annotation(
             subject.clone(),
             AnnotationKindId::Card,
-            SchemaAnnotationValue::Cardinality(
-                Cardinality::new(0, Some(2)).expect("old card"),
-            ),
+            SchemaAnnotationValue::Cardinality(Cardinality::new(0, Some(2)).expect("old card")),
         );
         let new = annotation(
             subject,
             AnnotationKindId::Card,
-            SchemaAnnotationValue::Cardinality(
-                Cardinality::new(1, Some(1)).expect("new card"),
-            ),
+            SchemaAnnotationValue::Cardinality(Cardinality::new(1, Some(1)).expect("new card")),
         );
         let source = declared(base.iter().cloned().chain([old.clone()]).collect());
         let target = declared(base.into_iter().chain([new.clone()]).collect());

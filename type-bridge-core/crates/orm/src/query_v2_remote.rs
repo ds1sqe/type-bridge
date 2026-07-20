@@ -16,21 +16,19 @@ use std::time::{Duration, Instant};
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::limits::StructuralLimits;
-use type_bridge_contract::query_plan::{
-    QueryInvocation, QueryOperation, QueryPlanFingerprint,
-};
+use type_bridge_contract::query_plan::{QueryInvocation, QueryOperation, QueryPlanFingerprint};
 use type_bridge_contract::query_remote::{
-    RemoteFieldValue, RemoteLimits, RemoteOutcome, RemoteQueryFailure,
-    RemoteQueryRequest, RemoteQueryResponse, RemoteValue,
+    RemoteFieldValue, RemoteLimits, RemoteOutcome, RemoteQueryFailure, RemoteQueryRequest,
+    RemoteQueryResponse, RemoteValue,
 };
 use type_bridge_query::{
-    DocumentColumnShape, MigrationAssertionValidationContext, OutputSchema,
-    ValidatedQuery, validate_query_plan,
+    DocumentColumnShape, MigrationAssertionValidationContext, OutputSchema, ValidatedQuery,
+    validate_query_plan,
 };
 
 use crate::query_v2::{
-    DocumentFieldValue, QueryResultDocument, QueryResultRow, QueryRowValue,
-    QueryV2Outcome, execute_with_provider, failure,
+    DocumentFieldValue, QueryResultDocument, QueryResultRow, QueryRowValue, QueryV2Outcome,
+    execute_with_provider, failure,
 };
 use crate::session::backend::BoundedAnswerLimits;
 
@@ -89,20 +87,18 @@ pub fn decode_remote_outcome(
                     .map(|(column, value)| {
                         let domain = column.domain();
                         match value {
-                            RemoteValue::Absent if column.optional() => {
-                                Ok(QueryRowValue::Absent)
-                            }
+                            RemoteValue::Absent if column.optional() => Ok(QueryRowValue::Absent),
                             RemoteValue::Value { value }
                                 if domain.type_ids().is_empty()
-                                    && domain.value_type()
-                                        == Some(value.value_type()) =>
+                                    && domain.value_type() == Some(value.value_type()) =>
                             {
-                                Ok(QueryRowValue::Value { value: value.clone() })
+                                Ok(QueryRowValue::Value {
+                                    value: value.clone(),
+                                })
                             }
                             RemoteValue::Attribute { type_id, value }
                                 if domain.type_ids().contains(type_id)
-                                    && domain.value_type()
-                                        == Some(value.value_type()) =>
+                                    && domain.value_type() == Some(value.value_type()) =>
                             {
                                 Ok(QueryRowValue::Attribute {
                                     type_id: type_id.clone(),
@@ -131,8 +127,7 @@ pub fn decode_remote_outcome(
             let OutputSchema::Documents(schema) = validated.output_schema() else {
                 return Err(outcome_mismatch());
             };
-            if u64::try_from(documents.len()).unwrap_or(u64::MAX) > limits.max_items
-            {
+            if u64::try_from(documents.len()).unwrap_or(u64::MAX) > limits.max_items {
                 return Err(failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_remote_response_oversized",
@@ -199,15 +194,7 @@ pub async fn execute_remote_envelope(
     transaction: &mut crate::session::transaction::Transaction,
     ceilings: BoundedAnswerLimits,
 ) -> Vec<u8> {
-    match serve_remote_request(
-        request_bytes,
-        context,
-        advertised,
-        transaction,
-        ceilings,
-    )
-    .await
-    {
+    match serve_remote_request(request_bytes, context, advertised, transaction, ceilings).await {
         Ok(response) => response,
         Err((nonce, diagnostic)) => RemoteQueryFailure::new(nonce, &diagnostic)
             .encode()
@@ -222,8 +209,8 @@ async fn serve_remote_request(
     transaction: &mut crate::session::transaction::Transaction,
     ceilings: BoundedAnswerLimits,
 ) -> Result<Vec<u8>, (Option<String>, Diagnostic)> {
-    let request = RemoteQueryRequest::decode(request_bytes)
-        .map_err(|diagnostic| (None, diagnostic))?;
+    let request =
+        RemoteQueryRequest::decode(request_bytes).map_err(|diagnostic| (None, diagnostic))?;
     let nonce = request.nonce().to_owned();
     let fail = |diagnostic: Diagnostic| (Some(nonce.clone()), diagnostic);
 
@@ -237,8 +224,8 @@ async fn serve_remote_request(
             )));
         }
     }
-    let validated = validate_query_plan(&plan, context, StructuralLimits::CANONICAL)
-        .map_err(&fail)?;
+    let validated =
+        validate_query_plan(&plan, context, StructuralLimits::CANONICAL).map_err(&fail)?;
     let invocation = request.invocation(&plan).map_err(&fail)?;
     let limits = tighten_limits(request.limits(), ceilings);
     let byte_budget = limits.max_bytes;
@@ -253,29 +240,22 @@ async fn serve_remote_request(
     let mut provider = crate::migration_assertion::TransactionAssertionProvider {
         transaction: provider_transaction,
     };
-    let outcome =
-        execute_with_provider(&mut provider, &validated, &invocation, limits)
-            .await
-            .map_err(|error| {
-                fail(match error {
-                    crate::query_v2::QueryV2ExecutionError::Validation(diagnostic) => {
-                        diagnostic
-                    }
-                    crate::query_v2::QueryV2ExecutionError::Provider(_) => failure(
-                        DiagnosticCategory::Integrity,
-                        "query_remote_provider_failed",
-                        "the executor provider call failed",
-                    ),
-                })
-            })?;
+    let outcome = execute_with_provider(&mut provider, &validated, &invocation, limits)
+        .await
+        .map_err(|error| {
+            fail(match error {
+                crate::query_v2::QueryV2ExecutionError::Validation(diagnostic) => diagnostic,
+                crate::query_v2::QueryV2ExecutionError::Provider(_) => failure(
+                    DiagnosticCategory::Integrity,
+                    "query_remote_provider_failed",
+                    "the executor provider call failed",
+                ),
+            })
+        })?;
 
     let fingerprint = QueryPlanFingerprint::compute(&plan).map_err(&fail)?;
-    let response = RemoteQueryResponse::new(
-        nonce.clone(),
-        &fingerprint,
-        remote_outcome(&outcome),
-    )
-    .map_err(&fail)?;
+    let response = RemoteQueryResponse::new(nonce.clone(), &fingerprint, remote_outcome(&outcome))
+        .map_err(&fail)?;
     let bytes = response.encode().map_err(&fail)?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > byte_budget {
         return Err(fail(failure(
@@ -288,10 +268,7 @@ async fn serve_remote_request(
 }
 
 /// Tighten caller budgets under executor ceilings; never raise them.
-fn tighten_limits(
-    caller: RemoteLimits,
-    ceilings: BoundedAnswerLimits,
-) -> BoundedAnswerLimits {
+fn tighten_limits(caller: RemoteLimits, ceilings: BoundedAnswerLimits) -> BoundedAnswerLimits {
     let deadline = caller
         .deadline_ms
         .map(|ms| Instant::now() + Duration::from_millis(ms));
@@ -317,9 +294,7 @@ pub(crate) fn remote_outcome(outcome: &QueryV2Outcome) -> RemoteOutcome {
         QueryV2Outcome::Documents(documents) => RemoteOutcome::Documents {
             documents: documents
                 .iter()
-                .map(|document| {
-                    document.values().iter().map(remote_field_value).collect()
-                })
+                .map(|document| document.values().iter().map(remote_field_value).collect())
                 .collect(),
         },
         QueryV2Outcome::Count(value) => RemoteOutcome::Count { value: *value },
@@ -337,20 +312,22 @@ fn remote_value(value: &QueryRowValue) -> RemoteValue {
             type_id: type_id.clone(),
             value: value.clone(),
         },
-        QueryRowValue::Value { value } => RemoteValue::Value { value: value.clone() },
+        QueryRowValue::Value { value } => RemoteValue::Value {
+            value: value.clone(),
+        },
         QueryRowValue::Absent => RemoteValue::Absent,
     }
 }
 
 fn remote_field_value(value: &DocumentFieldValue) -> RemoteFieldValue {
     match value {
-        DocumentFieldValue::Scalar(value) => {
-            RemoteFieldValue::Scalar { value: value.clone() }
-        }
+        DocumentFieldValue::Scalar(value) => RemoteFieldValue::Scalar {
+            value: value.clone(),
+        },
         DocumentFieldValue::Absent => RemoteFieldValue::Absent,
-        DocumentFieldValue::List(values) => {
-            RemoteFieldValue::List { values: values.clone() }
-        }
+        DocumentFieldValue::List(values) => RemoteFieldValue::List {
+            values: values.clone(),
+        },
     }
 }
 

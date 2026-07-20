@@ -568,13 +568,7 @@ impl SchemaDocumentSet {
                     .to_be_bytes(),
             );
             canonical.extend_from_slice(id.as_str().as_bytes());
-            canonical.extend_from_slice(
-                &document
-                    .fingerprint()
-                    .as_fingerprint()
-                    .digest()
-                    .bytes(),
-            );
+            canonical.extend_from_slice(&document.fingerprint().as_fingerprint().digest().bytes());
         }
         SchemaDocumentSetFingerprint::compute(&canonical)
             .map_err(|error| SchemaDiagnostics::one(SchemaDiagnostic::new(error, None)))

@@ -16,12 +16,14 @@ fn emit() -> GeneratedPackage {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("rust-acceptance.yaml").unwrap(),
         include_str!("acceptance/schema.yaml"),
-    )]).unwrap();
+    )])
+    .unwrap();
     let declared = normalize_documents(&documents).unwrap();
     let resolved = resolve(
         &declared,
         &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let emitter = RustEmitter::new();
     let resources = emitter.code_resources().unwrap();
     let projection = project(
@@ -30,7 +32,8 @@ fn emit() -> GeneratedPackage {
         &ProjectionConfig::rust(),
         &emitter.generator_handlers(),
         &resources,
-    ).unwrap();
+    )
+    .unwrap();
     emitter.emit(&projection).unwrap()
 }
 
@@ -80,7 +83,13 @@ fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
 
     let positive_manifest = positive.join("Cargo.toml");
     let positive_output = cargo(
-        &["run", "--quiet", "--offline", "--manifest-path", positive_manifest.to_str().unwrap()],
+        &[
+            "run",
+            "--quiet",
+            "--offline",
+            "--manifest-path",
+            positive_manifest.to_str().unwrap(),
+        ],
         &stage.join("positive-target"),
     );
     assert!(
@@ -92,12 +101,30 @@ fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
 
     let negative_manifest = negative.join("Cargo.toml");
     let negative_output = cargo(
-        &["check", "--quiet", "--offline", "--manifest-path", negative_manifest.to_str().unwrap()],
+        &[
+            "check",
+            "--quiet",
+            "--offline",
+            "--manifest-path",
+            negative_manifest.to_str().unwrap(),
+        ],
         &stage.join("negative-target"),
     );
-    assert!(!negative_output.status.success(), "negative generated consumer unexpectedly compiled");
+    assert!(
+        !negative_output.status.success(),
+        "negative generated consumer unexpectedly compiled"
+    );
     let stderr = String::from_utf8_lossy(&negative_output.stderr);
-    assert!(stderr.contains("mismatched types"), "negative failure was not a type mismatch:\n{stderr}");
-    assert!(stderr.contains("EventRef"), "negative failure omitted the distinct reference type:\n{stderr}");
-    assert!(stderr.contains("RoleToken"), "negative failure omitted the owner-branded role token:\n{stderr}");
+    assert!(
+        stderr.contains("mismatched types"),
+        "negative failure was not a type mismatch:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("EventRef"),
+        "negative failure omitted the distinct reference type:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("RoleToken"),
+        "negative failure omitted the owner-branded role token:\n{stderr}"
+    );
 }

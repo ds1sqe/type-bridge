@@ -93,13 +93,17 @@ relations:
 "#,
     );
     let resolved = resolve(&schema, &profile()).expect("schema resolves");
-    let employment = TypeId::new(TypeKind::Relation, "employment")
-        .expect("type identifier is valid");
+    let employment =
+        TypeId::new(TypeKind::Relation, "employment").expect("type identifier is valid");
     let relation = &resolved.types()[&employment];
     let member = RoleId::new("membership", "member").expect("role identifier is valid");
     let employee = RoleId::new("employment", "employee").expect("role identifier is valid");
     assert!(!relation.relates().contains_key(&member));
-    assert!(relation.relates()[&employee].replaced_roles().contains(&member));
+    assert!(
+        relation.relates()[&employee]
+            .replaced_roles()
+            .contains(&member)
+    );
 }
 
 #[test]
@@ -114,8 +118,8 @@ relations:
 "#,
     );
     let resolved = resolve(&schema, &profile()).expect("schema resolves");
-    let employment = TypeId::new(TypeKind::Relation, "employment")
-        .expect("type identifier is valid");
+    let employment =
+        TypeId::new(TypeKind::Relation, "employment").expect("type identifier is valid");
     let member = RoleId::new("membership", "member").expect("role identifier is valid");
     let relates = &resolved.types()[&employment].relates()[&member];
     assert_eq!(relates.id().relation(), &employment);
@@ -124,8 +128,7 @@ relations:
         relates.origin().declared(),
         &type_bridge_contract::schema::SchemaFactId::Relates(
             type_bridge_contract::schema::RelatesFactId::new(
-                TypeId::new(TypeKind::Relation, "membership")
-                    .expect("type identifier is valid"),
+                TypeId::new(TypeKind::Relation, "membership").expect("type identifier is valid"),
                 member,
             )
             .expect("relates identifier is valid"),
@@ -157,10 +160,10 @@ plays:
     let resolved = resolve(&schema, &profile()).expect("schema resolves");
     let member = RoleId::new("membership", "member").expect("role identifier is valid");
     let employee = RoleId::new("employment", "employee").expect("role identifier is valid");
-    let parent_player = TypeId::new(TypeKind::Entity, "parent-player")
-        .expect("type identifier is valid");
-    let specialized_player = TypeId::new(TypeKind::Entity, "specialized-player")
-        .expect("type identifier is valid");
+    let parent_player =
+        TypeId::new(TypeKind::Entity, "parent-player").expect("type identifier is valid");
+    let specialized_player =
+        TypeId::new(TypeKind::Entity, "specialized-player").expect("type identifier is valid");
 
     assert!(
         resolved.roles()[&member]
@@ -194,8 +197,7 @@ plays:
     );
     let resolved = resolve(&schema, &profile()).expect("schema resolves");
     let role = RoleId::new("container", "item").expect("role identifier is valid");
-    let container = TypeId::new(TypeKind::Relation, "container")
-        .expect("type identifier is valid");
+    let container = TypeId::new(TypeKind::Relation, "container").expect("type identifier is valid");
     let event = TypeId::new(TypeKind::Relation, "event").expect("type identifier is valid");
     assert!(resolved.roles()[&role].accepted_players().contains(&event));
     assert!(
@@ -218,9 +220,7 @@ plays:
             .strongly_connected_components()
             .iter()
             .any(|component| {
-                component.len() == 2
-                    && component.contains(&container)
-                    && component.contains(&event)
+                component.len() == 2 && component.contains(&container) && component.contains(&event)
             })
     );
 }
@@ -310,7 +310,10 @@ functions:
     let id = FunctionId::new("people").expect("function identifier is valid");
     let declaration = resolved.functions()[&id].declaration();
 
-    assert_eq!(declaration.signature().parameters()[0].name().as_str(), "person");
+    assert_eq!(
+        declaration.signature().parameters()[0].name().as_str(),
+        "person"
+    );
     assert_eq!(
         declaration.body().text(),
         "match\n  $person isa person;\nreturn { $person };"
@@ -328,7 +331,7 @@ relations:
 "#,
     );
     let available = CapabilitySet::from_iter([
-        CapabilityId::new("schema.roles").expect("capability ID is valid"),
+        CapabilityId::new("schema.roles").expect("capability ID is valid")
     ]);
     resolve_schema_with_capabilities(&schema, &profile(), &available)
         .expect("advertised required capability resolves");
@@ -370,9 +373,10 @@ capabilities:
         "unsupported_required_capability",
     );
 
-    let explicitly_available = CapabilitySet::from_iter([
-        CapabilityId::new("schema.future-feature").expect("capability ID is valid"),
-    ]);
+    let explicitly_available =
+        CapabilitySet::from_iter([
+            CapabilityId::new("schema.future-feature").expect("capability ID is valid")
+        ]);
     resolve_schema_with_capabilities(&future, &profile(), &explicitly_available)
         .expect("explicitly injected open capability resolves");
 }

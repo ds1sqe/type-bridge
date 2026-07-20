@@ -6,18 +6,10 @@
 //! replays legacy operations — it verifies files, ledger, and live state,
 //! then applies the zero-operation bridge as a pure journal checkpoint.
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
-use type_bridge_contract::migration::{
-    MigrationAppLabel, MigrationId, MigrationName,
-};
-use type_bridge_migration::{
-    AppliedMigrationRecord, MigrationGraph, checksum_drift_errors,
-};
-use type_bridge_schema_migration::{
-    LegacyMigrationChecksum, LegacyMigrationReference,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::migration::{MigrationAppLabel, MigrationId, MigrationName};
+use type_bridge_migration::{AppliedMigrationRecord, MigrationGraph, checksum_drift_errors};
+use type_bridge_schema_migration::{LegacyMigrationChecksum, LegacyMigrationReference};
 
 /// Extract the canonical legacy frontier from one checked legacy graph.
 ///
@@ -43,7 +35,10 @@ pub fn extract_legacy_frontier(
                 "migration_legacy_import_missing_checksum",
                 "legacy frontier migration carries no recorded checksum",
             )
-            .with_detail("migration", legacy_key(&migration.app_label, &migration.name))
+            .with_detail(
+                "migration",
+                legacy_key(&migration.app_label, &migration.name),
+            )
         })?;
         references.push(LegacyMigrationReference::new(
             legacy_migration_id(&migration.app_label, &migration.name)?,
@@ -80,9 +75,9 @@ pub fn verify_legacy_continuity(
         .with_detail("stored_checksum", first.stored_checksum.clone()));
     }
     for migration in &graph.migrations {
-        let is_applied = applied.iter().any(|record| {
-            record.app_label == migration.app_label && record.name == migration.name
-        });
+        let is_applied = applied
+            .iter()
+            .any(|record| record.app_label == migration.app_label && record.name == migration.name);
         if !is_applied {
             return Err(failure(
                 "migration_legacy_import_pending_migration",
@@ -122,11 +117,7 @@ mod tests {
 
     use super::*;
 
-    fn spec(
-        name: &str,
-        dependencies: Vec<(&str, &str)>,
-        checksum: Option<&str>,
-    ) -> MigrationSpec {
+    fn spec(name: &str, dependencies: Vec<(&str, &str)>, checksum: Option<&str>) -> MigrationSpec {
         MigrationSpec {
             app_label: "example".to_owned(),
             name: name.to_owned(),
@@ -214,11 +205,9 @@ mod tests {
             "migration_legacy_import_checksum_drift"
         );
 
-        let pending = verify_legacy_continuity(
-            &graph,
-            &[applied("0001_initial", "0123456789abcdef")],
-        )
-        .expect_err("pending legacy work blocks import");
+        let pending =
+            verify_legacy_continuity(&graph, &[applied("0001_initial", "0123456789abcdef")])
+                .expect_err("pending legacy work blocks import");
         assert_eq!(
             pending.code().as_str(),
             "migration_legacy_import_pending_migration"

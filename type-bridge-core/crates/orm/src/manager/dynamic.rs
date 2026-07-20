@@ -93,7 +93,8 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Fetch only entities whose concrete type exactly matches this descriptor.
     pub async fn get_exact(&self, filters: &[Filter]) -> Result<Vec<DynamicEntityRow>> {
-        let typeql = query_builder::build_dynamic_entity_fetch_exact(&self.descriptor, filters, "$e")?;
+        let typeql =
+            query_builder::build_dynamic_entity_fetch_exact(&self.descriptor, filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT FETCH");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
@@ -160,7 +161,8 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Fetch one exact-type entity by its TypeDB IID.
     pub async fn get_by_iid_exact(&self, iid: &str) -> Result<Option<DynamicEntityRow>> {
-        let typeql = query_builder::build_dynamic_entity_fetch_by_iid_exact(&self.descriptor, iid, "$e")?;
+        let typeql =
+            query_builder::build_dynamic_entity_fetch_by_iid_exact(&self.descriptor, iid, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT FETCH BY IID");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
@@ -485,7 +487,8 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Fetch only relations whose concrete type exactly matches this descriptor.
     pub async fn get_exact(&self, filters: &[Filter]) -> Result<Vec<DynamicRelationRow>> {
-        let typeql = query_builder::build_dynamic_relation_fetch_exact(&self.descriptor, filters, "$r")?;
+        let typeql =
+            query_builder::build_dynamic_relation_fetch_exact(&self.descriptor, filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT FETCH");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
@@ -566,11 +569,15 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Fetch exact-type relation rows by TypeDB IID.
     pub async fn get_by_iid_exact(&self, iid: &str) -> Result<Vec<DynamicRelationRow>> {
-        let typeql = query_builder::build_dynamic_relation_fetch_by_iid_exact(&self.descriptor, iid, "$r")?;
+        let typeql =
+            query_builder::build_dynamic_relation_fetch_by_iid_exact(&self.descriptor, iid, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT FETCH BY IID");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
-            QueryResult::Documents(docs) => docs.iter().map(|doc| hydrate_dynamic_relation(&self.descriptor, doc)).collect(),
+            QueryResult::Documents(docs) => docs
+                .iter()
+                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
+                .collect(),
             QueryResult::Ok => Ok(vec![]),
             QueryResult::Rows(_) => Err(OrmError::Hydration {
                 type_name: self.descriptor.type_name.clone(),

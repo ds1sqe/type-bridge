@@ -12,7 +12,10 @@ fn main() {
     let mut arguments = env::args_os().skip(1);
     let schema_path = PathBuf::from(arguments.next().expect("schema path is required"));
     let output_path = PathBuf::from(arguments.next().expect("output path is required"));
-    assert!(arguments.next().is_none(), "only schema and output paths are accepted");
+    assert!(
+        arguments.next().is_none(),
+        "only schema and output paths are accepted"
+    );
 
     let source = fs::read_to_string(&schema_path).expect("acceptance schema is readable");
     let documents = SchemaDocumentSet::parse([(
@@ -21,8 +24,7 @@ fn main() {
     )])
     .expect("acceptance schema parses");
     let declared = normalize_documents(&documents).expect("acceptance schema normalizes");
-    let profile =
-        SemanticProfileId::new("typedb-3.12.1/v1").expect("semantic profile is valid");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("semantic profile is valid");
     let resolved = resolve(&declared, &profile).expect("acceptance schema resolves");
     let emitter = PythonEmitter::new();
     let handlers = emitter.generator_handlers();

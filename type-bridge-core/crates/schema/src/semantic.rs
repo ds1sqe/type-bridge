@@ -308,8 +308,9 @@ fn semantic_facts<'a>(
                     _ => SemanticFactValue::Direct(fact),
                 }
             }
-            SchemaFact::Annotation(annotation) => semantic_timezone_value(annotation)
-                .unwrap_or(SemanticFactValue::Direct(fact)),
+            SchemaFact::Annotation(annotation) => {
+                semantic_timezone_value(annotation).unwrap_or(SemanticFactValue::Direct(fact))
+            }
             _ => SemanticFactValue::Direct(fact),
         };
         facts.insert(id, value);
@@ -320,8 +321,7 @@ fn semantic_facts<'a>(
             subject.clone(),
             AnnotationKindId::Card,
         ));
-        let cardinality =
-            profile.effective_cardinality(kind, None, key_owns.contains(&subject));
+        let cardinality = profile.effective_cardinality(kind, None, key_owns.contains(&subject));
         facts
             .entry(id)
             .or_insert_with(|| SemanticFactValue::MaterializedCardinality {
@@ -350,16 +350,22 @@ fn semantic_timezone_value<'a>(
             })
         }
         SchemaAnnotationValue::Values(values)
-            if values
-                .iter()
-                .next()
-                .is_some_and(|value| matches!(value, type_bridge_contract::value::CanonicalValue::DateTimeTz(_))) =>
+            if values.iter().next().is_some_and(|value| {
+                matches!(
+                    value,
+                    type_bridge_contract::value::CanonicalValue::DateTimeTz(_)
+                )
+            }) =>
         {
             let mut keys = values.iter().filter_map(timezone_key).collect::<Vec<_>>();
             keys.sort_by(|left, right| {
                 left.parse::<i128>()
                     .expect("semantic timezone key is an i128")
-                    .cmp(&right.parse::<i128>().expect("semantic timezone key is an i128"))
+                    .cmp(
+                        &right
+                            .parse::<i128>()
+                            .expect("semantic timezone key is an i128"),
+                    )
             });
             Some(SemanticFactValue::TimeZoneValues {
                 subject: annotation.id().subject().clone(),

@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
-use type_bridge_contract::migration_assertion_capability_vocabulary;
-use type_bridge_contract::migration_assertion::{
-    AssertionBinding, AssertionExpectation, AssertionPattern, BindingId,
-    MigrationAssertionPlan, QueryVariable, decode_migration_assertion_plan,
-};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::migration_assertion::{
+    AssertionBinding, AssertionExpectation, AssertionPattern, BindingId, MigrationAssertionPlan,
+    QueryVariable, decode_migration_assertion_plan,
+};
+use type_bridge_contract::migration_assertion_capability_vocabulary;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 
 fn binding(id: u16, variable: &str) -> AssertionBinding {
@@ -83,8 +83,14 @@ fn canonical_bytes_and_fingerprint_are_exact_and_stable() {
         "witnesses": []
     });
     assert_eq!(bytes, serde_json::to_vec(&expected).expect("expected JSON"));
-    assert_eq!(decode_migration_assertion_plan(&bytes).expect("decode"), plan);
-    assert_eq!(plan.fingerprint().expect("fingerprint"), plan.fingerprint().expect("repeat"));
+    assert_eq!(
+        decode_migration_assertion_plan(&bytes).expect("decode"),
+        plan
+    );
+    assert_eq!(
+        plan.fingerprint().expect("fingerprint"),
+        plan.fingerprint().expect("repeat")
+    );
 }
 
 #[test]
@@ -115,10 +121,7 @@ fn malformed_sparse_unknown_and_forged_capability_bytes_fail_closed() {
     let mut wrong_domain: Value = serde_json::from_slice(&bytes).expect("JSON");
     wrong_domain["managed_semantics"]["domain"] = json!("typebridge.schema.semantic");
     assert!(
-        decode_migration_assertion_plan(
-            &serde_json::to_vec(&wrong_domain).expect("JSON")
-        )
-        .is_err()
+        decode_migration_assertion_plan(&serde_json::to_vec(&wrong_domain).expect("JSON")).is_err()
     );
 }
 
@@ -134,7 +137,9 @@ fn variable_binding_and_pattern_limits_are_enforced() {
         type_id: TypeId::new(TypeKind::Entity, "person").expect("type id"),
     };
     for _ in 0..64 {
-        nested = AssertionPattern::Not { patterns: vec![nested] };
+        nested = AssertionPattern::Not {
+            patterns: vec![nested],
+        };
     }
     assert_eq!(
         MigrationAssertionPlan::new(

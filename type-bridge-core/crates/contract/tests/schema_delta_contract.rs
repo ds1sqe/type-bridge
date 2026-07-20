@@ -8,16 +8,15 @@ use type_bridge_contract::id::{
 };
 use type_bridge_contract::limits::CANONICAL_CODEC_LIMITS;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DocText,
-    DeclaredIdentityFingerprint, DeclaredSchema, DocumentId, FunctionBody,
-    FunctionFact, FunctionReturnElement, FunctionReturnMode, FunctionSignature,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
+    DeclaredIdentityFingerprint, DeclaredSchema, DocText, DocumentId, FunctionBody, FunctionFact,
+    FunctionReturnElement, FunctionReturnMode, FunctionSignature,
     ManagedDeclaredIdentityFingerprint, ManagedFactSelection, ManagedSchemaState,
-    ManagedScopeBinding, ManagedScopeId, ManagedSemanticSchemaFingerprint, OwnsFact,
-    OwnsFactId, PatchFormatVersion, PlaysFact, PlaysFactId, RelatesFact,
-    RelatesFactId, SchemaAnnotationValue, SchemaDelta, SchemaFact, SchemaOperation,
-    SourceSpan, SourcedSchemaFact, StructFact, StructField, SubFact, SubFactId,
-    TypeFact, TypeReference, ValueFact, ValueFactId, decode_schema_delta,
-    encode_schema_delta,
+    ManagedScopeBinding, ManagedScopeId, ManagedSemanticSchemaFingerprint, OwnsFact, OwnsFactId,
+    PatchFormatVersion, PlaysFact, PlaysFactId, RelatesFact, RelatesFactId, SchemaAnnotationValue,
+    SchemaDelta, SchemaFact, SchemaOperation, SourceSpan, SourcedSchemaFact, StructFact,
+    StructField, SubFact, SubFactId, TypeFact, TypeReference, ValueFact, ValueFactId,
+    decode_schema_delta, encode_schema_delta,
 };
 use type_bridge_contract::value::ValueTypeTag;
 
@@ -31,9 +30,7 @@ fn type_id(kind: TypeKind, label: &str) -> TypeId {
 
 fn declared_identity(marker: &str) -> DeclaredIdentityFingerprint {
     let label = format!("state-{marker}");
-    let fact = SchemaFact::Type(
-        TypeFact::new(type_id(TypeKind::Entity, &label)).unwrap(),
-    );
+    let fact = SchemaFact::Type(TypeFact::new(type_id(TypeKind::Entity, &label)).unwrap());
     DeclaredSchema::from_facts(
         FormatVersion::V1,
         CapabilitySet::new(),
@@ -108,9 +105,7 @@ fn all_fact_variants() -> Vec<SchemaFact> {
             )
             .unwrap(),
         ),
-        SchemaFact::Plays(PlaysFact::new(
-            PlaysFactId::new(person, friend).unwrap(),
-        )),
+        SchemaFact::Plays(PlaysFact::new(PlaysFactId::new(person, friend).unwrap())),
         SchemaFact::Annotation(
             AnnotationFact::new(
                 annotation_id,
@@ -142,23 +137,17 @@ fn state(
         scope,
         selection,
         declared_identity(declared_marker),
-        ManagedDeclaredIdentityFingerprint::compute(
-            format!("declared-{marker}").as_bytes(),
-        )
-        .unwrap(),
-        ManagedSemanticSchemaFingerprint::compute(
-            profile,
-            format!("semantic-{marker}").as_bytes(),
-        )
-        .unwrap(),
+        ManagedDeclaredIdentityFingerprint::compute(format!("declared-{marker}").as_bytes())
+            .unwrap(),
+        ManagedSemanticSchemaFingerprint::compute(profile, format!("semantic-{marker}").as_bytes())
+            .unwrap(),
     )
     .unwrap()
 }
 
 fn defined_delta() -> SchemaDelta {
     let facts = all_fact_variants();
-    let scope = ManagedScopeBinding::exclusive(ManagedScopeId::new("test-scope").unwrap())
-        .unwrap();
+    let scope = ManagedScopeBinding::exclusive(ManagedScopeId::new("test-scope").unwrap()).unwrap();
     let source = state(
         scope.clone(),
         ManagedFactSelection::empty(),
@@ -225,9 +214,7 @@ fn constructors_reject_malformed_operations_and_state_transitions() {
             .as_str(),
         "empty_schema_define",
     );
-    let type_fact = SchemaFact::Type(
-        TypeFact::new(type_id(TypeKind::Entity, "person")).unwrap(),
-    );
+    let type_fact = SchemaFact::Type(TypeFact::new(type_id(TypeKind::Entity, "person")).unwrap());
     assert_eq!(
         SchemaOperation::define(vec![type_fact.clone(), type_fact.clone()])
             .unwrap_err()
@@ -235,9 +222,7 @@ fn constructors_reject_malformed_operations_and_state_transitions() {
             .as_str(),
         "duplicate_schema_operation_fact_id",
     );
-    let other = SchemaFact::Type(
-        TypeFact::new(type_id(TypeKind::Entity, "company")).unwrap(),
-    );
+    let other = SchemaFact::Type(TypeFact::new(type_id(TypeKind::Entity, "company")).unwrap());
     assert_eq!(
         SchemaOperation::redefine(type_fact.clone(), other)
             .unwrap_err()
@@ -253,8 +238,8 @@ fn constructors_reject_malformed_operations_and_state_transitions() {
         "schema_redefine_noop",
     );
 
-    let scope = ManagedScopeBinding::exclusive(ManagedScopeId::new("negative-scope").unwrap())
-        .unwrap();
+    let scope =
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("negative-scope").unwrap()).unwrap();
     let source = state(
         scope.clone(),
         ManagedFactSelection::empty(),
@@ -288,8 +273,8 @@ fn capabilities_are_derived_from_both_states_and_the_transition_table() {
     let old = doc_fact("old");
     let new = doc_fact("new");
     let selection = ManagedFactSelection::new([old.id()]).unwrap();
-    let scope = ManagedScopeBinding::exclusive(ManagedScopeId::new("redefine-scope").unwrap())
-        .unwrap();
+    let scope =
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("redefine-scope").unwrap()).unwrap();
     let source = state(
         scope.clone(),
         selection.clone(),
@@ -311,13 +296,7 @@ fn capabilities_are_derived_from_both_states_and_the_transition_table() {
     assert_eq!(inverse[0].expected_fact(), Some(&new));
     assert_eq!(inverse[0].replacement_fact(), Some(&old));
 
-    let delta = SchemaDelta::new(
-        PatchFormatVersion::V1,
-        source,
-        target,
-        vec![operation],
-    )
-    .unwrap();
+    let delta = SchemaDelta::new(PatchFormatVersion::V1, source, target, vec![operation]).unwrap();
     assert_eq!(
         delta
             .required_capabilities()
@@ -330,10 +309,9 @@ fn capabilities_are_derived_from_both_states_and_the_transition_table() {
 
 #[test]
 fn capability_only_transition_round_trips_with_exact_derived_union() {
-    let scope = ManagedScopeBinding::exclusive(
-        ManagedScopeId::new("capability-only-scope").unwrap(),
-    )
-    .unwrap();
+    let scope =
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("capability-only-scope").unwrap())
+            .unwrap();
     let source = state(
         scope.clone(),
         ManagedFactSelection::empty(),
@@ -349,13 +327,7 @@ fn capability_only_transition_round_trips_with_exact_derived_union() {
         CapabilitySet::from_iter([capability("schema.target")]),
     );
 
-    let delta = SchemaDelta::new(
-        PatchFormatVersion::V1,
-        source,
-        target,
-        Vec::new(),
-    )
-    .unwrap();
+    let delta = SchemaDelta::new(PatchFormatVersion::V1, source, target, Vec::new()).unwrap();
     assert!(delta.operations().is_empty());
     assert_eq!(
         delta
@@ -371,10 +343,9 @@ fn capability_only_transition_round_trips_with_exact_derived_union() {
 
 #[test]
 fn identical_operation_free_state_is_rejected_as_a_noop() {
-    let scope = ManagedScopeBinding::exclusive(
-        ManagedScopeId::new("identical-noop-scope").unwrap(),
-    )
-    .unwrap();
+    let scope =
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("identical-noop-scope").unwrap())
+            .unwrap();
     let source = state(
         scope,
         ManagedFactSelection::empty(),
@@ -383,15 +354,10 @@ fn identical_operation_free_state_is_rejected_as_a_noop() {
         CapabilitySet::from_iter([capability("schema.same")]),
     );
     assert_eq!(
-        SchemaDelta::new(
-            PatchFormatVersion::V1,
-            source.clone(),
-            source,
-            Vec::new(),
-        )
-        .unwrap_err()
-        .code()
-        .as_str(),
+        SchemaDelta::new(PatchFormatVersion::V1, source.clone(), source, Vec::new(),)
+            .unwrap_err()
+            .code()
+            .as_str(),
         "schema_delta_noop",
     );
 }
@@ -477,10 +443,7 @@ fn canonical_decoder_rejects_unknown_forged_oversize_depth_and_noncanonical_inpu
 
     let oversized = vec![b' '; CANONICAL_CODEC_LIMITS.max_bytes + 1];
     assert_eq!(
-        decode_schema_delta(&oversized)
-            .unwrap_err()
-            .code()
-            .as_str(),
+        decode_schema_delta(&oversized).unwrap_err().code().as_str(),
         "canonical_json_too_large",
     );
 
@@ -501,9 +464,7 @@ fn canonical_decoder_rejects_unknown_forged_oversize_depth_and_noncanonical_inpu
 fn decoder_rejects_forged_capabilities_and_duplicate_affected_ids() {
     let delta = defined_delta();
     let mut forged: Value = serde_json::from_slice(&delta.canonical_bytes().unwrap()).unwrap();
-    forged["required_capabilities"] = Value::Array(vec![Value::String(
-        "schema.forged".to_owned(),
-    )]);
+    forged["required_capabilities"] = Value::Array(vec![Value::String("schema.forged".to_owned())]);
     assert_eq!(
         decode_schema_delta(&to_canonical_json(&forged).unwrap())
             .unwrap_err()
@@ -513,8 +474,8 @@ fn decoder_rejects_forged_capabilities_and_duplicate_affected_ids() {
     );
 
     let fact = doc_fact("remove");
-    let scope = ManagedScopeBinding::exclusive(ManagedScopeId::new("duplicate-scope").unwrap())
-        .unwrap();
+    let scope =
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("duplicate-scope").unwrap()).unwrap();
     let source = state(
         scope.clone(),
         ManagedFactSelection::new([fact.id()]).unwrap(),

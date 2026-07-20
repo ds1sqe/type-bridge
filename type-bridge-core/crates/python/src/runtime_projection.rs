@@ -13,6 +13,7 @@ use type_bridge_contract::projection::ProjectedModelForm;
 #[cfg(test)]
 use type_bridge_contract::projection::RuntimeProjection;
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
+use type_bridge_orm::InstalledRuntimeProjection;
 use type_bridge_orm::attribute::ValueType;
 use type_bridge_orm::descriptor::{
     EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
@@ -24,7 +25,6 @@ use type_bridge_orm::dynamic::{
 use type_bridge_orm::manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::session::{Database, TransactionContext};
 use type_bridge_orm::value::AttributeValue;
-use type_bridge_orm::InstalledRuntimeProjection;
 
 use crate::orm_runtime::{PyRustDatabase, PyRustTransactionContext};
 
@@ -40,18 +40,16 @@ struct InstalledPackage {
 }
 
 impl InstalledPackage {
-    fn model_id_for_class(
-        &self,
-        py: Python<'_>,
-        class: &Py<PyType>,
-    ) -> PyResult<TypeId> {
+    fn model_id_for_class(&self, py: Python<'_>, class: &Py<PyType>) -> PyResult<TypeId> {
         let pointer = class.bind(py).as_ptr();
         self.models
             .iter()
             .find_map(|(id, registered)| {
                 (registered.complete.bind(py).as_ptr() == pointer).then(|| id.clone())
             })
-            .ok_or_else(|| py_type_error("model class is not registered in this runtime projection"))
+            .ok_or_else(|| {
+                py_type_error("model class is not registered in this runtime projection")
+            })
     }
 
     fn identify_value(
@@ -77,11 +75,7 @@ impl InstalledPackage {
         ))
     }
 
-    fn class(
-        &self,
-        id: &TypeId,
-        form: ProjectedModelForm,
-    ) -> PyResult<&Py<PyType>> {
+    fn class(&self, id: &TypeId, form: ProjectedModelForm) -> PyResult<&Py<PyType>> {
         let registered = self
             .models
             .get(id)
@@ -185,15 +179,35 @@ impl PyProjectedModelManager {
         self.ensure_instance(py, &instance)?;
         let iid = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
-                let attributes = lower_attributes(py, self.package.as_ref(), &descriptor.owned_attributes, &instance)?;
+                let attributes = lower_attributes(
+                    py,
+                    self.package.as_ref(),
+                    &descriptor.owned_attributes,
+                    &instance,
+                )?;
                 let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime.block_on(manager.insert(&attributes)).map_err(py_orm_error)?
+                self.runtime
+                    .block_on(manager.insert(&attributes))
+                    .map_err(py_orm_error)?
             }
             TypeDescriptor::Relation(descriptor) => {
-                let attributes = lower_attributes(py, self.package.as_ref(), &descriptor.owned_attributes, &instance)?;
-                let players = lower_roles(py, self.package.as_ref(), &self.type_id, &descriptor, &instance)?;
+                let attributes = lower_attributes(
+                    py,
+                    self.package.as_ref(),
+                    &descriptor.owned_attributes,
+                    &instance,
+                )?;
+                let players = lower_roles(
+                    py,
+                    self.package.as_ref(),
+                    &self.type_id,
+                    &descriptor,
+                    &instance,
+                )?;
                 let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime.block_on(manager.insert(&attributes, &players)).map_err(py_orm_error)?
+                self.runtime
+                    .block_on(manager.insert(&attributes, &players))
+                    .map_err(py_orm_error)?
             }
         };
         instance.call_method1("attach_runtime_iid", (iid,))?;
@@ -206,16 +220,32 @@ impl PyProjectedModelManager {
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
-                let rows = self.runtime.block_on(manager.all_exact()).map_err(py_orm_error)?;
+                let rows = self
+                    .runtime
+                    .block_on(manager.all_exact())
+                    .map_err(py_orm_error)?;
                 for row in rows {
-                    values.append(hydrate_entity(py, self.package.as_ref(), &self.type_id, &row)?)?;
+                    values.append(hydrate_entity(
+                        py,
+                        self.package.as_ref(),
+                        &self.type_id,
+                        &row,
+                    )?)?;
                 }
             }
             TypeDescriptor::Relation(descriptor) => {
                 let manager = self.relation_manager(Arc::new(descriptor))?;
-                let rows = self.runtime.block_on(manager.all_exact()).map_err(py_orm_error)?;
+                let rows = self
+                    .runtime
+                    .block_on(manager.all_exact())
+                    .map_err(py_orm_error)?;
                 for row in rows {
-                    values.append(hydrate_relation(py, self.package.as_ref(), &self.type_id, &row)?)?;
+                    values.append(hydrate_relation(
+                        py,
+                        self.package.as_ref(),
+                        &self.type_id,
+                        &row,
+                    )?)?;
                 }
             }
         }
@@ -245,7 +275,9 @@ impl PyProjectedModelManager {
                 match rows.as_slice() {
                     [] => Ok(py.None()),
                     [row] => hydrate_relation(py, self.package.as_ref(), &self.type_id, row),
-                    _ => Err(py_runtime_error("exact IID relation query returned multiple rows")),
+                    _ => Err(py_runtime_error(
+                        "exact IID relation query returned multiple rows",
+                    )),
                 }
             }
         }
@@ -262,7 +294,9 @@ impl PyProjectedModelManager {
     }
 
     fn ensure_instance(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let expected = self.package.class(&self.type_id, ProjectedModelForm::Complete)?;
+        let expected = self
+            .package
+            .class(&self.type_id, ProjectedModelForm::Complete)?;
         if value.get_type().as_ptr() != expected.bind(py).as_ptr() {
             return Err(py_type_error(
                 "insert requires an instance of the manager's exact registered class",
@@ -271,9 +305,15 @@ impl PyProjectedModelManager {
         Ok(())
     }
 
-    fn entity_manager(&self, descriptor: Arc<EntityDescriptor>) -> PyResult<DynamicEntityManager<'_>> {
+    fn entity_manager(
+        &self,
+        descriptor: Arc<EntityDescriptor>,
+    ) -> PyResult<DynamicEntityManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicEntityManager::with_transaction(transaction.clone(), descriptor));
+            return Ok(DynamicEntityManager::with_transaction(
+                transaction.clone(),
+                descriptor,
+            ));
         }
         let database = self
             .database
@@ -282,9 +322,15 @@ impl PyProjectedModelManager {
         Ok(DynamicEntityManager::new(database.as_ref(), descriptor))
     }
 
-    fn relation_manager(&self, descriptor: Arc<RelationDescriptor>) -> PyResult<DynamicRelationManager<'_>> {
+    fn relation_manager(
+        &self,
+        descriptor: Arc<RelationDescriptor>,
+    ) -> PyResult<DynamicRelationManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicRelationManager::with_transaction(transaction.clone(), descriptor));
+            return Ok(DynamicRelationManager::with_transaction(
+                transaction.clone(),
+                descriptor,
+            ));
         }
         let database = self
             .database
@@ -310,24 +356,40 @@ fn install_projection(
     let mut expected = BTreeMap::new();
     let mut types_by_label = BTreeMap::new();
     for (id, model) in runtime.models() {
-        expected.insert(canonical_id(id)?, (id.clone(), model.target_name().as_str().to_owned(), model.reference_read().target_name().map(|name| name.as_str().to_owned())));
-        if types_by_label.insert(id.label().as_str().to_owned(), id.clone()).is_some() {
-            return Err(py_runtime_error("projection contains duplicate type labels"));
+        expected.insert(
+            canonical_id(id)?,
+            (
+                id.clone(),
+                model.target_name().as_str().to_owned(),
+                model
+                    .reference_read()
+                    .target_name()
+                    .map(|name| name.as_str().to_owned()),
+            ),
+        );
+        if types_by_label
+            .insert(id.label().as_str().to_owned(), id.clone())
+            .is_some()
+        {
+            return Err(py_runtime_error(
+                "projection contains duplicate type labels",
+            ));
         }
     }
     if models.len() != expected.len() {
         return Err(py_value_error(format!(
             "projection requires exactly {} model registrations, received {}",
-            expected.len(), models.len()
+            expected.len(),
+            models.len()
         )));
     }
     let mut registered = BTreeMap::new();
     let mut pointers = BTreeSet::new();
     for (complete, reference) in models {
         let id_text: String = complete.bind(py).getattr("__type_id__")?.extract()?;
-        let (id, complete_name, reference_name) = expected
-            .remove(&id_text)
-            .ok_or_else(|| py_value_error("registered model has an unknown or duplicate __type_id__"))?;
+        let (id, complete_name, reference_name) = expected.remove(&id_text).ok_or_else(|| {
+            py_value_error("registered model has an unknown or duplicate __type_id__")
+        })?;
         verify_class(py, &complete, &complete_name, "complete", &mut pointers)?;
         match (&reference_name, &reference) {
             (Some(expected_name), Some(class)) => {
@@ -337,10 +399,18 @@ fn install_projection(
             (Some(_), None) => return Err(py_value_error("projection reference class is missing")),
             (None, Some(_)) => return Err(py_value_error("unexpected projection reference class")),
         }
-        registered.insert(id, RegisteredModel { complete, reference });
+        registered.insert(
+            id,
+            RegisteredModel {
+                complete,
+                reference,
+            },
+        );
     }
     if !expected.is_empty() {
-        return Err(py_value_error("projection model registration coverage is incomplete"));
+        return Err(py_value_error(
+            "projection model registration coverage is incomplete",
+        ));
     }
     let installed = InstalledRuntimeProjection::try_new(runtime).map_err(py_orm_error)?;
     Ok(Arc::new(InstalledPackage {
@@ -366,7 +436,9 @@ fn verify_class(
         )));
     }
     if !pointers.insert(class.as_ptr() as usize) {
-        return Err(py_value_error("one Python class was registered for multiple projected forms"));
+        return Err(py_value_error(
+            "one Python class was registered for multiple projected forms",
+        ));
     }
     Ok(())
 }
@@ -378,7 +450,9 @@ fn canonical_id(id: &TypeId) -> PyResult<String> {
 
 fn ensure_manageable(package: &InstalledPackage, id: &TypeId) -> PyResult<()> {
     if package.projection.descriptor(id).is_err() {
-        return Err(py_type_error("attribute projections do not expose CRUD managers"));
+        return Err(py_type_error(
+            "attribute projections do not expose CRUD managers",
+        ));
     }
     Ok(())
 }
@@ -478,17 +552,23 @@ fn projected_key(
         Ok(TypeDescriptor::Entity(descriptor)) => descriptor,
         Ok(TypeDescriptor::Relation(_)) | Err(_) => return Ok(None),
     };
-    let Some(key) = descriptor.key_attribute() else { return Ok(None) };
+    let Some(key) = descriptor.key_attribute() else {
+        return Ok(None);
+    };
     let values = value.call_method0("runtime_values")?;
     let values = values.downcast::<PyDict>()?;
-    let Some(wrapper) = values.get_item(&key.field_name)? else { return Ok(None) };
+    let Some(wrapper) = values.get_item(&key.field_name)? else {
+        return Ok(None);
+    };
     if wrapper.is_none() {
         return Ok(None);
     }
     let (wrapper_id, form) = package.identify_value(py, &wrapper)?;
     let expected = package.type_by_label(&key.attr_name, TypeKind::Attribute)?;
     if &wrapper_id != expected || form != ProjectedModelForm::Complete {
-        return Err(py_type_error("projected key uses the wrong attribute wrapper"));
+        return Err(py_type_error(
+            "projected key uses the wrong attribute wrapper",
+        ));
     }
     let scalar = wrapper.call_method0("runtime_attribute_value")?;
     Ok(Some((
@@ -518,7 +598,9 @@ fn normalized_items<'py>(
         Some(value) if maximum == Some(1) => items.push(value.clone()),
         Some(value) => {
             if value.downcast::<PyString>().is_ok() {
-                return Err(py_type_error("projected multi-value input requires a sequence"));
+                return Err(py_type_error(
+                    "projected multi-value input requires a sequence",
+                ));
             }
             let tuple = value
                 .downcast::<PyTuple>()
@@ -526,9 +608,12 @@ fn normalized_items<'py>(
             items.extend(tuple.iter());
         }
     }
-    let count = u32::try_from(items.len()).map_err(|_| py_value_error("projected value count exceeds u32"))?;
+    let count = u32::try_from(items.len())
+        .map_err(|_| py_value_error("projected value count exceeds u32"))?;
     if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
-        return Err(py_value_error("projected value violates resolved cardinality"));
+        return Err(py_value_error(
+            "projected value violates resolved cardinality",
+        ));
     }
     Ok(items)
 }
@@ -579,7 +664,11 @@ fn hydrate_relation(
             .role(role_name)
             .ok_or_else(|| py_runtime_error("read role has no provider descriptor"))?;
         let mut players = Vec::new();
-        for player in row.role_players.iter().filter(|player| player.role_name == role_name) {
+        for player in row
+            .role_players
+            .iter()
+            .filter(|player| player.role_name == role_name)
+        {
             players.push(hydrate_player(py, package, read.players(), player)?);
         }
         set_hydrated_values(
@@ -610,7 +699,9 @@ fn hydrate_player(
     let projected = allowed
         .iter()
         .find(|projected| projected.id() == id)
-        .ok_or_else(|| py_runtime_error("role-player row type is not accepted by the projected role"))?;
+        .ok_or_else(|| {
+            py_runtime_error("role-player row type is not accepted by the projected role")
+        })?;
     let attributes = package
         .projection
         .role_player_attributes(id, &player.attributes)
@@ -658,7 +749,10 @@ fn hydrate_attributes<'py>(
     let values = PyDict::new(py);
     for descriptor in descriptors {
         let mut wrappers = Vec::new();
-        for (_, value) in attributes.iter().filter(|(name, _)| name == &descriptor.attr_name) {
+        for (_, value) in attributes
+            .iter()
+            .filter(|(name, _)| name == &descriptor.attr_name)
+        {
             wrappers.push(hydrate_attribute(py, package, descriptor, value)?);
         }
         set_hydrated_values(
@@ -693,9 +787,12 @@ fn set_hydrated_values(
     cardinality: (u32, Option<u32>),
 ) -> PyResult<()> {
     let (minimum, maximum) = cardinality;
-    let count = u32::try_from(items.len()).map_err(|_| py_value_error("hydrated value count exceeds u32"))?;
+    let count = u32::try_from(items.len())
+        .map_err(|_| py_value_error("hydrated value count exceeds u32"))?;
     if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
-        return Err(py_runtime_error("provider row violates projected cardinality"));
+        return Err(py_runtime_error(
+            "provider row violates projected cardinality",
+        ));
     }
     if maximum == Some(1) {
         match items.into_iter().next() {
@@ -742,7 +839,9 @@ fn allocate<'py>(py: Python<'py>, class: &Py<PyType>) -> PyResult<Bound<'py, PyA
 
 fn ensure_row_type(id: &TypeId, actual: Option<&str>) -> PyResult<()> {
     if actual.is_some_and(|actual| actual != id.label().as_str()) {
-        return Err(py_runtime_error("exact provider row returned a different concrete type"));
+        return Err(py_runtime_error(
+            "exact provider row returned a different concrete type",
+        ));
     }
     Ok(())
 }
@@ -773,10 +872,18 @@ fn attribute_value_from_py(
             .map_err(|_| py_type_error("attribute value requires an exact bool"))?
             .extract()
             .map(AttributeValue::Boolean),
-        ValueType::Date => exact_temporal_string(py, value, "date", false).map(AttributeValue::Date),
-        ValueType::DateTime => exact_temporal_string(py, value, "datetime", false).map(AttributeValue::DateTime),
-        ValueType::DateTimeTz => exact_temporal_string(py, value, "datetime", true).map(AttributeValue::DateTimeTZ),
-        ValueType::Decimal => exact_module_value_string(py, value, "decimal", "Decimal").map(AttributeValue::Decimal),
+        ValueType::Date => {
+            exact_temporal_string(py, value, "date", false).map(AttributeValue::Date)
+        }
+        ValueType::DateTime => {
+            exact_temporal_string(py, value, "datetime", false).map(AttributeValue::DateTime)
+        }
+        ValueType::DateTimeTz => {
+            exact_temporal_string(py, value, "datetime", true).map(AttributeValue::DateTimeTZ)
+        }
+        ValueType::Decimal => {
+            exact_module_value_string(py, value, "decimal", "Decimal").map(AttributeValue::Decimal)
+        }
         ValueType::Duration => duration_from_py(py, value).map(AttributeValue::Duration),
     }
 }
@@ -789,7 +896,9 @@ fn exact_temporal_string(
 ) -> PyResult<String> {
     let class = py.import("datetime")?.getattr(class_name)?;
     if value.get_type().as_ptr() != class.as_ptr() {
-        return Err(py_type_error(format!("attribute value requires an exact {class_name}")));
+        return Err(py_type_error(format!(
+            "attribute value requires an exact {class_name}"
+        )));
     }
     if class_name == "datetime" {
         let offset = value.call_method0("utcoffset")?;
@@ -812,7 +921,9 @@ fn exact_module_value_string(
 ) -> PyResult<String> {
     let class = py.import(module)?.getattr(class_name)?;
     if value.get_type().as_ptr() != class.as_ptr() {
-        return Err(py_type_error(format!("attribute value requires an exact {class_name}")));
+        return Err(py_type_error(format!(
+            "attribute value requires an exact {class_name}"
+        )));
     }
     value.str()?.extract()
 }
@@ -826,12 +937,18 @@ fn duration_from_py(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String
     let seconds: i64 = value.getattr("seconds")?.extract()?;
     let micros: i64 = value.getattr("microseconds")?.extract()?;
     if days < 0 {
-        return Err(py_value_error("negative projected durations are not representable losslessly"));
+        return Err(py_value_error(
+            "negative projected durations are not representable losslessly",
+        ));
     }
     let hours = seconds / 3600;
     let minutes = seconds % 3600 / 60;
     let seconds = seconds % 60;
-    let fraction = if micros == 0 { String::new() } else { format!(".{micros:06}").trim_end_matches('0').to_owned() };
+    let fraction = if micros == 0 {
+        String::new()
+    } else {
+        format!(".{micros:06}").trim_end_matches('0').to_owned()
+    };
     Ok(format!("P{days}DT{hours}H{minutes}M{seconds}{fraction}S"))
 }
 
@@ -848,7 +965,13 @@ fn ensure_attribute_type(value: &AttributeValue, expected: ValueType) -> PyResul
             | (AttributeValue::Decimal(_), ValueType::Decimal)
             | (AttributeValue::Duration(_), ValueType::Duration)
     );
-    if matches { Ok(()) } else { Err(py_runtime_error("provider attribute value type disagrees with the projection")) }
+    if matches {
+        Ok(())
+    } else {
+        Err(py_runtime_error(
+            "provider attribute value type disagrees with the projection",
+        ))
+    }
 }
 
 fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyObject> {
@@ -865,10 +988,24 @@ fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyO
         AttributeValue::Boolean(value) => pythonize(py, value)
             .map(Bound::unbind)
             .map_err(|error| py_runtime_error(error.to_string())),
-        AttributeValue::Date(value) => py.import("datetime")?.getattr("date")?.call_method1("fromisoformat", (value,)).map(Bound::unbind),
-        AttributeValue::DateTime(value) | AttributeValue::DateTimeTZ(value) => py.import("datetime")?.getattr("datetime")?.call_method1("fromisoformat", (value,)).map(Bound::unbind),
-        AttributeValue::Decimal(value) => py.import("decimal")?.getattr("Decimal")?.call1((value,)).map(Bound::unbind),
-        AttributeValue::Duration(_) => Err(py_value_error("duration hydration requires a lossless day-time parser")),
+        AttributeValue::Date(value) => py
+            .import("datetime")?
+            .getattr("date")?
+            .call_method1("fromisoformat", (value,))
+            .map(Bound::unbind),
+        AttributeValue::DateTime(value) | AttributeValue::DateTimeTZ(value) => py
+            .import("datetime")?
+            .getattr("datetime")?
+            .call_method1("fromisoformat", (value,))
+            .map(Bound::unbind),
+        AttributeValue::Decimal(value) => py
+            .import("decimal")?
+            .getattr("Decimal")?
+            .call1((value,))
+            .map(Bound::unbind),
+        AttributeValue::Duration(_) => Err(py_value_error(
+            "duration hydration requires a lossless day-time parser",
+        )),
     }
 }
 
@@ -934,10 +1071,9 @@ plays:
 "#;
 
     fn projection() -> RuntimeProjection {
-        let documents = SchemaDocumentSet::parse([(
-            DocumentId::new("python-native.yaml").unwrap(),
-            SCHEMA,
-        )]).unwrap();
+        let documents =
+            SchemaDocumentSet::parse([(DocumentId::new("python-native.yaml").unwrap(), SCHEMA)])
+                .unwrap();
         let declared = normalize_documents(&documents).unwrap();
         let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
         let resolved = resolve(&declared, &profile).unwrap();
@@ -947,13 +1083,18 @@ plays:
             &ProjectionConfig::python(),
             &[ProjectionHandler::python_v1()],
             &[],
-        ).unwrap()
+        )
+        .unwrap()
     }
 
-    fn classes(py: Python<'_>, projection: &RuntimeProjection) -> Vec<(Py<PyType>, Option<Py<PyType>>)> {
+    fn classes(
+        py: Python<'_>,
+        projection: &RuntimeProjection,
+    ) -> Vec<(Py<PyType>, Option<Py<PyType>>)> {
         let module = PyModule::from_code(
             py,
-            ffi::c_str!(r#"
+            ffi::c_str!(
+                r#"
 class Complete:
     __model_form__ = "complete"
     def __init__(self, **values):
@@ -989,36 +1130,71 @@ class Reference:
     def initialize_runtime_reference(self, iid, values):
         self._iid = iid
         self._values = dict(values)
-"#),
+"#
+            ),
             ffi::c_str!("projection_models.py"),
             ffi::c_str!("projection_models"),
-        ).unwrap();
+        )
+        .unwrap();
         let builtins = py.import("builtins").unwrap();
         let type_fn = builtins.getattr("type").unwrap();
-        projection.models().iter().map(|(id, model)| {
-            let base = if id.kind() == TypeKind::Attribute { "Attribute" } else { "Complete" };
-            let attrs = PyDict::new(py);
-            attrs.set_item("__type_id__", canonical_id(id).unwrap()).unwrap();
-            attrs.set_item("__model_form__", "complete").unwrap();
-            let bases = PyTuple::new(py, [module.getattr(base).unwrap()]).unwrap();
-            let complete = type_fn.call1((model.target_name().as_str(), bases, attrs)).unwrap().downcast_into::<PyType>().unwrap().unbind();
-            let reference = model.reference_read().target_name().map(|name| {
+        projection
+            .models()
+            .iter()
+            .map(|(id, model)| {
+                let base = if id.kind() == TypeKind::Attribute {
+                    "Attribute"
+                } else {
+                    "Complete"
+                };
                 let attrs = PyDict::new(py);
-                attrs.set_item("__type_id__", canonical_id(id).unwrap()).unwrap();
-                attrs.set_item("__model_form__", "reference").unwrap();
-                let bases = PyTuple::new(py, [module.getattr("Reference").unwrap()]).unwrap();
-                type_fn.call1((name.as_str(), bases, attrs)).unwrap().downcast_into::<PyType>().unwrap().unbind()
-            });
-            (complete, reference)
-        }).collect()
+                attrs
+                    .set_item("__type_id__", canonical_id(id).unwrap())
+                    .unwrap();
+                attrs.set_item("__model_form__", "complete").unwrap();
+                let bases = PyTuple::new(py, [module.getattr(base).unwrap()]).unwrap();
+                let complete = type_fn
+                    .call1((model.target_name().as_str(), bases, attrs))
+                    .unwrap()
+                    .downcast_into::<PyType>()
+                    .unwrap()
+                    .unbind();
+                let reference = model.reference_read().target_name().map(|name| {
+                    let attrs = PyDict::new(py);
+                    attrs
+                        .set_item("__type_id__", canonical_id(id).unwrap())
+                        .unwrap();
+                    attrs.set_item("__model_form__", "reference").unwrap();
+                    let bases = PyTuple::new(py, [module.getattr("Reference").unwrap()]).unwrap();
+                    type_fn
+                        .call1((name.as_str(), bases, attrs))
+                        .unwrap()
+                        .downcast_into::<PyType>()
+                        .unwrap()
+                        .unbind()
+                });
+                (complete, reference)
+            })
+            .collect()
     }
 
     fn install(py: Python<'_>) -> (RuntimeProjection, Arc<InstalledPackage>) {
         let projection = projection();
         let projection_json = String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
-        let semantic = String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap()).unwrap();
-        let fingerprint = String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap()).unwrap();
-        let package = install_projection(py, &projection_json, &semantic, &fingerprint, classes(py, &projection)).unwrap();
+        let semantic =
+            String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                .unwrap();
+        let fingerprint =
+            String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                .unwrap();
+        let package = install_projection(
+            py,
+            &projection_json,
+            &semantic,
+            &fingerprint,
+            classes(py, &projection),
+        )
+        .unwrap();
         (projection, package)
     }
 
@@ -1027,19 +1203,42 @@ class Reference:
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             let projection = projection();
-            let projection_json = String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
-            let semantic = String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap()).unwrap();
-            let fingerprint = String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap()).unwrap();
-            install_projection(py, &projection_json, &semantic, &fingerprint, classes(py, &projection)).unwrap();
+            let projection_json =
+                String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
+            let semantic =
+                String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                    .unwrap();
+            let fingerprint =
+                String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                    .unwrap();
+            install_projection(
+                py,
+                &projection_json,
+                &semantic,
+                &fingerprint,
+                classes(py, &projection),
+            )
+            .unwrap();
 
             let mut missing = classes(py, &projection);
             missing.pop();
-            assert!(install_projection(py, &projection_json, &semantic, &fingerprint, missing).is_err());
+            assert!(
+                install_projection(py, &projection_json, &semantic, &fingerprint, missing).is_err()
+            );
 
             let mut tampered: serde_json::Value = serde_json::from_str(&projection_json).unwrap();
             tampered["models"][0]["target_name"] = serde_json::json!("Tampered");
             let tampered = String::from_utf8(to_canonical_json(&tampered).unwrap()).unwrap();
-            assert!(install_projection(py, &tampered, &semantic, &fingerprint, classes(py, &projection)).is_err());
+            assert!(
+                install_projection(
+                    py,
+                    &tampered,
+                    &semantic,
+                    &fingerprint,
+                    classes(py, &projection)
+                )
+                .is_err()
+            );
         });
     }
 
@@ -1048,57 +1247,136 @@ class Reference:
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             let (_, package) = install(py);
-            let person_id = package.type_by_label("person", TypeKind::Entity).unwrap().clone();
-            let identifier_id = package.type_by_label("identifier", TypeKind::Attribute).unwrap().clone();
-            let aliases_id = package.type_by_label("aliases", TypeKind::Attribute).unwrap().clone();
-            let person_class = package.class(&person_id, ProjectedModelForm::Complete).unwrap().bind(py);
-            let identifier_class = package.class(&identifier_id, ProjectedModelForm::Complete).unwrap().bind(py);
-            let aliases_class = package.class(&aliases_id, ProjectedModelForm::Complete).unwrap().bind(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let identifier_id = package
+                .type_by_label("identifier", TypeKind::Attribute)
+                .unwrap()
+                .clone();
+            let aliases_id = package
+                .type_by_label("aliases", TypeKind::Attribute)
+                .unwrap()
+                .clone();
+            let person_class = package
+                .class(&person_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py);
+            let identifier_class = package
+                .class(&identifier_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py);
+            let aliases_class = package
+                .class(&aliases_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py);
             let identifier = identifier_class.call1(("person-1",)).unwrap();
             let kwargs = PyDict::new(py);
             kwargs.set_item("identifier", &identifier).unwrap();
             let person = person_class.call((), Some(&kwargs)).unwrap();
             let descriptor = package.projection.entity_descriptor(&person_id).unwrap();
             assert_eq!(
-                lower_attributes(py, package.as_ref(), &descriptor.owned_attributes, &person).unwrap(),
-                vec![("identifier".into(), AttributeValue::String("person-1".into()))]
+                lower_attributes(py, package.as_ref(), &descriptor.owned_attributes, &person)
+                    .unwrap(),
+                vec![(
+                    "identifier".into(),
+                    AttributeValue::String("person-1".into())
+                )]
             );
 
-            let hydrated = hydrate_entity(py, package.as_ref(), &person_id, &DynamicEntityRow {
-                iid: Some("0x-person".into()),
-                type_name: Some("person".into()),
-                attributes: vec![("identifier".into(), AttributeValue::String("person-1".into()))],
-            }).unwrap();
+            let hydrated = hydrate_entity(
+                py,
+                package.as_ref(),
+                &person_id,
+                &DynamicEntityRow {
+                    iid: Some("0x-person".into()),
+                    type_name: Some("person".into()),
+                    attributes: vec![(
+                        "identifier".into(),
+                        AttributeValue::String("person-1".into()),
+                    )],
+                },
+            )
+            .unwrap();
             let hydrated = hydrated.bind(py);
-            assert_eq!(hydrated.getattr("iid").unwrap().extract::<String>().unwrap(), "0x-person");
-            let wrapped = hydrated.call_method0("runtime_values").unwrap().downcast::<PyDict>().unwrap().get_item("identifier").unwrap().unwrap();
+            assert_eq!(
+                hydrated
+                    .getattr("iid")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "0x-person"
+            );
+            let wrapped = hydrated
+                .call_method0("runtime_values")
+                .unwrap()
+                .downcast::<PyDict>()
+                .unwrap()
+                .get_item("identifier")
+                .unwrap()
+                .unwrap();
             assert_eq!(wrapped.get_type().as_ptr(), identifier_class.as_ptr());
-            assert_eq!(wrapped.call_method0("runtime_attribute_value").unwrap().extract::<String>().unwrap(), "person-1");
+            assert_eq!(
+                wrapped
+                    .call_method0("runtime_attribute_value")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "person-1"
+            );
 
-            let membership_id = package.type_by_label("membership", TypeKind::Relation).unwrap().clone();
-            let membership = hydrate_relation(py, package.as_ref(), &membership_id, &DynamicRelationRow {
-                iid: Some("0x-membership".into()),
-                type_name: Some("membership".into()),
-                attributes: vec![],
-                role_players: vec![DynamicRolePlayer {
-                    role_name: "member".into(),
-                    player_iid: Some("0x-person".into()),
-                    player_type_name: Some("person".into()),
-                    attributes: vec![
-                        ("identifier".into(), serde_json::json!("person-1")),
-                        ("aliases".into(), serde_json::json!(["alpha", "beta"])),
-                    ],
-                }],
-            }).unwrap();
+            let membership_id = package
+                .type_by_label("membership", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let membership = hydrate_relation(
+                py,
+                package.as_ref(),
+                &membership_id,
+                &DynamicRelationRow {
+                    iid: Some("0x-membership".into()),
+                    type_name: Some("membership".into()),
+                    attributes: vec![],
+                    role_players: vec![DynamicRolePlayer {
+                        role_name: "member".into(),
+                        player_iid: Some("0x-person".into()),
+                        player_type_name: Some("person".into()),
+                        attributes: vec![
+                            ("identifier".into(), serde_json::json!("person-1")),
+                            ("aliases".into(), serde_json::json!(["alpha", "beta"])),
+                        ],
+                    }],
+                },
+            )
+            .unwrap();
             let membership_values = membership.bind(py).call_method0("runtime_values").unwrap();
-            let member = membership_values.downcast::<PyDict>().unwrap().get_item("member").unwrap().unwrap();
+            let member = membership_values
+                .downcast::<PyDict>()
+                .unwrap()
+                .get_item("member")
+                .unwrap()
+                .unwrap();
             assert_eq!(member.get_type().as_ptr(), person_class.as_ptr());
-            assert_eq!(member.getattr("iid").unwrap().extract::<String>().unwrap(), "0x-person");
+            assert_eq!(
+                member.getattr("iid").unwrap().extract::<String>().unwrap(),
+                "0x-person"
+            );
             let member_values = member.call_method0("runtime_values").unwrap();
             let member_values = member_values.downcast::<PyDict>().unwrap();
             let member_identifier = member_values.get_item("identifier").unwrap().unwrap();
-            assert_eq!(member_identifier.get_type().as_ptr(), identifier_class.as_ptr());
-            assert_eq!(member_identifier.call_method0("runtime_attribute_value").unwrap().extract::<String>().unwrap(), "person-1");
+            assert_eq!(
+                member_identifier.get_type().as_ptr(),
+                identifier_class.as_ptr()
+            );
+            assert_eq!(
+                member_identifier
+                    .call_method0("runtime_attribute_value")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "person-1"
+            );
             let member_aliases = member_values.get_item("aliases").unwrap().unwrap();
             let member_aliases = member_aliases.downcast::<PyTuple>().unwrap();
             assert_eq!(member_aliases.len(), 2);
@@ -1106,23 +1384,46 @@ class Reference:
                 assert_eq!(alias.get_type().as_ptr(), aliases_class.as_ptr());
             }
 
-            let container_id = package.type_by_label("container", TypeKind::Relation).unwrap().clone();
-            let relation = hydrate_relation(py, package.as_ref(), &container_id, &DynamicRelationRow {
-                iid: Some("0x-container".into()),
-                type_name: Some("container".into()),
-                attributes: vec![],
-                role_players: vec![DynamicRolePlayer {
-                    role_name: "item".into(),
-                    player_iid: Some("0x-event".into()),
-                    player_type_name: Some("event".into()),
+            let container_id = package
+                .type_by_label("container", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let relation = hydrate_relation(
+                py,
+                package.as_ref(),
+                &container_id,
+                &DynamicRelationRow {
+                    iid: Some("0x-container".into()),
+                    type_name: Some("container".into()),
                     attributes: vec![],
-                }],
-            }).unwrap();
+                    role_players: vec![DynamicRolePlayer {
+                        role_name: "item".into(),
+                        player_iid: Some("0x-event".into()),
+                        player_type_name: Some("event".into()),
+                        attributes: vec![],
+                    }],
+                },
+            )
+            .unwrap();
             let values = relation.bind(py).call_method0("runtime_values").unwrap();
-            let item = values.downcast::<PyDict>().unwrap().get_item("item").unwrap().unwrap();
+            let item = values
+                .downcast::<PyDict>()
+                .unwrap()
+                .get_item("item")
+                .unwrap()
+                .unwrap();
             let item = item.downcast::<PyTuple>().unwrap().get_item(0).unwrap();
-            assert_eq!(item.getattr("__model_form__").unwrap().extract::<String>().unwrap(), "reference");
-            assert_eq!(item.getattr("iid").unwrap().extract::<String>().unwrap(), "0x-event");
+            assert_eq!(
+                item.getattr("__model_form__")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "reference"
+            );
+            assert_eq!(
+                item.getattr("iid").unwrap().extract::<String>().unwrap(),
+                "0x-event"
+            );
         });
     }
 }

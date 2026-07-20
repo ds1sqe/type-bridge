@@ -10,28 +10,22 @@ use type_bridge_contract::query_plan::{
     QueryInvocation, QueryOperation, QueryOutput, QueryPattern, ReadStage,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
-    RelatesFact, RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
-    TypeFact, ValueFact, ValueFactId,
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact,
+    RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
+use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::AttributeValue;
 use type_bridge_orm::match_request::{
-    BindingId as V1BindingId, BindingPair, BoundFieldId, ComparisonOp,
-    DescriptorId, FetchShape, FetchSlot, FieldId, MatchBinding, MatchExpr,
-    MatchMode, MatchOperation, MatchOrder, MatchPlan, MatchRequest,
-    MissingOrder, RoleEdgeId, RoleId as V1RoleId, RowCardinality,
-    SortDirection, ThingKind, Window,
+    BindingId as V1BindingId, BindingPair, BoundFieldId, ComparisonOp, DescriptorId, FetchShape,
+    FetchSlot, FieldId, MatchBinding, MatchExpr, MatchMode, MatchOperation, MatchOrder, MatchPlan,
+    MatchRequest, MissingOrder, RoleEdgeId, RoleId as V1RoleId, RowCardinality, SortDirection,
+    ThingKind, Window,
 };
 use type_bridge_orm::query_v2::lower_validated_query;
 use type_bridge_orm::query_v2_adapter::adapt_match_request;
-use type_bridge_query::{
-    MigrationAssertionValidationContext, validate_query_plan,
-};
-use type_bridge_schema::{
-    ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve,
-};
-use type_bridge_contract::value::ValueTypeTag;
+use type_bridge_query::{MigrationAssertionValidationContext, validate_query_plan};
+use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
 
 struct SchemaFixture {
     managed: ManagedSchemaState,
@@ -41,8 +35,7 @@ struct SchemaFixture {
 fn schema_fixture() -> SchemaFixture {
     let person = TypeId::new(TypeKind::Entity, "person").expect("type");
     let employment = TypeId::new(TypeKind::Relation, "employment").expect("type");
-    let worker = type_bridge_contract::id::RoleId::new("employment", "worker")
-        .expect("role");
+    let worker = type_bridge_contract::id::RoleId::new("employment", "worker").expect("role");
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
@@ -86,9 +79,8 @@ fn schema_fixture() -> SchemaFixture {
             .expect("span"),
         )
     });
-    let declared =
-        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
-            .expect("declared schema");
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("adapter-scope").expect("scope"),
@@ -129,10 +121,7 @@ fn representative_plan() -> MatchPlan {
                 MatchExpr::RoleEdge {
                     id: RoleEdgeId::new(0),
                     relation: V1BindingId::new(1),
-                    role: V1RoleId::new(
-                        DescriptorId::new("relation:employment"),
-                        "worker",
-                    ),
+                    role: V1RoleId::new(DescriptorId::new("relation:employment"), "worker"),
                     player: V1BindingId::new(0),
                 },
                 MatchExpr::FieldValue {
@@ -156,14 +145,19 @@ fn representative_plan() -> MatchPlan {
 fn fetch_rows_operation() -> MatchOperation {
     MatchOperation::FetchRows {
         output: FetchShape::Positional {
-            slots: vec![FetchSlot::One { binding: V1BindingId::new(0) }],
+            slots: vec![FetchSlot::One {
+                binding: V1BindingId::new(0),
+            }],
         },
         order: vec![MatchOrder {
             field: name_field(),
             direction: SortDirection::Ascending,
             missing: MissingOrder::Reject,
         }],
-        window: Window { offset: 0, limit: 5 },
+        window: Window {
+            offset: 0,
+            limit: 5,
+        },
         cardinality: RowCardinality::BoundedMany,
     }
 }
@@ -172,15 +166,15 @@ fn fetch_rows_operation() -> MatchOperation {
 fn a_representative_v1_request_adapts_validates_and_lowers() {
     let fixture = schema_fixture();
     let request = MatchRequest::v1(representative_plan(), fetch_rows_operation());
-    let adapted = adapt_match_request(
-        &request,
-        fixture.managed.managed_semantic_schema(),
-    )
-    .expect("representative adaptation");
+    let adapted = adapt_match_request(&request, fixture.managed.managed_semantic_schema())
+        .expect("representative adaptation");
     assert_eq!(adapted.operation(), QueryOperation::Rows);
 
     let plan = adapted.plan();
-    assert!(plan.inputs().is_empty(), "V1 requests carry no input columns");
+    assert!(
+        plan.inputs().is_empty(),
+        "V1 requests carry no input columns"
+    );
     let QueryOutput::Rows { columns } = plan.output() else {
         panic!("adapted plans project rows");
     };
@@ -190,27 +184,29 @@ fn a_representative_v1_request_adapts_validates_and_lowers() {
     };
     assert!(patterns.iter().any(|pattern| matches!(
         pattern,
-        QueryPattern::Isa { include_subtypes: true, .. }
+        QueryPattern::Isa {
+            include_subtypes: true,
+            ..
+        }
     )));
-    assert!(patterns.iter().any(|pattern| matches!(
-        pattern,
-        QueryPattern::Links { .. }
-    )));
-    assert!(patterns.iter().any(|pattern| matches!(
-        pattern,
-        QueryPattern::Not { .. }
-    )));
+    assert!(
+        patterns
+            .iter()
+            .any(|pattern| matches!(pattern, QueryPattern::Links { .. }))
+    );
+    assert!(
+        patterns
+            .iter()
+            .any(|pattern| matches!(pattern, QueryPattern::Not { .. }))
+    );
 
     // The adapted plan is a real V2 plan: it validates and lowers.
-    let context =
-        MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let validated = validate_query_plan(plan, &context, StructuralLimits::CANONICAL)
         .expect("adapted plan validates against the schema");
     let invocation =
-        QueryInvocation::new(plan, adapted.operation(), Vec::new())
-            .expect("input-free invocation");
-    let lowered =
-        lower_validated_query(&validated, &invocation).expect("adapted lowering");
+        QueryInvocation::new(plan, adapted.operation(), Vec::new()).expect("input-free invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("adapted lowering");
     for syntax in [
         "$b0 isa person",
         "$b1 isa! employment, links (worker: $b0)",
@@ -233,7 +229,9 @@ fn a_representative_v1_request_adapts_validates_and_lowers() {
     let count = adapt_match_request(
         &MatchRequest::v1(
             representative_plan(),
-            MatchOperation::CountBy { root: V1BindingId::new(0) },
+            MatchOperation::CountBy {
+                root: V1BindingId::new(0),
+            },
         ),
         fixture.managed.managed_semantic_schema(),
     )
@@ -245,7 +243,9 @@ fn a_representative_v1_request_adapts_validates_and_lowers() {
     let exists = adapt_match_request(
         &MatchRequest::v1(
             representative_plan(),
-            MatchOperation::ExistsBy { root: V1BindingId::new(0) },
+            MatchOperation::ExistsBy {
+                root: V1BindingId::new(0),
+            },
         ),
         fixture.managed.managed_semantic_schema(),
     )
@@ -301,10 +301,15 @@ fn inexpressible_v1_shapes_reject_by_name() {
             MatchOperation::PageBy {
                 root: V1BindingId::new(0),
                 output: FetchShape::Positional {
-                    slots: vec![FetchSlot::One { binding: V1BindingId::new(0) }],
+                    slots: vec![FetchSlot::One {
+                        binding: V1BindingId::new(0)
+                    }],
                 },
                 order: Vec::new(),
-                window: Window { offset: 0, limit: 5 },
+                window: Window {
+                    offset: 0,
+                    limit: 5
+                },
                 include_total: false,
             },
         ),
@@ -316,7 +321,10 @@ fn inexpressible_v1_shapes_reject_by_name() {
             MatchOperation::FetchRows {
                 output: FetchShape::Named { slots: Vec::new() },
                 order: Vec::new(),
-                window: Window { offset: 0, limit: 5 },
+                window: Window {
+                    offset: 0,
+                    limit: 5
+                },
                 cardinality: RowCardinality::BoundedMany,
             },
         ),
@@ -334,7 +342,10 @@ fn inexpressible_v1_shapes_reject_by_name() {
                     }],
                 },
                 order: Vec::new(),
-                window: Window { offset: 0, limit: 5 },
+                window: Window {
+                    offset: 0,
+                    limit: 5
+                },
                 cardinality: RowCardinality::BoundedMany,
             },
         ),
@@ -345,14 +356,19 @@ fn inexpressible_v1_shapes_reject_by_name() {
             representative_plan(),
             MatchOperation::FetchRows {
                 output: FetchShape::Positional {
-                    slots: vec![FetchSlot::One { binding: V1BindingId::new(0) }],
+                    slots: vec![FetchSlot::One {
+                        binding: V1BindingId::new(0)
+                    }],
                 },
                 order: vec![MatchOrder {
                     field: name_field(),
                     direction: SortDirection::Ascending,
                     missing: MissingOrder::Reject,
                 }],
-                window: Window { offset: 0, limit: 1 },
+                window: Window {
+                    offset: 0,
+                    limit: 1
+                },
                 cardinality: RowCardinality::ExactlyOne,
             },
         ),
@@ -363,10 +379,15 @@ fn inexpressible_v1_shapes_reject_by_name() {
             representative_plan(),
             MatchOperation::FetchRows {
                 output: FetchShape::Positional {
-                    slots: vec![FetchSlot::One { binding: V1BindingId::new(0) }],
+                    slots: vec![FetchSlot::One {
+                        binding: V1BindingId::new(0)
+                    }],
                 },
                 order: Vec::new(),
-                window: Window { offset: 0, limit: 5 },
+                window: Window {
+                    offset: 0,
+                    limit: 5
+                },
                 cardinality: RowCardinality::BoundedMany,
             },
         ),

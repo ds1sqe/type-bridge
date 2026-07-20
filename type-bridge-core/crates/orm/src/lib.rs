@@ -76,11 +76,11 @@ pub mod hooks;
 pub mod manager;
 pub mod match_request;
 pub mod migration_assertion;
+pub mod query;
 pub mod query_v2;
 pub mod query_v2_adapter;
 pub mod query_v2_prepared;
 pub mod query_v2_remote;
-pub mod query;
 pub mod registry;
 pub mod relation;
 pub mod runtime_projection;
@@ -118,9 +118,9 @@ pub use session::ConnectOptions;
 pub use session::backend::AnswerCancellation;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
+pub use session::{Database, GivenRowsSpec, GivenValue, Transaction, TransactionContext, TxType};
 #[cfg(feature = "typedb")]
 pub use session::{database_exists, ensure_database_exists};
-pub use session::{Database, GivenRowsSpec, GivenValue, Transaction, TransactionContext, TxType};
 pub use value::AttributeValue;
 
 // Re-export derive macros when the `derive` feature is enabled.

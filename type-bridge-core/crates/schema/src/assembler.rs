@@ -78,8 +78,7 @@ impl FactAssembler {
                 "first capability requirement is here",
             ));
         }
-        self.capability_sources
-            .insert(capability.clone(), source);
+        self.capability_sources.insert(capability.clone(), source);
         self.capabilities.insert(capability);
         Ok(())
     }
@@ -140,18 +139,14 @@ impl FactAssembler {
 
         if let SchemaFact::Type(type_fact) = &fact {
             let type_id = type_fact.id();
-            self.type_labels.insert(
-                type_id.label().clone(),
-                (type_id.clone(), source.clone()),
-            );
+            self.type_labels
+                .insert(type_id.label().clone(), (type_id.clone(), source.clone()));
         }
 
         if let SchemaFact::Sub(sub_fact) = &fact {
             let subtype = sub_fact.id().subtype();
             let supertype = sub_fact.id().supertype();
-            if let Some((previous_parent, previous_source)) =
-                self.direct_parents.get(subtype)
-            {
+            if let Some((previous_parent, previous_source)) = self.direct_parents.get(subtype) {
                 if previous_parent != supertype {
                     return Err(diagnostic_with_related(
                         DiagnosticCategory::InvalidContract,
@@ -166,10 +161,8 @@ impl FactAssembler {
                     ));
                 }
             } else {
-                self.direct_parents.insert(
-                    subtype.clone(),
-                    (supertype.clone(), source.clone()),
-                );
+                self.direct_parents
+                    .insert(subtype.clone(), (supertype.clone(), source.clone()));
             }
         }
 
@@ -204,10 +197,7 @@ impl FactAssembler {
                 "first declaration is here",
             ));
         }
-        if let Some(previous) = self
-            .fact_sources
-            .get(&SchemaFactId::Relates(id.clone()))
-        {
+        if let Some(previous) = self.fact_sources.get(&SchemaFactId::Relates(id.clone())) {
             return Err(diagnostic_with_related(
                 DiagnosticCategory::InvalidContract,
                 "duplicate_schema_fact",
@@ -267,10 +257,7 @@ impl FactAssembler {
                 .transpose()?;
             let fact = RelatesFact::new(declaration.id.clone(), specializes)
                 .map_err(|error| contract(error, declaration.source.clone()))?;
-            self.insert_fact(
-                SchemaFact::Relates(fact),
-                declaration.source.clone(),
-            )?;
+            self.insert_fact(SchemaFact::Relates(fact), declaration.source.clone())?;
         }
         Ok(())
     }
@@ -318,17 +305,11 @@ impl FactAssembler {
                     Some(declaration.source),
                 ));
             }
-            let role = RoleId::new(
-                relation.label().as_str(),
-                declaration.role.as_str(),
-            )
-            .map_err(|error| contract(error, declaration.source.clone()))?;
+            let role = RoleId::new(relation.label().as_str(), declaration.role.as_str())
+                .map_err(|error| contract(error, declaration.source.clone()))?;
             let id = PlaysFactId::new(player, role)
                 .map_err(|error| contract(error, declaration.source.clone()))?;
-            self.insert_fact(
-                SchemaFact::Plays(PlaysFact::new(id)),
-                declaration.source,
-            )?;
+            self.insert_fact(SchemaFact::Plays(PlaysFact::new(id)), declaration.source)?;
         }
         Ok(())
     }
@@ -360,8 +341,7 @@ impl FactAssembler {
                 ));
             };
             if let Some(role) = declarations.iter().find_map(|candidate| {
-                (candidate.id.relation() == parent
-                    && candidate.id.role().label() == role_label)
+                (candidate.id.relation() == parent && candidate.id.role().label() == role_label)
                     .then(|| candidate.id.role().clone())
             }) {
                 return Ok(role);
@@ -370,8 +350,7 @@ impl FactAssembler {
                 let SchemaFact::Relates(fact) = sourced.fact() else {
                     return None;
                 };
-                (fact.id().relation() == parent
-                    && fact.id().role().label() == role_label)
+                (fact.id().relation() == parent && fact.id().role().label() == role_label)
                     .then(|| fact.id().role().clone())
             }) {
                 return Ok(role);

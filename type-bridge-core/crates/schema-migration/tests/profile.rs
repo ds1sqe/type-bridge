@@ -7,10 +7,9 @@ use type_bridge_contract::schema_lowering::{
     TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID,
 };
 use type_bridge_schema_migration::{
-    AnnotationKind, AnnotationSubjectKind, AnnotationTransition, EvidenceFlag,
-    EvidenceRequirement, FactKind, FactTransition, InterfaceDefault, InterfaceKind,
-    LoweringMechanism, SafetyClass, SafetyScenario, canonical_profile_bytes,
-    profile_fingerprint, typedb_3_12_1_profile,
+    AnnotationKind, AnnotationSubjectKind, AnnotationTransition, EvidenceFlag, EvidenceRequirement,
+    FactKind, FactTransition, InterfaceDefault, InterfaceKind, LoweringMechanism, SafetyClass,
+    SafetyScenario, canonical_profile_bytes, profile_fingerprint, typedb_3_12_1_profile,
 };
 
 fn capability(id: &str) -> CapabilityId {
@@ -20,7 +19,10 @@ fn capability(id: &str) -> CapabilityId {
 #[test]
 fn profile_identity_and_capabilities_are_closed() {
     let profile = typedb_3_12_1_profile();
-    assert_eq!(profile.id.as_str(), TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID);
+    assert_eq!(
+        profile.id.as_str(),
+        TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID
+    );
     assert_eq!(
         serde_json::to_value(&profile.fingerprint_domain).unwrap(),
         SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN
@@ -82,9 +84,11 @@ fn fact_table_is_exhaustive_and_matches_live_evidence() {
         .unwrap();
     assert_eq!(function.mechanism, LoweringMechanism::Redefine);
     assert_eq!(function.safety, SafetyClass::Opaque);
-    assert!(function.required_capabilities.contains(&capability(
-        "schema.transition.redefine.function"
-    )));
+    assert!(
+        function
+            .required_capabilities
+            .contains(&capability("schema.transition.redefine.function"))
+    );
     let value = profile
         .fact_rule(FactKind::Value, FactTransition::Redefine)
         .unwrap();
@@ -107,9 +111,11 @@ fn annotation_table_is_exhaustive_and_fail_closed() {
     for subject in AnnotationSubjectKind::ALL {
         for annotation in AnnotationKind::ALL {
             for transition in AnnotationTransition::ALL {
-                assert!(profile
-                    .annotation_rule(subject, annotation, transition)
-                    .is_some());
+                assert!(
+                    profile
+                        .annotation_rule(subject, annotation, transition)
+                        .is_some()
+                );
             }
         }
     }
@@ -195,15 +201,21 @@ fn defaults_safety_and_evidence_are_frozen() {
     assert_eq!(independent.safety, SafetyClass::Destructive);
     assert_eq!(independent.evidence, EvidenceRequirement::OperatorApproval);
     assert_eq!(profile.evidence, EvidenceFlag::ALL);
-    assert!(profile
-        .evidence
-        .contains(&EvidenceFlag::StructTransitionsUnsupported));
-    assert!(profile
-        .evidence
-        .contains(&EvidenceFlag::FunctionRedefineLeavesStoredMetadataStale));
-    assert!(profile
-        .evidence
-        .contains(&EvidenceFlag::IndependentRemovalDeletesOwnerlessAttributes));
+    assert!(
+        profile
+            .evidence
+            .contains(&EvidenceFlag::StructTransitionsUnsupported)
+    );
+    assert!(
+        profile
+            .evidence
+            .contains(&EvidenceFlag::FunctionRedefineLeavesStoredMetadataStale)
+    );
+    assert!(
+        profile
+            .evidence
+            .contains(&EvidenceFlag::IndependentRemovalDeletesOwnerlessAttributes)
+    );
 }
 
 #[test]
@@ -213,7 +225,9 @@ fn canonical_profile_and_fingerprint_match_goldens() {
         include_bytes!("fixtures/typedb-3.12.1-schema-lowering-v1.json")
     );
     assert_eq!(
-        serde_json::to_vec(&profile_fingerprint()).unwrap().as_slice(),
+        serde_json::to_vec(&profile_fingerprint())
+            .unwrap()
+            .as_slice(),
         include_bytes!("fixtures/typedb-3.12.1-schema-lowering-v1.fingerprint.json")
     );
 }

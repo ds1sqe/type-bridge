@@ -41,9 +41,8 @@ pub fn query_v2_authority(
     scope: String,
     profile: String,
 ) -> napi::Result<NodeQueryV2Authority> {
-    let authority =
-        QueryAuthority::from_declared_bytes(&declared_schema, &scope, &profile)
-            .map_err(|diagnostic| napi_error(&diagnostic))?;
+    let authority = QueryAuthority::from_declared_bytes(&declared_schema, &scope, &profile)
+        .map_err(|diagnostic| napi_error(&diagnostic))?;
     Ok(NodeQueryV2Authority {
         authority: Arc::new(authority),
     })

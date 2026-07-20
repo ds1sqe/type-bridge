@@ -5,8 +5,8 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    InputColumn, InputColumnId, OrderDirection, OrderTerm, QueryOperand,
-    QueryOutput, QueryPattern, QueryPlan, ReadStage, decode_query_plan,
+    InputColumn, InputColumnId, OrderDirection, OrderTerm, QueryOperand, QueryOutput, QueryPattern,
+    QueryPlan, ReadStage, decode_query_plan,
 };
 use type_bridge_contract::query_plan_capability_vocabulary;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -59,7 +59,9 @@ fn full_pipeline_plan() -> QueryPlan {
                     },
                     QueryPattern::Value {
                         comparator: ValueComparator::GreaterOrEqual,
-                        left: QueryOperand::Binding { binding: binding_id(1) },
+                        left: QueryOperand::Binding {
+                            binding: binding_id(1),
+                        },
                         right: QueryOperand::Input {
                             column: InputColumnId::new(0),
                         },
@@ -173,7 +175,9 @@ fn canonical_bytes_round_trip_and_bind_the_fingerprint() {
 
 #[test]
 fn malformed_forged_and_unknown_wire_bytes_fail_closed() {
-    let bytes = full_pipeline_plan().canonical_bytes().expect("canonical bytes");
+    let bytes = full_pipeline_plan()
+        .canonical_bytes()
+        .expect("canonical bytes");
 
     let mut forged: Value = serde_json::from_slice(&bytes).expect("JSON");
     forged["required_capabilities"] = json!(["query.future", "query.plan"]);
@@ -203,7 +207,9 @@ fn malformed_forged_and_unknown_wire_bytes_fail_closed() {
 #[test]
 fn pipeline_shape_rules_fail_closed() {
     let semantics = managed_semantics(b"query-plan-shape-fixture");
-    let output = QueryOutput::Rows { columns: vec![binding_id(0)] };
+    let output = QueryOutput::Rows {
+        columns: vec![binding_id(0)],
+    };
     let build = |pipeline: Vec<ReadStage>| {
         QueryPlan::new(
             vec![binding(0, "person")],
@@ -223,9 +229,13 @@ fn pipeline_shape_rules_fail_closed() {
     );
     assert_eq!(
         build(vec![
-            ReadStage::Match { patterns: vec![person_isa(0)] },
+            ReadStage::Match {
+                patterns: vec![person_isa(0)]
+            },
             ReadStage::Distinct,
-            ReadStage::Select { bindings: vec![binding_id(0)] },
+            ReadStage::Select {
+                bindings: vec![binding_id(0)]
+            },
         ])
         .expect_err("stages follow the canonical order")
         .code()
@@ -234,7 +244,9 @@ fn pipeline_shape_rules_fail_closed() {
     );
     assert_eq!(
         build(vec![
-            ReadStage::Match { patterns: vec![person_isa(0)] },
+            ReadStage::Match {
+                patterns: vec![person_isa(0)]
+            },
             ReadStage::Limit { rows: 3 },
         ])
         .expect_err("truncation requires an explicit order")
@@ -244,8 +256,12 @@ fn pipeline_shape_rules_fail_closed() {
     );
     assert_eq!(
         build(vec![
-            ReadStage::Match { patterns: vec![person_isa(0)] },
-            ReadStage::Select { bindings: vec![binding_id(1)] },
+            ReadStage::Match {
+                patterns: vec![person_isa(0)]
+            },
+            ReadStage::Select {
+                bindings: vec![binding_id(1)]
+            },
         ])
         .expect_err("select admits only declared bindings")
         .code()
@@ -268,9 +284,13 @@ fn pipeline_shape_rules_fail_closed() {
                     },
                 ],
             },
-            ReadStage::Select { bindings: vec![binding_id(0)] },
+            ReadStage::Select {
+                bindings: vec![binding_id(0)],
+            },
         ],
-        QueryOutput::Rows { columns: vec![binding_id(1)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(1)],
+        },
         semantics.clone(),
     );
     assert_eq!(
@@ -290,7 +310,9 @@ fn pipeline_shape_rules_fail_closed() {
                 person_isa(0),
                 QueryPattern::Value {
                     comparator: ValueComparator::Equal,
-                    left: QueryOperand::Input { column: InputColumnId::new(0) },
+                    left: QueryOperand::Input {
+                        column: InputColumnId::new(0),
+                    },
                     right: QueryOperand::Literal {
                         value: CanonicalValue::Long(1),
                     },
@@ -315,12 +337,8 @@ fn invocations_bind_the_exact_plan_and_validate_rectangular_batches() {
 
     let plan = full_pipeline_plan();
     let row = |value: i64| InputRow::new(vec![Some(CanonicalValue::Long(value))]);
-    let invocation = QueryInvocation::new(
-        &plan,
-        QueryOperation::Rows,
-        vec![row(18), row(65)],
-    )
-    .expect("rectangular batch");
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![row(18), row(65)])
+        .expect("rectangular batch");
     assert!(invocation.binds(&plan).expect("binding check"));
     assert_eq!(invocation.inputs().len(), 2);
     assert_eq!(invocation.operation(), QueryOperation::Rows);
@@ -331,7 +349,9 @@ fn invocations_bind_the_exact_plan_and_validate_rectangular_batches() {
         plan.inputs().to_vec(),
         vec![
             plan.pipeline()[0].clone(),
-            ReadStage::Select { bindings: vec![binding_id(0), binding_id(1)] },
+            ReadStage::Select {
+                bindings: vec![binding_id(0), binding_id(1)],
+            },
         ],
         plan.output().clone(),
         plan.managed_semantics().clone(),
@@ -356,12 +376,9 @@ fn invocations_bind_the_exact_plan_and_validate_rectangular_batches() {
     .expect_err("value type mismatch");
     assert_eq!(wrong_type.code().as_str(), "query_invocation_value_type");
 
-    let missing_required = QueryInvocation::new(
-        &plan,
-        QueryOperation::Rows,
-        vec![InputRow::new(vec![None])],
-    )
-    .expect_err("required value missing");
+    let missing_required =
+        QueryInvocation::new(&plan, QueryOperation::Rows, vec![InputRow::new(vec![None])])
+            .expect_err("required value missing");
     assert_eq!(
         missing_required.code().as_str(),
         "query_invocation_missing_value"
@@ -378,7 +395,9 @@ fn function_calls_are_first_class_and_capability_gated() {
 
     let semantics = managed_semantics(b"query-plan-function-fixture");
     let call = QueryPattern::FunctionCall {
-        arguments: vec![QueryOperand::Binding { binding: binding_id(0) }],
+        arguments: vec![QueryOperand::Binding {
+            binding: binding_id(0),
+        }],
         assigned: binding_id(1),
         function: FunctionId::new("person_age").expect("function id"),
     };
@@ -388,7 +407,9 @@ fn function_calls_are_first_class_and_capability_gated() {
         vec![ReadStage::Match {
             patterns: vec![person_isa(0), call.clone()],
         }],
-        QueryOutput::Rows { columns: vec![binding_id(0), binding_id(1)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
         semantics.clone(),
     )
     .expect("function-call plan");
@@ -405,9 +426,16 @@ fn function_calls_are_first_class_and_capability_gated() {
         vec![binding(0, "person"), binding(1, "age_value")],
         Vec::new(),
         vec![ReadStage::Match {
-            patterns: vec![person_isa(0), QueryPattern::Not { patterns: vec![call] }],
+            patterns: vec![
+                person_isa(0),
+                QueryPattern::Not {
+                    patterns: vec![call],
+                },
+            ],
         }],
-        QueryOutput::Rows { columns: vec![binding_id(0)] },
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
         semantics,
     )
     .expect_err("negated calls are reserved");
@@ -423,29 +451,28 @@ fn reduce_stages_group_assign_and_reject_unsound_shapes() {
         attribute_id: AttributeId::new("age").expect("attribute id"),
         owner: binding_id(0),
     };
-    let reduce_plan = |assignments: Vec<ReduceAssignment>,
-                       groups: Vec<BindingId>,
-                       columns: Vec<BindingId>| {
-        QueryPlan::new(
-            vec![
-                binding(0, "person"),
-                binding(1, "age"),
-                binding(2, "age_sum"),
-            ],
-            Vec::new(),
-            vec![
-                ReadStage::Match {
-                    patterns: vec![person_isa(0), has_age.clone()],
-                },
-                ReadStage::Reduce {
-                    assignments,
-                    groups,
-                },
-            ],
-            QueryOutput::Rows { columns },
-            managed_semantics(b"query-plan-reduce-fixture"),
-        )
-    };
+    let reduce_plan =
+        |assignments: Vec<ReduceAssignment>, groups: Vec<BindingId>, columns: Vec<BindingId>| {
+            QueryPlan::new(
+                vec![
+                    binding(0, "person"),
+                    binding(1, "age"),
+                    binding(2, "age_sum"),
+                ],
+                Vec::new(),
+                vec![
+                    ReadStage::Match {
+                        patterns: vec![person_isa(0), has_age.clone()],
+                    },
+                    ReadStage::Reduce {
+                        assignments,
+                        groups,
+                    },
+                ],
+                QueryOutput::Rows { columns },
+                managed_semantics(b"query-plan-reduce-fixture"),
+            )
+        };
 
     // A grouped sum round-trips and derives the reduce capability.
     let plan = reduce_plan(
@@ -549,16 +576,15 @@ fn try_blocks_export_optional_bindings_and_reject_unsound_shapes() {
     let try_match = ReadStage::Match {
         patterns: vec![
             person_isa(0),
-            QueryPattern::Try { patterns: vec![has_age(0, 1)] },
+            QueryPattern::Try {
+                patterns: vec![has_age(0, 1)],
+            },
         ],
     };
 
     // Optional bindings project and round-trip under the try capability.
-    let plan = build(
-        vec![try_match.clone()],
-        vec![binding_id(0), binding_id(1)],
-    )
-    .expect("optional projection plan");
+    let plan = build(vec![try_match.clone()], vec![binding_id(0), binding_id(1)])
+        .expect("optional projection plan");
     assert!(
         plan.required_capabilities()
             .iter()
@@ -619,23 +645,24 @@ fn try_blocks_export_optional_bindings_and_reject_unsound_shapes() {
     let error = build(
         vec![
             try_match.clone(),
-            ReadStage::Require { bindings: vec![binding_id(1)] },
+            ReadStage::Require {
+                bindings: vec![binding_id(1)],
+            },
         ],
         vec![binding_id(0)],
     )
     .expect_err("requiring an optional binding");
-    assert_eq!(error.code().as_str(), "query_plan_require_optional_reserved");
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_require_optional_reserved"
+    );
 
     // Grouping keys stay mandatory.
     let error = build(
         vec![
             try_match.clone(),
             ReadStage::Reduce {
-                assignments: vec![ReduceAssignment::new(
-                    binding_id(2),
-                    Reducer::Count,
-                    None,
-                )],
+                assignments: vec![ReduceAssignment::new(binding_id(2), Reducer::Count, None)],
                 groups: vec![binding_id(1)],
             },
         ],
@@ -649,8 +676,12 @@ fn try_blocks_export_optional_bindings_and_reject_unsound_shapes() {
         vec![ReadStage::Match {
             patterns: vec![
                 person_isa(0),
-                QueryPattern::Try { patterns: vec![has_age(0, 1)] },
-                QueryPattern::Try { patterns: vec![has_age(0, 1)] },
+                QueryPattern::Try {
+                    patterns: vec![has_age(0, 1)],
+                },
+                QueryPattern::Try {
+                    patterns: vec![has_age(0, 1)],
+                },
             ],
         }],
         vec![binding_id(0), binding_id(1)],
@@ -719,7 +750,9 @@ fn document_outputs_fetch_typed_fields_and_reject_unsound_shapes() {
         vec![
             DocumentField::new(
                 key("age"),
-                DocumentSource::Binding { binding: binding_id(1) },
+                DocumentSource::Binding {
+                    binding: binding_id(1),
+                },
             ),
             DocumentField::new(
                 key("names"),
@@ -745,11 +778,15 @@ fn document_outputs_fetch_typed_fields_and_reject_unsound_shapes() {
         vec![
             DocumentField::new(
                 key("age"),
-                DocumentSource::Binding { binding: binding_id(1) },
+                DocumentSource::Binding {
+                    binding: binding_id(1),
+                },
             ),
             DocumentField::new(
                 key("age"),
-                DocumentSource::Binding { binding: binding_id(1) },
+                DocumentSource::Binding {
+                    binding: binding_id(1),
+                },
             ),
         ],
     )
@@ -760,7 +797,9 @@ fn document_outputs_fetch_typed_fields_and_reject_unsound_shapes() {
     let error = build(
         vec![
             person_isa(0),
-            QueryPattern::Try { patterns: vec![has_age] },
+            QueryPattern::Try {
+                patterns: vec![has_age],
+            },
         ],
         vec![DocumentField::new(
             key("names"),
@@ -807,10 +846,11 @@ fn local_functions_declare_total_reducers_and_reject_unsound_shapes() {
                 patterns: vec![
                     person_isa(0),
                     QueryPattern::FunctionCall {
-                        arguments: vec![Operand::Binding { binding: binding_id(0) }],
+                        arguments: vec![Operand::Binding {
+                            binding: binding_id(0),
+                        }],
                         assigned: binding_id(1),
-                        function: FunctionId::new("age_count_of")
-                            .expect("function id"),
+                        function: FunctionId::new("age_count_of").expect("function id"),
                     },
                 ],
             }],
@@ -855,12 +895,23 @@ fn local_functions_declare_total_reducers_and_reject_unsound_shapes() {
         ValueTypeTag::Double,
     ))])
     .expect_err("mistyped local return");
-    assert_eq!(error.code().as_str(), "query_plan_local_function_return_type");
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_local_function_return_type"
+    );
 
     // Two local functions cannot share a name.
     let error = build(vec![
-        local(LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long)),
-        local(LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long)),
+        local(LocalReturn::new(
+            Reducer::Count,
+            binding_id(1),
+            ValueTypeTag::Long,
+        )),
+        local(LocalReturn::new(
+            Reducer::Count,
+            binding_id(1),
+            ValueTypeTag::Long,
+        )),
     ])
     .expect_err("duplicate local name");
     assert_eq!(error.code().as_str(), "query_plan_duplicate_local_function");
@@ -912,7 +963,9 @@ fn bounded_reachability_requires_a_finite_root_bound() {
     // Reachability stays in the root conjunction.
     let error = build(vec![
         person_isa(0),
-        QueryPattern::Not { patterns: vec![reachable(2)] },
+        QueryPattern::Not {
+            patterns: vec![reachable(2)],
+        },
     ])
     .expect_err("reachability in a negation");
     assert_eq!(error.code().as_str(), "query_plan_reachable_not_root");

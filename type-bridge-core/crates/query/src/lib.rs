@@ -6,15 +6,11 @@ mod safety_condition;
 
 pub use query_validation::{ValidatedQuery, validate_query_plan};
 
-pub use safety_condition::{
-    lower_condition_to_plan, safety_condition_to_assertion_plan,
-};
+pub use safety_condition::{lower_condition_to_plan, safety_condition_to_assertion_plan};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::TypeId;
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::{
@@ -63,11 +59,11 @@ pub struct BindingDomain {
 }
 
 impl BindingDomain {
-    pub(crate) const fn new(
-        type_ids: BTreeSet<TypeId>,
-        value_type: Option<ValueTypeTag>,
-    ) -> Self {
-        Self { type_ids, value_type }
+    pub(crate) const fn new(type_ids: BTreeSet<TypeId>, value_type: Option<ValueTypeTag>) -> Self {
+        Self {
+            type_ids,
+            value_type,
+        }
     }
 
     /// Return possible concrete runtime types.
@@ -325,10 +321,7 @@ pub fn validate_migration_assertion_plan(
                 "an output binding must be positively established at the root",
             ));
         }
-        if is_witness
-            && !positive.contains(&id)
-            && !scoped_positive.contains(&id)
-        {
+        if is_witness && !positive.contains(&id) && !scoped_positive.contains(&id) {
             return Err(query_failure(
                 "migration_assertion_invalid_witness",
                 "witness must be positively established in its lexical scope",
@@ -370,7 +363,13 @@ pub fn validate_migration_assertion_plan(
         .map(|(id, type_ids)| {
             let value_type =
                 engine::uniform_value_type(&type_ids, schema, &ASSERTION_ENGINE_CODES)?;
-            Ok((id, BindingDomain { type_ids, value_type }))
+            Ok((
+                id,
+                BindingDomain {
+                    type_ids,
+                    value_type,
+                },
+            ))
         })
         .collect::<Result<BTreeMap<_, _>, Diagnostic>>()?;
     let columns = plan

@@ -23,9 +23,18 @@ relation employment, relates worker;
     .expect("shadow setup should succeed");
 
     assert!(matches!(report.v1_direct(), ShadowLaneOutcome::Accepted(_)));
-    assert!(matches!(report.v1_effective(), ShadowLaneOutcome::Accepted(_)));
-    assert!(matches!(report.v2_declared(), ShadowLaneOutcome::Accepted(_)));
-    assert!(matches!(report.v2_effective(), ShadowLaneOutcome::Accepted(_)));
+    assert!(matches!(
+        report.v1_effective(),
+        ShadowLaneOutcome::Accepted(_)
+    ));
+    assert!(matches!(
+        report.v2_declared(),
+        ShadowLaneOutcome::Accepted(_)
+    ));
+    assert!(matches!(
+        report.v2_effective(),
+        ShadowLaneOutcome::Accepted(_)
+    ));
     assert!(report.v2_declared_fingerprint().is_some());
     assert!(report.v2_semantic_fingerprint().is_some());
 
@@ -109,9 +118,18 @@ fn dual_rejection_is_not_reported_as_schema_equality() {
         .expect("shadow setup should succeed even when lanes reject");
 
     assert!(matches!(report.v1_direct(), ShadowLaneOutcome::Rejected(_)));
-    assert!(matches!(report.v1_effective(), ShadowLaneOutcome::Rejected(_)));
-    assert!(matches!(report.v2_declared(), ShadowLaneOutcome::Rejected(_)));
-    assert!(matches!(report.v2_effective(), ShadowLaneOutcome::NotRun(_)));
+    assert!(matches!(
+        report.v1_effective(),
+        ShadowLaneOutcome::Rejected(_)
+    ));
+    assert!(matches!(
+        report.v2_declared(),
+        ShadowLaneOutcome::Rejected(_)
+    ));
+    assert!(matches!(
+        report.v2_effective(),
+        ShadowLaneOutcome::NotRun(_)
+    ));
     let ShadowComparison::NotCompared(not_compared) = report.comparison() else {
         panic!("rejecting lanes must not produce a comparison verdict");
     };

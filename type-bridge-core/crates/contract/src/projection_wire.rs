@@ -12,12 +12,12 @@ use crate::projection::{
     BindingTarget, CodeResourceDigest, CompleteReadProjection, CreateFieldProjection,
     CreateProjection, CreateRoleProjection, DeclarationProjection, DeclaredRoleProjection,
     EmissionPlan, FieldTokenProjection, FunctionParameterProjection, FunctionProjection,
-    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
-    PlayingProjection, ProjectedAnnotation, ProjectedContainer, ProjectedModelForm,
-    ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig,
-    ProjectionHandler, QueryTokenProjection, ReadFieldProjection, ReadRoleProjection,
-    ReferenceConstructionPolicy, ReferenceReadProjection, RoleTokenProjection,
-    RuntimeProjection, StructFieldProjection, StructProjection, TargetIdentifier,
+    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection, PlayingProjection,
+    ProjectedAnnotation, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
+    ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig, ProjectionHandler,
+    QueryTokenProjection, ReadFieldProjection, ReadRoleProjection, ReferenceConstructionPolicy,
+    ReferenceReadProjection, RoleTokenProjection, RuntimeProjection, StructFieldProjection,
+    StructProjection, TargetIdentifier,
 };
 use crate::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
@@ -81,7 +81,10 @@ where
     let mut output = BTreeMap::new();
     for value in values {
         if output.insert(key(&value), value).is_some() {
-            return Err(invalid(code, "canonical projection wire contains a duplicate identity"));
+            return Err(invalid(
+                code,
+                "canonical projection wire contains a duplicate identity",
+            ));
         }
     }
     Ok(output)
@@ -110,9 +113,13 @@ impl From<BindingTargetWire> for BindingTarget {
 #[serde(tag = "binding")]
 enum ProjectionConfigWire {
     #[serde(rename = "python")]
-    Python { naming_policy: PythonNamingPolicyWire },
+    Python {
+        naming_policy: PythonNamingPolicyWire,
+    },
     #[serde(rename = "typescript")]
-    TypeScript { naming_policy: TypeScriptNamingPolicyWire },
+    TypeScript {
+        naming_policy: TypeScriptNamingPolicyWire,
+    },
     #[serde(rename = "rust")]
     Rust {
         naming_policy: RustNamingPolicyWire,
@@ -300,7 +307,10 @@ struct AnnotationFactIdWire {
 
 impl AnnotationFactIdWire {
     fn rebuild(self) -> Result<AnnotationFactId, Diagnostic> {
-        Ok(AnnotationFactId::new(self.subject.rebuild()?, self.kind.rebuild()))
+        Ok(AnnotationFactId::new(
+            self.subject.rebuild()?,
+            self.kind.rebuild(),
+        ))
     }
 }
 
@@ -329,7 +339,9 @@ impl AnnotationValueWire {
             Self::Presence => SchemaAnnotationValue::Presence,
             Self::Cardinality(value) => SchemaAnnotationValue::Cardinality(value),
             Self::Regex(value) => SchemaAnnotationValue::Regex(RegexPattern::new(value)?),
-            Self::Range(value) => SchemaAnnotationValue::Range(CanonicalValueRange::new(value.lower, value.upper)?),
+            Self::Range(value) => {
+                SchemaAnnotationValue::Range(CanonicalValueRange::new(value.lower, value.upper)?)
+            }
             Self::Values(values) => SchemaAnnotationValue::Values(CanonicalValueSet::new(values)?),
             Self::Doc(value) => SchemaAnnotationValue::Doc(DocText::new(value)?),
             Self::Meta(value) => SchemaAnnotationValue::Meta(value),
@@ -346,13 +358,25 @@ struct AnnotationWire {
 
 impl AnnotationWire {
     fn rebuild(self) -> Result<ProjectedAnnotation, Diagnostic> {
-        Ok(ProjectedAnnotation::new(self.id.rebuild()?, self.value.rebuild()?))
+        Ok(ProjectedAnnotation::new(
+            self.id.rebuild()?,
+            self.value.rebuild()?,
+        ))
     }
 }
 
-fn annotations(values: Vec<AnnotationWire>) -> Result<BTreeMap<AnnotationFactId, ProjectedAnnotation>, Diagnostic> {
-    let values = values.into_iter().map(AnnotationWire::rebuild).collect::<Result<Vec<_>, _>>()?;
-    collect_unique(values, |value| value.id().clone(), "duplicate_projected_annotation")
+fn annotations(
+    values: Vec<AnnotationWire>,
+) -> Result<BTreeMap<AnnotationFactId, ProjectedAnnotation>, Diagnostic> {
+    let values = values
+        .into_iter()
+        .map(AnnotationWire::rebuild)
+        .collect::<Result<Vec<_>, _>>()?;
+    collect_unique(
+        values,
+        |value| value.id().clone(),
+        "duplicate_projected_annotation",
+    )
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -527,10 +551,26 @@ struct DeclarationWire {
 
 impl DeclarationWire {
     fn rebuild(self) -> Result<DeclarationProjection, Diagnostic> {
-        let roles = self.direct_roles.into_iter().map(DeclaredRoleWire::rebuild).collect::<Vec<_>>();
-        let roles = collect_unique(roles, |value| value.role().clone(), "duplicate_declared_role")?;
-        let direct_fields = self.direct_fields.into_iter().map(OwnsFactIdWire::rebuild).collect::<Result<_, _>>()?;
-        let direct_plays = self.direct_plays.into_iter().map(PlaysFactIdWire::rebuild).collect::<Result<_, _>>()?;
+        let roles = self
+            .direct_roles
+            .into_iter()
+            .map(DeclaredRoleWire::rebuild)
+            .collect::<Vec<_>>();
+        let roles = collect_unique(
+            roles,
+            |value| value.role().clone(),
+            "duplicate_declared_role",
+        )?;
+        let direct_fields = self
+            .direct_fields
+            .into_iter()
+            .map(OwnsFactIdWire::rebuild)
+            .collect::<Result<_, _>>()?;
+        let direct_plays = self
+            .direct_plays
+            .into_iter()
+            .map(PlaysFactIdWire::rebuild)
+            .collect::<Result<_, _>>()?;
         DeclarationProjection::new(
             self.parent,
             self.value_type,
@@ -540,7 +580,8 @@ impl DeclarationWire {
             direct_fields,
             roles,
             direct_plays,
-        )?.with_value_annotations(annotations(self.value_annotations)?)
+        )?
+        .with_value_annotations(annotations(self.value_annotations)?)
     }
 }
 
@@ -554,7 +595,11 @@ struct CreateFieldWire {
 
 impl CreateFieldWire {
     fn rebuild(self) -> Result<CreateFieldProjection, Diagnostic> {
-        Ok(CreateFieldProjection::new(self.token.rebuild()?, self.value.rebuild(), self.multiplicity.rebuild()?))
+        Ok(CreateFieldProjection::new(
+            self.token.rebuild()?,
+            self.value.rebuild(),
+            self.multiplicity.rebuild()?,
+        ))
     }
 }
 
@@ -570,7 +615,10 @@ impl CreateRoleWire {
     fn rebuild(self) -> Result<CreateRoleProjection, Diagnostic> {
         CreateRoleProjection::new(
             self.role,
-            self.players.into_iter().map(ProjectedModelUseWire::rebuild).collect(),
+            self.players
+                .into_iter()
+                .map(ProjectedModelUseWire::rebuild)
+                .collect(),
             self.multiplicity.rebuild()?,
         )
     }
@@ -588,9 +636,20 @@ struct CreateWire {
 
 impl CreateWire {
     fn rebuild(self, target: BindingTarget) -> Result<CreateProjection, Diagnostic> {
-        let target_name = self.target_name.map(|value| target_name(target, value)).transpose()?;
-        let fields = self.fields.into_iter().map(CreateFieldWire::rebuild).collect::<Result<_, _>>()?;
-        let roles = self.roles.into_iter().map(CreateRoleWire::rebuild).collect::<Result<Vec<_>, _>>()?;
+        let target_name = self
+            .target_name
+            .map(|value| target_name(target, value))
+            .transpose()?;
+        let fields = self
+            .fields
+            .into_iter()
+            .map(CreateFieldWire::rebuild)
+            .collect::<Result<_, _>>()?;
+        let roles = self
+            .roles
+            .into_iter()
+            .map(CreateRoleWire::rebuild)
+            .collect::<Result<Vec<_>, _>>()?;
         let roles = collect_unique(roles, |value| value.role().clone(), "duplicate_create_role")?;
         let mut projection = CreateProjection::new(self.enabled, fields, roles)?;
         if let Some(name) = target_name {
@@ -610,7 +669,11 @@ struct ReadFieldWire {
 
 impl ReadFieldWire {
     fn rebuild(self) -> Result<ReadFieldProjection, Diagnostic> {
-        Ok(ReadFieldProjection::new(self.token.rebuild()?, self.value.rebuild(), self.multiplicity.rebuild()?))
+        Ok(ReadFieldProjection::new(
+            self.token.rebuild()?,
+            self.value.rebuild(),
+            self.multiplicity.rebuild()?,
+        ))
     }
 }
 
@@ -626,7 +689,10 @@ impl ReadRoleWire {
     fn rebuild(self) -> Result<ReadRoleProjection, Diagnostic> {
         ReadRoleProjection::new(
             self.role,
-            self.players.into_iter().map(ProjectedModelUseWire::rebuild).collect(),
+            self.players
+                .into_iter()
+                .map(ProjectedModelUseWire::rebuild)
+                .collect(),
             self.multiplicity.rebuild()?,
         )
     }
@@ -659,12 +725,27 @@ impl CompleteReadWire {
                 "projection role-upcast ancestors exceed the canonical collection limit",
             ));
         }
-        let fields = self.fields.into_iter().map(ReadFieldWire::rebuild).collect::<Result<_, _>>()?;
-        let roles = self.roles.into_iter().map(ReadRoleWire::rebuild).collect::<Result<Vec<_>, _>>()?;
+        let fields = self
+            .fields
+            .into_iter()
+            .map(ReadFieldWire::rebuild)
+            .collect::<Result<_, _>>()?;
+        let roles = self
+            .roles
+            .into_iter()
+            .map(ReadRoleWire::rebuild)
+            .collect::<Result<Vec<_>, _>>()?;
         let roles = collect_unique(roles, |value| value.role().clone(), "duplicate_read_role")?;
-        let role_upcasts = collect_unique(self.role_upcasts, |value| value.role.clone(), "duplicate_role_upcast")?
-            .into_iter().map(|(role, value)| (role, value.ancestors)).collect();
-        CompleteReadProjection::new(fields, roles, self.nominal_upcasts)?.with_role_upcasts(role_upcasts)
+        let role_upcasts = collect_unique(
+            self.role_upcasts,
+            |value| value.role.clone(),
+            "duplicate_role_upcast",
+        )?
+        .into_iter()
+        .map(|(role, value)| (role, value.ancestors))
+        .collect();
+        CompleteReadProjection::new(fields, roles, self.nominal_upcasts)?
+            .with_role_upcasts(role_upcasts)
     }
 }
 
@@ -684,11 +765,21 @@ struct ReferenceReadWire {
 
 impl ReferenceReadWire {
     fn rebuild(self, target: BindingTarget) -> Result<ReferenceReadProjection, Diagnostic> {
-        let target_name = self.target_name.map(|value| target_name(target, value)).transpose()?;
-        let key_fields = self.key_fields.into_iter().map(OwnsFactIdWire::rebuild).collect::<Result<_, _>>()?;
+        let target_name = self
+            .target_name
+            .map(|value| target_name(target, value))
+            .transpose()?;
+        let key_fields = self
+            .key_fields
+            .into_iter()
+            .map(OwnsFactIdWire::rebuild)
+            .collect::<Result<_, _>>()?;
         let projection = ReferenceReadProjection::new(target_name, key_fields)?;
         if projection.construction_policy() != ReferenceConstructionPolicy::IidOnly {
-            return Err(invalid("invalid_reference_construction_policy", "reference construction policy is unsupported"));
+            return Err(invalid(
+                "invalid_reference_construction_policy",
+                "reference construction policy is unsupported",
+            ));
         }
         Ok(projection)
     }
@@ -706,10 +797,21 @@ struct QueryTokensWire {
 
 impl QueryTokensWire {
     fn rebuild(self, target: BindingTarget) -> Result<QueryTokenProjection, Diagnostic> {
-        let target_name = self.target_name.map(|value| target_name(target, value)).transpose()?;
-        let fields = self.fields.into_iter().map(|value| value.rebuild(target)).collect::<Result<Vec<_>, _>>()?;
+        let target_name = self
+            .target_name
+            .map(|value| target_name(target, value))
+            .transpose()?;
+        let fields = self
+            .fields
+            .into_iter()
+            .map(|value| value.rebuild(target))
+            .collect::<Result<Vec<_>, _>>()?;
         let fields = collect_unique(fields, |value| value.id().clone(), "duplicate_query_field")?;
-        let roles = self.roles.into_iter().map(|value| value.rebuild(target)).collect::<Result<Vec<_>, _>>()?;
+        let roles = self
+            .roles
+            .into_iter()
+            .map(|value| value.rebuild(target))
+            .collect::<Result<Vec<_>, _>>()?;
         let roles = collect_unique(roles, |value| value.role().clone(), "duplicate_query_role")?;
         let mut projection = QueryTokenProjection::new(self.type_id, fields, roles)?;
         if let Some(name) = target_name {
@@ -764,9 +866,18 @@ struct StructWire {
 
 impl StructWire {
     fn rebuild(self, target: BindingTarget) -> Result<StructProjection, Diagnostic> {
-        let fields = self.fields.into_iter().map(|value| {
-            Ok(StructFieldProjection::new(value.name, target_name(target, value.target_name)?, value.value_type, value.optional))
-        }).collect::<Result<_, Diagnostic>>()?;
+        let fields = self
+            .fields
+            .into_iter()
+            .map(|value| {
+                Ok(StructFieldProjection::new(
+                    value.name,
+                    target_name(target, value.target_name)?,
+                    value.value_type,
+                    value.optional,
+                ))
+            })
+            .collect::<Result<_, Diagnostic>>()?;
         StructProjection::new(self.id, target_name(target, self.target_name)?, fields)
     }
 }
@@ -804,8 +915,18 @@ impl FunctionReturnWire {
     fn rebuild(self) -> FunctionReturnProjection {
         match self {
             Self::Scalar(value) => FunctionReturnProjection::Scalar(value.rebuild()),
-            Self::Tuple(values) => FunctionReturnProjection::Tuple(values.into_iter().map(FunctionReturnElementWire::rebuild).collect()),
-            Self::Stream(values) => FunctionReturnProjection::Stream(values.into_iter().map(FunctionReturnElementWire::rebuild).collect()),
+            Self::Tuple(values) => FunctionReturnProjection::Tuple(
+                values
+                    .into_iter()
+                    .map(FunctionReturnElementWire::rebuild)
+                    .collect(),
+            ),
+            Self::Stream(values) => FunctionReturnProjection::Stream(
+                values
+                    .into_iter()
+                    .map(FunctionReturnElementWire::rebuild)
+                    .collect(),
+            ),
         }
     }
 }
@@ -822,11 +943,24 @@ struct FunctionWire {
 
 impl FunctionWire {
     fn rebuild(self, target: BindingTarget) -> Result<FunctionProjection, Diagnostic> {
-        let parameters = self.parameters.into_iter().map(|value| {
-            Ok(FunctionParameterProjection::new(value.name, target_name(target, value.target_name)?, value.type_ref.rebuild()))
-        }).collect::<Result<_, Diagnostic>>()?;
-        FunctionProjection::new(self.id, target_name(target, self.target_name)?, parameters, self.returns.rebuild())?
-            .with_annotations(annotations(self.annotations)?)
+        let parameters = self
+            .parameters
+            .into_iter()
+            .map(|value| {
+                Ok(FunctionParameterProjection::new(
+                    value.name,
+                    target_name(target, value.target_name)?,
+                    value.type_ref.rebuild(),
+                ))
+            })
+            .collect::<Result<_, Diagnostic>>()?;
+        FunctionProjection::new(
+            self.id,
+            target_name(target, self.target_name)?,
+            parameters,
+            self.returns.rebuild(),
+        )?
+        .with_annotations(annotations(self.annotations)?)
     }
 }
 
@@ -866,7 +1000,12 @@ struct EmissionWire {
 
 impl EmissionWire {
     fn rebuild(self) -> Result<EmissionPlan, Diagnostic> {
-        EmissionPlan::new(self.model_shells, self.model_link_components, self.structs, self.functions)
+        EmissionPlan::new(
+            self.model_shells,
+            self.model_link_components,
+            self.structs,
+            self.functions,
+        )
     }
 }
 
@@ -890,16 +1029,56 @@ impl RuntimeProjectionWire {
     fn rebuild(self) -> Result<RuntimeProjection, Diagnostic> {
         let target = BindingTarget::from(self.target);
         let semantic = SemanticSchemaFingerprint::from_wire(self.semantic_fingerprint)?;
-        let handlers = self.generator_handlers.into_iter().map(ProjectionHandlerWire::rebuild).collect::<Result<Vec<_>, _>>()?;
-        let resources = self.code_resources.into_iter().map(CodeResourceWire::rebuild).collect::<Result<Vec<_>, _>>()?;
-        let models = self.models.into_iter().map(|value| value.rebuild(target)).collect::<Result<Vec<_>, _>>()?;
-        let models = collect_unique(models, |value| value.id().clone(), "duplicate_runtime_projection_model")?;
-        let structs = self.structs.into_iter().map(|value| value.rebuild(target)).collect::<Result<Vec<_>, _>>()?;
-        let structs = collect_unique(structs, |value| value.id().clone(), "duplicate_runtime_projection_struct")?;
-        let functions = self.functions.into_iter().map(|value| value.rebuild(target)).collect::<Result<Vec<_>, _>>()?;
-        let functions = collect_unique(functions, |value| value.id().clone(), "duplicate_runtime_projection_function")?;
-        let playing = self.playing_facts.into_iter().map(|value| value.rebuild(target)).collect::<Result<Vec<_>, _>>()?;
-        let playing = collect_unique(playing, |value| value.id().clone(), "duplicate_runtime_projection_playing")?;
+        let handlers = self
+            .generator_handlers
+            .into_iter()
+            .map(ProjectionHandlerWire::rebuild)
+            .collect::<Result<Vec<_>, _>>()?;
+        let resources = self
+            .code_resources
+            .into_iter()
+            .map(CodeResourceWire::rebuild)
+            .collect::<Result<Vec<_>, _>>()?;
+        let models = self
+            .models
+            .into_iter()
+            .map(|value| value.rebuild(target))
+            .collect::<Result<Vec<_>, _>>()?;
+        let models = collect_unique(
+            models,
+            |value| value.id().clone(),
+            "duplicate_runtime_projection_model",
+        )?;
+        let structs = self
+            .structs
+            .into_iter()
+            .map(|value| value.rebuild(target))
+            .collect::<Result<Vec<_>, _>>()?;
+        let structs = collect_unique(
+            structs,
+            |value| value.id().clone(),
+            "duplicate_runtime_projection_struct",
+        )?;
+        let functions = self
+            .functions
+            .into_iter()
+            .map(|value| value.rebuild(target))
+            .collect::<Result<Vec<_>, _>>()?;
+        let functions = collect_unique(
+            functions,
+            |value| value.id().clone(),
+            "duplicate_runtime_projection_function",
+        )?;
+        let playing = self
+            .playing_facts
+            .into_iter()
+            .map(|value| value.rebuild(target))
+            .collect::<Result<Vec<_>, _>>()?;
+        let playing = collect_unique(
+            playing,
+            |value| value.id().clone(),
+            "duplicate_runtime_projection_playing",
+        )?;
         RuntimeProjection::try_new(
             target,
             self.config.rebuild(),

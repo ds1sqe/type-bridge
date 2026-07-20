@@ -15,8 +15,7 @@ pub(crate) const RECORD_KEY: &str = "typebridge-internal-v2-record-key";
 pub(crate) const RECORD_SEQUENCE: &str = "typebridge-internal-v2-record-sequence";
 pub(crate) const RECORD_KIND: &str = "typebridge-internal-v2-record-kind";
 pub(crate) const RECORD_PAYLOAD: &str = "typebridge-internal-v2-record-payload";
-pub(crate) const RECORD_PAYLOAD_DIGEST: &str =
-    "typebridge-internal-v2-record-payload-digest";
+pub(crate) const RECORD_PAYLOAD_DIGEST: &str = "typebridge-internal-v2-record-payload-digest";
 
 pub(crate) const LEASE_HELD: &str = "held";
 pub(crate) const LEASE_FREE: &str = "free";

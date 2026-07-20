@@ -37,7 +37,10 @@ fn duplicate_fact_reports_both_sources() {
         .insert_fact(type_fact(TypeKind::Entity, "person"), span("second", 1))
         .expect_err("duplicate fact is rejected");
     let diagnostic = error.iter().next().expect("one diagnostic exists");
-    assert_eq!(diagnostic.diagnostic().code().as_str(), "duplicate_schema_fact");
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "duplicate_schema_fact"
+    );
     assert_eq!(diagnostic.related().len(), 1);
 }
 
@@ -58,7 +61,10 @@ structs:
     let error = normalize_documents(&documents)
         .expect_err("a type and struct cannot share one schema label");
     let diagnostic = error.iter().next().expect("one diagnostic exists");
-    assert_eq!(diagnostic.diagnostic().code().as_str(), "duplicate_schema_label");
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "duplicate_schema_label"
+    );
     assert_eq!(diagnostic.related().len(), 1);
 }
 
@@ -103,10 +109,16 @@ fn role_specialization_resolves_the_declaring_ancestor() {
     let parent = TypeId::new(TypeKind::Relation, "membership").unwrap();
     let child = TypeId::new(TypeKind::Relation, "employment").unwrap();
     assembler
-        .insert_fact(type_fact(TypeKind::Relation, "membership"), span("types", 0))
+        .insert_fact(
+            type_fact(TypeKind::Relation, "membership"),
+            span("types", 0),
+        )
         .unwrap();
     assembler
-        .insert_fact(type_fact(TypeKind::Relation, "employment"), span("types", 1))
+        .insert_fact(
+            type_fact(TypeKind::Relation, "employment"),
+            span("types", 1),
+        )
         .unwrap();
     assembler
         .insert_fact(
@@ -136,9 +148,7 @@ fn role_specialization_resolves_the_declaring_ancestor() {
         .unwrap();
 
     let schema = assembler.finish().expect("specialization resolves");
-    let Some(SchemaFact::Relates(fact)) =
-        schema.fact(&SchemaFactId::Relates(child_id))
-    else {
+    let Some(SchemaFact::Relates(fact)) = schema.fact(&SchemaFactId::Relates(child_id)) else {
         panic!("child relates fact exists");
     };
     assert_eq!(fact.specializes(), Some(&parent_role));

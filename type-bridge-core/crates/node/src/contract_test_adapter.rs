@@ -38,8 +38,7 @@ pub fn round_trip_contract_foundation(input: Buffer) -> Result<Buffer> {
 }
 
 fn contract_error(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
-    let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
-        format!(r#"{{"code":"{}","message":"{}"}}"#, error.code(), error)
-    });
+    let payload = serde_json::to_string(&error)
+        .unwrap_or_else(|_| format!(r#"{{"code":"{}","message":"{}"}}"#, error.code(), error));
     Error::new(Status::InvalidArg, payload)
 }

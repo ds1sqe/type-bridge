@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 use type_bridge_contract::id::FunctionId;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationKindId, AnnotationSubjectId, SchemaAnnotationValue,
-    SchemaDelta, SchemaFact, SchemaFactId, SchemaOperation, SchemaOperationKind,
+    AnnotationFact, AnnotationKindId, AnnotationSubjectId, SchemaAnnotationValue, SchemaDelta,
+    SchemaFact, SchemaFactId, SchemaOperation, SchemaOperationKind,
 };
 
 /// The exact eight-class provider-neutral migration safety vocabulary.
@@ -55,9 +55,7 @@ impl SafetyClassificationError {
             Self::UnchangedRelatesSpecialization => {
                 "relates redefinition does not change specialization"
             }
-            Self::RedefinitionCategoryChanged => {
-                "schema redefinition changed fact category"
-            }
+            Self::RedefinitionCategoryChanged => "schema redefinition changed fact category",
         }
     }
 }
@@ -83,29 +81,25 @@ pub fn classify_operation_safety(
         }
         SchemaOperationKind::Redefine => {
             safety = classify_redefinition(
-                operation.expected_fact().expect("redefine exposes expected fact"),
+                operation
+                    .expected_fact()
+                    .expect("redefine exposes expected fact"),
                 operation
                     .replacement_fact()
                     .expect("redefine exposes replacement fact"),
             )?;
         }
         SchemaOperationKind::Undefine => {
-            safety = classify_undefined_fact(
-                operation.undefined_fact().expect("undefine exposes fact"),
-            );
+            safety =
+                classify_undefined_fact(operation.undefined_fact().expect("undefine exposes fact"));
         }
     }
     Ok(safety)
 }
 
-fn classify_defined_fact(
-    fact: &SchemaFact,
-    functions: &BTreeSet<FunctionId>,
-) -> SafetyClass {
+fn classify_defined_fact(fact: &SchemaFact, functions: &BTreeSet<FunctionId>) -> SafetyClass {
     match fact {
-        SchemaFact::Relates(relates) if relates.specializes().is_some() => {
-            SafetyClass::Conditional
-        }
+        SchemaFact::Relates(relates) if relates.specializes().is_some() => SafetyClass::Conditional,
         SchemaFact::Annotation(annotation) => {
             if let AnnotationSubjectId::Function(function) = annotation.id().subject()
                 && functions.contains(function)
@@ -128,9 +122,7 @@ fn classify_undefined_fact(fact: &SchemaFact) -> SafetyClass {
         SchemaFact::Annotation(annotation) => {
             classify_annotation(annotation, AnnotationTransition::Remove, None)
         }
-        SchemaFact::Relates(relates) if relates.specializes().is_some() => {
-            SafetyClass::Conditional
-        }
+        SchemaFact::Relates(relates) if relates.specializes().is_some() => SafetyClass::Conditional,
         _ => classify_fact(fact, FactTransition::Undefine),
     }
 }
@@ -140,16 +132,17 @@ fn classify_redefinition(
     replacement: &SchemaFact,
 ) -> Result<SafetyClass, SafetyClassificationError> {
     match (expected, replacement) {
-        (SchemaFact::Relates(old), SchemaFact::Relates(new)) => match (
-            old.specializes(),
-            new.specializes(),
-        ) {
-            (None, None) => Err(SafetyClassificationError::UnchangedRelatesSpecialization),
-            _ => Ok(SafetyClass::Conditional),
-        },
-        (SchemaFact::Annotation(old), SchemaFact::Annotation(new)) => Ok(
-            classify_annotation(new, AnnotationTransition::Change, Some(old)),
-        ),
+        (SchemaFact::Relates(old), SchemaFact::Relates(new)) => {
+            match (old.specializes(), new.specializes()) {
+                (None, None) => Err(SafetyClassificationError::UnchangedRelatesSpecialization),
+                _ => Ok(SafetyClass::Conditional),
+            }
+        }
+        (SchemaFact::Annotation(old), SchemaFact::Annotation(new)) => Ok(classify_annotation(
+            new,
+            AnnotationTransition::Change,
+            Some(old),
+        )),
         (left, right) if std::mem::discriminant(left) == std::mem::discriminant(right) => {
             Ok(classify_fact(right, FactTransition::Redefine))
         }
@@ -176,9 +169,7 @@ fn classify_fact(fact: &SchemaFact, transition: FactTransition) -> SafetyClass {
         (SchemaFact::Sub(_), Undefine) => Destructive,
         (SchemaFact::Value(_), Define) => Additive,
         (SchemaFact::Value(_), Undefine | Redefine) => Destructive,
-        (SchemaFact::Owns(_) | SchemaFact::Relates(_) | SchemaFact::Plays(_), Define) => {
-            Additive
-        }
+        (SchemaFact::Owns(_) | SchemaFact::Relates(_) | SchemaFact::Plays(_), Define) => Additive,
         (SchemaFact::Owns(_) | SchemaFact::Relates(_) | SchemaFact::Plays(_), Undefine) => {
             Destructive
         }
@@ -330,10 +321,7 @@ fn default_cardinality(subject: &AnnotationSubjectId) -> Option<(u64, Option<u64
     }
 }
 
-fn cardinality_transition_safety(
-    from: (u64, Option<u64>),
-    to: (u64, Option<u64>),
-) -> SafetyClass {
+fn cardinality_transition_safety(from: (u64, Option<u64>), to: (u64, Option<u64>)) -> SafetyClass {
     if from == to {
         SafetyClass::FormalOnly
     } else if interval_contains(to, from) {

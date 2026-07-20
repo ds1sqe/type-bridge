@@ -6,22 +6,21 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::{
-    MigrationAppLabel, MigrationId, MigrationName, MigrationStepId,
-    SchemaDeltaStep,
+    MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::migration_assertion_capability_vocabulary;
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, ManagedSchemaState, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact,
+    DeclaredSchema, DocumentId, ManagedSchemaState, SchemaFact, SourceSpan, SourcedSchemaFact,
+    TypeFact,
 };
 use type_bridge_schema::{
-    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, diff_managed,
-    inverse_delta, managed_schema_state,
+    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, diff_managed, inverse_delta,
+    managed_schema_state,
 };
 use type_bridge_schema_migration::{
     MigrationDriftFinding, MigrationHistoryGraph, SchemaMigrationDraft,
-    VerifiedSchemaMigrationManifest, build_verified_manifest,
-    typedb_3_12_1_profile, verify_migration_state,
+    VerifiedSchemaMigrationManifest, build_verified_manifest, typedb_3_12_1_profile,
+    verify_migration_state,
 };
 
 fn migration_id(name: &str) -> MigrationId {
@@ -102,8 +101,8 @@ fn manifest(
         Some(reverse),
     )
     .expect("fixture step");
-    let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step])
-        .expect("fixture draft");
+    let draft =
+        SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("fixture draft");
     build_verified_manifest(draft, (source, context)).expect("fixture manifest")
 }
 
@@ -130,8 +129,8 @@ fn triad() -> Triad {
         &top,
         &context,
     );
-    let graph = MigrationHistoryGraph::from_verified([first.clone(), second.clone()])
-        .expect("history");
+    let graph =
+        MigrationHistoryGraph::from_verified([first.clone(), second.clone()]).expect("history");
     Triad {
         context,
         genesis,
@@ -150,8 +149,7 @@ fn state(schema: &DeclaredSchema, context: &ManagedDeltaContext) -> ManagedSchem
 #[test]
 fn a_coherent_triad_verifies_clean() {
     let triad = triad();
-    let applied =
-        BTreeSet::from([triad.first.id().clone(), triad.second.id().clone()]);
+    let applied = BTreeSet::from([triad.first.id().clone(), triad.second.id().clone()]);
     let live = state(&triad.top, &triad.context);
     let report = verify_migration_state(
         &triad.graph,
@@ -198,8 +196,7 @@ fn each_drift_category_is_reported_without_repair() {
     ));
 
     // Live semantics behind the recorded frontier target is drift.
-    let applied =
-        BTreeSet::from([triad.first.id().clone(), triad.second.id().clone()]);
+    let applied = BTreeSet::from([triad.first.id().clone(), triad.second.id().clone()]);
     let stale_live = state(&triad.middle, &triad.context);
     let report = verify_migration_state(
         &triad.graph,
@@ -210,12 +207,13 @@ fn each_drift_category_is_reported_without_repair() {
         &triad.context,
     )
     .expect("live drift report");
-    let [MigrationDriftFinding::LiveSemantics { recorded, observed }] =
-        report.findings()
-    else {
+    let [MigrationDriftFinding::LiveSemantics { recorded, observed }] = report.findings() else {
         panic!("expected exactly one live-semantics finding: {report:?}");
     };
-    assert_eq!(recorded, triad.second.target_state().managed_semantic_schema());
+    assert_eq!(
+        recorded,
+        triad.second.target_state().managed_semantic_schema()
+    );
     assert_eq!(observed, stale_live.managed_semantic_schema());
 
     // Desired schema ahead of the committed head is divergence, not intent.
@@ -229,8 +227,12 @@ fn each_drift_category_is_reported_without_repair() {
         &triad.context,
     )
     .expect("desired divergence report");
-    let [MigrationDriftFinding::DesiredDivergence { head, desired: declared }] =
-        report.findings()
+    let [
+        MigrationDriftFinding::DesiredDivergence {
+            head,
+            desired: declared,
+        },
+    ] = report.findings()
     else {
         panic!("expected exactly one desired-divergence finding: {report:?}");
     };
@@ -251,8 +253,7 @@ fn each_drift_category_is_reported_without_repair() {
         &triad.context,
     )
     .expect("pending report");
-    let [MigrationDriftFinding::PendingMigrations { pending }] = report.findings()
-    else {
+    let [MigrationDriftFinding::PendingMigrations { pending }] = report.findings() else {
         panic!("expected exactly one pending finding: {report:?}");
     };
     assert_eq!(pending, &[triad.second.id().clone()]);
@@ -262,8 +263,7 @@ fn each_drift_category_is_reported_without_repair() {
 fn an_empty_lineage_verifies_against_its_genesis() {
     let context = context();
     let genesis = declared(&[]);
-    let graph =
-        MigrationHistoryGraph::from_verified([]).expect("empty history");
+    let graph = MigrationHistoryGraph::from_verified([]).expect("empty history");
     let live = state(&genesis, &context);
     let report = verify_migration_state(
         &graph,

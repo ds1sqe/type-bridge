@@ -6,13 +6,11 @@ use crate::capability::CapabilitySet;
 use crate::codec::{FormatVersion, from_canonical_json, to_canonical_json};
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::schema::{
-    DeclaredIdentityFingerprint, DeclaredSchema, DocumentId, SourceSpan,
-    SourcedSchemaFact,
+    DeclaredIdentityFingerprint, DeclaredSchema, DocumentId, SourceSpan, SourcedSchemaFact,
 };
 use crate::schema_delta_wire::{FingerprintWire, SchemaFactWire};
 
-const COMPILED_PROVENANCE_DOCUMENT: &str =
-    "__typebridge_compiled__/declared-schema-v1";
+const COMPILED_PROVENANCE_DOCUMENT: &str = "__typebridge_compiled__/declared-schema-v1";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -23,9 +21,7 @@ struct DeclaredSchemaWire {
     required_capabilities: CapabilitySet,
 }
 
-pub(crate) fn encode_declared_schema(
-    schema: &DeclaredSchema,
-) -> Result<Vec<u8>, Diagnostic> {
+pub(crate) fn encode_declared_schema(schema: &DeclaredSchema) -> Result<Vec<u8>, Diagnostic> {
     to_canonical_json(schema)
 }
 
@@ -36,8 +32,7 @@ pub(crate) fn decode_declared_schema(bytes: &[u8]) -> Result<DeclaredSchema, Dia
         format_version,
         required_capabilities,
     } = from_canonical_json(bytes)?;
-    let expected_identity =
-        DeclaredIdentityFingerprint::from_wire(declared_identity.rebuild()?)?;
+    let expected_identity = DeclaredIdentityFingerprint::from_wire(declared_identity.rebuild()?)?;
     let sourced_facts = facts
         .into_iter()
         .enumerate()
@@ -48,12 +43,8 @@ pub(crate) fn decode_declared_schema(bytes: &[u8]) -> Result<DeclaredSchema, Dia
             ))
         })
         .collect::<Result<Vec<_>, Diagnostic>>()?;
-    let trusted = DeclaredSchema::from_facts(
-        format_version,
-        required_capabilities,
-        sourced_facts,
-    )
-    .map_err(first_schema_diagnostic)?;
+    let trusted = DeclaredSchema::from_facts(format_version, required_capabilities, sourced_facts)
+        .map_err(first_schema_diagnostic)?;
 
     if &expected_identity != trusted.declared_identity_fingerprint() {
         return Err(wire_diagnostic(

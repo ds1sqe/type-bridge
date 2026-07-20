@@ -6,9 +6,7 @@ use type_bridge_contract::diagnostic::DiagnosticCategory;
 use type_bridge_contract::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintDomain, SemanticProfileId,
 };
-use type_bridge_contract::id::{
-    AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind,
-};
+use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
     AnnotationKindId, AnnotationSubjectId, DeclaredIdentityFingerprint, DeclaredSchema,
     FunctionFact, InterfaceKind, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact,
@@ -549,18 +547,14 @@ struct DirectIndex {
     owns: BTreeMap<TypeId, Vec<OwnsFact>>,
     relates: BTreeMap<TypeId, Vec<RelatesFact>>,
     plays: BTreeMap<TypeId, Vec<PlaysFact>>,
-    annotations:
-        BTreeMap<AnnotationSubjectId, BTreeMap<AnnotationKindId, SchemaAnnotationValue>>,
+    annotations: BTreeMap<AnnotationSubjectId, BTreeMap<AnnotationKindId, SchemaAnnotationValue>>,
     functions: BTreeMap<FunctionId, FunctionFact>,
     structs: BTreeMap<StructId, StructFact>,
 }
 
 /// Schema-feature capabilities implemented by the built-in compatibility resolver.
-pub const BUILTIN_SCHEMA_CAPABILITY_IDS: &[&str] = &[
-    "schema.annotations",
-    "schema.doc-meta",
-    "schema.roles",
-];
+pub const BUILTIN_SCHEMA_CAPABILITY_IDS: &[&str] =
+    &["schema.annotations", "schema.doc-meta", "schema.roles"];
 
 fn builtin_schema_capabilities() -> CapabilitySet {
     BUILTIN_SCHEMA_CAPABILITY_IDS
@@ -627,7 +621,9 @@ pub fn resolve_schema_with_capabilities(
                 .insert(AnnotationKindId::Independent, independent.clone());
         }
         resolved.annotations.extend(direct_annotations);
-        resolved.is_abstract = resolved.annotations.contains_key(&AnnotationKindId::Abstract);
+        resolved.is_abstract = resolved
+            .annotations
+            .contains_key(&AnnotationKindId::Abstract);
 
         if id.kind() == TypeKind::Attribute {
             let attribute = AttributeId::new(id.label().as_str()).map_err(no_source)?;
@@ -635,24 +631,20 @@ pub fn resolve_schema_with_capabilities(
                 resolved.value_type = Some(EffectiveValueType {
                     value_type: *value_type,
                     origin: ResolutionOrigin::direct(SchemaFactId::Value(value_id.clone())),
-                    annotations: annotations_for(&index, AnnotationSubjectId::Value(value_id.clone())),
+                    annotations: annotations_for(
+                        &index,
+                        AnnotationSubjectId::Value(value_id.clone()),
+                    ),
                 });
             }
         }
 
         for owns in index.owns.get(&id).into_iter().flatten() {
-            let annotations = annotations_for(
-                &index,
-                AnnotationSubjectId::Owns(owns.id().clone()),
-            );
+            let annotations = annotations_for(&index, AnnotationSubjectId::Owns(owns.id().clone()));
             let effective = EffectiveOwns {
                 id: owns.id().clone(),
                 origin: ResolutionOrigin::direct(SchemaFactId::Owns(owns.id().clone())),
-                cardinality: cardinality(
-                    &annotations,
-                    &profile,
-                    InterfaceKind::Owns,
-                ),
+                cardinality: cardinality(&annotations, &profile, InterfaceKind::Owns),
                 key: annotations.contains_key(&AnnotationKindId::Key),
                 unique: annotations.contains_key(&AnnotationKindId::Unique)
                     || annotations.contains_key(&AnnotationKindId::Key),
@@ -664,30 +656,20 @@ pub fn resolve_schema_with_capabilities(
         }
 
         for plays in index.plays.get(&id).into_iter().flatten() {
-            let annotations = annotations_for(
-                &index,
-                AnnotationSubjectId::Plays(plays.id().clone()),
-            );
+            let annotations =
+                annotations_for(&index, AnnotationSubjectId::Plays(plays.id().clone()));
             let effective = EffectivePlays {
                 id: plays.id().clone(),
                 origin: ResolutionOrigin::direct(SchemaFactId::Plays(plays.id().clone())),
-                cardinality: cardinality(
-                    &annotations,
-                    &profile,
-                    InterfaceKind::Plays,
-                ),
+                cardinality: cardinality(&annotations, &profile, InterfaceKind::Plays),
                 annotations,
             };
-            resolved
-                .plays
-                .insert(plays.id().role().clone(), effective);
+            resolved.plays.insert(plays.id().role().clone(), effective);
         }
 
         for relates in index.relates.get(&id).into_iter().flatten() {
-            let annotations = annotations_for(
-                &index,
-                AnnotationSubjectId::Relates(relates.id().clone()),
-            );
+            let annotations =
+                annotations_for(&index, AnnotationSubjectId::Relates(relates.id().clone()));
             let mut replaced_roles = BTreeSet::new();
             if let Some(specialized) = relates.specializes() {
                 let replaced = resolved
@@ -713,16 +695,9 @@ pub fn resolve_schema_with_capabilities(
                 replaced_roles.insert(specialized.clone());
             }
             let effective = EffectiveRelates {
-                id: EffectiveRelatesId::new(
-                    id.clone(),
-                    relates.id().role().clone(),
-                ),
+                id: EffectiveRelatesId::new(id.clone(), relates.id().role().clone()),
                 origin: ResolutionOrigin::direct(SchemaFactId::Relates(relates.id().clone())),
-                cardinality: cardinality(
-                    &annotations,
-                    &profile,
-                    InterfaceKind::Relates,
-                ),
+                cardinality: cardinality(&annotations, &profile, InterfaceKind::Relates),
                 is_abstract: annotations.contains_key(&AnnotationKindId::Abstract),
                 annotations,
                 replaced_roles,
@@ -745,8 +720,8 @@ pub fn resolve_schema_with_capabilities(
             .map(|owns| owns.id.attribute().clone())
             .collect();
         resolved.owned_attribute_order = resolved.owns.keys().cloned().collect();
-        resolved.constructible = !resolved.is_abstract
-            && !resolved.relates.values().any(EffectiveRelates::is_abstract);
+        resolved.constructible =
+            !resolved.is_abstract && !resolved.relates.values().any(EffectiveRelates::is_abstract);
         types.insert(id, resolved);
     }
 
@@ -1046,10 +1021,8 @@ fn resolve_roles(
 ) -> BTreeMap<RoleId, ResolvedRole> {
     let mut roles = BTreeMap::new();
     for relates in index.relates.values().flatten() {
-        let annotations = annotations_for(
-            index,
-            AnnotationSubjectId::Relates(relates.id().clone()),
-        );
+        let annotations =
+            annotations_for(index, AnnotationSubjectId::Relates(relates.id().clone()));
         roles.insert(
             relates.id().role().clone(),
             ResolvedRole {
@@ -1079,20 +1052,16 @@ fn resolve_roles(
 
 fn descriptor_index(declared: &DeclaredSchema) -> Result<DescriptorIndex, SchemaDiagnostics> {
     let domain = FingerprintDomain::new("typebridge.schema.descriptor").map_err(no_source)?;
-    let canonicalization = CanonicalizationVersion::new("typebridge.schema-fact-id-json/v1")
-        .map_err(no_source)?;
+    let canonicalization =
+        CanonicalizationVersion::new("typebridge.schema-fact-id-json/v1").map_err(no_source)?;
     let mut descriptors = BTreeMap::new();
     for fact in declared.facts() {
         let id = fact.id();
         let canonical = to_canonical_json(&id).map_err(no_source)?;
-        let digest = Fingerprint::compute(
-            domain.clone(),
-            canonicalization.clone(),
-            None,
-            &canonical,
-        )
-        .digest()
-        .to_hex();
+        let digest =
+            Fingerprint::compute(domain.clone(), canonicalization.clone(), None, &canonical)
+                .digest()
+                .to_hex();
         descriptors.insert(DescriptorId(format!("schema:{digest}")), id);
     }
     Ok(DescriptorIndex { descriptors })
@@ -1123,10 +1092,9 @@ fn dependency_graph(
             }
         }
         for role in resolved.plays.keys() {
-            if let Ok(relation) = TypeId::new(
-                TypeKind::Relation,
-                role.declaring_relation().as_str(),
-            ) {
+            if let Ok(relation) =
+                TypeId::new(TypeKind::Relation, role.declaring_relation().as_str())
+            {
                 edges
                     .entry(resolved.id.clone())
                     .or_default()

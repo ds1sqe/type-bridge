@@ -9,12 +9,10 @@
 
 use std::collections::BTreeMap;
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::managed_scope::SemanticProfileBinding;
-use type_bridge_contract::migration::{MigrationId, MigrationManifestDigest};
 use type_bridge_contract::migration::MigrationPlanFingerprint;
+use type_bridge_contract::migration::{MigrationId, MigrationManifestDigest};
 use type_bridge_contract::schema::ManagedSchemaState;
 use type_bridge_contract::schema_lowering::SchemaLoweringProfileBinding;
 use type_bridge_schema::SafetyClass;
@@ -54,7 +52,10 @@ impl MigrationSafetyPolicy {
                 (SafetyClass::SchemaMetadata, SafetyPolicyDecision::Allow),
                 (SafetyClass::Additive, SafetyPolicyDecision::Allow),
                 (SafetyClass::Conditional, SafetyPolicyDecision::Allow),
-                (SafetyClass::Destructive, SafetyPolicyDecision::RequireApproval),
+                (
+                    SafetyClass::Destructive,
+                    SafetyPolicyDecision::RequireApproval,
+                ),
                 (SafetyClass::Opaque, SafetyPolicyDecision::RequireApproval),
                 (SafetyClass::BackfillRequired, SafetyPolicyDecision::Reject),
                 (SafetyClass::Unsupported, SafetyPolicyDecision::Reject),
@@ -69,10 +70,7 @@ impl MigrationSafetyPolicy {
         decision: SafetyPolicyDecision,
     ) -> Result<Self, Diagnostic> {
         match (class, decision) {
-            (
-                SafetyClass::Destructive | SafetyClass::Opaque,
-                SafetyPolicyDecision::Allow,
-            ) => {
+            (SafetyClass::Destructive | SafetyClass::Opaque, SafetyPolicyDecision::Allow) => {
                 return Err(failure(
                     "migration_policy_forbidden_allow",
                     "destructive and opaque work cannot carry a standing allowance",
@@ -120,9 +118,7 @@ pub struct MigrationApplyApproval {
 
 impl MigrationApplyApproval {
     /// Record an approval for the exact transition a verified manifest claims.
-    pub fn for_manifest(
-        manifest: &VerifiedSchemaMigrationManifest,
-    ) -> Result<Self, Diagnostic> {
+    pub fn for_manifest(manifest: &VerifiedSchemaMigrationManifest) -> Result<Self, Diagnostic> {
         Self::for_transition(manifest, manifest.safety(), false)
     }
 
@@ -145,9 +141,15 @@ impl MigrationApplyApproval {
         rollback: bool,
     ) -> Result<Self, Diagnostic> {
         let (source_state, target_state) = if rollback {
-            (manifest.target_state().clone(), manifest.source_state().clone())
+            (
+                manifest.target_state().clone(),
+                manifest.source_state().clone(),
+            )
         } else {
-            (manifest.source_state().clone(), manifest.target_state().clone())
+            (
+                manifest.source_state().clone(),
+                manifest.target_state().clone(),
+            )
         };
         Ok(Self {
             id: manifest.id().clone(),
@@ -172,10 +174,7 @@ impl MigrationApplyApproval {
     }
 
     /// Return whether this approval binds the exact forward transition.
-    pub fn binds(
-        &self,
-        manifest: &VerifiedSchemaMigrationManifest,
-    ) -> Result<bool, Diagnostic> {
+    pub fn binds(&self, manifest: &VerifiedSchemaMigrationManifest) -> Result<bool, Diagnostic> {
         Ok(self.safety == manifest.safety()
             && self.source_state == *manifest.source_state()
             && self.target_state == *manifest.target_state()

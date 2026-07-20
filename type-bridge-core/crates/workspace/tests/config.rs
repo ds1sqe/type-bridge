@@ -3,9 +3,7 @@ use std::path::{Path, PathBuf};
 
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::managed_scope::{
-    EXCLUSIVE_MANAGED_SCOPE_PROFILE_ID, ManagedScopeId,
-};
+use type_bridge_contract::managed_scope::{EXCLUSIVE_MANAGED_SCOPE_PROFILE_ID, ManagedScopeId};
 use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::BindingTarget;
 use type_bridge_workspace::{
@@ -28,10 +26,7 @@ impl CanonicalSource {
 }
 
 impl WorkspaceSourceService for CanonicalSource {
-    fn canonicalize_workspace_root(
-        &self,
-        root: &Path,
-    ) -> Result<PathBuf, WorkspaceServiceError> {
+    fn canonicalize_workspace_root(&self, root: &Path) -> Result<PathBuf, WorkspaceServiceError> {
         self.calls.set(self.calls.get() + 1);
         Ok(root.to_path_buf())
     }
@@ -40,10 +35,7 @@ impl WorkspaceSourceService for CanonicalSource {
 struct DifferentCanonicalRoot;
 
 impl WorkspaceSourceService for DifferentCanonicalRoot {
-    fn canonicalize_workspace_root(
-        &self,
-        _root: &Path,
-    ) -> Result<PathBuf, WorkspaceServiceError> {
+    fn canonicalize_workspace_root(&self, _root: &Path) -> Result<PathBuf, WorkspaceServiceError> {
         Ok(PathBuf::from("/virtual/canonical"))
     }
 }
@@ -51,10 +43,7 @@ impl WorkspaceSourceService for DifferentCanonicalRoot {
 struct RejectSource;
 
 impl WorkspaceSourceService for RejectSource {
-    fn canonicalize_workspace_root(
-        &self,
-        _root: &Path,
-    ) -> Result<PathBuf, WorkspaceServiceError> {
+    fn canonicalize_workspace_root(&self, _root: &Path) -> Result<PathBuf, WorkspaceServiceError> {
         Err(WorkspaceServiceError::new("root_unavailable"))
     }
 }
@@ -144,9 +133,7 @@ fn builder_with_paths(schema_set: &str, migration_v2_directory: &str) -> TypeBri
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(
-            MigrationV2Directory::new(migration_v2_directory).unwrap(),
-        )
+        .migration_v2_directory(MigrationV2Directory::new(migration_v2_directory).unwrap())
 }
 
 fn services<'a>(
@@ -190,7 +177,10 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
     assert_eq!(source.calls.get(), 1);
     assert_eq!(secrets.calls.get(), 1);
     assert_eq!(extensions.calls.get(), 1);
-    assert_eq!(config.workspace_root().as_path(), Path::new("/virtual/project"));
+    assert_eq!(
+        config.workspace_root().as_path(),
+        Path::new("/virtual/project")
+    );
     assert_eq!(
         config.schema_set_absolute_path(),
         PathBuf::from("/virtual/project/schema/schema.yaml")
@@ -227,20 +217,21 @@ fn workspace_root_is_explicit_and_matches_injected_canonical_spelling() {
         WorkspaceConfigErrorCode::WorkspaceRootNotAbsolute
     );
     assert_eq!(
-        WorkspaceRoot::new("/virtual/../project").unwrap_err().code(),
+        WorkspaceRoot::new("/virtual/../project")
+            .unwrap_err()
+            .code(),
         WorkspaceConfigErrorCode::WorkspaceRootNotCanonical
     );
 
     let secrets = AcceptSecrets::new();
     let extensions = AcceptExtensions::new();
     let error = base_builder()
-        .build(&services(
-            &DifferentCanonicalRoot,
-            &secrets,
-            &extensions,
-        ))
+        .build(&services(&DifferentCanonicalRoot, &secrets, &extensions))
         .unwrap_err();
-    assert_eq!(error.code(), WorkspaceConfigErrorCode::WorkspaceRootNotCanonical);
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::WorkspaceRootNotCanonical
+    );
 
     let error = base_builder()
         .build(&services(&RejectSource, &secrets, &extensions))
@@ -254,7 +245,11 @@ fn workspace_root_is_explicit_and_matches_injected_canonical_spelling() {
 
 #[test]
 fn schema_migration_and_output_paths_are_portable_and_confined() {
-    for path in ["../schema/schema.yaml", "/schema/schema.yaml", "schema\\schema.yaml"] {
+    for path in [
+        "../schema/schema.yaml",
+        "/schema/schema.yaml",
+        "schema\\schema.yaml",
+    ] {
         assert_eq!(
             SchemaSetPath::new(path).unwrap_err().code(),
             WorkspaceConfigErrorCode::PathNotConfined
@@ -273,7 +268,9 @@ fn schema_migration_and_output_paths_are_portable_and_confined() {
         WorkspaceConfigErrorCode::PathNotConfined
     );
     assert_eq!(
-        OutputDirectory::new("/generated/python").unwrap_err().code(),
+        OutputDirectory::new("/generated/python")
+            .unwrap_err()
+            .code(),
         WorkspaceConfigErrorCode::PathNotConfined
     );
     assert_eq!(
@@ -387,7 +384,10 @@ fn duplicate_targets_secrets_extensions_and_singletons_are_rejected() {
         )
         .build(&service_set)
         .unwrap_err();
-    assert_eq!(error.code(), WorkspaceConfigErrorCode::DuplicateOutputTarget);
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::DuplicateOutputTarget
+    );
 
     let slot = SecretSlot::new("typedb.credential").unwrap();
     let error = base_builder()
@@ -414,7 +414,10 @@ fn duplicate_targets_secrets_extensions_and_singletons_are_rejected() {
         .schema_set(SchemaSetPath::new("other/schema.yaml").unwrap())
         .build(&service_set)
         .unwrap_err();
-    assert_eq!(error.code(), WorkspaceConfigErrorCode::DuplicateRequiredField);
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::DuplicateRequiredField
+    );
 }
 
 #[test]
@@ -477,10 +480,7 @@ fn workspace_owned_paths_reject_equality_and_name_both_fields() {
         error.code(),
         WorkspaceConfigErrorCode::OverlappingWorkspacePath
     );
-    assert_eq!(
-        error.detail(),
-        Some("migration_v2_directory,output.python")
-    );
+    assert_eq!(error.detail(), Some("migration_v2_directory,output.python"));
 
     let error = base_builder()
         .output(
@@ -514,10 +514,7 @@ fn workspace_owned_paths_reject_ancestor_descendant_nesting_deterministically() 
         error.code(),
         WorkspaceConfigErrorCode::OverlappingWorkspacePath
     );
-    assert_eq!(
-        error.detail(),
-        Some("schema_set,migration_v2_directory")
-    );
+    assert_eq!(error.detail(), Some("schema_set,migration_v2_directory"));
 
     let error = base_builder()
         .output(

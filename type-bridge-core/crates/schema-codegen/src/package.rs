@@ -20,7 +20,9 @@ impl GeneratedPackage {
                 || path.starts_with('/')
                 || path.contains('\\')
                 || path.contains('\0')
-                || path.split('/').any(|part| part.is_empty() || matches!(part, "." | ".."))
+                || path
+                    .split('/')
+                    .any(|part| part.is_empty() || matches!(part, "." | ".."))
             {
                 return Err(invalid(
                     "invalid_generated_package_path",
@@ -39,7 +41,9 @@ impl GeneratedPackage {
 
     /// Return files in bytewise path order.
     #[must_use]
-    pub const fn files(&self) -> &BTreeMap<String, Vec<u8>> { &self.files }
+    pub const fn files(&self) -> &BTreeMap<String, Vec<u8>> {
+        &self.files
+    }
 
     /// Borrow one generated file.
     #[must_use]

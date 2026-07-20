@@ -8,9 +8,7 @@
 //! Import verifies the ledger and live state against that head — it never
 //! replays already-applied legacy steps.
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_schema::ManagedDeltaContext;

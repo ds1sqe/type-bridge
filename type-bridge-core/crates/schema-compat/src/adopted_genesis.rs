@@ -21,13 +21,9 @@ use std::sync::LazyLock;
 
 use serde_json::Value;
 use type_bridge_contract::capability::CapabilitySet;
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode,
-};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::reserved::is_typebridge_internal_label;
-use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, SourcedSchemaFact,
-};
+use type_bridge_contract::schema::{DeclaredSchema, DocumentId, SourcedSchemaFact};
 
 use crate::typeql_to_declared;
 
@@ -84,26 +80,25 @@ entity type_bridge_migration_run,
 ///
 /// Legacy reservation was never prefix-based, so classification is by exact
 /// label. The set is derived from [`LEGACY_LEDGER_SCHEMA_TYPEQL`] labels.
-static LEGACY_LEDGER_LABELS: LazyLock<BTreeSet<&'static str>> =
-    LazyLock::new(|| {
-        BTreeSet::from([
-            "type_bridge_migration",
-            "type_bridge_migration_run",
-            "migration_id",
-            "migration_app_label",
-            "migration_name",
-            "migration_applied_at",
-            "migration_checksum",
-            "migration_run_id",
-            "migration_direction",
-            "migration_status",
-            "migration_started_at",
-            "migration_finished_at",
-            "migration_error",
-            "migration_executor_ip",
-            "migration_executor_mac",
-        ])
-    });
+static LEGACY_LEDGER_LABELS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
+    BTreeSet::from([
+        "type_bridge_migration",
+        "type_bridge_migration_run",
+        "migration_id",
+        "migration_app_label",
+        "migration_name",
+        "migration_applied_at",
+        "migration_checksum",
+        "migration_run_id",
+        "migration_direction",
+        "migration_status",
+        "migration_started_at",
+        "migration_finished_at",
+        "migration_error",
+        "migration_executor_ip",
+        "migration_executor_mac",
+    ])
+});
 
 /// Return whether a schema label belongs to the frozen v1 ledger vocabulary.
 #[must_use]
@@ -166,39 +161,29 @@ pub fn parse_adopted_genesis(
     }
 
     if !ledger.is_empty() {
-        let ledger = DeclaredSchema::from_facts(
-            full.format(),
-            CapabilitySet::new(),
-            ledger,
-        )
-        .map_err(|_| ledger_mismatch())?;
-        let expected_document =
-            DocumentId::new("typebridge-legacy-ledger-schema.typeql")?;
+        let ledger = DeclaredSchema::from_facts(full.format(), CapabilitySet::new(), ledger)
+            .map_err(|_| ledger_mismatch())?;
+        let expected_document = DocumentId::new("typebridge-legacy-ledger-schema.typeql")?;
         let expected =
-            typeql_to_declared(expected_document, LEGACY_LEDGER_SCHEMA_TYPEQL)
-                .map_err(|_| {
-                    failure(
-                        DiagnosticCategory::InvalidContract,
-                        "adopted_genesis_frozen_ledger_invalid",
-                        "frozen legacy migration-ledger schema cannot be normalized",
-                    )
-                })?;
-        if ledger.declared_identity_fingerprint()
-            != expected.declared_identity_fingerprint()
-        {
+            typeql_to_declared(expected_document, LEGACY_LEDGER_SCHEMA_TYPEQL).map_err(|_| {
+                failure(
+                    DiagnosticCategory::InvalidContract,
+                    "adopted_genesis_frozen_ledger_invalid",
+                    "frozen legacy migration-ledger schema cannot be normalized",
+                )
+            })?;
+        if ledger.declared_identity_fingerprint() != expected.declared_identity_fingerprint() {
             return Err(ledger_mismatch());
         }
     }
 
-    DeclaredSchema::from_facts(full.format(), CapabilitySet::new(), user).map_err(
-        |_| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "adopted_genesis_cross_reference",
-                "adopted-genesis user facts reference the frozen legacy ledger",
-            )
-        },
-    )
+    DeclaredSchema::from_facts(full.format(), CapabilitySet::new(), user).map_err(|_| {
+        failure(
+            DiagnosticCategory::Integrity,
+            "adopted_genesis_cross_reference",
+            "adopted-genesis user facts reference the frozen legacy ledger",
+        )
+    })
 }
 
 fn ledger_mismatch() -> Diagnostic {
@@ -212,9 +197,9 @@ fn ledger_mismatch() -> Diagnostic {
 fn value_mentions_label(value: &Value, predicate: fn(&str) -> bool) -> bool {
     match value {
         Value::String(value) => predicate(value),
-        Value::Array(values) => {
-            values.iter().any(|value| value_mentions_label(value, predicate))
-        }
+        Value::Array(values) => values
+            .iter()
+            .any(|value| value_mentions_label(value, predicate)),
         Value::Object(values) => values
             .values()
             .any(|value| value_mentions_label(value, predicate)),
@@ -222,11 +207,7 @@ fn value_mentions_label(value: &Value, predicate: fn(&str) -> bool) -> bool {
     }
 }
 
-fn failure(
-    category: DiagnosticCategory,
-    code: &'static str,
-    message: &'static str,
-) -> Diagnostic {
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static adopted-genesis diagnostic code"),
@@ -244,16 +225,11 @@ mod tests {
 
     #[test]
     fn user_only_export_parses_to_the_user_schema() {
-        let genesis = parse_adopted_genesis(
-            document(),
-            "define\nentity person;\nentity company;\n",
-        )
-        .expect("user-only export");
-        let direct = typeql_to_declared(
-            document(),
-            "define\nentity person;\nentity company;\n",
-        )
-        .expect("direct parse");
+        let genesis =
+            parse_adopted_genesis(document(), "define\nentity person;\nentity company;\n")
+                .expect("user-only export");
+        let direct = typeql_to_declared(document(), "define\nentity person;\nentity company;\n")
+            .expect("direct parse");
         assert_eq!(
             genesis.declared_identity_fingerprint(),
             direct.declared_identity_fingerprint(),
@@ -266,10 +242,9 @@ mod tests {
             "{}\nentity person;\n",
             LEGACY_LEDGER_SCHEMA_TYPEQL.trim_end(),
         );
-        let genesis =
-            parse_adopted_genesis(document(), &source).expect("v1 export");
-        let expected = typeql_to_declared(document(), "define\nentity person;\n")
-            .expect("user parse");
+        let genesis = parse_adopted_genesis(document(), &source).expect("v1 export");
+        let expected =
+            typeql_to_declared(document(), "define\nentity person;\n").expect("user parse");
         assert_eq!(
             genesis.declared_identity_fingerprint(),
             expected.declared_identity_fingerprint(),
@@ -301,7 +276,6 @@ mod tests {
 
     #[test]
     fn the_frozen_ledger_constant_normalizes() {
-        typeql_to_declared(document(), LEGACY_LEDGER_SCHEMA_TYPEQL)
-            .expect("frozen ledger parses");
+        typeql_to_declared(document(), LEGACY_LEDGER_SCHEMA_TYPEQL).expect("frozen ledger parses");
     }
 }

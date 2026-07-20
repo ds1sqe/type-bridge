@@ -5,9 +5,9 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
-    ProjectedContainer, ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity,
-    ProjectedTypeRef, RuntimeProjection,
+    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection, ProjectedContainer,
+    ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
+    RuntimeProjection,
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::ValueTypeTag;
@@ -16,25 +16,72 @@ use crate::{GeneratedPackage, invalid};
 
 macro_rules! canonical_text {
     ($value:expr) => {{
-        String::from_utf8(to_canonical_json($value)?)
-            .map_err(|_| invalid("rust_emitter_non_utf8_canonical_json", "canonical JSON must be UTF-8"))?
+        String::from_utf8(to_canonical_json($value)?).map_err(|_| {
+            invalid(
+                "rust_emitter_non_utf8_canonical_json",
+                "canonical JSON must be UTF-8",
+            )
+        })?
     }};
 }
 
 const FIXED_PUBLIC_NAMES: &[&str] = &[
-    "runtime", "declaration", "create", "read", "reference", "tokens", "structs",
-    "functions", "schema", "ValidationError", "Cardinality", "Required", "Optional",
-    "Sequence", "Either", "Never", "CanonicalDouble", "Decimal", "Date", "DateTime",
-    "DateTimeTz", "Duration", "Model", "CompleteModel", "ReferenceModel", "StructValue",
-    "NominalUpcast", "RoleUpcast", "TypeToken", "FieldToken", "RoleToken", "PlaysToken",
-    "FunctionToken", "Stream", "ModelDeclaration", "MODEL_DECLARATIONS",
-    "SEMANTIC_SCHEMA_FINGERPRINT_JSON", "PROJECTION_FINGERPRINT_JSON",
-    "RUNTIME_PROJECTION_JSON", "MODEL_SHELLS", "MODEL_LINK_COMPONENTS", "STRUCT_ORDER",
-    "FUNCTION_ORDER", "PlayingFact", "PLAYING_FACTS", "String",
+    "runtime",
+    "declaration",
+    "create",
+    "read",
+    "reference",
+    "tokens",
+    "structs",
+    "functions",
+    "schema",
+    "ValidationError",
+    "Cardinality",
+    "Required",
+    "Optional",
+    "Sequence",
+    "Either",
+    "Never",
+    "CanonicalDouble",
+    "Decimal",
+    "Date",
+    "DateTime",
+    "DateTimeTz",
+    "Duration",
+    "Model",
+    "CompleteModel",
+    "ReferenceModel",
+    "StructValue",
+    "NominalUpcast",
+    "RoleUpcast",
+    "TypeToken",
+    "FieldToken",
+    "RoleToken",
+    "PlaysToken",
+    "FunctionToken",
+    "Stream",
+    "ModelDeclaration",
+    "MODEL_DECLARATIONS",
+    "SEMANTIC_SCHEMA_FINGERPRINT_JSON",
+    "PROJECTION_FINGERPRINT_JSON",
+    "RUNTIME_PROJECTION_JSON",
+    "MODEL_SHELLS",
+    "MODEL_LINK_COMPONENTS",
+    "STRUCT_ORDER",
+    "FUNCTION_ORDER",
+    "PlayingFact",
+    "PLAYING_FACTS",
+    "String",
 ];
 
 const FIXED_MEMBER_NAMES: &[&str] = &[
-    "from_parts", "try_new", "new", "value", "iid", "TOKEN", "TYPE_ID_JSON",
+    "from_parts",
+    "try_new",
+    "new",
+    "value",
+    "iid",
+    "TOKEN",
+    "TYPE_ID_JSON",
 ];
 
 pub(super) fn render(
@@ -47,14 +94,38 @@ pub(super) fn render(
         ("Cargo.toml".to_owned(), cargo_toml.to_vec()),
         ("src/lib.rs".to_owned(), render_lib().into_bytes()),
         ("src/runtime.rs".to_owned(), runtime.to_vec()),
-        ("src/declaration.rs".to_owned(), render_declaration(projection)?.into_bytes()),
-        ("src/create.rs".to_owned(), render_create(projection)?.into_bytes()),
-        ("src/read.rs".to_owned(), render_read(projection)?.into_bytes()),
-        ("src/reference.rs".to_owned(), render_reference(projection)?.into_bytes()),
-        ("src/tokens.rs".to_owned(), render_tokens(projection)?.into_bytes()),
-        ("src/structs.rs".to_owned(), render_structs(projection)?.into_bytes()),
-        ("src/functions.rs".to_owned(), render_functions(projection)?.into_bytes()),
-        ("src/schema.rs".to_owned(), render_schema(projection)?.into_bytes()),
+        (
+            "src/declaration.rs".to_owned(),
+            render_declaration(projection)?.into_bytes(),
+        ),
+        (
+            "src/create.rs".to_owned(),
+            render_create(projection)?.into_bytes(),
+        ),
+        (
+            "src/read.rs".to_owned(),
+            render_read(projection)?.into_bytes(),
+        ),
+        (
+            "src/reference.rs".to_owned(),
+            render_reference(projection)?.into_bytes(),
+        ),
+        (
+            "src/tokens.rs".to_owned(),
+            render_tokens(projection)?.into_bytes(),
+        ),
+        (
+            "src/structs.rs".to_owned(),
+            render_structs(projection)?.into_bytes(),
+        ),
+        (
+            "src/functions.rs".to_owned(),
+            render_functions(projection)?.into_bytes(),
+        ),
+        (
+            "src/schema.rs".to_owned(),
+            render_schema(projection)?.into_bytes(),
+        ),
     ])
 }
 
@@ -79,32 +150,56 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
         let name = projected_model.target_name().as_str();
         let id_json = rust_literal(&canonical_text!(id));
         let _ = writeln!(output, "impl runtime::sealed::Sealed for {name} {{}}");
-        let _ = writeln!(output, "impl Model for {name} {{ const TYPE_ID_JSON: &'static str = {id_json}; }}");
+        let _ = writeln!(
+            output,
+            "impl Model for {name} {{ const TYPE_ID_JSON: &'static str = {id_json}; }}"
+        );
         let _ = writeln!(output, "impl CompleteModel for {name} {{}}");
         if let Some(reference) = projected_model.reference_read().target_name() {
             let reference = reference.as_str();
             let _ = writeln!(output, "impl runtime::sealed::Sealed for {reference} {{}}");
-            let _ = writeln!(output, "impl Model for {reference} {{ const TYPE_ID_JSON: &'static str = {id_json}; }}");
+            let _ = writeln!(
+                output,
+                "impl Model for {reference} {{ const TYPE_ID_JSON: &'static str = {id_json}; }}"
+            );
             let _ = writeln!(output, "impl ReferenceModel for {reference} {{}}");
         }
         for ancestor in projected_model.complete_read().nominal_upcasts() {
             let ancestor_model = model(projection, ancestor)?;
             let ancestor_name = ancestor_model.target_name().as_str();
-            let _ = writeln!(output, "impl NominalUpcast<{ancestor_name}> for {name} {{}}");
+            let _ = writeln!(
+                output,
+                "impl NominalUpcast<{ancestor_name}> for {name} {{}}"
+            );
             if let (Some(reference), Some(ancestor_reference)) = (
                 projected_model.reference_read().target_name(),
                 ancestor_model.reference_read().target_name(),
             ) {
-                let _ = writeln!(output, "impl NominalUpcast<{}> for {} {{}}", ancestor_reference.as_str(), reference.as_str());
+                let _ = writeln!(
+                    output,
+                    "impl NominalUpcast<{}> for {} {{}}",
+                    ancestor_reference.as_str(),
+                    reference.as_str()
+                );
             }
         }
         for (active, ancestors) in projected_model.complete_read().role_upcasts() {
-            let active_union = projected_model.query_tokens().roles().get(active)
+            let active_union = projected_model
+                .query_tokens()
+                .roles()
+                .get(active)
                 .and_then(|token| token.player_union_target_name())
-                .ok_or_else(|| facet_error("active role upcast has no projected player-union name"))?;
+                .ok_or_else(|| {
+                    facet_error("active role upcast has no projected player-union name")
+                })?;
             for ancestor in ancestors {
                 let ancestor_union = role_union_name(projection, ancestor)?;
-                let _ = writeln!(output, "impl RoleUpcast<{}, {}> for {name} {{}}", active_union.as_str(), ancestor_union);
+                let _ = writeln!(
+                    output,
+                    "impl RoleUpcast<{}, {}> for {name} {{}}",
+                    active_union.as_str(),
+                    ancestor_union
+                );
             }
         }
         output.push('\n');
@@ -139,7 +234,9 @@ fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
         if !model.create().enabled() {
             continue;
         }
-        let name = model.create().target_name()
+        let name = model
+            .create()
+            .target_name()
             .ok_or_else(|| facet_error("enabled Rust create facet has no target name"))?
             .as_str();
         let members = create_members(projection, model)?;
@@ -154,7 +251,13 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     for id in projection.emission().model_shells() {
         let model = model(projection, id)?;
         let members = read_members(projection, model)?;
-        render_record(&mut output, model.target_name().as_str(), &members, "from_parts", true);
+        render_record(
+            &mut output,
+            model.target_name().as_str(),
+            &members,
+            "from_parts",
+            true,
+        );
     }
     Ok(output)
 }
@@ -164,13 +267,22 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
     output.push_str("use crate::read::*;\nuse crate::runtime::*;\nuse crate::structs::*;\n\n");
     for id in projection.emission().model_shells() {
         let model = model(projection, id)?;
-        let Some(reference_name) = model.reference_read().target_name() else { continue };
+        let Some(reference_name) = model.reference_read().target_name() else {
+            continue;
+        };
         let name = reference_name.as_str();
         let mut members = Vec::new();
         for key in model.reference_read().key_fields() {
-            let read = model.complete_read().fields().iter().find(|field| field.token() == key)
+            let read = model
+                .complete_read()
+                .fields()
+                .iter()
+                .find(|field| field.token() == key)
                 .ok_or_else(|| facet_error("reference key has no complete-read field"))?;
-            let token = model.query_tokens().fields().get(key)
+            let token = model
+                .query_tokens()
+                .fields()
+                .get(key)
                 .ok_or_else(|| facet_error("reference key has no query token"))?;
             members.push(Member::from_multiplicity(
                 token.target_name().as_str(),
@@ -178,12 +290,18 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 read.multiplicity(),
             ));
         }
-        let _ = writeln!(output, "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n  iid: String,");
+        let _ = writeln!(
+            output,
+            "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n  iid: String,"
+        );
         for member in &members {
             let _ = writeln!(output, "  {}: {},", member.name, member.stored_type());
         }
         output.push_str("}\n\n");
-        let _ = write!(output, "impl {name} {{\n  pub fn try_new(iid: impl Into<String>");
+        let _ = write!(
+            output,
+            "impl {name} {{\n  pub fn try_new(iid: impl Into<String>"
+        );
         for member in &members {
             let _ = write!(output, ", {}: {}", member.name, member.parameter_type());
         }
@@ -191,7 +309,8 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
         for member in &members {
             let _ = writeln!(output, "      {}: {},", member.name, member.initializer());
         }
-        output.push_str("    })\n  }\n\n  #[must_use]\n  pub fn iid(&self) -> &str { &self.iid }\n");
+        output
+            .push_str("    })\n  }\n\n  #[must_use]\n  pub fn iid(&self) -> &str { &self.iid }\n");
         for member in &members {
             render_getter(&mut output, member);
         }
@@ -207,10 +326,14 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     for id in projection.emission().model_shells() {
         let projected_model = model(projection, id)?;
         for token in projected_model.query_tokens().roles().values() {
-            let union = token.player_union_target_name()
+            let union = token
+                .player_union_target_name()
                 .ok_or_else(|| facet_error("Rust role token has no player-union name"))?
                 .as_str();
-            let _ = writeln!(output, "#[derive(Clone, Debug, PartialEq)]\npub enum {union} {{");
+            let _ = writeln!(
+                output,
+                "#[derive(Clone, Debug, PartialEq)]\npub enum {union} {{"
+            );
             for player in token.accepted_players() {
                 let player_name = model(projection, player)?.target_name().as_str();
                 let _ = writeln!(output, "  {player_name}({player_name}),");
@@ -221,11 +344,16 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
 
     for id in projection.emission().model_shells() {
         let model = model(projection, id)?;
-        let query_name = model.query_tokens().target_name()
+        let query_name = model
+            .query_tokens()
+            .target_name()
             .ok_or_else(|| facet_error("Rust model has no type/query-token name"))?
             .as_str();
         let owner = model.target_name().as_str();
-        let _ = writeln!(output, "#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]\npub struct {query_name};\n\n#[allow(non_upper_case_globals)]\nimpl {query_name} {{");
+        let _ = writeln!(
+            output,
+            "#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]\npub struct {query_name};\n\n#[allow(non_upper_case_globals)]\nimpl {query_name} {{"
+        );
         let _ = writeln!(
             output,
             "  pub const TOKEN: TypeToken<{owner}> = TypeToken::new({}, {});",
@@ -243,7 +371,9 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             );
         }
         for token in model.query_tokens().roles().values() {
-            let union = token.player_union_target_name().ok_or_else(|| facet_error("role union is absent"))?;
+            let union = token
+                .player_union_target_name()
+                .ok_or_else(|| facet_error("role union is absent"))?;
             let _ = writeln!(
                 output,
                 "  pub const {}: RoleToken<{owner}, {}> = RoleToken::new({}, {});",
@@ -257,8 +387,13 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     }
 
     for playing in projection.playing_facts().values() {
-        let name = playing.target_name().ok_or_else(|| facet_error("Rust playing fact has no target name"))?.as_str();
-        let player = model(projection, playing.id().player())?.target_name().as_str();
+        let name = playing
+            .target_name()
+            .ok_or_else(|| facet_error("Rust playing fact has no target name"))?
+            .as_str();
+        let player = model(projection, playing.id().player())?
+            .target_name()
+            .as_str();
         let (owner, union) = role_owner_and_union(projection, playing.role())?;
         let _ = writeln!(
             output,
@@ -274,37 +409,69 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
     let mut output = String::from(header());
     output.push_str("use crate::runtime::{self, StructValue};\n\n");
     for id in projection.emission().structs() {
-        let structure = projection.structs().get(id).ok_or_else(|| facet_error("emission references an absent struct"))?;
+        let structure = projection
+            .structs()
+            .get(id)
+            .ok_or_else(|| facet_error("emission references an absent struct"))?;
         let name = structure.target_name().as_str();
-        let _ = writeln!(output, "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{");
+        let _ = writeln!(
+            output,
+            "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{"
+        );
         for field in structure.fields() {
             let value = scalar_type(field.value_type());
-            let value = if field.optional() { format!("Option<{value}>") } else { value.to_owned() };
+            let value = if field.optional() {
+                format!("Option<{value}>")
+            } else {
+                value.to_owned()
+            };
             let _ = writeln!(output, "  {}: {value},", field.target_name().as_str());
         }
         output.push_str("}\n\n");
         let _ = write!(output, "impl {name} {{\n  #[must_use]\n  pub fn try_new(");
         for (index, field) in structure.fields().iter().enumerate() {
-            if index > 0 { output.push_str(", "); }
+            if index > 0 {
+                output.push_str(", ");
+            }
             let value = scalar_type(field.value_type());
-            let value = if field.optional() { format!("Option<{value}>") } else { value.to_owned() };
+            let value = if field.optional() {
+                format!("Option<{value}>")
+            } else {
+                value.to_owned()
+            };
             let _ = write!(output, "{}: {value}", field.target_name().as_str());
         }
         output.push_str(") -> Self { Self { ");
         for (index, field) in structure.fields().iter().enumerate() {
-            if index > 0 { output.push_str(", "); }
+            if index > 0 {
+                output.push_str(", ");
+            }
             output.push_str(field.target_name().as_str());
         }
         output.push_str(" } }\n");
         for field in structure.fields() {
             let value = scalar_type(field.value_type());
             if field.optional() {
-                let _ = writeln!(output, "  #[must_use]\n  pub fn {}(&self) -> Option<&{value}> {{ self.{}.as_ref() }}", field.target_name().as_str(), field.target_name().as_str());
+                let _ = writeln!(
+                    output,
+                    "  #[must_use]\n  pub fn {}(&self) -> Option<&{value}> {{ self.{}.as_ref() }}",
+                    field.target_name().as_str(),
+                    field.target_name().as_str()
+                );
             } else {
-                let _ = writeln!(output, "  #[must_use]\n  pub fn {}(&self) -> &{value} {{ &self.{} }}", field.target_name().as_str(), field.target_name().as_str());
+                let _ = writeln!(
+                    output,
+                    "  #[must_use]\n  pub fn {}(&self) -> &{value} {{ &self.{} }}",
+                    field.target_name().as_str(),
+                    field.target_name().as_str()
+                );
             }
         }
-        let _ = writeln!(output, "}}\n\nimpl runtime::sealed::Sealed for {name} {{}}\nimpl StructValue for {name} {{ const STRUCT_ID_JSON: &'static str = {}; }}\n", rust_literal(&canonical_text!(id)));
+        let _ = writeln!(
+            output,
+            "}}\n\nimpl runtime::sealed::Sealed for {name} {{}}\nimpl StructValue for {name} {{ const STRUCT_ID_JSON: &'static str = {}; }}\n",
+            rust_literal(&canonical_text!(id))
+        );
     }
     Ok(output)
 }
@@ -313,10 +480,17 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
     let mut output = String::from(header());
     output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::*;\nuse crate::structs::*;\n\n");
     for id in projection.emission().functions() {
-        let function = projection.functions().get(id).ok_or_else(|| facet_error("emission references an absent function"))?;
-        let arguments = tuple_type(function.parameters().iter()
-            .map(|parameter| projected_type(projection, parameter.type_ref()))
-            .collect::<Result<Vec<_>, _>>()?);
+        let function = projection
+            .functions()
+            .get(id)
+            .ok_or_else(|| facet_error("emission references an absent function"))?;
+        let arguments = tuple_type(
+            function
+                .parameters()
+                .iter()
+                .map(|parameter| projected_type(projection, parameter.type_ref()))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
         let returns = function_return_type(projection, function.returns())?;
         let _ = writeln!(
             output,
@@ -331,10 +505,16 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
 fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str("use crate::runtime::Cardinality;\n\npub const SEMANTIC_SCHEMA_FINGERPRINT_JSON: &str = ");
-    output.push_str(&rust_literal(&canonical_text!(projection.semantic_fingerprint())));
+    output.push_str(
+        "use crate::runtime::Cardinality;\n\npub const SEMANTIC_SCHEMA_FINGERPRINT_JSON: &str = ",
+    );
+    output.push_str(&rust_literal(&canonical_text!(
+        projection.semantic_fingerprint()
+    )));
     output.push_str(";\npub const PROJECTION_FINGERPRINT_JSON: &str = ");
-    output.push_str(&rust_literal(&canonical_text!(projection.projection_fingerprint())));
+    output.push_str(&rust_literal(&canonical_text!(
+        projection.projection_fingerprint()
+    )));
     output.push_str(";\npub const RUNTIME_PROJECTION_JSON: &str = ");
     output.push_str(&rust_literal(&canonical_text!(projection)));
     output.push_str(";\n\n");
@@ -369,7 +549,12 @@ fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             "  PlayingFact {{ id_json: {}, role_json: {}, token_name: {}, cardinality: Cardinality::new({}, {}), metadata_json: {} }},",
             rust_literal(&canonical_text!(playing.id())),
             rust_literal(&canonical_text!(playing.role())),
-            rust_literal(playing.target_name().ok_or_else(|| facet_error("playing name missing"))?.as_str()),
+            rust_literal(
+                playing
+                    .target_name()
+                    .ok_or_else(|| facet_error("playing name missing"))?
+                    .as_str()
+            ),
             cardinality.min(),
             option_u64(cardinality.max()),
             rust_literal(&canonical_text!(playing)),
@@ -393,13 +578,24 @@ impl Member {
     fn from_multiplicity(name: &str, value: String, multiplicity: ProjectedMultiplicity) -> Self {
         let cardinality = multiplicity.cardinality();
         Self {
-            name: name.to_owned(), value, required: multiplicity.required(),
-            container: multiplicity.container(), min: cardinality.min(), max: cardinality.max(),
+            name: name.to_owned(),
+            value,
+            required: multiplicity.required(),
+            container: multiplicity.container(),
+            min: cardinality.min(),
+            max: cardinality.max(),
         }
     }
 
     fn required_scalar(name: &str, value: String) -> Self {
-        Self { name: name.to_owned(), value, required: true, container: ProjectedContainer::Scalar, min: 1, max: Some(1) }
+        Self {
+            name: name.to_owned(),
+            value,
+            required: true,
+            container: ProjectedContainer::Scalar,
+            min: 1,
+            max: Some(1),
+        }
     }
 
     fn stored_type(&self) -> String {
@@ -424,7 +620,10 @@ impl Member {
             (ProjectedContainer::Scalar, false) => format!("Optional::new({})", self.name),
             (ProjectedContainer::Sequence, _) => format!(
                 "Sequence::try_new({}, Cardinality::new({}, {}), {})?",
-                self.name, self.min, option_u64(self.max), rust_literal(&self.name),
+                self.name,
+                self.min,
+                option_u64(self.max),
+                rust_literal(&self.name),
             ),
         }
     }
@@ -446,15 +645,26 @@ impl Member {
     }
 }
 
-fn render_record(output: &mut String, name: &str, members: &[Member], constructor: &str, fallible: bool) {
-    let _ = writeln!(output, "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{");
+fn render_record(
+    output: &mut String,
+    name: &str,
+    members: &[Member],
+    constructor: &str,
+    fallible: bool,
+) {
+    let _ = writeln!(
+        output,
+        "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{"
+    );
     for member in members {
         let _ = writeln!(output, "  {}: {},", member.name, member.stored_type());
     }
     output.push_str("}\n\n");
     let _ = write!(output, "impl {name} {{\n  pub fn {constructor}(");
     for (index, member) in members.iter().enumerate() {
-        if index > 0 { output.push_str(", "); }
+        if index > 0 {
+            output.push_str(", ");
+        }
         let _ = write!(output, "{}: {}", member.name, member.parameter_type());
     }
     if fallible {
@@ -465,8 +675,14 @@ fn render_record(output: &mut String, name: &str, members: &[Member], constructo
     for member in members {
         let _ = writeln!(output, "      {}: {},", member.name, member.initializer());
     }
-    if fallible { output.push_str("    })\n  }\n"); } else { output.push_str("    }\n  }\n"); }
-    for member in members { render_getter(output, member); }
+    if fallible {
+        output.push_str("    })\n  }\n");
+    } else {
+        output.push_str("    }\n  }\n");
+    }
+    for member in members {
+        render_getter(output, member);
+    }
     output.push_str("}\n\n");
 }
 
@@ -474,69 +690,113 @@ fn render_getter(output: &mut String, member: &Member) {
     let _ = writeln!(
         output,
         "\n  #[must_use]\n  pub fn {}(&self) -> {} {{ {} }}",
-        member.name, member.getter_type(), member.getter_body(),
+        member.name,
+        member.getter_type(),
+        member.getter_body(),
     );
 }
 
-fn create_members(projection: &RuntimeProjection, model: &ModelProjection) -> Result<Vec<Member>, Diagnostic> {
+fn create_members(
+    projection: &RuntimeProjection,
+    model: &ModelProjection,
+) -> Result<Vec<Member>, Diagnostic> {
     let mut members = Vec::new();
     if let Some(value_type) = model.declaration().value_type() {
-        members.push(Member::required_scalar("value", scalar_type(value_type).to_owned()));
+        members.push(Member::required_scalar(
+            "value",
+            scalar_type(value_type).to_owned(),
+        ));
     }
     for field in model.create().fields() {
-        let token = model.query_tokens().fields().get(field.token())
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
             .ok_or_else(|| facet_error("create field has no query token"))?;
         members.push(Member::from_multiplicity(
-            token.target_name().as_str(), projected_type(projection, field.value())?, field.multiplicity(),
+            token.target_name().as_str(),
+            projected_type(projection, field.value())?,
+            field.multiplicity(),
         ));
     }
     for (role_id, role) in model.create().roles() {
-        let token = model.query_tokens().roles().get(role_id)
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
             .ok_or_else(|| facet_error("create role has no query token"))?;
         members.push(Member::from_multiplicity(
-            token.target_name().as_str(), model_use_union(projection, role.players())?, role.multiplicity(),
+            token.target_name().as_str(),
+            model_use_union(projection, role.players())?,
+            role.multiplicity(),
         ));
     }
     Ok(members)
 }
 
-fn read_members(projection: &RuntimeProjection, model: &ModelProjection) -> Result<Vec<Member>, Diagnostic> {
+fn read_members(
+    projection: &RuntimeProjection,
+    model: &ModelProjection,
+) -> Result<Vec<Member>, Diagnostic> {
     let mut members = Vec::new();
     if let Some(value_type) = model.declaration().value_type() {
-        members.push(Member::required_scalar("value", scalar_type(value_type).to_owned()));
+        members.push(Member::required_scalar(
+            "value",
+            scalar_type(value_type).to_owned(),
+        ));
     }
     for field in model.complete_read().fields() {
-        let token = model.query_tokens().fields().get(field.token())
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
             .ok_or_else(|| facet_error("read field has no query token"))?;
         members.push(Member::from_multiplicity(
-            token.target_name().as_str(), projected_type(projection, field.value())?, field.multiplicity(),
+            token.target_name().as_str(),
+            projected_type(projection, field.value())?,
+            field.multiplicity(),
         ));
     }
     for (role_id, role) in model.complete_read().roles() {
-        let token = model.query_tokens().roles().get(role_id)
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
             .ok_or_else(|| facet_error("read role has no query token"))?;
         members.push(Member::from_multiplicity(
-            token.target_name().as_str(), model_use_union(projection, role.players())?, role.multiplicity(),
+            token.target_name().as_str(),
+            model_use_union(projection, role.players())?,
+            role.multiplicity(),
         ));
     }
     Ok(members)
 }
 
-fn projected_type(projection: &RuntimeProjection, value: &ProjectedTypeRef) -> Result<String, Diagnostic> {
+fn projected_type(
+    projection: &RuntimeProjection,
+    value: &ProjectedTypeRef,
+) -> Result<String, Diagnostic> {
     match value {
         ProjectedTypeRef::Scalar(tag) => Ok(scalar_type(*tag).to_owned()),
         ProjectedTypeRef::Model(value) => model_use_type(projection, value),
-        ProjectedTypeRef::Struct(id) => projection.structs().get(id)
+        ProjectedTypeRef::Struct(id) => projection
+            .structs()
+            .get(id)
             .map(|value| value.target_name().as_str().to_owned())
             .ok_or_else(|| facet_error("type reference names an absent struct")),
     }
 }
 
-fn model_use_type(projection: &RuntimeProjection, value: &ProjectedModelUse) -> Result<String, Diagnostic> {
+fn model_use_type(
+    projection: &RuntimeProjection,
+    value: &ProjectedModelUse,
+) -> Result<String, Diagnostic> {
     let model = model(projection, value.id())?;
     match value.form() {
         ProjectedModelForm::Complete => Ok(model.target_name().as_str().to_owned()),
-        ProjectedModelForm::Reference => model.reference_read().target_name()
+        ProjectedModelForm::Reference => model
+            .reference_read()
+            .target_name()
             .map(|name| name.as_str().to_owned())
             .ok_or_else(|| facet_error("reference form has no projected reference name")),
     }
@@ -546,14 +806,23 @@ fn model_use_union<'a>(
     projection: &RuntimeProjection,
     values: impl IntoIterator<Item = &'a ProjectedModelUse>,
 ) -> Result<String, Diagnostic> {
-    nested_union(values.into_iter().map(|value| model_use_type(projection, value)).collect::<Result<Vec<_>, _>>())
+    nested_union(
+        values
+            .into_iter()
+            .map(|value| model_use_type(projection, value))
+            .collect::<Result<Vec<_>, _>>(),
+    )
 }
 
 fn nested_union(values: Result<Vec<String>, Diagnostic>) -> Result<String, Diagnostic> {
     let values = values?;
     let mut values = values.into_iter().rev();
-    let Some(mut output) = values.next() else { return Ok("Never".to_owned()) };
-    for value in values { output = format!("Either<{value}, {output}>"); }
+    let Some(mut output) = values.next() else {
+        return Ok("Never".to_owned());
+    };
+    for value in values {
+        output = format!("Either<{value}, {output}>");
+    }
     Ok(output)
 }
 
@@ -571,20 +840,30 @@ fn function_return_type(
 ) -> Result<String, Diagnostic> {
     match returns {
         FunctionReturnProjection::Scalar(value) => function_element_type(projection, value),
-        FunctionReturnProjection::Tuple(values) => Ok(tuple_type(values.iter()
-            .map(|value| function_element_type(projection, value))
-            .collect::<Result<Vec<_>, _>>()?)),
-        FunctionReturnProjection::Stream(values) => {
-            let row = tuple_or_scalar(values.iter()
+        FunctionReturnProjection::Tuple(values) => Ok(tuple_type(
+            values
+                .iter()
                 .map(|value| function_element_type(projection, value))
-                .collect::<Result<Vec<_>, _>>()?);
-            Ok(format!("Stream<{row}>") )
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        FunctionReturnProjection::Stream(values) => {
+            let row = tuple_or_scalar(
+                values
+                    .iter()
+                    .map(|value| function_element_type(projection, value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            Ok(format!("Stream<{row}>"))
         }
     }
 }
 
 fn tuple_or_scalar(values: Vec<String>) -> String {
-    if values.len() == 1 { values[0].clone() } else { tuple_type(values) }
+    if values.len() == 1 {
+        values[0].clone()
+    } else {
+        tuple_type(values)
+    }
 }
 
 fn function_element_type(
@@ -592,23 +871,42 @@ fn function_element_type(
     value: &FunctionReturnElementProjection,
 ) -> Result<String, Diagnostic> {
     let value_type = projected_type(projection, value.type_ref())?;
-    Ok(if value.optional() { format!("Option<{value_type}>") } else { value_type })
+    Ok(if value.optional() {
+        format!("Option<{value_type}>")
+    } else {
+        value_type
+    })
 }
 
 fn projected_field_value<'a>(
     model: &'a ModelProjection,
     id: &OwnsFactId,
 ) -> Result<&'a ProjectedTypeRef, Diagnostic> {
-    if let Some(field) = model.complete_read().fields().iter().find(|field| field.token() == id) {
+    if let Some(field) = model
+        .complete_read()
+        .fields()
+        .iter()
+        .find(|field| field.token() == id)
+    {
         return Ok(field.value());
     }
-    model.create().fields().iter().find(|field| field.token() == id)
+    model
+        .create()
+        .fields()
+        .iter()
+        .find(|field| field.token() == id)
         .map(type_bridge_contract::projection::CreateFieldProjection::value)
         .ok_or_else(|| facet_error("query field has no create or complete-read value"))
 }
 
-fn model<'a>(projection: &'a RuntimeProjection, id: &TypeId) -> Result<&'a ModelProjection, Diagnostic> {
-    projection.models().get(id).ok_or_else(|| facet_error("projection references an absent model"))
+fn model<'a>(
+    projection: &'a RuntimeProjection,
+    id: &TypeId,
+) -> Result<&'a ModelProjection, Diagnostic> {
+    projection
+        .models()
+        .get(id)
+        .ok_or_else(|| facet_error("projection references an absent model"))
 }
 
 fn role_owner_and_union<'a>(
@@ -621,11 +919,15 @@ fn role_owner_and_union<'a>(
             && owner.id().label() == role.declaring_relation()
             && let Some(token) = owner.query_tokens().roles().get(role)
         {
-            let union = token.player_union_target_name().ok_or_else(|| facet_error("role union is absent"))?;
+            let union = token
+                .player_union_target_name()
+                .ok_or_else(|| facet_error("role union is absent"))?;
             return Ok((owner.target_name().as_str(), union.as_str()));
         }
     }
-    Err(facet_error("playing or specialization references an absent role owner"))
+    Err(facet_error(
+        "playing or specialization references an absent role owner",
+    ))
 }
 
 fn role_union_name(projection: &RuntimeProjection, role: &RoleId) -> Result<String, Diagnostic> {
@@ -650,7 +952,9 @@ fn option_u64(value: Option<u64>) -> String {
     value.map_or_else(|| "None".to_owned(), |value| format!("Some({value})"))
 }
 
-fn rust_literal(value: &str) -> String { format!("{value:?}") }
+fn rust_literal(value: &str) -> String {
+    format!("{value:?}")
+}
 
 fn facet_error(message: &'static str) -> Diagnostic {
     invalid("rust_emitter_facet_mismatch", message)
@@ -673,43 +977,82 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
 
     for id in projection.emission().model_shells() {
         let model = model(projection, id)?;
-        insert(model.target_name().as_str(), format!("complete model {id:?}"))?;
+        insert(
+            model.target_name().as_str(),
+            format!("complete model {id:?}"),
+        )?;
         if let Some(name) = model.create().target_name() {
             insert(name.as_str(), format!("create model {id:?}"))?;
         }
         if let Some(name) = model.reference_read().target_name() {
             insert(name.as_str(), format!("reference model {id:?}"))?;
         }
-        let query = model.query_tokens().target_name().ok_or_else(|| facet_error("query-token name is absent"))?;
+        let query = model
+            .query_tokens()
+            .target_name()
+            .ok_or_else(|| facet_error("query-token name is absent"))?;
         insert(query.as_str(), format!("query token {id:?}"))?;
         for token in model.query_tokens().roles().values() {
-            let union = token.player_union_target_name().ok_or_else(|| facet_error("player-union name is absent"))?;
-            insert(union.as_str(), format!("role player union {:?}", token.role()))?;
+            let union = token
+                .player_union_target_name()
+                .ok_or_else(|| facet_error("player-union name is absent"))?;
+            insert(
+                union.as_str(),
+                format!("role player union {:?}", token.role()),
+            )?;
         }
-        for name in model.query_tokens().fields().values().map(|token| token.target_name())
-            .chain(model.query_tokens().roles().values().map(|token| token.target_name()))
+        for name in model
+            .query_tokens()
+            .fields()
+            .values()
+            .map(|token| token.target_name())
+            .chain(
+                model
+                    .query_tokens()
+                    .roles()
+                    .values()
+                    .map(|token| token.target_name()),
+            )
         {
             if FIXED_MEMBER_NAMES.contains(&name.as_str()) {
                 return Err(invalid(
                     "rust_emitter_name_collision",
-                    format!("Rust model member `{}` collides with generated runtime state", name.as_str()),
+                    format!(
+                        "Rust model member `{}` collides with generated runtime state",
+                        name.as_str()
+                    ),
                 ));
             }
         }
     }
     for id in projection.emission().structs() {
-        let structure = projection.structs().get(id).ok_or_else(|| facet_error("struct is absent"))?;
+        let structure = projection
+            .structs()
+            .get(id)
+            .ok_or_else(|| facet_error("struct is absent"))?;
         insert(structure.target_name().as_str(), format!("struct {id:?}"))?;
-        if structure.fields().iter().any(|field| FIXED_MEMBER_NAMES.contains(&field.target_name().as_str())) {
-            return Err(invalid("rust_emitter_name_collision", "Rust struct field collides with generated runtime state"));
+        if structure
+            .fields()
+            .iter()
+            .any(|field| FIXED_MEMBER_NAMES.contains(&field.target_name().as_str()))
+        {
+            return Err(invalid(
+                "rust_emitter_name_collision",
+                "Rust struct field collides with generated runtime state",
+            ));
         }
     }
     for id in projection.emission().functions() {
-        let function = projection.functions().get(id).ok_or_else(|| facet_error("function is absent"))?;
+        let function = projection
+            .functions()
+            .get(id)
+            .ok_or_else(|| facet_error("function is absent"))?;
         insert(function.target_name().as_str(), format!("function {id:?}"))?;
     }
     for playing in projection.playing_facts().values() {
-        let name = playing.target_name().ok_or_else(|| facet_error("playing name is absent"))?;
+        let name = playing
+            .target_name()
+            .ok_or_else(|| facet_error("playing name is absent"))?;
         insert(name.as_str(), format!("playing fact {:?}", playing.id()))?;
     }
     Ok(())
