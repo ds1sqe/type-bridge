@@ -108,6 +108,7 @@ from type_bridge.migration.loader import (
 from type_bridge.migration.operations import CopyAttribute, RunPython
 from type_bridge.migration.registry import ModelRegistry
 from type_bridge.migration.schema_manager import SchemaManager
+from type_bridge.migration.sidecar import SidecarConversionError, generate_sidecars
 from type_bridge.migration.simple_migration import (
     MigrationManager as SimpleMigrationManager,
 )
@@ -165,6 +166,9 @@ __all__ = [
     "MigrationLoader",
     "LoadedMigration",
     "MigrationLoadError",
+    # Sidecar conversion
+    "SidecarConversionError",
+    "generate_sidecars",
     # Generator
     "MigrationGenerator",
     # Offline authoring

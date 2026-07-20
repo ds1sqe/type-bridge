@@ -185,7 +185,8 @@ pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
                  The native loader cannot execute a dynamically imported \
                  migration; each listed file needs a JSON sidecar recording \
                  its checked execution spec before the native migration \
-                 path can use this history.",
+                 path can use this history. Generate the sidecars with \
+                 `python -m type_bridge.migration.sidecar <migrations-dir>`.",
                 dir.display(),
                 orphans.join(", ")
             ),
