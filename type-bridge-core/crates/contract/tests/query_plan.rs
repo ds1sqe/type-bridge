@@ -984,3 +984,138 @@ fn bounded_reachability_requires_a_finite_root_bound() {
         "query_plan_reachable_expansion_limit"
     );
 }
+
+#[test]
+fn optional_input_columns_are_reserved() {
+    let error = QueryPlan::new(
+        vec![binding(0, "person"), binding(1, "age")],
+        vec![InputColumn::new(
+            InputColumnId::new(0),
+            QueryVariable::new("maybe_age").expect("input name"),
+            ValueTypeTag::Long,
+            true,
+        )],
+        vec![ReadStage::Match {
+            patterns: vec![
+                person_isa(0),
+                QueryPattern::Has {
+                    attribute: binding_id(1),
+                    attribute_id: AttributeId::new("age").expect("attribute id"),
+                    owner: binding_id(0),
+                },
+                QueryPattern::Value {
+                    comparator: ValueComparator::GreaterOrEqual,
+                    left: QueryOperand::Binding {
+                        binding: binding_id(1),
+                    },
+                    right: QueryOperand::Input {
+                        column: InputColumnId::new(0),
+                    },
+                },
+            ],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
+        managed_semantics(b"optional-input-fixture"),
+    )
+    .expect_err("no transport implements absent input values");
+    assert_eq!(error.code().as_str(), "query_plan_optional_input_reserved");
+}
+
+#[test]
+fn caller_limits_recheck_the_whole_plan_structure() {
+    use type_bridge_contract::limits::StructuralLimits;
+
+    let plan = full_pipeline_plan();
+    plan.check_structural_limits(StructuralLimits::CANONICAL)
+        .expect("canonical limits accept the canonical plan");
+
+    for (case, apply, code) in [
+        (
+            "boolean terms",
+            (|limits: &mut StructuralLimits| limits.boolean_terms = 2) as fn(&mut StructuralLimits),
+            "query_plan_pattern_limit",
+        ),
+        (
+            "predicate nodes",
+            |limits: &mut StructuralLimits| limits.predicate_nodes = 2,
+            "query_plan_pattern_node_limit",
+        ),
+        (
+            "output names",
+            |limits: &mut StructuralLimits| limits.output_name_bytes = 3,
+            "query_plan_name_limit",
+        ),
+        (
+            "selected slots",
+            |limits: &mut StructuralLimits| limits.selected_slots = 1,
+            "query_plan_output_limit",
+        ),
+    ] {
+        let mut limits = StructuralLimits::CANONICAL;
+        apply(&mut limits);
+        let error = plan
+            .check_structural_limits(limits)
+            .expect_err("stricter limits must reject");
+        assert_eq!(error.code().as_str(), code, "{case}");
+    }
+}
+
+#[test]
+fn predicate_nodes_charge_one_aggregate_budget_across_local_functions() {
+    use type_bridge_contract::id::{FunctionId, Label};
+    use type_bridge_contract::limits::StructuralLimits;
+    use type_bridge_contract::query_plan::{LocalFunction, LocalReturn, Reducer};
+
+    // Root conjunction: two nodes. Local body: one node. A per-function
+    // reset would accept a three-node plan under a two-node budget; the
+    // aggregate budget must reject it.
+    let plan = QueryPlan::new_with_functions(
+        vec![binding(0, "person"), binding(1, "age_count")],
+        vec![LocalFunction::new(
+            FunctionId::new("age_count_of").expect("function id"),
+            vec![binding(0, "subject"), binding(1, "age")],
+            vec![Label::new("person").expect("label")],
+            vec![QueryPattern::Has {
+                attribute: binding_id(1),
+                attribute_id: AttributeId::new("age").expect("attribute id"),
+                owner: binding_id(0),
+            }],
+            LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long),
+        )],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![
+                person_isa(0),
+                QueryPattern::FunctionCall {
+                    arguments: vec![QueryOperand::Binding {
+                        binding: binding_id(0),
+                    }],
+                    assigned: binding_id(1),
+                    function: FunctionId::new("age_count_of").expect("function id"),
+                },
+            ],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+        managed_semantics(b"aggregate-node-budget-fixture"),
+    )
+    .expect("three-node plan under canonical limits");
+
+    let mut two_nodes = StructuralLimits::CANONICAL;
+    two_nodes.predicate_nodes = 2;
+    assert_eq!(
+        plan.check_structural_limits(two_nodes)
+            .expect_err("aggregate budget spans functions")
+            .code()
+            .as_str(),
+        "query_plan_pattern_node_limit"
+    );
+
+    let mut three_nodes = StructuralLimits::CANONICAL;
+    three_nodes.predicate_nodes = 3;
+    plan.check_structural_limits(three_nodes)
+        .expect("exact aggregate fits");
+}

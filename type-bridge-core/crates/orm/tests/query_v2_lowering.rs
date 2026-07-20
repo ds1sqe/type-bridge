@@ -12,8 +12,9 @@ use type_bridge_contract::query_plan::{
     QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
-    TypeFact, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
+    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2::lower_validated_query;
@@ -46,8 +47,20 @@ fn validated_person_query() -> (ValidatedQuery, QueryPlan) {
             ValueTypeTag::String,
         )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person, name).expect("owns id"),
+            OwnsFactId::new(person.clone(), name.clone()).expect("owns id"),
         )),
+        // The windowed fixture plan sorts by name; the unique ownership
+        // proves the sort tuple total for the visible person column.
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Owns(OwnsFactId::new(person, name).expect("owns id")),
+                    AnnotationKindId::Unique,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .expect("unique annotation"),
+        ),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
         let byte = u64::try_from(index).expect("byte");
@@ -853,5 +866,119 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
          { (from: $start, to: $R0h1) isa! edge; \
          (from: $R0h1, to: $R0h2) isa! edge; \
          (from: $R0h2, to: $finish) isa! edge; };\n",
+    );
+}
+
+#[test]
+fn hidden_negation_witnesses_lower_with_an_exact_root_select() {
+    let person = type_id(TypeKind::Entity, "person");
+    let name = AttributeId::new("name").expect("attribute");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, name).expect("owns id"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-witness-fixture").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-v2-scope").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+
+    // The hidden witness is established only inside the negation and never
+    // projected; the plan carries no explicit Select stage.
+    let plan = QueryPlan::new(
+        vec![
+            binding(0, "person"),
+            binding(1, "name"),
+            binding(2, "hidden"),
+        ],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding: binding_id(0),
+                    include_subtypes: true,
+                    type_id: type_id(TypeKind::Entity, "person"),
+                },
+                QueryPattern::Has {
+                    attribute: binding_id(1),
+                    attribute_id: AttributeId::new("name").expect("attribute"),
+                    owner: binding_id(0),
+                },
+                QueryPattern::Not {
+                    patterns: vec![
+                        QueryPattern::Has {
+                            attribute: binding_id(2),
+                            attribute_id: AttributeId::new("name").expect("attribute"),
+                            owner: binding_id(0),
+                        },
+                        QueryPattern::Value {
+                            comparator: ValueComparator::Equal,
+                            left: QueryOperand::Binding {
+                                binding: binding_id(2),
+                            },
+                            right: QueryOperand::Literal {
+                                value: CanonicalValue::String(
+                                    CanonicalString::new("zed").expect("literal"),
+                                ),
+                            },
+                        },
+                    ],
+                },
+            ],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("witness plan");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated witness query");
+
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
+    assert_eq!(
+        lowered.typeql(),
+        "match\n\
+         $person isa person;\n\
+         $person has name $name;\n\
+         $name isa! name;\n\
+         not {\n\
+         \x20   $person has name $hidden;\n\
+         \x20   $hidden isa! name;\n\
+         \x20   $hidden == \"zed\";\n\
+         };\n\
+         select $person, $name;\n",
     );
 }

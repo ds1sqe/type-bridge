@@ -17,8 +17,9 @@ use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::QueryInvocation;
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
-    TypeFact, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
+    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::ValueTypeTag;
@@ -64,11 +65,24 @@ fn declared_fixture(schema: &DynamicCrudSchema) -> (ManagedSchemaState, Resolved
             ValueTypeTag::Long,
         )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person.clone(), name).expect("owns id"),
+            OwnsFactId::new(person.clone(), name.clone()).expect("owns id"),
         )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person, age).expect("owns id"),
+            OwnsFactId::new(person.clone(), age).expect("owns id"),
         )),
+        // The V1 registry declares the name field as a key; the declared
+        // schema carries the same fact so windowed adapted plans prove
+        // their sort tuple total through the unique ownership.
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Owns(OwnsFactId::new(person, name).expect("owns id")),
+                    AnnotationKindId::Key,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .expect("key annotation"),
+        ),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
         let byte = u64::try_from(index).expect("byte");

@@ -18,8 +18,10 @@ use type_bridge_contract::query_plan::{
     QueryInvocation, QueryOperation, QueryOutput, QueryPattern, ReadStage,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact,
-    RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
+    SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact,
+    ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::ValueTypeTag;
@@ -60,8 +62,23 @@ fn schema_fixture() -> SchemaFixture {
             ValueTypeTag::String,
         )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person.clone(), name).expect("owns id"),
+            OwnsFactId::new(person.clone(), name.clone()).expect("owns id"),
         )),
+        // The V1 registry declares person-name as a key field; the V2
+        // schema carries the same fact so windowed adapted plans prove
+        // their sort tuple total through the unique ownership.
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Owns(
+                        OwnsFactId::new(person.clone(), name).expect("owns id"),
+                    ),
+                    AnnotationKindId::Key,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .expect("key annotation"),
+        ),
         SchemaFact::Type(TypeFact::new(employment.clone()).expect("type fact")),
         SchemaFact::Relates(
             RelatesFact::new(

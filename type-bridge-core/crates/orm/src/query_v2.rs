@@ -161,6 +161,21 @@ pub fn lower_validated_query(
     };
     render_patterns(&mut typeql, plan, patterns, row, 0)?;
 
+    // A binding established only inside a negation is a witness the
+    // provider never returns as a column. When the plan carries no
+    // explicit Select or Reduce and a witness narrows the environment,
+    // project the validator-derived root visibility exactly, so implicit
+    // projection never requests a column no provider row can carry.
+    let has_projection_stage = plan
+        .pipeline()
+        .iter()
+        .any(|stage| matches!(stage, ReadStage::Select { .. } | ReadStage::Reduce { .. }));
+    if !has_projection_stage && validated.root_visibility().len() < plan.bindings().len() {
+        typeql.push_str("select ");
+        render_variable_list(&mut typeql, plan, validated.root_visibility())?;
+        typeql.push_str(";\n");
+    }
+
     for stage in &plan.pipeline()[1..] {
         match stage {
             ReadStage::Match { .. } => {
@@ -934,7 +949,7 @@ fn validate_result_row(
             "provider row must be a JSON object keyed by selected variables",
         )
     })?;
-    let visible = visible_variables(validated.plan());
+    let visible = visible_variables(validated);
     // Given lowerings echo the driver-bound input variables in every row;
     // input names are contract-unique against binding names, so tolerating
     // exactly them stays closed.
@@ -1099,7 +1114,8 @@ fn validate_result_row(
 }
 
 /// Return the visible variable names after select and reduce stages.
-fn visible_variables(plan: &QueryPlan) -> Vec<&str> {
+fn visible_variables(validated: &ValidatedQuery) -> Vec<&str> {
+    let plan = validated.plan();
     // A reduce stage replaces the whole row environment with its group
     // keys and assigned results, superseding any earlier select.
     for stage in plan.pipeline() {
@@ -1132,9 +1148,17 @@ fn visible_variables(plan: &QueryPlan) -> Vec<&str> {
                 .collect();
         }
     }
-    plan.bindings()
+    // No Select or Reduce: the environment is the validator-derived root
+    // visibility, which lowering also projects explicitly whenever a
+    // negation witness narrows it below the declared binding set.
+    validated
+        .root_visibility()
         .iter()
-        .map(|binding| binding.variable().as_str())
+        .filter_map(|binding| {
+            plan.bindings()
+                .get(usize::from(binding.get()))
+                .map(|binding| binding.variable().as_str())
+        })
         .collect()
 }
 

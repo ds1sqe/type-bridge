@@ -12,8 +12,9 @@ use type_bridge_contract::query_plan::{
     QueryPlan, ReadStage,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
-    TypeFact, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
+    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
@@ -49,6 +50,10 @@ struct SchemaFixture {
 }
 
 fn schema_fixture() -> SchemaFixture {
+    schema_fixture_with_unique_name(true)
+}
+
+fn schema_fixture_with_unique_name(unique_name: bool) -> SchemaFixture {
     let person = type_id(TypeKind::Entity, "person");
     let name = AttributeId::new("name").expect("attribute");
     let facts = vec![
@@ -59,9 +64,25 @@ fn schema_fixture() -> SchemaFixture {
             ValueTypeTag::String,
         )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person, name).expect("owns id"),
+            OwnsFactId::new(person.clone(), name.clone()).expect("owns id"),
         )),
     ];
+    // Windowed fixture plans sort by name; the unique ownership proves
+    // the sort tuple total for the visible person column. The
+    // annotation-free variant exists to prove windows reject without it.
+    let mut facts = facts;
+    if unique_name {
+        facts.push(SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Owns(OwnsFactId::new(person, name).expect("owns id")),
+                    AnnotationKindId::Unique,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .expect("unique annotation"),
+        ));
+    }
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
         let byte = u64::try_from(index).expect("byte");
         let line = u32::try_from(index + 1).expect("line");
@@ -1066,4 +1087,50 @@ fn bounded_reachability_narrows_endpoints_to_role_players() {
     // A role outside the relation fails closed.
     let error = build(RoleId::new("edge", "witness").expect("role")).expect_err("unknown role");
     assert_eq!(error.code().as_str(), "query_plan_unknown_role");
+}
+
+#[test]
+fn windows_without_a_proven_total_order_are_rejected() {
+    // Two persons may share a name when the ownership is not unique: the
+    // sorted page order among them is provider-defined, so the window is
+    // refused instead of paging nondeterministically.
+    let fixture = schema_fixture_with_unique_name(false);
+    let error = person_name_plan(
+        &fixture,
+        vec![
+            ReadStage::Select {
+                bindings: vec![binding_id(0), binding_id(1)],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+            },
+            ReadStage::Offset { rows: 0 },
+            ReadStage::Limit { rows: 10 },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+    )
+    .expect_err("duplicate sort keys must not admit a window");
+    assert_eq!(error.code().as_str(), "query_plan_window_order_not_total");
+
+    // Dropping the tied thing column from the row environment restores
+    // the proof: the remaining sorted attribute column is value-identified.
+    person_name_plan(
+        &fixture,
+        vec![
+            ReadStage::Select {
+                bindings: vec![binding_id(1)],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+            },
+            ReadStage::Offset { rows: 0 },
+            ReadStage::Limit { rows: 10 },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(1)],
+        },
+    )
+    .expect("a fully sorted scalar environment is total");
 }

@@ -16,8 +16,9 @@ use type_bridge_contract::query_plan::{
     QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
-    TypeFact, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
+    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 use type_bridge_orm::TxType;
@@ -58,6 +59,21 @@ fn live_fixture(suffix: &str) -> LiveQueryFixture {
         SchemaFact::Owns(OwnsFact::new(
             OwnsFactId::new(person.clone(), name.clone()).unwrap(),
         )),
+        // Windowed live plans sort by the name attribute; the unique
+        // ownership proves the sort tuple total for the person column and
+        // matches the live schema definition text.
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Owns(
+                        OwnsFactId::new(person.clone(), name.clone()).unwrap(),
+                    ),
+                    AnnotationKindId::Unique,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .unwrap(),
+        ),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
         let byte = u64::try_from(index).expect("byte");
@@ -200,7 +216,7 @@ async fn validated_queries_execute_rows_count_and_exists_live() {
         &format!(
             "define\n\
              attribute {}, value string;\n\
-             entity {}, owns {};",
+             entity {}, owns {} @unique;",
             fixture.name.label(),
             fixture.person.label(),
             fixture.name.label(),
@@ -914,7 +930,7 @@ async fn multi_row_given_invocations_correlate_inputs_live() {
         &format!(
             "define\n\
              attribute {}, value string;\n\
-             entity {}, owns {};",
+             entity {}, owns {} @unique;",
             fixture.name.label(),
             fixture.person.label(),
             fixture.name.label(),
@@ -1569,7 +1585,7 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         &format!(
             "define\n\
              attribute {}, value string;\n\
-             entity {}, owns {};",
+             entity {}, owns {} @unique;",
             fixture.name.label(),
             fixture.person.label(),
             fixture.name.label(),
@@ -2204,7 +2220,7 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
         &format!(
             "define\n\
              attribute {}, value string;\n\
-             entity {}, owns {};",
+             entity {}, owns {} @unique;",
             fixture.name.label(),
             fixture.person.label(),
             fixture.name.label(),
@@ -2297,7 +2313,7 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
         &format!(
             "define\n\
              attribute {}, value string;\n\
-             entity {}, owns {};",
+             entity {}, owns {} @unique;",
             fixture.name.label(),
             fixture.person.label(),
             fixture.name.label(),
@@ -2333,6 +2349,18 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
             SchemaFact::Owns(OwnsFact::new(
                 OwnsFactId::new(fixture.person.clone(), fixture.name.clone()).unwrap(),
             )),
+            SchemaFact::Annotation(
+                AnnotationFact::new(
+                    AnnotationFactId::new(
+                        AnnotationSubjectId::Owns(
+                            OwnsFactId::new(fixture.person.clone(), fixture.name.clone()).unwrap(),
+                        ),
+                        AnnotationKindId::Unique,
+                    ),
+                    SchemaAnnotationValue::Presence,
+                )
+                .unwrap(),
+            ),
         ];
         let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
             let byte = u64::try_from(index).unwrap();
@@ -2414,4 +2442,108 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
     )
     .expect("prepared remote outcome");
     assert_eq!(remote_json, local_json);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hidden_negation_witnesses_execute_without_an_explicit_select_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let db = setup_db().await;
+    let suffix = unique_schema_suffix("rust", "query-v2-witness");
+    let fixture = live_fixture(&suffix);
+
+    db.execute_raw(
+        &format!(
+            "define\n\
+             attribute {}, value string;\n\
+             entity {}, owns {} @unique;",
+            fixture.name.label(),
+            fixture.person.label(),
+            fixture.name.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("witness schema");
+    db.execute_raw(
+        &format!(
+            "insert $ada isa {person}, has {name} \"Ada\"; \
+             $grace isa {person}, has {name} \"Grace\"; \
+             $zed isa {person}, has {name} \"Zed\";",
+            person = fixture.person.label(),
+            name = fixture.name.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("witness data");
+
+    // The witness binding exists only inside the negation and is never
+    // projected; the plan carries no explicit Select stage, so implicit
+    // projection must come from the validator-derived root visibility.
+    let plan = QueryPlan::new(
+        vec![
+            binding(0, "person"),
+            binding(1, "name"),
+            binding(2, "hidden"),
+        ],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding: binding_id(0),
+                    include_subtypes: true,
+                    type_id: fixture.person.clone(),
+                },
+                QueryPattern::Has {
+                    attribute: binding_id(1),
+                    attribute_id: fixture.name.clone(),
+                    owner: binding_id(0),
+                },
+                QueryPattern::Not {
+                    patterns: vec![
+                        QueryPattern::Has {
+                            attribute: binding_id(2),
+                            attribute_id: fixture.name.clone(),
+                            owner: binding_id(0),
+                        },
+                        QueryPattern::Value {
+                            comparator: ValueComparator::Equal,
+                            left: QueryOperand::Binding {
+                                binding: binding_id(2),
+                            },
+                            right: QueryOperand::Literal {
+                                value: CanonicalValue::String(
+                                    CanonicalString::new("Zed").expect("literal"),
+                                ),
+                            },
+                        },
+                    ],
+                },
+            ],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+        fixture.managed.managed_semantic_schema().clone(),
+    )
+    .expect("witness plan");
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let validated = validate_query_plan(&plan, &context, StructuralLimits::CANONICAL)
+        .expect("validated witness query");
+
+    let mut transaction = db
+        .read_transaction()
+        .await
+        .expect("borrowed read transaction");
+    let rows = execute_validated_query(
+        &mut transaction,
+        &validated,
+        &QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation"),
+        limits(),
+    )
+    .await
+    .expect("witness rows execute without a provider column mismatch");
+    let mut names = row_names(&rows);
+    names.sort();
+    assert_eq!(names, vec!["Ada", "Grace"]);
 }

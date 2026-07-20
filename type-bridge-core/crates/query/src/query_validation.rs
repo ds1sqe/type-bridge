@@ -12,7 +12,7 @@ use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
-    DocumentSource, QueryOutput, QueryPlan, ReadStage, Reducer,
+    DocumentSource, QueryOutput, QueryPattern, QueryPlan, ReadStage, Reducer,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::ValueTypeTag;
@@ -133,6 +133,7 @@ pub struct ValidatedQuery {
     binding_domains: BTreeMap<BindingId, BindingDomain>,
     output_schema: OutputSchema,
     plan: QueryPlan,
+    root_visibility: Vec<BindingId>,
     source_state: ManagedSchemaState,
     structural_limits: StructuralLimits,
 }
@@ -162,6 +163,18 @@ impl ValidatedQuery {
     pub const fn structural_limits(&self) -> StructuralLimits {
         self.structural_limits
     }
+
+    /// Return the bindings positively visible in a root row, dense order.
+    ///
+    /// This is the validator-derived row environment after the pattern
+    /// conjunction and before any Select or Reduce stage: a binding
+    /// established only inside a negation is a witness, never a column.
+    /// Execution derives implicit projection from exactly this set, so a
+    /// plan without an explicit Select still requests only columns the
+    /// provider can produce.
+    pub fn root_visibility(&self) -> &[BindingId] {
+        &self.root_visibility
+    }
 }
 
 /// Validate one reusable plan against exact resolved schema authority.
@@ -186,18 +199,10 @@ pub fn validate_query_plan(
             "resolved schema declaration identity does not match validation state",
         ));
     }
-    if !limits.allows_bindings(plan.bindings().len())
-        || plan
-            .bindings()
-            .iter()
-            .any(|binding| binding.variable().as_str().len() > limits.output_name_bytes)
-    {
-        return Err(plan_failure(
-            DiagnosticCategory::ResourceLimit,
-            "query_plan_validation_limit",
-            "plan exceeds caller structural limits",
-        ));
-    }
+    // The supplied limits are validation authority: the plan's entire
+    // structure — root pipeline and local functions under one aggregate
+    // predicate-node budget — re-checks under them, not a subset.
+    plan.check_structural_limits(limits)?;
 
     let schema = context.resolved_schema();
     let inputs = plan
@@ -424,6 +429,93 @@ pub fn validate_query_plan(
         }
     }
 
+    // A window consumes a total order: page membership must not depend on
+    // provider iteration among tied rows. Every binding visible at the
+    // window must be determined by the sort tuple — a scalar column by
+    // being a sort key itself (attributes are value-identified), a thing
+    // column through a mandatory root ownership of a sort-key attribute
+    // whose owns edge is unique or key on every type in its domain.
+    let windowed = plan
+        .pipeline()
+        .iter()
+        .any(|stage| matches!(stage, ReadStage::Offset { .. } | ReadStage::Limit { .. }));
+    if windowed {
+        let sort_keys: BTreeSet<BindingId> = plan
+            .pipeline()
+            .iter()
+            .filter_map(|stage| match stage {
+                ReadStage::Sort { terms } => Some(terms),
+                _ => None,
+            })
+            .flatten()
+            .map(|term| term.binding())
+            .collect();
+        let window_environment: Vec<BindingId> = if let Some(ReadStage::Reduce {
+            assignments,
+            groups,
+        }) = plan
+            .pipeline()
+            .iter()
+            .find(|stage| matches!(stage, ReadStage::Reduce { .. }))
+        {
+            groups
+                .iter()
+                .copied()
+                .chain(assignments.iter().map(|assignment| assignment.assigned()))
+                .collect()
+        } else if let Some(ReadStage::Select { bindings }) = plan
+            .pipeline()
+            .iter()
+            .find(|stage| matches!(stage, ReadStage::Select { .. }))
+        {
+            bindings.clone()
+        } else {
+            positive.union(&optional_positive).copied().collect()
+        };
+
+        let not_total = || {
+            plan_failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_window_order_not_total",
+                "offset and limit require a sort tuple proven total for every visible column",
+            )
+        };
+        for binding in window_environment {
+            if sort_keys.contains(&binding) {
+                continue;
+            }
+            let domain = binding_domains.get(&binding).ok_or_else(&not_total)?;
+            if domain.value_type().is_some() {
+                // An unsorted scalar column can tie under the sort tuple
+                // while differing in value: pages would split arbitrarily.
+                return Err(not_total());
+            }
+            // A thing column is determined by a sort key it owns through a
+            // unique or key edge: equal key value implies the same owner.
+            let determined = patterns.iter().any(|pattern| {
+                let QueryPattern::Has {
+                    owner,
+                    attribute,
+                    attribute_id,
+                } = pattern
+                else {
+                    return false;
+                };
+                *owner == binding
+                    && sort_keys.contains(attribute)
+                    && !domain.type_ids().is_empty()
+                    && domain.type_ids().iter().all(|type_id| {
+                        schema.types().get(type_id).is_some_and(|resolved| {
+                            resolved.unique_attributes().contains(attribute_id)
+                        })
+                    })
+            });
+            if !determined {
+                return Err(not_total());
+            }
+        }
+    }
+
     let output_schema = match plan.output() {
         QueryOutput::Rows { columns } => OutputSchema::Rows(RowSchema::new(
             columns
@@ -507,6 +599,7 @@ pub fn validate_query_plan(
         binding_domains,
         output_schema,
         plan: plan.clone(),
+        root_visibility: positive.union(&optional_positive).copied().collect(),
         source_state: context.managed_state().clone(),
         structural_limits: limits,
     })

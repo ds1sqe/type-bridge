@@ -705,6 +705,48 @@ impl QueryPlan {
         managed_semantics: ManagedSemanticSchemaFingerprint,
         limits: StructuralLimits,
     ) -> Result<Self, Diagnostic> {
+        Self::validate_plan_structure(&bindings, &functions, &inputs, &pipeline, &output, limits)?;
+        let required_capabilities = derive_capabilities(&pipeline, &functions, &inputs, &output)?;
+        Ok(Self {
+            bindings,
+            format: QUERY_PLAN_FORMAT_V1.to_owned(),
+            functions,
+            inputs,
+            managed_semantics,
+            output,
+            pipeline,
+            required_capabilities,
+        })
+    }
+
+    /// Re-check this plan's whole structure under caller-supplied limits.
+    ///
+    /// The exact construction-time traversal runs again — bindings,
+    /// inputs, the root pipeline, and every local function under one
+    /// aggregate predicate-node budget — so a caller passing stricter
+    /// [`StructuralLimits`] gets every field enforced, not a subset.
+    pub fn check_structural_limits(&self, limits: StructuralLimits) -> Result<(), Diagnostic> {
+        Self::validate_plan_structure(
+            &self.bindings,
+            &self.functions,
+            &self.inputs,
+            &self.pipeline,
+            &self.output,
+            limits,
+        )
+    }
+
+    /// The construction-time structural traversal, shared with
+    /// [`Self::check_structural_limits`] so caller-supplied limits enforce
+    /// exactly what construction enforces.
+    fn validate_plan_structure(
+        bindings: &[AssertionBinding],
+        functions: &[LocalFunction],
+        inputs: &[InputColumn],
+        pipeline: &[ReadStage],
+        output: &QueryOutput,
+        limits: StructuralLimits,
+    ) -> Result<(), Diagnostic> {
         if bindings.is_empty() || !limits.allows_bindings(bindings.len()) {
             return Err(failure(
                 DiagnosticCategory::ResourceLimit,
@@ -719,6 +761,13 @@ impl QueryPlan {
                     DiagnosticCategory::InvalidContract,
                     "query_plan_bindings_not_dense",
                     "plan binding IDs must be ordered dense zero-based ordinals",
+                ));
+            }
+            if binding.variable().as_str().len() > limits.output_name_bytes {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_name_limit",
+                    "a query variable name exceeds the structural ceiling",
                 ));
             }
             if !names.insert(binding.variable().clone()) {
@@ -744,6 +793,24 @@ impl QueryPlan {
                     "input column IDs must be ordered dense zero-based ordinals",
                 ));
             }
+            // The public contract accepts `None` for optional columns, but
+            // neither inline nor given lowering can transport absence yet.
+            // Reserve the value state instead of admitting plans no
+            // provider path can execute.
+            if column.optional() {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_optional_input_reserved",
+                    "optional input columns are reserved until absence transport is defined",
+                ));
+            }
+            if column.public_name().as_str().len() > limits.output_name_bytes {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_name_limit",
+                    "an input column name exceeds the structural ceiling",
+                ));
+            }
             if !names.insert(column.public_name().clone()) {
                 return Err(failure(
                     DiagnosticCategory::InvalidContract,
@@ -753,13 +820,14 @@ impl QueryPlan {
             }
         }
 
-        validate_local_functions(&functions, limits)?;
+        let mut nodes = 0usize;
+        validate_local_functions(functions, limits, &mut nodes)?;
 
         let (mandatory, optional, has_sort) =
-            validate_pipeline(&pipeline, bindings.len(), inputs.len(), limits)?;
+            validate_pipeline(pipeline, bindings.len(), inputs.len(), limits, &mut nodes)?;
         let visible: BTreeSet<BindingId> = mandatory.union(&optional).copied().collect();
 
-        match &output {
+        match output {
             QueryOutput::Rows { columns } => {
                 if columns.is_empty() || !limits.allows_selected_slots(columns.len()) {
                     return Err(failure(
@@ -843,17 +911,7 @@ impl QueryPlan {
             ));
         }
 
-        let required_capabilities = derive_capabilities(&pipeline, &functions, &inputs, &output)?;
-        Ok(Self {
-            bindings,
-            format: QUERY_PLAN_FORMAT_V1.to_owned(),
-            functions,
-            inputs,
-            managed_semantics,
-            output,
-            pipeline,
-            required_capabilities,
-        })
+        Ok(())
     }
 
     /// Return the exact wire format discriminator.
@@ -1112,6 +1170,7 @@ pub fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
 fn validate_local_functions(
     functions: &[LocalFunction],
     limits: StructuralLimits,
+    nodes: &mut usize,
 ) -> Result<(), Diagnostic> {
     if !limits.allows_bindings(functions.len().max(1)) {
         return Err(failure(
@@ -1168,7 +1227,6 @@ fn validate_local_functions(
                 "plan root conjunction is empty or exceeds the term ceiling",
             ));
         }
-        let mut nodes = 0usize;
         for pattern in function.body() {
             // The first local vocabulary keeps bodies flat.
             if matches!(
@@ -1184,7 +1242,10 @@ fn validate_local_functions(
                     "local bodies admit only isa, has, links, and value patterns",
                 ));
             }
-            inspect_pattern(pattern, 1, bindings.len(), 0, limits, &mut nodes)?;
+            // The predicate-node budget is one aggregate ceiling for the
+            // whole plan: local bodies charge the same counter the root
+            // conjunction does instead of resetting per function.
+            inspect_pattern(pattern, 1, bindings.len(), 0, limits, nodes)?;
         }
         let returns = function.returns();
         check_binding(returns.input(), bindings.len())?;
@@ -1219,6 +1280,7 @@ fn validate_pipeline(
     binding_count: usize,
     input_count: usize,
     limits: StructuralLimits,
+    nodes: &mut usize,
 ) -> Result<(BTreeSet<BindingId>, BTreeSet<BindingId>, bool), Diagnostic> {
     let Some((first, rest)) = pipeline.split_first() else {
         return Err(failure(
@@ -1241,9 +1303,8 @@ fn validate_pipeline(
             "plan root conjunction is empty or exceeds the term ceiling",
         ));
     }
-    let mut stats = 0usize;
     for pattern in patterns {
-        inspect_pattern(pattern, 1, binding_count, input_count, limits, &mut stats)?;
+        inspect_pattern(pattern, 1, binding_count, input_count, limits, nodes)?;
     }
 
     // The row environment starts as the pattern-referenced bindings: a
