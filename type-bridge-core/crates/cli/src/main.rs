@@ -76,6 +76,18 @@ enum MigrationCommand {
         #[arg(long)]
         environment: String,
     },
+    /// Adopt a completed legacy (v1) history as the canonical genesis.
+    Adopt {
+        /// The manifest environment holding the migrated v1 database.
+        #[arg(long)]
+        environment: String,
+        /// Directory containing the completed legacy migration files.
+        #[arg(long)]
+        legacy_directory: PathBuf,
+        /// Migration name recorded for the zero-operation bridge manifest.
+        #[arg(long, default_value = "0000_legacy_frontier")]
+        name: String,
+    },
 }
 
 /// Symbolic secret references stay unresolved during offline commands.
@@ -170,6 +182,18 @@ fn run(cli: &Cli) -> Result<(), String> {
             MigrationCommand::Verify { environment } => {
                 run_connected(&workspace, environment, ConnectedAction::Verify)
             }
+            MigrationCommand::Adopt {
+                environment,
+                legacy_directory,
+                name,
+            } => run_connected(
+                &workspace,
+                environment,
+                ConnectedAction::Adopt {
+                    legacy_directory: legacy_directory.clone(),
+                    name: name.clone(),
+                },
+            ),
             MigrationCommand::Plan => {
                 let plan =
                     workspace.migration_plan(&BTreeSet::new()).map_err(display)?;
@@ -226,6 +250,7 @@ fn display(error: impl std::fmt::Display) -> String {
 enum ConnectedAction {
     Apply { approvals: Vec<String> },
     Verify,
+    Adopt { legacy_directory: PathBuf, name: String },
 }
 
 fn run_connected(
@@ -255,7 +280,11 @@ async fn run_connected_async(
             "unknown environment {environment_name:?}; the manifest declares: [{known}]"
         ));
     };
-    if matches!(action, ConnectedAction::Apply { .. }) && !environment.migrate() {
+    if matches!(
+        action,
+        ConnectedAction::Apply { .. } | ConnectedAction::Adopt { .. }
+    ) && !environment.migrate()
+    {
         return Err(format!(
             "environment {environment_name:?} is not opted into migration \
              application; set `migrate: true` in the manifest to allow it"
@@ -277,10 +306,25 @@ async fn run_connected_async(
     );
     // `verify` is observational: it must never create the managed or
     // journal database (a typoed environment name would otherwise
-    // materialize two databases). Only `apply`, which is migration-gated
-    // above, may bootstrap them.
+    // materialize two databases). `adopt` requires the migrated v1 managed
+    // database to already exist — bootstrapping an empty one would
+    // guarantee a broken adoption — while its journal companion is new by
+    // definition. Only migration-gated actions may bootstrap anything.
     for database in [environment.database(), journal_name.as_str()] {
-        if matches!(action, ConnectedAction::Verify) {
+        let requires_existing = match &action {
+            ConnectedAction::Verify => Some(
+                "`migration verify` is read-only and never creates databases \
+                 — apply migrations to this environment first",
+            ),
+            ConnectedAction::Adopt { .. } if database == environment.database() => {
+                Some(
+                    "`migration adopt` cutover requires the migrated v1 \
+                     database to already exist",
+                )
+            }
+            ConnectedAction::Apply { .. } | ConnectedAction::Adopt { .. } => None,
+        };
+        if let Some(reason) = requires_existing {
             let exists = type_bridge_orm::database_exists(
                 environment.uri(),
                 database,
@@ -291,11 +335,7 @@ async fn run_connected_async(
             .await
             .map_err(|error| format!("cannot check database {database:?}: {error}"))?;
             if !exists {
-                return Err(format!(
-                    "database {database:?} does not exist; `migration verify` is \
-                     read-only and never creates databases — apply migrations to \
-                     this environment first"
-                ));
+                return Err(format!("database {database:?} does not exist; {reason}"));
             }
         } else {
             type_bridge_orm::ensure_database_exists(
@@ -332,12 +372,17 @@ async fn run_connected_async(
         .map_err(|error| format!("cannot connect the journal database: {error}"))?,
     );
 
-    let genesis = type_bridge_contract::schema::DeclaredSchema::from_facts(
-        workspace.declared_schema().format(),
-        type_bridge_contract::capability::CapabilitySet::new(),
-        std::iter::empty(),
-    )
-    .map_err(display)?;
+    // Adoption records the pre-adoption managed export as the durable
+    // genesis artifact before genesis resolution runs; every action then
+    // resolves the workspace genesis the same way — the adopted head when
+    // the artifact exists, the empty schema otherwise.
+    let adopted_artifact_created = if matches!(action, ConnectedAction::Adopt { .. })
+    {
+        ensure_adopted_genesis_artifact(workspace, &managed).await?
+    } else {
+        false
+    };
+    let genesis = workspace.migration_genesis().map_err(display)?;
     let lowering = type_bridge_schema_migration::SchemaLoweringBinding::current(
         workspace.delta_context().available_capabilities().clone(),
     )
@@ -345,7 +390,7 @@ async fn run_connected_async(
     let runner = type_bridge_schema_migration_typedb::TypeDbMigrationRunner::new(
         managed,
         journal,
-        genesis,
+        genesis.clone(),
         workspace.delta_context().clone(),
         lowering,
         config.migration_policy().clone(),
@@ -384,7 +429,7 @@ async fn run_connected_async(
         }
         ConnectedAction::Verify => {
             let report = runner
-                .verify(&directory, Some(workspace.declared_schema()), &holder)
+                .verify(&directory, Some(workspace.declared_schema()))
                 .await
                 .map_err(display)?;
             if report.is_clean() {
@@ -405,6 +450,157 @@ async fn run_connected_async(
                 Err(format!("{} drift finding(s)", report.findings().len()))
             }
         }
+        ConnectedAction::Adopt {
+            legacy_directory,
+            name,
+        } => {
+            let bridge_path = directory.join(format!("{name}.tbmigration.json"));
+            let bridge_created = if bridge_path.exists() {
+                false
+            } else {
+                match author_bridge_manifest(
+                    workspace,
+                    &legacy_directory,
+                    &name,
+                    &genesis,
+                    &bridge_path,
+                ) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        cleanup_adoption_files(adopted_artifact_created, workspace, false, &bridge_path);
+                        return Err(error);
+                    }
+                }
+            };
+            let outcome = runner
+                .import_legacy_frontier(&legacy_directory, &directory, &holder)
+                .await;
+            match outcome {
+                Ok(type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::UpToDate) => {
+                    println!("legacy history is already adopted; the bridged ledger is current");
+                    Ok(())
+                }
+                Ok(type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
+                    type_bridge_schema_migration::MigrationExecutionOutcome::Applied,
+                )) => {
+                    println!(
+                        "adopted the legacy history\n  genesis: {}\n  bridge: {}",
+                        workspace.adopted_genesis_absolute_path().display(),
+                        bridge_path.display(),
+                    );
+                    Ok(())
+                }
+                Ok(type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
+                    outcome,
+                )) => {
+                    cleanup_adoption_files(adopted_artifact_created, workspace, bridge_created, &bridge_path);
+                    Err(format!("adoption checkpoint did not complete: {outcome:?}"))
+                }
+                Err(error) => {
+                    cleanup_adoption_files(adopted_artifact_created, workspace, bridge_created, &bridge_path);
+                    Err(display(error))
+                }
+            }
+        }
+    }
+}
+
+/// Record the pre-adoption managed export as the durable genesis artifact.
+///
+/// The export is validated through the same parse the workspace genesis
+/// resolution uses before a byte is written, so an already-adopted or
+/// otherwise contaminated database fails closed here instead of persisting
+/// an artifact the workspace would later reject. Returns whether this call
+/// created the artifact.
+async fn ensure_adopted_genesis_artifact(
+    workspace: &TypeBridgeWorkspace,
+    managed: &type_bridge_orm::Database,
+) -> Result<bool, String> {
+    let path = workspace.adopted_genesis_absolute_path();
+    if path.exists() {
+        return Ok(false);
+    }
+    let export = managed
+        .schema_text()
+        .await
+        .map_err(|error| format!("cannot export the managed schema: {error}"))?;
+    let document = type_bridge_contract::schema::DocumentId::new(
+        type_bridge_schema_compat::ADOPTED_GENESIS_FILE_NAME,
+    )
+    .map_err(display)?;
+    type_bridge_schema_compat::parse_adopted_genesis(document, &export)
+        .map_err(display)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("cannot create the migration directory: {error}")
+        })?;
+    }
+    write_exclusive(&path, export.as_bytes())?;
+    Ok(true)
+}
+
+/// Author and persist the zero-operation legacy-frontier bridge manifest.
+fn author_bridge_manifest(
+    workspace: &TypeBridgeWorkspace,
+    legacy_directory: &std::path::Path,
+    name: &str,
+    genesis: &type_bridge_contract::schema::DeclaredSchema,
+    bridge_path: &std::path::Path,
+) -> Result<(), String> {
+    let legacy_graph =
+        type_bridge_migration::load_dir_checked(legacy_directory).map_err(|error| {
+            format!("legacy migration directory failed the checked v1 loader: {error}")
+        })?;
+    let frontier =
+        type_bridge_schema_migration_typedb::extract_legacy_frontier(&legacy_graph)
+            .map_err(display)?;
+    let id = type_bridge_contract::migration::MigrationId::from_components(
+        type_bridge_contract::migration::MigrationAppLabel::new(
+            workspace.config().app_label().as_str().to_owned(),
+        )
+        .map_err(display)?,
+        type_bridge_contract::migration::MigrationName::new(name.to_owned())
+            .map_err(display)?,
+    );
+    let bridge = type_bridge_schema_migration::build_legacy_frontier_bridge(
+        id,
+        frontier,
+        genesis,
+        workspace.delta_context(),
+    )
+    .map_err(display)?;
+    let bytes = type_bridge_schema_migration::encode_verified_manifest(&bridge)
+        .map_err(display)?;
+    write_exclusive(bridge_path, &bytes)
+}
+
+fn write_exclusive(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("cannot create {}: {error}", path.display()))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))
+}
+
+/// Best-effort removal of files this adoption run created before it failed.
+///
+/// Pre-existing files are never touched: a re-run over an already-adopted
+/// workspace must not delete the durable artifacts a previous successful
+/// adoption recorded.
+fn cleanup_adoption_files(
+    artifact_created: bool,
+    workspace: &TypeBridgeWorkspace,
+    bridge_created: bool,
+    bridge_path: &std::path::Path,
+) {
+    if bridge_created {
+        let _ = fs::remove_file(bridge_path);
+    }
+    if artifact_created {
+        let _ = fs::remove_file(workspace.adopted_genesis_absolute_path());
     }
 }
 

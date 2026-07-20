@@ -4,10 +4,15 @@
 //! `type_bridge_schema::FactAssembler`; contract and schema crates never depend
 //! on compatibility parsers or their transitive grammar dependencies.
 
+mod adopted_genesis;
 mod descriptor;
 mod function_references;
 mod literal;
 
+pub use adopted_genesis::{
+    ADOPTED_GENESIS_FILE_NAME, LEGACY_LEDGER_SCHEMA_TYPEQL,
+    is_legacy_ledger_label, parse_adopted_genesis,
+};
 pub use function_references::{
     FunctionBodyReferences, SchemaReference, TypeqlDeclaredSchema,
 };

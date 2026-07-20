@@ -487,7 +487,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         let mut transaction = self.journal_database.write_transaction().await.map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let existing = self
-            .load_applied_in_transaction(&mut transaction, lease)
+            .load_applied_in_transaction(&mut transaction, lease.scope(), lease.holder())
             .await?;
         if let Some(existing) = existing
             .iter()
@@ -546,6 +546,59 @@ impl<'a> TypeDbMigrationStore<'a> {
         Ok(JournalEntry::from_store(sequence, record))
     }
 
+    /// Read the applied ledger without a lease, a write, or a schema install.
+    ///
+    /// This is the inspection path for read-only commands such as verify:
+    /// the frozen control schema is checked against the journal export and
+    /// never installed, no control row is consulted, and the whole read is
+    /// one snapshot transaction. A journal database without the control
+    /// schema has never recorded history through the migration path, so the
+    /// load fails closed instead of bootstrapping control state into an
+    /// environment the caller promised not to mutate. The result is
+    /// reporting-grade data, never execution authority.
+    pub async fn load_applied_read_only(
+        &self,
+        scope: &ExecutionScope,
+    ) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
+        let export = self
+            .journal_database
+            .schema_text()
+            .await
+            .map_err(map_orm_error)?;
+        if !control_schema_matches(
+            &export,
+            JOURNAL_CONTROL_SCHEMA_TYPEQL,
+            "journal-control",
+        )? {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_typedb_journal_control_schema_absent",
+                "journal database carries no migration control schema; no \
+                 history was recorded through the migration path and a \
+                 read-only load will not install one",
+            )
+            .with_detail(
+                "journal_database",
+                self.journal_database.database_name().to_owned(),
+            ));
+        }
+        // The persisted wire contract binds scope and fence; the holder on
+        // the reconstructed decode lease is inert plumbing, so an
+        // inspection-local identity keeps this path honest about never
+        // having acquired anything.
+        let holder = LeaseHolderId::new("typebridge-read-only-inspection")?;
+        let mut transaction = self.journal_database.read_transaction().await.map_err(map_orm_error)?;
+        let result = self
+            .load_applied_in_transaction(&mut transaction, scope, &holder)
+            .await;
+        let close = transaction.close().await.map_err(map_orm_error);
+        match (result, close) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(records), Ok(())) => Ok(records),
+        }
+    }
+
     async fn load_applied_inner(
         &self,
         lease: &MigrationLease,
@@ -554,7 +607,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         let mut transaction = self.journal_database.read_transaction().await.map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
-            .load_applied_in_transaction(&mut transaction, lease)
+            .load_applied_in_transaction(&mut transaction, lease.scope(), lease.holder())
             .await;
         let close = transaction.close().await.map_err(map_orm_error);
         match (result, close) {
@@ -586,13 +639,14 @@ impl<'a> TypeDbMigrationStore<'a> {
     async fn load_applied_in_transaction(
         &self,
         transaction: &mut Transaction,
-        lease: &MigrationLease,
+        scope: &ExecutionScope,
+        holder: &LeaseHolderId,
     ) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
         let raw = self
-            .load_applied_rows_in_transaction(transaction, lease)
+            .load_applied_rows_in_transaction(transaction, scope, holder)
             .await?;
         let rolled_back = self
-            .load_rolled_back_in_transaction(transaction, lease)
+            .load_rolled_back_in_transaction(transaction, scope, holder)
             .await?;
         active_applied_entries(raw, &rolled_back)
     }
@@ -600,17 +654,15 @@ impl<'a> TypeDbMigrationStore<'a> {
     async fn load_applied_rows_in_transaction(
         &self,
         transaction: &mut Transaction,
-        lease: &MigrationLease,
+        scope: &ExecutionScope,
+        holder: &LeaseHolderId,
     ) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
-        let rows = load_rows(transaction, lease.scope(), Some(APPLIED_RECORD_KIND)).await?;
+        let rows = load_rows(transaction, scope, Some(APPLIED_RECORD_KIND)).await?;
         let mut result = Vec::with_capacity(rows.len());
         for row in rows {
             let fence = persisted_fence(&row.payload, APPLIED_RECORD_KIND)?;
-            let historical = MigrationLease::new(
-                lease.scope().clone(),
-                lease.holder().clone(),
-                fence,
-            );
+            let historical =
+                MigrationLease::new(scope.clone(), holder.clone(), fence);
             let mut decoded = None;
             for manifest in self.catalog.values() {
                 let expected =
@@ -630,18 +682,16 @@ impl<'a> TypeDbMigrationStore<'a> {
     async fn load_rolled_back_in_transaction(
         &self,
         transaction: &mut Transaction,
-        lease: &MigrationLease,
+        scope: &ExecutionScope,
+        holder: &LeaseHolderId,
     ) -> Result<Vec<JournalEntry<RolledBackRecord>>, Diagnostic> {
         let rows =
-            load_rows(transaction, lease.scope(), Some(ROLLED_BACK_RECORD_KIND)).await?;
+            load_rows(transaction, scope, Some(ROLLED_BACK_RECORD_KIND)).await?;
         let mut result = Vec::with_capacity(rows.len());
         for row in rows {
             let fence = persisted_fence(&row.payload, ROLLED_BACK_RECORD_KIND)?;
-            let historical = MigrationLease::new(
-                lease.scope().clone(),
-                lease.holder().clone(),
-                fence,
-            );
+            let historical =
+                MigrationLease::new(scope.clone(), holder.clone(), fence);
             let mut decoded = None;
             for manifest in self.catalog.values() {
                 let expected = RolledBackRecord::from_verified_manifest_contract(
@@ -795,10 +845,10 @@ impl<'a> TypeDbMigrationStore<'a> {
         let mut transaction = self.journal_database.write_transaction().await.map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let raw = self
-            .load_applied_rows_in_transaction(&mut transaction, lease)
+            .load_applied_rows_in_transaction(&mut transaction, lease.scope(), lease.holder())
             .await?;
         let rolled_back = self
-            .load_rolled_back_in_transaction(&mut transaction, lease)
+            .load_rolled_back_in_transaction(&mut transaction, lease.scope(), lease.holder())
             .await?;
         let active = active_applied_entries(raw, &rolled_back)?;
         let is_active = active.iter().any(|entry| {
@@ -881,7 +931,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         let mut transaction = self.journal_database.read_transaction().await.map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
-            .load_rolled_back_in_transaction(&mut transaction, lease)
+            .load_rolled_back_in_transaction(&mut transaction, lease.scope(), lease.holder())
             .await;
         let close = transaction.close().await.map_err(map_orm_error);
         match (result, close) {

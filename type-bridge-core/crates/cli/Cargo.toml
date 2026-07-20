@@ -15,6 +15,8 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 type-bridge-contract = { path = "../contract" }
 type-bridge-orm = { path = "../orm" }
 type-bridge-schema = { path = "../schema" }
+type-bridge-migration = { path = "../migration" }
+type-bridge-schema-compat = { path = "../schema-compat" }
 type-bridge-schema-migration = { path = "../schema-migration" }
 type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb" }
 type-bridge-workspace = { path = "../workspace" }
@@ -23,5 +25,6 @@ type-bridge-workspace = { path = "../workspace" }
 workspace = true
 
 [dev-dependencies]
+serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"

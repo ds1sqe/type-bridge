@@ -414,3 +414,197 @@ async fn verify_never_creates_databases_live() {
     .expect("existence check");
     assert!(!exists, "verify must never create the managed database");
 }
+
+fn write_legacy_migration(
+    directory: &Path,
+    app_label: &str,
+    name: &str,
+    python_source: &str,
+) -> String {
+    let checksum = type_bridge_migration::migration_file_checksum(python_source);
+    fs::write(directory.join(format!("{name}.py")), python_source)
+        .expect("legacy python source writes");
+    let spec = type_bridge_migration::MigrationSpec {
+        app_label: app_label.to_owned(),
+        name: name.to_owned(),
+        dependencies: Vec::new(),
+        operations: Vec::new(),
+        checksum: Some(checksum.clone()),
+        reversible: true,
+    };
+    fs::write(
+        directory.join(format!("{name}.json")),
+        serde_json::to_string_pretty(&spec).expect("legacy sidecar encodes"),
+    )
+    .expect("legacy sidecar writes");
+    checksum
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn adopt_legacy_history_then_evolve_live() {
+    use type_bridge_migration::MigrationStateStore;
+
+    let address =
+        std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let http_port =
+        std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
+    let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+    let password =
+        std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    // SAFETY: test process, set before any CLI child spawns.
+    unsafe {
+        std::env::set_var("TYPEDB_USERNAME", &username);
+        std::env::set_var("TYPEDB_PASSWORD", &password);
+    }
+
+    // Seed a migrated v1 database: legacy ledger schema, one applied
+    // migration with its recorded checksum, and the user schema its history
+    // reached — exactly what a 1.5.x deployment carries before cutover.
+    let primary = format!("tb_e2e_adopt_{}", std::process::id());
+    type_bridge_orm::session::real_driver::ensure_database_exists(
+        &address,
+        &primary,
+        &username,
+        &password,
+        type_bridge_orm::session::real_driver::ConnectOptions::default(),
+    )
+    .await
+    .expect("v1 database exists");
+    let v1 = std::sync::Arc::new(
+        Database::connect(&address, &primary, &username, &password)
+            .await
+            .expect("v1 database connects"),
+    );
+
+    let workspace = tempfile::tempdir().expect("workspace directory");
+    let root = workspace.path();
+    fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
+    fs::create_dir_all(root.join("migrations/v2")).expect("migration directory");
+    fs::create_dir_all(root.join("migrations/v1")).expect("legacy directory");
+    write_manifest(root, &address, &http_port, &[("live", &primary)]);
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+    )
+    .expect("schema set writes");
+    fs::write(
+        root.join("schema/fragments/model.yaml"),
+        "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\n\
+         entities:\n  person: { owns: [name] }\n",
+    )
+    .expect("schema writes");
+
+    let checksum = write_legacy_migration(
+        &root.join("migrations/v1"),
+        "smoke",
+        "0001_initial",
+        "class Migration:\n    operations = []\n",
+    );
+    let state_store =
+        type_bridge_migration::TypeDbStateStore::new(std::sync::Arc::clone(&v1));
+    state_store
+        .ensure_schema()
+        .await
+        .expect("legacy ledger schema installs");
+    state_store
+        .record_applied(type_bridge_migration::AppliedMigrationRecord {
+            app_label: "smoke".to_owned(),
+            name: "0001_initial".to_owned(),
+            checksum,
+            applied_at: None,
+        })
+        .await
+        .expect("legacy ledger seeds");
+    v1.execute_raw(
+        "define attribute name, value string; entity person, owns name;",
+        TxType::Schema,
+    )
+    .await
+    .expect("legacy schema effect replays");
+
+    // Adopt: the reconstructed head becomes the durable workspace genesis
+    // and the zero-operation bridge checkpoints the ledger.
+    assert_success(
+        &run_cli(
+            root,
+            &[
+                "migration",
+                "adopt",
+                "--environment",
+                "live",
+                "--legacy-directory",
+                "migrations/v1",
+            ],
+        ),
+        "migration adopt",
+    );
+    assert!(root.join("migrations/v2/adopted-genesis.typeql").exists());
+    assert!(
+        root.join("migrations/v2/0000_legacy_frontier.tbmigration.json").exists(),
+    );
+    assert_success(
+        &run_cli(root, &["migration", "verify", "--environment", "live"]),
+        "post-adoption verify",
+    );
+
+    // Adoption is idempotent: a re-run reports the bridged ledger current.
+    let rerun = run_cli(
+        root,
+        &[
+            "migration",
+            "adopt",
+            "--environment",
+            "live",
+            "--legacy-directory",
+            "migrations/v1",
+        ],
+    );
+    assert_success(&rerun, "repeated adopt");
+    assert!(
+        String::from_utf8_lossy(&rerun.stdout).contains("already adopted"),
+        "stdout: {}",
+        String::from_utf8_lossy(&rerun.stdout),
+    );
+
+    // Ordinary work chains onto the adopted genesis: make sees the bridge
+    // head as its source and generates only the nickname delta.
+    fs::write(
+        root.join("schema/fragments/model.yaml"),
+        "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\n  \
+         nickname: { value: string }\nentities:\n  person: { owns: [name, nickname] }\n",
+    )
+    .expect("schema evolves");
+    assert_success(
+        &run_cli(root, &["migration", "make", "--name", "nickname"]),
+        "post-adoption make",
+    );
+    assert!(
+        root.join("migrations/v2/0001_nickname.tbmigration.json").exists(),
+    );
+    assert_success(
+        &run_cli(root, &["migration", "apply", "--environment", "live"]),
+        "post-adoption apply",
+    );
+    assert_success(
+        &run_cli(root, &["migration", "verify", "--environment", "live"]),
+        "post-adoption evolved verify",
+    );
+    v1.execute_raw(
+        "insert $a isa person, has name \"ada\", has nickname \"lovelace\";",
+        TxType::Write,
+    )
+    .await
+    .expect("evolved schema accepts data");
+
+    let journal = Database::connect(
+        &address,
+        &format!("{primary}__tbv2_journal"),
+        &username,
+        &password,
+    )
+    .await
+    .expect("journal connects");
+    journal.delete_database().await.expect("journal cleanup");
+    v1.delete_database().await.expect("v1 cleanup");
+}

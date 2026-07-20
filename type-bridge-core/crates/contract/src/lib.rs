@@ -37,6 +37,7 @@ pub mod projection_wire;
 /// Reusable typed query plans and the first public V2 read vocabulary.
 pub mod query_plan;
 pub mod query_remote;
+pub mod reserved;
 
 mod query_plan_wire;
 

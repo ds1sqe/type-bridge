@@ -42,9 +42,9 @@ use type_bridge_schema_migration::{
     schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
-    MigrationDirectoryApplyOutcome, MigrationDirectoryRollbackOutcome,
-    TypeDbMigrationRunner, derived_journal_database_name,
-    execution_capability_vocabulary,
+    MigrationDirectoryApplyError, MigrationDirectoryApplyOutcome,
+    MigrationDirectoryRollbackOutcome, TypeDbMigrationRunner,
+    derived_journal_database_name, execution_capability_vocabulary,
 };
 
 fn write_legacy_migration(
@@ -714,15 +714,21 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
     );
     let holder = LeaseHolderId::new("live-verify").expect("holder");
 
-    // Before any apply, the only finding is the pending chain.
-    let report = runner
-        .verify(directory.path(), Some(&second_target), &holder)
+    // Before any apply, the untouched journal database has no control
+    // schema; the read-only load refuses to bootstrap one and cannot
+    // distinguish a never-migrated pair from a wiped journal, so verify
+    // fails closed instead of reporting everything as merely pending.
+    let error = runner
+        .verify(directory.path(), Some(&second_target))
         .await
-        .expect("pre-apply verification");
-    assert!(matches!(
-        report.findings(),
-        [MigrationDriftFinding::PendingMigrations { .. }]
-    ));
+        .expect_err("pre-apply verification fails closed");
+    let MigrationDirectoryApplyError::Diagnostic(diagnostic) = &error else {
+        panic!("expected a diagnostic failure: {error}");
+    };
+    assert_eq!(
+        diagnostic.code().as_str(),
+        "migration_typedb_journal_control_schema_absent",
+    );
 
     let outcome = runner
         .apply(directory.path(), &MigrationApplyTarget::DefaultHead, &holder, &[])
@@ -735,7 +741,7 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
 
     // A coherent triad verifies clean.
     let report = runner
-        .verify(directory.path(), Some(&second_target), &holder)
+        .verify(directory.path(), Some(&second_target))
         .await
         .expect("clean verification");
     assert!(report.is_clean(), "findings: {:?}", report.findings());
@@ -752,7 +758,7 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
         type_fact("team"),
     ]);
     let report = runner
-        .verify(directory.path(), Some(&desired), &holder)
+        .verify(directory.path(), Some(&desired))
         .await
         .expect("desired divergence verification");
     assert!(matches!(
@@ -771,7 +777,7 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
         .expect("mutate the managed schema out of band");
     transaction.commit().await.expect("commit out-of-band change");
     let report = runner
-        .verify(directory.path(), Some(&second_target), &holder)
+        .verify(directory.path(), Some(&second_target))
         .await
         .expect("live drift verification");
     let [MigrationDriftFinding::LiveSemantics { recorded, observed }] =

@@ -9,14 +9,13 @@ authors.workspace = true
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 type-bridge-contract = { path = "../contract", version = "1.5.10" }
 type-bridge-core-lib = { path = "../core", version = "1.5.9" }
 type-bridge-schema = { path = "../schema", version = "1.5.10" }
 type-bridge-toml-transpiler = { path = "../toml-transpiler", version = "1.5.9" }
 typeql = "=3.12.0"
 
-[dev-dependencies]
-serde_json = "1.0"
 
 [lints]
 workspace = true

@@ -1,8 +1,5 @@
 //! Parsed partitioning of provider schema exports around the control namespace.
 
-use std::collections::BTreeSet;
-use std::sync::LazyLock;
-
 use serde_json::Value;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{
@@ -11,10 +8,10 @@ use type_bridge_contract::diagnostic::{
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, ManagedSchemaState, SourcedSchemaFact,
 };
-use type_bridge_migration::migration_state_schema;
 use type_bridge_schema::{DeltaError, ManagedDeltaContext, managed_schema_state};
 use type_bridge_schema_compat::{
-    SchemaReference, TypeqlDeclaredSchema, typeql_to_declared,
+    LEGACY_LEDGER_SCHEMA_TYPEQL, SchemaReference, TypeqlDeclaredSchema,
+    is_legacy_ledger_label, typeql_to_declared,
     typeql_to_declared_with_references,
 };
 
@@ -22,23 +19,6 @@ use crate::control_schema::{
     MANAGED_FENCE_SCHEMA_TYPEQL, TYPEBRIDGE_INTERNAL_PREFIX,
 };
 use crate::is_typebridge_internal_label;
-
-/// The exact-match label set of the frozen legacy (v1) migration ledger.
-///
-/// A v1 database keeps its applied ledger as ordinary entities inside the
-/// managed database, so observation must recognize those frozen labels as
-/// TypeBridge control state rather than user content. The set is exact —
-/// legacy reservation was never prefix-based.
-static LEGACY_CONTROL_LABELS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
-    let schema = migration_state_schema();
-    schema
-        .entities
-        .keys()
-        .chain(schema.relations.keys())
-        .chain(schema.attributes.keys())
-        .map(String::as_str)
-        .collect()
-});
 
 /// One parsed TypeDB export partitioned into managed-user and internal facts.
 #[derive(Clone, Debug)]
@@ -287,7 +267,7 @@ fn reject_reserved_function_references(
         for reference in references.references() {
             let control_label = |label: &str| {
                 is_typebridge_internal_label(label)
-                    || LEGACY_CONTROL_LABELS.contains(label)
+                    || is_legacy_ledger_label(label)
             };
             let reserved = match reference {
                 SchemaReference::Label(label) => control_label(label.as_str()),
@@ -345,16 +325,13 @@ fn verify_legacy_control_partition(
     if legacy_control.facts().next().is_none() {
         return Ok(());
     }
-    let frozen = migration_state_schema().to_typeql().map_err(|_| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_typedb_frozen_schema_invalid",
-            "frozen legacy migration-ledger schema cannot be rendered",
-        )
-    })?;
     let expected_document =
         DocumentId::new("typebridge-legacy-ledger-schema.typeql")?;
-    let expected = typeql_to_declared(expected_document, &frozen).map_err(|_| {
+    let expected = typeql_to_declared(
+        expected_document,
+        LEGACY_LEDGER_SCHEMA_TYPEQL,
+    )
+    .map_err(|_| {
         failure(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_frozen_schema_invalid",
@@ -449,7 +426,7 @@ fn value_mentions_reserved_label(value: &Value) -> bool {
 
 fn value_mentions_legacy_control_label(value: &Value) -> bool {
     match value {
-        Value::String(value) => LEGACY_CONTROL_LABELS.contains(value.as_str()),
+        Value::String(value) => is_legacy_ledger_label(value.as_str()),
         Value::Array(values) => values.iter().any(value_mentions_legacy_control_label),
         Value::Object(values) => {
             values.values().any(value_mentions_legacy_control_label)
@@ -566,11 +543,11 @@ mod tests {
 
     #[test]
     fn legacy_ledger_facts_stay_out_of_the_managed_observation() {
-        let legacy = migration_state_schema().to_typeql().expect("legacy typeql");
+        let legacy = LEGACY_LEDGER_SCHEMA_TYPEQL;
         let legacy_definables = legacy
             .trim_start()
             .strip_prefix("define")
-            .unwrap_or(&legacy)
+            .unwrap_or(legacy)
             .to_owned();
         let export = export_with_user(&format!("{legacy_definables}\nentity person;\n"));
         let candidate = candidate_state("define\nentity person;\n");

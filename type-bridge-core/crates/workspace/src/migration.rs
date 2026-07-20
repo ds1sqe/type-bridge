@@ -12,8 +12,11 @@ use std::path::PathBuf;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::migration::MigrationId;
-use type_bridge_contract::schema::DeclaredSchema;
+use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_schema::SafetyClass;
+use type_bridge_schema_compat::{
+    ADOPTED_GENESIS_FILE_NAME, parse_adopted_genesis,
+};
 use type_bridge_schema_migration::{
     GeneratedMigration, MigrationGenerationOutcome, MigrationGenerationRequest,
     MigrationHistoryGraph, MigrationPreviewError, discover_verified_migration_chain,
@@ -55,6 +58,13 @@ impl TypeBridgeWorkspace {
             .workspace_root()
             .as_path()
             .join(self.config().migration_v2_directory().as_path())
+    }
+
+    /// Return the adopted-genesis artifact path under the migration directory.
+    #[must_use]
+    pub fn adopted_genesis_absolute_path(&self) -> PathBuf {
+        self.migration_directory_absolute_path()
+            .join(ADOPTED_GENESIS_FILE_NAME)
     }
 
     /// Discover and replay-verify the workspace's canonical migration chain.
@@ -139,15 +149,40 @@ impl TypeBridgeWorkspace {
 
     /// Return the genesis source every parentless manifest verifies against.
     ///
-    /// The first V2 workspace format always starts managed history from the
-    /// empty schema; adopted scopes enter through the legacy-frontier bridge,
-    /// whose reconstructed head is supplied by the import flow instead.
-    fn migration_genesis(&self) -> Result<DeclaredSchema, TypeBridgeWorkspaceError> {
-        Ok(DeclaredSchema::from_facts(
-            self.declared_schema().format(),
-            CapabilitySet::new(),
-            std::iter::empty(),
-        )?)
+    /// A workspace that never adopted a legacy (v1) database starts managed
+    /// history from the empty schema. An adopted workspace carries the
+    /// `adopted-genesis.typeql` artifact beside its canonical manifests; the
+    /// reconstructed legacy head parsed from those bytes is the genesis on
+    /// every offline and connected operation, so the legacy-frontier bridge
+    /// and everything chained onto it replay-verify against the exact head
+    /// the adoption recorded.
+    pub fn migration_genesis(
+        &self,
+    ) -> Result<DeclaredSchema, TypeBridgeWorkspaceError> {
+        let path = self.adopted_genesis_absolute_path();
+        let source = match std::fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(DeclaredSchema::from_facts(
+                    self.declared_schema().format(),
+                    CapabilitySet::new(),
+                    std::iter::empty(),
+                )?);
+            }
+            Err(_) => {
+                return Err(TypeBridgeWorkspaceError::Contract(Diagnostic::new(
+                    type_bridge_contract::diagnostic::DiagnosticCategory::Integrity,
+                    type_bridge_contract::diagnostic::DiagnosticCode::new(
+                        "workspace_adopted_genesis_unreadable",
+                    )
+                    .expect("static workspace diagnostic code"),
+                    "adopted-genesis artifact exists but cannot be read",
+                )));
+            }
+        };
+        let document = DocumentId::new(ADOPTED_GENESIS_FILE_NAME)?;
+        parse_adopted_genesis(document, &source)
+            .map_err(TypeBridgeWorkspaceError::Contract)
     }
 }
 

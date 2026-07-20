@@ -191,8 +191,10 @@ impl TypeDbMigrationRunner {
 
     /// Verify the migration state triad and report every drift finding.
     ///
-    /// The check is read-only: the applied basis is read under the same
-    /// short-lived rendezvous lease as [`Self::apply`], the live schema is
+    /// The check is strictly read-only: the applied basis is loaded through
+    /// the store's lease-free snapshot read — no lease is acquired, no
+    /// control schema is installed, and no database is created or touched
+    /// beyond schema exports and read transactions. The live schema is
     /// rebuilt for reporting without candidate matching, and nothing is
     /// repaired, generated, or applied. A schema mismatch is drift, not an
     /// invitation to reconcile production automatically.
@@ -200,7 +202,6 @@ impl TypeDbMigrationRunner {
         &self,
         directory: &Path,
         desired: Option<&DeclaredSchema>,
-        holder: &LeaseHolderId,
     ) -> Result<MigrationVerifyReport, MigrationDirectoryApplyError> {
         let graph = self.discover(directory)?;
         let catalog =
@@ -210,8 +211,13 @@ impl TypeDbMigrationRunner {
             Arc::clone(&self.journal_database),
             catalog,
         )?;
-        store.ensure_control_schema().await?;
-        let basis = self.load_applied_basis(&store, holder).await?;
+        let scope = ExecutionScope::new(self.context.scope_id().clone());
+        let basis: BTreeSet<MigrationId> = store
+            .load_applied_read_only(&scope)
+            .await?
+            .iter()
+            .map(|entry| entry.record().migration_id().clone())
+            .collect();
 
         let export = self
             .managed_database

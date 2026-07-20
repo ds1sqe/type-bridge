@@ -1,7 +1,8 @@
 //! Frozen TypeDB control namespace for migration leases and journal rows.
 
-/// Reserved prefix for every V2 migration control type.
-pub const TYPEBRIDGE_INTERNAL_PREFIX: &str = "typebridge-internal-v2-";
+pub use type_bridge_contract::reserved::{
+    TYPEBRIDGE_INTERNAL_PREFIX, is_typebridge_internal_label,
+};
 
 pub(crate) const CONTROL_ENTITY: &str = "typebridge-internal-v2-migration-control";
 pub(crate) const JOURNAL_ENTITY: &str = "typebridge-internal-v2-migration-journal";
@@ -45,12 +46,6 @@ const CONTROL_LABELS: &[&str] = &[
 #[must_use]
 pub const fn control_schema_labels() -> &'static [&'static str] {
     CONTROL_LABELS
-}
-
-/// Return whether a schema label belongs to the reserved control namespace.
-#[must_use]
-pub fn is_typebridge_internal_label(label: &str) -> bool {
-    label.starts_with(TYPEBRIDGE_INTERNAL_PREFIX)
 }
 
 /// Exact TypeDB 3 fence-mirror schema installed in each managed database.

@@ -2617,11 +2617,14 @@ name = "type-bridge-cli"
 version = "1.5.10"
 dependencies = [
  "clap",
+ "serde_json",
  "tempfile",
  "tokio",
  "type-bridge-contract",
+ "type-bridge-migration",
  "type-bridge-orm",
  "type-bridge-schema",
+ "type-bridge-schema-compat",
  "type-bridge-schema-migration",
  "type-bridge-schema-migration-typedb",
  "type-bridge-workspace",
@@ -2940,6 +2943,7 @@ dependencies = [
  "serde_json",
  "type-bridge-contract",
  "type-bridge-schema",
+ "type-bridge-schema-compat",
  "type-bridge-schema-migration",
 ]
 
