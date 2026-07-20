@@ -183,9 +183,9 @@ pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
             message: format!(
                 "Python-only migrations without JSON sidecars in {}: {}. \
                  The native loader cannot execute a dynamically imported \
-                 migration; generate each file's sidecar with the released \
-                 Python migration tooling before running the native \
-                 migration path.",
+                 migration; each listed file needs a JSON sidecar recording \
+                 its checked execution spec before the native migration \
+                 path can use this history.",
                 dir.display(),
                 orphans.join(", ")
             ),
