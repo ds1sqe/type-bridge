@@ -1,15 +1,25 @@
-//! One-way adaptation of released V1 match requests onto V2 query plans.
+//! One-way adaptation of validated V1 match requests onto V2 query plans.
 //!
-//! The adapter maps the V1 vocabulary that the first public V2 vocabulary
-//! can express exactly, and rejects everything else by name — V2 features
-//! never degrade silently to V1 and a V1 shape without a V2 equivalent is
-//! refused, never approximated. There is no reverse adapter, and the V1
-//! executor remains the public default: delegation through this adapter is
-//! gated on a proven byte/result/error parity corpus.
+//! **Status: internal experiment.** The adapter is not wired into any
+//! execution path, is not part of the upgrade contract, and does not
+//! justify any V1 removal; see `docs/guide/v2-deprecations.md`. It maps the
+//! V1 vocabulary that the first public V2 vocabulary can express exactly,
+//! and rejects everything else by name — V2 features never degrade silently
+//! to V1 and a V1 shape without a V2 equivalent is refused, never
+//! approximated. There is no reverse adapter, and the V1 executor remains
+//! the public default.
 //!
-//! Identity mapping is syntactic: descriptor ids carry `kind:label` and V1
-//! field names name their attribute types. A request whose registry renames
-//! members fails V2 schema validation closed instead of matching wrongly.
+//! Adaptation starts from a [`ValidatedMatchRequest`] plus the registry
+//! that validated it: attribute identities are the registry's canonical
+//! provider labels (renamed members translate correctly), and ordering
+//! consumes the validator-proven stable order — including its synthesized
+//! unique tie breaker — so windowed pages keep V1 membership. Shapes whose
+//! V1 semantics the V2 vocabulary cannot reproduce (subtype-inclusive role
+//! edges, missing-value order placement V1 itself rejects) fail with typed
+//! diagnostics.
+//!
+//! Known disclosed divergence: for equal sort keys *without* a window, row
+//! order among ties follows the provider, not V1's stable tie order.
 
 use std::collections::BTreeSet;
 
@@ -31,8 +41,9 @@ use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalVal
 use crate::AttributeValue;
 use crate::match_request::{
     BoundFieldId, ComparisonOp, MatchExpr, MatchMode, MatchOperation, MatchRequest,
-    MatchRequestVersion, SortDirection, ThingKind,
+    MatchRequestVersion, MissingOrder, SortDirection, ThingKind, ValidatedMatchRequest,
 };
+use crate::registry::DescriptorRegistry;
 
 /// The V2 program one V1 request adapts to.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,11 +66,16 @@ impl AdaptedMatchRequest {
     }
 }
 
-/// Adapt one V1 request onto the first public V2 vocabulary.
+/// Adapt one validated V1 request onto the first public V2 vocabulary.
+///
+/// `registry` must be the registry that validated the request; it supplies
+/// the canonical provider attribute labels for renamed members.
 pub fn adapt_match_request(
-    request: &MatchRequest,
+    validated: &ValidatedMatchRequest,
+    registry: &DescriptorRegistry,
     managed_semantics: &ManagedSemanticSchemaFingerprint,
 ) -> Result<AdaptedMatchRequest, Diagnostic> {
+    let request = validated.request();
     if request.version != MatchRequestVersion::V1 {
         return Err(reject(
             "query_v2_adapter_version_unsupported",
@@ -86,11 +102,27 @@ pub fn adapt_match_request(
     if let Some(predicate) = &request.plan.predicate {
         collect_fields(predicate, &mut fields);
     }
-    let operation_order = match &request.operation {
-        MatchOperation::FetchRows { order, .. } => order.as_slice(),
-        _ => &[],
-    };
-    for order in operation_order {
+    // Ordering consumes the validator-proven stable order, not the raw
+    // public order: it carries the synthesized unique tie breaker that keeps
+    // windowed page membership identical to V1 execution.
+    let stable_terms: Vec<&crate::match_request::MatchOrder> =
+        if matches!(request.operation, MatchOperation::FetchRows { .. }) {
+            validated
+                .stable_order()
+                .terms()
+                .iter()
+                .map(|term| term.order())
+                .collect()
+        } else {
+            Vec::new()
+        };
+    for order in &stable_terms {
+        if order.missing != MissingOrder::Reject {
+            return Err(reject(
+                "query_v2_adapter_missing_order_unsupported",
+                "V1 execution rejects missing-value order placement; the adapter preserves that rejection",
+            ));
+        }
         if !fields.contains(&order.field) {
             fields.push(order.field.clone());
         }
@@ -132,9 +164,20 @@ pub fn adapt_match_request(
                 "a bound field references an undeclared V1 binding",
             ));
         }
+        // Emit the registry's canonical provider label, never the
+        // binding-facing field name: renamed members must match the real
+        // attribute type instead of a coincidental same-named one.
+        let attribute_label = registry
+            .provider_attribute_name(&field.field)
+            .ok_or_else(|| {
+                reject(
+                    "query_v2_adapter_unknown_field",
+                    "a bound field has no registered provider attribute",
+                )
+            })?;
         patterns.push(QueryPattern::Has {
             attribute: field_binding(field)?,
-            attribute_id: AttributeId::new(field.field.name.clone())?,
+            attribute_id: AttributeId::new(attribute_label)?,
             owner: BindingId::new(field.binding.get())?,
         });
     }
@@ -147,10 +190,10 @@ pub fn adapt_match_request(
         )?);
     }
 
-    let (operation, output_columns, order) = match &request.operation {
+    let (operation, output_columns) = match &request.operation {
         MatchOperation::FetchRows {
             output,
-            order,
+            order: _,
             window: _,
             cardinality,
         } => {
@@ -179,18 +222,14 @@ pub fn adapt_match_request(
                 };
                 columns.push(BindingId::new(binding.get())?);
             }
-            (QueryOperation::Rows, columns, order.clone())
+            (QueryOperation::Rows, columns)
         }
-        MatchOperation::CountBy { root } => (
-            QueryOperation::Count,
-            vec![BindingId::new(root.get())?],
-            Vec::new(),
-        ),
-        MatchOperation::ExistsBy { root } => (
-            QueryOperation::Exists,
-            vec![BindingId::new(root.get())?],
-            Vec::new(),
-        ),
+        MatchOperation::CountBy { root } => {
+            (QueryOperation::Count, vec![BindingId::new(root.get())?])
+        }
+        MatchOperation::ExistsBy { root } => {
+            (QueryOperation::Exists, vec![BindingId::new(root.get())?])
+        }
         MatchOperation::PageBy { .. } => {
             return Err(reject(
                 "query_v2_adapter_paging_unsupported",
@@ -200,8 +239,8 @@ pub fn adapt_match_request(
     };
 
     let mut select: BTreeSet<BindingId> = output_columns.iter().copied().collect();
-    let mut sort_terms = Vec::with_capacity(order.len());
-    for term in &order {
+    let mut sort_terms = Vec::with_capacity(stable_terms.len());
+    for term in &stable_terms {
         let binding = field_binding(&term.field)?;
         select.insert(binding);
         sort_terms.push(OrderTerm::new(
@@ -223,10 +262,10 @@ pub fn adapt_match_request(
         pipeline.push(ReadStage::Sort { terms: sort_terms });
     }
     if let MatchOperation::FetchRows { window, .. } = &request.operation {
-        if order.is_empty() {
+        if stable_terms.is_empty() {
             return Err(reject(
                 "query_v2_adapter_unordered_window",
-                "a V1 window without an explicit order has no stable V2 truncation",
+                "a V1 window without a proven stable order has no stable V2 truncation",
             ));
         }
         if window.offset > 0 {
@@ -323,6 +362,12 @@ fn adapt_expression(
                         "a role edge references an undeclared relation binding",
                     )
                 })?;
+            if relation_binding.match_mode == MatchMode::Subtypes {
+                return Err(reject(
+                    "query_v2_adapter_subtype_links_unsupported",
+                    "V2 links pin the exact relation type; a subtype-inclusive V1 role edge has no faithful V2 equivalent",
+                ));
+            }
             let relation_id =
                 descriptor_type(relation_binding.descriptor.as_str(), ThingKind::Relation)?;
             if usize::from(player.get()) >= thing_count {

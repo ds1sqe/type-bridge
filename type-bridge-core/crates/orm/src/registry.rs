@@ -188,6 +188,20 @@ impl DescriptorRegistry {
             .map(|descriptor| descriptor.type_name().to_owned())
     }
 
+    /// Resolve the provider-facing TypeDB attribute label of a registered field.
+    ///
+    /// The binding-facing field name and the TypeDB attribute label may
+    /// differ (renamed members); consumers emitting provider syntax must use
+    /// this canonical label, never the field name.
+    pub fn provider_attribute_name(&self, field: &FieldId) -> Option<String> {
+        let descriptor = self.descriptor_by_id(&field.owner)?;
+        let attribute = match &descriptor {
+            TypeDescriptorRef::Entity(descriptor) => descriptor.attribute(&field.name),
+            TypeDescriptorRef::Relation(descriptor) => descriptor.attribute(&field.name),
+        }?;
+        Some(attribute.attr_name.clone())
+    }
+
     /// Resolve an owner-qualified field identity by binding-facing field name
     /// or TypeDB attribute name.
     pub fn field_id(&self, owner: &DescriptorId, field_name: &str) -> Option<FieldId> {

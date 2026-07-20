@@ -181,8 +181,14 @@ async fn v2_outcome(
     fixture: &ParityFixture,
     request: &MatchRequest,
 ) -> QueryV2Outcome {
-    let adapted = adapt_match_request(request, fixture.managed.managed_semantic_schema())
-        .expect("corpus request adapts");
+    let validated_v1 = validate_match_request(&fixture.registry, request.clone())
+        .expect("corpus request passes V1 validation");
+    let adapted = adapt_match_request(
+        &validated_v1,
+        &fixture.registry,
+        fixture.managed.managed_semantic_schema(),
+    )
+    .expect("corpus request adapts");
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let validated = validate_query_plan(adapted.plan(), &context, StructuralLimits::CANONICAL)
         .expect("adapted corpus plan validates");
