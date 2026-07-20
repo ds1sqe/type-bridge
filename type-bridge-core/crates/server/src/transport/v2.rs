@@ -20,7 +20,7 @@ use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteQueryFailure};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
-use type_bridge_orm::query_v2_remote::execute_remote_envelope;
+use type_bridge_orm::query_v2_remote::{execute_admitted_remote_request, preflight_remote_request};
 use type_bridge_orm::session::backend::BoundedAnswerLimits;
 use type_bridge_orm::session::database::Database;
 use type_bridge_query::MigrationAssertionValidationContext;
@@ -42,11 +42,18 @@ pub struct V2QueryState {
     pub resolved: ResolvedSchema,
 }
 
+/// Transport body ceiling: the canonical 16 MiB envelope limit plus
+/// framing slack. Any contract-valid envelope is admitted and answered
+/// with an envelope; bodies beyond this explicit transport ceiling are
+/// refused at the transport layer before buffering.
+const V2_BODY_LIMIT_BYTES: usize = type_bridge_contract::limits::MAX_CANONICAL_BYTES + 64 * 1024;
+
 /// Build the V2 route surface over one executor state.
 pub fn create_v2_router(state: Arc<V2QueryState>) -> Router {
     Router::new()
         .route("/v2/query", post(handle_v2_query))
         .route("/v2/capabilities", get(handle_v2_capabilities))
+        .layer(axum::extract::DefaultBodyLimit::max(V2_BODY_LIMIT_BYTES))
         .with_state(state)
 }
 
@@ -56,25 +63,31 @@ pub fn create_router_with_v2(pipeline: Arc<QueryPipeline>, v2: Arc<V2QueryState>
 }
 
 async fn handle_v2_query(State(state): State<Arc<V2QueryState>>, body: Bytes) -> Response {
+    // Preflight before any provider resource: malformed, stale,
+    // unsupported, or over-budget traffic never opens a transaction.
+    let context = MigrationAssertionValidationContext::new(&state.resolved, &state.managed);
+    let admitted = match preflight_remote_request(
+        &body,
+        &context,
+        &state.advertised,
+        state.ceilings.clone(),
+    ) {
+        Ok(admitted) => admitted,
+        Err(rejection) => {
+            return envelope_response(rejection.into_failure_envelope());
+        }
+    };
     let mut transaction = match state.database.read_transaction().await {
         Ok(transaction) => transaction,
         Err(_) => {
             return envelope_response(
-                RemoteQueryFailure::new(None, &unavailable())
+                RemoteQueryFailure::new(Some(admitted.nonce().to_owned()), &unavailable())
                     .encode()
                     .unwrap_or_default(),
             );
         }
     };
-    let context = MigrationAssertionValidationContext::new(&state.resolved, &state.managed);
-    let bytes = execute_remote_envelope(
-        &body,
-        &context,
-        &state.advertised,
-        &mut transaction,
-        state.ceilings.clone(),
-    )
-    .await;
+    let bytes = execute_admitted_remote_request(admitted, &mut transaction).await;
     envelope_response(bytes)
 }
 

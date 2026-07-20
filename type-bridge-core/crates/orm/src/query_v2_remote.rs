@@ -180,39 +180,71 @@ pub fn decode_remote_outcome(
     }
 }
 
-/// Execute one request envelope through the local engine, server-side.
+/// A remote request proven admissible without any provider resource.
 ///
-/// Always returns envelope bytes: a typed response on success, a structured
-/// failure otherwise. The plan re-validates against this server's schema
-/// authority, so a stale managed fingerprint fails closed; capabilities the
-/// server does not advertise reject before any data I/O; caller budgets
-/// tighten under the supplied ceilings and never raise them.
-pub async fn execute_remote_envelope(
-    request_bytes: &[u8],
-    context: &MigrationAssertionValidationContext<'_>,
-    advertised: &CapabilitySet,
-    transaction: &mut crate::session::transaction::Transaction,
-    ceilings: BoundedAnswerLimits,
-) -> Vec<u8> {
-    match serve_remote_request(request_bytes, context, advertised, transaction, ceilings).await {
-        Ok(response) => response,
-        Err((nonce, diagnostic)) => RemoteQueryFailure::new(nonce, &diagnostic)
-            .encode()
-            .unwrap_or_default(),
+/// Constructed only by [`preflight_remote_request`], which has no access
+/// to a transaction or provider by signature: decode, capability,
+/// schema/staleness, invocation, and budget rejection all happen before
+/// any provider resource can exist.
+pub struct AdmittedRemoteRequest {
+    byte_budget: u64,
+    invocation: QueryInvocation,
+    limits: BoundedAnswerLimits,
+    nonce: String,
+    plan_fingerprint: QueryPlanFingerprint,
+    validated: ValidatedQuery,
+}
+
+impl AdmittedRemoteRequest {
+    /// Return the caller-supplied nonce for failure envelopes produced
+    /// after admission (for example a provider that cannot open).
+    #[must_use]
+    pub fn nonce(&self) -> &str {
+        &self.nonce
     }
 }
 
-async fn serve_remote_request(
+/// A provider-independent rejection produced by request preflight.
+#[derive(Debug)]
+pub struct RemoteRejection {
+    diagnostic: Box<Diagnostic>,
+    nonce: Option<String>,
+}
+
+impl RemoteRejection {
+    fn new(nonce: Option<String>, diagnostic: Diagnostic) -> Self {
+        Self {
+            diagnostic: Box::new(diagnostic),
+            nonce,
+        }
+    }
+
+    /// Encode the failure envelope carrying this rejection.
+    #[must_use]
+    pub fn into_failure_envelope(self) -> Vec<u8> {
+        RemoteQueryFailure::new(self.nonce, &self.diagnostic)
+            .encode()
+            .unwrap_or_default()
+    }
+}
+
+/// Run every provider-independent check over one request envelope.
+///
+/// The plan re-validates against this server's schema authority, so a
+/// stale managed fingerprint fails closed; capabilities the server does
+/// not advertise reject here; caller budgets tighten under the supplied
+/// ceilings and never raise them. No transaction, provider, or other
+/// host resource is constructed — rejected traffic costs only CPU.
+pub fn preflight_remote_request(
     request_bytes: &[u8],
     context: &MigrationAssertionValidationContext<'_>,
     advertised: &CapabilitySet,
-    transaction: &mut crate::session::transaction::Transaction,
     ceilings: BoundedAnswerLimits,
-) -> Result<Vec<u8>, (Option<String>, Diagnostic)> {
-    let request =
-        RemoteQueryRequest::decode(request_bytes).map_err(|diagnostic| (None, diagnostic))?;
+) -> Result<AdmittedRemoteRequest, RemoteRejection> {
+    let request = RemoteQueryRequest::decode(request_bytes)
+        .map_err(|diagnostic| RemoteRejection::new(None, diagnostic))?;
     let nonce = request.nonce().to_owned();
-    let fail = |diagnostic: Diagnostic| (Some(nonce.clone()), diagnostic);
+    let fail = |diagnostic: Diagnostic| RemoteRejection::new(Some(nonce.clone()), diagnostic);
 
     let plan = request.plan().map_err(&fail)?;
     for capability in plan.required_capabilities().iter() {
@@ -229,6 +261,65 @@ async fn serve_remote_request(
     let invocation = request.invocation(&plan).map_err(&fail)?;
     let limits = tighten_limits(request.limits(), ceilings);
     let byte_budget = limits.max_bytes;
+    let plan_fingerprint = QueryPlanFingerprint::compute(&plan).map_err(&fail)?;
+
+    Ok(AdmittedRemoteRequest {
+        byte_budget,
+        invocation,
+        limits,
+        nonce,
+        plan_fingerprint,
+        validated,
+    })
+}
+
+/// Execute one admitted request over a live transaction.
+///
+/// Always returns envelope bytes: a typed response on success, a
+/// structured failure carrying the admitted nonce otherwise.
+pub async fn execute_admitted_remote_request(
+    admitted: AdmittedRemoteRequest,
+    transaction: &mut crate::session::transaction::Transaction,
+) -> Vec<u8> {
+    match run_admitted_request(admitted, transaction).await {
+        Ok(response) => response,
+        Err((nonce, diagnostic)) => RemoteQueryFailure::new(nonce, &diagnostic)
+            .encode()
+            .unwrap_or_default(),
+    }
+}
+
+/// Execute one request envelope through the local engine, server-side.
+///
+/// Preflight runs first ([`preflight_remote_request`]); only an admitted
+/// request touches the supplied transaction. Always returns envelope
+/// bytes: a typed response on success, a structured failure otherwise.
+pub async fn execute_remote_envelope(
+    request_bytes: &[u8],
+    context: &MigrationAssertionValidationContext<'_>,
+    advertised: &CapabilitySet,
+    transaction: &mut crate::session::transaction::Transaction,
+    ceilings: BoundedAnswerLimits,
+) -> Vec<u8> {
+    match preflight_remote_request(request_bytes, context, advertised, ceilings) {
+        Ok(admitted) => execute_admitted_remote_request(admitted, transaction).await,
+        Err(rejection) => rejection.into_failure_envelope(),
+    }
+}
+
+async fn run_admitted_request(
+    admitted: AdmittedRemoteRequest,
+    transaction: &mut crate::session::transaction::Transaction,
+) -> Result<Vec<u8>, (Option<String>, Diagnostic)> {
+    let AdmittedRemoteRequest {
+        byte_budget,
+        invocation,
+        limits,
+        nonce,
+        plan_fingerprint,
+        validated,
+    } = admitted;
+    let fail = |diagnostic: Diagnostic| (Some(nonce.clone()), diagnostic);
 
     let provider_transaction = transaction.provider_mut().map_err(|_| {
         fail(failure(
@@ -253,9 +344,9 @@ async fn serve_remote_request(
             })
         })?;
 
-    let fingerprint = QueryPlanFingerprint::compute(&plan).map_err(&fail)?;
-    let response = RemoteQueryResponse::new(nonce.clone(), &fingerprint, remote_outcome(&outcome))
-        .map_err(&fail)?;
+    let response =
+        RemoteQueryResponse::new(nonce.clone(), &plan_fingerprint, remote_outcome(&outcome))
+            .map_err(&fail)?;
     let bytes = response.encode().map_err(&fail)?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > byte_budget {
         return Err(fail(failure(
