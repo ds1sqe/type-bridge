@@ -142,6 +142,7 @@ pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
     })?;
 
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
+    let mut python_stems: Vec<String> = Vec::new();
 
     for entry in read_dir {
         let entry = entry.map_err(|err| MigrationError::Loader {
@@ -149,23 +150,47 @@ pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
         })?;
         let path = entry.path();
 
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-
+        let extension = path.extension().and_then(|e| e.to_str());
         let stem = match path.file_stem().and_then(|s| s.to_str()) {
             Some(s) => s.to_owned(),
             None => continue,
         };
-
         if !is_migration_stem(&stem) {
             continue;
         }
-
-        entries.push((stem, path));
+        match extension {
+            Some("json") => entries.push((stem, path)),
+            Some("py") => python_stems.push(stem),
+            _ => {}
+        }
     }
 
     entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    // A migration-shaped `.py` with no sidecar is a Python-only migration
+    // the released loader would import dynamically. This native loader
+    // cannot execute it; silently omitting it would truncate the history,
+    // so fail with the exact conversion requirement instead.
+    let sidecar_stems: std::collections::BTreeSet<&str> =
+        entries.iter().map(|(stem, _)| stem.as_str()).collect();
+    let mut orphans: Vec<String> = python_stems
+        .into_iter()
+        .filter(|stem| !sidecar_stems.contains(stem.as_str()))
+        .collect();
+    if !orphans.is_empty() {
+        orphans.sort();
+        return Err(MigrationError::Loader {
+            message: format!(
+                "Python-only migrations without JSON sidecars in {}: {}. \
+                 The native loader cannot execute a dynamically imported \
+                 migration; generate each file's sidecar with the released \
+                 Python migration tooling before running the native \
+                 migration path.",
+                dir.display(),
+                orphans.join(", ")
+            ),
+        });
+    }
 
     let mut migrations = Vec::with_capacity(entries.len());
     for (stem, json_path) in entries {
@@ -189,13 +214,7 @@ pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
         if let Some(sidecar_checksum) = &spec.checksum {
             let py_path = json_path.with_extension("py");
             if py_path.exists() {
-                let py_text =
-                    std::fs::read_to_string(&py_path).map_err(|err| MigrationError::Loader {
-                        message: format!(
-                            "failed to read .py for drift check {}: {err}",
-                            py_path.display()
-                        ),
-                    })?;
+                let py_text = read_python_text(&py_path)?;
                 let computed = migration_file_checksum(&py_text);
                 if computed != *sidecar_checksum {
                     return Err(MigrationError::Loader {
@@ -215,6 +234,23 @@ pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
     }
 
     Ok(MigrationGraph { migrations })
+}
+
+/// Read a legacy `.py` migration exactly as the released Python loader
+/// does: UTF-8 decode plus universal-newline translation, so a CRLF
+/// checkout hashes to the same checksum `Path.read_text()` produced when
+/// the sidecar or ledger was written.
+fn read_python_text(py_path: &Path) -> Result<String> {
+    let raw = std::fs::read_to_string(py_path).map_err(|err| MigrationError::Loader {
+        message: format!(
+            "failed to read .py for drift check {}: {err}",
+            py_path.display()
+        ),
+    })?;
+    if !raw.contains('\r') {
+        return Ok(raw);
+    }
+    Ok(raw.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
 /// Return `true` if the stem matches the migration naming convention:
@@ -410,6 +446,44 @@ mod tests {
         let graph = load_dir_checked(tmp.path()).unwrap();
         assert_eq!(graph.migrations.len(), 1);
         assert_eq!(graph.migrations[0].name, "0001_initial");
+    }
+
+    #[test]
+    fn load_dir_checked_accepts_crlf_checked_out_python() {
+        // The released Python loader hashes after Path.read_text()'s
+        // universal-newline translation. A CRLF checkout of the same
+        // logical source must therefore verify against a sidecar written
+        // from the LF form.
+        let tmp = tempfile::tempdir().unwrap();
+        let lf_text = "class Migration: pass\n# checked out with CRLF\n";
+        let crlf_text = lf_text.replace('\n', "\r\n");
+
+        let spec = make_spec_with_real_checksum("0001_initial", lf_text);
+        write_sidecar(tmp.path(), "0001_initial", &spec);
+        std::fs::write(tmp.path().join("0001_initial.py"), crlf_text.as_bytes()).unwrap();
+
+        let graph = load_dir_checked(tmp.path()).unwrap();
+        assert_eq!(graph.migrations.len(), 1);
+    }
+
+    #[test]
+    fn load_dir_checked_rejects_python_only_migrations() {
+        // A migration-shaped .py with no sidecar is a dynamically imported
+        // Python-only migration; omitting it would truncate the history,
+        // so the checked loader must fail with a conversion requirement.
+        let tmp = tempfile::tempdir().unwrap();
+        let py_text = "class Migration: pass\n";
+        let spec = make_spec_with_real_checksum("0001_initial", py_text);
+        write_sidecar(tmp.path(), "0001_initial", &spec);
+        std::fs::write(tmp.path().join("0001_initial.py"), py_text.as_bytes()).unwrap();
+        write_py(tmp.path(), "0002_custom");
+
+        let err = load_dir_checked(tmp.path()).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("0002_custom") && message.contains("sidecar"),
+            "error must name the orphan and the sidecar requirement; got: {message}"
+        );
     }
 
     #[test]

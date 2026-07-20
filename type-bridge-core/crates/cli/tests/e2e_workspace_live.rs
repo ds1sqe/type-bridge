@@ -355,3 +355,62 @@ async fn empty_workspace_to_replayed_history_live() {
     database.delete_database().await.expect("primary cleanup");
     replayed.delete_database().await.expect("replay cleanup");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn verify_never_creates_databases_live() {
+    let address =
+        std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let http_port =
+        std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
+    let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+    let password =
+        std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    // SAFETY: test process, set before any CLI child spawns.
+    unsafe {
+        std::env::set_var("TYPEDB_USERNAME", &username);
+        std::env::set_var("TYPEDB_PASSWORD", &password);
+    }
+    let missing = format!("tb_e2e_verify_missing_{}", std::process::id());
+
+    let workspace = tempfile::tempdir().expect("workspace directory");
+    let root = workspace.path();
+    fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
+    fs::create_dir_all(root.join("migrations/v2")).expect("migration directory");
+    write_manifest(root, &address, &http_port, &[("live", &missing)]);
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+    )
+    .expect("schema set writes");
+    fs::write(
+        root.join("schema/fragments/model.yaml"),
+        "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\n\
+         entities:\n  person: { owns: [name] }\n",
+    )
+    .expect("schema writes");
+
+    // Two identical refusals prove verify created nothing on the first run.
+    for round in 1..=2 {
+        let output = run_cli(root, &["migration", "verify", "--environment", "live"]);
+        assert!(
+            !output.status.success(),
+            "verify round {round} must refuse a missing database"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("does not exist"),
+            "verify round {round} must name the missing database; stderr: {stderr}"
+        );
+    }
+    let exists = type_bridge_orm::session::real_driver::database_exists(
+        &address,
+        &missing,
+        &username,
+        &password,
+        type_bridge_orm::session::real_driver::ConnectOptions::default(),
+    )
+    .await
+    .expect("existence check");
+    assert!(!exists, "verify must never create the managed database");
+}

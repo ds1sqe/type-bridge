@@ -62,6 +62,19 @@ pub async fn ensure_database_exists(
         .map_err(OrmError::from)
 }
 
+/// Check whether a TypeDB database exists without creating it.
+pub async fn database_exists(
+    address: &str,
+    database: &str,
+    username: &str,
+    password: &str,
+    options: ConnectOptions,
+) -> Result<bool, OrmError> {
+    runtime::database_exists(address, database, username, password, options)
+        .await
+        .map_err(OrmError::from)
+}
+
 impl DriverBackend for RealBackend {
     fn match_capabilities(&self) -> CapabilitySet {
         real_match_capabilities()

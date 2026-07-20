@@ -275,16 +275,39 @@ async fn run_connected_async(
     let journal_name = type_bridge_schema_migration_typedb::derived_journal_database_name(
         environment.database(),
     );
+    // `verify` is observational: it must never create the managed or
+    // journal database (a typoed environment name would otherwise
+    // materialize two databases). Only `apply`, which is migration-gated
+    // above, may bootstrap them.
     for database in [environment.database(), journal_name.as_str()] {
-        type_bridge_orm::ensure_database_exists(
-            environment.uri(),
-            database,
-            &username,
-            &password,
-            options.clone(),
-        )
-        .await
-        .map_err(|error| format!("cannot ensure database {database:?}: {error}"))?;
+        if matches!(action, ConnectedAction::Verify) {
+            let exists = type_bridge_orm::database_exists(
+                environment.uri(),
+                database,
+                &username,
+                &password,
+                options.clone(),
+            )
+            .await
+            .map_err(|error| format!("cannot check database {database:?}: {error}"))?;
+            if !exists {
+                return Err(format!(
+                    "database {database:?} does not exist; `migration verify` is \
+                     read-only and never creates databases — apply migrations to \
+                     this environment first"
+                ));
+            }
+        } else {
+            type_bridge_orm::ensure_database_exists(
+                environment.uri(),
+                database,
+                &username,
+                &password,
+                options.clone(),
+            )
+            .await
+            .map_err(|error| format!("cannot ensure database {database:?}: {error}"))?;
+        }
     }
     let managed = std::sync::Arc::new(
         type_bridge_orm::Database::connect_with_options(

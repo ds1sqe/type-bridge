@@ -119,7 +119,7 @@ pub use session::backend::AnswerCancellation;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
 #[cfg(feature = "typedb")]
-pub use session::ensure_database_exists;
+pub use session::{database_exists, ensure_database_exists};
 pub use session::{Database, GivenRowsSpec, GivenValue, Transaction, TransactionContext, TxType};
 pub use value::AttributeValue;
 

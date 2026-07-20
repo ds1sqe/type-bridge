@@ -22,4 +22,4 @@ pub use real_driver::ConnectOptions;
 #[cfg(feature = "typedb")]
 pub use real_driver::embedded_driver_versions;
 #[cfg(feature = "typedb")]
-pub use real_driver::ensure_database_exists;
+pub use real_driver::{database_exists, ensure_database_exists};

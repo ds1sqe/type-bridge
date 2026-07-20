@@ -929,6 +929,43 @@ pub async fn ensure_database_exists(
     Ok(())
 }
 
+/// Check whether a TypeDB database exists without creating it.
+///
+/// Same version gating as [`ensure_database_exists`]; the lookup itself is
+/// read-only and never mutates server state.
+pub async fn database_exists(
+    address: &str,
+    database: &str,
+    username: &str,
+    password: &str,
+    options: ConnectOptions,
+) -> Result<bool> {
+    let (driver, _server_version) = gated_driver(address, username, password, options).await?;
+
+    let exists = match driver {
+        #[cfg(feature = "band7")]
+        DriverHandle::B7(d) => d
+            .databases()
+            .contains(database)
+            .await
+            .map_err(|e| RuntimeError::Connection(format!("Database lookup failed: {e}")))?,
+        #[cfg(feature = "band8")]
+        DriverHandle::B8(d) => d
+            .databases()
+            .contains(database)
+            .await
+            .map_err(|e| RuntimeError::Connection(format!("Database lookup failed: {e}")))?,
+        #[cfg(feature = "band9")]
+        DriverHandle::B9(d) => d
+            .databases()
+            .contains(database)
+            .await
+            .map_err(|e| RuntimeError::Connection(format!("Database lookup failed: {e}")))?,
+    };
+
+    Ok(exists)
+}
+
 impl TypeDBRuntime {
     /// Open a TypeDB transaction against `database`.
     pub fn open_transaction(
