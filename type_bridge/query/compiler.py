@@ -62,6 +62,30 @@ try:
 except ImportError:
     _core_compiler = None
 
+_fallback_warned = False
+
+
+def _log_python_fallback() -> None:
+    """Surface the Rust-to-Python compiler fallback instead of hiding it.
+
+    The released compatibility contract keeps the fallback (the query still
+    compiles and executes), but operators must be able to see that V1
+    semantics for the affected query ran through the Python compiler rather
+    than the Rust engine. Warn once per process; repeat occurrences log at
+    debug with the full exception.
+    """
+    global _fallback_warned
+    if _fallback_warned:
+        logger.debug("Rust compiler failed, falling back to Python", exc_info=True)
+        return
+    _fallback_warned = True
+    logger.warning(
+        "Rust query compiler rejected a V1 query; falling back to the Python "
+        "compiler. Queries taking this path execute with Python V1 semantics, "
+        "not the Rust engine. Further fallbacks will log at DEBUG level.",
+        exc_info=True,
+    )
+
 
 def _value_to_dict(value: Value | str) -> dict[str, Any]:
     """Convert a Value AST node to a serde-compatible dict."""
@@ -301,7 +325,7 @@ class QueryCompiler:
             try:
                 return _core_compiler.compile_dicts([_clause_to_dict(node)])
             except Exception:
-                logger.debug("Rust compiler failed, falling back to Python", exc_info=True)
+                _log_python_fallback()
 
         if isinstance(node, Clause):
             return self._compile_clause(node)
@@ -334,7 +358,7 @@ class QueryCompiler:
                     return f"{operation}\n{result}"
                 return result
             except Exception:
-                logger.debug("Rust compiler failed, falling back to Python", exc_info=True)
+                _log_python_fallback()
 
         parts = [self.compile(node) for node in nodes]
         query = "\n".join(parts)

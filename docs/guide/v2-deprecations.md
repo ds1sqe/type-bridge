@@ -1,11 +1,12 @@
 # V2 Deprecation Inventory
 
-`type-bridge 2.0.0` ships the complete V2 schema, query, and migration
-stack with Rust as the only semantic engine. Every V1 surface listed
-below stays fully operational throughout every `2.0.x` release and is
-**scheduled for removal in `2.1.0`**. This page is the exact removal
-contract: a surface absent from the removal list is not scheduled for
-removal, and nothing is removed under a catch-all.
+`type-bridge 2.0.0` ships the V2 schema, query, and migration stack
+with Rust as the only semantic engine on every V2 path; deprecated V1
+facades keep their released engines until they are removed. Every V1
+surface stays fully operational throughout every `2.0.x` release. This
+page is the exact removal contract: a surface absent from the
+"Scheduled for removal" list is not scheduled for removal, and nothing
+is removed under a catch-all.
 
 ## Scheduled for removal in 2.1.0
 
@@ -34,18 +35,6 @@ one-way TOML-to-YAML converter remain so existing schemas can migrate.
 
 Generated model projections and the V2 `RoleRef` are **not** removed.
 
-### V1 query facades
-
-- The Python V1 `Query` and `QueryBuilder`.
-- The Node single-model `TypedQuery<T, Row>` and
-  `TypedGroupByQuery<Row>`.
-- The Rust V1 `MatchRequest` and its entity, relation, and group-by
-  query facades.
-
-Each is removed only where its complete V2 replacement exists; the V1
-adapter that lowers `MatchRequest` onto V2 plans (with the proven
-result-parity corpus) is the documented migration path.
-
 ### Legacy migration authoring
 
 - Authoring new legacy root `NNNN_*.py` migrations and their sibling
@@ -55,6 +44,24 @@ result-parity corpus) is the documented migration path.
 Legacy migration **reading** is not removed: readers, original checksum
 verification, applied-ledger import, snapshots, historical
 TypeDB-version metadata, and the legacy-frontier bridge all remain.
+
+## Deprecated without a removal schedule
+
+### V1 query facades
+
+- The Python V1 `Query` and `QueryBuilder`.
+- The Node single-model `TypedQuery<T, Row>` and
+  `TypedGroupByQuery<Row>`.
+- The Rust V1 `MatchRequest` and its entity, relation, and group-by
+  query facades.
+
+These facades are deprecated in intent but are **not** scheduled for
+removal in `2.1.0`. No V1 query surface is removed before a complete
+V2 replacement exists for its full released algebra with a proven
+result-, order-, and diagnostic-parity corpus, announced in a later
+deprecation revision with its own notice period. The internal
+`MatchRequest`-to-V2 adapter is an incomplete experiment, is not wired
+into any execution path, and does not justify any removal.
 
 ## Explicitly retained
 
@@ -76,8 +83,8 @@ These surfaces are not deprecated and carry no removal schedule:
 | --- | --- | --- |
 | `schema.toml` authoring | Split YAML schema documents | Read-only TOML-to-YAML converter |
 | Fused `Role[T]` | Split YAML + generated `relates()`/`plays()` | Schema converter output |
-| Python/Rust/Node V1 queries | V2 query plans (prepared, capability-gated) | V1 `MatchRequest` adapter onto V2 plans |
-| Legacy `NNNN_*.py` migrations | Generated migration manifests | Legacy-frontier bridge + ledger import |
+| Python/Rust/Node V1 queries | V2 query plans (prepared, capability-gated) | Manual per-query rewrite (no automated converter yet) |
+| Legacy `NNNN_*.py` migrations | Generated migration manifests | `migration adopt` (legacy-frontier bridge + ledger import) |
 | TypeDB 3.8/3.10 bands | TypeDB 3.12 baseline | Band upgrade before 2.1.0 |
 
 Archive-only compatibility does not authorize new legacy authoring and
