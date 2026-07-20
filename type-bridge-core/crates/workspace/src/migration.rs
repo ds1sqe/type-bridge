@@ -21,7 +21,19 @@ use type_bridge_schema_migration::{
     generate_next_migration, render_migration_preview, write_generated_migration,
 };
 
-use crate::{TypeBridgeWorkspace, TypeBridgeWorkspaceError};
+use crate::{
+    TypeBridgeWorkspace, TypeBridgeWorkspaceError, WorkspaceConfigError, WorkspaceConfigErrorCode,
+};
+
+fn migration_directory_escape() -> TypeBridgeWorkspaceError {
+    TypeBridgeWorkspaceError::Config(
+        WorkspaceConfigError::new(
+            WorkspaceConfigErrorCode::PathNotConfined,
+            "the canonical migration directory must resolve inside the workspace without symbolic links",
+        )
+        .with_detail("migration_v2_directory"),
+    )
+}
 
 /// One dependency-ordered entry of an offline apply plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,25 +62,62 @@ impl MigrationPlanEntry {
 
 impl TypeBridgeWorkspace {
     /// Return the canonical migration directory resolved under the root.
-    #[must_use]
-    pub fn migration_directory_absolute_path(&self) -> PathBuf {
-        self.config()
-            .workspace_root()
+    ///
+    /// The configured relative path is validated lexically at load; this
+    /// resolution also checks the filesystem: no component under the root
+    /// may be a symbolic link, and an existing directory must canonicalize
+    /// inside the canonical root. A `migrations/v2` link pointing outside
+    /// the workspace can therefore never become migration authority or a
+    /// write target. Every discovery and creation call resolves afresh
+    /// instead of trusting an earlier check.
+    pub fn migration_directory_absolute_path(&self) -> Result<PathBuf, TypeBridgeWorkspaceError> {
+        let root = self.config().workspace_root().as_path();
+        let mut resolved = root.to_path_buf();
+        for component in self
+            .config()
+            .migration_v2_directory()
             .as_path()
-            .join(self.config().migration_v2_directory().as_path())
+            .components()
+        {
+            resolved.push(component);
+            if std::fs::symlink_metadata(&resolved)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                return Err(migration_directory_escape());
+            }
+        }
+        if resolved.exists() {
+            let canonical_root = root
+                .canonicalize()
+                .map_err(|_| migration_directory_escape())?;
+            let canonical = resolved
+                .canonicalize()
+                .map_err(|_| migration_directory_escape())?;
+            if !canonical.starts_with(&canonical_root) {
+                return Err(migration_directory_escape());
+            }
+        }
+        Ok(resolved)
     }
 
     /// Return the adopted-genesis artifact path under the migration directory.
-    #[must_use]
-    pub fn adopted_genesis_absolute_path(&self) -> PathBuf {
-        self.migration_directory_absolute_path()
-            .join(ADOPTED_GENESIS_FILE_NAME)
+    pub fn adopted_genesis_absolute_path(&self) -> Result<PathBuf, TypeBridgeWorkspaceError> {
+        let path = self
+            .migration_directory_absolute_path()?
+            .join(ADOPTED_GENESIS_FILE_NAME);
+        // The artifact itself must be a regular file: a link inside the
+        // confined directory would make foreign bytes the genesis authority.
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(migration_directory_escape());
+        }
+        Ok(path)
     }
 
     /// Discover and replay-verify the workspace's canonical migration chain.
     pub fn discover_migrations(&self) -> Result<MigrationHistoryGraph, TypeBridgeWorkspaceError> {
         Ok(discover_verified_migration_chain(
-            &self.migration_directory_absolute_path(),
+            &self.migration_directory_absolute_path()?,
             &self.migration_genesis()?,
             self.delta_context(),
         )?)
@@ -104,7 +153,7 @@ impl TypeBridgeWorkspace {
         let preview = render_migration_preview(generated.manifest(), self.delta_context())
             .map_err(preview_diagnostic)?;
         Ok(write_generated_migration(
-            &self.migration_directory_absolute_path(),
+            &self.migration_directory_absolute_path()?,
             generated,
             &preview,
         )?)
@@ -153,7 +202,7 @@ impl TypeBridgeWorkspace {
     /// and everything chained onto it replay-verify against the exact head
     /// the adoption recorded.
     pub fn migration_genesis(&self) -> Result<DeclaredSchema, TypeBridgeWorkspaceError> {
-        let path = self.adopted_genesis_absolute_path();
+        let path = self.adopted_genesis_absolute_path()?;
         let source = match std::fs::read_to_string(&path) {
             Ok(source) => source,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

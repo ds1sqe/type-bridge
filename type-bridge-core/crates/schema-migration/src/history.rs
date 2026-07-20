@@ -402,6 +402,41 @@ struct CanonicalCandidate {
     bytes: Vec<u8>,
 }
 
+/// Maximum entries one canonical history directory may contain.
+const MAX_HISTORY_DIRECTORY_ENTRIES: usize = 65_536;
+/// Maximum aggregate candidate bytes retained during discovery: 256 MiB.
+const MAX_HISTORY_AGGREGATE_BYTES: usize = 256 * 1024 * 1024;
+
+/// Read at most `limit` bytes, failing before the allocation grows past it.
+fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Diagnostic> {
+    use std::io::Read;
+
+    let file = fs::File::open(path).map_err(|_| {
+        discovery_failure(
+            "migration_discovery_file_unreadable",
+            "canonical migration file cannot be read",
+        )
+    })?;
+    let mut bytes = Vec::new();
+    let limit_u64 = u64::try_from(limit).unwrap_or(u64::MAX);
+    file.take(limit_u64.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| {
+            discovery_failure(
+                "migration_discovery_file_unreadable",
+                "canonical migration file cannot be read",
+            )
+        })?;
+    if bytes.len() > limit {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "migration_discovery_file_oversized",
+            "canonical migration file exceeds the document byte ceiling",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn collect_canonical_candidates(directory: &Path) -> Result<Vec<CanonicalCandidate>, Diagnostic> {
     let read_dir = fs::read_dir(directory).map_err(|_| {
         discovery_failure(
@@ -409,18 +444,26 @@ fn collect_canonical_candidates(directory: &Path) -> Result<Vec<CanonicalCandida
             "canonical migration directory cannot be read",
         )
     })?;
-    let mut entries = read_dir
-        .map(|entry| {
-            entry.map_err(|_| {
-                discovery_failure(
-                    "migration_discovery_entry_unreadable",
-                    "canonical migration directory entry cannot be read",
-                )
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut entries = Vec::new();
+    for entry in read_dir {
+        let entry = entry.map_err(|_| {
+            discovery_failure(
+                "migration_discovery_entry_unreadable",
+                "canonical migration directory entry cannot be read",
+            )
+        })?;
+        if entries.len() == MAX_HISTORY_DIRECTORY_ENTRIES {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "migration_discovery_entry_limit",
+                "canonical migration directory exceeds the entry ceiling",
+            ));
+        }
+        entries.push(entry);
+    }
     entries.sort_by_key(|entry| entry.file_name());
 
+    let mut aggregate_bytes = 0usize;
     let mut candidates = Vec::new();
     for entry in entries {
         let file_type = entry.file_type().map_err(|_| {
@@ -457,12 +500,17 @@ fn collect_canonical_candidates(directory: &Path) -> Result<Vec<CanonicalCandida
             ));
         }
         let path = entry.path();
-        let bytes = fs::read(&path).map_err(|_| {
-            discovery_failure(
-                "migration_discovery_file_unreadable",
-                "canonical migration file cannot be read",
-            )
-        })?;
+        let bytes = read_bounded(&path, type_bridge_contract::limits::MAX_CANONICAL_BYTES)?;
+        // Candidate bytes for the whole history are retained together, so
+        // the aggregate is capped before the next allocation, not after.
+        aggregate_bytes = aggregate_bytes.saturating_add(bytes.len());
+        if aggregate_bytes > MAX_HISTORY_AGGREGATE_BYTES {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "migration_discovery_history_limit",
+                "canonical migration history exceeds the aggregate byte ceiling",
+            ));
+        }
         sniff_v1_format(&bytes)?;
         candidates.push(CanonicalCandidate {
             path,

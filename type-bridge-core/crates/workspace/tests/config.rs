@@ -546,3 +546,43 @@ fn workspace_owned_paths_reject_ancestor_descendant_nesting_deterministically() 
     );
     assert_eq!(error.detail(), Some("output.python,output.typescript"));
 }
+
+#[test]
+fn environment_uris_admit_only_plain_host_addresses() {
+    use type_bridge_workspace::{SecretReference, WorkspaceEnvironment};
+
+    let environment = || {
+        (
+            SecretReference::environment("TYPEDB_USERNAME").unwrap(),
+            SecretReference::environment("TYPEDB_PASSWORD").unwrap(),
+        )
+    };
+    for accepted in [
+        "localhost:1729",
+        "[::1]:1729",
+        "db-1.internal:1729,db-2.internal:1729",
+    ] {
+        let (username, password) = environment();
+        WorkspaceEnvironment::new(accepted, "app", username, password)
+            .unwrap_or_else(|error| panic!("{accepted}: {error:?}"));
+    }
+    // Userinfo, schemes, query strings, whitespace, and control bytes
+    // would smuggle credentials into an address that driver errors and
+    // tracing echo verbatim.
+    for rejected in [
+        "admin:secret@host:1729",
+        "typedb://host:1729",
+        "host:1729?tls=false",
+        "host 1729",
+        "host:1729\n",
+    ] {
+        let (username, password) = environment();
+        let error =
+            WorkspaceEnvironment::new(rejected, "app", username, password).expect_err(rejected);
+        assert_eq!(
+            error.code(),
+            WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+            "{rejected}"
+        );
+    }
+}

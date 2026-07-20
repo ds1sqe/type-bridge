@@ -567,6 +567,12 @@ pub struct WorkspaceEnvironment {
 
 impl WorkspaceEnvironment {
     /// Construct one environment with mandatory connection identity.
+    ///
+    /// The uri is a plain TypeDB host address (`host:port`, bracketed
+    /// IPv6, or a comma-separated list of those). Userinfo, schemes,
+    /// paths, query strings, whitespace, and control characters are
+    /// rejected: credentials stay symbolic by construction, so an
+    /// address echoed by driver errors or tracing can never leak them.
     pub fn new(
         uri: impl Into<String>,
         database: impl Into<String>,
@@ -579,6 +585,15 @@ impl WorkspaceEnvironment {
             return Err(WorkspaceConfigError::new(
                 WorkspaceConfigErrorCode::InvalidWorkspaceValue,
                 "environment uri and database must be non-empty",
+            ));
+        }
+        let plain_address = uri.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']' | b',')
+        });
+        if !plain_address {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+                "environment uri must be a plain host address without credentials, schemes, or control characters",
             ));
         }
         Ok(Self {

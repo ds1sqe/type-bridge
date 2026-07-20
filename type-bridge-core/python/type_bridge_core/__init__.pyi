@@ -85,7 +85,10 @@ def query_v2_execute_local(
     authority: QueryV2Authority,
     plan: bytes,
     invocation_json: str,
-) -> str: ...
+    deadline_ms: int | None = ...,
+) -> str:
+    """Runs with the GIL released; the optional deadline bounds the round trip."""
+    ...
 def query_v2_remote_capabilities(advertisement: bytes) -> list[str]: ...
 def query_v2_encode_remote_request(
     authority: QueryV2Authority,

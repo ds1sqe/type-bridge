@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use napi::bindgen_prelude::{BigInt, Buffer};
+use napi::bindgen_prelude::{AsyncTask, BigInt, Buffer};
 use napi_derive::napi;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::query_remote::{
@@ -50,24 +50,69 @@ pub fn query_v2_authority(
     })
 }
 
-/// Execute one prepared plan locally; returns typed outcome JSON.
-#[napi(js_name = "queryV2ExecuteLocal")]
+/// One local prepared execution scheduled off the JavaScript thread.
+///
+/// `compute` runs on the libuv worker pool, so a slow or stalled
+/// provider never freezes timers or request handling on the main
+/// thread; the optional deadline bounds the round trip itself.
+pub struct ExecuteLocalTask {
+    authority: Arc<QueryAuthority>,
+    database: Arc<type_bridge_orm::Database>,
+    invocation_json: String,
+    limits: BoundedAnswerLimits,
+    plan: Vec<u8>,
+    runtime: Arc<tokio::runtime::Runtime>,
+}
+
+impl napi::Task for ExecuteLocalTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> napi::Result<String> {
+        self.runtime
+            .block_on(execute_prepared_local(
+                &self.database,
+                &self.authority,
+                &self.plan,
+                &self.invocation_json,
+                self.limits.clone(),
+            ))
+            .map_err(|diagnostic| napi_error(&diagnostic))
+    }
+
+    fn resolve(&mut self, _env: napi::Env, output: String) -> napi::Result<String> {
+        Ok(output)
+    }
+}
+
+/// Execute one prepared plan locally; resolves to typed outcome JSON.
+#[napi(js_name = "queryV2ExecuteLocal", ts_return_type = "Promise<string>")]
 pub fn query_v2_execute_local(
     database: &NodeRustDatabase,
     authority: &NodeQueryV2Authority,
     plan: Buffer,
     invocation_json: String,
-) -> napi::Result<String> {
+    deadline_ms: Option<BigInt>,
+) -> napi::Result<AsyncTask<ExecuteLocalTask>> {
+    let deadline = deadline_ms
+        .as_ref()
+        .map(remote_limit)
+        .transpose()
+        .map_err(|diagnostic| napi_error(&diagnostic))?
+        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    let limits = BoundedAnswerLimits {
+        deadline,
+        ..BoundedAnswerLimits::default()
+    };
     let (db, runtime) = database.handles();
-    runtime
-        .block_on(execute_prepared_local(
-            &db,
-            &authority.authority,
-            &plan,
-            &invocation_json,
-            BoundedAnswerLimits::default(),
-        ))
-        .map_err(|diagnostic| napi_error(&diagnostic))
+    Ok(AsyncTask::new(ExecuteLocalTask {
+        authority: Arc::clone(&authority.authority),
+        database: db,
+        invocation_json,
+        limits,
+        plan: plan.to_vec(),
+        runtime,
+    }))
 }
 
 /// Convert one caller-supplied `BigInt` limit through the shared range check.

@@ -260,8 +260,26 @@ fn load_workspace(manifest: &PathBuf) -> Result<TypeBridgeWorkspace, String> {
         .ok_or_else(|| "workspace manifest has no UTF-8 file name".to_owned())?;
     let root = WorkspaceRoot::new(root).map_err(display)?;
     let origin = ConfigOrigin::new(root, file_name, "type-bridge cli").map_err(display)?;
-    let bytes = fs::read(&manifest)
-        .map_err(|error| format!("cannot read {}: {error}", manifest.display()))?;
+    // Read at most the canonical document ceiling plus one byte: an
+    // oversized manifest fails with a stable message before its full
+    // content is ever allocated.
+    let bytes = {
+        use std::io::Read;
+        let limit = type_bridge_contract::limits::MAX_CANONICAL_BYTES;
+        let file = fs::File::open(&manifest)
+            .map_err(|error| format!("cannot read {}: {error}", manifest.display()))?;
+        let mut bytes = Vec::new();
+        file.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("cannot read {}: {error}", manifest.display()))?;
+        if bytes.len() > limit {
+            return Err(format!(
+                "{} exceeds the 16 MiB manifest ceiling",
+                manifest.display()
+            ));
+        }
+        bytes
+    };
     let located = TypeBridgeConfigSpec::from_yaml_bytes(&bytes, origin).map_err(display)?;
 
     let available = execution_capability_vocabulary().map_err(display)?;
@@ -540,7 +558,9 @@ async fn run_connected_async(
     );
     let holder =
         type_bridge_schema_migration::LeaseHolderId::new("type-bridge-cli").map_err(display)?;
-    let directory = workspace.migration_directory_absolute_path();
+    let directory = workspace
+        .migration_directory_absolute_path()
+        .map_err(display)?;
 
     match action {
         ConnectedAction::Apply { approvals } => {
@@ -637,7 +657,10 @@ async fn run_connected_async(
                 ) => {
                     println!(
                         "adopted the legacy history\n  genesis: {}\n  bridge: {}",
-                        workspace.adopted_genesis_absolute_path().display(),
+                        workspace
+                            .adopted_genesis_absolute_path()
+                            .map_err(display)?
+                            .display(),
                         bridge_path.display(),
                     );
                     Ok(())
@@ -680,7 +703,7 @@ async fn ensure_adopted_genesis_artifact(
     workspace: &TypeBridgeWorkspace,
     managed: &type_bridge_orm::Database,
 ) -> Result<bool, String> {
-    let path = workspace.adopted_genesis_absolute_path();
+    let path = workspace.adopted_genesis_absolute_path().map_err(display)?;
     if path.exists() {
         return Ok(false);
     }
@@ -758,8 +781,8 @@ fn cleanup_adoption_files(
     if bridge_created {
         let _ = fs::remove_file(bridge_path);
     }
-    if artifact_created {
-        let _ = fs::remove_file(workspace.adopted_genesis_absolute_path());
+    if artifact_created && let Ok(path) = workspace.adopted_genesis_absolute_path() {
+        let _ = fs::remove_file(path);
     }
 }
 

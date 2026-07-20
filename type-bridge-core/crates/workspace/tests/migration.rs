@@ -297,3 +297,33 @@ fn environments_parse_with_symbolic_credentials_and_optin_migrate() {
         WorkspaceConfigErrorCode::InvalidWorkspaceValue
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn migration_directories_reject_symbolic_link_escapes() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let outside = TempDirectory::new();
+
+    // Swap the confined history directory for a link pointing outside the
+    // workspace: lexical config validation cannot see it, so resolution
+    // must check the filesystem and fail closed.
+    fs::remove_dir_all(directory.0.join("migrations/v2")).unwrap();
+    std::os::unix::fs::symlink(&outside.0, directory.0.join("migrations/v2")).unwrap();
+
+    let source = SystemSchemaSourceService;
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let workspace = load_workspace(&directory, &source, &secrets, &extensions, &available);
+
+    let error = workspace
+        .migration_directory_absolute_path()
+        .expect_err("a symlinked history directory is not migration authority");
+    assert_eq!(
+        error.config().expect("config-level rejection").code(),
+        WorkspaceConfigErrorCode::PathNotConfined,
+    );
+    assert!(workspace.discover_migrations().is_err());
+    assert!(workspace.migration_make("escape").is_err());
+}

@@ -260,8 +260,13 @@ pub fn render_migration_preview(
 
 /// Persist a generated manifest and its TypeQL preview into a directory.
 ///
-/// Both files are created exclusively; an existing manifest or preview file
-/// is a conflict, never an overwrite. Returns the manifest path.
+/// An existing manifest is a conflict, never an overwrite. Both files are
+/// written completely to confined temporaries and flushed before either
+/// final name exists, then published with no-replace links — the preview
+/// first, the authority manifest last. A disk-full, short write, or crash
+/// therefore never leaves a malformed file under a final name, and a
+/// preview orphaned by an earlier crash (its manifest never published) is
+/// replaced instead of wedging every later generation.
 pub fn write_generated_migration(
     directory: &Path,
     generated: &GeneratedMigration,
@@ -269,41 +274,87 @@ pub fn write_generated_migration(
 ) -> Result<PathBuf, Diagnostic> {
     let manifest_path = directory.join(generated.file_name());
     let preview_path = directory.join(generated.preview_file_name());
-    create_exclusive(&manifest_path, generated.canonical_bytes())?;
-    if let Err(diagnostic) = create_exclusive(&preview_path, preview.as_bytes()) {
-        let _ = fs::remove_file(&manifest_path);
-        return Err(diagnostic);
+    if manifest_path.exists() {
+        return Err(write_conflict());
     }
+    // A preview without its manifest was never advertised as authority:
+    // an interrupted earlier publication left it behind.
+    if preview_path.exists() {
+        fs::remove_file(&preview_path).map_err(|_| write_failed())?;
+    }
+
+    let manifest_temp = directory.join(format!(".{}.tmp", generated.file_name()));
+    let preview_temp = directory.join(format!(".{}.tmp", generated.preview_file_name()));
+    let cleanup = |published_preview: bool| {
+        let _ = fs::remove_file(&manifest_temp);
+        let _ = fs::remove_file(&preview_temp);
+        if published_preview {
+            let _ = fs::remove_file(&preview_path);
+        }
+    };
+
+    for (temp, bytes) in [
+        (&manifest_temp, generated.canonical_bytes()),
+        (&preview_temp, preview.as_bytes()),
+    ] {
+        if let Err(diagnostic) = write_temporary(temp, bytes) {
+            cleanup(false);
+            return Err(diagnostic);
+        }
+    }
+    if publish_no_replace(&preview_temp, &preview_path).is_err() {
+        cleanup(false);
+        return Err(write_failed());
+    }
+    if let Err(error) = publish_no_replace(&manifest_temp, &manifest_path) {
+        cleanup(true);
+        return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
+            write_conflict()
+        } else {
+            write_failed()
+        });
+    }
+    let _ = fs::remove_file(&manifest_temp);
+    let _ = fs::remove_file(&preview_temp);
     Ok(manifest_path)
 }
 
-fn create_exclusive(path: &Path, bytes: &[u8]) -> Result<(), Diagnostic> {
+fn write_temporary(path: &Path, bytes: &[u8]) -> Result<(), Diagnostic> {
+    // A stale temporary from an interrupted run is never authority.
+    let _ = fs::remove_file(path);
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                failure(
-                    DiagnosticCategory::InvalidContract,
-                    "migration_generation_write_conflict",
-                    "generated migration file already exists in the target directory",
-                )
-            } else {
-                failure(
-                    DiagnosticCategory::Integrity,
-                    "migration_generation_write_failed",
-                    "generated migration file could not be created",
-                )
-            }
-        })?;
-    file.write_all(bytes).map_err(|_| {
-        failure(
-            DiagnosticCategory::Integrity,
-            "migration_generation_write_failed",
-            "generated migration file could not be written completely",
-        )
-    })
+        .map_err(|_| write_failed())?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| write_failed())
+}
+
+/// Publish a completed temporary under its final name without replacing.
+///
+/// A hard link fails when the destination exists, which keeps publication
+/// atomic and conflict-detecting at once; the temporary is removed by the
+/// caller after both publications succeed.
+fn publish_no_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
+    fs::hard_link(temp, target)
+}
+
+fn write_conflict() -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "migration_generation_write_conflict",
+        "generated migration file already exists in the target directory",
+    )
+}
+
+fn write_failed() -> Diagnostic {
+    failure(
+        DiagnosticCategory::Integrity,
+        "migration_generation_write_failed",
+        "generated migration file could not be created",
+    )
 }
 
 /// Allocate the next ordinal-prefixed name in the lineage's local convention.

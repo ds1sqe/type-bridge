@@ -576,3 +576,18 @@ fn chain_discovery_accepts_only_convergent_merge_parents() {
         "migration_discovery_divergent_merge_sources"
     );
 }
+
+#[test]
+fn discovery_bounds_file_size_before_allocation() {
+    let directory = TempDirectory::new();
+    // One byte past the canonical document ceiling: discovery must fail
+    // with the resource diagnostic instead of retaining the full input.
+    let oversized = vec![b'x'; type_bridge_contract::limits::MAX_CANONICAL_BYTES + 1];
+    fs::write(directory.path().join("huge.tbmigration.json"), oversized)
+        .expect("write oversized candidate");
+    let error = discover_verified_migrations(directory.path(), |_, _bytes| {
+        panic!("an oversized candidate must never reach decoding")
+    })
+    .expect_err("oversized candidate rejected");
+    assert_eq!(error.code().as_str(), "migration_discovery_file_oversized");
+}

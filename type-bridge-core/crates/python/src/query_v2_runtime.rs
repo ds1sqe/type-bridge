@@ -50,24 +50,45 @@ pub fn query_v2_authority(
     })
 }
 
+/// Build the local execution budget from a checked optional deadline.
+fn local_limits(deadline_ms: Option<i128>) -> PyResult<BoundedAnswerLimits> {
+    let deadline = checked_remote_deadline(deadline_ms)
+        .map_err(|diagnostic| value_error(&diagnostic))?
+        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    Ok(BoundedAnswerLimits {
+        deadline,
+        ..BoundedAnswerLimits::default()
+    })
+}
+
 /// Execute one prepared plan locally; returns typed outcome JSON.
+///
+/// The GIL is released for the whole provider round trip, and the
+/// optional deadline bounds it — a stalled provider cannot pin other
+/// Python threads for longer than the caller allows.
 #[pyfunction]
+#[pyo3(signature = (database, authority, plan, invocation_json, deadline_ms=None))]
 pub fn query_v2_execute_local(
+    py: Python<'_>,
     database: &PyRustDatabase,
     authority: &PyQueryV2Authority,
     plan: Vec<u8>,
-    invocation_json: &str,
+    invocation_json: String,
+    deadline_ms: Option<i128>,
 ) -> PyResult<String> {
+    let limits = local_limits(deadline_ms)?;
     let (db, runtime) = database.handles();
-    runtime
-        .block_on(execute_prepared_local(
+    let authority = Arc::clone(&authority.authority);
+    py.allow_threads(move || {
+        runtime.block_on(execute_prepared_local(
             &db,
-            &authority.authority,
+            &authority,
             &plan,
-            invocation_json,
-            BoundedAnswerLimits::default(),
+            &invocation_json,
+            limits,
         ))
-        .map_err(|diagnostic| value_error(&diagnostic))
+    })
+    .map_err(|diagnostic| value_error(&diagnostic))
 }
 
 /// Build the exact remote limit set from checked caller arguments.

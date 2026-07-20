@@ -423,3 +423,45 @@ fn destructive_generation_is_honest_and_previews_without_approval() {
     let preview = render_migration_preview(next.manifest(), &context).expect("preview renders");
     assert!(preview.contains("undefine"), "preview: {preview}");
 }
+
+#[test]
+fn writes_publish_atomically_and_recover_orphaned_previews() {
+    let genesis = declared_facts(Vec::new());
+    let desired = declared(&["person"]);
+    let context = context();
+    let graph = empty_graph();
+    let request = request("init", &genesis, &desired, &context);
+    let generated = generated(&graph, &request);
+    let preview = render_migration_preview(generated.manifest(), &context).expect("preview");
+
+    // A preview left behind by an interrupted earlier publication (its
+    // manifest never appeared) must not wedge every later generation.
+    let directory = TempDirectory::new();
+    std::fs::write(
+        directory.path().join(generated.preview_file_name()),
+        "-- partial",
+    )
+    .expect("orphan preview");
+    let manifest_path = write_generated_migration(directory.path(), &generated, &preview)
+        .expect("orphaned preview is replaced, not a conflict");
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join(generated.preview_file_name()))
+            .expect("published preview"),
+        preview,
+    );
+    assert!(manifest_path.exists());
+
+    // Publication leaves no temporaries behind under any name.
+    let leftovers: Vec<_> = std::fs::read_dir(directory.path())
+        .expect("read directory")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("utf8")
+        })
+        .filter(|name| name.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
