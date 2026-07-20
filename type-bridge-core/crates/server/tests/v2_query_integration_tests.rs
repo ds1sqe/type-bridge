@@ -224,6 +224,9 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
     };
     let request =
         encode_remote_request(&validated, &invocation, limits, nonce).expect("request envelope");
+    let expected_request =
+        type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
+            .expect("request fingerprint");
     let response = router
         .oneshot(
             Request::builder()
@@ -237,8 +240,15 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let outcome = decode_remote_outcome(&bytes, &validated, QueryOperation::Rows, nonce, limits)
-        .expect("typed outcome");
+    let outcome = decode_remote_outcome(
+        &bytes,
+        &validated,
+        QueryOperation::Rows,
+        nonce,
+        &expected_request,
+        limits,
+    )
+    .expect("typed outcome");
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };

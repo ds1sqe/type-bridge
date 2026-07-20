@@ -1611,6 +1611,9 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
     };
     let request = encode_remote_request(&validated, &invocation, caller_limits, nonce)
         .expect("request envelope");
+    let expected_request =
+        type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
+            .expect("request fingerprint");
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let mut server_transaction = db.read_transaction().await.expect("server transaction");
     let response = execute_remote_envelope(
@@ -1626,10 +1629,32 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         &validated,
         QueryOperation::Rows,
         nonce,
+        &expected_request,
         caller_limits,
     )
     .expect("remote outcome");
     assert_eq!(remote, local);
+
+    // Same-nonce replay with different rows: the response is bound to the
+    // whole request envelope, so evidence for invocation A can never be
+    // accepted as the answer to invocation B even under a reused nonce.
+    let other_invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("e")])
+        .expect("other invocation");
+    let other_request = encode_remote_request(&validated, &other_invocation, caller_limits, nonce)
+        .expect("other request envelope");
+    let other_fingerprint =
+        type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&other_request)
+            .expect("other request fingerprint");
+    let error = decode_remote_outcome(
+        &response,
+        &validated,
+        QueryOperation::Rows,
+        nonce,
+        &other_fingerprint,
+        caller_limits,
+    )
+    .expect_err("same-nonce different-rows replay");
+    assert_eq!(error.code().as_str(), "query_remote_request_mismatch");
 
     // Replayed evidence: a foreign nonce never constructs host objects.
     let error = decode_remote_outcome(
@@ -1637,6 +1662,7 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         &validated,
         QueryOperation::Rows,
         "some-other-nonce-9876543210",
+        &expected_request,
         caller_limits,
     )
     .expect_err("foreign nonce");
@@ -1649,6 +1675,7 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         &other_validated,
         QueryOperation::Rows,
         nonce,
+        &expected_request,
         caller_limits,
     )
     .expect_err("foreign plan");
@@ -1660,6 +1687,7 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         &validated,
         QueryOperation::Rows,
         nonce,
+        &expected_request,
         RemoteLimits {
             deadline_ms: None,
             max_bytes: 16,
@@ -1685,6 +1713,9 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         "query_remote_capability_unsupported",
     );
     assert_eq!(failure.nonce(), Some(nonce));
+    failure
+        .verify_binding(nonce, &expected_request)
+        .expect("post-decode failures bind the exact request envelope");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2126,6 +2157,9 @@ async fn remote_envelope_parity_corpus_live() {
         let nonce = format!("corpus-parity-nonce-{index:04}");
         let request = encode_remote_request(&validated, &invocation, caller_limits, &nonce)
             .unwrap_or_else(|error| panic!("{label}: request: {error}"));
+        let expected_request =
+            type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
+                .unwrap_or_else(|error| panic!("{label}: request fingerprint: {error}"));
         let response = execute_remote_envelope(
             &request,
             &context,
@@ -2139,6 +2173,7 @@ async fn remote_envelope_parity_corpus_live() {
             &validated,
             QueryOperation::Rows,
             &nonce,
+            &expected_request,
             caller_limits,
         )
         .unwrap_or_else(|error| panic!("{label}: remote outcome: {error}"));
@@ -2215,6 +2250,9 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
     };
     let request = encode_remote_request(&validated, &invocation, caller_limits, nonce)
         .expect("request envelope");
+    let expected_request =
+        type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
+            .expect("request fingerprint");
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let response = execute_remote_envelope(
         &request,
@@ -2226,6 +2264,9 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
     .await;
     let failure = RemoteQueryFailure::decode(&response).expect("failure envelope");
     assert_eq!(failure.nonce(), Some(nonce));
+    failure
+        .verify_binding(nonce, &expected_request)
+        .expect("admitted failure binds the exact request envelope");
     assert_eq!(
         failure.diagnostic().expect("diagnostic").code().as_str(),
         "query_remote_provider_failed",

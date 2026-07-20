@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::{from_canonical_json, to_canonical_json};
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use crate::fingerprint::FingerprintDigest;
+use crate::fingerprint::{
+    CanonicalizationVersion, Fingerprint, FingerprintDigest, FingerprintDomain,
+};
 use crate::id::TypeId;
 use crate::query_plan::{
     InputRow, QueryInvocation, QueryOperation, QueryPlan, QueryPlanFingerprint, decode_query_plan,
@@ -238,6 +240,41 @@ pub enum RemoteOutcome {
     },
 }
 
+/// Fingerprint domain for whole remote request envelopes.
+pub const QUERY_REMOTE_REQUEST_FINGERPRINT_DOMAIN: &str = "typebridge.query.remote-request";
+/// Canonicalization identifier for whole remote request envelopes.
+pub const QUERY_REMOTE_REQUEST_CANONICALIZATION: &str = "typebridge.query-remote-request/v1";
+
+/// The canonical fingerprint of one complete request envelope.
+///
+/// Covers every request field — plan bytes, operation, input rows, limits,
+/// and nonce — so evidence carrying it is bound to exactly one invocation,
+/// never merely to a plan/nonce pair whose rows may differ.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemoteRequestFingerprint(Fingerprint);
+
+impl RemoteRequestFingerprint {
+    /// Compute the fingerprint of exact request envelope bytes.
+    pub fn compute(request_bytes: &[u8]) -> Result<Self, Diagnostic> {
+        Ok(Self(Fingerprint::compute(
+            FingerprintDomain::new(QUERY_REMOTE_REQUEST_FINGERPRINT_DOMAIN)?,
+            CanonicalizationVersion::new(QUERY_REMOTE_REQUEST_CANONICALIZATION)?,
+            None,
+            request_bytes,
+        )))
+    }
+
+    /// Return the generic fingerprint.
+    #[must_use]
+    pub const fn as_fingerprint(&self) -> &Fingerprint {
+        &self.0
+    }
+
+    fn digest_hex(&self) -> String {
+        self.0.digest().to_hex()
+    }
+}
+
 /// One successful remote execution bound to its request and plan.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -246,13 +283,17 @@ pub struct RemoteQueryResponse {
     nonce: String,
     outcome: RemoteOutcome,
     plan: String,
+    // Pre-release wire ledger: the /v1 response gained the whole-request
+    // binding before any 2.0.0 artifact shipped; no released bytes change.
+    request: String,
 }
 
 impl RemoteQueryResponse {
-    /// Bind one outcome to the request nonce and executed plan identity.
+    /// Bind one outcome to the request nonce, plan, and whole request.
     pub fn new(
         nonce: impl Into<String>,
         plan: &QueryPlanFingerprint,
+        request: &RemoteRequestFingerprint,
         outcome: RemoteOutcome,
     ) -> Result<Self, Diagnostic> {
         let nonce = nonce.into();
@@ -262,6 +303,7 @@ impl RemoteQueryResponse {
             nonce,
             outcome,
             plan: plan.as_fingerprint().digest().to_hex(),
+            request: request.digest_hex(),
         })
     }
 
@@ -279,6 +321,7 @@ impl RemoteQueryResponse {
         bytes: &[u8],
         expected_nonce: &str,
         expected_plan: &QueryPlanFingerprint,
+        expected_request: &RemoteRequestFingerprint,
     ) -> Result<Self, Diagnostic> {
         let response = from_canonical_json::<Self>(bytes)?;
         if response.format != QUERY_REMOTE_RESPONSE_FORMAT_V1 {
@@ -303,6 +346,14 @@ impl RemoteQueryResponse {
                 "response evidence does not bind the invoked plan",
             ));
         }
+        let echoed_request = FingerprintDigest::from_hex(&response.request)?;
+        if echoed_request != expected_request.as_fingerprint().digest() {
+            return Err(envelope_failure(
+                DiagnosticCategory::Integrity,
+                "query_remote_request_mismatch",
+                "response evidence does not bind the exact request envelope",
+            ));
+        }
         Ok(response)
     }
 
@@ -322,6 +373,9 @@ pub struct RemoteQueryFailure {
     format: String,
     message: String,
     nonce: Option<String>,
+    // Pre-release wire ledger: the /v1 failure gained the optional
+    // whole-request binding before any 2.0.0 artifact shipped.
+    request: Option<String>,
 }
 
 impl RemoteQueryFailure {
@@ -334,7 +388,57 @@ impl RemoteQueryFailure {
             format: QUERY_REMOTE_FAILURE_FORMAT_V1.to_owned(),
             message: diagnostic.message().to_owned(),
             nonce,
+            request: None,
         }
+    }
+
+    /// Bind one structured diagnostic to the nonce and the exact request.
+    #[must_use]
+    pub fn bound(
+        nonce: impl Into<String>,
+        request: &RemoteRequestFingerprint,
+        diagnostic: &Diagnostic,
+    ) -> Self {
+        Self {
+            category: diagnostic.category(),
+            code: diagnostic.code().as_str().to_owned(),
+            format: QUERY_REMOTE_FAILURE_FORMAT_V1.to_owned(),
+            message: diagnostic.message().to_owned(),
+            nonce: Some(nonce.into()),
+            request: Some(request.digest_hex()),
+        }
+    }
+
+    /// Authenticate this failure against the request the caller sent.
+    ///
+    /// A present nonce must echo the sent nonce and a present request
+    /// digest must bind the sent envelope; a failure claiming foreign
+    /// evidence is rejected instead of surfacing its diagnostic.
+    pub fn verify_binding(
+        &self,
+        expected_nonce: &str,
+        expected_request: &RemoteRequestFingerprint,
+    ) -> Result<(), Diagnostic> {
+        if let Some(nonce) = &self.nonce
+            && nonce != expected_nonce
+        {
+            return Err(envelope_failure(
+                DiagnosticCategory::Integrity,
+                "query_remote_nonce_mismatch",
+                "failure evidence does not echo the request nonce",
+            ));
+        }
+        if let Some(request) = &self.request {
+            let echoed = FingerprintDigest::from_hex(request)?;
+            if echoed != expected_request.as_fingerprint().digest() {
+                return Err(envelope_failure(
+                    DiagnosticCategory::Integrity,
+                    "query_remote_request_mismatch",
+                    "failure evidence does not bind the exact request envelope",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Encode exact canonical envelope bytes.
@@ -421,6 +525,57 @@ impl RemoteCapabilities {
     pub const fn capabilities(&self) -> &crate::capability::CapabilitySet {
         &self.capabilities
     }
+}
+
+/// One decoded remote reply: a typed response or an authenticated failure.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RemoteReply {
+    /// A typed successful response, fully bound to the request.
+    Response(RemoteQueryResponse),
+    /// A structured failure whose present bindings authenticated.
+    Failure(RemoteQueryFailure),
+}
+
+/// Decode one reply envelope of either kind and authenticate its binding.
+///
+/// Success and failure envelopes share one entry point so every caller —
+/// including the Python and Node bindings — decodes both outcomes with the
+/// same nonce and whole-request authentication.
+pub fn decode_remote_reply(
+    bytes: &[u8],
+    expected_nonce: &str,
+    expected_plan: &QueryPlanFingerprint,
+    expected_request: &RemoteRequestFingerprint,
+) -> Result<RemoteReply, Diagnostic> {
+    #[derive(Deserialize)]
+    struct FormatPeek {
+        format: String,
+    }
+    let peek: FormatPeek = serde_json::from_slice(bytes).map_err(|_| {
+        envelope_failure(
+            DiagnosticCategory::InvalidContract,
+            "query_remote_reply_malformed",
+            "remote reply is not a JSON envelope with a format discriminator",
+        )
+    })?;
+    if peek.format == QUERY_REMOTE_RESPONSE_FORMAT_V1 {
+        return Ok(RemoteReply::Response(RemoteQueryResponse::decode(
+            bytes,
+            expected_nonce,
+            expected_plan,
+            expected_request,
+        )?));
+    }
+    if peek.format == QUERY_REMOTE_FAILURE_FORMAT_V1 {
+        let failure = RemoteQueryFailure::decode(bytes)?;
+        failure.verify_binding(expected_nonce, expected_request)?;
+        return Ok(RemoteReply::Failure(failure));
+    }
+    Err(envelope_failure(
+        DiagnosticCategory::InvalidContract,
+        "query_remote_format_unsupported",
+        "remote reply wire format is unsupported",
+    ))
 }
 
 fn check_nonce(nonce: &str) -> Result<(), Diagnostic> {

@@ -16,7 +16,7 @@ use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperation, QueryPlan, decode_query_plan,
 };
-use type_bridge_contract::query_remote::RemoteLimits;
+use type_bridge_contract::query_remote::{RemoteLimits, RemoteRequestFingerprint};
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::CanonicalValue;
@@ -178,11 +178,17 @@ pub fn decode_prepared_remote_outcome(
 ) -> Result<String, Diagnostic> {
     let (plan, validated) = authority.validate(plan_bytes)?;
     let invocation = parse_invocation(&plan, invocation_json)?;
+    // Recompute the exact request envelope this caller sent: canonical
+    // encoding is deterministic, so the whole-request fingerprint binds the
+    // reply to this plan, operation, row batch, limit set, and nonce.
+    let request_bytes = encode_remote_request(&validated, &invocation, limits, nonce)?;
+    let expected_request = RemoteRequestFingerprint::compute(&request_bytes)?;
     let outcome = decode_remote_outcome(
         response_bytes,
         &validated,
         invocation.operation(),
         nonce,
+        &expected_request,
         limits,
     )?;
     outcome_json(&outcome)

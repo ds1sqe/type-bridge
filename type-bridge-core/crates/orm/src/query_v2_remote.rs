@@ -19,7 +19,7 @@ use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::query_plan::{QueryInvocation, QueryOperation, QueryPlanFingerprint};
 use type_bridge_contract::query_remote::{
     RemoteFieldValue, RemoteLimits, RemoteOutcome, RemoteQueryFailure, RemoteQueryRequest,
-    RemoteQueryResponse, RemoteValue,
+    RemoteQueryResponse, RemoteReply, RemoteRequestFingerprint, RemoteValue, decode_remote_reply,
 };
 use type_bridge_query::{
     DocumentColumnShape, MigrationAssertionValidationContext, OutputSchema, ValidatedQuery,
@@ -52,6 +52,7 @@ pub fn decode_remote_outcome(
     validated: &ValidatedQuery,
     operation: QueryOperation,
     nonce: &str,
+    request: &RemoteRequestFingerprint,
     limits: RemoteLimits,
 ) -> Result<QueryV2Outcome, Diagnostic> {
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limits.max_bytes {
@@ -62,7 +63,12 @@ pub fn decode_remote_outcome(
         ));
     }
     let fingerprint = QueryPlanFingerprint::compute(validated.plan())?;
-    let response = RemoteQueryResponse::decode(bytes, nonce, &fingerprint)?;
+    let response = match decode_remote_reply(bytes, nonce, &fingerprint, request)? {
+        RemoteReply::Response(response) => response,
+        // An authenticated failure surfaces its stable server diagnostic
+        // instead of collapsing into a generic decode error.
+        RemoteReply::Failure(failure) => return Err(failure.diagnostic()?),
+    };
     match (operation, response.outcome()) {
         (QueryOperation::Rows, RemoteOutcome::Rows { rows }) => {
             let OutputSchema::Rows(schema) = validated.output_schema() else {
@@ -192,6 +198,7 @@ pub struct AdmittedRemoteRequest {
     limits: BoundedAnswerLimits,
     nonce: String,
     plan_fingerprint: QueryPlanFingerprint,
+    request_fingerprint: RemoteRequestFingerprint,
     validated: ValidatedQuery,
 }
 
@@ -209,6 +216,7 @@ impl AdmittedRemoteRequest {
 pub struct RemoteRejection {
     diagnostic: Box<Diagnostic>,
     nonce: Option<String>,
+    request: Option<Box<RemoteRequestFingerprint>>,
 }
 
 impl RemoteRejection {
@@ -216,15 +224,29 @@ impl RemoteRejection {
         Self {
             diagnostic: Box::new(diagnostic),
             nonce,
+            request: None,
+        }
+    }
+
+    fn bound(nonce: String, request: RemoteRequestFingerprint, diagnostic: Diagnostic) -> Self {
+        Self {
+            diagnostic: Box::new(diagnostic),
+            nonce: Some(nonce),
+            request: Some(Box::new(request)),
         }
     }
 
     /// Encode the failure envelope carrying this rejection.
     #[must_use]
     pub fn into_failure_envelope(self) -> Vec<u8> {
-        RemoteQueryFailure::new(self.nonce, &self.diagnostic)
-            .encode()
-            .unwrap_or_default()
+        match (self.nonce, self.request) {
+            (Some(nonce), Some(request)) => {
+                RemoteQueryFailure::bound(nonce, &request, &self.diagnostic)
+            }
+            (nonce, _) => RemoteQueryFailure::new(nonce, &self.diagnostic),
+        }
+        .encode()
+        .unwrap_or_default()
     }
 }
 
@@ -244,7 +266,14 @@ pub fn preflight_remote_request(
     let request = RemoteQueryRequest::decode(request_bytes)
         .map_err(|diagnostic| RemoteRejection::new(None, diagnostic))?;
     let nonce = request.nonce().to_owned();
-    let fail = |diagnostic: Diagnostic| RemoteRejection::new(Some(nonce.clone()), diagnostic);
+    // Bind every post-decode rejection and all later evidence to the exact
+    // received envelope bytes, covering plan, operation, rows, limits, and
+    // nonce at once.
+    let request_fingerprint = RemoteRequestFingerprint::compute(request_bytes)
+        .map_err(|diagnostic| RemoteRejection::new(Some(nonce.clone()), diagnostic))?;
+    let fail = |diagnostic: Diagnostic| {
+        RemoteRejection::bound(nonce.clone(), request_fingerprint.clone(), diagnostic)
+    };
 
     let plan = request.plan().map_err(&fail)?;
     for capability in plan.required_capabilities().iter() {
@@ -269,6 +298,7 @@ pub fn preflight_remote_request(
         limits,
         nonce,
         plan_fingerprint,
+        request_fingerprint,
         validated,
     })
 }
@@ -281,9 +311,11 @@ pub async fn execute_admitted_remote_request(
     admitted: AdmittedRemoteRequest,
     transaction: &mut crate::session::transaction::Transaction,
 ) -> Vec<u8> {
+    let nonce = admitted.nonce.clone();
+    let request_fingerprint = admitted.request_fingerprint.clone();
     match run_admitted_request(admitted, transaction).await {
         Ok(response) => response,
-        Err((nonce, diagnostic)) => RemoteQueryFailure::new(nonce, &diagnostic)
+        Err((_, diagnostic)) => RemoteQueryFailure::bound(nonce, &request_fingerprint, &diagnostic)
             .encode()
             .unwrap_or_default(),
     }
@@ -317,6 +349,7 @@ async fn run_admitted_request(
         limits,
         nonce,
         plan_fingerprint,
+        request_fingerprint,
         validated,
     } = admitted;
     let fail = |diagnostic: Diagnostic| (Some(nonce.clone()), diagnostic);
@@ -344,9 +377,13 @@ async fn run_admitted_request(
             })
         })?;
 
-    let response =
-        RemoteQueryResponse::new(nonce.clone(), &plan_fingerprint, remote_outcome(&outcome))
-            .map_err(&fail)?;
+    let response = RemoteQueryResponse::new(
+        nonce.clone(),
+        &plan_fingerprint,
+        &request_fingerprint,
+        remote_outcome(&outcome),
+    )
+    .map_err(&fail)?;
     let bytes = response.encode().map_err(&fail)?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > byte_budget {
         return Err(fail(failure(
