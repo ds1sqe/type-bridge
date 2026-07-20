@@ -2624,6 +2624,7 @@ dependencies = [
  "type-bridge-migration",
  "type-bridge-orm",
  "type-bridge-schema",
+ "type-bridge-schema-codegen",
  "type-bridge-schema-compat",
  "type-bridge-schema-migration",
  "type-bridge-schema-migration-typedb",

@@ -53,6 +53,8 @@ enum Command {
 enum SchemaCommand {
     /// Parse and resolve the schema sources without network I/O.
     Check,
+    /// Generate the configured binding projections from the canonical schema.
+    Generate,
 }
 
 #[derive(Subcommand)]
@@ -154,6 +156,9 @@ fn run(cli: &Cli) -> Result<(), String> {
             );
             Ok(())
         }
+        Command::Schema {
+            command: SchemaCommand::Generate,
+        } => run_schema_generate(&workspace),
         Command::Migration { command } => match command {
             MigrationCommand::Make { name } => {
                 match workspace.migration_make(name).map_err(display)? {
@@ -249,6 +254,118 @@ fn load_workspace(manifest: &PathBuf) -> Result<TypeBridgeWorkspace, String> {
 
 fn display(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+/// Generate every configured binding projection from the canonical schema.
+///
+/// The resolved workspace schema is projected per configured target with
+/// each shipped emitter's handler and code-resource evidence — the same
+/// path the codegen acceptance fixtures pin — and emitted
+/// deterministically. Files land under the confined output directories
+/// through same-directory temporary files renamed into place; files not
+/// produced by the emitter are never touched or deleted.
+fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
+    use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
+    use type_bridge_schema::{project, resolve};
+    use type_bridge_schema_codegen::{PythonEmitter, RustEmitter, TypeScriptEmitter};
+
+    let outputs = workspace.config().outputs();
+    if outputs.is_empty() {
+        return Err(
+            "no binding outputs configured; add bindings.<target>.output to the manifest".into(),
+        );
+    }
+
+    let resolved = resolve(
+        workspace.declared_schema(),
+        workspace.config().semantic_profile(),
+    )
+    .map_err(display)?;
+
+    for (target, directory) in outputs {
+        let package = match target {
+            BindingTarget::Python => {
+                let emitter = PythonEmitter::new();
+                let projection = project(
+                    &resolved,
+                    BindingTarget::Python,
+                    &ProjectionConfig::python(),
+                    &emitter.generator_handlers(),
+                    &emitter.code_resources().map_err(display)?,
+                )
+                .map_err(display)?;
+                emitter.emit(&projection)
+            }
+            BindingTarget::TypeScript => {
+                let emitter = TypeScriptEmitter::new();
+                let projection = project(
+                    &resolved,
+                    BindingTarget::TypeScript,
+                    &ProjectionConfig::typescript(),
+                    &emitter.generator_handlers(),
+                    &emitter.code_resources().map_err(display)?,
+                )
+                .map_err(display)?;
+                emitter.emit(&projection)
+            }
+            BindingTarget::Rust => {
+                let emitter = RustEmitter::new();
+                let projection = project(
+                    &resolved,
+                    BindingTarget::Rust,
+                    &ProjectionConfig::rust(),
+                    &emitter.generator_handlers(),
+                    &emitter.code_resources().map_err(display)?,
+                )
+                .map_err(display)?;
+                emitter.emit(&projection)
+            }
+        }
+        .map_err(display)?;
+
+        let root = workspace
+            .config()
+            .workspace_root()
+            .as_path()
+            .join(directory.as_path());
+        for (path, bytes) in package.files() {
+            let absolute = root.join(path);
+            if let Some(parent) = absolute.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+            }
+            write_atomic(&absolute, bytes)?;
+        }
+        println!(
+            "generated {} file(s) for {} into {}",
+            package.files().len(),
+            match target {
+                BindingTarget::Python => "python",
+                BindingTarget::TypeScript => "typescript",
+                BindingTarget::Rust => "rust",
+            },
+            root.display(),
+        );
+    }
+    Ok(())
+}
+
+/// Write bytes through a same-directory temporary file renamed into place.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("{} has no UTF-8 file name", path.display()))?;
+    let temporary = parent.join(format!(".{file_name}.typebridge-tmp"));
+    fs::write(&temporary, bytes)
+        .map_err(|error| format!("cannot write {}: {error}", temporary.display()))?;
+    fs::rename(&temporary, path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        format!("cannot publish {}: {error}", path.display())
+    })
 }
 
 enum ConnectedAction {
