@@ -2160,10 +2160,14 @@ async fn remote_envelope_parity_corpus_live() {
         let expected_request =
             type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
                 .unwrap_or_else(|error| panic!("{label}: request fingerprint: {error}"));
+        // The live provider transports multi-row given batches, so the
+        // executor truthfully advertises the transport capability.
+        let mut advertised = query_plan_capability_vocabulary();
+        advertised.insert(type_bridge_contract::query_given_rows_capability());
         let response = execute_remote_envelope(
             &request,
             &context,
-            &query_plan_capability_vocabulary(),
+            &advertised,
             &mut server_transaction,
             limits(),
         )
@@ -2276,7 +2280,7 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_facade_executes_locally_and_remotely_live() {
     use type_bridge_contract::query_plan_capability_vocabulary;
-    use type_bridge_contract::query_remote::RemoteLimits;
+    use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteLimits};
     use type_bridge_contract::schema::encode_declared_schema;
     use type_bridge_orm::query_v2_prepared::{
         QueryAuthority, decode_prepared_remote_outcome, encode_prepared_remote_request,
@@ -2378,10 +2382,14 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
         max_bytes: 1 << 20,
         max_items: 100,
     };
+    let advertisement = RemoteCapabilities::new(query_plan_capability_vocabulary())
+        .encode()
+        .expect("advertisement bytes");
     let request = encode_prepared_remote_request(
         &authority,
         &plan_bytes,
         &invocation_json,
+        &advertisement,
         caller_limits,
         nonce,
     )

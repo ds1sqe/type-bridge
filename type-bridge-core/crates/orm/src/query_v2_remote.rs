@@ -18,8 +18,9 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::query_plan::{QueryInvocation, QueryOperation, QueryPlanFingerprint};
 use type_bridge_contract::query_remote::{
-    RemoteFieldValue, RemoteLimits, RemoteOutcome, RemoteQueryFailure, RemoteQueryRequest,
-    RemoteQueryResponse, RemoteReply, RemoteRequestFingerprint, RemoteValue, decode_remote_reply,
+    RemoteCapabilities, RemoteFieldValue, RemoteLimits, RemoteOutcome, RemoteQueryFailure,
+    RemoteQueryRequest, RemoteQueryResponse, RemoteReply, RemoteRequestFingerprint, RemoteValue,
+    decode_remote_reply,
 };
 use type_bridge_query::{
     DocumentColumnShape, MigrationAssertionValidationContext, OutputSchema, ValidatedQuery,
@@ -40,6 +41,40 @@ pub fn encode_remote_request(
     nonce: impl Into<String>,
 ) -> Result<Vec<u8>, Diagnostic> {
     RemoteQueryRequest::new(validated.plan(), invocation, limits, nonce)?.encode()
+}
+
+/// Refuse one invocation the executor's advertisement cannot execute.
+///
+/// The contract promises clients check required capabilities against the
+/// exact advertisement and refuse unsupported plans before any I/O. Both
+/// the plan's derived capabilities and the invocation's transport
+/// capabilities (multi-row `given` batches) are checked; the executor
+/// re-checks the same sets at admission.
+pub fn check_advertised_capabilities(
+    validated: &ValidatedQuery,
+    invocation: &QueryInvocation,
+    advertisement: &RemoteCapabilities,
+) -> Result<(), Diagnostic> {
+    let advertised = advertisement.capabilities();
+    for capability in validated.plan().required_capabilities().iter() {
+        if !advertised.contains(capability) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_remote_capability_unsupported",
+                "the plan requires a capability this executor does not advertise",
+            ));
+        }
+    }
+    for capability in invocation.transport_capabilities().iter() {
+        if !advertised.contains(capability) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_remote_capability_unsupported",
+                "the invocation requires a transport capability this executor does not advertise",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Decode and evidence-validate one response into a typed outcome.
@@ -288,6 +323,18 @@ pub fn preflight_remote_request(
     let validated =
         validate_query_plan(&plan, context, StructuralLimits::CANONICAL).map_err(&fail)?;
     let invocation = request.invocation(&plan).map_err(&fail)?;
+    // Multi-row batches need the native given transport; an executor that
+    // cannot transport rows must reject here, not after opening a
+    // transaction and asking the provider mid-execution.
+    for capability in invocation.transport_capabilities().iter() {
+        if !advertised.contains(capability) {
+            return Err(fail(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_remote_capability_unsupported",
+                "the invocation requires a transport capability this executor does not advertise",
+            )));
+        }
+    }
     let limits = tighten_limits(request.limits(), ceilings);
     let byte_budget = limits.max_bytes;
     let plan_fingerprint = QueryPlanFingerprint::compute(&plan).map_err(&fail)?;

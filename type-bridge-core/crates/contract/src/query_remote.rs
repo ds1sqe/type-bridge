@@ -71,14 +71,19 @@ impl RemoteOperation {
 }
 
 /// One complete remote invocation of a reusable validated plan.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteQueryRequest {
     format: String,
     limits: RemoteLimits,
     nonce: String,
     operation: RemoteOperation,
-    plan: String,
+    // Pre-release wire ledger: the /v1 request embedded the plan as one
+    // JSON string until 2.0.0 shipped, which capped remote plans at the
+    // 1 MiB per-string ceiling instead of the 16 MiB document limit the
+    // plan contract states. The plan now embeds as the canonical JSON
+    // object itself, so local and remote share one plan size limit.
+    plan: serde_json::Value,
     rows: Vec<Vec<Option<CanonicalValue>>>,
 }
 
@@ -99,19 +104,22 @@ impl RemoteQueryRequest {
         }
         let nonce = nonce.into();
         check_nonce(&nonce)?;
-        let plan_text = String::from_utf8(plan.canonical_bytes()?).map_err(|_| {
-            envelope_failure(
-                DiagnosticCategory::Integrity,
-                "query_remote_plan_not_utf8",
-                "canonical plan bytes are not UTF-8",
-            )
-        })?;
+        // Canonical bytes prove the plan encodes within contract limits;
+        // the parsed tree of those exact bytes is what the envelope embeds.
+        let plan_value = serde_json::from_slice::<serde_json::Value>(&plan.canonical_bytes()?)
+            .map_err(|_| {
+                envelope_failure(
+                    DiagnosticCategory::Integrity,
+                    "query_remote_plan_unencodable",
+                    "the plan cannot be embedded as canonical JSON",
+                )
+            })?;
         Ok(Self {
             format: QUERY_REMOTE_REQUEST_FORMAT_V1.to_owned(),
             limits,
             nonce,
             operation: RemoteOperation::from_operation(invocation.operation()),
-            plan: plan_text,
+            plan: plan_value,
             rows: invocation
                 .inputs()
                 .iter()
@@ -139,9 +147,13 @@ impl RemoteQueryRequest {
         Ok(request)
     }
 
-    /// Rebuild the trusted plan from the carried canonical bytes.
+    /// Rebuild the trusted plan from the embedded canonical document.
+    ///
+    /// The embedded tree re-encodes to exact canonical bytes and runs the
+    /// full plan wire decoder, so every structural plan check applies to
+    /// remote plans exactly as it does to local ones.
     pub fn plan(&self) -> Result<QueryPlan, Diagnostic> {
-        decode_query_plan(self.plan.as_bytes())
+        decode_query_plan(&to_canonical_json(&self.plan)?)
     }
 
     /// Rebuild the validated invocation against the carried plan.
@@ -576,6 +588,38 @@ pub fn decode_remote_reply(
         "query_remote_format_unsupported",
         "remote reply wire format is unsupported",
     ))
+}
+
+/// Convert one caller-supplied limit into the unsigned wire range.
+///
+/// Every binding funnels its limit arguments through this exact
+/// conversion, so a negative or out-of-range budget fails with one
+/// stable diagnostic in every language instead of silently saturating
+/// to zero or dropping the budget entirely.
+pub fn checked_remote_limit(value: i128) -> Result<u64, Diagnostic> {
+    u64::try_from(value).map_err(|_| remote_limit_invalid())
+}
+
+/// The stable rejection every out-of-range limit argument maps to.
+///
+/// Exposed so bindings whose integer representation exceeds `i128`
+/// (JavaScript `BigInt`) reject unrepresentable values with exactly
+/// this diagnostic instead of inventing their own.
+#[must_use]
+pub fn remote_limit_invalid() -> Diagnostic {
+    envelope_failure(
+        DiagnosticCategory::InvalidContract,
+        "query_remote_limit_invalid",
+        "remote limits are unsigned 64-bit integers",
+    )
+}
+
+/// Convert one optional caller-supplied deadline into the wire range.
+///
+/// A negative deadline is rejected — never silently mapped to "no
+/// deadline", which would remove the bound instead of enforcing it.
+pub fn checked_remote_deadline(value: Option<i128>) -> Result<Option<u64>, Diagnostic> {
+    value.map(checked_remote_limit).transpose()
 }
 
 fn check_nonce(nonce: &str) -> Result<(), Diagnostic> {

@@ -8,13 +8,15 @@
 
 use std::sync::Arc;
 
-use napi::bindgen_prelude::Buffer;
+use napi::bindgen_prelude::{BigInt, Buffer};
 use napi_derive::napi;
 use type_bridge_contract::diagnostic::Diagnostic;
-use type_bridge_contract::query_remote::RemoteLimits;
+use type_bridge_contract::query_remote::{
+    RemoteLimits, checked_remote_deadline, checked_remote_limit, remote_limit_invalid,
+};
 use type_bridge_orm::query_v2_prepared::{
-    QueryAuthority, decode_prepared_remote_outcome, encode_prepared_remote_request,
-    execute_prepared_local,
+    QueryAuthority, decode_prepared_remote_outcome, decode_remote_capabilities,
+    encode_prepared_remote_request, execute_prepared_local,
 };
 use type_bridge_orm::session::backend::BoundedAnswerLimits;
 
@@ -68,54 +70,101 @@ pub fn query_v2_execute_local(
         .map_err(|diagnostic| napi_error(&diagnostic))
 }
 
+/// Convert one caller-supplied `BigInt` limit through the shared range check.
+///
+/// `BigInt` preserves the full unsigned 64-bit range without JavaScript
+/// number precision loss; a negative or out-of-range value fails with
+/// the same stable diagnostic the Python binding reports.
+fn remote_limit(value: &BigInt) -> Result<u64, Diagnostic> {
+    let (value, lossless) = value.get_i128();
+    if lossless {
+        checked_remote_limit(value)
+    } else {
+        Err(remote_limit_invalid())
+    }
+}
+
+/// Build the exact remote limit set from checked caller arguments.
+fn remote_limits(
+    max_items: &BigInt,
+    max_bytes: &BigInt,
+    deadline_ms: Option<&BigInt>,
+) -> napi::Result<RemoteLimits> {
+    let build = || -> Result<RemoteLimits, Diagnostic> {
+        Ok(RemoteLimits {
+            deadline_ms: checked_remote_deadline(
+                deadline_ms
+                    .map(|value| remote_limit(value).map(i128::from))
+                    .transpose()?,
+            )?,
+            max_bytes: remote_limit(max_bytes)?,
+            max_items: remote_limit(max_items)?,
+        })
+    };
+    build().map_err(|diagnostic| napi_error(&diagnostic))
+}
+
+/// Decode one capability advertisement into its sorted capability ids.
+#[napi(js_name = "queryV2RemoteCapabilities")]
+pub fn query_v2_remote_capabilities(advertisement: Buffer) -> napi::Result<Vec<String>> {
+    decode_remote_capabilities(&advertisement).map_err(|diagnostic| napi_error(&diagnostic))
+}
+
 /// Encode one prepared invocation into remote request envelope bytes.
+///
+/// `advertisement` carries the executor's exact `/v2/capabilities`
+/// bytes; a plan or multi-row invocation the executor cannot execute is
+/// refused here, before any request bytes exist.
 #[napi(js_name = "queryV2EncodeRemoteRequest")]
+#[allow(clippy::too_many_arguments, reason = "flat binding surface")]
 pub fn query_v2_encode_remote_request(
     authority: &NodeQueryV2Authority,
     plan: Buffer,
     invocation_json: String,
+    advertisement: Buffer,
     nonce: String,
-    max_items: i64,
-    max_bytes: i64,
-    deadline_ms: Option<i64>,
+    max_items: BigInt,
+    max_bytes: BigInt,
+    deadline_ms: Option<BigInt>,
 ) -> napi::Result<Buffer> {
+    let limits = remote_limits(&max_items, &max_bytes, deadline_ms.as_ref())?;
     let bytes = encode_prepared_remote_request(
         &authority.authority,
         &plan,
         &invocation_json,
-        RemoteLimits {
-            deadline_ms: deadline_ms.and_then(|value| u64::try_from(value).ok()),
-            max_bytes: u64::try_from(max_bytes).unwrap_or(0),
-            max_items: u64::try_from(max_items).unwrap_or(0),
-        },
+        &advertisement,
+        limits,
         &nonce,
     )
     .map_err(|diagnostic| napi_error(&diagnostic))?;
     Ok(bytes.into())
 }
 
-/// Decode one remote response into typed outcome JSON.
+/// Decode one remote reply into typed outcome JSON.
+///
+/// The limit arguments must repeat the exact budgets the request was
+/// encoded with — including the deadline — because the reply binds the
+/// whole request envelope, budgets included.
 #[napi(js_name = "queryV2DecodeRemoteOutcome")]
+#[allow(clippy::too_many_arguments, reason = "flat binding surface")]
 pub fn query_v2_decode_remote_outcome(
     authority: &NodeQueryV2Authority,
     plan: Buffer,
     invocation_json: String,
     response: Buffer,
     nonce: String,
-    max_items: i64,
-    max_bytes: i64,
+    max_items: BigInt,
+    max_bytes: BigInt,
+    deadline_ms: Option<BigInt>,
 ) -> napi::Result<String> {
+    let limits = remote_limits(&max_items, &max_bytes, deadline_ms.as_ref())?;
     decode_prepared_remote_outcome(
         &authority.authority,
         &plan,
         &invocation_json,
         &response,
         &nonce,
-        RemoteLimits {
-            deadline_ms: None,
-            max_bytes: u64::try_from(max_bytes).unwrap_or(0),
-            max_items: u64::try_from(max_items).unwrap_or(0),
-        },
+        limits,
     )
     .map_err(|diagnostic| napi_error(&diagnostic))
 }

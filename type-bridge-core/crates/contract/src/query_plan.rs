@@ -57,6 +57,7 @@ const CAP_TRY: &str = "query.pattern.try";
 const CAP_OUTPUT_DOCUMENTS: &str = "query.output.documents";
 const CAP_LOCAL_FUNCTIONS: &str = "query.function.local";
 const CAP_REACHABLE: &str = "query.pattern.reachable";
+const CAP_INPUT_GIVEN_ROWS: &str = "query.input.given-rows";
 
 /// Return every capability the first query-plan vocabulary can require.
 #[must_use]
@@ -87,6 +88,19 @@ pub fn query_plan_capability_vocabulary() -> CapabilitySet {
     .into_iter()
     .map(|value| CapabilityId::new(value).expect("static capability id is canonical"))
     .collect()
+}
+
+/// Return the transport capability multi-row `given` invocations require.
+///
+/// Plans never require this capability — it is derived from invocation
+/// cardinality by [`QueryInvocation::transport_capabilities`], so it is
+/// not part of [`query_plan_capability_vocabulary`]. Executors advertise
+/// it only when their provider can transport explicit input rows, which
+/// makes multi-row admission truthful at preflight instead of failing
+/// after a transaction exists.
+#[must_use]
+pub fn query_given_rows_capability() -> CapabilityId {
+    CapabilityId::new(CAP_INPUT_GIVEN_ROWS).expect("static capability id is canonical")
 }
 
 /// One dense typed input column identity.
@@ -1046,6 +1060,24 @@ impl QueryInvocation {
     /// Return whether this invocation still binds the supplied plan.
     pub fn binds(&self, plan: &QueryPlan) -> Result<bool, Diagnostic> {
         Ok(self.plan_fingerprint == plan.fingerprint()?)
+    }
+
+    /// Return capabilities this invocation's transport requires beyond
+    /// the plan's own.
+    ///
+    /// A multi-row input batch rides the native `given` transport, so it
+    /// requires [`query_given_rows_capability`]; empty and single-row
+    /// invocations lower inline and require nothing extra. Both client
+    /// preflight and executor admission check this set against the
+    /// advertisement so untransportable invocations fail before any I/O
+    /// or provider resource.
+    #[must_use]
+    pub fn transport_capabilities(&self) -> CapabilitySet {
+        let mut capabilities = CapabilitySet::new();
+        if self.inputs.len() > 1 {
+            capabilities.insert(query_given_rows_capability());
+        }
+        capabilities
     }
 }
 

@@ -14,7 +14,6 @@
 
 use std::sync::Arc;
 
-use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan_capability_vocabulary;
@@ -69,7 +68,7 @@ async fn main() {
         &ManagedDeltaContext::new(
             ManagedScopeId::new(env("SMOKE_SCOPE")).expect("scope"),
             profile,
-            CapabilitySet::new(),
+            declared.required_capabilities().clone(),
         ),
     )
     .expect("managed state");
@@ -82,8 +81,12 @@ async fn main() {
     .await
     .expect("database connects");
 
+    let mut advertised = query_plan_capability_vocabulary();
+    if database.supports_given_stage() {
+        advertised.insert(type_bridge_contract::query_given_rows_capability());
+    }
     let state = Arc::new(V2QueryState {
-        advertised: query_plan_capability_vocabulary(),
+        advertised,
         ceilings: BoundedAnswerLimits::default(),
         database,
         managed,

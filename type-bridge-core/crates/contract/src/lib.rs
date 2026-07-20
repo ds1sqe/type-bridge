@@ -27,7 +27,7 @@ pub mod migration;
 /// Canonical typed migration assertion syntax and fingerprints.
 pub mod migration_assertion;
 pub use migration_assertion::migration_assertion_capability_vocabulary;
-pub use query_plan::query_plan_capability_vocabulary;
+pub use query_plan::{query_given_rows_capability, query_plan_capability_vocabulary};
 mod migration_assertion_wire;
 /// Binding-target configuration and reproducible projection fingerprints.
 pub mod projection;

@@ -8,7 +8,6 @@
 //! either path — the Rust engine is the only semantic implementation.
 
 use serde::{Deserialize, Serialize};
-use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::limits::StructuralLimits;
@@ -16,7 +15,9 @@ use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperation, QueryPlan, decode_query_plan,
 };
-use type_bridge_contract::query_remote::{RemoteLimits, RemoteRequestFingerprint};
+use type_bridge_contract::query_remote::{
+    RemoteCapabilities, RemoteLimits, RemoteRequestFingerprint,
+};
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::CanonicalValue;
@@ -24,7 +25,9 @@ use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, val
 use type_bridge_schema::ResolvedSchema;
 
 use crate::query_v2::{QueryV2ExecutionError, failure};
-use crate::query_v2_remote::{decode_remote_outcome, encode_remote_request, remote_outcome};
+use crate::query_v2_remote::{
+    check_advertised_capabilities, decode_remote_outcome, encode_remote_request, remote_outcome,
+};
 use crate::session::backend::BoundedAnswerLimits;
 use crate::session::database::Database;
 
@@ -36,6 +39,12 @@ pub struct QueryAuthority {
 
 impl QueryAuthority {
     /// Build one authority from canonical declared-schema bytes.
+    ///
+    /// The caller supplied the schema artifact, so its declared required
+    /// capabilities are the authority for resolution — a schema requiring
+    /// `schema.roles` or any other capability builds exactly as it does on
+    /// the server. Contract-level rejections keep their specific
+    /// diagnostic instead of collapsing into a generic one.
     pub fn from_declared_bytes(
         bytes: &[u8],
         scope: &str,
@@ -50,10 +59,13 @@ impl QueryAuthority {
             &type_bridge_schema::ManagedDeltaContext::new(
                 ManagedScopeId::new(scope)?,
                 profile,
-                CapabilitySet::new(),
+                declared.required_capabilities().clone(),
             ),
         )
-        .map_err(|_| schema_rejected())?;
+        .map_err(|error| match error {
+            type_bridge_schema::DeltaError::Contract(diagnostic) => diagnostic,
+            type_bridge_schema::DeltaError::Schema(_) => schema_rejected(),
+        })?;
         Ok(Self { managed, resolved })
     }
 
@@ -151,17 +163,38 @@ pub async fn execute_prepared_local(
 /// Encode one prepared invocation into remote request envelope bytes.
 ///
 /// The plan validates against the caller's authority first, so a stale or
-/// invalid plan never leaves the client.
+/// invalid plan never leaves the client. The caller also supplies the
+/// executor's exact capability advertisement (the `/v2/capabilities`
+/// bytes): a plan or multi-row invocation the executor cannot execute is
+/// refused here, before any request bytes exist — the promised client
+/// preflight, with the executor re-checking the same sets at admission.
 pub fn encode_prepared_remote_request(
     authority: &QueryAuthority,
     plan_bytes: &[u8],
     invocation_json: &str,
+    advertisement_bytes: &[u8],
     limits: RemoteLimits,
     nonce: &str,
 ) -> Result<Vec<u8>, Diagnostic> {
     let (plan, validated) = authority.validate(plan_bytes)?;
     let invocation = parse_invocation(&plan, invocation_json)?;
+    let advertisement = RemoteCapabilities::decode(advertisement_bytes)?;
+    check_advertised_capabilities(&validated, &invocation, &advertisement)?;
     encode_remote_request(&validated, &invocation, limits, nonce)
+}
+
+/// Decode one capability advertisement into its sorted capability ids.
+///
+/// This is the typed client-side view of the `/v2/capabilities` bytes;
+/// bindings surface it so callers can inspect exactly what an executor
+/// advertises before preparing requests against it.
+pub fn decode_remote_capabilities(advertisement_bytes: &[u8]) -> Result<Vec<String>, Diagnostic> {
+    let advertisement = RemoteCapabilities::decode(advertisement_bytes)?;
+    Ok(advertisement
+        .capabilities()
+        .iter()
+        .map(|capability| capability.as_str().to_owned())
+        .collect())
 }
 
 /// Decode one remote response into the typed outcome JSON.

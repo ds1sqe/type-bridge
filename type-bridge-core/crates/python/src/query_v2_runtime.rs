@@ -11,10 +11,12 @@ use std::sync::Arc;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use type_bridge_contract::diagnostic::Diagnostic;
-use type_bridge_contract::query_remote::RemoteLimits;
+use type_bridge_contract::query_remote::{
+    RemoteLimits, checked_remote_deadline, checked_remote_limit,
+};
 use type_bridge_orm::query_v2_prepared::{
-    QueryAuthority, decode_prepared_remote_outcome, encode_prepared_remote_request,
-    execute_prepared_local,
+    QueryAuthority, decode_prepared_remote_outcome, decode_remote_capabilities,
+    encode_prepared_remote_request, execute_prepared_local,
 };
 use type_bridge_orm::session::backend::BoundedAnswerLimits;
 
@@ -68,54 +70,88 @@ pub fn query_v2_execute_local(
         .map_err(|diagnostic| value_error(&diagnostic))
 }
 
-/// Encode one prepared invocation into remote request envelope bytes.
+/// Build the exact remote limit set from checked caller arguments.
+///
+/// Limits accept any Python integer and convert through the shared
+/// contract range check, so a negative or oversized budget fails with
+/// the same stable diagnostic the Node binding reports.
+fn remote_limits(
+    max_items: i128,
+    max_bytes: i128,
+    deadline_ms: Option<i128>,
+) -> PyResult<RemoteLimits> {
+    let build = || -> Result<RemoteLimits, Diagnostic> {
+        Ok(RemoteLimits {
+            deadline_ms: checked_remote_deadline(deadline_ms)?,
+            max_bytes: checked_remote_limit(max_bytes)?,
+            max_items: checked_remote_limit(max_items)?,
+        })
+    };
+    build().map_err(|diagnostic| value_error(&diagnostic))
+}
+
+/// Decode one capability advertisement into its sorted capability ids.
 #[pyfunction]
-#[pyo3(signature = (authority, plan, invocation_json, nonce, max_items, max_bytes, deadline_ms=None))]
+pub fn query_v2_remote_capabilities(advertisement: Vec<u8>) -> PyResult<Vec<String>> {
+    decode_remote_capabilities(&advertisement).map_err(|diagnostic| value_error(&diagnostic))
+}
+
+/// Encode one prepared invocation into remote request envelope bytes.
+///
+/// `advertisement` carries the executor's exact `/v2/capabilities`
+/// bytes; a plan or multi-row invocation the executor cannot execute is
+/// refused here, before any request bytes exist.
+#[pyfunction]
+#[pyo3(signature = (authority, plan, invocation_json, advertisement, nonce, max_items, max_bytes, deadline_ms=None))]
+#[expect(clippy::too_many_arguments, reason = "flat binding surface")]
 pub fn query_v2_encode_remote_request(
     authority: &PyQueryV2Authority,
     plan: Vec<u8>,
     invocation_json: &str,
+    advertisement: Vec<u8>,
     nonce: &str,
-    max_items: u64,
-    max_bytes: u64,
-    deadline_ms: Option<u64>,
+    max_items: i128,
+    max_bytes: i128,
+    deadline_ms: Option<i128>,
 ) -> PyResult<Vec<u8>> {
+    let limits = remote_limits(max_items, max_bytes, deadline_ms)?;
     encode_prepared_remote_request(
         &authority.authority,
         &plan,
         invocation_json,
-        RemoteLimits {
-            deadline_ms,
-            max_bytes,
-            max_items,
-        },
+        &advertisement,
+        limits,
         nonce,
     )
     .map_err(|diagnostic| value_error(&diagnostic))
 }
 
-/// Decode one remote response into typed outcome JSON.
+/// Decode one remote reply into typed outcome JSON.
+///
+/// The limit arguments must repeat the exact budgets the request was
+/// encoded with — including the deadline — because the reply binds the
+/// whole request envelope, budgets included.
 #[pyfunction]
+#[pyo3(signature = (authority, plan, invocation_json, response, nonce, max_items, max_bytes, deadline_ms=None))]
+#[expect(clippy::too_many_arguments, reason = "flat binding surface")]
 pub fn query_v2_decode_remote_outcome(
     authority: &PyQueryV2Authority,
     plan: Vec<u8>,
     invocation_json: &str,
     response: Vec<u8>,
     nonce: &str,
-    max_items: u64,
-    max_bytes: u64,
+    max_items: i128,
+    max_bytes: i128,
+    deadline_ms: Option<i128>,
 ) -> PyResult<String> {
+    let limits = remote_limits(max_items, max_bytes, deadline_ms)?;
     decode_prepared_remote_outcome(
         &authority.authority,
         &plan,
         invocation_json,
         &response,
         nonce,
-        RemoteLimits {
-            deadline_ms: None,
-            max_bytes,
-            max_items,
-        },
+        limits,
     )
     .map_err(|diagnostic| value_error(&diagnostic))
 }
@@ -125,6 +161,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyQueryV2Authority>()?;
     m.add_function(wrap_pyfunction!(query_v2_authority, m)?)?;
     m.add_function(wrap_pyfunction!(query_v2_execute_local, m)?)?;
+    m.add_function(wrap_pyfunction!(query_v2_remote_capabilities, m)?)?;
     m.add_function(wrap_pyfunction!(query_v2_encode_remote_request, m)?)?;
     m.add_function(wrap_pyfunction!(query_v2_decode_remote_outcome, m)?)?;
     Ok(())

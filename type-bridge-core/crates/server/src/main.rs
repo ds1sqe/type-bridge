@@ -175,8 +175,17 @@ async fn build_v2_state(
     .await
     .map_err(|e| format!("v2 database connection failed: {e}"))?;
 
+    // The plan vocabulary is always executable; the multi-row given
+    // transport is advertised only when the connected server and the
+    // negotiated provider can actually carry explicit input rows, so
+    // capability preflight stays truthful for multi-row invocations.
+    let mut advertised = query_plan_capability_vocabulary();
+    if database.supports_given_stage() {
+        advertised.insert(type_bridge_contract::query_given_rows_capability());
+    }
+
     Ok(transport::v2::V2QueryState {
-        advertised: query_plan_capability_vocabulary(),
+        advertised,
         ceilings: BoundedAnswerLimits::default(),
         database,
         managed,

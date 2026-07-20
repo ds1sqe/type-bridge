@@ -69,9 +69,7 @@ def _wait_for_port(port: int, process: subprocess.Popen, timeout: float) -> None
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise AssertionError(
-                f"smoke server exited early with code {process.returncode}"
-            )
+            raise AssertionError(f"smoke server exited early with code {process.returncode}")
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=1):
                 return
@@ -100,8 +98,7 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
     try:
         schema_tx = rust_db.transaction("schema")
         schema_tx.execute(
-            "define attribute smoke-name, value string; "
-            "entity smoke-person, owns smoke-name;"
+            "define attribute smoke-name, value string; entity smoke-person, owns smoke-name;"
         )
         schema_tx.commit()
         write_tx = rust_db.transaction("write")
@@ -144,9 +141,15 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
         )
         try:
             _wait_for_port(port, server, timeout=300.0)
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/v2/capabilities", timeout=30
+            ) as response:
+                advertisement = response.read()
+            capabilities = core.query_v2_remote_capabilities(advertisement)
+            assert "query.plan" in capabilities
             nonce = f"binding-smoke-{uuid.uuid4().hex[:16]}"
             request = core.query_v2_encode_remote_request(
-                authority, plan, invocation, nonce, 100, 1 << 20, 30_000
+                authority, plan, invocation, advertisement, nonce, 100, 1 << 20, 30_000
             )
             http_request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/v2/query",
@@ -157,7 +160,7 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
             with urllib.request.urlopen(http_request, timeout=30) as response:
                 body = response.read()
             remote = core.query_v2_decode_remote_outcome(
-                authority, plan, invocation, body, nonce, 100, 1 << 20
+                authority, plan, invocation, body, nonce, 100, 1 << 20, 30_000
             )
             assert remote == local
         finally:

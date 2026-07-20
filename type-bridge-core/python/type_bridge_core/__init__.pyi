@@ -72,6 +72,47 @@ def render_models_json(input: str, target: str, options_json: str | None = ...) 
 def toml_to_typeql(toml_text: str) -> str: ...
 def run_v2_cli(arguments: list[str]) -> int: ...
 
+# Prepared V2 query facade — opaque authority handle plus canonical
+# plan/envelope bytes; limits accept any int and are range-checked
+# against the unsigned 64-bit wire contract.
+class QueryV2Authority: ...
+
+def query_v2_authority(
+    declared_schema: bytes, scope: str, profile: str
+) -> QueryV2Authority: ...
+def query_v2_execute_local(
+    database: PyRustDatabase,
+    authority: QueryV2Authority,
+    plan: bytes,
+    invocation_json: str,
+) -> str: ...
+def query_v2_remote_capabilities(advertisement: bytes) -> list[str]: ...
+def query_v2_encode_remote_request(
+    authority: QueryV2Authority,
+    plan: bytes,
+    invocation_json: str,
+    advertisement: bytes,
+    nonce: str,
+    max_items: int,
+    max_bytes: int,
+    deadline_ms: int | None = ...,
+) -> bytes:
+    """Refuse plans or batches the advertisement cannot execute, then encode."""
+    ...
+
+def query_v2_decode_remote_outcome(
+    authority: QueryV2Authority,
+    plan: bytes,
+    invocation_json: str,
+    response: bytes,
+    nonce: str,
+    max_items: int,
+    max_bytes: int,
+    deadline_ms: int | None = ...,
+) -> str:
+    """Limits must repeat the encoded budgets exactly; replies bind the whole request."""
+    ...
+
 # Version gate — SSOT in crates/core/src/version.rs, re-exported here.
 class VersionError(Exception):
     """Raised for TypeDB version window violations, band mismatches, probe failures, or parse errors."""
