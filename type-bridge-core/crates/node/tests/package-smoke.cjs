@@ -163,6 +163,18 @@ assert.deepStrictEqual(attrs, [
 // ---------------------------------------------------------------------------
 
 assert.strictEqual(typeof typeBridge.loadNative, "function", "loadNative must be a function");
+for (const preparedV2Export of [
+  "QueryV2Authority",
+  "queryV2ExecuteLocal",
+  "queryV2RemoteCapabilities",
+  "queryV2PrepareRemote",
+]) {
+  assert.strictEqual(
+    typeof typeBridge[preparedV2Export],
+    "function",
+    `${preparedV2Export} must be a public prepared V2 export`,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Typed layer — presence assertions
@@ -214,6 +226,10 @@ const packed = JSON.parse(execSync("npm pack --dry-run --json", { encoding: "utf
 const packedFiles = packed[0].files.map((f) => f.path);
 assert.ok(packedFiles.includes("dist/index.js"), "tarball must include dist/index.js");
 assert.ok(packedFiles.includes("dist/native.js"), "tarball must include dist/native.js (the loader)");
+assert.ok(
+  packedFiles.includes("THIRD_PARTY_NOTICES.md"),
+  "tarball must include third-party license, fork, and source notices",
+);
 assert.ok(
   packedFiles.some((f) => f.endsWith(".node")),
   "tarball must include the native .node module",

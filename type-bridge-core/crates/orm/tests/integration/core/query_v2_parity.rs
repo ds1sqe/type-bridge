@@ -23,9 +23,11 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::ValueTypeTag;
+use type_bridge_orm::integration_test_support::adapt_match_request_for_live_test;
 use type_bridge_orm::query_v2::{QueryRowValue, QueryV2Outcome, execute_validated_query};
-use type_bridge_orm::query_v2_adapter::adapt_match_request;
-use type_bridge_orm::session::backend::{AnswerCancellation, BoundedAnswerLimits};
+use type_bridge_orm::session::backend::{
+    AnswerCancellation, BoundedAnswerLimits, QueryV2AnswerLimits,
+};
 use type_bridge_orm::*;
 use type_bridge_query::{MigrationAssertionValidationContext, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
@@ -197,27 +199,31 @@ async fn v2_outcome(
 ) -> QueryV2Outcome {
     let validated_v1 = validate_match_request(&fixture.registry, request.clone())
         .expect("corpus request passes V1 validation");
-    let adapted = adapt_match_request(
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let (adapted, operation) = adapt_match_request_for_live_test(
         &validated_v1,
         &fixture.registry,
-        fixture.managed.managed_semantic_schema(),
+        &context,
+        StructuralLimits::CANONICAL,
     )
     .expect("corpus request adapts");
-    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
     let validated = validate_query_plan(adapted.plan(), &context, StructuralLimits::CANONICAL)
         .expect("adapted corpus plan validates");
-    let invocation = QueryInvocation::new(adapted.plan(), adapted.operation(), Vec::new())
+    let invocation = QueryInvocation::new(validated.plan(), operation, Vec::new())
         .expect("input-free invocation");
     let mut transaction = db.read_transaction().await.expect("read transaction");
     execute_validated_query(
         &mut transaction,
         &validated,
         &invocation,
-        BoundedAnswerLimits {
-            max_items: 1000,
-            max_bytes: 1 << 20,
-            deadline: None,
-            cancellation: AnswerCancellation::default(),
+        QueryV2AnswerLimits {
+            answer: BoundedAnswerLimits {
+                max_items: 1000,
+                max_bytes: 1 << 20,
+                deadline: None,
+                cancellation: AnswerCancellation::default(),
+            },
+            max_collection_members: 65_536,
         },
     )
     .await

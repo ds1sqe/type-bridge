@@ -45,6 +45,15 @@ run_rust() {
     run_step "cargo test --all-targets" \
         cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets
 
+    run_step "contract alternate serde_json backend conformance" \
+        cargo test --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-contract --features serde-backend-conformance
+
+    run_step "released validation-rule wire without feature unification" \
+        env CARGO_TARGET_DIR=type-bridge-core/target/rule-wire-standalone \
+        cargo test --locked \
+        --manifest-path type-bridge-core/crates/core/tests/fixtures/rule-wire-standalone/Cargo.toml
+
     run_step "schema-codegen Rust projection acceptance" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-schema-codegen --test rust_acceptance
@@ -101,6 +110,7 @@ run_node() {
         node ../schema-codegen/tests/typescript_acceptance/check.mjs
     run_step "npm run test:unit"     npm run test:unit
     run_step "npm run test:dts"      npm run test:dts
+    run_step "npm run dts:parity"    npm run dts:parity
     run_step "npm run smoke:package" npm run smoke:package
     run_step "npm run smoke:legacy-package" npm run smoke:legacy-package
     run_step "npm run test:contract-adapter" npm run test:contract-adapter

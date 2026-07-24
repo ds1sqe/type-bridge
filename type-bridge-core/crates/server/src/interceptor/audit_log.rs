@@ -5,6 +5,8 @@ use tokio::sync::Mutex;
 use type_bridge_core_lib::ast::Clause;
 
 use super::traits::{InterceptError, Interceptor, RequestContext};
+#[cfg(feature = "v2-query")]
+use super::traits::{V2PolicyOutcome, V2PolicyRequest};
 use crate::config::AuditLogConfig;
 
 #[derive(Debug, serde::Serialize)]
@@ -26,7 +28,10 @@ enum AuditWriter {
 
 impl AuditWriter {
     #[cfg_attr(coverage_nightly, coverage(off))]
-    fn write_entry(&mut self, entry: &AuditEntry) -> Result<(), std::io::Error> {
+    fn write_entry<T: serde::Serialize + ?Sized>(
+        &mut self,
+        entry: &T,
+    ) -> Result<(), std::io::Error> {
         let json = serde_json::to_string(entry).map_err(std::io::Error::other)?;
         match self {
             AuditWriter::Stdout => {
@@ -43,6 +48,22 @@ impl AuditWriter {
 
 pub struct AuditLogInterceptor {
     writer: Arc<Mutex<AuditWriter>>,
+}
+
+#[cfg(feature = "v2-query")]
+#[derive(Debug, serde::Serialize)]
+struct V2AuditEntry {
+    timestamp: String,
+    request_id: String,
+    client_id: String,
+    database: String,
+    transaction_type: String,
+    clause_count: usize,
+    compiled_typeql: Option<String>,
+    status: String,
+    transport: &'static str,
+    diagnostic_code: String,
+    response_bytes: usize,
 }
 
 impl AuditLogInterceptor {
@@ -65,6 +86,61 @@ impl AuditLogInterceptor {
         Ok(Self {
             writer: Arc::new(Mutex::new(writer)),
         })
+    }
+
+    fn entry_from_context(ctx: &RequestContext, status: &str) -> AuditEntry {
+        AuditEntry {
+            timestamp: ctx.timestamp.to_rfc3339(),
+            request_id: ctx.request_id.clone(),
+            client_id: ctx.client_id.clone(),
+            database: ctx.database.clone(),
+            transaction_type: ctx.transaction_type.clone(),
+            clause_count: ctx
+                .metadata
+                .get("audit_clause_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as usize,
+            compiled_typeql: ctx
+                .metadata
+                .get("compiled_typeql")
+                .and_then(|value| value.as_str())
+                .map(String::from),
+            status: status.to_owned(),
+        }
+    }
+
+    async fn write_context(
+        &self,
+        ctx: &RequestContext,
+        status: &str,
+    ) -> Result<(), InterceptError> {
+        let entry = Self::entry_from_context(ctx, status);
+        let mut writer = self.writer.lock().await;
+        writer.write_entry(&entry).map_err(io_to_intercept_error)
+    }
+
+    #[cfg(feature = "v2-query")]
+    async fn write_v2_context(
+        &self,
+        ctx: &RequestContext,
+        outcome: &V2PolicyOutcome<'_>,
+    ) -> Result<(), InterceptError> {
+        let base = Self::entry_from_context(ctx, if outcome.success() { "ok" } else { "error" });
+        let entry = V2AuditEntry {
+            timestamp: base.timestamp,
+            request_id: base.request_id,
+            client_id: base.client_id,
+            database: base.database,
+            transaction_type: base.transaction_type,
+            clause_count: base.clause_count,
+            compiled_typeql: base.compiled_typeql,
+            status: base.status,
+            transport: "v2",
+            diagnostic_code: outcome.code().to_owned(),
+            response_bytes: outcome.response_bytes(),
+        };
+        let mut writer = self.writer.lock().await;
+        writer.write_entry(&entry).map_err(io_to_intercept_error)
     }
 }
 
@@ -94,35 +170,44 @@ impl Interceptor for AuditLogInterceptor {
         })
     }
 
+    #[cfg(feature = "v2-query")]
+    fn supports_v2(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "v2-query")]
+    fn on_v2_request<'a>(
+        &'a self,
+        request: &'a V2PolicyRequest<'a>,
+        ctx: &'a mut RequestContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            ctx.metadata.insert(
+                "audit_clause_count".to_owned(),
+                serde_json::json!(request.plan().pipeline().len()),
+            );
+            Ok(())
+        })
+    }
+
+    #[cfg(feature = "v2-query")]
+    fn on_v2_response<'a>(
+        &'a self,
+        outcome: &'a V2PolicyOutcome<'a>,
+        ctx: &'a RequestContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
+    {
+        Box::pin(async move { self.write_v2_context(ctx, outcome).await })
+    }
+
     fn on_response<'a>(
         &'a self,
         _result: &'a serde_json::Value,
         ctx: &'a RequestContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
     {
-        Box::pin(async move {
-            let entry = AuditEntry {
-                timestamp: ctx.timestamp.to_rfc3339(),
-                request_id: ctx.request_id.clone(),
-                client_id: ctx.client_id.clone(),
-                database: ctx.database.clone(),
-                transaction_type: ctx.transaction_type.clone(),
-                clause_count: ctx
-                    .metadata
-                    .get("audit_clause_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize,
-                compiled_typeql: ctx
-                    .metadata
-                    .get("compiled_typeql")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                status: "ok".to_string(),
-            };
-
-            let mut writer = self.writer.lock().await;
-            writer.write_entry(&entry).map_err(io_to_intercept_error)
-        })
+        Box::pin(async move { self.write_context(ctx, "ok").await })
     }
 }
 
@@ -307,6 +392,43 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "v2-query")]
+    async fn v2_failure_audit_records_only_redacted_deterministic_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let interceptor = AuditLogInterceptor::new(&AuditLogConfig {
+            output: "file".into(),
+            file_path: path.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+        let mut context = make_ctx();
+        context.timestamp = chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .expect("fixed timestamp")
+            .with_timezone(&chrono::Utc);
+        interceptor
+            .on_v2_response(
+                &V2PolicyOutcome::new(false, "query_remote_provider_failed", 128),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(path).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry["status"], "error");
+        assert_eq!(entry["transport"], "v2");
+        assert_eq!(entry["diagnostic_code"], "query_remote_provider_failed");
+        assert_eq!(entry["response_bytes"], 128);
+        assert_eq!(entry.as_object().expect("entry object").len(), 11);
+        assert!(!content.contains("plan"));
+        assert!(!content.contains("envelope"));
+        assert_eq!(
+            content.trim(),
+            r#"{"timestamp":"2024-01-01T00:00:00+00:00","request_id":"req-123","client_id":"client-1","database":"test-db","transaction_type":"read","clause_count":0,"compiled_typeql":null,"status":"error","transport":"v2","diagnostic_code":"query_remote_provider_failed","response_bytes":128}"#,
+        );
+    }
+
+    #[tokio::test]
     async fn on_response_clause_count_absent_defaults_to_zero() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
@@ -482,5 +604,23 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["compiled_typeql"], "match $p isa person;");
         assert_eq!(value["clause_count"], 2);
+    }
+
+    #[test]
+    fn v1_audit_entry_serialized_shape_is_exactly_frozen() {
+        let entry = AuditEntry {
+            timestamp: "2024-01-01T00:00:00+00:00".into(),
+            request_id: "req-1".into(),
+            client_id: "client-1".into(),
+            database: "db".into(),
+            transaction_type: "read".into(),
+            clause_count: 2,
+            compiled_typeql: Some("match $p isa person;".into()),
+            status: "ok".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&entry).expect("serialize V1 audit entry"),
+            r#"{"timestamp":"2024-01-01T00:00:00+00:00","request_id":"req-1","client_id":"client-1","database":"db","transaction_type":"read","clause_count":2,"compiled_typeql":"match $p isa person;","status":"ok"}"#,
+        );
     }
 }

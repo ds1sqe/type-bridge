@@ -98,14 +98,34 @@ impl TransactionOps for CorpusTransaction {
 
     fn query_typed_bounded<'a>(
         &'a mut self,
-        _query: &'a TypedFetchRows,
+        query: &'a TypedFetchRows,
         limits: BoundedAnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.events
             .selected_statements
             .fetch_add(1, Ordering::SeqCst);
-        let items = solution_rows(&self.fixture);
+        let items = solution_rows(&self.fixture)
+            .into_iter()
+            .take(usize::try_from(query.limit).unwrap_or(usize::MAX))
+            .collect();
+        Box::pin(async move { feed(items, limits, consumer) })
+    }
+
+    fn supports_exactly_one_tuple_proof(&self) -> bool {
+        true
+    }
+
+    fn query_tuple_typed_bounded<'a>(
+        &'a mut self,
+        query: &'a TypedFetchRows,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.events
+            .selected_statements
+            .fetch_add(1, Ordering::SeqCst);
+        let items = tuple_rows(&self.fixture, &query.projection, query.limit);
         Box::pin(async move { feed(items, limits, consumer) })
     }
 
@@ -117,19 +137,29 @@ impl TransactionOps for CorpusTransaction {
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.events.root_statements.fetch_add(1, Ordering::SeqCst);
         let root_name = binding_name(query.root);
+        let mut seen = BTreeSet::new();
         let items = self
             .fixture
             .solutions
             .iter()
-            .map(|solution| {
-                AnswerItem::Row(json!({
-                    "bindings": [{
-                        "binding": query.root,
-                        "concept_id": provider_iid(&solution.bindings[root_name]),
-                    }],
-                    "satisfied_role_edges": [],
-                }))
+            .filter_map(|solution| {
+                let concept_id = provider_iid(&solution.bindings[root_name]);
+                seen.insert(concept_id).then(|| {
+                    AnswerItem::Row(json!({
+                        "bindings": [{
+                            "binding": query.root,
+                            "concept_id": concept_id,
+                        }],
+                        "satisfied_role_edges": [],
+                    }))
+                })
             })
+            .take(
+                query
+                    .limit
+                    .and_then(|limit| usize::try_from(limit).ok())
+                    .unwrap_or(usize::MAX),
+            )
             .collect();
         Box::pin(async move { feed(items, limits, consumer) })
     }
@@ -224,6 +254,40 @@ fn solution_rows(fixture: &IdentityFixture) -> Vec<AnswerItem> {
                 "satisfied_role_edges": [0, 1],
             }))
         })
+        .collect()
+}
+
+fn tuple_rows(fixture: &IdentityFixture, projection: &[u16], limit: u64) -> Vec<AnswerItem> {
+    let mut seen = BTreeSet::new();
+    fixture
+        .solutions
+        .iter()
+        .filter_map(|solution| {
+            let bindings = projection
+                .iter()
+                .map(|binding| {
+                    let concept_id = provider_iid(&solution.bindings[binding_name(*binding)]);
+                    (*binding, concept_id)
+                })
+                .collect::<Vec<_>>();
+            let identity = bindings
+                .iter()
+                .map(|(_, concept_id)| *concept_id)
+                .collect::<Vec<_>>();
+            seen.insert(identity).then(|| {
+                AnswerItem::Row(json!({
+                    "bindings": bindings
+                        .iter()
+                        .map(|(binding, concept_id)| json!({
+                            "binding": binding,
+                            "concept_id": concept_id,
+                        }))
+                        .collect::<Vec<_>>(),
+                    "satisfied_role_edges": [],
+                }))
+            })
+        })
+        .take(usize::try_from(limit).unwrap_or(usize::MAX))
         .collect()
 }
 
@@ -460,6 +524,25 @@ fn rows_request(registry: &DescriptorRegistry) -> MatchRequest {
     )
 }
 
+fn exact_one_person_request(registry: &DescriptorRegistry) -> MatchRequest {
+    MatchRequest::v1(
+        plan(registry),
+        MatchOperation::FetchRows {
+            output: FetchShape::Positional {
+                slots: vec![FetchSlot::One {
+                    binding: BindingId::new(0),
+                }],
+            },
+            order: Vec::new(),
+            window: Window {
+                offset: 0,
+                limit: 1,
+            },
+            cardinality: RowCardinality::ExactlyOne,
+        },
+    )
+}
+
 fn page_request(
     registry: &DescriptorRegistry,
     limit: u64,
@@ -639,4 +722,36 @@ async fn identity_manifest_executes_through_the_canonical_selected_result_backen
     assert!(events.root_statements.load(Ordering::SeqCst) >= 6);
     assert_eq!(events.rematch_statements.load(Ordering::SeqCst), 3);
     assert!(events.hydration_statements.load(Ordering::SeqCst) >= 1);
+}
+
+#[tokio::test]
+async fn exact_one_reads_past_duplicate_hidden_witnesses_before_not_unique() {
+    let fixture: Arc<IdentityFixture> = Arc::new(serde_json::from_str(FIXTURE_JSON).unwrap());
+    assert_eq!(fixture.solutions[0].bindings["person"], "person:alice");
+    assert_eq!(fixture.solutions[1].bindings["person"], "person:alice");
+    assert_eq!(fixture.solutions[3].bindings["person"], "person:bob");
+
+    let registry = registry();
+    let events = Arc::new(RecordingEvents::default());
+    let database = Database::with_backend(
+        Box::new(CorpusBackend {
+            fixture,
+            events: Arc::clone(&events),
+        }),
+        "semantic-corpus-exact-one",
+    );
+    let request = exact_one_person_request(&registry)
+        .validate(&registry)
+        .unwrap();
+
+    let error = database
+        .execute_match(&registry, &request)
+        .await
+        .expect_err("Bob must make the selected person identity non-unique");
+    let OrmError::Match(error) = error else {
+        panic!("expected a canonical typed-match cardinality error")
+    };
+    assert_eq!(error.code().as_str(), "not_unique");
+    assert_eq!(events.selected_statements.load(Ordering::SeqCst), 1);
+    assert_eq!(events.closes.load(Ordering::SeqCst), 1);
 }

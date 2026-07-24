@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_contract::{
+    diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode},
     id::{FunctionId, Label},
+    reserved::is_typebridge_internal_label,
     schema::DeclaredSchema,
 };
 use typeql::{
@@ -24,6 +26,8 @@ use typeql::{
         TypeRefAny,
     },
 };
+
+use crate::is_legacy_ledger_label;
 
 /// A declared schema plus references derived from each TypeQL function body.
 ///
@@ -62,6 +66,58 @@ impl TypeqlDeclaredSchema {
     }
 }
 
+/// Reject function bodies that cannot be proven independent of migration
+/// control schema.
+///
+/// This check must run while the strict TypeQL reference index is still paired
+/// with its declared projection. Converting to [`DeclaredSchema`] first would
+/// irreversibly discard body-only references.
+pub(crate) fn reject_reserved_function_references(
+    parsed: &TypeqlDeclaredSchema,
+) -> Result<(), Diagnostic> {
+    for (function, references) in parsed.function_body_references() {
+        if references.has_dynamic_type_reference() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_typedb_dynamic_function_reference",
+                "function body supplies a type position dynamically and cannot be proven free of the reserved control namespace",
+            )
+            .with_detail("function", function.label().as_str().to_owned()));
+        }
+        for reference in references.references() {
+            let reserved = match reference {
+                SchemaReference::Label(label) => is_reserved_schema_label(label.as_str()),
+                SchemaReference::Scoped { scope, name } => {
+                    is_reserved_schema_label(scope.as_str())
+                        || is_reserved_schema_label(name.as_str())
+                }
+                SchemaReference::Function(id) => is_reserved_schema_label(id.label().as_str()),
+            };
+            if reserved {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "reserved_schema_cross_reference",
+                    "function body references the reserved TypeDB control namespace",
+                )
+                .with_detail("function", function.label().as_str().to_owned()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_reserved_schema_label(label: &str) -> bool {
+    is_typebridge_internal_label(label) || is_legacy_ledger_label(label)
+}
+
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
+    Diagnostic::new(
+        category,
+        DiagnosticCode::new(code).expect("static function-reference diagnostic code"),
+        message,
+    )
+}
+
 /// Static schema references found in one function body.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FunctionBodyReferences {
@@ -90,20 +146,30 @@ pub enum SchemaReference {
     Function(FunctionId),
 }
 
-pub(crate) fn collect_function_body_references(block: &FunctionBlock) -> FunctionBodyReferences {
+pub(crate) fn collect_function_body_references(
+    block: &FunctionBlock,
+) -> Result<FunctionBodyReferences, Diagnostic> {
     let mut collector = Collector::default();
     collector.visit_stages(&block.stages);
     collector.visit_return_statement(&block.return_stmt);
-    FunctionBodyReferences {
+    if collector.invalid_reference {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "typeql_function_reference_invalid",
+            "function body contains a schema reference outside the canonical identifier domain",
+        ));
+    }
+    Ok(FunctionBodyReferences {
         references: collector.references,
         dynamic_type_reference: collector.dynamic_type_reference,
-    }
+    })
 }
 
 #[derive(Default)]
 struct Collector {
     references: BTreeSet<SchemaReference>,
     dynamic_type_reference: bool,
+    invalid_reference: bool,
 }
 
 impl Collector {
@@ -259,10 +325,12 @@ impl Collector {
         match &function.name {
             FunctionName::Builtin(_) => {}
             FunctionName::Identifier(identifier) => {
-                self.references.insert(SchemaReference::Function(
-                    FunctionId::new(identifier.as_str_unchecked())
-                        .expect("TypeQL emitted a function identifier rejected by the contract"),
-                ));
+                match FunctionId::new(identifier.as_str_unchecked()) {
+                    Ok(function) => {
+                        self.references.insert(SchemaReference::Function(function));
+                    }
+                    Err(_) => self.invalid_reference = true,
+                }
             }
         }
         for argument in &function.args {
@@ -373,18 +441,23 @@ impl Collector {
     }
 
     fn insert_label(&mut self, label: &TypeqlLabel) {
-        self.references.insert(SchemaReference::Label(
-            Label::new(label.ident.as_str_unchecked())
-                .expect("TypeQL emitted a label rejected by the contract"),
-        ));
+        match Label::new(label.ident.as_str_unchecked()) {
+            Ok(label) => {
+                self.references.insert(SchemaReference::Label(label));
+            }
+            Err(_) => self.invalid_reference = true,
+        }
     }
 
     fn insert_scoped_label(&mut self, label: &TypeqlScopedLabel) {
-        self.references.insert(SchemaReference::Scoped {
-            scope: Label::new(label.scope.ident.as_str_unchecked())
-                .expect("TypeQL emitted a scope rejected by the contract"),
-            name: Label::new(label.name.ident.as_str_unchecked())
-                .expect("TypeQL emitted a scoped name rejected by the contract"),
-        });
+        let scope = Label::new(label.scope.ident.as_str_unchecked());
+        let name = Label::new(label.name.ident.as_str_unchecked());
+        match (scope, name) {
+            (Ok(scope), Ok(name)) => {
+                self.references
+                    .insert(SchemaReference::Scoped { scope, name });
+            }
+            _ => self.invalid_reference = true,
+        }
     }
 }

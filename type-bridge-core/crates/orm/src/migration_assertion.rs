@@ -14,18 +14,17 @@ use type_bridge_contract::migration_assertion::{
     QueryVariable, ValueComparator, ValueOperand,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
-use type_bridge_contract::temporal::{
-    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
-};
+use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDuration};
 use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
 };
 use type_bridge_query::{BindingDomain, RowSchema, ValidatedMigrationAssertionPlan};
 
 use crate::error::OrmError;
+use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use crate::session::backend::{
     AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
-    BoundedAnswerStats, BoxFuture, TransactionOps,
+    BoundedAnswerStats, BoxFuture, QueryV2AnswerLimits, TransactionOps,
 };
 use crate::session::transaction::Transaction;
 
@@ -235,6 +234,25 @@ pub(crate) trait AssertionProviderCall: Send {
             ))
         })
     }
+
+    fn query_v2_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        limits: QueryV2AnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.query_bounded(typeql, limits.answer, consumer)
+    }
+
+    fn query_v2_with_rows_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: crate::session::backend::GivenRowsSpec,
+        limits: QueryV2AnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.query_with_rows_bounded(typeql, rows, limits.answer, consumer)
+    }
 }
 
 pub(crate) struct TransactionAssertionProvider<'a, T: ?Sized> {
@@ -265,6 +283,26 @@ impl<T: TransactionOps + ?Sized> AssertionProviderCall for TransactionAssertionP
         self.transaction
             .query_with_rows_bounded(typeql, rows, limits, consumer)
     }
+
+    fn query_v2_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        limits: QueryV2AnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.transaction.query_v2_bounded(typeql, limits, consumer)
+    }
+
+    fn query_v2_with_rows_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: crate::session::backend::GivenRowsSpec,
+        limits: QueryV2AnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.transaction
+            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
+    }
 }
 
 async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
@@ -280,39 +318,102 @@ async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
         .fingerprint()
         .map_err(MigrationAssertionExecutionError::Lowering)?;
 
+    let max_diagnostic_bytes =
+        u64::try_from(context.structural_limits.diagnostic_bytes).unwrap_or(u64::MAX);
+    let mut response_bytes = 0_u64;
+    let mut deferred_failure = None;
     let mut evidence = None;
-    let mut consumer = |item| {
-        evidence = Some(match item {
+    let mut consumer = |item: AnswerItem| {
+        if deferred_failure.is_some() {
+            return Ok(AnswerControl::Continue);
+        }
+        let item_bytes = match item.encoded_bytes() {
+            Ok(item_bytes) => item_bytes,
+            Err(error) => {
+                deferred_failure = Some(MigrationAssertionExecutionError::Provider(error));
+                return Ok(AnswerControl::Continue);
+            }
+        };
+        let next_bytes = match response_bytes.checked_add(item_bytes) {
+            Some(next_bytes) => next_bytes,
+            None => {
+                deferred_failure = Some(MigrationAssertionExecutionError::Provider(
+                    assertion_provider_resource_error(
+                        "answer_byte_counter_overflow",
+                        "provider answer byte counter overflowed",
+                    ),
+                ));
+                return Ok(AnswerControl::Continue);
+            }
+        };
+        if next_bytes > max_diagnostic_bytes {
+            deferred_failure = Some(MigrationAssertionExecutionError::Provider(
+                assertion_provider_resource_error(
+                    "response_byte_limit",
+                    "provider answer exceeded the response-byte ceiling",
+                ),
+            ));
+            return Ok(AnswerControl::Continue);
+        }
+        response_bytes = next_bytes;
+        let validated_evidence = match item {
             AnswerItem::Row(row) => validate_evidence_row(&row, validated),
             AnswerItem::Document(_) => Err(assertion_diagnostic(
                 DiagnosticCategory::InvalidContract,
                 "migration_assertion_result_not_row",
                 "provider returned a document for a selected-row assertion",
             )),
-        });
-        Ok(AnswerControl::Stop)
+        };
+        match validated_evidence {
+            Ok(()) => evidence = Some(()),
+            Err(diagnostic) => {
+                deferred_failure = Some(MigrationAssertionExecutionError::ResultValidation(
+                    diagnostic,
+                ));
+            }
+        }
+        // The assertion statement owns `limit 1`; continue through the
+        // provider's terminal frame so a failing assertion cannot strand a
+        // resumable TypeDB answer stream.
+        Ok(AnswerControl::Continue)
     };
-    provider
-        .query_bounded(
+    let provider_result = provider
+        .query_v2_bounded(
             lowered.typeql(),
-            BoundedAnswerLimits {
-                max_items: 1,
-                max_bytes: u64::try_from(context.structural_limits.diagnostic_bytes)
-                    .unwrap_or(u64::MAX),
-                deadline: None,
-                cancellation: AnswerCancellation::default(),
+            QueryV2AnswerLimits {
+                answer: BoundedAnswerLimits {
+                    max_items: 1,
+                    // `limit 1` owns the finite provider ceiling. Keep the
+                    // diagnostic-byte failure sticky in the consumer so the sole
+                    // answer can be followed through the terminal stream frame.
+                    max_bytes: u64::MAX,
+                    deadline: None,
+                    cancellation: AnswerCancellation::default(),
+                },
+                // Assertion evidence is selected rows. Documents are rejected,
+                // so no document-list allocation belongs to this execution.
+                max_collection_members: 0,
             },
             &mut consumer,
         )
-        .await
-        .map_err(MigrationAssertionExecutionError::Provider)?;
+        .await;
+    if let Some(error) = deferred_failure {
+        return Err(error);
+    }
+    let stats = provider_result.map_err(MigrationAssertionExecutionError::Provider)?;
+    if stats.stopped_early {
+        return Err(MigrationAssertionExecutionError::ResultValidation(
+            assertion_diagnostic(
+                DiagnosticCategory::InvalidContract,
+                "migration_assertion_provider_stream_not_exhausted",
+                "provider stopped before the bounded assertion reached its terminal frame",
+            ),
+        ));
+    }
 
     match evidence {
         None => Ok(()),
-        Some(Err(diagnostic)) => Err(MigrationAssertionExecutionError::ResultValidation(
-            diagnostic,
-        )),
-        Some(Ok(())) => {
+        Some(()) => {
             let evidence = assertion_evidence_shape(validated)
                 .map_err(MigrationAssertionExecutionError::ResultValidation)?;
             Err(MigrationAssertionExecutionError::AssertionFailed(
@@ -323,6 +424,12 @@ async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
             ))
         }
     }
+}
+
+fn assertion_provider_resource_error(code: &'static str, message: &'static str) -> OrmError {
+    MatchError::new(MatchErrorCategory::ResourceLimit, code, message)
+        .at(MatchErrorPathSegment::ProviderEvidence)
+        .into()
 }
 
 fn preflight(
@@ -475,7 +582,7 @@ fn render_operand(
 ) -> Result<String, Diagnostic> {
     match operand {
         ValueOperand::Binding { binding } => Ok(format!("${}", variable(plan, *binding)?)),
-        ValueOperand::Literal { value } => Ok(render_literal(value)),
+        ValueOperand::Literal { value } => render_literal(value),
     }
 }
 
@@ -490,8 +597,9 @@ pub(crate) const fn render_comparator(comparator: ValueComparator) -> &'static s
     }
 }
 
-pub(crate) fn render_literal(value: &CanonicalValue) -> String {
-    match value {
+pub(crate) fn render_literal(value: &CanonicalValue) -> Result<String, Diagnostic> {
+    type_bridge_schema::validate_provider_temporal_literal(value)?;
+    Ok(match value {
         CanonicalValue::String(value) => {
             serde_json::to_string(value.as_str()).expect("serializing a string cannot fail")
         }
@@ -500,10 +608,18 @@ pub(crate) fn render_literal(value: &CanonicalValue) -> String {
         CanonicalValue::Boolean(value) => value.to_string(),
         CanonicalValue::Date(value) => value.to_string(),
         CanonicalValue::DateTime(value) => value.to_string(),
-        CanonicalValue::DateTimeTz(value) => value.to_string(),
+        CanonicalValue::DateTimeTz(value) => match value.zone() {
+            type_bridge_contract::temporal::TimeZoneDesignator::Named(name) => {
+                format!("{} {name}", value.local())
+            }
+            type_bridge_contract::temporal::TimeZoneDesignator::Utc
+            | type_bridge_contract::temporal::TimeZoneDesignator::OffsetSeconds(_) => {
+                value.to_string()
+            }
+        },
         CanonicalValue::Decimal(value) => format!("{}dec", value.as_str()),
         CanonicalValue::Duration(value) => value.to_string(),
-    }
+    })
 }
 
 fn render_double(value: CanonicalDouble) -> String {
@@ -758,9 +874,14 @@ pub(crate) fn parse_provider_value(
             .map(CanonicalValue::Boolean),
         ValueTypeTag::Date => parse_text::<CanonicalDate>(value, CanonicalValue::Date),
         ValueTypeTag::DateTime => parse_text::<CanonicalDateTime>(value, CanonicalValue::DateTime),
-        ValueTypeTag::DateTimeTz => {
-            parse_text::<CanonicalDateTimeTz>(value, CanonicalValue::DateTimeTz)
-        }
+        ValueTypeTag::DateTimeTz => value
+            .as_str()
+            .ok_or_else(malformed_value)
+            .and_then(|value| {
+                type_bridge_schema::parse_provider_datetime_tz_evidence(value)
+                    .map_err(|_| malformed_value())
+            })
+            .map(CanonicalValue::DateTimeTz),
         ValueTypeTag::Decimal => value
             .as_str()
             .ok_or_else(malformed_value)
@@ -1079,6 +1200,9 @@ mod tests {
         calls: usize,
         result: Option<QueryResult>,
         statements: Vec<String>,
+        v1_calls: usize,
+        v2_calls: usize,
+        v2_collection_limit: Option<u64>,
     }
 
     impl FakeProvider {
@@ -1087,12 +1211,13 @@ mod tests {
                 calls: 0,
                 result: Some(result),
                 statements: Vec::new(),
+                v1_calls: 0,
+                v2_calls: 0,
+                v2_collection_limit: None,
             }
         }
-    }
 
-    impl AssertionProviderCall for FakeProvider {
-        fn query_bounded<'a>(
+        fn respond<'a>(
             &'a mut self,
             typeql: &'a str,
             limits: BoundedAnswerLimits,
@@ -1100,6 +1225,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
             self.calls += 1;
             self.statements.push(typeql.to_owned());
+            let bounded_to_one = typeql.ends_with("limit 1;\n");
             let result = self.result.take().unwrap_or(QueryResult::Rows(Vec::new()));
             Box::pin(async move {
                 let mut reader = BoundedAnswerReader::new(limits);
@@ -1114,13 +1240,39 @@ mod tests {
                         .map(AnswerItem::Document)
                         .collect::<Vec<_>>(),
                 };
-                for item in items {
+                for item in items
+                    .into_iter()
+                    .take(if bounded_to_one { 1 } else { usize::MAX })
+                {
                     if reader.accept(item, consumer)? == AnswerControl::Stop {
                         break;
                     }
                 }
                 Ok(reader.stats())
             })
+        }
+    }
+
+    impl AssertionProviderCall for FakeProvider {
+        fn query_bounded<'a>(
+            &'a mut self,
+            typeql: &'a str,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            self.v1_calls += 1;
+            self.respond(typeql, limits, consumer)
+        }
+
+        fn query_v2_bounded<'a>(
+            &'a mut self,
+            typeql: &'a str,
+            limits: QueryV2AnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            self.v2_calls += 1;
+            self.v2_collection_limit = Some(limits.max_collection_members);
+            self.respond(typeql, limits.answer, consumer)
         }
     }
 
@@ -1191,43 +1343,167 @@ limit 1;\n"
         assert_eq!(
             render_literal(&CanonicalValue::String(
                 CanonicalString::new("quote \" slash \\ line\n").unwrap(),
-            )),
+            ))
+            .expect("string literal"),
             "\"quote \\\" slash \\\\ line\\n\""
         );
         assert_eq!(
-            render_literal(&CanonicalValue::Long(i64::MIN)),
+            render_literal(&CanonicalValue::Long(i64::MIN)).expect("integer literal"),
             i64::MIN.to_string()
         );
         assert_eq!(
-            render_literal(&CanonicalValue::Double(CanonicalDouble::new(-0.0).unwrap())),
+            render_literal(&CanonicalValue::Double(CanonicalDouble::new(-0.0).unwrap()))
+                .expect("double literal"),
             "-0.0"
         );
         assert_eq!(
             render_literal(&CanonicalValue::Double(
                 CanonicalDouble::new(f64::MAX).unwrap()
-            )),
+            ))
+            .expect("double literal"),
             "1.7976931348623157e308"
         );
         assert_eq!(
             render_literal(&CanonicalValue::Double(
                 CanonicalDouble::new(f64::MIN_POSITIVE).unwrap()
-            )),
+            ))
+            .expect("double literal"),
             "2.2250738585072014e-308"
         );
         assert_eq!(
             render_literal(&CanonicalValue::Decimal(
                 DecimalValue::new("12.30dec").unwrap()
-            )),
+            ))
+            .expect("decimal literal"),
             "12.3dec"
         );
         assert_eq!(
             render_literal(&CanonicalValue::String(
                 CanonicalString::new("\0\u{0008}\u{000c}\n\r\t").unwrap()
-            )),
+            ))
+            .expect("string literal"),
             "\"\\u0000\\b\\f\\n\\r\\t\""
         );
         let date: CanonicalDate = "2024-02-29".parse().expect("date");
-        assert_eq!(render_literal(&CanonicalValue::Date(date)), "2024-02-29");
+        assert_eq!(
+            render_literal(&CanonicalValue::Date(date)).expect("date literal"),
+            "2024-02-29"
+        );
+
+        let named = type_bridge_contract::temporal::CanonicalDateTimeTz::new_named_resolved(
+            "2024-07-01T12:00:00".parse().expect("local datetime"),
+            "Europe/Amsterdam",
+            7_200,
+        )
+        .expect("ordinary named datetime-tz");
+        assert_eq!(
+            render_literal(&CanonicalValue::DateTimeTz(named)).expect("named literal"),
+            "2024-07-01T12:00:00 Europe/Amsterdam",
+            "named values use TypeQL's native IANA spelling without truncating the offset",
+        );
+
+        let fixed = type_bridge_contract::temporal::CanonicalDateTimeTz::new_fixed(
+            "1900-01-01T12:00:00".parse().expect("local datetime"),
+            type_bridge_contract::temporal::TimeZoneDesignator::OffsetSeconds(1_172),
+        )
+        .expect("second-resolution fixed datetime-tz");
+        assert_eq!(
+            render_literal(&CanonicalValue::DateTimeTz(fixed))
+                .expect_err("TypeQL cannot spell fixed offset seconds")
+                .code()
+                .as_str(),
+            "provider_datetime_tz_literal_offset_precision"
+        );
+
+        let negative = CanonicalDuration::new(true, 0, 1, 0, 0).expect("canonical duration");
+        assert_eq!(
+            render_literal(&CanonicalValue::Duration(negative))
+                .expect_err("provider does not admit negative duration")
+                .code()
+                .as_str(),
+            "provider_duration_out_of_range"
+        );
+    }
+
+    #[test]
+    fn provider_datetime_tz_evidence_decodes_named_and_fixed_offsets_without_guessing() {
+        let earlier_overlap = parse_provider_value(
+            &Value::String("2024-10-27T01:30:00+01:00[Europe/London]".into()),
+            ValueTypeTag::DateTimeTz,
+        )
+        .expect("named overlap evidence");
+        let CanonicalValue::DateTimeTz(earlier_overlap) = earlier_overlap else {
+            panic!("datetime-tz evidence")
+        };
+        assert_eq!(earlier_overlap.effective_offset_seconds(), 3_600);
+        assert_eq!(
+            earlier_overlap.zone(),
+            &type_bridge_contract::temporal::TimeZoneDesignator::Named("Europe/London".into())
+        );
+
+        let fixed = parse_provider_value(
+            &Value::String("1900-01-01T12:00:00+00:19:32".into()),
+            ValueTypeTag::DateTimeTz,
+        )
+        .expect("fixed second-offset evidence");
+        let CanonicalValue::DateTimeTz(fixed) = fixed else {
+            panic!("datetime-tz evidence")
+        };
+        assert_eq!(fixed.effective_offset_seconds(), 1_172);
+
+        let legacy = parse_provider_value(
+            &Value::String("2024-07-01T12:00:00.000000000 Europe/Amsterdam".into()),
+            ValueTypeTag::DateTimeTz,
+        )
+        .expect("exact upstream display remains accepted");
+        let CanonicalValue::DateTimeTz(legacy) = legacy else {
+            panic!("datetime-tz evidence")
+        };
+        assert_eq!(legacy.effective_offset_seconds(), 7_200);
+    }
+
+    #[test]
+    fn exact_v2_datetime_and_duration_evidence_covers_provider_boundaries() {
+        for value in [
+            "2024-01-02T03:04:05",
+            "2024-01-02T03:04:05.5",
+            "+262142-12-31T23:59:59.999999999",
+            "-262143-01-01T00:00:00",
+        ] {
+            let parsed =
+                parse_provider_value(&Value::String(value.to_owned()), ValueTypeTag::DateTime)
+                    .unwrap_or_else(|error| panic!("{value}: {error}"));
+            let CanonicalValue::DateTime(parsed) = parsed else {
+                panic!("datetime evidence")
+            };
+            assert_eq!(parsed.to_string(), value);
+        }
+
+        for value in [
+            "PT0S",
+            "P12M",
+            "P4294967295M4294967295DT18446744073.709551615S",
+        ] {
+            let parsed =
+                parse_provider_value(&Value::String(value.to_owned()), ValueTypeTag::Duration)
+                    .unwrap_or_else(|error| panic!("{value}: {error}"));
+            let CanonicalValue::Duration(parsed) = parsed else {
+                panic!("duration evidence")
+            };
+            assert_eq!(parsed.to_string(), value);
+        }
+
+        for legacy in ["2024-01-02T03:04:05.000000000", "P1Y"] {
+            let value_type = if legacy.starts_with('P') {
+                ValueTypeTag::Duration
+            } else {
+                ValueTypeTag::DateTime
+            };
+            assert!(
+                parse_provider_value(&Value::String(legacy.to_owned()), value_type).is_err(),
+                "V2 evidence must not depend on released driver-display normalization: {legacy}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1246,6 +1522,9 @@ limit 1;\n"
             .await
             .expect("empty result passes");
         assert_eq!(empty.calls, 1);
+        assert_eq!(empty.v1_calls, 0);
+        assert_eq!(empty.v2_calls, 1);
+        assert_eq!(empty.v2_collection_limit, Some(0));
 
         let mut first = FakeProvider::returning(QueryResult::Rows(vec![valid_row()]));
         let error = execute_with_provider(&mut first, &validated, context)
@@ -1273,6 +1552,162 @@ limit 1;\n"
         };
         assert_eq!(failure, replayed);
         assert_eq!(first.statements, replay.statements);
+    }
+
+    #[tokio::test]
+    async fn assertion_continues_to_eof_and_rejects_forged_early_stop_stats() {
+        struct EarlyStopProvider {
+            control: Option<AnswerControl>,
+        }
+
+        impl AssertionProviderCall for EarlyStopProvider {
+            fn query_bounded<'a>(
+                &'a mut self,
+                typeql: &'a str,
+                _limits: BoundedAnswerLimits,
+                consumer: &'a mut dyn AnswerConsumer,
+            ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+                assert!(typeql.ends_with("limit 1;\n"));
+                Box::pin(async move {
+                    self.control = Some(consumer.accept(AnswerItem::Row(valid_row()))?);
+                    Ok(BoundedAnswerStats {
+                        processed_items: 1,
+                        response_bytes: 0,
+                        stopped_early: true,
+                    })
+                })
+            }
+        }
+
+        let fixture = schema_fixture();
+        let validated = validated(&fixture);
+        let available = capabilities(&validated);
+        let context = MigrationAssertionExecutionContext::new(
+            &fixture.managed,
+            &available,
+            StructuralLimits::CANONICAL,
+        );
+        let mut provider = EarlyStopProvider { control: None };
+        let error = execute_with_provider(&mut provider, &validated, context)
+            .await
+            .expect_err("early-stop stats cannot prove assertion-stream exhaustion");
+        assert_eq!(provider.control, Some(AnswerControl::Continue));
+        let MigrationAssertionExecutionError::ResultValidation(diagnostic) = error else {
+            panic!("false exhaustion proof is a result-validation failure")
+        };
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "migration_assertion_provider_stream_not_exhausted"
+        );
+    }
+
+    #[tokio::test]
+    async fn assertion_byte_failure_is_sticky_until_the_limit_one_stream_reaches_eof() {
+        struct ByteProbeProvider {
+            max_bytes: Option<u64>,
+            control: Option<AnswerControl>,
+        }
+
+        impl AssertionProviderCall for ByteProbeProvider {
+            fn query_bounded<'a>(
+                &'a mut self,
+                typeql: &'a str,
+                limits: BoundedAnswerLimits,
+                consumer: &'a mut dyn AnswerConsumer,
+            ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+                assert!(typeql.ends_with("limit 1;\n"));
+                assert_eq!(limits.max_items, 1);
+                self.max_bytes = Some(limits.max_bytes);
+                Box::pin(async move {
+                    let item = AnswerItem::Row(valid_row());
+                    let response_bytes = item.encoded_bytes()?;
+                    self.control = Some(consumer.accept(item)?);
+                    Ok(BoundedAnswerStats {
+                        processed_items: 1,
+                        response_bytes,
+                        stopped_early: false,
+                    })
+                })
+            }
+        }
+
+        let fixture = schema_fixture();
+        let canonical = validated(&fixture);
+        let limits = StructuralLimits {
+            diagnostic_bytes: 1,
+            ..StructuralLimits::CANONICAL
+        };
+        let validated = validate_migration_assertion_plan(
+            canonical.plan(),
+            &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
+            limits,
+        )
+        .expect("tight diagnostic-byte policy remains structurally valid");
+        let available = capabilities(&validated);
+        let context = MigrationAssertionExecutionContext::new(&fixture.managed, &available, limits);
+        let mut provider = ByteProbeProvider {
+            max_bytes: None,
+            control: None,
+        };
+        let error = execute_with_provider(&mut provider, &validated, context)
+            .await
+            .expect_err("the bounded diagnostic row must exceed one byte");
+
+        assert_eq!(provider.max_bytes, Some(u64::MAX));
+        assert_eq!(provider.control, Some(AnswerControl::Continue));
+        let MigrationAssertionExecutionError::Provider(OrmError::Match(error)) = error else {
+            panic!("sticky byte exhaustion must retain the released provider error surface")
+        };
+        assert_eq!(error.code().as_str(), "response_byte_limit");
+        assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
+    }
+
+    #[tokio::test]
+    async fn malformed_evidence_precedes_a_later_provider_drain_failure() {
+        struct EvidenceThenFailureProvider {
+            control: Option<AnswerControl>,
+        }
+
+        impl AssertionProviderCall for EvidenceThenFailureProvider {
+            fn query_bounded<'a>(
+                &'a mut self,
+                typeql: &'a str,
+                _limits: BoundedAnswerLimits,
+                consumer: &'a mut dyn AnswerConsumer,
+            ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+                assert!(typeql.ends_with("limit 1;\n"));
+                Box::pin(async move {
+                    let mut row = valid_row();
+                    row.as_object_mut()
+                        .expect("valid fixture row is an object")
+                        .insert("unexpected".into(), Value::Null);
+                    self.control = Some(consumer.accept(AnswerItem::Row(row))?);
+                    Err(OrmError::Transaction("later drain failure".into()))
+                })
+            }
+        }
+
+        let fixture = schema_fixture();
+        let validated = validated(&fixture);
+        let available = capabilities(&validated);
+        let context = MigrationAssertionExecutionContext::new(
+            &fixture.managed,
+            &available,
+            StructuralLimits::CANONICAL,
+        );
+        let mut provider = EvidenceThenFailureProvider { control: None };
+        let error = execute_with_provider(&mut provider, &validated, context)
+            .await
+            .expect_err("the first evidence failure must survive a later terminal-poll error");
+
+        assert_eq!(provider.control, Some(AnswerControl::Continue));
+        let MigrationAssertionExecutionError::ResultValidation(diagnostic) = error else {
+            panic!("the malformed-row diagnostic must precede the later provider failure")
+        };
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "migration_assertion_result_column_mismatch"
+        );
     }
 
     #[tokio::test]

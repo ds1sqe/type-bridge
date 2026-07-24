@@ -219,28 +219,28 @@ fn struct_field_order_and_optionality_are_semantic() {
 structs:
   sample:
     fields:
-      - name: first
+      - name: alpha
         type: string
-      - name: second
+      - name: beta
         type: integer
 "#;
     let reordered = r#"format: typebridge.schema/v2
 structs:
   sample:
     fields:
-      - name: second
+      - name: beta
         type: integer
-      - name: first
+      - name: alpha
         type: string
 "#;
     let optional = r#"format: typebridge.schema/v2
 structs:
   sample:
     fields:
-      - name: first
+      - name: alpha
         type: string
         optional: true
-      - name: second
+      - name: beta
         type: integer
 "#;
 

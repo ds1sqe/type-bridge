@@ -2,6 +2,7 @@
 
 mod apply_plan;
 mod coordinator;
+mod directory;
 mod execution;
 mod generate;
 mod history;
@@ -19,9 +20,13 @@ pub use apply_plan::{
     build_verified_migration_apply_plan, partition_transaction_groups,
 };
 pub use coordinator::{
-    GroupCommitFailure, GroupCommitFuture, MigrationExecutionOutcome, MigrationExecutionProvider,
-    MigrationRollbackOutcome, PreparedMigrationGroup, execute_verified_migration_apply_plan,
-    execute_verified_migration_rollback_plan,
+    GroupCommitFailure, GroupCommitFuture, MigrationExecutionOutcome, MigrationExecutionPosition,
+    MigrationExecutionProvider, MigrationRollbackOutcome, PreparedMigrationGroup,
+    execute_verified_migration_apply_plan, execute_verified_migration_rollback_plan,
+};
+pub use directory::{
+    MigrationAuthoringLock, MigrationDirectory, MigrationDirectoryEntry,
+    validate_portable_direct_child,
 };
 pub use execution::{
     AppliedRecord, ExecutionFence, ExecutionFuture, ExecutionScope, GroupCommitCertainty,
@@ -33,14 +38,20 @@ pub use execution::{
 pub use generate::{
     GeneratedMigration, MigrationGenerationOutcome, MigrationGenerationRequest,
     MigrationPreviewError, generate_next_migration, render_migration_preview,
-    write_generated_migration,
+    try_acquire_migration_authoring_lock, write_generated_migration_under_lock,
 };
 pub use history::{
-    MigrationHistoryGraph, discover_verified_migration_chain, discover_verified_migrations,
+    CanonicalMigrationHistoryEvidence, MigrationHistoryGraph,
+    canonical_history_declared_legacy_bridge_count_in, canonical_history_declares_legacy_bridge_in,
+    discover_verified_migration_chain, discover_verified_migration_chain_in,
+    discover_verified_migration_chain_with_evidence_in, discover_verified_migrations,
+    discover_verified_migrations_in, require_adoption_authority_pair,
+    require_adoption_authority_pair_state,
 };
 pub use legacy::{
-    LEGACY_CHECKSUM_ALGORITHM, LegacyMigrationChecksum, LegacyMigrationReference,
-    build_legacy_frontier_bridge,
+    LEGACY_APPLIED_SET_ALGORITHM, LEGACY_APPLIED_SET_CANONICALIZATION, LEGACY_CHECKSUM_ALGORITHM,
+    LegacyAppliedSetDigest, LegacyMigrationAppLabel, LegacyMigrationChecksum, LegacyMigrationId,
+    LegacyMigrationName, LegacyMigrationReference, build_legacy_frontier_bridge,
 };
 pub use lowering::{
     SchemaFactCatalog, SchemaLoweringBinding, SchemaLoweringDiagnostic, SchemaLoweringPlan,

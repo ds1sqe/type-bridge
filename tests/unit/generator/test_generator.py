@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
 import pytest
 
+import type_bridge.generator as generator_module
 from type_bridge.generator import generate_models, parse_tql_schema
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 BOOKSTORE_SCHEMA = FIXTURES_DIR / "bookstore.tql"
+_DEFENSIVE_SCHEMA_BYTES = 16 * 1024 * 1024
+
+
+def _released_schema_with_trailing_comment(total_bytes: int) -> str:
+    prefix = "define\nentity person;\n#"
+    source = prefix + ("x" * (total_bytes - len(prefix)))
+    assert len(source.encode()) == total_bytes
+    return source
 
 
 class TestGenerateModels:
@@ -40,6 +50,46 @@ class TestGenerateModels:
             for py_file in output.glob("*.py"):
                 content = py_file.read_text()
                 compile(content, py_file.name, "exec")
+
+    def test_trusted_released_input_above_defensive_ceiling_reaches_native_renderer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wrapper passes large trusted input through; Rust owns the expensive parse proof."""
+        schema_text = _released_schema_with_trailing_comment(_DEFENSIVE_SCHEMA_BYTES + 1)
+        output = tmp_path / "large_released_models"
+        captured_sources: list[str] = []
+        captured_targets: list[str] = []
+        captured_options: list[dict[str, object]] = []
+
+        def render_models_json(source: str, target: str, options_json: str) -> str:
+            captured_sources.append(source)
+            captured_targets.append(target)
+            captured_options.append(json.loads(options_json))
+            return json.dumps(
+                {
+                    "files": [
+                        {
+                            "path": "boundary_marker.py",
+                            "contents": "LARGE_TRUSTED_INPUT_REACHED_NATIVE = True\n",
+                        }
+                    ]
+                }
+            )
+
+        monkeypatch.setattr(
+            generator_module,
+            "extract_annotations",
+            lambda _source: ({}, {}, {}, {}),
+        )
+        monkeypatch.setattr(generator_module, "_rust_render_models_json", render_models_json)
+        generate_models(schema_text, output, copy_schema=False)
+
+        assert captured_sources == [schema_text]
+        assert captured_targets == ["python"]
+        assert captured_options[0]["schema_text"] == schema_text
+        assert (output / "boundary_marker.py").read_text(encoding="utf-8") == (
+            "LARGE_TRUSTED_INPUT_REACHED_NATIVE = True\n"
+        )
 
     def test_case_annotation_inference_and_overrides(self) -> None:
         """Test that TypeNameCase inference and @case overrides work correctly."""

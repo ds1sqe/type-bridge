@@ -76,9 +76,13 @@ pub mod hooks;
 pub mod manager;
 pub mod match_request;
 pub mod migration_assertion;
+pub mod provider_runtime;
 pub mod query;
 pub mod query_v2;
-pub mod query_v2_adapter;
+#[cfg(any(test, feature = "integration-tests"))]
+mod query_v2_adapter;
+#[cfg(test)]
+mod query_v2_adapter_tests;
 pub mod query_v2_prepared;
 pub mod query_v2_remote;
 pub mod registry;
@@ -87,6 +91,36 @@ pub mod runtime_projection;
 pub mod schema;
 pub mod session;
 pub mod value;
+
+/// Test-only bridge for exercising the crate-internal V1-to-V2 adapter from
+/// the live integration-test crate.
+///
+/// This module exists only when the explicitly test-only `integration-tests`
+/// feature is enabled. The adapter itself remains private and is absent from
+/// normal/release builds.
+#[cfg(feature = "integration-tests")]
+#[doc(hidden)]
+pub mod integration_test_support {
+    use type_bridge_contract::diagnostic::Diagnostic;
+    use type_bridge_contract::limits::StructuralLimits;
+    use type_bridge_contract::query_plan::QueryOperation;
+    use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery};
+
+    use crate::match_request::ValidatedMatchRequest;
+    use crate::query_v2_adapter::adapt_match_request;
+    use crate::registry::DescriptorRegistry;
+
+    /// Adapt a validated V1 request for the live parity gate.
+    pub fn adapt_match_request_for_live_test(
+        validated: &ValidatedMatchRequest,
+        registry: &DescriptorRegistry,
+        context: &MigrationAssertionValidationContext<'_>,
+        limits: StructuralLimits,
+    ) -> Result<(ValidatedQuery, QueryOperation), Diagnostic> {
+        let adapted = adapt_match_request(validated, registry, context, limits)?;
+        Ok((adapted.validated().clone(), adapted.operation()))
+    }
+}
 
 // Re-exports for convenient access
 pub use attribute::{TypeBridgeAttribute, ValueType};
@@ -99,7 +133,7 @@ pub use dynamic::{
     DynamicRelationRow, DynamicRolePlayer, DynamicRolePlayerInput, DynamicSort,
 };
 pub use entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};
-pub use error::{CommitFailureCertainty, OrmError, Result};
+pub use error::{ClassifiedCommitError, CommitFailureCertainty, OrmError, Result};
 pub use expr::{Agg, AggResult, Expr, GroupByResult, SortDir};
 pub use field_ref::{FieldRef, RolePlayerFieldRef, RoleRef};
 pub use filter::Filter;
@@ -108,19 +142,31 @@ pub use hooks::{
 };
 pub use manager::{DynamicEntityManager, DynamicRelationManager, EntityManager, RelationManager};
 pub use match_request::*;
+pub use provider_runtime::ProviderRuntimeOwner;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
 pub use registry::DescriptorRegistry;
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use runtime_projection::InstalledRuntimeProjection;
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
-#[cfg(feature = "typedb")]
-pub use session::ConnectOptions;
 pub use session::backend::AnswerCancellation;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
-pub use session::{Database, GivenRowsSpec, GivenValue, Transaction, TransactionContext, TxType};
 #[cfg(feature = "typedb")]
-pub use session::{database_exists, ensure_database_exists};
+pub use session::{
+    ConnectOptions, PreparedSecureConnectOptions, SecureConnectError, SecureConnectOptions,
+    SecureResult, TlsMode,
+};
+pub use session::{
+    Database, DatabaseConnectionAuthority, GivenRowsSpec, GivenValue, Transaction,
+    TransactionContext, TxType, require_legacy_writer_open,
+    require_legacy_writer_open_in_transaction,
+};
+#[cfg(feature = "typedb")]
+pub use session::{
+    database_exists, database_exists_prepared_secure, database_exists_secure,
+    delete_database_prepared_secure, delete_database_secure, ensure_database_exists,
+    ensure_database_exists_prepared_secure, ensure_database_exists_secure,
+};
 pub use value::AttributeValue;
 
 // Re-export derive macros when the `derive` feature is enabled.

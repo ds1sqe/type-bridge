@@ -7,16 +7,19 @@ use type_bridge_contract::id::{
 use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, CompleteReadProjection, CreateFieldProjection,
     CreateProjection, CreateRoleProjection, DeclarationProjection, DeclaredRoleProjection,
-    EmissionPlan, FieldTokenProjection, FunctionParameterProjection, FunctionProjection,
-    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection, PlayingProjection,
-    ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
-    ProjectionConfig, QueryTokenProjection, ReadFieldProjection, ReadRoleProjection,
-    ReferenceReadProjection, RoleTokenProjection, RuntimeProjection, StructFieldProjection,
-    StructProjection, TargetIdentifier,
+    DirectSubProjection, EmissionPlan, FieldTokenProjection, FunctionParameterProjection,
+    FunctionProjection, FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
+    PlayingProjection, ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity,
+    ProjectedTypeRef, ProjectionConfig, QueryTokenProjection, ReadFieldProjection,
+    ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection, RuntimeProjection,
+    StructFieldProjection, StructProjection, TargetIdentifier,
 };
-use type_bridge_contract::schema::{AnnotationFactId, OwnsFactId, PlaysFactId};
+use type_bridge_contract::schema::{
+    AnnotationFactId, DocumentId, OwnsFactId, PlaysFactId, SchemaFactId, SubFactId,
+};
 use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
+use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 use type_bridge_schema_codegen::PythonEmitter;
 
 fn multiplicity(min: u64, max: Option<u64>) -> ProjectedMultiplicity {
@@ -26,6 +29,34 @@ fn multiplicity(min: u64, max: Option<u64>) -> ProjectedMultiplicity {
 fn annotations() -> BTreeMap<AnnotationFactId, type_bridge_contract::projection::ProjectedAnnotation>
 {
     BTreeMap::new()
+}
+
+fn direct_sub(subtype: &TypeId, supertype: &TypeId) -> DirectSubProjection {
+    let id = SubFactId::new(subtype.clone(), supertype.clone()).unwrap();
+    DirectSubProjection::new(id.clone(), SchemaFactId::Sub(id), annotations()).unwrap()
+}
+
+fn projected(
+    source: &str,
+    resources: &[CodeResourceDigest],
+) -> type_bridge_contract::projection::RuntimeProjection {
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("python-emitter.yaml").unwrap(), source)])
+            .unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    project(
+        &resolved,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &PythonEmitter::new().generator_handlers(),
+        resources,
+    )
+    .unwrap()
 }
 
 fn compound_projection(resources: &[CodeResourceDigest]) -> RuntimeProjection {
@@ -232,6 +263,8 @@ fn compound_projection(resources: &[CodeResourceDigest]) -> RuntimeProjection {
             )]),
             BTreeSet::new(),
         )
+        .unwrap()
+        .with_direct_sub(Some(direct_sub(&employment, &membership)))
         .unwrap(),
         CreateProjection::new(
             true,
@@ -441,6 +474,36 @@ fn emits_exact_deterministic_eight_file_compound_package() {
 }
 
 #[test]
+fn emits_safely_escaped_type_and_direct_sub_documentation() {
+    let emitter = PythonEmitter::new();
+    let resources = emitter.code_resources().unwrap();
+    let projection = projected(
+        r#"format: typebridge.schema/v2
+entities:
+  actor: {}
+  person:
+    doc: |-
+      Type "doc".
+      closing */ kept
+    sub:
+      type: actor
+      doc: |-
+        Edge 'doc' \ path
+        closes */ safely
+"#,
+        &resources,
+    );
+    let package = emitter.emit(&projection).unwrap();
+    let source = std::str::from_utf8(package.get("_models.py").unwrap()).unwrap();
+    let stub = std::str::from_utf8(package.get("_models.pyi").unwrap()).unwrap();
+    let documentation = "\"Type \\\"doc\\\".\\nclosing */ kept\\n\\nDirect subtype of `actor`:\\nEdge 'doc' \\\\ path\\ncloses */ safely\"";
+
+    assert!(source.contains(&format!("class Person(Actor):\n    {documentation}")));
+    assert!(source.contains(&format!("class PersonRef(ActorRef):\n    {documentation}")));
+    assert!(stub.contains(&format!("class Person(Actor):\n    {documentation}")));
+}
+
+#[test]
 fn rejects_mutated_resource_evidence() {
     let emitter = PythonEmitter::new();
     let mut resources = emitter.code_resources().unwrap();
@@ -490,8 +553,9 @@ fn rejects_public_name_collisions_and_missing_parents() {
         "python_emitter_name_collision"
     );
 
+    let ghost = TypeId::new(TypeKind::Relation, "ghost").unwrap();
     let declaration = DeclarationProjection::new(
-        Some(TypeId::new(TypeKind::Relation, "ghost").unwrap()),
+        Some(ghost.clone()),
         employment.declaration().value_type(),
         employment.declaration().is_abstract(),
         employment.declaration().is_constructible(),
@@ -500,6 +564,8 @@ fn rejects_public_name_collisions_and_missing_parents() {
         employment.declaration().direct_roles().clone(),
         employment.declaration().direct_plays().clone(),
     )
+    .unwrap()
+    .with_direct_sub(Some(direct_sub(employment.id(), &ghost)))
     .unwrap();
     let missing_parent = ModelProjection::new(
         employment.id().clone(),

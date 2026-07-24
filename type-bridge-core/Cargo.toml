@@ -21,12 +21,17 @@ members = [
     "crates/toml-transpiler",
     "vendor/typedb-protocol-b7",
     "vendor/typedb-driver-b7",
+    "vendor/typedb-protocol-b8",
+    "vendor/typedb-driver-b8",
+]
+exclude = [
     "vendor/typedb-protocol-b9",
     "vendor/typedb-driver-b9",
 ]
 
 [workspace.package]
 license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/ds1sqe/type-bridge"
 authors = ["ds1sqe"]
 

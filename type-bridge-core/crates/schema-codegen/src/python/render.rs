@@ -11,7 +11,7 @@ use type_bridge_contract::projection::{
 };
 use type_bridge_contract::value::ValueTypeTag;
 
-use crate::{GeneratedPackage, invalid};
+use crate::{GeneratedPackage, documentation_annotation, invalid, model_documentation};
 
 const PUBLIC_RUNTIME_NAMES: &[&str] = &["FieldToken", "FunctionRef", "RoleToken"];
 const PUBLIC_SCHEMA_NAMES: &[&str] = &[
@@ -167,6 +167,9 @@ fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     );
     output.push_str("\nPLAYING_FACTS = _MappingProxyType({\n");
     for (id, playing) in projection.playing_facts() {
+        if let Some(documentation) = documentation_annotation(playing.annotations()) {
+            render_python_doc_comment(&mut output, "    ", documentation);
+        }
         let id = canonical_text!(id);
         let playing = canonical_text!(playing);
         let _ = writeln!(
@@ -344,6 +347,7 @@ fn render_model(
     stub: bool,
 ) -> Result<(), Diagnostic> {
     let name = model.target_name().as_str();
+    let documentation = model_documentation(model);
     let base = match model.declaration().parent() {
         Some(parent) => projection.models()[parent].target_name().as_str(),
         None => match model.id().kind() {
@@ -356,6 +360,9 @@ fn render_model(
         },
     };
     let _ = writeln!(output, "class {name}({base}):");
+    if let Some(documentation) = &documentation {
+        let _ = writeln!(output, "    {}", python_string(documentation)?);
+    }
     if !stub {
         let id = canonical_text!(model.id());
         let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
@@ -381,6 +388,9 @@ fn render_model(
             .and_then(|parent| projection.models()[parent].reference_read().target_name())
             .map_or("_Reference", |name| name.as_str());
         let _ = writeln!(output, "class {reference}({base}):");
+        if let Some(documentation) = &documentation {
+            let _ = writeln!(output, "    {}", python_string(documentation)?);
+        }
         if !stub {
             let id = canonical_text!(model.id());
             let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
@@ -465,6 +475,9 @@ fn render_descriptors(
             })
             .transpose()?
             .unwrap_or_else(|| "Never".to_owned());
+        if let Some(documentation) = documentation_annotation(token.annotations()) {
+            render_python_doc_comment(output, "    ", documentation);
+        }
         let _ = writeln!(
             output,
             "    {}: _FieldDescriptor[{owner}, {read}, {assign}]",
@@ -503,6 +516,9 @@ fn render_descriptors(
         } else {
             &logical
         };
+        if let Some(documentation) = documentation_annotation(token.annotations()) {
+            render_python_doc_comment(output, "    ", documentation);
+        }
         let _ = writeln!(
             output,
             "    {}: _RoleDescriptor[{owner}, {logical}, {read}, {assign}]",
@@ -694,6 +710,9 @@ fn render_function(
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     let returns = function_return(projection, function.returns())?;
+    if let Some(documentation) = documentation_annotation(function.annotations()) {
+        render_python_doc_comment(output, "", documentation);
+    }
     if stub {
         let _ = writeln!(
             output,
@@ -844,6 +863,26 @@ fn scalar_type(tag: ValueTypeTag) -> &'static str {
 
 fn python_string(value: &str) -> Result<String, Diagnostic> {
     Ok(String::from_utf8(to_canonical_json(&value)?).expect("canonical JSON output is UTF-8"))
+}
+
+fn render_python_doc_comment(output: &mut String, indentation: &str, documentation: &str) {
+    for line in documentation.split('\n') {
+        let _ = writeln!(output, "{indentation}#: {}", safe_python_doc_line(line));
+    }
+}
+
+fn safe_python_doc_line(line: &str) -> String {
+    let mut escaped = String::new();
+    for character in line.chars() {
+        match character {
+            '\r' => escaped.push_str("\\r"),
+            character if character.is_control() && character != '\t' => {
+                let _ = write!(escaped, "\\u{{{:x}}}", u32::from(character));
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic> {

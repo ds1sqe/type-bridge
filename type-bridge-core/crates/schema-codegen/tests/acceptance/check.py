@@ -7,14 +7,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 HERE = Path(__file__).resolve().parent
 CORE = HERE.parents[3]
 ROOT = HERE.parents[4]
 STAGE = CORE / "target" / "schema-codegen-python-acceptance"
-MARKER = re.compile(
-    r"# E: (?P<marker>[a-z][a-z0-9_]*):(?P<rule>report[A-Za-z]+)$"
-)
+MARKER = re.compile(r"# E: (?P<marker>[a-z][a-z0-9_]*):(?P<rule>report[A-Za-z]+)$")
 
 
 def command(
@@ -126,9 +123,13 @@ def main() -> None:
         ]
     )
 
-    variant_source = (HERE / "schema.yaml").read_text().replace(
-        "member: { card: { min: 0, max: 2 }, doc: membership player }",
-        "member: { card: { min: 0, max: 3 }, doc: membership player }",
+    variant_source = (
+        (HERE / "schema.yaml")
+        .read_text()
+        .replace(
+            "member: { card: { min: 0, max: 2 }, doc: membership player }",
+            "member: { card: { min: 0, max: 3 }, doc: membership player }",
+        )
     )
     if variant_source == (HERE / "schema.yaml").read_text():
         raise AssertionError("fingerprint variant did not modify the playing fact")

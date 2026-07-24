@@ -33,7 +33,10 @@ use type_bridge_schema::{
     managed_schema_state, plan_schema_operations, resolve,
 };
 
-use crate::legacy::{LEGACY_CHECKSUM_ALGORITHM, LegacyMigrationChecksum, LegacyMigrationReference};
+use crate::legacy::{
+    LEGACY_APPLIED_SET_ALGORITHM, LEGACY_APPLIED_SET_CANONICALIZATION, LEGACY_CHECKSUM_ALGORITHM,
+    LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationId, LegacyMigrationReference,
+};
 use crate::profile::schema_lowering_profile_binding;
 
 const MANIFEST_SCHEMA_CANONICALIZATION: &str = "typebridge.schema-c14n/v2";
@@ -50,6 +53,7 @@ pub struct SchemaMigrationDraft {
     parents: Vec<MigrationId>,
     steps: Vec<MigrationStep>,
     legacy_parents: Vec<LegacyMigrationReference>,
+    legacy_applied_set: Option<LegacyAppliedSetDigest>,
 }
 
 impl SchemaMigrationDraft {
@@ -101,6 +105,7 @@ impl SchemaMigrationDraft {
             parents,
             steps,
             legacy_parents: Vec::new(),
+            legacy_applied_set: None,
         })
     }
 
@@ -112,12 +117,20 @@ impl SchemaMigrationDraft {
     pub fn legacy_bridge(
         id: MigrationId,
         mut legacy_parents: Vec<LegacyMigrationReference>,
+        legacy_applied_set: LegacyAppliedSetDigest,
     ) -> Result<Self, Diagnostic> {
         if legacy_parents.is_empty() {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_manifest_empty_legacy_frontier",
                 "a legacy-frontier bridge must name at least one legacy parent",
+            ));
+        }
+        if legacy_parents.len() > MAX_CANONICAL_COLLECTION_LEN {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_legacy_frontier_too_large",
+                "legacy-frontier bridge exceeds the canonical collection ceiling",
             ));
         }
         legacy_parents.sort();
@@ -136,6 +149,7 @@ impl SchemaMigrationDraft {
             parents: Vec::new(),
             steps: Vec::new(),
             legacy_parents,
+            legacy_applied_set: Some(legacy_applied_set),
         })
     }
 
@@ -158,6 +172,11 @@ impl SchemaMigrationDraft {
     pub fn legacy_parents(&self) -> &[LegacyMigrationReference] {
         &self.legacy_parents
     }
+
+    /// Return the complete released applied-set digest (bridge only).
+    pub const fn legacy_applied_set(&self) -> Option<&LegacyAppliedSetDigest> {
+        self.legacy_applied_set.as_ref()
+    }
 }
 
 /// A manifest whose complete schema program has been replayed and recomputed.
@@ -169,6 +188,7 @@ pub struct VerifiedSchemaMigrationManifest {
     format: MigrationFormat,
     id: MigrationId,
     legacy_parents: Vec<LegacyMigrationReference>,
+    legacy_applied_set: Option<LegacyAppliedSetDigest>,
     lowering_profile: SchemaLoweringProfileBinding,
     managed_scope: ManagedScopeBinding,
     parents: Vec<MigrationId>,
@@ -200,6 +220,11 @@ impl VerifiedSchemaMigrationManifest {
     /// Return canonical-sorted legacy frontier references (bridge only).
     pub fn legacy_parents(&self) -> &[LegacyMigrationReference] {
         &self.legacy_parents
+    }
+
+    /// Return the complete released applied-set digest (bridge only).
+    pub const fn legacy_applied_set(&self) -> Option<&LegacyAppliedSetDigest> {
+        self.legacy_applied_set.as_ref()
     }
 
     /// Return whether this manifest is the zero-operation legacy bridge.
@@ -287,8 +312,16 @@ pub fn build_verified_manifest(
         parents,
         steps,
         legacy_parents,
+        legacy_applied_set,
     } = draft;
     if legacy_parents.is_empty() {
+        if legacy_applied_set.is_some() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_legacy_applied_set_without_bridge",
+                "an ordinary migration cannot carry a legacy applied-set digest",
+            ));
+        }
         if steps.is_empty() {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
@@ -296,12 +329,21 @@ pub fn build_verified_manifest(
                 "a migration without schema steps is valid only as a legacy-frontier bridge",
             ));
         }
-    } else if !steps.is_empty() || !parents.is_empty() {
-        return Err(failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_manifest_bridge_not_zero_operation",
-            "a legacy-frontier bridge carries no steps and no canonical parents",
-        ));
+    } else {
+        if legacy_applied_set.is_none() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_legacy_applied_set_missing",
+                "a legacy-frontier bridge requires its complete applied-set digest",
+            ));
+        }
+        if !steps.is_empty() || !parents.is_empty() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_bridge_not_zero_operation",
+                "a legacy-frontier bridge carries no steps and no canonical parents",
+            ));
+        }
     }
     let mut current_schema = source_schema.clone();
     let mut required_capabilities = source_schema.required_capabilities().clone();
@@ -429,6 +471,7 @@ pub fn build_verified_manifest(
         format: MigrationFormat::V1,
         id,
         legacy_parents,
+        legacy_applied_set,
         lowering_profile,
         managed_scope,
         parents,
@@ -481,6 +524,18 @@ pub(crate) fn peek_manifest_identity(
         .map(MigrationIdCandidate::rebuild)
         .collect::<Result<Vec<_>, _>>()?;
     Ok((id, parents))
+}
+
+/// Inspect only whether an untrusted canonical candidate declares the legacy
+/// bridge shape needed to select its genesis authority.
+///
+/// This is deliberately not verification authority. Callers use it only to
+/// reject a bridge whose companion adopted-genesis artifact is absent before
+/// replay decoding would otherwise use the wrong (empty) genesis.
+pub(crate) fn peek_manifest_declares_legacy_bridge(bytes: &[u8]) -> Result<bool, Diagnostic> {
+    let candidate = from_canonical_json::<ManifestCandidate>(bytes)?;
+    candidate.validate_header()?;
+    Ok(!candidate.legacy_parents.is_empty())
 }
 
 /// Encode a verified manifest under the bounded canonical JSON contract.
@@ -722,6 +777,8 @@ struct ManifestWire<'a> {
     fingerprints: ManifestFingerprintsWire<'a>,
     format: &'a MigrationFormat,
     id: &'a MigrationId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    legacy_applied_set: Option<LegacyAppliedSetWire<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     legacy_parents: Vec<LegacyParentWire<'a>>,
     managed_scope: &'a ManagedScopeBinding,
@@ -757,6 +814,13 @@ impl<'a> ManifestWire<'a> {
             },
             format: &manifest.format,
             id: &manifest.id,
+            legacy_applied_set: manifest.legacy_applied_set.as_ref().map(|digest| {
+                LegacyAppliedSetWire {
+                    algorithm: digest.algorithm(),
+                    canonicalization: digest.canonicalization(),
+                    digest: digest.as_str(),
+                }
+            }),
             legacy_parents: manifest
                 .legacy_parents
                 .iter()
@@ -824,6 +888,13 @@ struct LegacyChecksumWire<'a> {
     value: &'a str,
 }
 
+#[derive(Serialize)]
+struct LegacyAppliedSetWire<'a> {
+    algorithm: &'static str,
+    canonicalization: &'static str,
+    digest: &'a str,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestCandidate {
@@ -831,6 +902,8 @@ struct ManifestCandidate {
     fingerprints: ManifestFingerprintsCandidate,
     format: String,
     id: MigrationIdCandidate,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_applied_set: Option<LegacyAppliedSetCandidate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     legacy_parents: Vec<LegacyParentCandidate>,
     managed_scope: ManagedScopeCandidate,
@@ -880,7 +953,24 @@ impl ManifestCandidate {
                     .iter()
                     .map(LegacyParentCandidate::rebuild)
                     .collect::<Result<Vec<_>, _>>()?,
+                self.legacy_applied_set
+                    .as_ref()
+                    .ok_or_else(|| {
+                        failure(
+                            DiagnosticCategory::InvalidContract,
+                            "migration_manifest_legacy_applied_set_missing",
+                            "a legacy-frontier bridge requires its complete applied-set digest",
+                        )
+                    })?
+                    .rebuild()?,
             );
+        }
+        if self.legacy_applied_set.is_some() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_legacy_applied_set_without_bridge",
+                "an ordinary migration cannot carry a legacy applied-set digest",
+            ));
         }
         SchemaMigrationDraft::new(
             self.id.rebuild()?,
@@ -944,6 +1034,29 @@ struct LegacyChecksumCandidate {
     value: String,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyAppliedSetCandidate {
+    algorithm: String,
+    canonicalization: String,
+    digest: String,
+}
+
+impl LegacyAppliedSetCandidate {
+    fn rebuild(&self) -> Result<LegacyAppliedSetDigest, Diagnostic> {
+        if self.algorithm != LEGACY_APPLIED_SET_ALGORITHM
+            || self.canonicalization != LEGACY_APPLIED_SET_CANONICALIZATION
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_legacy_applied_set_contract",
+                "legacy applied-set binding carries unsupported digest vocabulary",
+            ));
+        }
+        LegacyAppliedSetDigest::new(self.digest.clone())
+    }
+}
+
 impl LegacyParentCandidate {
     fn rebuild(&self) -> Result<LegacyMigrationReference, Diagnostic> {
         if self.checksum.algorithm != LEGACY_CHECKSUM_ALGORITHM {
@@ -954,10 +1067,7 @@ impl LegacyParentCandidate {
             ));
         }
         Ok(LegacyMigrationReference::new(
-            MigrationId::from_components(
-                MigrationAppLabel::new(self.app_label.clone())?,
-                MigrationName::new(self.name.clone())?,
-            ),
+            LegacyMigrationId::new(self.app_label.clone(), self.name.clone())?,
             LegacyMigrationChecksum::new(self.checksum.value.clone())?,
         ))
     }

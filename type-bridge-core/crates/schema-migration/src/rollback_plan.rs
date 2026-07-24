@@ -197,6 +197,14 @@ pub fn build_verified_migration_rollback_plan(
                 "rollback planning returned an identity without a verified manifest",
             )
         })?;
+        if manifest.is_legacy_bridge() {
+            return Err(contract_failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_rollback_legacy_bridge_permanent",
+                "the legacy cutover bridge is a permanent lineage root and cannot be rolled back",
+            )
+            .into());
+        }
         if manifest.lowering_profile().id() != lowering_binding.profile_id()
             || manifest.lowering_profile().fingerprint() != lowering_binding.profile_fingerprint()
         {

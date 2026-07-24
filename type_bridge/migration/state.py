@@ -215,12 +215,12 @@ class MigrationStateManager:
         Returns:
             Current migration state
         """
-        self.ensure_schema()
-
         state = MigrationState()
-        # Let a real backend error surface; ensure_schema() above guarantees the
-        # store exists, so load_applied returns [] (not an error) on first run.
-        # Swallowing here would silently mask a Rust-side failure as empty state.
+        # The Rust read path bootstraps only a genuinely absent legacy store and
+        # otherwise reads the frozen ledger without invoking its writer guard.
+        # This keeps archival reads available after V2 adoption while still
+        # surfacing partial-schema and provider failures instead of masking them
+        # as an empty state.
         for row in self._manager.load_applied():
             applied = row.get("applied_at")
             state.add(
@@ -237,8 +237,6 @@ class MigrationStateManager:
 
     def load_runs(self) -> list[MigrationRunRecord]:
         """Load the migration execution run log from TypeDB."""
-        self.ensure_schema()
-
         runs: list[MigrationRunRecord] = []
         for row in self._manager.load_runs():
             runs.append(

@@ -13,14 +13,24 @@
 //! boundary (invariant 4); only the public ORM `session` API is used
 //! (invariant 7).
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
-use type_bridge_orm::Database;
+pub use type_bridge_contract::reserved::{
+    LEGACY_CUTOVER_SENTINEL_APP_LABEL, LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
+    LEGACY_CUTOVER_SENTINEL_MIGRATION_ID, LEGACY_CUTOVER_SENTINEL_NAME,
+    LEGACY_WRITER_CUTOVER_MESSAGE,
+};
 use type_bridge_orm::OrmError;
 use type_bridge_orm::schema::{SchemaError, SchemaInfo};
 use type_bridge_orm::session::backend::{BoxFuture, QueryResult, TxType};
+use type_bridge_orm::{
+    Database, Transaction, TransactionContext,
+    require_legacy_writer_open as require_orm_legacy_writer_open,
+    require_legacy_writer_open_in_transaction as require_orm_legacy_writer_open_in_transaction,
+};
 
 use crate::state::schema::labels::{
     APP_LABEL, APPLIED_AT, APPLIED_ENTITY, CHECKSUM, DIRECTION, ERROR, EXECUTOR_IP, EXECUTOR_MAC,
@@ -36,6 +46,72 @@ use crate::{AppliedMigrationRecord, MigrationError, Result};
 /// chrono's `%6f` is the byte-identical equivalent. This is the format written
 /// into the `insert` TypeQL — `record_applied` (`state.py:250`).
 const APPLIED_AT_FORMAT: &str = "%Y-%m-%dT%H:%M:%S.%6f";
+
+const LEGACY_STATE_SCHEMA_PROBE_QUERY_TAG: &str =
+    "# typebridge-internal-legacy-state-schema-probe/v1\n";
+
+/// Required state of the V2-only legacy-ledger sentinel while a caller reads a
+/// legacy applied projection.
+#[derive(Debug, Clone, Copy)]
+pub enum LegacyCutoverSentinelExpectation<'a> {
+    /// No cutover sentinel may exist.
+    Absent,
+    /// The sentinel may be absent, or must exactly carry this fingerprint.
+    OptionalExact(&'a str),
+    /// One exact sentinel carrying this fingerprint must exist.
+    RequiredExact(&'a str),
+}
+
+/// A verified legacy applied projection with the V2-only sentinel removed.
+///
+/// Construction is possible only after the sentinel candidate probes and all
+/// stored sentinel fields have passed the requested expectation.  Callers must
+/// never filter the reserved identity directly from an unverified row list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedLegacyAppliedPartition {
+    applied: Vec<AppliedMigrationRecord>,
+    sentinel_fingerprint: Option<String>,
+}
+
+impl VerifiedLegacyAppliedPartition {
+    /// Borrow the released user migration records, excluding the verified
+    /// V2-only sentinel partition.
+    pub fn applied(&self) -> &[AppliedMigrationRecord] {
+        &self.applied
+    }
+
+    /// Consume the partition and return released user migration records.
+    pub fn into_applied(self) -> Vec<AppliedMigrationRecord> {
+        self.applied
+    }
+
+    /// Return the exact sentinel fingerprint when the verified pair is present.
+    pub fn sentinel_fingerprint(&self) -> Option<&str> {
+        self.sentinel_fingerprint.as_deref()
+    }
+}
+
+/// Failure to observe and validate the reserved V2 cutover sentinel.
+#[derive(Debug, thiserror::Error)]
+pub enum LegacyCutoverSentinelError {
+    /// The ledger could not be queried through the retained transaction.
+    #[error("legacy cutover sentinel storage inspection failed: {0}")]
+    Storage(#[source] MigrationError),
+    /// Stored rows violate the exact singleton contract.
+    #[error("legacy cutover sentinel contract violation: {message}")]
+    Contract {
+        /// Stable human-readable contract failure.
+        message: String,
+    },
+}
+
+impl LegacyCutoverSentinelError {
+    /// Return whether this is durable stored drift rather than provider
+    /// infrastructure failure.
+    pub fn is_contract_violation(&self) -> bool {
+        matches!(self, Self::Contract { .. })
+    }
+}
 
 /// TypeDB-backed migration state store over the ORM session seam.
 ///
@@ -57,24 +133,36 @@ impl TypeDbStateStore {
         }
     }
 
-    async fn type_exists(&self, type_name: &str) -> bool {
+    async fn type_exists(&self, type_name: &str) -> Result<bool> {
+        let kind = state_type_kind(type_name).ok_or_else(|| MigrationError::State {
+            message: format!("unknown migration-state schema label: {type_name}"),
+        })?;
         let check_query = format!(
-            "\n            match $t type {type_name};\n            fetch {{ \"exists\": true }};\n        "
+            "\n            match {kind} $t;\n            fetch {{ \"label\": label($t) }};\n        "
         );
 
-        match self.db.transaction_context(TxType::Read).await {
-            Ok(ctx) => match ctx.query(&check_query).await {
-                Ok(QueryResult::Documents(docs)) => !docs.is_empty(),
-                Ok(QueryResult::Rows(rows)) => !rows.is_empty(),
-                Ok(QueryResult::Ok) => false,
-                Err(_) => false,
-            },
-            Err(_) => false,
+        let ctx = self
+            .db
+            .transaction_context(TxType::Read)
+            .await
+            .map_err(map_orm_error)?;
+        let checked = ctx
+            .query(&check_query)
+            .await
+            .map_err(map_orm_error)
+            .and_then(|result| schema_labels_from_result(result, "migration state type probe"))
+            .map(|labels| labels.contains(type_name));
+        let closed = ctx.close().await.map_err(map_orm_error);
+        match (checked, closed) {
+            (Ok(exists), Ok(())) => Ok(exists),
+            (Err(primary), Ok(())) => Err(primary),
+            (Ok(_), Err(cleanup)) => Err(cleanup),
+            (Err(primary), Err(_)) => Err(primary),
         }
     }
 
     async fn ensure_type(&self, type_name: &str, define_typeql: &str) -> Result<()> {
-        if self.type_exists(type_name).await {
+        if self.type_exists(type_name).await? {
             return Ok(());
         }
 
@@ -83,14 +171,20 @@ impl TypeDbStateStore {
             .transaction_context(TxType::Schema)
             .await
             .map_err(map_orm_error)?;
+        if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
+            let _ = ctx.rollback().await;
+            return Err(error);
+        }
         match ctx.query(define_typeql).await {
             Ok(_) => {
                 ctx.commit().await.map_err(map_orm_error)?;
                 Ok(())
             }
             Err(error) => {
-                let _ = ctx.rollback().await;
-                if self.type_exists(type_name).await {
+                if let Err(cleanup) = ctx.rollback().await {
+                    return Err(schema_rollback_cleanup_failure(&error, &cleanup));
+                }
+                if self.type_exists(type_name).await? {
                     Ok(())
                 } else {
                     Err(map_orm_error(error))
@@ -99,15 +193,423 @@ impl TypeDbStateStore {
         }
     }
 
+    async fn ensure_schema_for_read(&self) -> Result<()> {
+        if self.schema_ensured.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        // An adopted database already has the complete frozen legacy state
+        // schema.  Archival reads must remain available there and must expose
+        // the sentinel to ordinary legacy planning; only a genuinely missing
+        // type enters the writer-guarded bootstrap path.
+        let mut transaction = self.db.read_transaction().await.map_err(map_orm_error)?;
+        let inspected = legacy_state_schema_presence(&mut transaction)
+            .await
+            .map_err(legacy_sentinel_error_into_migration_error);
+        let closed = transaction.close().await.map_err(map_orm_error);
+        let presence = match (inspected, closed) {
+            (Ok(presence), Ok(())) => presence,
+            (Err(primary), Ok(())) => return Err(primary),
+            (Ok(_), Err(cleanup)) => return Err(cleanup),
+            (Err(primary), Err(_)) => return Err(primary),
+        };
+        if presence == LegacyStateSchemaPresence::Complete {
+            self.schema_ensured.store(true, Ordering::Release);
+            return Ok(());
+        }
+
+        // Released readers repaired interrupted incremental bootstraps. Keep
+        // that behavior for absent and partial unadopted schemas by entering
+        // the ordinary writer-guarded bootstrap. An adopted target is rejected
+        // by the sentinel before any repair mutation.
+        self.ensure_schema().await
+    }
+
     async fn query_documents(&self, query: &str) -> Result<Vec<serde_json::Value>> {
         let ctx = self
             .db
             .transaction_context(TxType::Read)
             .await
             .map_err(map_orm_error)?;
-        let result = ctx.query(query).await.map_err(map_orm_error)?;
-        Ok(query_result_values(result))
+        let queried = ctx
+            .query(query)
+            .await
+            .map_err(map_orm_error)
+            .map(query_result_values);
+        let closed = ctx.close().await.map_err(map_orm_error);
+        match (queried, closed) {
+            (Ok(values), Ok(())) => Ok(values),
+            (Err(primary), Ok(())) => Err(primary),
+            (Ok(_), Err(cleanup)) => Err(cleanup),
+            (Err(primary), Err(_)) => Err(primary),
+        }
     }
+
+    /// Read the complete released applied ledger through an already-retained
+    /// transaction.
+    ///
+    /// Legacy-frontier cutover uses a managed schema transaction as an
+    /// exclusive guard against V1 write transactions. The caller must ensure
+    /// the released state schema already exists before opening that guard;
+    /// this method performs no bootstrap and never commits or closes it.
+    pub async fn load_applied_in_transaction(
+        transaction: &mut Transaction,
+    ) -> Result<Vec<AppliedMigrationRecord>> {
+        let result = transaction
+            .query(&applied_query())
+            .await
+            .map_err(map_orm_error)?;
+        parse_applied_documents(&query_result_values(result))
+    }
+
+    /// Read the released applied projection and validate the reserved V2
+    /// sentinel through the same retained transaction snapshot.
+    ///
+    /// The sentinel is removed only after both independent identity probes,
+    /// singleton cardinality, every stored field, and the expected anchor
+    /// fingerprint have been checked.  This is the only supported filtering
+    /// boundary for V2 legacy-frontier continuity and digest calculations.
+    pub async fn load_verified_legacy_partition_in_transaction(
+        transaction: &mut Transaction,
+        expectation: LegacyCutoverSentinelExpectation<'_>,
+    ) -> std::result::Result<VerifiedLegacyAppliedPartition, LegacyCutoverSentinelError> {
+        match legacy_state_schema_presence(transaction).await? {
+            LegacyStateSchemaPresence::Absent => {
+                if matches!(
+                    expectation,
+                    LegacyCutoverSentinelExpectation::RequiredExact(_)
+                ) {
+                    return Err(sentinel_contract_error(
+                        "the V2 bridge is active but the frozen legacy ledger schema is absent",
+                    ));
+                }
+                return Ok(VerifiedLegacyAppliedPartition {
+                    applied: Vec::new(),
+                    sentinel_fingerprint: None,
+                });
+            }
+            LegacyStateSchemaPresence::Partial => {
+                return Err(sentinel_contract_error(
+                    "the frozen legacy ledger schema is partially present",
+                ));
+            }
+            LegacyStateSchemaPresence::Complete => {}
+        }
+        let result = transaction
+            .query(&applied_query())
+            .await
+            .map_err(map_sentinel_storage_error)?;
+        let mut applied = parse_applied_documents(&query_result_values(result))
+            .map_err(LegacyCutoverSentinelError::Storage)?;
+
+        let id_candidates = sentinel_query_values(
+            transaction,
+            &format!(
+                "match $m isa {APPLIED_ENTITY}, has {MIGRATION_ID} {}; fetch {{ \"exists\": true }};",
+                typeql_string_literal(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID),
+            ),
+        )
+        .await?;
+        let name_candidates = sentinel_query_values(
+            transaction,
+            &format!(
+                "match $m isa {APPLIED_ENTITY}, has {NAME} {}; fetch {{ \"exists\": true }};",
+                typeql_string_literal(LEGACY_CUTOVER_SENTINEL_NAME),
+            ),
+        )
+        .await?;
+
+        if id_candidates.is_empty() && name_candidates.is_empty() {
+            if matches!(
+                expectation,
+                LegacyCutoverSentinelExpectation::RequiredExact(_)
+            ) {
+                return Err(sentinel_contract_error(
+                    "the V2 bridge is active but its legacy-writer sentinel is missing",
+                ));
+            }
+            return Ok(VerifiedLegacyAppliedPartition {
+                applied,
+                sentinel_fingerprint: None,
+            });
+        }
+
+        if matches!(expectation, LegacyCutoverSentinelExpectation::Absent) {
+            return Err(sentinel_contract_error(
+                "a legacy-writer sentinel exists without an active or pending V2 bridge",
+            ));
+        }
+        if id_candidates.len() != 1 || name_candidates.len() != 1 {
+            return Err(sentinel_contract_error(
+                "the legacy-writer sentinel is duplicated or has split identity rows",
+            ));
+        }
+
+        let details = sentinel_query_values(
+            transaction,
+            &format!(
+                "match $m isa {APPLIED_ENTITY}, has {MIGRATION_ID} {}, has {APP_LABEL} $app, has {NAME} {}, has {APPLIED_AT} $applied, has {CHECKSUM} $checksum; fetch {{ \"app\": $app, \"applied\": $applied, \"checksum\": $checksum }};",
+                typeql_string_literal(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID),
+                typeql_string_literal(LEGACY_CUTOVER_SENTINEL_NAME),
+            ),
+        )
+        .await?;
+        if details.len() != 1 {
+            return Err(sentinel_contract_error(
+                "the legacy-writer sentinel is missing required exact fields",
+            ));
+        }
+        let detail = &details[0];
+        let app = extract_value(detail, "app").ok_or_else(|| {
+            sentinel_contract_error("the legacy-writer sentinel app label is malformed")
+        })?;
+        let applied_at = extract_value(detail, "applied").ok_or_else(|| {
+            sentinel_contract_error("the legacy-writer sentinel applied timestamp is malformed")
+        })?;
+        let fingerprint = extract_value(detail, "checksum").ok_or_else(|| {
+            sentinel_contract_error("the legacy-writer sentinel checksum is malformed")
+        })?;
+        if app != LEGACY_CUTOVER_SENTINEL_APP_LABEL {
+            return Err(sentinel_contract_error(
+                "the legacy-writer sentinel carries a foreign application label",
+            ));
+        }
+        if applied_at != LEGACY_CUTOVER_SENTINEL_APPLIED_AT {
+            return Err(sentinel_contract_error(
+                "the legacy-writer sentinel carries a foreign applied timestamp",
+            ));
+        }
+        if !is_lower_hex_fingerprint(&fingerprint) {
+            return Err(sentinel_contract_error(
+                "the legacy-writer sentinel checksum is not a lowercase 64-hex fingerprint",
+            ));
+        }
+        let expected = match expectation {
+            LegacyCutoverSentinelExpectation::OptionalExact(expected)
+            | LegacyCutoverSentinelExpectation::RequiredExact(expected) => expected,
+            LegacyCutoverSentinelExpectation::Absent => unreachable!("handled above"),
+        };
+        if fingerprint != expected {
+            return Err(sentinel_contract_error(
+                "the legacy-writer sentinel checksum differs from the managed cutover anchor",
+            ));
+        }
+
+        let original_len = applied.len();
+        applied.retain(|record| {
+            record.app_label != LEGACY_CUTOVER_SENTINEL_APP_LABEL
+                || record.name != LEGACY_CUTOVER_SENTINEL_NAME
+        });
+        if original_len.saturating_sub(applied.len()) != 1 {
+            return Err(sentinel_contract_error(
+                "the exact legacy-writer sentinel is absent from the released applied projection",
+            ));
+        }
+
+        Ok(VerifiedLegacyAppliedPartition {
+            applied,
+            sentinel_fingerprint: Some(fingerprint),
+        })
+    }
+
+    /// Stage the complete V2 cutover sentinel in a caller-retained managed
+    /// transaction.  The caller commits this in the same transaction as the
+    /// managed cutover anchor.
+    pub async fn insert_legacy_cutover_sentinel_in_transaction(
+        transaction: &mut Transaction,
+        anchor_fingerprint: &str,
+    ) -> Result<()> {
+        if !is_lower_hex_fingerprint(anchor_fingerprint) {
+            return Err(MigrationError::State {
+                message: "legacy cutover sentinel requires a lowercase 64-hex anchor fingerprint"
+                    .to_owned(),
+            });
+        }
+        let query = format!(
+            "insert $m isa {APPLIED_ENTITY}, has {MIGRATION_ID} {}, has {APP_LABEL} {}, has {NAME} {}, has {APPLIED_AT} {LEGACY_CUTOVER_SENTINEL_APPLIED_AT}, has {CHECKSUM} {};",
+            typeql_string_literal(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID),
+            typeql_string_literal(LEGACY_CUTOVER_SENTINEL_APP_LABEL),
+            typeql_string_literal(LEGACY_CUTOVER_SENTINEL_NAME),
+            typeql_string_literal(anchor_fingerprint),
+        );
+        transaction.query(&query).await.map_err(map_orm_error)?;
+        Ok(())
+    }
+}
+
+/// Fail before a legacy writer uses an already-open transaction when an exact,
+/// managed-anchor-bound V2 cutover pair is present.
+pub async fn require_legacy_writer_open_in_transaction(
+    transaction: &TransactionContext,
+) -> Result<()> {
+    require_orm_legacy_writer_open_in_transaction(transaction)
+        .await
+        .map_err(map_legacy_guard_error)
+}
+
+#[cfg(test)]
+pub(crate) fn is_legacy_state_schema_probe_query(query: &str) -> bool {
+    query.starts_with(LEGACY_STATE_SCHEMA_PROBE_QUERY_TAG)
+}
+
+/// Read-only entry guard for legacy writer surfaces whose external side
+/// effects cannot share a TypeDB transaction.
+pub async fn require_legacy_writer_open(database: &Database) -> Result<()> {
+    require_orm_legacy_writer_open(database)
+        .await
+        .map_err(map_legacy_guard_error)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyStateSchemaPresence {
+    Absent,
+    Partial,
+    Complete,
+}
+
+async fn legacy_state_schema_presence(
+    transaction: &mut Transaction,
+) -> std::result::Result<LegacyStateSchemaPresence, LegacyCutoverSentinelError> {
+    let state_schema = migration_state_schema();
+    let mut present = 0_usize;
+    let expected_by_root = [
+        (
+            "attribute",
+            state_schema
+                .attributes
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "entity",
+            state_schema
+                .entities
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "relation",
+            state_schema
+                .relations
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        ),
+    ];
+    let total = expected_by_root
+        .iter()
+        .map(|(_, labels)| labels.len())
+        .sum::<usize>();
+    let all_expected = expected_by_root
+        .iter()
+        .flat_map(|(_, labels)| labels.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let mut expected_labels_seen_in_any_kind = 0_usize;
+    for (kind, expected) in expected_by_root {
+        let result = transaction
+            .query(&format!(
+                "{LEGACY_STATE_SCHEMA_PROBE_QUERY_TAG}match {kind} $t; fetch {{ \"label\": label($t) }};"
+            ))
+            .await
+            .map_err(map_sentinel_storage_error)?;
+        let observed = schema_labels_from_result(result, "legacy state schema probe")
+            .map_err(LegacyCutoverSentinelError::Storage)?;
+        expected_labels_seen_in_any_kind += observed
+            .iter()
+            .filter(|label| all_expected.contains(label.as_str()))
+            .count();
+        present += expected
+            .into_iter()
+            .filter(|label| observed.contains(*label))
+            .count();
+    }
+    if present == 0 && expected_labels_seen_in_any_kind == 0 {
+        return Ok(LegacyStateSchemaPresence::Absent);
+    }
+    if present != total || expected_labels_seen_in_any_kind != total {
+        return Ok(LegacyStateSchemaPresence::Partial);
+    }
+    Ok(LegacyStateSchemaPresence::Complete)
+}
+
+fn state_type_kind(type_name: &str) -> Option<&'static str> {
+    let schema = migration_state_schema();
+    if schema.attributes.contains_key(type_name) {
+        Some("attribute")
+    } else if schema.entities.contains_key(type_name) {
+        Some("entity")
+    } else if schema.relations.contains_key(type_name) {
+        Some("relation")
+    } else {
+        None
+    }
+}
+
+fn schema_labels_from_result(result: QueryResult, operation: &str) -> Result<BTreeSet<String>> {
+    let values = match result {
+        QueryResult::Documents(values) | QueryResult::Rows(values) => values,
+        QueryResult::Ok => {
+            return Err(MigrationError::State {
+                message: format!("{operation} returned no document result"),
+            });
+        }
+    };
+    let mut labels = BTreeSet::new();
+    for value in &values {
+        let label = extract_value(value, "label").ok_or_else(|| MigrationError::State {
+            message: format!("{operation} returned a malformed schema label"),
+        })?;
+        labels.insert(label);
+    }
+    Ok(labels)
+}
+
+fn legacy_sentinel_error_into_migration_error(error: LegacyCutoverSentinelError) -> MigrationError {
+    match error {
+        LegacyCutoverSentinelError::Storage(error) => error,
+        LegacyCutoverSentinelError::Contract { message } => MigrationError::State { message },
+    }
+}
+
+fn applied_query() -> String {
+    format!(
+        "\nmatch\n$m isa {APPLIED_ENTITY},\n    has {APP_LABEL} $app,\n    has {NAME} $name,\n    has {APPLIED_AT} $applied,\n    has {CHECKSUM} $checksum;\nfetch {{\n    \"app\": $app,\n    \"name\": $name,\n    \"applied\": $applied,\n    \"checksum\": $checksum\n}};\n"
+    )
+}
+
+async fn sentinel_query_values(
+    transaction: &mut Transaction,
+    query: &str,
+) -> std::result::Result<Vec<serde_json::Value>, LegacyCutoverSentinelError> {
+    let result = transaction
+        .query(query)
+        .await
+        .map_err(map_sentinel_storage_error)?;
+    match result {
+        QueryResult::Documents(values) | QueryResult::Rows(values) => Ok(values),
+        QueryResult::Ok => Err(LegacyCutoverSentinelError::Storage(MigrationError::State {
+            message: "legacy cutover sentinel fetch returned no document result".to_owned(),
+        })),
+    }
+}
+
+fn map_sentinel_storage_error(error: OrmError) -> LegacyCutoverSentinelError {
+    LegacyCutoverSentinelError::Storage(map_orm_error(error))
+}
+
+fn sentinel_contract_error(message: impl Into<String>) -> LegacyCutoverSentinelError {
+    LegacyCutoverSentinelError::Contract {
+        message: message.into(),
+    }
+}
+
+fn is_lower_hex_fingerprint(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Format the current UTC time as the Python-compatible applied-at string.
@@ -144,9 +646,26 @@ fn map_orm_error(error: OrmError) -> MigrationError {
     }
 }
 
+fn map_legacy_guard_error(error: OrmError) -> MigrationError {
+    match error {
+        OrmError::Transaction(message) if message == LEGACY_WRITER_CUTOVER_MESSAGE => {
+            MigrationError::State { message }
+        }
+        error => map_orm_error(error),
+    }
+}
+
 fn map_schema_error(error: SchemaError) -> MigrationError {
     MigrationError::State {
         message: error.to_string(),
+    }
+}
+
+fn schema_rollback_cleanup_failure(primary: &OrmError, cleanup: &OrmError) -> MigrationError {
+    MigrationError::State {
+        message: format!(
+            "schema bootstrap query failed and rollback was not acknowledged; primary: {primary}; cleanup: {cleanup}"
+        ),
     }
 }
 
@@ -328,6 +847,10 @@ fn run_insert_query(record: &MigrationRunRecord) -> String {
 impl MigrationStateStore for TypeDbStateStore {
     fn ensure_schema(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
+            // Even the latched fast path is a legacy writer entry point.  The
+            // read guard rejects an already-adopted target; each actual schema
+            // transaction repeats the guard for race-free mutation ordering.
+            require_legacy_writer_open(self.db.as_ref()).await?;
             if self.schema_ensured.load(Ordering::Acquire) {
                 return Ok(());
             }
@@ -364,28 +887,19 @@ impl MigrationStateStore for TypeDbStateStore {
 
     fn load_applied(&self) -> BoxFuture<'_, Result<Vec<AppliedMigrationRecord>>> {
         Box::pin(async move {
-            self.ensure_schema().await?;
+            self.ensure_schema_for_read().await?;
 
             // Ported verbatim from state.py:179-191.
-            let query = format!(
-                "\nmatch\n$m isa {APPLIED_ENTITY},\n    has {APP_LABEL} $app,\n    has {NAME} $name,\n    has {APPLIED_AT} $applied,\n    has {CHECKSUM} $checksum;\nfetch {{\n    \"app\": $app,\n    \"name\": $name,\n    \"applied\": $applied,\n    \"checksum\": $checksum\n}};\n"
-            );
+            let query = applied_query();
 
-            let ctx = self
-                .db
-                .transaction_context(TxType::Read)
-                .await
-                .map_err(map_orm_error)?;
-            let result = ctx.query(&query).await.map_err(map_orm_error)?;
-
-            let values = query_result_values(result);
+            let values = self.query_documents(&query).await?;
             parse_applied_documents(&values)
         })
     }
 
     fn load_runs(&self) -> BoxFuture<'_, Result<Vec<MigrationRunRecord>>> {
         Box::pin(async move {
-            self.ensure_schema().await?;
+            self.ensure_schema_for_read().await?;
 
             let query = format!(
                 "\nmatch\n$r isa {RUN_ENTITY},\n    has {RUN_ID} $run_id,\n    has {APP_LABEL} $app,\n    has {NAME} $name,\n    has {CHECKSUM} $checksum,\n    has {DIRECTION} $direction,\n    has {STATUS} $status,\n    has {STARTED_AT} $started;\nfetch {{\n    \"run_id\": $run_id,\n    \"app\": $app,\n    \"name\": $name,\n    \"checksum\": $checksum,\n    \"direction\": $direction,\n    \"status\": $status,\n    \"started\": $started\n}};\n"
@@ -449,6 +963,10 @@ impl MigrationStateStore for TypeDbStateStore {
                 .transaction_context(TxType::Write)
                 .await
                 .map_err(map_orm_error)?;
+            if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
+                let _ = ctx.rollback().await;
+                return Err(error);
+            }
             ctx.query(&delete_existing).await.map_err(map_orm_error)?;
             ctx.query(&insert).await.map_err(map_orm_error)?;
             ctx.commit().await.map_err(map_orm_error)?;
@@ -478,6 +996,10 @@ impl MigrationStateStore for TypeDbStateStore {
                 .transaction_context(TxType::Write)
                 .await
                 .map_err(map_orm_error)?;
+            if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
+                let _ = ctx.rollback().await;
+                return Err(error);
+            }
             ctx.query(&query).await.map_err(map_orm_error)?;
             ctx.commit().await.map_err(map_orm_error)?;
             Ok(())
@@ -498,6 +1020,10 @@ impl MigrationStateStore for TypeDbStateStore {
                 .transaction_context(TxType::Write)
                 .await
                 .map_err(map_orm_error)?;
+            if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
+                let _ = ctx.rollback().await;
+                return Err(error);
+            }
             ctx.query(&delete_existing).await.map_err(map_orm_error)?;
             ctx.query(&insert).await.map_err(map_orm_error)?;
             ctx.commit().await.map_err(map_orm_error)?;
@@ -509,6 +1035,7 @@ impl MigrationStateStore for TypeDbStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{MockEvent, MockMigrationBackend};
     use chrono::{TimeZone, Timelike};
 
     // ── document parsing (no TypeDB) ────────────────────────────────────────
@@ -535,6 +1062,207 @@ mod tests {
         assert_eq!(
             records[0].applied_at.as_deref(),
             Some("2026-06-05T00:00:00.000000000")
+        );
+    }
+
+    #[tokio::test]
+    async fn state_readers_close_every_read_context() {
+        let responses = vec![
+            QueryResult::Documents(vec![serde_json::json!({
+                "app": "myapp",
+                "name": "0001_initial",
+                "applied": "2026-06-05T00:00:00.000000000",
+                "checksum": "abc123"
+            })]),
+            QueryResult::Documents(Vec::new()),
+            QueryResult::Documents(Vec::new()),
+            QueryResult::Documents(Vec::new()),
+            QueryResult::Documents(Vec::new()),
+            QueryResult::Documents(Vec::new()),
+        ];
+        let (backend, log) = MockMigrationBackend::with_state_read_responses(responses);
+        let store =
+            TypeDbStateStore::new(Arc::new(Database::with_backend(Box::new(backend), "test")));
+
+        assert_eq!(store.load_applied().await.unwrap().len(), 1);
+        assert!(store.load_runs().await.unwrap().is_empty());
+
+        let events = log.lock().unwrap();
+        let opens = events
+            .iter()
+            .filter(|event| matches!(event, MockEvent::OpenTx(TxType::Read)))
+            .count();
+        let closes = events
+            .iter()
+            .filter(|event| matches!(event, MockEvent::Close))
+            .count();
+        assert_eq!(opens, 7, "one schema inspection plus six ledger reads");
+        assert_eq!(closes, opens, "every read context must be acknowledged");
+    }
+
+    #[tokio::test]
+    async fn load_applied_preserves_query_error_when_close_also_fails() {
+        // Close 0 terminates the successful schema-presence inspection. The
+        // applied-ledger query and close then fail together at indexes 0 and 1.
+        let (backend, log) = MockMigrationBackend::with_state_read_and_close_failure(0, 1);
+        let store =
+            TypeDbStateStore::new(Arc::new(Database::with_backend(Box::new(backend), "test")));
+
+        let error = store
+            .load_applied()
+            .await
+            .expect_err("the ledger query must fail");
+        let message = error.to_string();
+        assert!(message.contains("injected query failure for testing"));
+        assert!(!message.contains("injected close failure for testing"));
+        assert_eq!(
+            log.lock()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, MockEvent::Close))
+                .count(),
+            2,
+            "the failed ledger read must still acknowledge close"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_runs_preserves_query_error_when_close_also_fails() {
+        let (backend, log) = MockMigrationBackend::with_state_read_and_close_failure(0, 1);
+        let store =
+            TypeDbStateStore::new(Arc::new(Database::with_backend(Box::new(backend), "test")));
+
+        let error = store
+            .load_runs()
+            .await
+            .expect_err("the base run-log query must fail");
+        let message = error.to_string();
+        assert!(message.contains("injected query failure for testing"));
+        assert!(!message.contains("injected close failure for testing"));
+        assert_eq!(
+            log.lock()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, MockEvent::Close))
+                .count(),
+            2,
+            "the failed run-log read must still acknowledge close"
+        );
+    }
+
+    #[tokio::test]
+    async fn unadopted_partial_state_schema_is_repaired_before_read() {
+        let (backend, log, labels) =
+            MockMigrationBackend::with_partial_state_schema(&[RUN_ENTITY], false);
+        let store =
+            TypeDbStateStore::new(Arc::new(Database::with_backend(Box::new(backend), "test")));
+
+        assert!(store.load_applied().await.unwrap().is_empty());
+        assert!(labels.lock().unwrap().contains(RUN_ENTITY));
+        assert!(log.lock().unwrap().iter().any(|event| {
+            matches!(event, MockEvent::Query(TxType::Schema, query) if query.contains(&format!("entity {RUN_ENTITY}")))
+        }));
+    }
+
+    #[tokio::test]
+    async fn adopted_partial_state_schema_fails_before_repair() {
+        let (backend, log, labels) =
+            MockMigrationBackend::with_partial_state_schema(&[RUN_ENTITY], true);
+        let store =
+            TypeDbStateStore::new(Arc::new(Database::with_backend(Box::new(backend), "test")));
+
+        let error = store
+            .load_applied()
+            .await
+            .expect_err("the sentinel must block partial-schema repair");
+        assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+        assert!(!labels.lock().unwrap().contains(RUN_ENTITY));
+        assert!(
+            !log.lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, MockEvent::Query(TxType::Schema, _))),
+            "adopted schema repair must not reach a define query"
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_sentinel_partition_is_verified_before_filtering() {
+        let fingerprint = "a".repeat(64);
+        let sentinel = serde_json::json!({
+            "app": LEGACY_CUTOVER_SENTINEL_APP_LABEL,
+            "name": LEGACY_CUTOVER_SENTINEL_NAME,
+            "applied": LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
+            "checksum": fingerprint,
+        });
+        let responses = vec![
+            QueryResult::Documents(vec![sentinel]),
+            QueryResult::Documents(vec![serde_json::json!({"exists": true})]),
+            QueryResult::Documents(vec![serde_json::json!({"exists": true})]),
+            QueryResult::Documents(vec![serde_json::json!({
+                "app": LEGACY_CUTOVER_SENTINEL_APP_LABEL,
+                "applied": LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
+                "checksum": fingerprint,
+            })]),
+        ];
+        let (backend, _) = MockMigrationBackend::with_state_read_responses(responses);
+        let database = Database::with_backend(Box::new(backend), "test");
+        let mut transaction = database.read_transaction().await.unwrap();
+
+        let partition = TypeDbStateStore::load_verified_legacy_partition_in_transaction(
+            &mut transaction,
+            LegacyCutoverSentinelExpectation::RequiredExact(&fingerprint),
+        )
+        .await
+        .expect("verify exact sentinel");
+        transaction.close().await.unwrap();
+
+        assert!(partition.applied().is_empty());
+        assert_eq!(partition.sentinel_fingerprint(), Some(fingerprint.as_str()));
+    }
+
+    #[tokio::test]
+    async fn malformed_sentinel_timestamp_is_not_filtered() {
+        let fingerprint = "b".repeat(64);
+        let malformed_timestamp = "1970-01-01T00:00:00";
+        let responses = vec![
+            QueryResult::Documents(vec![serde_json::json!({
+                "app": LEGACY_CUTOVER_SENTINEL_APP_LABEL,
+                "name": LEGACY_CUTOVER_SENTINEL_NAME,
+                "applied": malformed_timestamp,
+                "checksum": fingerprint,
+            })]),
+            QueryResult::Documents(vec![serde_json::json!({"exists": true})]),
+            QueryResult::Documents(vec![serde_json::json!({"exists": true})]),
+            QueryResult::Documents(vec![serde_json::json!({
+                "app": LEGACY_CUTOVER_SENTINEL_APP_LABEL,
+                "applied": malformed_timestamp,
+                "checksum": fingerprint,
+            })]),
+        ];
+        let (backend, _) = MockMigrationBackend::with_state_read_responses(responses);
+        let database = Database::with_backend(Box::new(backend), "test");
+        let mut transaction = database.read_transaction().await.unwrap();
+
+        let error = TypeDbStateStore::load_verified_legacy_partition_in_transaction(
+            &mut transaction,
+            LegacyCutoverSentinelExpectation::RequiredExact(&fingerprint),
+        )
+        .await
+        .expect_err("malformed sentinel must fail closed");
+        transaction.close().await.unwrap();
+
+        assert!(error.is_contract_violation());
+        assert!(error.to_string().contains("foreign applied timestamp"));
+    }
+
+    #[test]
+    fn sentinel_name_is_outside_the_released_numbered_loader_namespace() {
+        assert!(
+            !LEGACY_CUTOVER_SENTINEL_NAME
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_digit)
         );
     }
 
@@ -653,6 +1381,16 @@ mod tests {
     #[test]
     fn typeql_string_literal_escapes_user_controlled_text() {
         assert_eq!(typeql_string_literal("a\"b\\c\n"), "\"a\\\"b\\\\c\\n\"");
+    }
+
+    #[test]
+    fn schema_bootstrap_rollback_failure_preserves_primary_and_cleanup() {
+        let primary = OrmError::QueryExecution("define failed".to_owned());
+        let cleanup = OrmError::Transaction("rollback failed".to_owned());
+        let error = schema_rollback_cleanup_failure(&primary, &cleanup).to_string();
+        assert!(error.contains("define failed"), "{error}");
+        assert!(error.contains("rollback failed"), "{error}");
+        assert!(error.contains("rollback was not acknowledged"), "{error}");
     }
 
     #[test]

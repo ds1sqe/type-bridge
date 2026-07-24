@@ -21,7 +21,8 @@ use type_bridge_orm::Database;
 use crate::backfill::{BackfillResult, execute_backfill};
 use crate::plan::{ExecutionPlan, MigrationAction, MigrationExecution, StepKind};
 use crate::state::{
-    MigrationExecutorInfo, MigrationStateStore, finished_run_record, started_run_record,
+    MigrationExecutorInfo, MigrationStateStore, finished_run_record, require_legacy_writer_open,
+    require_legacy_writer_open_in_transaction, started_run_record,
 };
 
 /// Result of executing a single migration (one entry per attempted migration).
@@ -116,6 +117,10 @@ async fn execute_logged_migration<S: MigrationStateStore>(
     checksums: &BTreeMap<(String, String), String>,
     executor: &MigrationExecutorInfo,
 ) -> crate::Result<MigrationResult> {
+    // External state stores cannot share the target transaction, so reject an
+    // already-cut-over target before touching their run log.  Each target
+    // mutation repeats the check in its own transaction below.
+    require_legacy_writer_open(db).await?;
     let checksum = checksums
         .get(&(migration.app_label.clone(), migration.name.clone()))
         .cloned()
@@ -146,6 +151,17 @@ pub async fn execute_migration(db: &Database, migration: &MigrationExecution) ->
             action: migration.action,
             success: false,
             error: Some(format!("{} is not reversible", migration.name)),
+            backfill: None,
+        };
+    }
+
+    if let Err(error) = require_legacy_writer_open(db).await {
+        return MigrationResult {
+            app_label: migration.app_label.clone(),
+            name: migration.name.clone(),
+            action: migration.action,
+            success: false,
+            error: Some(error.to_string()),
             backfill: None,
         };
     }
@@ -213,6 +229,18 @@ pub async fn execute_migration(db: &Database, migration: &MigrationExecution) ->
                 };
             }
         };
+
+        if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
+            let _ = ctx.rollback().await;
+            return MigrationResult {
+                app_label: migration.app_label.clone(),
+                name: migration.name.clone(),
+                action: migration.action,
+                success: false,
+                error: Some(error.to_string()),
+                backfill: None,
+            };
+        }
 
         // Execute the query.
         if let Err(e) = ctx.query(typeql).await {
@@ -302,6 +330,54 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn cutover_rejects_before_executor_typeql_or_run_log_mutation() {
+        let (backend, log) = MockMigrationBackend::with_legacy_cutover();
+        let db = Database::with_backend(Box::new(backend), "test");
+        let migration = apply_migration(
+            "0001_blocked",
+            vec![schema_step("define entity must-not-run;", None)],
+        );
+        let plan = ExecutionPlan {
+            to_apply: vec![migration.clone()],
+            to_rollback: Vec::new(),
+        };
+
+        let results = execute_plan(&db, plan).await;
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].success);
+        assert!(
+            results[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains(crate::LEGACY_WRITER_CUTOVER_MESSAGE))
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![MockEvent::OpenTx(TxType::Read), MockEvent::Close]
+        );
+
+        let store = InMemoryStateStore::new();
+        let logged = execute_plan_with_run_log(
+            &db,
+            &store,
+            ExecutionPlan {
+                to_apply: vec![migration],
+                to_rollback: Vec::new(),
+            },
+            &BTreeMap::new(),
+            &MigrationExecutorInfo::default(),
+        )
+        .await
+        .expect_err("cutover must reject before the external run log");
+        assert!(
+            logged
+                .to_string()
+                .contains(crate::LEGACY_WRITER_CUTOVER_MESSAGE)
+        );
+        assert!(store.load_runs().await.unwrap().is_empty());
+    }
+
     // ── test: apply-only plan ─────────────────────────────────────────────────
 
     #[tokio::test]
@@ -334,18 +410,22 @@ mod tests {
         assert!(results[1].success);
         assert_eq!(results[1].name, "0002_add");
 
-        // Verify the event log shows the correct order:
-        // OpenTx(Schema), Query, Commit for each step.
+        // Each migration first performs the read-only cutover preflight, then
+        // executes its step under the intended schema transaction.
         let events = log.lock().unwrap();
         assert_eq!(
             *events,
             vec![
+                MockEvent::OpenTx(TxType::Read),
+                MockEvent::Close,
                 MockEvent::OpenTx(TxType::Schema),
                 MockEvent::Query(
                     TxType::Schema,
                     "define attribute a, value string;".to_string()
                 ),
                 MockEvent::Commit,
+                MockEvent::OpenTx(TxType::Read),
+                MockEvent::Close,
                 MockEvent::OpenTx(TxType::Schema),
                 MockEvent::Query(
                     TxType::Schema,
@@ -424,6 +504,8 @@ mod tests {
         assert_eq!(
             *events,
             vec![
+                MockEvent::OpenTx(TxType::Read),
+                MockEvent::Close,
                 MockEvent::OpenTx(TxType::Schema),
                 // Reverse TypeQL is used for rollback.
                 MockEvent::Query(TxType::Schema, "undefine attribute b;".to_string()),
@@ -468,22 +550,26 @@ mod tests {
 
         let events = log.lock().unwrap();
 
+        // Migration entry: read-only cutover guard, then close the snapshot.
+        assert!(matches!(events[0], MockEvent::OpenTx(TxType::Read)));
+        assert!(matches!(events[1], MockEvent::Close));
+
         // Step 1: OpenTx → Query → Commit (durable)
-        assert!(matches!(events[0], MockEvent::OpenTx(TxType::Schema)));
+        assert!(matches!(events[2], MockEvent::OpenTx(TxType::Schema)));
         assert!(
-            matches!(&events[1], MockEvent::Query(TxType::Schema, q) if q == "define attribute a, value string;")
+            matches!(&events[3], MockEvent::Query(TxType::Schema, q) if q == "define attribute a, value string;")
         );
-        assert!(matches!(events[2], MockEvent::Commit));
+        assert!(matches!(events[4], MockEvent::Commit));
 
         // Step 2: OpenTx → Query (fails) → Rollback
-        assert!(matches!(events[3], MockEvent::OpenTx(TxType::Schema)));
+        assert!(matches!(events[5], MockEvent::OpenTx(TxType::Schema)));
         assert!(
-            matches!(&events[4], MockEvent::Query(TxType::Schema, q) if q == "define attribute b, value string;")
+            matches!(&events[6], MockEvent::Query(TxType::Schema, q) if q == "define attribute b, value string;")
         );
-        assert!(matches!(events[5], MockEvent::Rollback));
+        assert!(matches!(events[7], MockEvent::Rollback));
 
         // Step 3 must NOT appear — run halted after step 2 failure.
-        assert_eq!(events.len(), 6, "step 3 must not be opened");
+        assert_eq!(events.len(), 8, "step 3 must not be opened");
     }
 
     // ── test: non-reversible rollback ─────────────────────────────────────────

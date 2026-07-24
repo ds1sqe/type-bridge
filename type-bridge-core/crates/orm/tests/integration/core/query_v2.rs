@@ -1,12 +1,16 @@
 //! End-to-end V2 query execution against TypeDB 3.12.1.
 
+use std::env;
+use std::time::Duration;
+
 use crate::common::dynamic_crud::unique_schema_suffix;
 use crate::common::rust_binding::setup_db;
+use crate::common::typedb::connect_options_from_env;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-use type_bridge_contract::limits::StructuralLimits;
+use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, StructuralLimits};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
@@ -15,15 +19,21 @@ use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryInvocation, QueryOperand,
     QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage,
 };
+use type_bridge_contract::query_remote::{
+    RemoteCapabilities, RemoteExecutorBinding, RemoteQueryFailure, decode_signed_remote_failure,
+};
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
     DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
     SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
-use type_bridge_orm::TxType;
 use type_bridge_orm::query_v2::{QueryRowValue, QueryV2Outcome, execute_validated_query};
-use type_bridge_orm::session::backend::{AnswerCancellation, BoundedAnswerLimits};
+use type_bridge_orm::query_v2_remote::{Ed25519RemoteReplyVerifier, RemoteReplySigningKey};
+use type_bridge_orm::session::backend::{
+    AnswerCancellation, BoundedAnswerLimits, QueryV2AnswerLimits,
+};
+use type_bridge_orm::{Database, TxType};
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
 
@@ -32,6 +42,36 @@ struct LiveQueryFixture {
     name: AttributeId,
     person: TypeId,
     resolved: ResolvedSchema,
+}
+
+fn remote_advertisement(capabilities: CapabilitySet) -> RemoteCapabilities {
+    RemoteCapabilities::new(
+        capabilities,
+        RemoteExecutorBinding::new("orm-live-query-executor", "orm-live-query-epoch-000001")
+            .expect("remote executor binding"),
+        remote_signer().public_key(),
+    )
+}
+
+fn remote_signer() -> RemoteReplySigningKey {
+    RemoteReplySigningKey::from_secret_bytes([0x2b; 32])
+}
+
+fn decode_authenticated_failure(
+    bytes: &[u8],
+    advertisement: &RemoteCapabilities,
+) -> RemoteQueryFailure {
+    let advertisement_fingerprint = advertisement
+        .fingerprint()
+        .expect("advertisement fingerprint");
+    decode_signed_remote_failure(
+        bytes,
+        &advertisement_fingerprint,
+        advertisement.reply_key(),
+        u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("remote envelope ceiling fits u64"),
+        &Ed25519RemoteReplyVerifier,
+    )
+    .expect("authenticated failure envelope")
 }
 
 fn binding(id: u16, variable: &str) -> AssertionBinding {
@@ -179,12 +219,15 @@ fn string_row(value: &str) -> InputRow {
     ))])
 }
 
-fn limits() -> BoundedAnswerLimits {
-    BoundedAnswerLimits {
-        max_items: 100,
-        max_bytes: 1 << 20,
-        deadline: None,
-        cancellation: AnswerCancellation::default(),
+fn limits() -> QueryV2AnswerLimits {
+    QueryV2AnswerLimits {
+        answer: BoundedAnswerLimits {
+            max_items: 100,
+            max_bytes: 1 << 20,
+            deadline: None,
+            cancellation: AnswerCancellation::default(),
+        },
+        max_collection_members: 1 << 16,
     }
 }
 
@@ -292,6 +335,74 @@ async fn validated_queries_execute_rows_count_and_exists_live() {
     .await
     .expect("exists outcome");
     assert_eq!(exists, QueryV2Outcome::Exists(false));
+}
+
+#[tokio::test]
+async fn v2_exists_semantic_limit_releases_database_immediately_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
+    let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
+    let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
+    let database_name = unique_schema_suffix("rust", "query-v2-exists-terminal");
+    let db = Database::connect_with_options(
+        &address,
+        &database_name,
+        &username,
+        &password,
+        connect_options_from_env(),
+    )
+    .await
+    .expect("V2 terminal exists fixture should connect");
+    db.create_database()
+        .await
+        .expect("V2 terminal exists database should be created");
+    let suffix = unique_schema_suffix("rust", "query-v2-exists-terminal-type");
+    let fixture = live_fixture(&suffix);
+    db.execute_raw(
+        &format!(
+            "define attribute {}, value string; entity {}, owns {} @unique;",
+            fixture.name.label(),
+            fixture.person.label(),
+            fixture.name.label(),
+        ),
+        TxType::Schema,
+    )
+    .await
+    .expect("V2 terminal exists schema should be defined");
+    db.execute_raw(
+        &format!(
+            "insert $a isa {person}, has {name} \"Ada\"; \
+             $b isa {person}, has {name} \"Alan\"; \
+             $c isa {person}, has {name} \"Grace\";",
+            person = fixture.person.label(),
+            name = fixture.name.label(),
+        ),
+        TxType::Write,
+    )
+    .await
+    .expect("V2 terminal exists rows should commit");
+
+    let (validated, plan) = validated_query(&fixture, OrderDirection::Ascending);
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Exists, vec![string_row("A")])
+        .expect("V2 terminal exists invocation");
+    let mut transaction = db
+        .read_transaction()
+        .await
+        .expect("V2 terminal exists transaction should open");
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("V2 terminal exists should execute");
+    assert_eq!(outcome, QueryV2Outcome::Exists(true));
+    transaction
+        .close()
+        .await
+        .expect("V2 terminal exists transaction should close");
+    drop(transaction);
+
+    tokio::time::timeout(Duration::from_secs(10), db.delete_database())
+        .await
+        .expect("V2 exists must not leave database deletion blocked")
+        .expect("V2 exists must release the database before delete returns");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1197,6 +1308,35 @@ async fn document_fetch_returns_typed_documents_live() {
     assert_eq!(ada_ages, vec![30, 40]);
     assert_eq!(scalar(&documents[1].values()[0]), "bob");
     assert_eq!(longs(&documents[1].values()[1]), Vec::<i64>::new());
+
+    // Executable lowering uses a list-valued read subquery with an N+1
+    // sentinel. Ada's two ages therefore prove both that the TypeQL syntax
+    // preserves scalar-list output and that a one-member budget detects the
+    // over-limit ownership without fetching the unbounded list form.
+    let mut one_member = limits();
+    one_member.max_collection_members = 1;
+    let error = execute_validated_query(&mut transaction, &validated, &invocation, one_member)
+        .await
+        .expect_err("the second age is the over-limit sentinel");
+    let type_bridge_orm::query_v2::QueryV2ExecutionError::Provider(
+        type_bridge_orm::OrmError::Match(error),
+    ) = error
+    else {
+        panic!("document member limit must surface from the bounded provider: {error}");
+    };
+    assert_eq!(
+        error.category(),
+        type_bridge_orm::match_request::MatchErrorCategory::ResourceLimit
+    );
+    assert_eq!(error.code().as_str(), "query_v2_document_member_limit");
+    assert_eq!(
+        error.message(),
+        "document lists exceed the aggregate member ceiling"
+    );
+    assert_eq!(
+        error.path().segments(),
+        &[type_bridge_orm::match_request::MatchErrorPathSegment::ProviderEvidence]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1385,7 +1525,7 @@ async fn local_functions_execute_per_row_live() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_reachability_executes_live() {
     use type_bridge_contract::id::RoleId;
-    use type_bridge_contract::query_plan::QueryOperation;
+    use type_bridge_contract::query_plan::{QueryOperation, ReduceAssignment, Reducer};
     use type_bridge_contract::schema::{PlaysFact, PlaysFactId, RelatesFact, RelatesFactId};
     use type_bridge_contract::value::CanonicalValue;
 
@@ -1394,6 +1534,7 @@ async fn bounded_reachability_executes_live() {
     let suffix = unique_schema_suffix("rust", "query-v2-reach-live");
     let node = TypeId::new(TypeKind::Entity, format!("{suffix}-node")).unwrap();
     let name = AttributeId::new(format!("{suffix}-name")).unwrap();
+    let age = AttributeId::new(format!("{suffix}-age")).unwrap();
     let edge = TypeId::new(TypeKind::Relation, format!("{suffix}-edge")).unwrap();
     let from = RoleId::new(edge.label().as_str(), "origin").unwrap();
     let to = RoleId::new(edge.label().as_str(), "destination").unwrap();
@@ -1402,9 +1543,11 @@ async fn bounded_reachability_executes_live() {
         &format!(
             "define\n\
              attribute {name}, value string;\n\
+             attribute {age}, value integer;\n\
              relation {edge}, relates origin, relates destination;\n\
-             entity {node}, owns {name}, plays {edge}:origin, plays {edge}:destination;",
+             entity {node}, owns {name}, owns {age} @card(0..1), plays {edge}:origin, plays {edge}:destination;",
             name = name.label(),
+            age = age.label(),
             edge = edge.label(),
             node = node.label(),
         ),
@@ -1415,14 +1558,17 @@ async fn bounded_reachability_executes_live() {
     db.execute_raw(
         &format!(
             "insert $a isa {node}, has {name} \"na\"; \
-             $b isa {node}, has {name} \"nb\"; \
+             $b isa {node}, has {name} \"nb\", has {age} 10; \
              $c isa {node}, has {name} \"nc\"; \
              $d isa {node}, has {name} \"nd\"; \
              (origin: $a, destination: $b) isa {edge}; \
              (origin: $b, destination: $c) isa {edge}; \
+             (origin: $a, destination: $c) isa {edge}; \
+             (origin: $a, destination: $c) isa {edge}; \
              (origin: $c, destination: $d) isa {edge};",
             node = node.label(),
             name = name.label(),
+            age = age.label(),
             edge = edge.label(),
         ),
         TxType::Write,
@@ -1436,13 +1582,23 @@ async fn bounded_reachability_executes_live() {
             TypeFact::new(TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap())
                 .unwrap(),
         ),
+        SchemaFact::Type(
+            TypeFact::new(TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap()).unwrap(),
+        ),
         SchemaFact::Type(TypeFact::new(edge.clone()).unwrap()),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
         )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
         SchemaFact::Owns(OwnsFact::new(
             OwnsFactId::new(node.clone(), name.clone()).unwrap(),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(node.clone(), age.clone()).unwrap(),
         )),
         SchemaFact::Relates(
             RelatesFact::new(
@@ -1493,13 +1649,16 @@ async fn bounded_reachability_executes_live() {
     .unwrap();
     let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
-    // Every node within two hops of "na", in one provider query.
+    // Every node within two hops of "na", in one provider query. `nc` has
+    // one indirect and two parallel direct proofs, but Reachable is
+    // existential and must expose the endpoint exactly once.
     let plan = QueryPlan::new(
         vec![
             binding(0, "start"),
             binding(1, "start_name"),
             binding(2, "finish"),
             binding(3, "finish_name"),
+            binding(4, "finish_age"),
         ],
         Vec::new(),
         vec![
@@ -1532,6 +1691,13 @@ async fn bounded_reachability_executes_live() {
                         attribute_id: name.clone(),
                         owner: binding_id(2),
                     },
+                    QueryPattern::Try {
+                        patterns: vec![QueryPattern::Has {
+                            attribute: binding_id(4),
+                            attribute_id: age.clone(),
+                            owner: binding_id(2),
+                        }],
+                    },
                 ],
             },
             ReadStage::Sort {
@@ -1539,7 +1705,7 @@ async fn bounded_reachability_executes_live() {
             },
         ],
         QueryOutput::Rows {
-            columns: vec![binding_id(3)],
+            columns: vec![binding_id(3), binding_id(4)],
         },
         managed.managed_semantic_schema().clone(),
     )
@@ -1554,26 +1720,90 @@ async fn bounded_reachability_executes_live() {
     let QueryV2Outcome::Rows(rows) = &outcome else {
         panic!("rows outcome: {outcome:?}");
     };
-    let names = rows
+    let names_and_ages = rows
         .iter()
-        .map(|row| match &row.values()[0] {
-            QueryRowValue::Attribute {
-                value: CanonicalValue::String(value),
-                ..
-            } => value.as_str().to_owned(),
-            other => panic!("expected string names: {other:?}"),
+        .map(|row| {
+            let name = match &row.values()[0] {
+                QueryRowValue::Attribute {
+                    value: CanonicalValue::String(value),
+                    ..
+                } => value.as_str().to_owned(),
+                other => panic!("expected string names: {other:?}"),
+            };
+            let age = match &row.values()[1] {
+                QueryRowValue::Attribute {
+                    value: CanonicalValue::Long(value),
+                    ..
+                } => Some(*value),
+                QueryRowValue::Absent => None,
+                other => panic!("expected optional integer age: {other:?}"),
+            };
+            (name, age)
         })
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["nb".to_owned(), "nc".to_owned()]);
+    assert_eq!(
+        names_and_ages,
+        vec![
+            ("nb".to_owned(), Some(10)),
+            ("nc".to_owned(), None),
+            ("nd".to_owned(), None),
+        ],
+    );
+
+    // A user reducer observes endpoint rows, not the multiplicity of path
+    // proofs that the internal reachability aggregate discarded.
+    let count_plan = QueryPlan::new(
+        vec![
+            binding(0, "start"),
+            binding(1, "start_name"),
+            binding(2, "finish"),
+            binding(3, "finish_name"),
+            binding(4, "finish_age"),
+            binding(5, "finish_count"),
+        ],
+        Vec::new(),
+        vec![
+            plan.pipeline()[0].clone(),
+            ReadStage::Reduce {
+                assignments: vec![ReduceAssignment::new(binding_id(5), Reducer::Count, None)],
+                groups: Vec::new(),
+            },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(5)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .unwrap();
+    let validated = validate_query_plan(
+        &count_plan,
+        &validation_context,
+        StructuralLimits::CANONICAL,
+    )
+    .unwrap();
+    let invocation = QueryInvocation::new(&count_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("reachability count execution");
+    let QueryV2Outcome::Rows(rows) = &outcome else {
+        panic!("rows outcome: {outcome:?}");
+    };
+    assert_eq!(
+        rows[0].values()[0],
+        QueryRowValue::Value {
+            value: CanonicalValue::Long(3),
+        },
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_envelope_round_trip_matches_local_execution_live() {
     use type_bridge_contract::capability::CapabilitySet as Caps;
     use type_bridge_contract::query_plan_capability_vocabulary;
-    use type_bridge_contract::query_remote::{RemoteLimits, RemoteQueryFailure};
+    use type_bridge_contract::query_remote::RemoteLimits;
     use type_bridge_orm::query_v2_remote::{
-        decode_remote_outcome, encode_remote_request, execute_remote_envelope,
+        decode_remote_outcome, encode_remote_request, execute_admitted_remote_request,
+        preflight_remote_request,
     };
 
     let _guard = crate::common::integration_test_guard().await;
@@ -1624,28 +1854,40 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         deadline_ms: Some(30_000),
         max_bytes: 1 << 20,
         max_items: 100,
+        max_collection_members: 1 << 16,
     };
-    let request = encode_remote_request(&validated, &invocation, caller_limits, nonce)
-        .expect("request envelope");
+    let advertisement = remote_advertisement(query_plan_capability_vocabulary());
+    let advertisement_fingerprint = advertisement
+        .fingerprint()
+        .expect("advertisement fingerprint");
+    let signer = remote_signer();
+    let request = encode_remote_request(
+        &validated,
+        &invocation,
+        &advertisement,
+        caller_limits,
+        nonce,
+    )
+    .expect("request envelope");
     let expected_request =
         type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
             .expect("request fingerprint");
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let admitted = preflight_remote_request(&request, &context, &advertisement, limits())
+        .unwrap_or_else(|rejection| {
+            panic!("remote request preflight: {}", rejection.diagnostic_code())
+        });
     let mut server_transaction = db.read_transaction().await.expect("server transaction");
-    let response = execute_remote_envelope(
-        &request,
-        &context,
-        &query_plan_capability_vocabulary(),
-        &mut server_transaction,
-        limits(),
-    )
-    .await;
+    let response =
+        execute_admitted_remote_request(admitted, &mut server_transaction, &signer).await;
     let remote = decode_remote_outcome(
         &response,
         &validated,
         QueryOperation::Rows,
         nonce,
         &expected_request,
+        &advertisement_fingerprint,
+        advertisement.reply_key(),
         caller_limits,
     )
     .expect("remote outcome");
@@ -1656,8 +1898,14 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
     // accepted as the answer to invocation B even under a reused nonce.
     let other_invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("e")])
         .expect("other invocation");
-    let other_request = encode_remote_request(&validated, &other_invocation, caller_limits, nonce)
-        .expect("other request envelope");
+    let other_request = encode_remote_request(
+        &validated,
+        &other_invocation,
+        &advertisement,
+        caller_limits,
+        nonce,
+    )
+    .expect("other request envelope");
     let other_fingerprint =
         type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&other_request)
             .expect("other request fingerprint");
@@ -1667,6 +1915,8 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         QueryOperation::Rows,
         nonce,
         &other_fingerprint,
+        &advertisement_fingerprint,
+        advertisement.reply_key(),
         caller_limits,
     )
     .expect_err("same-nonce different-rows replay");
@@ -1679,6 +1929,8 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         QueryOperation::Rows,
         "some-other-nonce-9876543210",
         &expected_request,
+        &advertisement_fingerprint,
+        advertisement.reply_key(),
         caller_limits,
     )
     .expect_err("foreign nonce");
@@ -1692,6 +1944,8 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         QueryOperation::Rows,
         nonce,
         &expected_request,
+        &advertisement_fingerprint,
+        advertisement.reply_key(),
         caller_limits,
     )
     .expect_err("foreign plan");
@@ -1704,10 +1958,13 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         QueryOperation::Rows,
         nonce,
         &expected_request,
+        &advertisement_fingerprint,
+        advertisement.reply_key(),
         RemoteLimits {
             deadline_ms: None,
             max_bytes: 16,
             max_items: 100,
+            max_collection_members: 1 << 16,
         },
     )
     .expect_err("oversized response");
@@ -1715,22 +1972,29 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
 
     // Unknown capability: an executor advertising nothing rejects the
     // plan before data I/O with a structured failure envelope.
-    let response = execute_remote_envelope(
-        &request,
-        &context,
-        &Caps::new(),
-        &mut server_transaction,
-        limits(),
-    )
-    .await;
-    let failure = RemoteQueryFailure::decode(&response).expect("failure envelope");
+    let starved = remote_advertisement(Caps::new());
+    let starved_request =
+        encode_remote_request(&validated, &invocation, &starved, caller_limits, nonce)
+            .expect("starved request");
+    let starved_fingerprint =
+        type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&starved_request)
+            .expect("starved request fingerprint");
+    let rejection = match preflight_remote_request(&starved_request, &context, &starved, limits()) {
+        Ok(_) => panic!("capability-starved request must reject in preflight"),
+        Err(rejection) => rejection,
+    };
+    let starved_advertisement_fingerprint = starved
+        .fingerprint()
+        .expect("starved advertisement fingerprint");
+    let response = rejection.into_failure_envelope(&starved_advertisement_fingerprint, &signer);
+    let failure = decode_authenticated_failure(&response, &starved);
     assert_eq!(
         failure.diagnostic().expect("diagnostic").code().as_str(),
         "query_remote_capability_unsupported",
     );
     assert_eq!(failure.nonce(), Some(nonce));
     failure
-        .verify_binding(nonce, &expected_request)
+        .verify_binding(nonce, &starved_fingerprint)
         .expect("post-decode failures bind the exact request envelope");
 }
 
@@ -1748,7 +2012,8 @@ async fn remote_envelope_parity_corpus_live() {
         FunctionSignature, PlaysFact, PlaysFactId, RelatesFact, RelatesFactId, TypeReference,
     };
     use type_bridge_orm::query_v2_remote::{
-        decode_remote_outcome, encode_remote_request, execute_remote_envelope,
+        decode_remote_outcome, encode_remote_request, execute_admitted_remote_request,
+        preflight_remote_request,
     };
 
     let _guard = crate::common::integration_test_guard().await;
@@ -2158,9 +2423,18 @@ async fn remote_envelope_parity_corpus_live() {
         deadline_ms: Some(30_000),
         max_bytes: 1 << 20,
         max_items: 1000,
+        max_collection_members: 1 << 16,
     };
     let mut transaction = db.read_transaction().await.expect("local transaction");
-    let mut server_transaction = db.read_transaction().await.expect("server transaction");
+    // The live provider transports multi-row given batches, so the executor
+    // truthfully advertises the transport capability under one stable epoch.
+    let mut advertised = query_plan_capability_vocabulary();
+    advertised.insert(type_bridge_contract::query_given_rows_capability());
+    let advertisement = remote_advertisement(advertised);
+    let advertisement_fingerprint = advertisement
+        .fingerprint()
+        .expect("advertisement fingerprint");
+    let signer = remote_signer();
     for (index, (label, plan, rows)) in corpus.iter().enumerate() {
         let validated = validate_query_plan(plan, &context, StructuralLimits::CANONICAL)
             .unwrap_or_else(|error| panic!("{label}: validation: {error}"));
@@ -2171,29 +2445,35 @@ async fn remote_envelope_parity_corpus_live() {
             .unwrap_or_else(|error| panic!("{label}: local execution: {error}"));
 
         let nonce = format!("corpus-parity-nonce-{index:04}");
-        let request = encode_remote_request(&validated, &invocation, caller_limits, &nonce)
-            .unwrap_or_else(|error| panic!("{label}: request: {error}"));
+        let request = encode_remote_request(
+            &validated,
+            &invocation,
+            &advertisement,
+            caller_limits,
+            &nonce,
+        )
+        .unwrap_or_else(|error| panic!("{label}: request: {error}"));
         let expected_request =
             type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
                 .unwrap_or_else(|error| panic!("{label}: request fingerprint: {error}"));
-        // The live provider transports multi-row given batches, so the
-        // executor truthfully advertises the transport capability.
-        let mut advertised = query_plan_capability_vocabulary();
-        advertised.insert(type_bridge_contract::query_given_rows_capability());
-        let response = execute_remote_envelope(
-            &request,
-            &context,
-            &advertised,
-            &mut server_transaction,
-            limits(),
-        )
-        .await;
+        let admitted = preflight_remote_request(&request, &context, &advertisement, limits())
+            .unwrap_or_else(|rejection| {
+                panic!("{label}: remote preflight: {}", rejection.diagnostic_code())
+            });
+        let mut server_transaction = db
+            .read_transaction()
+            .await
+            .unwrap_or_else(|error| panic!("{label}: server transaction: {error}"));
+        let response =
+            execute_admitted_remote_request(admitted, &mut server_transaction, &signer).await;
         let remote = decode_remote_outcome(
             &response,
             &validated,
             QueryOperation::Rows,
             &nonce,
             &expected_request,
+            &advertisement_fingerprint,
+            advertisement.reply_key(),
             caller_limits,
         )
         .unwrap_or_else(|error| panic!("{label}: remote outcome: {error}"));
@@ -2207,8 +2487,8 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
 
     use type_bridge_contract::query_plan::QueryOperation;
     use type_bridge_contract::query_plan_capability_vocabulary;
-    use type_bridge_contract::query_remote::{RemoteLimits, RemoteQueryFailure};
-    use type_bridge_orm::query_v2_remote::{encode_remote_request, execute_remote_envelope};
+    use type_bridge_contract::query_remote::RemoteLimits;
+    use type_bridge_orm::query_v2_remote::{encode_remote_request, preflight_remote_request};
     use type_bridge_orm::session::backend::AnswerCancellation;
 
     let _guard = crate::common::integration_test_guard().await;
@@ -2246,11 +2526,14 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
 
     // Local: an already-expired deadline rejects before streaming.
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let expired = BoundedAnswerLimits {
-        max_items: 100,
-        max_bytes: 1 << 20,
-        deadline: Some(Instant::now() - Duration::from_secs(1)),
-        cancellation: AnswerCancellation::default(),
+    let expired = QueryV2AnswerLimits {
+        answer: BoundedAnswerLimits {
+            max_items: 100,
+            max_bytes: 1 << 20,
+            deadline: Some(Instant::now() - Duration::from_secs(1)),
+            cancellation: AnswerCancellation::default(),
+        },
+        max_collection_members: 1 << 16,
     };
     let error = execute_validated_query(&mut transaction, &validated, &invocation, expired)
         .await
@@ -2260,52 +2543,133 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
         "local deadline error: {error}",
     );
 
-    // Remote: a zero caller deadline tightens the executor and returns a
-    // structured failure envelope instead of typed results.
+    // Remote: a zero caller deadline becomes an immediately elapsed absolute
+    // expiry and rejects during preflight, before provider execution.
     let nonce = "deadline-nonce-0123456789abc";
     let caller_limits = RemoteLimits {
         deadline_ms: Some(0),
         max_bytes: 1 << 20,
         max_items: 100,
+        max_collection_members: 1 << 16,
     };
-    let request = encode_remote_request(&validated, &invocation, caller_limits, nonce)
-        .expect("request envelope");
+    let advertisement = remote_advertisement(query_plan_capability_vocabulary());
+    let signer = remote_signer();
+    let request = encode_remote_request(
+        &validated,
+        &invocation,
+        &advertisement,
+        caller_limits,
+        nonce,
+    )
+    .expect("request envelope");
     let expected_request =
         type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
             .expect("request fingerprint");
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
-    let response = execute_remote_envelope(
-        &request,
-        &context,
-        &query_plan_capability_vocabulary(),
-        &mut transaction,
-        limits(),
-    )
-    .await;
-    let failure = RemoteQueryFailure::decode(&response).expect("failure envelope");
+    let rejection = match preflight_remote_request(&request, &context, &advertisement, limits()) {
+        Ok(_) => panic!("expired request must reject in preflight"),
+        Err(rejection) => rejection,
+    };
+    let advertisement_fingerprint = advertisement
+        .fingerprint()
+        .expect("advertisement fingerprint");
+    let response = rejection.into_failure_envelope(&advertisement_fingerprint, &signer);
+    let failure = decode_authenticated_failure(&response, &advertisement);
     assert_eq!(failure.nonce(), Some(nonce));
     failure
         .verify_binding(nonce, &expected_request)
         .expect("admitted failure binds the exact request envelope");
     assert_eq!(
         failure.diagnostic().expect("diagnostic").code().as_str(),
-        "query_remote_provider_failed",
+        "query_remote_request_expired",
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn schema_fenced_transaction_blocks_schema_admission_until_close_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let fence_db = setup_db().await;
+    let schema_db = setup_db().await;
+
+    let mut warmup = tokio::time::timeout(Duration::from_secs(10), schema_db.schema_transaction())
+        .await
+        .expect("schema admission warmup must not stall")
+        .expect("schema admission warmup");
+    tokio::time::timeout(Duration::from_secs(10), warmup.close())
+        .await
+        .expect("schema warmup close must not stall")
+        .expect("schema warmup close");
+
+    let (mut fence, fenced_schema) = tokio::time::timeout(
+        Duration::from_secs(10),
+        fence_db.schema_fenced_read_transaction(Duration::from_secs(10)),
+    )
+    .await
+    .expect("schema-fenced admission must not stall")
+    .expect("schema-fenced admission");
+    assert!(
+        !fenced_schema.is_empty(),
+        "fenced schema export is required"
+    );
+
+    let pending_schema = schema_db.schema_transaction();
+    tokio::pin!(pending_schema);
+    match tokio::time::timeout(Duration::from_millis(500), &mut pending_schema).await {
+        Err(_) => {}
+        Ok(Ok(mut unexpectedly_open)) => {
+            let _ = unexpectedly_open.close().await;
+            let _ = fence.close().await;
+            panic!("SCHEMA transaction opened while the V2 schema fence was retained");
+        }
+        Ok(Err(error)) => {
+            let _ = fence.close().await;
+            panic!("SCHEMA transaction failed instead of waiting for the V2 fence: {error}");
+        }
+    }
+
+    tokio::time::timeout(Duration::from_secs(10), fence.close())
+        .await
+        .expect("schema-fenced close must not stall")
+        .expect("schema-fenced close");
+    let mut schema = tokio::time::timeout(Duration::from_secs(10), &mut pending_schema)
+        .await
+        .expect("SCHEMA transaction must open after the V2 fence closes")
+        .expect("SCHEMA transaction admission after V2 fence close");
+    tokio::time::timeout(Duration::from_secs(10), schema.close())
+        .await
+        .expect("post-fence SCHEMA close must not stall")
+        .expect("post-fence SCHEMA close");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_facade_executes_locally_and_remotely_live() {
     use type_bridge_contract::query_plan_capability_vocabulary;
-    use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteLimits};
+    use type_bridge_contract::query_remote::RemoteLimits;
     use type_bridge_contract::schema::encode_declared_schema;
     use type_bridge_orm::query_v2_prepared::{
-        QueryAuthority, decode_prepared_remote_outcome, encode_prepared_remote_request,
-        execute_prepared_local,
+        QueryAuthority, execute_prepared_local, prepare_remote_query,
     };
-    use type_bridge_orm::query_v2_remote::execute_remote_envelope;
+    use type_bridge_orm::query_v2_remote::{
+        execute_admitted_remote_request, preflight_remote_request,
+    };
 
     let _guard = crate::common::integration_test_guard().await;
-    let db = setup_db().await;
+    let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
+    let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
+    let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
+    let database_name = unique_schema_suffix("rust", "query-v2-prepared-live-database");
+    let db = Database::connect_with_options(
+        &address,
+        &database_name,
+        &username,
+        &password,
+        connect_options_from_env(),
+    )
+    .await
+    .expect("prepared V2 fixture should connect");
+    db.create_database()
+        .await
+        .expect("prepared V2 fixture database should be created");
     let suffix = unique_schema_suffix("rust", "query-v2-prepared-live");
     let fixture = live_fixture(&suffix);
 
@@ -2386,6 +2750,13 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
     let authority =
         QueryAuthority::from_declared_bytes(&declared_bytes, "query-v2-live", "typedb-3.12.1/v1")
             .expect("authority from declared bytes");
+    let local_authority = QueryAuthority::from_declared_bytes_query_only(
+        &declared_bytes,
+        "query-v2-live",
+        "typedb-3.12.1/v1",
+        &db,
+    )
+    .expect("query-only authority from declared bytes");
 
     let (_, plan) = validated_query(&fixture, OrderDirection::Ascending);
     let plan_bytes = plan.canonical_bytes().expect("plan bytes");
@@ -2396,52 +2767,67 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
     .to_string();
 
     // Local execution through the facade.
-    let local_json =
-        execute_prepared_local(&db, &authority, &plan_bytes, &invocation_json, limits())
-            .await
-            .expect("prepared local outcome");
+    let local_json = execute_prepared_local(
+        &db,
+        &local_authority,
+        &plan_bytes,
+        &invocation_json,
+        limits(),
+    )
+    .await
+    .expect("prepared local outcome");
     assert!(local_json.contains("\"ada\""), "{local_json}");
     assert!(local_json.contains("\"bob\""), "{local_json}");
 
     // Remote execution through the same facade and envelope.
-    let nonce = "prepared-nonce-0123456789abc";
     let caller_limits = RemoteLimits {
         deadline_ms: Some(30_000),
         max_bytes: 1 << 20,
         max_items: 100,
+        max_collection_members: 1 << 16,
     };
-    let advertisement = RemoteCapabilities::new(query_plan_capability_vocabulary())
-        .encode()
-        .expect("advertisement bytes");
-    let request = encode_prepared_remote_request(
+    let advertisement = remote_advertisement(query_plan_capability_vocabulary());
+    let advertisement_bytes = advertisement.encode().expect("advertisement bytes");
+    let pending = prepare_remote_query(
         &authority,
         &plan_bytes,
         &invocation_json,
-        &advertisement,
+        &advertisement_bytes,
         caller_limits,
-        nonce,
     )
     .expect("prepared request");
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let admitted =
+        preflight_remote_request(pending.request_bytes(), &context, &advertisement, limits())
+            .unwrap_or_else(|rejection| {
+                panic!("prepared preflight: {}", rejection.diagnostic_code())
+            });
+    let signer = remote_signer();
     let mut server_transaction = db.read_transaction().await.expect("server transaction");
-    let response = execute_remote_envelope(
-        &request,
-        &context,
-        &query_plan_capability_vocabulary(),
-        &mut server_transaction,
-        limits(),
-    )
-    .await;
-    let remote_json = decode_prepared_remote_outcome(
-        &authority,
-        &plan_bytes,
-        &invocation_json,
-        &response,
-        nonce,
-        caller_limits,
-    )
-    .expect("prepared remote outcome");
+    let response =
+        execute_admitted_remote_request(admitted, &mut server_transaction, &signer).await;
+    let remote_json = pending
+        .decode_reply(&response)
+        .expect("prepared remote outcome");
     assert_eq!(remote_json, local_json);
+    assert_eq!(
+        pending
+            .decode_reply(&response)
+            .expect_err("pending reply decoder is one-shot")
+            .code()
+            .as_str(),
+        "query_remote_reply_replayed",
+    );
+    server_transaction
+        .close()
+        .await
+        .expect("prepared V2 server transaction should close");
+    drop(server_transaction);
+
+    tokio::time::timeout(Duration::from_secs(10), db.delete_database())
+        .await
+        .expect("prepared V2 fixture database deletion must not stall")
+        .expect("prepared V2 fixture database should be deleted");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

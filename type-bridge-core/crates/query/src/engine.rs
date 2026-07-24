@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
-use type_bridge_contract::migration_assertion::BindingId;
+use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
 use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
 use type_bridge_contract::schema::{FunctionReturnMode, TypeReference};
 use type_bridge_contract::value::ValueTypeTag;
@@ -34,6 +34,7 @@ pub(crate) struct EngineCodes {
     pub(crate) negation_unbound: EngineCode,
     pub(crate) empty_negated_domain: EngineCode,
     pub(crate) value_domain_mismatch: EngineCode,
+    pub(crate) value_comparator_unsupported: EngineCode,
     pub(crate) binding_not_scalar: EngineCode,
     pub(crate) nonuniform_value_domain: EngineCode,
     pub(crate) disconnected_topology: EngineCode,
@@ -42,10 +43,12 @@ pub(crate) struct EngineCodes {
     pub(crate) function_return_unsupported: EngineCode,
     pub(crate) function_arity_mismatch: EngineCode,
     pub(crate) function_argument_type: EngineCode,
+    pub(crate) function_dependency_cycle: EngineCode,
     pub(crate) value_binding_misuse: EngineCode,
     pub(crate) try_unbound: EngineCode,
     pub(crate) try_uncorrelated: EngineCode,
     pub(crate) empty_try_domain: EngineCode,
+    pub(crate) try_binding_shared: EngineCode,
     pub(crate) local_unbound: EngineCode,
     pub(crate) local_uncorrelated: EngineCode,
     pub(crate) empty_local_domain: EngineCode,
@@ -196,12 +199,6 @@ pub(crate) fn analyze_patterns(
         .collect::<BTreeMap<_, _>>();
 
     refine_positive(patterns, &mut domains, schema, codes)?;
-    let value_bindings =
-        analyze_function_calls(patterns, &mut domains, schema, inputs, locals, codes)?;
-    refine_positive(patterns, &mut domains, schema, codes)?;
-    for binding in value_bindings.keys() {
-        domains.insert(*binding, BTreeSet::new());
-    }
     let mut positive = BTreeSet::new();
     let mut root_references = BTreeSet::new();
     let mut topology = binding_ids
@@ -212,7 +209,15 @@ pub(crate) fn analyze_patterns(
     if root_references.iter().any(|id| !positive.contains(id)) {
         return Err(fail(codes.root_reference_not_positive));
     }
+    let value_bindings =
+        analyze_function_calls(patterns, &mut domains, schema, inputs, locals, codes)?;
+    refine_positive(patterns, &mut domains, schema, codes)?;
+    for binding in value_bindings.keys() {
+        domains.insert(*binding, BTreeSet::new());
+    }
+    validate_function_dependencies(patterns, codes)?;
     topology.retain(|id, _| root_references.contains(id));
+    prune_singleton_function_sources(patterns, &mut topology);
     let mut scoped_positive = BTreeSet::new();
     validate_negations(
         patterns,
@@ -237,6 +242,9 @@ pub(crate) fn analyze_patterns(
         &value_bindings,
         codes,
     )?;
+    if !scoped_positive.is_disjoint(&optional_positive) {
+        return Err(fail(codes.try_binding_shared));
+    }
     validate_values_shallow(patterns, &domains, schema, inputs, &value_bindings, codes)?;
     let mut used = BTreeSet::new();
     collect_references(patterns, &mut used);
@@ -266,6 +274,11 @@ fn analyze_function_calls(
     codes: &EngineCodes,
 ) -> Result<BTreeMap<BindingId, ValueTypeTag>, Diagnostic> {
     let mut value_bindings = BTreeMap::new();
+
+    // Discover every result before checking any argument. Match conjunctions
+    // are declarative, so a consumer may precede its producer in plan order.
+    // This pass also makes value-return bindings available uniformly to the
+    // argument checks below.
     for pattern in patterns {
         let QueryPattern::FunctionCall {
             arguments,
@@ -280,15 +293,6 @@ fn analyze_function_calls(
         if let Some(local) = locals.get(function) {
             if local.parameters.len() != arguments.len() {
                 return Err(fail(codes.function_arity_mismatch));
-            }
-            for (allowed, argument) in local.parameters.iter().zip(arguments) {
-                let QueryOperand::Binding { binding } = argument else {
-                    return Err(fail(codes.function_argument_type));
-                };
-                if value_bindings.contains_key(binding) {
-                    return Err(fail(codes.value_binding_misuse));
-                }
-                intersect_mut(domains.get_mut(binding).expect("declared binding"), allowed);
             }
             if value_bindings.insert(*assigned, local.returns).is_some() {
                 return Err(fail(codes.value_binding_misuse));
@@ -309,36 +313,6 @@ fn analyze_function_calls(
         if signature.parameters().len() != arguments.len() {
             return Err(fail(codes.function_arity_mismatch));
         }
-        for (parameter, argument) in signature.parameters().iter().zip(arguments) {
-            match parameter.type_ref() {
-                TypeReference::Value(expected) => {
-                    let actual = operand_value_type(
-                        argument,
-                        domains,
-                        schema,
-                        inputs,
-                        &value_bindings,
-                        codes,
-                    )?;
-                    if actual != *expected {
-                        return Err(fail(codes.function_argument_type));
-                    }
-                }
-                TypeReference::Schema(label) => {
-                    let QueryOperand::Binding { binding } = argument else {
-                        return Err(fail(codes.function_argument_type));
-                    };
-                    if value_bindings.contains_key(binding) {
-                        return Err(fail(codes.value_binding_misuse));
-                    }
-                    let allowed = schema_reference_domain(label.as_str(), schema, codes)?;
-                    intersect_mut(
-                        domains.get_mut(binding).expect("declared binding"),
-                        &allowed,
-                    );
-                }
-            }
-        }
         match element.type_ref() {
             TypeReference::Value(tag) => {
                 if value_bindings.insert(*assigned, *tag).is_some() {
@@ -354,10 +328,174 @@ fn analyze_function_calls(
             }
         }
     }
+
+    // Apply every schema-position argument constraint against the complete
+    // result environment. Keep scalar checks for the final pass: one call's
+    // schema constraint may make another call's scalar domain uniform, and
+    // conjunction order must not decide which signature is accepted.
+    for pattern in patterns {
+        let QueryPattern::FunctionCall {
+            arguments,
+            function,
+            ..
+        } = pattern
+        else {
+            continue;
+        };
+        if let Some(local) = locals.get(function) {
+            for (allowed, argument) in local.parameters.iter().zip(arguments) {
+                let QueryOperand::Binding { binding } = argument else {
+                    return Err(fail(codes.function_argument_type));
+                };
+                if value_bindings.contains_key(binding) {
+                    return Err(fail(codes.value_binding_misuse));
+                }
+                intersect_mut(domains.get_mut(binding).expect("declared binding"), allowed);
+            }
+            continue;
+        }
+        let resolved = schema
+            .functions()
+            .get(function)
+            .ok_or_else(|| fail(codes.unknown_function))?;
+        for (parameter, argument) in resolved
+            .declaration()
+            .signature()
+            .parameters()
+            .iter()
+            .zip(arguments)
+        {
+            match parameter.type_ref() {
+                TypeReference::Value(_) => {}
+                TypeReference::Schema(label) => {
+                    let QueryOperand::Binding { binding } = argument else {
+                        return Err(fail(codes.function_argument_type));
+                    };
+                    if value_bindings.contains_key(binding) {
+                        return Err(fail(codes.value_binding_misuse));
+                    }
+                    let allowed = schema_reference_domain(label.as_str(), schema, codes)?;
+                    intersect_mut(
+                        domains.get_mut(binding).expect("declared binding"),
+                        &allowed,
+                    );
+                }
+            }
+        }
+    }
+
+    // Propagate all schema-position call constraints through the ordinary
+    // positive pattern fixpoint before any scalar domain is claimed.
+    refine_positive(patterns, domains, schema, codes)?;
+    for pattern in patterns {
+        let QueryPattern::FunctionCall {
+            arguments,
+            function,
+            ..
+        } = pattern
+        else {
+            continue;
+        };
+        if locals.contains_key(function) {
+            continue;
+        }
+        let resolved = schema
+            .functions()
+            .get(function)
+            .ok_or_else(|| fail(codes.unknown_function))?;
+        for (parameter, argument) in resolved
+            .declaration()
+            .signature()
+            .parameters()
+            .iter()
+            .zip(arguments)
+        {
+            let TypeReference::Value(expected) = parameter.type_ref() else {
+                continue;
+            };
+            let actual =
+                operand_value_type(argument, domains, schema, inputs, &value_bindings, codes)?;
+            if actual != *expected {
+                return Err(fail(codes.function_argument_type));
+            }
+        }
+    }
     if !value_bindings.is_empty() {
         ensure_value_bindings_stay_scalar(patterns, &value_bindings, codes)?;
     }
     Ok(value_bindings)
+}
+
+/// Require root function results to form an acyclic dataflow graph.
+///
+/// A call result is a positive producer; a binding argument is only a
+/// reference. References to non-call producers are checked by the ordinary
+/// root-scope discipline, while references to call results form dependency
+/// edges checked here independent of conjunction order.
+fn validate_function_dependencies(
+    patterns: &[QueryPattern],
+    codes: &EngineCodes,
+) -> Result<(), Diagnostic> {
+    let mut producers = BTreeSet::new();
+    for pattern in patterns {
+        if let QueryPattern::FunctionCall { assigned, .. } = pattern
+            && !producers.insert(*assigned)
+        {
+            return Err(fail(codes.value_binding_misuse));
+        }
+    }
+
+    let mut dependencies = producers
+        .iter()
+        .map(|binding| (*binding, BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    let mut dependents = dependencies.clone();
+    for pattern in patterns {
+        let QueryPattern::FunctionCall {
+            arguments,
+            assigned,
+            ..
+        } = pattern
+        else {
+            continue;
+        };
+        for dependency in arguments.iter().filter_map(operand_binding) {
+            if producers.contains(&dependency)
+                && dependencies
+                    .get_mut(assigned)
+                    .expect("registered producer")
+                    .insert(dependency)
+            {
+                dependents
+                    .get_mut(&dependency)
+                    .expect("registered producer")
+                    .insert(*assigned);
+            }
+        }
+    }
+
+    let mut ready = dependencies
+        .iter()
+        .filter_map(|(binding, dependencies)| dependencies.is_empty().then_some(*binding))
+        .collect::<VecDeque<_>>();
+    let mut resolved = 0_usize;
+    while let Some(binding) = ready.pop_front() {
+        resolved += 1;
+        for dependent in &dependents[&binding] {
+            let unresolved = dependencies
+                .get_mut(dependent)
+                .expect("registered dependent");
+            unresolved.remove(&binding);
+            if unresolved.is_empty() {
+                ready.push_back(*dependent);
+            }
+        }
+    }
+    if resolved == producers.len() {
+        Ok(())
+    } else {
+        Err(fail(codes.function_dependency_cycle))
+    }
 }
 
 /// Resolve one schema-position type reference to its constructible domain.
@@ -666,12 +804,46 @@ fn collect_scope_topology(
                 for argument in arguments {
                     if let Some(binding) = operand_binding(argument) {
                         referenced.insert(binding);
-                        positive.insert(binding);
                         connect(topology, *assigned, binding);
                     }
                 }
             }
         }
+    }
+}
+
+/// Remove call-result vertices that cannot introduce row multiplicity.
+///
+/// This runs only after every call has resolved to a scalar, non-optional
+/// signature. A call whose arguments are all literals or invocation inputs
+/// produces one result for the invocation row, so combining it with an
+/// independent graph component is not a Cartesian product. Calls with any
+/// binding argument remain in the topology and retain the ordinary
+/// cross-product guard.
+fn prune_singleton_function_sources(
+    patterns: &[QueryPattern],
+    topology: &mut BTreeMap<BindingId, BTreeSet<BindingId>>,
+) {
+    let singleton_sources = patterns
+        .iter()
+        .filter_map(|pattern| {
+            let QueryPattern::FunctionCall {
+                arguments,
+                assigned,
+                ..
+            } = pattern
+            else {
+                return None;
+            };
+            arguments
+                .iter()
+                .all(|argument| operand_binding(argument).is_none())
+                .then_some(*assigned)
+        })
+        .collect::<BTreeSet<_>>();
+    topology.retain(|binding, _| !singleton_sources.contains(binding));
+    for neighbors in topology.values_mut() {
+        neighbors.retain(|binding| !singleton_sources.contains(binding));
     }
 }
 
@@ -801,7 +973,9 @@ fn validate_tries(
         ensure_connected(&topology, codes)?;
         for id in &body_positive {
             if !outer_positive.contains(id) {
-                optional_positive.insert(*id);
+                if !optional_positive.insert(*id) {
+                    return Err(fail(codes.try_binding_shared));
+                }
                 domains.insert(*id, nested[id].clone());
             }
         }
@@ -818,11 +992,24 @@ fn validate_values_shallow(
     codes: &EngineCodes,
 ) -> Result<(), Diagnostic> {
     for pattern in patterns {
-        if let QueryPattern::Value { left, right, .. } = pattern {
+        if let QueryPattern::Value {
+            comparator,
+            left,
+            right,
+        } = pattern
+        {
             let left = operand_value_type(left, domains, schema, inputs, value_bindings, codes)?;
             let right = operand_value_type(right, domains, schema, inputs, value_bindings, codes)?;
             if left != right {
                 return Err(fail(codes.value_domain_mismatch));
+            }
+            if left == ValueTypeTag::Duration
+                && !matches!(
+                    comparator,
+                    ValueComparator::Equal | ValueComparator::NotEqual
+                )
+            {
+                return Err(fail(codes.value_comparator_unsupported));
             }
         }
     }
@@ -838,7 +1025,10 @@ fn operand_value_type(
     codes: &EngineCodes,
 ) -> Result<ValueTypeTag, Diagnostic> {
     match operand {
-        QueryOperand::Literal { value } => Ok(value.value_type()),
+        QueryOperand::Literal { value } => {
+            type_bridge_schema::validate_provider_temporal_literal(value)?;
+            Ok(value.value_type())
+        }
         QueryOperand::Binding { binding } => {
             if let Some(tag) = value_bindings.get(binding) {
                 return Ok(*tag);

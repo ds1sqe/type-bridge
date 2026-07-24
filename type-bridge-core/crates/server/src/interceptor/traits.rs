@@ -1,13 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 
+#[cfg(feature = "v2-query")]
+use type_bridge_contract::query_plan::{QueryInvocation, QueryPlan};
 use type_bridge_core_lib::ast::Clause;
 
 use super::crud_info::CrudInfo;
 
 /// Metadata attached to each request flowing through the interceptor chain.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RequestContext {
     pub request_id: String,
     pub client_id: String,
@@ -16,6 +19,91 @@ pub struct RequestContext {
     pub metadata: HashMap<String, serde_json::Value>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub crud_info: Option<CrudInfo>,
+}
+
+impl fmt::Debug for RequestContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let metadata_keys = self.metadata.keys().collect::<BTreeSet<_>>();
+        formatter
+            .debug_struct("RequestContext")
+            .field("request_id", &self.request_id)
+            .field("client_id", &self.client_id)
+            .field("database", &self.database)
+            .field("transaction_type", &self.transaction_type)
+            // V2 transport policy metadata deliberately contains raw HTTP
+            // credentials. Keep explicit interceptor access while making the
+            // ordinary whole-context debug path value-blind.
+            .field("metadata_keys", &metadata_keys)
+            .field("timestamp", &self.timestamp)
+            .field("crud_info", &self.crud_info)
+            .finish()
+    }
+}
+
+/// Immutable typed V2 contract presented to authorization policies after
+/// provider-independent validation and before replay/provider admission.
+#[cfg(feature = "v2-query")]
+pub struct V2PolicyRequest<'a> {
+    plan: &'a QueryPlan,
+    invocation: &'a QueryInvocation,
+}
+
+#[cfg(feature = "v2-query")]
+impl<'a> V2PolicyRequest<'a> {
+    pub(crate) const fn new(plan: &'a QueryPlan, invocation: &'a QueryInvocation) -> Self {
+        Self { plan, invocation }
+    }
+
+    /// Return the exact schema-bound plan admitted by contract validation.
+    #[must_use]
+    pub const fn plan(&self) -> &'a QueryPlan {
+        self.plan
+    }
+
+    /// Return the exact operation and input rows bound into the request.
+    #[must_use]
+    pub const fn invocation(&self) -> &'a QueryInvocation {
+        self.invocation
+    }
+}
+
+/// Redacted V2 result evidence presented to response and audit policies.
+#[cfg(feature = "v2-query")]
+pub struct V2PolicyOutcome<'a> {
+    success: bool,
+    code: &'a str,
+    response_bytes: usize,
+}
+
+#[cfg(feature = "v2-query")]
+impl<'a> V2PolicyOutcome<'a> {
+    /// Construct one redacted outcome without provider or query payload text.
+    #[must_use]
+    pub const fn new(success: bool, code: &'a str, response_bytes: usize) -> Self {
+        Self {
+            success,
+            code,
+            response_bytes,
+        }
+    }
+
+    /// Whether execution produced the successful bound response.
+    #[must_use]
+    pub const fn success(&self) -> bool {
+        self.success
+    }
+
+    /// Stable diagnostic code, or `ok` for success.
+    #[must_use]
+    pub const fn code(&self) -> &'a str {
+        self.code
+    }
+
+    /// Encoded response size, or zero when no response was constructed.
+    #[must_use]
+    pub const fn response_bytes(&self) -> usize {
+        self.response_bytes
+    }
 }
 
 /// Errors that interceptors can produce.
@@ -50,6 +138,44 @@ pub trait Interceptor: Send + Sync {
         clauses: Vec<Clause>,
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>;
+
+    /// Declare that this policy intentionally covers the typed V2 lifecycle.
+    ///
+    /// The default is fail-closed: an AST policy cannot silently receive an
+    /// empty legacy query and accidentally authorize a V2 plan it never saw.
+    #[cfg(feature = "v2-query")]
+    fn supports_v2(&self) -> bool {
+        false
+    }
+
+    /// Authenticate and rate-limit transport metadata before envelope decode.
+    #[cfg(feature = "v2-query")]
+    fn on_v2_transport<'a>(
+        &'a self,
+        _ctx: &'a mut RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Authorize the exact validated plan and invocation before replay or I/O.
+    #[cfg(feature = "v2-query")]
+    fn on_v2_request<'a>(
+        &'a self,
+        _request: &'a V2PolicyRequest<'a>,
+        _ctx: &'a mut RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Observe one redacted success or failure outcome for audit/policy.
+    #[cfg(feature = "v2-query")]
+    fn on_v2_response<'a>(
+        &'a self,
+        _outcome: &'a V2PolicyOutcome<'a>,
+        _ctx: &'a RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
 
     /// Called after query execution, before response is sent to client.
     /// Default implementation is a no-op pass-through.
@@ -115,17 +241,33 @@ mod tests {
 
     #[test]
     fn request_context_debug() {
+        let metadata = HashMap::from([
+            (
+                "http_headers".to_owned(),
+                serde_json::json!({
+                    "authorization": ["Bearer debug-secret"],
+                    "cookie": ["session=debug-secret"],
+                }),
+            ),
+            ("tenant".to_owned(), serde_json::json!("private-tenant")),
+        ]);
         let ctx = RequestContext {
             request_id: "req-1".into(),
             client_id: "client-1".into(),
             database: "db".into(),
             transaction_type: "read".into(),
-            metadata: HashMap::new(),
+            metadata,
             timestamp: chrono::Utc::now(),
             crud_info: None,
         };
         let debug = format!("{:?}", ctx);
         assert!(debug.contains("req-1"));
+        assert!(debug.contains("http_headers"));
+        assert!(debug.contains("tenant"));
+        assert!(!debug.contains("debug-secret"));
+        assert!(!debug.contains("private-tenant"));
+        assert!(!debug.contains("authorization"));
+        assert!(!debug.contains("cookie"));
     }
 
     #[tokio::test]

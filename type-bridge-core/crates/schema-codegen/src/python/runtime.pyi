@@ -1,26 +1,17 @@
 from collections.abc import Mapping, Sequence
-from typing import Generic, ParamSpec, TypeVar, overload
+from typing import overload
 
 from type_bridge.session import Database, TransactionContext
 
-_OwnerT = TypeVar("_OwnerT", bound="ModelBase")
-_PlayerT_co = TypeVar("_PlayerT_co", covariant=True)
-_ReadT_co = TypeVar("_ReadT_co", covariant=True)
-_AssignT_contra = TypeVar("_AssignT_contra", contravariant=True)
-_AccessOwnerT = TypeVar("_AccessOwnerT", bound="ModelBase")
-_P = ParamSpec("_P")
-_R_co = TypeVar("_R_co", covariant=True)
-_ModelT = TypeVar("_ModelT", bound="ModelBase")
-
-class FieldToken(Generic[_OwnerT]):
-    owner: type[_OwnerT]
+class FieldToken[OwnerT: ModelBase]:
+    owner: type[OwnerT]
     fact: Mapping[str, object]
 
-class RoleToken(Generic[_OwnerT, _PlayerT_co]):
-    owner: type[_OwnerT]
+class RoleToken[OwnerT: ModelBase, PlayerT_co]:
+    owner: type[OwnerT]
     fact: Mapping[str, object]
 
-class FunctionRef(Generic[_P, _R_co]):
+class FunctionRef[**P, R_co]:
     id: str
     signature: Mapping[str, object]
     def __init__(
@@ -37,10 +28,10 @@ class ModelBase:
     @property
     def iid(self) -> str | None: ...
     @classmethod
-    def manager(
-        cls: type[_ModelT],
+    def manager[ModelT: ModelBase](
+        cls: type[ModelT],
         connection: Database | TransactionContext,
-    ) -> ProjectedModelManager[_ModelT]: ...
+    ) -> ProjectedModelManager[ModelT]: ...
     def runtime_values(self) -> dict[str, object]: ...
     def initialize_runtime_values(
         self,
@@ -53,13 +44,14 @@ class AttributeBase(ModelBase):
     def value(self) -> object: ...
     def runtime_attribute_value(self) -> object: ...
     def initialize_runtime_attribute(self, value: object, scalar: str) -> None: ...
+
 class EntityBase(ModelBase): ...
 class RelationBase(ModelBase): ...
 
-class ProjectedModelManager(Generic[_ModelT]):
-    def insert(self, instance: _ModelT) -> _ModelT: ...
-    def all(self) -> list[_ModelT]: ...
-    def get_by_iid(self, iid: str) -> _ModelT | None: ...
+class ProjectedModelManager[ModelT: ModelBase]:
+    def insert(self, instance: ModelT) -> ModelT: ...
+    def all(self) -> list[ModelT]: ...
+    def get_by_iid(self, iid: str) -> ModelT | None: ...
 
 class ReferenceBase:
     __projection__: Mapping[str, object]
@@ -77,44 +69,42 @@ class ReferenceBase:
 class StructValueBase:
     __struct_id__: str
 
-class FieldDescriptor(Generic[_OwnerT, _ReadT_co, _AssignT_contra]):
+class FieldDescriptor[OwnerT: ModelBase, ReadT_co, AssignT_contra]:
     @overload
-    def __get__(
+    def __get__[AccessOwnerT: ModelBase](
         self,
         instance: None,
-        owner: type[_AccessOwnerT],
-    ) -> FieldToken[_AccessOwnerT]: ...
+        owner: type[AccessOwnerT],
+    ) -> FieldToken[AccessOwnerT]: ...
     @overload
     def __get__(
         self,
-        instance: _OwnerT,
-        owner: type[_OwnerT] | None = ...,
-    ) -> _ReadT_co: ...
+        instance: OwnerT,
+        owner: type[OwnerT] | None = ...,
+    ) -> ReadT_co: ...
     def __set__(
         self,
-        instance: _OwnerT,
-        value: _AssignT_contra,
+        instance: OwnerT,
+        value: AssignT_contra,
     ) -> None: ...
 
-class RoleDescriptor(
-    Generic[_OwnerT, _PlayerT_co, _ReadT_co, _AssignT_contra]
-):
+class RoleDescriptor[OwnerT: ModelBase, PlayerT_co, ReadT_co, AssignT_contra]:
     @overload
-    def __get__(
+    def __get__[AccessOwnerT: ModelBase](
         self,
         instance: None,
-        owner: type[_AccessOwnerT],
-    ) -> RoleToken[_AccessOwnerT, _PlayerT_co]: ...
+        owner: type[AccessOwnerT],
+    ) -> RoleToken[AccessOwnerT, PlayerT_co]: ...
     @overload
     def __get__(
         self,
-        instance: _OwnerT,
-        owner: type[_OwnerT] | None = ...,
-    ) -> _ReadT_co: ...
+        instance: OwnerT,
+        owner: type[OwnerT] | None = ...,
+    ) -> ReadT_co: ...
     def __set__(
         self,
-        instance: _OwnerT,
-        value: _AssignT_contra,
+        instance: OwnerT,
+        value: AssignT_contra,
     ) -> None: ...
 
 def load_mapping(source: str) -> Mapping[str, object]: ...

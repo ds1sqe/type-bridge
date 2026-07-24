@@ -1,0 +1,55 @@
+# Native-distribution licensing policy. The notice generator runs cargo-about
+# once from each released binding root, then forms a deterministic union. Keep
+# this allow-list exact: an accepted SPDX identifier that is unused by the
+# locked union is rejected as stale.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "MPL-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+]
+
+# Exact union of the Python-wheel and Node-native release matrices. cargo-about
+# evaluates these together, intentionally over-approximating cfg combinations
+# while excluding targets that are not distributed.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+
+# Build tools and test-only crates are not linked into the distributed native
+# modules. Private TypeBridge-authored crates are covered by the custom MIT
+# section. Public local and namespaced TypeDB dependencies remain in the
+# generated inventory; the latter also retain their custom provenance section.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+private = { ignore = true }
+
+# These version-pinned cargo-about workarounds bind ambiguous packaged license
+# files to checksummed upstream texts instead of silently choosing a generic
+# SPDX body.
+workarounds = [
+    "chrono",
+    "prost",
+    "ring",
+    "rustix",
+    "rustls",
+]
+
+# cargo-about otherwise falls back to a generic BSD-3-Clause body for this
+# crate's concatenated two-author LICENSE. Bind the complete upstream file so
+# both copyright blocks and the Go-derived portions notice remain verbatim.
+[curve25519-dalek.clarify]
+license = "BSD-3-Clause"
+
+[[curve25519-dalek.clarify.files]]
+path = "LICENSE"
+checksum = "cca0bd3c4fcdba74145ef9d49c62337e2c9fbf9368288f11d0547f1b0273219f"

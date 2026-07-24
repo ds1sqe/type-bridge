@@ -14,6 +14,7 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
+use type_bridge_contract::temporal::{CanonicalDateTimeTz, CanonicalDuration};
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 use type_bridge_query::{MigrationAssertionValidationContext, validate_migration_assertion_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
@@ -152,6 +153,138 @@ fn valid_plan(managed_semantics: &ManagedSemanticSchemaFingerprint) -> Migration
         AssertionExpectation::NoRows,
     )
     .expect("valid plan")
+}
+
+fn validate_temporal_assertion_literal(
+    value_type: ValueTypeTag,
+    comparator: ValueComparator,
+    literal: CanonicalValue,
+) -> Result<
+    type_bridge_query::ValidatedMigrationAssertionPlan,
+    type_bridge_contract::diagnostic::Diagnostic,
+> {
+    let person = type_id(TypeKind::Entity, "person");
+    let observed = AttributeId::new("observed").expect("attribute");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
+        SchemaFact::Type(
+            TypeFact::new(type_id(TypeKind::Attribute, "observed")).expect("type fact"),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(observed.clone()),
+            value_type,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), observed.clone()).expect("owns id"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("temporal-assertion-literal").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let managed = managed_schema_state(
+        &declared,
+        &ManagedDeltaContext::new(
+            ManagedScopeId::new("temporal-assertion-literal").expect("scope"),
+            profile.clone(),
+            CapabilitySet::new(),
+        ),
+    )
+    .expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+    let person_binding = BindingId::new(0).expect("binding");
+    let observed_binding = BindingId::new(1).expect("binding");
+    let plan = MigrationAssertionPlan::new(
+        vec![binding(0, "person"), binding(1, "observed")],
+        vec![
+            AssertionPattern::Isa {
+                binding: person_binding,
+                include_subtypes: false,
+                type_id: person,
+            },
+            AssertionPattern::Has {
+                attribute: observed_binding,
+                attribute_id: observed,
+                owner: person_binding,
+            },
+            AssertionPattern::Value {
+                comparator,
+                left: ValueOperand::binding(observed_binding),
+                right: ValueOperand::literal(literal),
+            },
+        ],
+        vec![person_binding],
+        vec![observed_binding],
+        managed.managed_semantic_schema().clone(),
+        AssertionExpectation::NoRows,
+    )
+    .expect("assertion plan");
+    validate_migration_assertion_plan(
+        &plan,
+        &MigrationAssertionValidationContext::new(&resolved, &managed),
+        StructuralLimits::CANONICAL,
+    )
+}
+
+#[test]
+fn migration_assertion_temporal_literals_fail_before_provider_lowering() {
+    let named = CanonicalDateTimeTz::new_named_resolved(
+        "2024-07-01T12:00:00".parse().expect("local datetime"),
+        "Europe/Amsterdam",
+        7_200,
+    )
+    .expect("ordinary named value");
+    validate_temporal_assertion_literal(
+        ValueTypeTag::DateTimeTz,
+        ValueComparator::Equal,
+        CanonicalValue::DateTimeTz(named),
+    )
+    .expect("unambiguous named literal is provider-valid");
+
+    for duration in [
+        CanonicalDuration::new(true, 0, 1, 0, 0).unwrap(),
+        CanonicalDuration::new(false, 0, u64::from(u32::MAX) + 1, 0, 0).unwrap(),
+    ] {
+        assert_eq!(
+            validate_temporal_assertion_literal(
+                ValueTypeTag::Duration,
+                ValueComparator::Equal,
+                CanonicalValue::Duration(duration),
+            )
+            .expect_err("provider-invalid assertion literal")
+            .code()
+            .as_str(),
+            "provider_duration_out_of_range"
+        );
+    }
+
+    assert_eq!(
+        validate_temporal_assertion_literal(
+            ValueTypeTag::Duration,
+            ValueComparator::Less,
+            CanonicalValue::Duration(CanonicalDuration::new(false, 0, 1, 0, 0).unwrap()),
+        )
+        .expect_err("provider-unorderable assertion comparator")
+        .code()
+        .as_str(),
+        "migration_assertion_value_comparator_unsupported"
+    );
 }
 
 #[test]

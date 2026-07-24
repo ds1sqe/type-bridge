@@ -10,6 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::checksum::migration_file_checksum;
 use crate::error::{MigrationError, Result};
 use crate::spec::{MigrationGraph, MigrationSpec};
@@ -66,13 +68,17 @@ pub fn load_dir(dir: &Path) -> Result<MigrationGraph> {
     })?;
 
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
-
     for entry in read_dir {
         let entry = entry.map_err(|err| MigrationError::Loader {
             message: format!("failed to iterate migrations dir {}: {err}", dir.display()),
         })?;
         let path = entry.path();
 
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        // Adoption archives are deliberately not executable sidecars.
+        if file_name.is_some_and(|name| name.ends_with(".adoption.json")) {
+            continue;
+        }
         // Only consider `.json` files.
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
@@ -113,43 +119,46 @@ pub fn load_dir(dir: &Path) -> Result<MigrationGraph> {
 }
 
 /// Walk `dir` and load all `NNNN_*.json` sidecar files into a sorted
-/// [`MigrationGraph`], then validate that each sidecar's embedded checksum
-/// agrees with the current `.py` text.
+/// [`MigrationGraph`], then validate that each sidecar's embedded source
+/// identity agrees with the current `.py` file.
 ///
 /// This is the **checked** variant of [`load_dir`], intended for use by the
 /// Rust CLI whenever it is the execution source.  The check guards against
 /// sidecar drift: if a developer hand-edits the `.py` after the sidecar was
-/// generated, the sidecar's `checksum` field will disagree with the fresh
-/// `.py` text, and this function returns an error rather than silently
-/// executing a stale sidecar.
+/// generated, its full `source_sha256` (new sidecars) or legacy shortened
+/// text `checksum` will disagree, and this function returns an error rather
+/// than silently executing a stale sidecar.
 ///
 /// # Invariant
 ///
-/// The `.py` text is the sole checksum source (sub-plan 04/07 invariant).
-/// The sidecar carries a copy of that checksum so the drift guard can compare
-/// without importing Python; if the `.py` file is absent for a given sidecar
-/// the check is skipped (legacy sidecar-only migration; no `.py` to compare).
+/// `source_sha256`, when present, is authoritative and binds exact raw bytes.
+/// Sidecars without it retain the released UTF-8/universal-newline checksum
+/// behavior. If the `.py` file is absent for a given sidecar the check is
+/// skipped (legacy sidecar-only migration; no `.py` to compare).
 ///
 /// # Errors
 ///
 /// Returns [`MigrationError::Loader`] when:
 /// - The directory or a sidecar cannot be read (same as [`load_dir`]).
-/// - A sidecar's embedded `checksum` disagrees with the recomputed `.py` text
-///   checksum — "sidecar drift: regenerate the migration" (D6 guard).
+/// - A sidecar's source digest or legacy checksum disagrees with the `.py`
+///   source — "sidecar drift: regenerate the migration" (D6 guard).
 pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
     let read_dir = std::fs::read_dir(dir).map_err(|err| MigrationError::Loader {
         message: format!("failed to read migrations dir {}: {err}", dir.display()),
     })?;
 
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
-    let mut python_stems: Vec<String> = Vec::new();
-
+    let mut python_stems = std::collections::BTreeSet::new();
     for entry in read_dir {
         let entry = entry.map_err(|err| MigrationError::Loader {
             message: format!("failed to iterate migrations dir {}: {err}", dir.display()),
         })?;
         let path = entry.path();
 
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        if file_name.is_some_and(|name| name.ends_with(".adoption.json")) {
+            continue;
+        }
         let extension = path.extension().and_then(|e| e.to_str());
         let stem = match path.file_stem().and_then(|s| s.to_str()) {
             Some(s) => s.to_owned(),
@@ -160,7 +169,9 @@ pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
         }
         match extension {
             Some("json") => entries.push((stem, path)),
-            Some("py") => python_stems.push(stem),
+            Some("py") => {
+                python_stems.insert(stem);
+            }
             _ => {}
         }
     }
@@ -168,17 +179,18 @@ pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
     entries.sort_by(|(a, _), (b, _)| a.cmp(b));
 
     // A migration-shaped `.py` with no sidecar is a Python-only migration
-    // the released loader would import dynamically. This native loader
-    // cannot execute it; silently omitting it would truncate the history,
-    // so fail with the exact conversion requirement instead.
+    // the released Python loader would import dynamically. This is the one
+    // deliberate fail-closed exception to V1 sidecar-loader parity: the
+    // native loader cannot execute it, and silently omitting it would
+    // truncate the history, so require the explicit adoption conversion.
     let sidecar_stems: std::collections::BTreeSet<&str> =
         entries.iter().map(|(stem, _)| stem.as_str()).collect();
-    let mut orphans: Vec<String> = python_stems
-        .into_iter()
+    let orphans: Vec<String> = python_stems
+        .iter()
         .filter(|stem| !sidecar_stems.contains(stem.as_str()))
+        .cloned()
         .collect();
     if !orphans.is_empty() {
-        orphans.sort();
         return Err(MigrationError::Loader {
             message: format!(
                 "Python-only migrations without JSON sidecars in {}: {}. \
@@ -207,14 +219,41 @@ pub fn load_dir_checked(dir: &Path) -> Result<MigrationGraph> {
                 ),
             })?;
 
-        // D6 drift guard: recompute the .py text checksum and compare to the
-        // sidecar's embedded value.  The .py text is the sole checksum source
-        // (04/07 invariant); the sidecar is a generated cache.  If the .py
-        // was hand-edited after the sidecar was written, the checksums will
-        // diverge and we reject the stale sidecar rather than executing it.
-        if let Some(sidecar_checksum) = &spec.checksum {
-            let py_path = json_path.with_extension("py");
-            if py_path.exists() {
+        let py_path = json_path.with_extension("py");
+        let has_python_source = python_stems.contains(&stem);
+
+        // New sidecars bind the exact source bytes without interpreting them
+        // as text. This full digest is locale- and newline-independent, and
+        // supersedes the shorter legacy text checksum when present so PEP 263
+        // sources remain verifiable without reimplementing Python's codecs.
+        if let Some(sidecar_sha256) = &spec.source_sha256 {
+            if !is_lower_hex_sha256(sidecar_sha256) {
+                return Err(MigrationError::Loader {
+                    message: format!(
+                        "sidecar for {stem} carries a malformed source_sha256; \
+                         expected exactly 64 lowercase hexadecimal characters"
+                    ),
+                });
+            }
+            if has_python_source {
+                let raw = read_python_bytes(&py_path)?;
+                let computed = format!("{:x}", Sha256::digest(&raw));
+                if computed != *sidecar_sha256 {
+                    return Err(MigrationError::Loader {
+                        message: format!(
+                            "sidecar drift detected for {stem}: the raw .py file has been \
+                             modified since the sidecar was generated \
+                             (sidecar source_sha256={sidecar_sha256}, \
+                             current .py source_sha256={computed}). \
+                             Regenerate the migration to sync the sidecar."
+                        ),
+                    });
+                }
+            }
+        } else if let Some(sidecar_checksum) = &spec.checksum {
+            // D6 legacy drift guard: sidecars without a raw digest retain the
+            // released read/decode/universal-newline behavior exactly.
+            if has_python_source {
                 let py_text = read_python_text(&py_path)?;
                 let computed = migration_file_checksum(&py_text);
                 if computed != *sidecar_checksum {
@@ -254,11 +293,51 @@ fn read_python_text(py_path: &Path) -> Result<String> {
     Ok(raw.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
+fn read_python_bytes(py_path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(py_path).map_err(|err| MigrationError::Loader {
+        message: format!(
+            "failed to read .py for raw-source drift check {}: {err}",
+            py_path.display()
+        ),
+    })
+}
+
+fn is_lower_hex_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Open an adoption artifact without following its final path component.
+///
+/// The released V1 loaders above intentionally retain their historical
+/// symlink-following behavior. Only the new bounded adoption reader calls
+/// this helper.
+pub(crate) fn open_regular_readonly_nofollow(
+    directory: &cap_std::fs::Dir,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<cap_std::fs::File> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt as _};
+
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    let file = directory.open_with(name, &options)?;
+
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "migration artifact is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
 /// Return `true` if the stem matches the migration naming convention:
-/// four ASCII digits followed by an underscore and at least one more character.
+/// four ASCII digits followed by an underscore.
 fn is_migration_stem(stem: &str) -> bool {
     let bytes = stem.as_bytes();
-    if bytes.len() < 6 {
+    if bytes.len() < 5 {
         return false;
     }
     bytes[..4].iter().all(|b| b.is_ascii_digit()) && bytes[4] == b'_'
@@ -280,6 +359,7 @@ mod tests {
                 reverse: None,
             }],
             checksum: Some("abc123".to_string()),
+            source_sha256: None,
             reversible: false,
         }
     }
@@ -390,6 +470,18 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_loaders_recognize_minimal_released_migration_stem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spec = make_spec("0001_");
+        spec.checksum = None;
+        write_sidecar(tmp.path(), "0001_", &spec);
+        write_py(tmp.path(), "0001_");
+
+        assert_eq!(load_dir(tmp.path()).unwrap().migrations, vec![spec.clone()]);
+        assert_eq!(load_dir_checked(tmp.path()).unwrap().migrations, vec![spec]);
+    }
+
+    #[test]
     fn load_dir_integration_smoke_sidecar_and_no_sidecar() {
         // Integration smoke: dir with one sidecar-bearing .py+.json pair and one
         // legacy .py-only file; load_dir returns MigrationGraph with exactly the
@@ -429,6 +521,7 @@ mod tests {
                 reverse: None,
             }],
             checksum: Some(migration_file_checksum(py_text)),
+            source_sha256: None,
             reversible: false,
         }
     }
@@ -465,6 +558,51 @@ mod tests {
 
         let graph = load_dir_checked(tmp.path()).unwrap();
         assert_eq!(graph.migrations.len(), 1);
+    }
+
+    #[test]
+    fn load_dir_checked_raw_digest_supersedes_legacy_text_checksum() {
+        let tmp = tempfile::tempdir().unwrap();
+        let py_bytes = b"# -*- coding: cp1252 -*-\nlabel = '\xe9'\n";
+        let mut spec = make_spec("0001_encoded");
+        // This deliberately cannot describe the source below: a checked raw
+        // digest is authoritative when both fields are present.
+        spec.checksum = Some("0000000000000000".to_string());
+        spec.source_sha256 = Some(format!("{:x}", Sha256::digest(py_bytes)));
+        write_sidecar(tmp.path(), "0001_encoded", &spec);
+        std::fs::write(tmp.path().join("0001_encoded.py"), py_bytes).unwrap();
+
+        let graph = load_dir_checked(tmp.path()).unwrap();
+        assert_eq!(graph.migrations, vec![spec]);
+    }
+
+    #[test]
+    fn load_dir_checked_rejects_raw_source_drift_before_legacy_checksum() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = b"class Migration: pass\n";
+        let current = b"class Migration: pass\n# changed\n";
+        let mut spec =
+            make_spec_with_real_checksum("0001_raw_drift", std::str::from_utf8(current).unwrap());
+        spec.source_sha256 = Some(format!("{:x}", Sha256::digest(original)));
+        write_sidecar(tmp.path(), "0001_raw_drift", &spec);
+        std::fs::write(tmp.path().join("0001_raw_drift.py"), current).unwrap();
+
+        let error = load_dir_checked(tmp.path()).unwrap_err().to_string();
+        assert!(error.contains("source_sha256"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn load_dir_checked_rejects_malformed_raw_source_digest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spec = make_spec("0001_malformed");
+        spec.source_sha256 = Some("ABC".to_string());
+        write_sidecar(tmp.path(), "0001_malformed", &spec);
+
+        let error = load_dir_checked(tmp.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("malformed source_sha256"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -558,5 +696,86 @@ mod tests {
 
         let graph = load_dir_checked(tmp.path()).unwrap();
         assert_eq!(graph.migrations.len(), 1);
+    }
+
+    #[test]
+    fn executable_loader_ignores_non_executable_adoption_archives() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("0001_backfill.adoption.json"),
+            br#"{"format":"typebridge.migration-adoption-metadata/v1"}"#,
+        )
+        .unwrap();
+        assert!(load_dir(tmp.path()).unwrap().migrations.is_empty());
+    }
+
+    #[test]
+    fn released_sidecar_loaders_accept_valid_artifact_larger_than_16_mib() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spec = make_spec("0001_large");
+        spec.checksum = None;
+        let mut bytes = serde_json::to_vec(&spec).unwrap();
+        bytes.resize(16 * 1024 * 1024 + 1, b' ');
+        std::fs::write(tmp.path().join("0001_large.json"), bytes).unwrap();
+        write_py(tmp.path(), "0001_large");
+
+        assert_eq!(
+            load_sidecar(&tmp.path().join("0001_large.py")).unwrap(),
+            Some(spec.clone())
+        );
+        assert_eq!(load_dir(tmp.path()).unwrap().migrations, vec![spec.clone()]);
+        assert_eq!(load_dir_checked(tmp.path()).unwrap().migrations, vec![spec]);
+    }
+
+    #[test]
+    fn released_sidecar_loaders_ignore_more_than_65536_unrelated_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Cycle across enough seed inodes to stay below conservative
+        // per-file hard-link ceilings on every release platform.
+        let seeds = (0..128)
+            .map(|index| tmp.path().join(format!("unrelated-seed-{index:03}.txt")))
+            .collect::<Vec<_>>();
+        for seed in &seeds {
+            std::fs::write(seed, b"not a migration").unwrap();
+        }
+        for index in 0..65_537 {
+            std::fs::hard_link(
+                &seeds[index % seeds.len()],
+                tmp.path().join(format!("unrelated-{index:05}.txt")),
+            )
+            .unwrap();
+        }
+        let mut spec = make_spec("0001_initial");
+        spec.checksum = None;
+        write_sidecar(tmp.path(), "0001_initial", &spec);
+        write_py(tmp.path(), "0001_initial");
+
+        assert_eq!(load_dir(tmp.path()).unwrap().migrations, vec![spec.clone()]);
+        assert_eq!(load_dir_checked(tmp.path()).unwrap().migrations, vec![spec]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn released_sidecar_loaders_follow_regular_file_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let py_text = "class Migration: pass\n";
+        let spec = make_spec_with_real_checksum("0001_linked", py_text);
+        std::fs::write(tmp.path().join("source.py"), py_text).unwrap();
+        std::fs::write(
+            tmp.path().join("source.json"),
+            serde_json::to_vec(&spec).unwrap(),
+        )
+        .unwrap();
+        symlink("source.py", tmp.path().join("0001_linked.py")).unwrap();
+        symlink("source.json", tmp.path().join("0001_linked.json")).unwrap();
+
+        assert_eq!(
+            load_sidecar(&tmp.path().join("0001_linked.py")).unwrap(),
+            Some(spec.clone())
+        );
+        assert_eq!(load_dir(tmp.path()).unwrap().migrations, vec![spec.clone()]);
+        assert_eq!(load_dir_checked(tmp.path()).unwrap().migrations, vec![spec]);
     }
 }

@@ -1,20 +1,136 @@
 //! Canonical V2 discovery and pure migration-history graph planning.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::migration::{MIGRATION_FORMAT_V1, MigrationId};
+use type_bridge_contract::migration::{MIGRATION_FORMAT_V1, MigrationId, MigrationManifestDigest};
 use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_schema::ManagedDeltaContext;
 
-use crate::manifest::peek_manifest_identity;
-use crate::{VerifiedSchemaMigrationManifest, decode_verified_manifest, encode_verified_manifest};
+use crate::manifest::{peek_manifest_declares_legacy_bridge, peek_manifest_identity};
+use crate::{
+    MigrationDirectory, VerifiedSchemaMigrationManifest, decode_verified_manifest,
+    encode_verified_manifest,
+};
 
 const CANONICAL_MIGRATION_SUFFIX: &str = ".tbmigration.json";
+
+#[derive(Clone, Eq, PartialEq)]
+struct CanonicalMigrationFileEvidence {
+    bytes: Vec<u8>,
+    digest: MigrationManifestDigest,
+}
+
+/// Exact canonical-file authority retained from one successful discovery.
+///
+/// The evidence binds direct canonical membership, the exact bytes used for
+/// verification, and their raw SHA-256 digests. Revalidation always reads
+/// through the same caller-retained [`MigrationDirectory`] capability, so a
+/// later ambient pathname replacement cannot redirect the comparison.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CanonicalMigrationHistoryEvidence {
+    files: BTreeMap<PathBuf, CanonicalMigrationFileEvidence>,
+}
+
+impl fmt::Debug for CanonicalMigrationHistoryEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let files = self
+            .files
+            .iter()
+            .map(|(path, evidence)| (path, evidence.bytes.len(), evidence.digest.to_hex()))
+            .collect::<Vec<_>>();
+        formatter
+            .debug_struct("CanonicalMigrationHistoryEvidence")
+            .field("files", &files)
+            .finish()
+    }
+}
+
+impl CanonicalMigrationHistoryEvidence {
+    fn from_candidates(candidates: Vec<CanonicalCandidate>) -> Self {
+        let files = candidates
+            .into_iter()
+            .map(|candidate| {
+                let digest = MigrationManifestDigest::compute(&candidate.bytes);
+                (
+                    candidate.path,
+                    CanonicalMigrationFileEvidence {
+                        digest,
+                        bytes: candidate.bytes,
+                    },
+                )
+            })
+            .collect();
+        Self { files }
+    }
+
+    /// Require canonical membership and every discovered byte to remain exact.
+    pub fn require_unchanged(&self, directory: &MigrationDirectory) -> Result<(), Diagnostic> {
+        let candidates = collect_canonical_candidates(directory).map_err(|cause| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_history_authority_revalidation_failed",
+                "canonical migration authority cannot be revalidated through its retained directory",
+            )
+            .with_detail("cause_code", cause.code().as_str().to_owned())
+            .with_detail("cause", cause.to_string())
+        })?;
+
+        let expected_names = self.files.keys().cloned().collect::<BTreeSet<_>>();
+        let observed_names = candidates
+            .iter()
+            .map(|candidate| candidate.path.clone())
+            .collect::<BTreeSet<_>>();
+        if expected_names != observed_names {
+            let added = observed_names
+                .difference(&expected_names)
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            let removed = expected_names
+                .difference(&observed_names)
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_history_authority_membership_changed",
+                "canonical migration file membership changed after discovery",
+            )
+            .with_detail("added", added)
+            .with_detail("removed", removed));
+        }
+
+        for candidate in candidates {
+            let path = candidate.path;
+            let expected = &self.files[&path];
+            let observed_digest = MigrationManifestDigest::compute(&candidate.bytes);
+            if observed_digest != expected.digest {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_history_authority_digest_changed",
+                    "canonical migration file digest changed after discovery",
+                )
+                .with_detail("file", path.display().to_string())
+                .with_detail("expected_digest", expected.digest.to_hex())
+                .with_detail("observed_digest", observed_digest.to_hex()));
+            }
+            // The byte comparison remains authoritative even in the presence
+            // of a hypothetical digest collision.
+            if candidate.bytes != expected.bytes {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_history_authority_bytes_changed",
+                    "canonical migration file bytes changed after discovery",
+                )
+                .with_detail("file", path.display().to_string()));
+            }
+        }
+        Ok(())
+    }
+}
 
 /// A validated DAG whose only node authority is a verified canonical manifest.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -266,6 +382,73 @@ impl MigrationHistoryGraph {
     }
 }
 
+/// Return whether any direct canonical candidate declares a legacy bridge.
+///
+/// The result is routing evidence only, never manifest authority. Every
+/// candidate still has to replay-verify through normal chain discovery before
+/// graph, planning, or execution use.
+pub fn canonical_history_declares_legacy_bridge_in(
+    directory: &MigrationDirectory,
+) -> Result<bool, Diagnostic> {
+    canonical_history_declared_legacy_bridge_count_in(directory).map(|count| count != 0)
+}
+
+/// Count direct canonical candidates that declare a legacy bridge.
+///
+/// Like [`canonical_history_declares_legacy_bridge_in`], this is routing
+/// evidence only and does not replace replay verification.
+pub fn canonical_history_declared_legacy_bridge_count_in(
+    directory: &MigrationDirectory,
+) -> Result<usize, Diagnostic> {
+    let mut count = 0usize;
+    for candidate in collect_canonical_candidates(directory)? {
+        sniff_v1_format(&candidate.bytes)?;
+        if peek_manifest_declares_legacy_bridge(&candidate.bytes)? {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
+}
+
+/// Require adopted genesis and the unique canonical legacy bridge to exist as
+/// one inseparable authority pair.
+pub fn require_adoption_authority_pair(
+    graph: &MigrationHistoryGraph,
+    adopted_genesis_present: bool,
+) -> Result<(), Diagnostic> {
+    let bridge_count = graph
+        .manifests()
+        .filter(|(_, manifest)| manifest.is_legacy_bridge())
+        .count();
+    require_adoption_authority_pair_state(adopted_genesis_present, bridge_count)
+}
+
+/// Require the raw adoption-authority presence state to be complete.
+///
+/// This entry point lets discovery reject bridge-without-genesis before it
+/// attempts replay against an empty genesis. A verified graph should use
+/// [`require_adoption_authority_pair`] instead.
+pub fn require_adoption_authority_pair_state(
+    adopted_genesis_present: bool,
+    legacy_bridge_count: usize,
+) -> Result<(), Diagnostic> {
+    if (adopted_genesis_present && legacy_bridge_count == 1)
+        || (!adopted_genesis_present && legacy_bridge_count == 0)
+    {
+        return Ok(());
+    }
+    Err(failure(
+        DiagnosticCategory::Integrity,
+        "migration_adoption_authority_incomplete",
+        "adopted genesis and one sole-root legacy bridge must be present together",
+    )
+    .with_detail("adopted_genesis_present", adopted_genesis_present)
+    .with_detail(
+        "legacy_bridge_count",
+        i64::try_from(legacy_bridge_count).unwrap_or(i64::MAX),
+    ))
+}
+
 /// Discover only direct canonical V2 children and verify each before graph use.
 ///
 /// The callback is the context provider: it must call `decode_verified_manifest`
@@ -273,6 +456,18 @@ impl MigrationHistoryGraph {
 /// requires the returned verified artifact to re-encode byte-identically.
 pub fn discover_verified_migrations<F>(
     directory: &Path,
+    verify: F,
+) -> Result<MigrationHistoryGraph, Diagnostic>
+where
+    F: FnMut(&Path, &[u8]) -> Result<VerifiedSchemaMigrationManifest, Diagnostic>,
+{
+    let directory = open_directory(directory)?;
+    discover_verified_migrations_in(&directory, verify)
+}
+
+/// Discover through a retained directory capability.
+pub fn discover_verified_migrations_in<F>(
+    directory: &MigrationDirectory,
     mut verify: F,
 ) -> Result<MigrationHistoryGraph, Diagnostic>
 where
@@ -280,6 +475,7 @@ where
 {
     let mut verified = Vec::new();
     for candidate in collect_canonical_candidates(directory)? {
+        sniff_v1_format(&candidate.bytes)?;
         let manifest = verify(&candidate.path, &candidate.bytes)?;
         if encode_verified_manifest(&manifest)? != candidate.bytes {
             return Err(discovery_failure(
@@ -307,10 +503,32 @@ pub fn discover_verified_migration_chain(
     genesis_source: &DeclaredSchema,
     context: &ManagedDeltaContext,
 ) -> Result<MigrationHistoryGraph, Diagnostic> {
+    let directory = open_directory(directory)?;
+    discover_verified_migration_chain_in(&directory, genesis_source, context)
+}
+
+/// Discover and replay-verify through a retained directory capability.
+pub fn discover_verified_migration_chain_in(
+    directory: &MigrationDirectory,
+    genesis_source: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<MigrationHistoryGraph, Diagnostic> {
+    discover_verified_migration_chain_with_evidence_in(directory, genesis_source, context)
+        .map(|(graph, _)| graph)
+}
+
+/// Discover and replay-verify through a retained directory while preserving
+/// the exact canonical-file authority used to build the graph.
+pub fn discover_verified_migration_chain_with_evidence_in(
+    directory: &MigrationDirectory,
+    genesis_source: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<(MigrationHistoryGraph, CanonicalMigrationHistoryEvidence), Diagnostic> {
     let candidates = collect_canonical_candidates(directory)?;
     let mut headers = Vec::with_capacity(candidates.len());
     let mut index_by_id = BTreeMap::new();
     for (index, candidate) in candidates.iter().enumerate() {
+        sniff_v1_format(&candidate.bytes)?;
         let (id, parents) = peek_manifest_identity(&candidate.bytes)?;
         if index_by_id.insert(id.clone(), index).is_some() {
             return Err(discovery_failure(
@@ -357,7 +575,10 @@ pub fn discover_verified_migration_chain(
         require_stem_binding(&manifest, &candidate.stem)?;
         verified_by_id.insert(id, manifest);
     }
-    MigrationHistoryGraph::from_verified(verified_by_id.into_values().collect::<Vec<_>>())
+    let graph =
+        MigrationHistoryGraph::from_verified(verified_by_id.into_values().collect::<Vec<_>>())?;
+    let evidence = CanonicalMigrationHistoryEvidence::from_candidates(candidates);
+    Ok((graph, evidence))
 }
 
 fn require_stem_binding(
@@ -408,10 +629,14 @@ const MAX_HISTORY_DIRECTORY_ENTRIES: usize = 65_536;
 const MAX_HISTORY_AGGREGATE_BYTES: usize = 256 * 1024 * 1024;
 
 /// Read at most `limit` bytes, failing before the allocation grows past it.
-fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Diagnostic> {
+fn read_bounded(
+    directory: &MigrationDirectory,
+    name: &std::ffi::OsStr,
+    limit: usize,
+) -> Result<Vec<u8>, Diagnostic> {
     use std::io::Read;
 
-    let file = fs::File::open(path).map_err(|_| {
+    let file = directory.open_regular_readonly(name).map_err(|_| {
         discovery_failure(
             "migration_discovery_file_unreadable",
             "canonical migration file cannot be read",
@@ -437,54 +662,43 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Diagnostic> {
     Ok(bytes)
 }
 
-fn collect_canonical_candidates(directory: &Path) -> Result<Vec<CanonicalCandidate>, Diagnostic> {
-    let read_dir = fs::read_dir(directory).map_err(|_| {
-        discovery_failure(
-            "migration_discovery_directory_unreadable",
-            "canonical migration directory cannot be read",
-        )
-    })?;
-    let mut entries = Vec::new();
-    for entry in read_dir {
-        let entry = entry.map_err(|_| {
-            discovery_failure(
-                "migration_discovery_entry_unreadable",
-                "canonical migration directory entry cannot be read",
-            )
+fn collect_canonical_candidates(
+    directory: &MigrationDirectory,
+) -> Result<Vec<CanonicalCandidate>, Diagnostic> {
+    let mut entries = directory
+        .entries(MAX_HISTORY_DIRECTORY_ENTRIES)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::InvalidData {
+                failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "migration_discovery_entry_limit",
+                    "canonical migration directory exceeds the entry ceiling",
+                )
+            } else {
+                discovery_failure(
+                    "migration_discovery_directory_unreadable",
+                    "canonical migration directory cannot be read",
+                )
+            }
         })?;
-        if entries.len() == MAX_HISTORY_DIRECTORY_ENTRIES {
-            return Err(failure(
-                DiagnosticCategory::ResourceLimit,
-                "migration_discovery_entry_limit",
-                "canonical migration directory exceeds the entry ceiling",
-            ));
-        }
-        entries.push(entry);
-    }
-    entries.sort_by_key(|entry| entry.file_name());
+    entries.sort_by(|left, right| left.file_name().cmp(right.file_name()));
 
     let mut aggregate_bytes = 0usize;
     let mut candidates = Vec::new();
     for entry in entries {
-        let file_type = entry.file_type().map_err(|_| {
-            discovery_failure(
-                "migration_discovery_entry_unreadable",
-                "canonical migration entry type cannot be read",
-            )
-        })?;
-        if file_type.is_dir() {
+        if entry.is_directory() {
             return Err(discovery_failure(
                 "migration_discovery_nested_authority",
                 "nested directories cannot contain canonical migration authority",
             ));
         }
-        if !file_type.is_file() {
+        if !entry.is_regular() {
             return Err(discovery_failure(
                 "migration_discovery_non_regular_entry",
                 "canonical migration directory contains a non-regular entry",
             ));
         }
-        let file_name = entry.file_name().into_string().map_err(|_| {
+        let file_name = entry.file_name().to_owned().into_string().map_err(|_| {
             discovery_failure(
                 "migration_discovery_non_utf8_filename",
                 "canonical migration filename is not valid UTF-8",
@@ -499,8 +713,12 @@ fn collect_canonical_candidates(directory: &Path) -> Result<Vec<CanonicalCandida
                 "canonical migration filename has an empty manifest-name stem",
             ));
         }
-        let path = entry.path();
-        let bytes = read_bounded(&path, type_bridge_contract::limits::MAX_CANONICAL_BYTES)?;
+        let path = PathBuf::from(&file_name);
+        let bytes = read_bounded(
+            directory,
+            std::ffi::OsStr::new(&file_name),
+            type_bridge_contract::limits::MAX_CANONICAL_BYTES,
+        )?;
         // Candidate bytes for the whole history are retained together, so
         // the aggregate is capped before the next allocation, not after.
         aggregate_bytes = aggregate_bytes.saturating_add(bytes.len());
@@ -511,7 +729,6 @@ fn collect_canonical_candidates(directory: &Path) -> Result<Vec<CanonicalCandida
                 "canonical migration history exceeds the aggregate byte ceiling",
             ));
         }
-        sniff_v1_format(&bytes)?;
         candidates.push(CanonicalCandidate {
             path,
             stem: stem.to_owned(),
@@ -519,6 +736,15 @@ fn collect_canonical_candidates(directory: &Path) -> Result<Vec<CanonicalCandida
         });
     }
     Ok(candidates)
+}
+
+fn open_directory(path: &Path) -> Result<MigrationDirectory, Diagnostic> {
+    MigrationDirectory::open_ambient(path).map_err(|_| {
+        discovery_failure(
+            "migration_discovery_directory_unreadable",
+            "canonical migration directory cannot be read",
+        )
+    })
 }
 
 fn sniff_v1_format(bytes: &[u8]) -> Result<(), Diagnostic> {

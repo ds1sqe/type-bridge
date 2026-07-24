@@ -8,7 +8,6 @@ use napi::{Error, Status};
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::runtime::Runtime;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{BindingTarget, ProjectedModelForm};
@@ -26,7 +25,8 @@ use type_bridge_orm::dynamic::{
 };
 use type_bridge_orm::manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::{
-    AttributeValue, Database, InstalledRuntimeProjection, TransactionContext, ValueType,
+    AttributeValue, Database, InstalledRuntimeProjection, ProviderRuntimeOwner, TransactionContext,
+    ValueType,
 };
 
 use crate::{NodeRustDatabase, NodeRustTransactionContext};
@@ -176,7 +176,7 @@ pub struct NodeProjectedModelManager {
     type_id: TypeId,
     database: Option<Arc<Database>>,
     transaction: Option<TransactionContext>,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
 }
 
 #[napi]

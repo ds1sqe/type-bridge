@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationId;
+use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{Database, OrmError, Transaction};
@@ -23,29 +25,31 @@ use type_bridge_schema_migration::{
 
 use crate::control_schema::{
     APPLIED_RECORD_KIND, CONTROL_ENTITY, CONTROL_SCOPE, EVENT_RECORD_KIND,
-    JOURNAL_CONTROL_SCHEMA_TYPEQL, JOURNAL_ENTITY, LEASE_FENCE, LEASE_FREE, LEASE_HELD,
-    LEASE_HOLDER, LEASE_STATE, MANAGED_FENCE_SCHEMA_TYPEQL, NEXT_SEQUENCE, PLAN_RECORD_KIND,
-    RECORD_KEY, RECORD_KIND, RECORD_PAYLOAD, RECORD_PAYLOAD_DIGEST, RECORD_SEQUENCE,
-    ROLLBACK_EVENT_RECORD_KIND, ROLLBACK_PLAN_RECORD_KIND, ROLLED_BACK_RECORD_KIND,
+    JOURNAL_CONTROL_SCHEMA_TYPEQL, JOURNAL_ENTITY, JOURNAL_OWNER_ENTITY, JOURNAL_OWNER_KEY,
+    JOURNAL_OWNER_MANAGED_DATABASE, JOURNAL_OWNER_MANAGED_SCOPE, JOURNAL_OWNER_SINGLETON_KEY,
+    LEASE_FENCE, LEASE_FREE, LEASE_HELD, LEASE_HOLDER, LEASE_STATE, MANAGED_FENCE_SCHEMA_TYPEQL,
+    NEXT_SEQUENCE, PLAN_RECORD_KIND, RECORD_KEY, RECORD_KIND, RECORD_PAYLOAD,
+    RECORD_PAYLOAD_DIGEST, RECORD_SEQUENCE, ROLLBACK_EVENT_RECORD_KIND, ROLLBACK_PLAN_RECORD_KIND,
+    ROLLED_BACK_RECORD_KIND,
 };
-use crate::observation::partition_typeql_export;
+use crate::observation::{partition_typeql_export, partition_typeql_export_lossless};
 use crate::wire::{
     decode_applied, decode_event, decode_plan, decode_rollback_event, decode_rollback_plan,
     decode_rolled_back, encode_applied, encode_event, encode_plan, encode_rollback_event,
     encode_rollback_plan, encode_rolled_back, persisted_fence,
 };
 
-const JOURNAL_DATABASE_SUFFIX: &str = "__tbv2_journal";
-
 /// Derive the one-to-one companion journal database name.
 ///
 /// The managed and journal databases are one recovery unit. Operators must
 /// back up, restore, clone, and delete the derived pair together; restoring
 /// either member alone is unsupported and fails closed through fence or
-/// verified-record identity mismatch.
+/// verified-record identity mismatch. The suffix is reserved within a TypeDB
+/// deployment: no managed database may use a name that is another managed
+/// database's derived journal name.
 #[must_use]
 pub fn derived_journal_database_name(managed_database_name: &str) -> String {
-    format!("{managed_database_name}{JOURNAL_DATABASE_SUFFIX}")
+    format!("{managed_database_name}{TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX}")
 }
 
 /// Verified historical manifest catalog used to rederive applied records.
@@ -91,6 +95,7 @@ impl<'a> VerifiedMigrationCatalog<'a> {
 pub struct TypeDbMigrationStore<'a> {
     managed_database: Arc<Database>,
     journal_database: Arc<Database>,
+    managed_scope_id: ManagedScopeId,
     catalog: VerifiedMigrationCatalog<'a>,
     plan: Option<&'a VerifiedMigrationApplyPlan>,
     rollback_plan: Option<&'a VerifiedMigrationRollbackPlan>,
@@ -103,8 +108,16 @@ impl<'a> TypeDbMigrationStore<'a> {
     pub fn new(
         managed_database: Arc<Database>,
         journal_database: Arc<Database>,
+        managed_scope_id: ManagedScopeId,
         catalog: VerifiedMigrationCatalog<'a>,
     ) -> Result<Self, Diagnostic> {
+        if !managed_database.shares_connection_authority_with(&journal_database) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_typedb_database_authority_mismatch",
+                "managed and journal databases must share one provider connection authority",
+            ));
+        }
         if managed_database.database_name() == journal_database.database_name() {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
@@ -132,6 +145,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         Ok(Self {
             managed_database,
             journal_database,
+            managed_scope_id,
             catalog,
             plan: None,
             rollback_plan: None,
@@ -141,8 +155,56 @@ impl<'a> TypeDbMigrationStore<'a> {
     }
 
     /// Bind the store to the exact apply plan used for open-plan recovery.
-    pub fn bind_plan(mut self, plan: &'a VerifiedMigrationApplyPlan) -> Result<Self, Diagnostic> {
+    pub fn bind_plan(self, plan: &'a VerifiedMigrationApplyPlan) -> Result<Self, Diagnostic> {
+        self.bind_plan_inner(plan, false)
+    }
+
+    /// Bind the one guarded legacy-import plan.
+    ///
+    /// This is intentionally crate-private: public/generic plan binding must
+    /// never establish the permanent bridge without the runner's managed-side
+    /// recovery anchor and V1 ledger guard.
+    pub(crate) fn bind_legacy_import_plan(
+        self,
+        plan: &'a VerifiedMigrationApplyPlan,
+    ) -> Result<Self, Diagnostic> {
+        self.bind_plan_inner(plan, true)
+    }
+
+    /// Bind a descendant apply plan after the runner validated the permanent
+    /// legacy cutover binding. Public callers cannot bypass that proof.
+    pub(crate) fn bind_guarded_bridge_plan(
+        self,
+        plan: &'a VerifiedMigrationApplyPlan,
+    ) -> Result<Self, Diagnostic> {
+        self.bind_plan_inner(plan, true)
+    }
+
+    fn bind_plan_inner(
+        mut self,
+        plan: &'a VerifiedMigrationApplyPlan,
+        allow_legacy_bridge: bool,
+    ) -> Result<Self, Diagnostic> {
+        if !allow_legacy_bridge
+            && self
+                .catalog
+                .values()
+                .any(|manifest| manifest.is_legacy_bridge())
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_legacy_import_required",
+                "a bridge-rooted catalog requires the runner's validated cutover binding",
+            ));
+        }
         for migration in plan.migrations() {
+            if migration.manifest().is_legacy_bridge() && !allow_legacy_bridge {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_legacy_import_required",
+                    "a legacy bridge can be bound only by the guarded legacy import runner",
+                ));
+            }
             let Some(catalog_manifest) = self.catalog.get(migration.manifest().id()) else {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
@@ -164,9 +226,38 @@ impl<'a> TypeDbMigrationStore<'a> {
 
     /// Bind the store to the exact rollback plan used for open-plan recovery.
     pub fn bind_rollback_plan(
-        mut self,
+        self,
         plan: &'a VerifiedMigrationRollbackPlan,
     ) -> Result<Self, Diagnostic> {
+        self.bind_rollback_plan_inner(plan, false)
+    }
+
+    /// Bind a descendant rollback after the runner validated the permanent
+    /// legacy cutover binding.
+    pub(crate) fn bind_guarded_bridge_rollback_plan(
+        self,
+        plan: &'a VerifiedMigrationRollbackPlan,
+    ) -> Result<Self, Diagnostic> {
+        self.bind_rollback_plan_inner(plan, true)
+    }
+
+    fn bind_rollback_plan_inner(
+        mut self,
+        plan: &'a VerifiedMigrationRollbackPlan,
+        allow_bridged_catalog: bool,
+    ) -> Result<Self, Diagnostic> {
+        if !allow_bridged_catalog
+            && self
+                .catalog
+                .values()
+                .any(|manifest| manifest.is_legacy_bridge())
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_legacy_binding_required",
+                "a bridge-rooted rollback requires the runner's validated cutover binding",
+            ));
+        }
         for rollback in plan.rollbacks() {
             let Some(catalog_manifest) = self.catalog.get(rollback.manifest().id()) else {
                 return Err(failure(
@@ -193,18 +284,143 @@ impl<'a> TypeDbMigrationStore<'a> {
     }
 
     async fn ensure_schema(&self) -> Result<(), Diagnostic> {
+        self.ensure_journal_schema().await?;
         self.ensure_schema_contract(
             &self.managed_database,
             &self.managed_schema_verified,
             MANAGED_FENCE_SCHEMA_TYPEQL,
             "managed-fence",
         )
-        .await?;
-        self.ensure_schema_contract(
-            &self.journal_database,
-            &self.journal_schema_verified,
-            JOURNAL_CONTROL_SCHEMA_TYPEQL,
-            "journal-control",
+        .await
+    }
+
+    async fn ensure_schema_for_scope(&self, scope: &ExecutionScope) -> Result<(), Diagnostic> {
+        self.require_owned_scope(scope)?;
+        self.ensure_schema().await
+    }
+
+    fn require_owned_scope(&self, scope: &ExecutionScope) -> Result<(), Diagnostic> {
+        if scope.managed_scope_id() == &self.managed_scope_id {
+            Ok(())
+        } else {
+            Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_typedb_journal_owner_scope_mismatch",
+                "migration operation scope differs from the journal database owner identity",
+            ))
+        }
+    }
+
+    async fn ensure_journal_schema(&self) -> Result<(), Diagnostic> {
+        if self.journal_schema_verified.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        // A schema transaction is exclusive with both schema and write
+        // transactions. Inspecting the committed export while this handle is
+        // retained therefore serializes concurrent bootstrap attempts without
+        // a racy preflight-to-install window.
+        let mut transaction = self
+            .journal_database
+            .schema_transaction()
+            .await
+            .map_err(map_orm_error)?;
+        let export = match self.journal_database.schema_text().await {
+            Ok(export) => export,
+            Err(error) => {
+                let primary = map_orm_error(error);
+                return Err(rollback_schema_error(
+                    &mut transaction,
+                    primary,
+                    "journal schema export",
+                )
+                .await);
+            }
+        };
+        let state = match journal_schema_state(&export) {
+            Ok(state) => state,
+            Err(error) => {
+                return Err(rollback_schema_error(
+                    &mut transaction,
+                    error,
+                    "journal schema validation",
+                )
+                .await);
+            }
+        };
+
+        match state {
+            JournalSchemaState::Exact => {
+                if let Err(error) = self.require_journal_owner(&mut transaction).await {
+                    return Err(rollback_schema_error(
+                        &mut transaction,
+                        error,
+                        "journal owner validation",
+                    )
+                    .await);
+                }
+                transaction.rollback().await.map_err(|error| {
+                    schema_cleanup_failure(error, None, "exact journal schema inspection")
+                })?;
+            }
+            JournalSchemaState::Empty => {
+                if let Err(error) = transaction.query(JOURNAL_CONTROL_SCHEMA_TYPEQL).await {
+                    let primary = map_orm_error(error);
+                    return Err(rollback_schema_error(
+                        &mut transaction,
+                        primary,
+                        "journal schema installation",
+                    )
+                    .await);
+                }
+                let owner = insert_journal_owner_query(
+                    self.managed_database.database_name(),
+                    &self.managed_scope_id,
+                );
+                if let Err(error) = transaction.query(&owner).await {
+                    let primary = map_orm_error(error);
+                    return Err(rollback_schema_error(
+                        &mut transaction,
+                        primary,
+                        "journal owner installation",
+                    )
+                    .await);
+                }
+                if let Err(error) = self.require_journal_owner(&mut transaction).await {
+                    return Err(rollback_schema_error(
+                        &mut transaction,
+                        error,
+                        "installed journal owner validation",
+                    )
+                    .await);
+                }
+                transaction.commit().await.map_err(map_orm_error)?;
+
+                let installed = self
+                    .journal_database
+                    .schema_text()
+                    .await
+                    .map_err(map_orm_error)?;
+                if journal_schema_state(&installed)? != JournalSchemaState::Exact {
+                    return Err(failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_typedb_control_schema_mismatch",
+                        "installed TypeDB migration journal schema differs from the frozen contract",
+                    )
+                    .with_detail("control_contract", "journal-control"));
+                }
+            }
+        }
+
+        self.journal_schema_verified.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    async fn require_journal_owner(&self, transaction: &mut Transaction) -> Result<(), Diagnostic> {
+        require_journal_owner(
+            transaction,
+            self.managed_database.database_name(),
+            &self.managed_scope_id,
         )
         .await
     }
@@ -227,10 +443,13 @@ impl<'a> TypeDbMigrationStore<'a> {
 
         let mut transaction = database.schema_transaction().await.map_err(map_orm_error)?;
         if let Err(error) = transaction.query(schema).await {
-            let _ = transaction.rollback().await;
+            let primary = map_orm_error(error);
+            transaction.rollback().await.map_err(|cleanup| {
+                schema_cleanup_failure(cleanup, Some(&primary), "raced control-schema install")
+            })?;
             let raced_export = database.schema_text().await.map_err(map_orm_error)?;
             if !control_schema_matches(&raced_export, schema, contract)? {
-                return Err(map_orm_error(error));
+                return Err(primary);
             }
         } else {
             transaction.commit().await.map_err(map_orm_error)?;
@@ -274,7 +493,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         scope: &ExecutionScope,
         holder: &LeaseHolderId,
     ) -> Result<MigrationLease, Diagnostic> {
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(scope).await?;
         let lease = self.acquire_authoritative(scope, holder).await?;
         self.publish_managed_fence(&lease).await?;
         Ok(lease)
@@ -352,7 +571,7 @@ impl<'a> TypeDbMigrationStore<'a> {
     }
 
     async fn release_inner(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         self.release_authoritative(lease).await?;
         self.release_managed_fence(lease).await
     }
@@ -402,7 +621,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         if record != expected {
             return Err(record_identity_mismatch());
         }
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .write_transaction()
@@ -431,7 +650,7 @@ impl<'a> TypeDbMigrationStore<'a> {
     ) -> Result<JournalEntry<GroupEventRecord>, Diagnostic> {
         ensure_record_lease(lease, record.scope(), record.fence())?;
         let plan = self.require_plan()?;
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .write_transaction()
@@ -474,7 +693,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             return Err(record_identity_mismatch());
         }
         let plan = self.require_plan()?;
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .write_transaction()
@@ -555,12 +774,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         &self,
         scope: &ExecutionScope,
     ) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
+        self.require_owned_scope(scope)?;
         let export = self
             .journal_database
             .schema_text()
             .await
             .map_err(map_orm_error)?;
-        if !control_schema_matches(&export, JOURNAL_CONTROL_SCHEMA_TYPEQL, "journal-control")? {
+        if journal_schema_state(&export)? == JournalSchemaState::Empty {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_typedb_journal_control_schema_absent",
@@ -583,9 +803,12 @@ impl<'a> TypeDbMigrationStore<'a> {
             .read_transaction()
             .await
             .map_err(map_orm_error)?;
-        let result = self
-            .load_applied_in_transaction(&mut transaction, scope, &holder)
-            .await;
+        let result = async {
+            self.require_journal_owner(&mut transaction).await?;
+            self.load_applied_in_transaction(&mut transaction, scope, &holder)
+                .await
+        }
+        .await;
         let close = transaction.close().await.map_err(map_orm_error);
         match (result, close) {
             (Err(error), _) => Err(error),
@@ -598,7 +821,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         &self,
         lease: &MigrationLease,
     ) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .read_transaction()
@@ -621,7 +844,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         lease: &MigrationLease,
     ) -> Result<Option<OpenPlanRecord>, Diagnostic> {
         let plan = self.require_plan()?;
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .read_transaction()
@@ -752,7 +975,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         if record != expected {
             return Err(record_identity_mismatch());
         }
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .write_transaction()
@@ -787,7 +1010,7 @@ impl<'a> TypeDbMigrationStore<'a> {
     ) -> Result<JournalEntry<RollbackStepEventRecord>, Diagnostic> {
         ensure_record_lease(lease, record.scope(), record.fence())?;
         let plan = self.require_rollback_plan()?;
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .write_transaction()
@@ -840,7 +1063,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             return Err(record_identity_mismatch());
         }
         let plan = self.require_rollback_plan()?;
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .write_transaction()
@@ -930,7 +1153,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         &self,
         lease: &MigrationLease,
     ) -> Result<Vec<JournalEntry<RolledBackRecord>>, Diagnostic> {
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .read_transaction()
@@ -953,7 +1176,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         lease: &MigrationLease,
     ) -> Result<Option<OpenRollbackPlanRecord>, Diagnostic> {
         let plan = self.require_rollback_plan()?;
-        self.ensure_schema().await?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
         let mut transaction = self
             .journal_database
             .read_transaction()
@@ -1104,6 +1327,12 @@ struct ControlSnapshot {
     next_sequence: u64,
 }
 
+#[derive(Debug)]
+struct ManagedControlSnapshot {
+    fence: u64,
+    state: String,
+}
+
 struct StoredRow {
     key: String,
     kind: String,
@@ -1120,6 +1349,12 @@ pub async fn require_active_managed_fence(
     transaction: &mut Transaction,
     lease: &MigrationLease,
 ) -> Result<(), Diagnostic> {
+    let snapshot = load_global_managed_control(transaction, lease.scope())
+        .await?
+        .ok_or_else(stale_fence)?;
+    if snapshot.fence != lease.fence().get() || snapshot.state != LEASE_HELD {
+        return Err(stale_fence());
+    }
     let query = format!(
         "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}; fetch {{ \"exists\": true }};",
         literal(lease.scope().managed_scope_id().as_str()),
@@ -1138,28 +1373,21 @@ async fn load_managed_fence(
     transaction: &mut Transaction,
     scope: &ExecutionScope,
 ) -> Result<Option<u64>, Diagnostic> {
-    let query = format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} $fence; fetch {{ \"fence\": $fence }};",
-        literal(scope.managed_scope_id().as_str()),
-    );
-    let documents = query_documents(transaction, &query).await?;
-    if documents.is_empty() {
-        return Ok(None);
-    }
-    if documents.len() != 1 {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "migration_typedb_duplicate_managed_fence",
-            "managed scope has more than one fence mirror row",
-        ));
-    }
-    canonical_u64(&required_scalar(&documents[0], "fence")?).map(Some)
+    Ok(load_global_managed_control(transaction, scope)
+        .await?
+        .map(|snapshot| snapshot.fence))
 }
 
 async fn load_free_managed_fence(
     transaction: &mut Transaction,
     lease: &MigrationLease,
 ) -> Result<bool, Diagnostic> {
+    let snapshot = load_global_managed_control(transaction, lease.scope()).await?;
+    if snapshot.as_ref().is_none_or(|snapshot| {
+        snapshot.fence != lease.fence().get() || snapshot.state != LEASE_FREE
+    }) {
+        return Ok(false);
+    }
     let query = format!(
         "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}; fetch {{ \"exists\": true }};",
         literal(lease.scope().managed_scope_id().as_str()),
@@ -1167,6 +1395,51 @@ async fn load_free_managed_fence(
         literal(LEASE_FREE),
     );
     Ok(query_documents(transaction, &query).await?.len() == 1)
+}
+
+async fn load_global_managed_control(
+    transaction: &mut Transaction,
+    scope: &ExecutionScope,
+) -> Result<Option<ManagedControlSnapshot>, Diagnostic> {
+    let query = format!(
+        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} $scope, has {LEASE_FENCE} $fence, has {LEASE_STATE} $state; fetch {{ \"scope\": $scope, \"fence\": $fence, \"state\": $state }};"
+    );
+    parse_managed_control_documents(
+        query_documents(transaction, &query).await?,
+        scope.managed_scope_id(),
+    )
+}
+
+fn parse_managed_control_documents(
+    documents: Vec<Value>,
+    expected_scope: &ManagedScopeId,
+) -> Result<Option<ManagedControlSnapshot>, Diagnostic> {
+    if documents.is_empty() {
+        return Ok(None);
+    }
+    if documents.len() != 1 {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_typedb_duplicate_managed_fence",
+            "managed database has more than one fence mirror row",
+        ));
+    }
+    let document = &documents[0];
+    if required_scalar(document, "scope")? != expected_scope.as_str() {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_typedb_foreign_managed_scope",
+            "managed database is already bound to a different migration scope",
+        ));
+    }
+    let state = required_scalar(document, "state")?;
+    if state != LEASE_HELD && state != LEASE_FREE {
+        return Err(malformed_provider_row("state"));
+    }
+    Ok(Some(ManagedControlSnapshot {
+        fence: canonical_u64(&required_scalar(document, "fence")?)?,
+        state,
+    }))
 }
 
 async fn load_control(
@@ -1704,6 +1977,88 @@ fn ensure_applied_membership(plan: &PlanRecord, applied: &AppliedRecord) -> Resu
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JournalSchemaState {
+    Empty,
+    Exact,
+}
+
+fn journal_schema_state(export: &str) -> Result<JournalSchemaState, Diagnostic> {
+    if export.trim().is_empty() {
+        return Ok(JournalSchemaState::Empty);
+    }
+    let document = DocumentId::new("typebridge-journal-control-provider-export.typeql")?;
+    let partitioned = partition_typeql_export_lossless(document, export)?;
+    if partitioned.full().facts().next().is_none() {
+        return Ok(JournalSchemaState::Empty);
+    }
+    if partitioned.user().facts().next().is_some()
+        || partitioned.legacy_control().facts().next().is_some()
+    {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_typedb_journal_database_not_exclusive",
+            "journal database contains non-journal schema and will not be claimed or modified",
+        ));
+    }
+    let expected_document = DocumentId::new("typebridge-journal-control-schema.typeql")?;
+    let expected =
+        typeql_to_declared(expected_document, JOURNAL_CONTROL_SCHEMA_TYPEQL).map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_typedb_frozen_schema_invalid",
+                "frozen TypeDB control schema cannot be normalized",
+            )
+        })?;
+    if partitioned.internal().declared_identity_fingerprint()
+        != expected.declared_identity_fingerprint()
+    {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_typedb_control_schema_mismatch",
+            "reserved TypeDB migration control schema differs from the frozen contract",
+        )
+        .with_detail("control_contract", "journal-control"));
+    }
+    Ok(JournalSchemaState::Exact)
+}
+
+fn insert_journal_owner_query(
+    managed_database_name: &str,
+    managed_scope_id: &ManagedScopeId,
+) -> String {
+    format!(
+        "insert $owner isa {JOURNAL_OWNER_ENTITY}, has {JOURNAL_OWNER_KEY} {}, has {JOURNAL_OWNER_MANAGED_DATABASE} {}, has {JOURNAL_OWNER_MANAGED_SCOPE} {};",
+        literal(JOURNAL_OWNER_SINGLETON_KEY),
+        literal(managed_database_name),
+        literal(managed_scope_id.as_str()),
+    )
+}
+
+async fn require_journal_owner(
+    transaction: &mut Transaction,
+    managed_database_name: &str,
+    managed_scope_id: &ManagedScopeId,
+) -> Result<(), Diagnostic> {
+    let query = format!(
+        "match $owner isa {JOURNAL_OWNER_ENTITY}, has {JOURNAL_OWNER_KEY} $key, has {JOURNAL_OWNER_MANAGED_DATABASE} $database, has {JOURNAL_OWNER_MANAGED_SCOPE} $scope; fetch {{ \"key\": $key, \"database\": $database, \"scope\": $scope }};"
+    );
+    let documents = query_documents(transaction, &query).await?;
+    let exact = documents.len() == 1
+        && required_scalar(&documents[0], "key")? == JOURNAL_OWNER_SINGLETON_KEY
+        && required_scalar(&documents[0], "database")? == managed_database_name
+        && required_scalar(&documents[0], "scope")? == managed_scope_id.as_str();
+    if exact {
+        Ok(())
+    } else {
+        Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_typedb_journal_owner_mismatch",
+            "journal database owner identity is missing, duplicated, or bound to another managed database or scope",
+        ))
+    }
+}
+
 fn control_schema_matches(
     export: &str,
     expected_schema: &str,
@@ -1758,6 +2113,37 @@ fn map_orm_error(error: OrmError) -> Diagnostic {
     .with_detail("provider", error.to_string())
 }
 
+async fn rollback_schema_error(
+    transaction: &mut Transaction,
+    primary: Diagnostic,
+    operation: &'static str,
+) -> Diagnostic {
+    match transaction.rollback().await {
+        Ok(()) => primary,
+        Err(cleanup) => schema_cleanup_failure(cleanup, Some(&primary), operation),
+    }
+}
+
+fn schema_cleanup_failure(
+    cleanup: OrmError,
+    primary: Option<&Diagnostic>,
+    operation: &'static str,
+) -> Diagnostic {
+    let mut diagnostic = failure(
+        DiagnosticCategory::Integrity,
+        "migration_typedb_schema_guard_cleanup_uncertain",
+        "TypeDB schema transaction termination was not acknowledged",
+    )
+    .with_detail("operation", operation)
+    .with_detail("cleanup", cleanup.to_string());
+    if let Some(primary) = primary {
+        diagnostic = diagnostic
+            .with_detail("primary_code", primary.code().as_str().to_owned())
+            .with_detail("primary", primary.to_string());
+    }
+    diagnostic
+}
+
 fn stale_fence() -> Diagnostic {
     failure(
         DiagnosticCategory::Integrity,
@@ -1797,4 +2183,263 @@ fn failure(category: DiagnosticCategory, code: &'static str, message: &'static s
         DiagnosticCode::new(code).expect("static diagnostic code is valid"),
         message,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
+    use type_bridge_orm::{DatabaseConnectionAuthority, OrmError};
+
+    use super::*;
+
+    struct NoIoBackend {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl DriverBackend for NoIoBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+
+        fn is_open(&self) -> bool {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        fn close_connection(&self) -> Result<(), OrmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(OrmError::Connection("unexpected backend I/O".to_owned()))
+        }
+
+        fn database_exists(&self, _database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+
+        fn create_database(&self, _database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+
+        fn delete_database(&self, _database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+
+        fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+    }
+
+    fn no_io_database(
+        name: String,
+        calls: Arc<AtomicUsize>,
+        authority: Option<DatabaseConnectionAuthority>,
+    ) -> Arc<Database> {
+        let backend = Box::new(NoIoBackend { calls });
+        Arc::new(match authority {
+            Some(authority) => Database::with_backend_authority(backend, name, authority),
+            None => Database::with_backend(backend, name),
+        })
+    }
+
+    #[test]
+    fn database_authority_mismatch_rejects_before_backend_io_without_identity_leakage() {
+        const SENTINEL: &str = "TB_PROVIDER_SECRET_89ab";
+        let calls = Arc::new(AtomicUsize::new(0));
+        let managed_name = format!("managed-{SENTINEL}");
+        let journal_name = derived_journal_database_name(&managed_name);
+        let managed = no_io_database(managed_name, Arc::clone(&calls), None);
+        let journal = no_io_database(journal_name, Arc::clone(&calls), None);
+        let scope = ManagedScopeId::new("authority-test-scope").unwrap();
+        let catalog =
+            VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+                .unwrap();
+
+        let result = TypeDbMigrationStore::new(managed, journal, scope, catalog);
+        let Err(error) = result else {
+            panic!("independent custom backend authorities must reject");
+        };
+        assert_eq!(
+            error.code().as_str(),
+            "migration_typedb_database_authority_mismatch"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let rendered = format!("{error}\n{error:?}");
+        assert!(!rendered.contains(SENTINEL), "{rendered}");
+        assert!(std::error::Error::source(&error).is_none());
+    }
+
+    #[test]
+    fn explicitly_shared_custom_backend_authority_constructs_one_pair() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let authority = DatabaseConnectionAuthority::isolated();
+        let managed = no_io_database(
+            "managed".to_owned(),
+            Arc::clone(&calls),
+            Some(authority.clone()),
+        );
+        let journal = no_io_database(
+            derived_journal_database_name("managed"),
+            Arc::clone(&calls),
+            Some(authority),
+        );
+        let scope = ManagedScopeId::new("authority-test-scope").unwrap();
+        let catalog =
+            VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+                .unwrap();
+
+        assert!(TypeDbMigrationStore::new(managed, journal, scope, catalog).is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn journal_schema_contract_accepts_only_empty_or_exact_exclusive_schema() {
+        assert_eq!(journal_schema_state("").unwrap(), JournalSchemaState::Empty);
+        assert_eq!(
+            journal_schema_state(JOURNAL_CONTROL_SCHEMA_TYPEQL).unwrap(),
+            JournalSchemaState::Exact
+        );
+
+        let foreign = journal_schema_state("define entity customer;")
+            .expect_err("a user database must not be claimed as a journal");
+        assert_eq!(
+            foreign.code().as_str(),
+            "migration_typedb_journal_database_not_exclusive"
+        );
+
+        let mixed = format!("{JOURNAL_CONTROL_SCHEMA_TYPEQL}\nentity customer;");
+        let mixed = journal_schema_state(&mixed)
+            .expect_err("exact control schema plus user schema is not an exclusive journal");
+        assert_eq!(
+            mixed.code().as_str(),
+            "migration_typedb_journal_database_not_exclusive"
+        );
+
+        let partial = journal_schema_state(
+            "define attribute typebridge-internal-v2-control-scope, value string;",
+        )
+        .expect_err("partial reserved schema must fail closed");
+        assert_eq!(
+            partial.code().as_str(),
+            "migration_typedb_control_schema_mismatch"
+        );
+    }
+
+    #[test]
+    fn journal_schema_contract_rejects_every_lossy_compatibility_construct() {
+        let payload_ownership = "owns typebridge-internal-v2-record-payload @card(1..1),";
+        for (case, replacement) in [
+            (
+                "ordered distinct ownership",
+                "owns typebridge-internal-v2-record-payload[] @card(1..1) @distinct,",
+            ),
+            (
+                "cascade ownership",
+                "owns typebridge-internal-v2-record-payload @card(1..1) @cascade,",
+            ),
+            (
+                "subkey ownership",
+                "owns typebridge-internal-v2-record-payload @card(1..1) @subkey(journal),",
+            ),
+        ] {
+            let schema = JOURNAL_CONTROL_SCHEMA_TYPEQL.replacen(payload_ownership, replacement, 1);
+            let error = journal_schema_state(&schema).expect_err(case);
+            assert_eq!(
+                error.code().as_str(),
+                "migration_typedb_export_invalid",
+                "{case}: {error}"
+            );
+        }
+
+        for (case, definition) in [
+            (
+                "opaque function",
+                "fun typebridge-hidden() -> integer: return { 1 };",
+            ),
+            (
+                "released struct",
+                "struct typebridge-hidden, value payload string;",
+            ),
+        ] {
+            let schema = format!("{JOURNAL_CONTROL_SCHEMA_TYPEQL}\n{definition}\n");
+            journal_schema_state(&schema).expect_err(case);
+        }
+    }
+
+    #[test]
+    fn journal_owner_insert_is_literal_escaped_and_binds_both_identities() {
+        let scope = ManagedScopeId::new("scope\"with-quote").unwrap();
+        let query = insert_journal_owner_query("managed\"database", &scope);
+        assert!(query.contains(JOURNAL_OWNER_SINGLETON_KEY));
+        assert!(query.contains("managed\\\"database"));
+        assert!(query.contains("scope\\\"with-quote"));
+        assert!(query.contains(JOURNAL_OWNER_MANAGED_DATABASE));
+        assert!(query.contains(JOURNAL_OWNER_MANAGED_SCOPE));
+    }
+
+    #[test]
+    fn managed_control_singleton_rejects_foreign_and_multiple_scopes() {
+        let expected = ManagedScopeId::new("expected-scope").expect("scope");
+        let exact = serde_json::json!({
+            "scope": "expected-scope",
+            "fence": "7",
+            "state": LEASE_FREE,
+        });
+        let parsed = parse_managed_control_documents(vec![exact.clone()], &expected)
+            .expect("exact managed owner")
+            .expect("managed row");
+        assert_eq!(parsed.fence, 7);
+        assert_eq!(parsed.state, LEASE_FREE);
+
+        let foreign = serde_json::json!({
+            "scope": "restored-under-another-scope",
+            "fence": "7",
+            "state": LEASE_FREE,
+        });
+        assert_eq!(
+            parse_managed_control_documents(vec![foreign], &expected)
+                .expect_err("one-sided journal replacement cannot rebind the managed database")
+                .code()
+                .as_str(),
+            "migration_typedb_foreign_managed_scope"
+        );
+        assert_eq!(
+            parse_managed_control_documents(vec![exact.clone(), exact], &expected)
+                .expect_err("managed control is a global singleton")
+                .code()
+                .as_str(),
+            "migration_typedb_duplicate_managed_fence"
+        );
+    }
+
+    #[test]
+    fn managed_fence_matching_still_ignores_application_schema() {
+        let export = format!("{MANAGED_FENCE_SCHEMA_TYPEQL}\nentity customer;");
+        assert!(
+            control_schema_matches(&export, MANAGED_FENCE_SCHEMA_TYPEQL, "managed-fence").unwrap()
+        );
+    }
+
+    #[test]
+    fn managed_fence_matching_preserves_released_application_extensions() {
+        let export = format!(
+            "{MANAGED_FENCE_SCHEMA_TYPEQL}\n\
+             attribute tag, value string;\n\
+             attribute name, value string;\n\
+             entity customer, owns tag[] @card(0..5) @distinct, \
+             owns name @cascade @subkey(primary);"
+        );
+        assert!(
+            control_schema_matches(&export, MANAGED_FENCE_SCHEMA_TYPEQL, "managed-fence").unwrap()
+        );
+    }
 }

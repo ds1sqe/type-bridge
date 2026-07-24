@@ -1,15 +1,18 @@
 //! Validated, programmatic TypeBridge workspace configuration.
 //!
 //! This unpublished orchestration boundary deliberately stops before YAML
-//! parsing, schema loading, history, persistence, provider I/O, secret
-//! resolution, or compiled-runtime construction. Callers inject local services
-//! and receive an inert, fully validated [`TypeBridgeConfig`].
+//! parsing, schema loading, history, persistence, provider/network I/O, secret
+//! resolution, or compiled-runtime construction. The one bounded filesystem
+//! observation is explicit custom TLS trust material: callers inject a local
+//! source service that canonicalizes and proves the configured CA file before
+//! an inert, fully validated [`TypeBridgeConfig`] is returned.
 
 #![warn(missing_docs)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Component, Path, PathBuf};
 
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
@@ -19,17 +22,20 @@ use type_bridge_contract::managed_scope::{
 };
 use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::BindingTarget;
+use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::SourceSpan;
 use type_bridge_contract::semantic_profile::SemanticProfile;
-use type_bridge_schema::SchemaSourceService;
+use type_bridge_schema::{SchemaSourceKind, SchemaSourceService};
 use type_bridge_schema_migration::MigrationSafetyPolicy;
 
+mod authority;
 mod bundle;
 mod lock;
 mod migration;
 mod workspace;
 mod workspace_yaml;
 
+pub use authority::{WorkspaceDirectoryAuthority, WorkspaceOutputDirectory};
 pub use bundle::{
     BundleProjectionContext, BundleVerificationContext, MAX_SCHEMA_BUNDLE_BYTES,
     SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION, SCHEMA_BUNDLE_FINGERPRINT_DOMAIN,
@@ -41,7 +47,7 @@ pub use lock::{
     MAX_WORKSPACE_LOCK_BYTES, TYPEBRIDGE_WORKSPACE_LOCK_V1, VerifiedWorkspaceLock, WorkspaceLock,
     WorkspaceLockError, WorkspaceLockErrorCode, generate_workspace_lock, verify_workspace_lock,
 };
-pub use migration::MigrationPlanEntry;
+pub use migration::{MigrationDirectoryAuthority, MigrationPlanEntry};
 pub use workspace::{TypeBridgeWorkspace, TypeBridgeWorkspaceError, TypeBridgeWorkspaceServices};
 pub use workspace_yaml::{
     ConfigOrigin, LocatedConfigSpec, TYPEBRIDGE_WORKSPACE_V1_FORMAT, TypeBridgeConfigSpec,
@@ -87,6 +93,8 @@ pub enum WorkspaceConfigErrorCode {
     DuplicateExtensionHandler,
     /// A symbolic identifier was malformed.
     InvalidSymbolicIdentifier,
+    /// One environment's managed database aliases another environment's journal.
+    EnvironmentDatabaseCollision,
     /// A config origin was absent, escaped its root, or was malformed.
     InvalidConfigOrigin,
     /// Config bytes were not valid UTF-8.
@@ -101,6 +109,8 @@ pub enum WorkspaceConfigErrorCode {
     MissingWorkspaceField,
     /// A workspace wire value had the wrong shape or spelling.
     InvalidWorkspaceValue,
+    /// A set-like capability requirement appeared more than once.
+    DuplicateCapabilityRequirement,
     /// A secret input was a literal rather than a reference.
     SecretLiteralRejected,
     /// An environment secret reference was malformed.
@@ -109,6 +119,14 @@ pub enum WorkspaceConfigErrorCode {
     SecretReferenceRejected,
     /// A local extension registry rejected a requirement.
     ExtensionRequirementRejected,
+    /// An environment TLS value was not the canonical Boolean spelling.
+    InvalidTlsBoolean,
+    /// A custom root CA was supplied without explicitly enabling TLS.
+    TlsRootCaRequiresTls,
+    /// A custom root CA contradicted an explicit disabled TLS policy.
+    TlsRootCaWithDisabledTls,
+    /// A custom root CA path was not a readable, non-empty confined file.
+    InvalidTlsRootCa,
 }
 
 /// A structured programmatic workspace validation failure.
@@ -212,13 +230,37 @@ impl fmt::Display for WorkspaceServiceError {
 
 impl Error for WorkspaceServiceError {}
 
-/// A narrow source service used only to prove an explicit root is canonical.
+/// A narrow local source service for root and custom-CA path validation.
 ///
-/// Config validation never reads schema bytes or expands source patterns.
-/// Full schema source services automatically satisfy this boundary.
+/// Config validation never reads schema documents or expands source patterns.
+/// When a custom root CA is configured, the service additionally proves its
+/// canonical confinement and bounded readability. Full schema source services
+/// automatically satisfy this boundary.
 pub trait WorkspaceSourceService {
     /// Return the canonical spelling of the supplied workspace root.
     fn canonicalize_workspace_root(&self, root: &Path) -> Result<PathBuf, WorkspaceServiceError>;
+
+    /// Return the canonical physical spelling of one workspace-owned path.
+    ///
+    /// Implementations that only support virtual programmatic configs may
+    /// retain the default rejection. The method is required only when a
+    /// custom root CA path is configured.
+    fn canonicalize_workspace_path(&self, _path: &Path) -> Result<PathBuf, WorkspaceServiceError> {
+        Err(WorkspaceServiceError::new(
+            "workspace_path_canonicalization_unavailable",
+        ))
+    }
+
+    /// Prove that one canonical path is a readable regular file and return
+    /// its observed byte length.
+    ///
+    /// The default rejection keeps existing virtual services source
+    /// compatible and is exercised only by custom-root configuration.
+    fn readable_workspace_file_len(&self, _path: &Path) -> Result<u64, WorkspaceServiceError> {
+        Err(WorkspaceServiceError::new(
+            "workspace_file_observation_unavailable",
+        ))
+    }
 }
 
 impl<T> WorkspaceSourceService for T
@@ -228,6 +270,29 @@ where
     fn canonicalize_workspace_root(&self, root: &Path) -> Result<PathBuf, WorkspaceServiceError> {
         self.canonicalize(root)
             .map_err(|_| WorkspaceServiceError::new("schema_source_canonicalize_failed"))
+    }
+
+    fn canonicalize_workspace_path(&self, path: &Path) -> Result<PathBuf, WorkspaceServiceError> {
+        self.canonicalize(path)
+            .map_err(|_| WorkspaceServiceError::new("workspace_path_canonicalize_failed"))
+    }
+
+    fn readable_workspace_file_len(&self, path: &Path) -> Result<u64, WorkspaceServiceError> {
+        let observation = self
+            .metadata(path)
+            .map_err(|_| WorkspaceServiceError::new("workspace_file_metadata_failed"))?;
+        if observation.kind() != SchemaSourceKind::File {
+            return Err(WorkspaceServiceError::new("workspace_path_is_not_a_file"));
+        }
+        let capture = self
+            .capture_file(path, 0)
+            .map_err(|_| WorkspaceServiceError::new("workspace_file_read_failed"))?;
+        if capture.before() != &observation || capture.after() != &observation {
+            return Err(WorkspaceServiceError::new(
+                "workspace_file_changed_during_validation",
+            ));
+        }
+        Ok(observation.len())
     }
 }
 
@@ -259,7 +324,10 @@ pub struct TypeBridgeConfigServices<'a> {
 }
 
 impl<'a> TypeBridgeConfigServices<'a> {
-    /// Construct a service set without ambient filesystem, environment, or network state.
+    /// Construct a service set without ambient environment or network state.
+    ///
+    /// Filesystem access remains explicit through `sources` and is used only
+    /// for canonical-root and optional custom-CA validation.
     #[must_use]
     pub const fn new(
         sources: &'a dyn WorkspaceSourceService,
@@ -338,6 +406,97 @@ pub(crate) fn confined_relative_path(
         .with_detail(subject));
     }
     Ok(path)
+}
+
+/// A canonical, workspace-confined custom root CA file.
+///
+/// Construction resolves a portable workspace-relative path against the
+/// canonical workspace root, follows symbolic links, rejects escapes, and
+/// proves that the target is a readable non-empty regular file. The lower
+/// transport layer re-validates the PEM certificate contents immediately
+/// before any network I/O.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceRootCa(PathBuf);
+
+impl WorkspaceRootCa {
+    /// Resolve and validate a workspace-relative custom root CA path.
+    pub fn new(
+        workspace_root: &WorkspaceRoot,
+        relative_path: impl Into<PathBuf>,
+        sources: &dyn WorkspaceSourceService,
+    ) -> Result<Self, WorkspaceConfigError> {
+        let relative_path = confined_relative_path(relative_path, "environment.tls-root-ca")?;
+        let canonical_root = sources
+            .canonicalize_workspace_root(workspace_root.as_path())
+            .map_err(|error| {
+                WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::WorkspaceRootCanonicalizationFailed,
+                    "custom root CA validation could not canonicalize the workspace root",
+                )
+                .with_detail(error.code())
+            })?;
+        if canonical_root != workspace_root.as_path() {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::WorkspaceRootNotCanonical,
+                "custom root CA validation requires a canonical workspace root",
+            ));
+        }
+
+        let candidate = canonical_root.join(relative_path);
+        let canonical_path = sources
+            .canonicalize_workspace_path(&candidate)
+            .map_err(|error| {
+                WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::InvalidTlsRootCa,
+                    "custom root CA path cannot be canonicalized",
+                )
+                .with_detail(error.code())
+            })?;
+        if canonical_path == canonical_root
+            || !canonical_path.starts_with(&canonical_root)
+            || canonical_path.to_str().is_none()
+        {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidTlsRootCa,
+                "custom root CA path escapes the canonical workspace root",
+            ));
+        }
+
+        let length = sources
+            .readable_workspace_file_len(&canonical_path)
+            .map_err(|error| {
+                WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::InvalidTlsRootCa,
+                    "custom root CA path must be a readable regular file",
+                )
+                .with_detail(error.code())
+            })?;
+        if length == 0 {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidTlsRootCa,
+                "custom root CA file must not be empty",
+            ));
+        }
+        Ok(Self(canonical_path))
+    }
+
+    /// Return the canonical absolute root CA path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Validated transport policy for one workspace environment.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum WorkspaceTransportPolicy {
+    /// Plaintext HTTP and gRPC.
+    #[default]
+    Disabled,
+    /// TLS using operating-system native trust roots.
+    NativeRoots,
+    /// TLS using one canonical workspace-confined custom root CA file.
+    CustomRootCa(WorkspaceRootCa),
 }
 
 /// A confined path to one portable schema-set manifest.
@@ -561,18 +720,127 @@ pub struct WorkspaceEnvironment {
     migrate: bool,
     password: SecretReference,
     requirements: CapabilitySet,
+    transport_policy: WorkspaceTransportPolicy,
     uri: String,
     username: SecretReference,
 }
 
+fn invalid_environment_uri() -> WorkspaceConfigError {
+    WorkspaceConfigError::new(
+        WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+        "environment uri must be a comma-separated list of host:port or [IPv6]:port endpoints without credentials, schemes, or control characters",
+    )
+}
+
+fn valid_endpoint_port(port: &str) -> bool {
+    !port.is_empty()
+        && port.bytes().all(|byte| byte.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|port| port != 0)
+}
+
+fn valid_endpoint_host(host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
+}
+
+fn valid_environment_endpoint(endpoint: &str) -> bool {
+    if let Some(bracketed) = endpoint.strip_prefix('[') {
+        let Some((address, port)) = bracketed.split_once("]:") else {
+            return false;
+        };
+        !address.is_empty()
+            && !port.contains(['[', ']', ':'])
+            && address.parse::<Ipv6Addr>().is_ok()
+            && valid_endpoint_port(port)
+    } else {
+        let Some((host, port)) = endpoint.rsplit_once(':') else {
+            return false;
+        };
+        !host.contains(['[', ']', ':']) && valid_endpoint_host(host) && valid_endpoint_port(port)
+    }
+}
+
+pub(crate) fn validate_environment_uri(uri: &str) -> Result<(), WorkspaceConfigError> {
+    if uri.is_empty() || !uri.split(',').all(valid_environment_endpoint) {
+        return Err(invalid_environment_uri());
+    }
+    Ok(())
+}
+
+fn normalized_environment_endpoints(uri: &str) -> Result<BTreeSet<String>, WorkspaceConfigError> {
+    uri.split(',')
+        .map(|endpoint| {
+            if let Some(bracketed) = endpoint.strip_prefix('[') {
+                let (address, port) = bracketed.split_once("]:")?;
+                let address = address.parse::<Ipv6Addr>().ok()?;
+                let port = port.parse::<u16>().ok()?;
+                Some(format!("[{address}]:{port}"))
+            } else {
+                let (host, port) = endpoint.rsplit_once(':')?;
+                let host = host.strip_suffix('.').unwrap_or(host);
+                let host = host
+                    .parse::<Ipv4Addr>()
+                    .map_or_else(|_| host.to_ascii_lowercase(), |address| address.to_string());
+                let port = port.parse::<u16>().ok()?;
+                Some(format!("{host}:{port}"))
+            }
+        })
+        .collect::<Option<BTreeSet<_>>>()
+        .ok_or_else(invalid_environment_uri)
+}
+
+pub(crate) fn validate_environment_database(database: &str) -> Result<(), WorkspaceConfigError> {
+    if database.is_empty() {
+        return Err(WorkspaceConfigError::new(
+            WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+            "environment database must be non-empty",
+        ));
+    }
+    Ok(())
+}
+
 impl WorkspaceEnvironment {
+    fn from_validated(
+        uri: String,
+        database: String,
+        username: SecretReference,
+        password: SecretReference,
+    ) -> Self {
+        Self {
+            database,
+            http_port: None,
+            migrate: false,
+            password,
+            requirements: CapabilitySet::new(),
+            transport_policy: WorkspaceTransportPolicy::Disabled,
+            uri,
+            username,
+        }
+    }
+
     /// Construct one environment with mandatory connection identity.
     ///
-    /// The uri is a plain TypeDB host address (`host:port`, bracketed
-    /// IPv6, or a comma-separated list of those). Userinfo, schemes,
-    /// paths, query strings, whitespace, and control characters are
-    /// rejected: credentials stay symbolic by construction, so an
-    /// address echoed by driver errors or tracing can never leak them.
+    /// The uri is one or more comma-separated TypeDB endpoints: `host:port`
+    /// or bracketed `[IPv6]:port`, with every port in `1..=65535`. Userinfo,
+    /// schemes, paths, query strings, whitespace, and control characters are
+    /// rejected: credentials stay symbolic by construction, so an address
+    /// echoed by driver errors or tracing can never leak them.
     pub fn new(
         uri: impl Into<String>,
         database: impl Into<String>,
@@ -581,30 +849,9 @@ impl WorkspaceEnvironment {
     ) -> Result<Self, WorkspaceConfigError> {
         let uri = uri.into();
         let database = database.into();
-        if uri.is_empty() || database.is_empty() {
-            return Err(WorkspaceConfigError::new(
-                WorkspaceConfigErrorCode::InvalidWorkspaceValue,
-                "environment uri and database must be non-empty",
-            ));
-        }
-        let plain_address = uri.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']' | b',')
-        });
-        if !plain_address {
-            return Err(WorkspaceConfigError::new(
-                WorkspaceConfigErrorCode::InvalidWorkspaceValue,
-                "environment uri must be a plain host address without credentials, schemes, or control characters",
-            ));
-        }
-        Ok(Self {
-            database,
-            http_port: None,
-            migrate: false,
-            password,
-            requirements: CapabilitySet::new(),
-            uri,
-            username,
-        })
+        validate_environment_uri(&uri)?;
+        validate_environment_database(&database)?;
+        Ok(Self::from_validated(uri, database, username, password))
     }
 
     /// Select an explicit provider HTTP port.
@@ -618,6 +865,13 @@ impl WorkspaceEnvironment {
     #[must_use]
     pub const fn with_migrate(mut self, migrate: bool) -> Self {
         self.migrate = migrate;
+        self
+    }
+
+    /// Select the validated transport policy for this environment.
+    #[must_use]
+    pub fn with_transport_policy(mut self, policy: WorkspaceTransportPolicy) -> Self {
+        self.transport_policy = policy;
         self
     }
 
@@ -667,6 +921,12 @@ impl WorkspaceEnvironment {
     #[must_use]
     pub const fn migrate(&self) -> bool {
         self.migrate
+    }
+
+    /// Return the validated transport policy.
+    #[must_use]
+    pub const fn transport_policy(&self) -> &WorkspaceTransportPolicy {
+        &self.transport_policy
     }
 
     /// Return environment-specific capability requirements.
@@ -1110,6 +1370,34 @@ impl TypeBridgeConfigBuilder {
                     WorkspaceConfigErrorCode::DuplicateRequiredField,
                     "environment name is configured more than once",
                 ));
+            }
+        }
+
+        let environment_namespaces = environments
+            .iter()
+            .map(|(name, environment)| {
+                normalized_environment_endpoints(environment.uri())
+                    .map(|endpoints| (name, environment, endpoints))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for left_index in 0..environment_namespaces.len() {
+            for right_index in (left_index + 1)..environment_namespaces.len() {
+                let (left_name, left, left_endpoints) = &environment_namespaces[left_index];
+                let (right_name, right, right_endpoints) = &environment_namespaces[right_index];
+                if left_endpoints.is_disjoint(right_endpoints) {
+                    continue;
+                }
+                let left_journal =
+                    format!("{}{TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX}", left.database());
+                let right_journal =
+                    format!("{}{TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX}", right.database());
+                if left_journal == right.database() || right_journal == left.database() {
+                    return Err(WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::EnvironmentDatabaseCollision,
+                        "one environment's managed database aliases another environment's reserved migration journal on overlapping TypeDB endpoint sets",
+                    )
+                    .with_detail(format!("{left_name},{right_name}")));
+                }
             }
         }
 

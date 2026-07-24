@@ -17,7 +17,10 @@
 //! | [`negotiate_server_band`] | Pick the embedded band to connect a server with |
 //! | [`check_supported`] | Installed-driver gate: window + driver band ∈ server's accepted set |
 //! | [`check_server_supported`] | Embedded-runtime gate: window + accepted ∩ embedded ≠ ∅ |
-//! | [`server_version`] | HTTP probe → `GET /v1/version` |
+//! | [`server_version`] | Released Boolean adapter for the HTTP version probe |
+//! | [`server_version_plaintext`] | Explicit plaintext HTTP version probe |
+//! | [`server_version_native_roots`] | HTTPS version probe using native trust roots |
+//! | [`server_version_custom_root_ca`] | HTTPS version probe using one custom CA bundle |
 //! | [`VersionError`] | Typed error for all failure modes |
 //!
 //! ## Two gates, two questions
@@ -31,9 +34,20 @@
 //! bands at once (the default build embeds them all), so it tests whether the
 //! server's accepted band set intersects the embedded set.
 
+use std::ffi::OsString;
 use std::fmt;
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
+#[cfg(unix)]
+use cap_fs_ext::OpenOptionsSyncExt as _;
+use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
+use cap_std::ambient_authority;
+#[cfg(windows)]
+use cap_std::fs::OpenOptionsExt as _;
+use cap_std::fs::{Dir, OpenOptions};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -409,6 +423,782 @@ pub fn check_feature_supported(feature: Feature, server: &Version) -> Result<(),
 // HTTP probe helpers (pure / unit-testable)
 // ---------------------------------------------------------------------------
 
+/// Stable TLS configuration failures for explicit HTTPS version probes.
+///
+/// This type is deliberately separate from [`VersionError`].  `VersionError`
+/// is a released, exhaustively matchable API, while TLS configuration is an
+/// additive transport concern.  Callers can match these variants (or use
+/// [`TlsConfigurationError::code`]) without parsing an operating-system error
+/// string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TlsConfigurationError {
+    /// The platform trust store could not provide any usable roots.
+    NativeRootsUnavailable,
+    /// The configured custom root path does not identify a regular file.
+    CustomRootCaNotFile {
+        /// Path supplied by the caller.
+        path: PathBuf,
+    },
+    /// The configured custom root file could not be read.
+    CustomRootCaUnreadable {
+        /// Path supplied by the caller.
+        path: PathBuf,
+    },
+    /// The custom root bundle exceeds the bounded pre-I/O parser budget.
+    CustomRootCaTooLarge {
+        /// Path supplied by the caller.
+        path: PathBuf,
+    },
+    /// The custom root file is empty, malformed, contains non-certificate PEM
+    /// blocks, or contains a certificate that rustls cannot use as a root.
+    CustomRootCaInvalidPem {
+        /// Path supplied by the caller.
+        path: PathBuf,
+    },
+    /// The statically selected rustls protocol configuration could not be
+    /// constructed.
+    ClientConfiguration,
+}
+
+impl TlsConfigurationError {
+    /// Return the stable machine-readable diagnostic code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::NativeRootsUnavailable => "tls_native_roots_unavailable",
+            Self::CustomRootCaNotFile { .. } => "tls_custom_root_ca_not_file",
+            Self::CustomRootCaUnreadable { .. } => "tls_custom_root_ca_unreadable",
+            Self::CustomRootCaTooLarge { .. } => "tls_custom_root_ca_too_large",
+            Self::CustomRootCaInvalidPem { .. } => "tls_custom_root_ca_invalid_pem",
+            Self::ClientConfiguration => "tls_client_configuration_invalid",
+        }
+    }
+}
+
+impl fmt::Display for TlsConfigurationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TLS configuration error [{}]: ", self.code())?;
+        match self {
+            Self::NativeRootsUnavailable => {
+                write!(
+                    f,
+                    "the platform trust store contains no usable certificates"
+                )
+            }
+            Self::CustomRootCaNotFile { path } => write!(
+                f,
+                "custom root CA path is not a regular file: {}",
+                path.display()
+            ),
+            Self::CustomRootCaUnreadable { path } => {
+                write!(f, "custom root CA file cannot be read: {}", path.display())
+            }
+            Self::CustomRootCaTooLarge { path } => write!(
+                f,
+                "custom root CA file exceeds the 1 MiB bundle limit: {}",
+                path.display()
+            ),
+            Self::CustomRootCaInvalidPem { path } => write!(
+                f,
+                "custom root CA file is not a valid PEM certificate bundle: {}",
+                path.display()
+            ),
+            Self::ClientConfiguration => {
+                write!(
+                    f,
+                    "the rustls client configuration could not be constructed"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TlsConfigurationError {}
+
+/// Failure returned by an explicit HTTP/HTTPS version probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionProbeError {
+    /// Network, HTTP status, response parsing, or version parsing failure.
+    Probe(VersionError),
+    /// TLS trust material failed validation before any request was sent.
+    TlsConfiguration(TlsConfigurationError),
+}
+
+impl VersionProbeError {
+    /// Collapse the additive probe error onto the released [`VersionError`]
+    /// surface used by [`server_version`].
+    #[must_use]
+    pub fn into_version_error(self) -> VersionError {
+        match self {
+            Self::Probe(error) => error,
+            Self::TlsConfiguration(error) => VersionError::Probe(error.to_string()),
+        }
+    }
+}
+
+impl From<VersionError> for VersionProbeError {
+    fn from(value: VersionError) -> Self {
+        Self::Probe(value)
+    }
+}
+
+impl From<TlsConfigurationError> for VersionProbeError {
+    fn from(value: TlsConfigurationError) -> Self {
+        Self::TlsConfiguration(value)
+    }
+}
+
+impl fmt::Display for VersionProbeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Probe(error) => error.fmt(f),
+            Self::TlsConfiguration(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for VersionProbeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Probe(error) => Some(error),
+            Self::TlsConfiguration(error) => Some(error),
+        }
+    }
+}
+
+const MAX_CUSTOM_ROOT_CA_BYTES: u64 = 1024 * 1024;
+
+fn validate_custom_root_pem_shape(
+    configured_path: &Path,
+    bytes: &[u8],
+) -> Result<(), TlsConfigurationError> {
+    const BEGIN_CERTIFICATE: &[u8] = b"-----BEGIN CERTIFICATE-----";
+    const END_CERTIFICATE: &[u8] = b"-----END CERTIFICATE-----";
+
+    let invalid = || TlsConfigurationError::CustomRootCaInvalidPem {
+        path: configured_path.to_path_buf(),
+    };
+    let mut cursor = 0usize;
+    let mut certificate_count = 0usize;
+
+    while cursor < bytes.len() {
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if cursor == bytes.len() {
+            break;
+        }
+        if !bytes[cursor..].starts_with(BEGIN_CERTIFICATE) {
+            return Err(invalid());
+        }
+
+        let body_start = cursor + BEGIN_CERTIFICATE.len();
+        let end_offset = bytes[body_start..]
+            .windows(END_CERTIFICATE.len())
+            .position(|window| window == END_CERTIFICATE)
+            .ok_or_else(&invalid)?;
+        cursor = body_start + end_offset + END_CERTIFICATE.len();
+        if bytes
+            .get(cursor)
+            .is_some_and(|byte| !byte.is_ascii_whitespace())
+        {
+            return Err(invalid());
+        }
+        certificate_count += 1;
+    }
+
+    if certificate_count == 0 {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn parse_custom_root_store(
+    configured_path: &Path,
+    bytes: &[u8],
+) -> Result<rustls::RootCertStore, TlsConfigurationError> {
+    // Every vendored driver consumes the bundle through `read_to_string`, so
+    // reject non-UTF-8 material at the shared boundary instead of allowing
+    // different bands to classify the same bytes differently.
+    std::str::from_utf8(bytes).map_err(|_| TlsConfigurationError::CustomRootCaInvalidPem {
+        path: configured_path.to_path_buf(),
+    })?;
+    // `rustls-pemfile` intentionally skips text outside recognised PEM
+    // sections and silently ignores unknown section labels. A trust bundle is
+    // a closed input, so reject that material before asking it to decode the
+    // certificate bodies.
+    validate_custom_root_pem_shape(configured_path, bytes)?;
+
+    let mut reader = BufReader::new(bytes);
+    let mut roots = rustls::RootCertStore::empty();
+    let mut certificate_count = 0usize;
+
+    loop {
+        let item = rustls_pemfile::read_one(&mut reader).map_err(|_| {
+            TlsConfigurationError::CustomRootCaInvalidPem {
+                path: configured_path.to_path_buf(),
+            }
+        })?;
+        let Some(item) = item else {
+            break;
+        };
+        let rustls_pemfile::Item::X509Certificate(certificate) = item else {
+            return Err(TlsConfigurationError::CustomRootCaInvalidPem {
+                path: configured_path.to_path_buf(),
+            });
+        };
+        roots
+            .add(certificate)
+            .map_err(|_| TlsConfigurationError::CustomRootCaInvalidPem {
+                path: configured_path.to_path_buf(),
+            })?;
+        certificate_count += 1;
+    }
+
+    if certificate_count == 0 {
+        return Err(TlsConfigurationError::CustomRootCaInvalidPem {
+            path: configured_path.to_path_buf(),
+        });
+    }
+
+    Ok(roots)
+}
+
+/// One bounded, validated snapshot of a custom root CA bundle.
+///
+/// This is a hidden cross-crate implementation seam for the secure TypeDB
+/// runtime. Path-based loaders retain both the resolved source parent and the
+/// exact source file used for the bounded read; external path authorities can
+/// instead supply already-captured bytes. Both paths copy the accepted bytes
+/// once into a private snapshot. HTTP trust is built from cached parsed roots.
+/// Driver-band lowering is allowed to read only the snapshot handle:
+/// `/dev/fd/<fd>` on Unix, or the current handle-derived path while Windows
+/// no-write/no-delete handles keep both the snapshot parent and file pinned.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct RetainedCustomRootCa(Arc<RetainedCustomRootCaInner>);
+
+struct RetainedCustomRootCaInner {
+    configured_path: PathBuf,
+    bytes: Arc<[u8]>,
+    roots: rustls::RootCertStore,
+    // Path-based loaders retain their exact source identity. Authorities that
+    // already captured bytes through their own directory handle do not need
+    // to reopen or retain the caller-controlled source name here.
+    _source_directory: Option<Dir>,
+    _source_file: Option<std::fs::File>,
+    snapshot_file: Mutex<Option<std::fs::File>>,
+    #[cfg(windows)]
+    snapshot_directory: Option<Dir>,
+    #[cfg(windows)]
+    snapshot_path: PathBuf,
+}
+
+impl Drop for RetainedCustomRootCaInner {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            // The snapshot file and its parent deliberately deny delete
+            // sharing while the material is live. Close those handles before
+            // removing the private name and directory.
+            let snapshot = match self.snapshot_file.get_mut() {
+                Ok(snapshot) => snapshot,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            drop(snapshot.take());
+            drop(self.snapshot_directory.take());
+            let _ = std::fs::remove_file(&self.snapshot_path);
+            if let Some(parent) = self.snapshot_path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn create_custom_root_snapshot(
+    configured_path: &Path,
+    bytes: &[u8],
+) -> Result<std::fs::File, TlsConfigurationError> {
+    // `tempfile()` is anonymous on Unix. Only the retained descriptor can
+    // reach this immutable-by-convention snapshot; configured-path writes,
+    // renames, and parent swaps cannot change what a driver reads.
+    let mut snapshot =
+        tempfile::tempfile().map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        })?;
+    snapshot
+        .write_all(bytes)
+        .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        })?;
+    snapshot
+        .flush()
+        .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        })?;
+    snapshot.seek(SeekFrom::Start(0)).map_err(|_| {
+        TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        }
+    })?;
+    Ok(snapshot)
+}
+
+#[cfg(windows)]
+fn create_custom_root_snapshot(
+    configured_path: &Path,
+    bytes: &[u8],
+) -> Result<(std::fs::File, Dir, PathBuf), TlsConfigurationError> {
+    let temporary_directory = tempfile::Builder::new()
+        .prefix("type-bridge-root-ca-")
+        .tempdir()
+        .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        })?;
+    let directory = Dir::open_ambient_dir(temporary_directory.path(), ambient_authority())
+        .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        })?;
+    let snapshot_path = temporary_directory.path().join("root-ca.pem");
+    let mut options = OpenOptions::new();
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    options
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .follow(FollowSymlinks::No)
+        .share_mode(FILE_SHARE_READ);
+    let mut snapshot = directory
+        .open_with(Path::new("root-ca.pem"), &options)
+        .map(cap_std::fs::File::into_std)
+        .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        })?;
+    snapshot
+        .write_all(bytes)
+        .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        })?;
+    snapshot
+        .flush()
+        .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        })?;
+    snapshot.seek(SeekFrom::Start(0)).map_err(|_| {
+        TlsConfigurationError::CustomRootCaUnreadable {
+            path: configured_path.to_path_buf(),
+        }
+    })?;
+
+    // Disable TempDir cleanup only after the complete snapshot exists. The
+    // retained handles above enforce no-write/no-delete semantics; Drop closes
+    // them in the required order and removes this private namespace.
+    let retained_directory = temporary_directory.keep();
+    debug_assert_eq!(snapshot_path.parent(), Some(retained_directory.as_path()));
+    Ok((snapshot, directory, snapshot_path))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_custom_root_snapshot(
+    configured_path: &Path,
+    _bytes: &[u8],
+) -> Result<std::fs::File, TlsConfigurationError> {
+    Err(TlsConfigurationError::CustomRootCaUnreadable {
+        path: configured_path.to_path_buf(),
+    })
+}
+
+impl fmt::Debug for RetainedCustomRootCa {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RetainedCustomRootCa")
+            .field("configured_path", &self.0.configured_path)
+            .field("bytes", &self.0.bytes.len())
+            .finish_non_exhaustive()
+    }
+}
+
+fn open_custom_root_parent_nofollow(
+    path: &Path,
+    configured_path: &Path,
+) -> Result<(Dir, OsString), TlsConfigurationError> {
+    let unreadable = || TlsConfigurationError::CustomRootCaUnreadable {
+        path: configured_path.to_path_buf(),
+    };
+    let file_name = path
+        .file_name()
+        .map(OsString::from)
+        .ok_or_else(unreadable)?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    // Anchor only at the filesystem root (or the current directory for a
+    // relative path), then resolve each named directory through its preceding
+    // retained descriptor. A single cap-std open with a multi-component path
+    // would still be allowed to follow symlinks in intermediate components.
+    let mut components = parent.components();
+    let mut anchor = PathBuf::new();
+    let mut saw_prefix = false;
+    let mut saw_root = false;
+    loop {
+        match components.clone().next() {
+            Some(Component::Prefix(prefix)) if !saw_prefix && !saw_root => {
+                anchor.push(prefix.as_os_str());
+                saw_prefix = true;
+                let _ = components.next();
+            }
+            Some(Component::RootDir) if !saw_root => {
+                anchor.push(Component::RootDir.as_os_str());
+                saw_root = true;
+                let _ = components.next();
+            }
+            _ => break,
+        }
+    }
+    // Preserve Windows drive-relative semantics by using the drive prefix as
+    // the ambient anchor; named components are still opened one at a time.
+    if !saw_prefix && !saw_root {
+        anchor.push(".");
+    }
+
+    let mut directory =
+        Dir::open_ambient_dir(&anchor, ambient_authority()).map_err(|_| unreadable())?;
+    let mut ancestors = Vec::new();
+    for component in components {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                directory = match ancestors.pop() {
+                    Some(parent) => parent,
+                    None => directory
+                        .open_parent_dir(ambient_authority())
+                        .map_err(|_| unreadable())?,
+                };
+            }
+            Component::Normal(name) => {
+                let child = directory
+                    .open_dir_nofollow(name)
+                    .map_err(|_| unreadable())?;
+                ancestors.push(directory);
+                directory = child;
+            }
+            Component::Prefix(_) | Component::RootDir => return Err(unreadable()),
+        }
+    }
+
+    Ok((directory, file_name))
+}
+
+impl RetainedCustomRootCa {
+    /// Load and validate one already-physical custom root bundle without
+    /// following any path component symlinks.
+    ///
+    /// Workspace and server callers use this entry point after their own
+    /// confinement/canonicalization checks. All later HTTP and driver lowering
+    /// consumes the cached roots or private byte snapshot.
+    #[doc(hidden)]
+    pub fn load(path: &Path) -> Result<Self, TlsConfigurationError> {
+        Self::load_physical(path, path)
+    }
+
+    /// Resolve one raw binding path alias, then apply the physical no-follow
+    /// loader while retaining the caller path in diagnostics.
+    ///
+    /// This entry point is deliberately distinct from [`Self::load`]: only
+    /// language-binding inputs that have not already passed workspace or
+    /// server confinement may follow a caller-supplied alias once.
+    #[doc(hidden)]
+    pub fn load_configured_alias(path: &Path) -> Result<Self, TlsConfigurationError> {
+        Self::load_configured_alias_with_after_open(path, || {})
+    }
+
+    /// Validate and retain bytes already captured through an external path
+    /// authority without reopening the diagnostic path.
+    ///
+    /// Server/workspace configuration loaders use this only after a bounded,
+    /// regular-file read through their retained directory handle. All HTTP
+    /// and driver consumers receive the private snapshot created here.
+    #[doc(hidden)]
+    pub fn load_captured_bytes(
+        configured_path: &Path,
+        bytes: Arc<[u8]>,
+    ) -> Result<Self, TlsConfigurationError> {
+        Self::from_captured_bytes(configured_path, bytes, None, None)
+    }
+
+    fn load_configured_alias_with_after_open<F>(
+        configured_path: &Path,
+        after_open: F,
+    ) -> Result<Self, TlsConfigurationError>
+    where
+        F: FnOnce(),
+    {
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::Yes);
+        #[cfg(unix)]
+        options.nonblock(true);
+        #[cfg(windows)]
+        {
+            // Permit concurrent readers, but pin this exact opened identity
+            // against writes, deletion, and replacement while it is captured.
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+            options.share_mode(FILE_SHARE_READ);
+        }
+        let file =
+            cap_std::fs::File::open_ambient_with(configured_path, &options, ambient_authority())
+                .map(cap_std::fs::File::into_std)
+                .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+                    path: configured_path.to_path_buf(),
+                })?;
+
+        // A raw binding path is allowed to traverse aliases, but it is opened
+        // only once. Parent or final-component replacement after this point
+        // cannot redirect the bytes consumed below.
+        after_open();
+        Self::load_open_file(configured_path, None, file)
+    }
+
+    fn load_physical(
+        physical_path: &Path,
+        configured_path: &Path,
+    ) -> Result<Self, TlsConfigurationError> {
+        let (directory, file_name) =
+            open_custom_root_parent_nofollow(physical_path, configured_path)?;
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        options.nonblock(true);
+        #[cfg(windows)]
+        {
+            // Permit the eager read-only opens performed by the vendored drivers,
+            // but deny writes, deletion, and replacement while this handle lives.
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+            options.share_mode(FILE_SHARE_READ);
+        }
+        let file = directory
+            .open_with(Path::new(&file_name), &options)
+            .map(cap_std::fs::File::into_std)
+            .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+                path: configured_path.to_path_buf(),
+            })?;
+        Self::load_open_file(configured_path, Some(directory), file)
+    }
+
+    fn load_open_file(
+        configured_path: &Path,
+        source_directory: Option<Dir>,
+        mut file: std::fs::File,
+    ) -> Result<Self, TlsConfigurationError> {
+        // Inspect and read the same open handle. The metadata check provides a
+        // cheap rejection, while the limit-plus-one read remains authoritative if
+        // another process grows the opened file.
+        let before =
+            file.metadata()
+                .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+                    path: configured_path.to_path_buf(),
+                })?;
+        if !before.is_file() {
+            return Err(TlsConfigurationError::CustomRootCaNotFile {
+                path: configured_path.to_path_buf(),
+            });
+        }
+        if before.len() > MAX_CUSTOM_ROOT_CA_BYTES {
+            return Err(TlsConfigurationError::CustomRootCaTooLarge {
+                path: configured_path.to_path_buf(),
+            });
+        }
+
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(MAX_CUSTOM_ROOT_CA_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+                path: configured_path.to_path_buf(),
+            })?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CUSTOM_ROOT_CA_BYTES {
+            return Err(TlsConfigurationError::CustomRootCaTooLarge {
+                path: configured_path.to_path_buf(),
+            });
+        }
+        file.seek(SeekFrom::Start(0)).map_err(|_| {
+            TlsConfigurationError::CustomRootCaUnreadable {
+                path: configured_path.to_path_buf(),
+            }
+        })?;
+        let mut verification_bytes = Vec::new();
+        (&mut file)
+            .take(MAX_CUSTOM_ROOT_CA_BYTES + 1)
+            .read_to_end(&mut verification_bytes)
+            .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+                path: configured_path.to_path_buf(),
+            })?;
+        let after = file
+            .metadata()
+            .map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
+                path: configured_path.to_path_buf(),
+            })?;
+        let timestamps_match = match (before.modified(), after.modified()) {
+            (Ok(before), Ok(after)) => before == after,
+            (Err(_), Err(_)) => true,
+            _ => false,
+        };
+        if before.len() != after.len()
+            || before.len() != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+            || bytes != verification_bytes
+            || !timestamps_match
+        {
+            return Err(TlsConfigurationError::CustomRootCaUnreadable {
+                path: configured_path.to_path_buf(),
+            });
+        }
+        file.seek(SeekFrom::Start(0)).map_err(|_| {
+            TlsConfigurationError::CustomRootCaUnreadable {
+                path: configured_path.to_path_buf(),
+            }
+        })?;
+        Self::from_captured_bytes(configured_path, bytes.into(), source_directory, Some(file))
+    }
+
+    fn from_captured_bytes(
+        configured_path: &Path,
+        bytes: Arc<[u8]>,
+        source_directory: Option<Dir>,
+        source_file: Option<std::fs::File>,
+    ) -> Result<Self, TlsConfigurationError> {
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CUSTOM_ROOT_CA_BYTES {
+            return Err(TlsConfigurationError::CustomRootCaTooLarge {
+                path: configured_path.to_path_buf(),
+            });
+        }
+        let roots = parse_custom_root_store(configured_path, &bytes)?;
+
+        #[cfg(unix)]
+        let snapshot_file = create_custom_root_snapshot(configured_path, &bytes)?;
+        #[cfg(windows)]
+        let (snapshot_file, snapshot_directory, snapshot_path) =
+            create_custom_root_snapshot(configured_path, &bytes)?;
+        #[cfg(not(any(unix, windows)))]
+        let snapshot_file = create_custom_root_snapshot(configured_path, &bytes)?;
+
+        Ok(Self(Arc::new(RetainedCustomRootCaInner {
+            configured_path: configured_path.to_path_buf(),
+            bytes,
+            roots,
+            _source_directory: source_directory,
+            _source_file: source_file,
+            snapshot_file: Mutex::new(Some(snapshot_file)),
+            #[cfg(windows)]
+            snapshot_directory: Some(snapshot_directory),
+            #[cfg(windows)]
+            snapshot_path,
+        })))
+    }
+
+    /// Invoke one eager driver lowering operation with a path pinned to the
+    /// private captured-byte snapshot.
+    ///
+    /// The closure must consume the file synchronously.  This matches all
+    /// three supported driver constructors, which read the PEM before they
+    /// return their TLS configuration object.
+    #[doc(hidden)]
+    pub fn with_driver_root_path<T>(
+        &self,
+        lower: impl FnOnce(&Path) -> T,
+    ) -> Result<T, TlsConfigurationError> {
+        let mut snapshot = self.0.snapshot_file.lock().map_err(|_| {
+            TlsConfigurationError::CustomRootCaUnreadable {
+                path: self.0.configured_path.clone(),
+            }
+        })?;
+        let file =
+            snapshot
+                .as_mut()
+                .ok_or_else(|| TlsConfigurationError::CustomRootCaUnreadable {
+                    path: self.0.configured_path.clone(),
+                })?;
+        file.seek(SeekFrom::Start(0)).map_err(|_| {
+            TlsConfigurationError::CustomRootCaUnreadable {
+                path: self.0.configured_path.clone(),
+            }
+        })?;
+
+        #[cfg(unix)]
+        let retained_path = {
+            use std::os::fd::AsRawFd as _;
+            PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()))
+        };
+
+        #[cfg(windows)]
+        let retained_path = winx::file::get_file_path(file).map_err(|_| {
+            TlsConfigurationError::CustomRootCaUnreadable {
+                path: self.0.configured_path.clone(),
+            }
+        })?;
+
+        #[cfg(not(any(unix, windows)))]
+        return Err(TlsConfigurationError::CustomRootCaUnreadable {
+            path: self.0.configured_path.clone(),
+        });
+
+        #[cfg(any(unix, windows))]
+        {
+            Ok(lower(&retained_path))
+        }
+    }
+
+    fn root_store(&self) -> rustls::RootCertStore {
+        self.0.roots.clone()
+    }
+
+    #[cfg(test)]
+    fn captured_bytes(&self) -> &[u8] {
+        &self.0.bytes
+    }
+}
+
+fn native_root_store_from_loaded(
+    loaded: rustls_native_certs::CertificateResult,
+) -> Result<rustls::RootCertStore, TlsConfigurationError> {
+    let mut roots = rustls::RootCertStore::empty();
+    let (valid_count, _) = roots.add_parsable_certificates(loaded.certs);
+    if valid_count == 0 {
+        return Err(TlsConfigurationError::NativeRootsUnavailable);
+    }
+    Ok(roots)
+}
+
+fn native_root_store() -> Result<rustls::RootCertStore, TlsConfigurationError> {
+    // Platform stores are often heterogeneous. Individual unreadable or
+    // malformed entries are not fatal when the same load produced at least
+    // one certificate rustls can use.
+    native_root_store_from_loaded(rustls_native_certs::load_native_certs())
+}
+
+fn tls_agent(roots: rustls::RootCertStore) -> Result<ureq::Agent, TlsConfigurationError> {
+    // ureq's default rustls feature uses webpki roots.  Build the client
+    // explicitly so `NativeRoots` means the operating-system store and a
+    // custom mode trusts only the supplied PEM bundle.
+    let config = rustls::ClientConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+    .map_err(|_| TlsConfigurationError::ClientConfiguration)?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(ureq::builder().tls_config(Arc::new(config)).build())
+}
+
+/// Validate a custom root CA bundle without performing network I/O.
+///
+/// The file must be a regular file containing one or more PEM-encoded X.509
+/// certificates and no other PEM block types.
+pub fn validate_custom_root_ca(path: &Path) -> Result<(), TlsConfigurationError> {
+    RetainedCustomRootCa::load_configured_alias(path).map(|_| ())
+}
+
 /// Derive the HTTP version endpoint URL from a gRPC-style address.
 ///
 /// The address may be:
@@ -465,25 +1255,8 @@ pub(crate) fn parse_version_response(json: &str) -> Result<Version, VersionError
 // HTTP probe (network)
 // ---------------------------------------------------------------------------
 
-/// Query the TypeDB HTTP API for the server version.
-///
-/// Constructs the endpoint URL via [`version_endpoint`], issues a blocking
-/// `GET`, and parses the response with [`parse_version_response`].
-///
-/// The gRPC `address` format is `"host:1729"` or bare `"host"`.  The HTTP
-/// version endpoint always runs on a separate port (default `8000`); pass
-/// `http_port` to override for non-standard deployments.
-///
-/// # Errors
-///
-/// Returns [`VersionError::Probe`] for any network, HTTP, or parse failure,
-/// with an actionable message that names the URL tried.  The probe **never**
-/// silently returns a default — it fails closed so an undetectable version
-/// cannot be asserted compatible.
-pub fn server_version(address: &str, http_port: u16, tls: bool) -> Result<Version, VersionError> {
-    let url = version_endpoint(address, http_port, tls);
-
-    let response_body = ureq::get(&url)
+fn server_version_request(request: ureq::Request, url: &str) -> Result<Version, VersionError> {
+    let response_body = request
         .call()
         .map_err(|e| {
             VersionError::Probe(format!(
@@ -500,6 +1273,98 @@ pub fn server_version(address: &str, http_port: u16, tls: bool) -> Result<Versio
         VersionError::Probe(msg) => VersionError::Probe(format!("{msg} (endpoint: {url})")),
         other => other,
     })
+}
+
+/// Query the TypeDB HTTP API over plaintext HTTP.
+///
+/// This function never constructs a TLS client and is the only explicit probe
+/// used by [`crate::version::server_version`] when its released `tls` argument
+/// is `false`.
+///
+/// # Errors
+///
+/// Returns [`VersionProbeError::Probe`] for any network, HTTP, or response
+/// parsing failure.
+pub fn server_version_plaintext(
+    address: &str,
+    http_port: u16,
+) -> Result<Version, VersionProbeError> {
+    let url = version_endpoint(address, http_port, false);
+    server_version_request(ureq::get(&url), &url).map_err(VersionProbeError::Probe)
+}
+
+/// Query the TypeDB HTTP API over HTTPS using native system trust roots.
+///
+/// Native roots are loaded eagerly, before the request is constructed.  This
+/// enabled path does not retry through [`server_version_plaintext`].
+///
+/// # Errors
+///
+/// Returns [`VersionProbeError::TlsConfiguration`] if native roots cannot be
+/// loaded, or [`VersionProbeError::Probe`] for network, HTTP, or response
+/// parsing failures.
+pub fn server_version_native_roots(
+    address: &str,
+    http_port: u16,
+) -> Result<Version, VersionProbeError> {
+    let agent = tls_agent(native_root_store()?)?;
+    let url = version_endpoint(address, http_port, true);
+    server_version_request(agent.get(&url), &url).map_err(VersionProbeError::Probe)
+}
+
+/// Query the TypeDB HTTP API over HTTPS using only a custom root CA bundle.
+///
+/// The PEM bundle is loaded and validated before a request is constructed.
+/// This enabled path does not retry through [`server_version_plaintext`].
+///
+/// # Errors
+///
+/// Returns [`VersionProbeError::TlsConfiguration`] for an unreadable or
+/// invalid root bundle, or [`VersionProbeError::Probe`] for network, HTTP, or
+/// response parsing failures.
+pub fn server_version_custom_root_ca(
+    address: &str,
+    http_port: u16,
+    root_ca: &Path,
+) -> Result<Version, VersionProbeError> {
+    let material = RetainedCustomRootCa::load_configured_alias(root_ca)?;
+    server_version_retained_custom_root_ca(address, http_port, &material)
+}
+
+/// Query the HTTPS version endpoint from already retained custom-root
+/// material.
+///
+/// This hidden cross-crate seam prevents the secure runtime from reopening a
+/// caller-controlled path after it has lowered the TypeDB driver bands.
+#[doc(hidden)]
+pub fn server_version_retained_custom_root_ca(
+    address: &str,
+    http_port: u16,
+    material: &RetainedCustomRootCa,
+) -> Result<Version, VersionProbeError> {
+    let agent = tls_agent(material.root_store())?;
+    let url = version_endpoint(address, http_port, true);
+    server_version_request(agent.get(&url), &url).map_err(VersionProbeError::Probe)
+}
+
+/// Query the TypeDB HTTP API for the server version.
+///
+/// This is the released Boolean adapter.  `false` delegates to
+/// [`server_version_plaintext`]; `true` delegates to
+/// [`server_version_native_roots`].  New code that carries a typed TLS policy
+/// should call the explicit function matching that policy.
+///
+/// # Errors
+///
+/// Returns [`VersionError::Probe`] for any TLS configuration, network, HTTP,
+/// or parse failure.  The probe never silently returns a default.
+pub fn server_version(address: &str, http_port: u16, tls: bool) -> Result<Version, VersionError> {
+    let result = if tls {
+        server_version_native_roots(address, http_port)
+    } else {
+        server_version_plaintext(address, http_port)
+    };
+    result.map_err(VersionProbeError::into_version_error)
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +1485,9 @@ impl std::error::Error for VersionError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TLS_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
     // -- FromStr / Display ---------------------------------------------------
 
@@ -1097,6 +1965,400 @@ mod tests {
             version_endpoint("typedb://myhost:1729", 8000, false),
             "http://myhost:8000/v1/version"
         );
+    }
+
+    #[test]
+    fn native_roots_keep_usable_certificates_when_other_entries_fail() {
+        let valid = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/valid-root.pem");
+        let temporary = tempfile::tempdir().expect("create native-root test directory");
+        let missing_directory = temporary.path().join("missing");
+        let loaded = rustls_native_certs::load_certs_from_paths(
+            Some(valid.as_path()),
+            Some(missing_directory.as_path()),
+        );
+        assert!(
+            !loaded.certs.is_empty(),
+            "fixture must provide a certificate"
+        );
+        assert!(
+            !loaded.errors.is_empty(),
+            "missing directory must provide a deterministic load error"
+        );
+
+        let roots = native_root_store_from_loaded(loaded)
+            .expect("usable roots must survive unrelated load errors");
+        assert!(!roots.is_empty());
+    }
+
+    #[test]
+    fn native_roots_fail_when_no_loaded_certificate_is_usable() {
+        let mut loaded = rustls_native_certs::CertificateResult::default();
+        loaded
+            .certs
+            .push(rustls::pki_types::CertificateDer::from(vec![0_u8; 8]));
+
+        assert!(matches!(
+            native_root_store_from_loaded(loaded),
+            Err(TlsConfigurationError::NativeRootsUnavailable)
+        ));
+    }
+
+    #[test]
+    fn custom_root_validation_reports_stable_pre_io_errors() {
+        let missing =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/does-not-exist.pem");
+        let missing_error = validate_custom_root_ca(&missing).unwrap_err();
+        assert_eq!(missing_error.code(), "tls_custom_root_ca_unreadable");
+        assert!(matches!(
+            missing_error,
+            TlsConfigurationError::CustomRootCaUnreadable { path } if path == missing
+        ));
+
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let directory_error = validate_custom_root_ca(&directory).unwrap_err();
+        assert_eq!(directory_error.code(), "tls_custom_root_ca_not_file");
+        assert!(matches!(
+            directory_error,
+            TlsConfigurationError::CustomRootCaNotFile { path } if path == directory
+        ));
+
+        let invalid =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/invalid-root.pem");
+        let invalid_error = validate_custom_root_ca(&invalid).unwrap_err();
+        assert_eq!(invalid_error.code(), "tls_custom_root_ca_invalid_pem");
+        assert!(matches!(
+            invalid_error,
+            TlsConfigurationError::CustomRootCaInvalidPem { path } if path == invalid
+        ));
+
+        let oversized = std::env::temp_dir().join(format!(
+            "type-bridge-oversized-root-{}-{}.pem",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let file = std::fs::File::create(&oversized).expect("create oversized root fixture");
+        file.set_len(MAX_CUSTOM_ROOT_CA_BYTES + 1)
+            .expect("extend oversized root fixture");
+        let oversized_error = validate_custom_root_ca(&oversized).unwrap_err();
+        std::fs::remove_file(&oversized).expect("remove oversized root fixture");
+        assert_eq!(oversized_error.code(), "tls_custom_root_ca_too_large");
+        assert!(matches!(
+            oversized_error,
+            TlsConfigurationError::CustomRootCaTooLarge { path } if path == oversized
+        ));
+    }
+
+    #[test]
+    fn custom_root_parser_rejects_junk_and_unknown_pem_sections() {
+        let path = Path::new("configured-root.pem");
+        let valid = include_bytes!("../tests/fixtures/valid-root.pem");
+        let cases = [
+            [b"leading junk\n".as_slice(), valid].concat(),
+            [valid.as_slice(), b"\ntrailing junk\n"].concat(),
+            [
+                b"-----BEGIN TYPEBRIDGE UNKNOWN-----\nAA==\n-----END TYPEBRIDGE UNKNOWN-----\n"
+                    .as_slice(),
+                valid,
+            ]
+            .concat(),
+        ];
+
+        for bytes in cases {
+            assert!(matches!(
+                parse_custom_root_store(path, &bytes),
+                Err(TlsConfigurationError::CustomRootCaInvalidPem { path: rejected })
+                    if rejected == path
+            ));
+        }
+
+        let padded = [b" \t\r\n".as_slice(), valid.as_slice(), b"\n\r\t "].concat();
+        assert!(parse_custom_root_store(path, &padded).is_ok());
+    }
+
+    #[test]
+    fn custom_root_probe_rejects_material_before_network_io() {
+        let missing =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/does-not-exist.pem");
+        let error = server_version_custom_root_ca(
+            "invalid host that must not be contacted",
+            8000,
+            &missing,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            VersionProbeError::TlsConfiguration(
+                TlsConfigurationError::CustomRootCaUnreadable { path }
+            ) if path == missing
+        ));
+    }
+
+    #[test]
+    fn retained_custom_root_survives_configured_file_replacement() {
+        let sequence = NEXT_TLS_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "type-bridge-core-root-replacement-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).expect("create custom-root replacement directory");
+        let configured = directory.join("configured.pem");
+        let moved = directory.join("loaded.pem");
+        let valid_root = include_bytes!("../tests/fixtures/valid-root.pem");
+        std::fs::write(&configured, valid_root).expect("write original custom root");
+
+        let material = RetainedCustomRootCa::load(&configured).expect("load original custom root");
+        match std::fs::rename(&configured, &moved) {
+            Ok(()) => std::fs::write(&configured, b"replacement is not a certificate\n")
+                .expect("install replacement custom root"),
+            Err(_) => {
+                // Windows pins the source path with no-delete and read-only
+                // sharing. Replacement and in-place mutation must both fail.
+                assert!(
+                    std::fs::write(&configured, b"replacement is not a certificate\n").is_err()
+                );
+            }
+        }
+
+        let driver_bytes = material
+            .with_driver_root_path(|path| std::fs::read(path))
+            .expect("derive retained driver path")
+            .expect("read retained driver path");
+        assert_eq!(driver_bytes, valid_root);
+        assert_eq!(material.captured_bytes(), valid_root);
+        assert!(!material.root_store().is_empty());
+        tls_agent(material.root_store()).expect("HTTP TLS lowers captured original roots");
+
+        drop(material);
+        std::fs::remove_dir_all(&directory).expect("remove replacement directory");
+    }
+
+    #[test]
+    fn retained_custom_root_survives_parent_directory_swap() {
+        let sequence = NEXT_TLS_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "type-bridge-core-root-parent-swap-{}-{sequence}",
+            std::process::id()
+        ));
+        let configured_parent = root.join("configured-parent");
+        let moved_parent = root.join("loaded-parent");
+        std::fs::create_dir_all(&configured_parent).expect("create configured parent");
+        let configured = configured_parent.join("root.pem");
+        let valid_root = include_bytes!("../tests/fixtures/valid-root.pem");
+        std::fs::write(&configured, valid_root).expect("write original custom root");
+
+        let material = RetainedCustomRootCa::load(&configured).expect("load original custom root");
+        match std::fs::rename(&configured_parent, &moved_parent) {
+            Ok(()) => {
+                std::fs::create_dir(&configured_parent).expect("install replacement parent");
+                std::fs::write(&configured, b"replacement is not a certificate\n")
+                    .expect("install replacement parent custom root");
+            }
+            Err(_) => {
+                // Windows' retained parent directory handle denies the swap.
+                assert_eq!(std::fs::read(&configured).unwrap(), valid_root);
+            }
+        }
+
+        let driver_bytes = material
+            .with_driver_root_path(|path| std::fs::read(path))
+            .expect("derive retained driver path")
+            .expect("read retained driver path");
+        assert_eq!(driver_bytes, valid_root);
+        assert_eq!(material.captured_bytes(), valid_root);
+        assert!(!material.root_store().is_empty());
+        tls_agent(material.root_store()).expect("HTTP TLS lowers captured original roots");
+
+        drop(material);
+        std::fs::remove_dir_all(&root).expect("remove parent-swap directory");
+    }
+
+    #[test]
+    fn retained_custom_root_snapshot_survives_in_place_source_overwrite() {
+        let sequence = NEXT_TLS_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "type-bridge-core-root-overwrite-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).expect("create custom-root overwrite directory");
+        let configured = directory.join("configured.pem");
+        let valid_root = include_bytes!("../tests/fixtures/valid-root.pem");
+        std::fs::write(&configured, valid_root).expect("write original custom root");
+
+        let material = RetainedCustomRootCa::load(&configured).expect("load original custom root");
+        match std::fs::write(&configured, b"overwritten source is not a certificate\n") {
+            Ok(()) => assert_ne!(std::fs::read(&configured).unwrap(), valid_root),
+            Err(_) => {
+                // Windows' retained source handle denies a writer rather than
+                // allowing the source inode to diverge after preparation.
+                assert_eq!(std::fs::read(&configured).unwrap(), valid_root);
+            }
+        }
+
+        let driver_bytes = material
+            .with_driver_root_path(|path| std::fs::read(path))
+            .expect("derive retained snapshot driver path")
+            .expect("read retained snapshot driver path");
+        assert_eq!(driver_bytes, valid_root);
+        assert_eq!(material.captured_bytes(), valid_root);
+        tls_agent(material.root_store()).expect("HTTP TLS lowers captured original roots");
+
+        drop(material);
+        std::fs::remove_dir_all(&directory).expect("remove overwrite directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_alias_retains_the_open_target_after_final_name_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let sequence = NEXT_TLS_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "type-bridge-core-root-swap-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).expect("create custom-root swap directory");
+        let configured = directory.join("configured.pem");
+        let replacement = directory.join("replacement.pem");
+        let valid_root = include_bytes!("../tests/fixtures/valid-root.pem");
+        std::fs::write(&configured, valid_root).expect("write initially resolved root");
+        std::fs::write(&replacement, b"replacement is not a certificate")
+            .expect("write replacement root");
+        let material =
+            RetainedCustomRootCa::load_configured_alias_with_after_open(&configured, || {
+                std::fs::remove_file(&configured).expect("remove root after opening it");
+                symlink(&replacement, &configured).expect("replace root name with a symlink");
+            })
+            .expect("the already-opened CA identity remains authoritative");
+
+        assert_eq!(material.captured_bytes(), valid_root);
+        drop(material);
+        std::fs::remove_dir_all(&directory).expect("remove custom-root swap directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_alias_retains_the_open_target_after_parent_replacement() {
+        let directory = tempfile::tempdir().expect("create parent-swap test directory");
+        let active = directory.path().join("active");
+        let retained = directory.path().join("retained");
+        std::fs::create_dir(&active).expect("create active CA parent");
+        let configured = active.join("root.pem");
+        let valid_root = include_bytes!("../tests/fixtures/valid-root.pem");
+        std::fs::write(&configured, valid_root).expect("write original root");
+
+        let material =
+            RetainedCustomRootCa::load_configured_alias_with_after_open(&configured, || {
+                std::fs::rename(&active, &retained).expect("retain opened CA parent");
+                std::fs::create_dir(&active).expect("create replacement CA parent");
+                std::fs::write(active.join("root.pem"), b"replacement is not a certificate")
+                    .expect("write replacement root");
+            })
+            .expect("the already-opened CA identity remains authoritative");
+
+        assert_eq!(material.captured_bytes(), valid_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_root_accepts_a_caller_alias_but_reports_the_original_path() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("create parent-symlink test directory");
+        let actual_parent = directory.path().join("actual");
+        let linked_parent = directory.path().join("linked");
+        std::fs::create_dir(&actual_parent).expect("create actual CA parent");
+        let configured = linked_parent.join("root.pem");
+        std::fs::write(actual_parent.join("root.pem"), b"not a certificate")
+            .expect("write invalid CA behind parent symlink");
+        symlink(&actual_parent, &linked_parent).expect("create parent symlink");
+
+        let error = RetainedCustomRootCa::load_configured_alias(&configured).unwrap_err();
+        assert!(matches!(
+            error,
+            TlsConfigurationError::CustomRootCaInvalidPem { path } if path == configured
+        ));
+
+        std::fs::write(
+            actual_parent.join("root.pem"),
+            include_bytes!("../tests/fixtures/valid-root.pem"),
+        )
+        .expect("replace alias target with a valid CA");
+        RetainedCustomRootCa::load_configured_alias(&configured)
+            .expect("caller path alias resolves once and validates");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn physical_custom_root_rejects_symlink_components() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("create physical-path test directory");
+        let actual_parent = directory.path().join("actual");
+        let linked_parent = directory.path().join("linked");
+        std::fs::create_dir(&actual_parent).expect("create actual CA parent");
+        let target = actual_parent.join("root.pem");
+        std::fs::write(&target, include_bytes!("../tests/fixtures/valid-root.pem"))
+            .expect("write physical CA");
+        symlink(&actual_parent, &linked_parent).expect("create parent alias");
+
+        let through_parent_alias = linked_parent.join("root.pem");
+        assert!(matches!(
+            RetainedCustomRootCa::load(&through_parent_alias),
+            Err(TlsConfigurationError::CustomRootCaUnreadable { path })
+                if path == through_parent_alias
+        ));
+
+        let final_alias = actual_parent.join("root-alias.pem");
+        symlink(&target, &final_alias).expect("create final-component alias");
+        assert!(matches!(
+            RetainedCustomRootCa::load(&final_alias),
+            Err(TlsConfigurationError::CustomRootCaUnreadable { path }) if path == final_alias
+        ));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+    #[test]
+    fn custom_root_fifo_is_rejected_within_a_bounded_deadline() {
+        use std::sync::mpsc::{self, RecvTimeoutError};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().expect("create FIFO test directory");
+        let configured = directory.path().join("root.pem");
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            configured.as_path(),
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .expect("create root-CA FIFO");
+
+        let worker_path = configured.clone();
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = sender.send(validate_custom_root_ca(&worker_path));
+        });
+        let result = match receiver.recv_timeout(Duration::from_secs(2)) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => {
+                // Release an implementation that accidentally performed a
+                // blocking FIFO open so the test can join before failing.
+                let _writer = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&configured)
+                    .expect("open FIFO writer to release blocked reader");
+                worker.join().expect("join released FIFO reader");
+                panic!("custom-root validation blocked while opening a FIFO");
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                worker.join().expect("surface FIFO validation panic");
+                panic!("FIFO validation worker disconnected without a result");
+            }
+        };
+        worker.join().expect("join FIFO validation worker");
+
+        assert!(matches!(
+            result,
+            Err(TlsConfigurationError::CustomRootCaNotFile { path }) if path == configured
+        ));
     }
 
     // -- parse_version_response ----------------------------------------------

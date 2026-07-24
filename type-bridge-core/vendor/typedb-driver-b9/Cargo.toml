@@ -1,9 +1,13 @@
+# Historical quarantine only. This manifest must remain publish=false,
+# workspace-excluded, and forbidden for every TypeBridge dependency graph.
 [package]
 name = "type-bridge-typedb-driver-b9"
 version = "3.12.0"
+publish = false
 edition = "2024"
 license = "Apache-2.0"
-description = "Renamed vendor of upstream typedb-driver 3.12.0 (TypeDB protocol band 9), republished unmodified for type-bridge multi-band server support"
+license-file = "LICENSE"
+description = "Historical quarantined TypeDB driver 3.12.0 snapshot; workspace-excluded and forbidden for current TypeBridge consumption"
 readme = "README.md"
 repository = "https://github.com/ds1sqe/type-bridge"
 homepage = "https://github.com/typedb/typedb-driver"

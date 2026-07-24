@@ -89,13 +89,21 @@ pub fn to_canonical_json_with_limits<T: Serialize>(
     value: &T,
     limits: CodecLimits,
 ) -> Result<Vec<u8>, Diagnostic> {
-    let value = serde_json::to_value(value).map_err(|_| {
+    let mut value = serde_json::to_value(value).map_err(|_| {
         Diagnostic::stable(
             DiagnosticCategory::InvalidContract,
             "canonical_json_encode_failed",
             "value cannot be represented as canonical JSON",
         )
     })?;
+    normalize_numbers(&mut value).map_err(|()| {
+        Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "canonical_json_encode_failed",
+            "value contains a number outside the canonical JSON domain",
+        )
+    })?;
+    sort_object_keys(&mut value);
     inspect(&value, 1, limits)?;
     let bytes = serde_json::to_vec(&value).map_err(|_| {
         Diagnostic::stable(
@@ -125,7 +133,7 @@ where
     T: DeserializeOwned + Serialize,
 {
     ensure_bytes(bytes.len(), limits)?;
-    let value: Value = serde_json::from_slice(bytes).map_err(|_| {
+    let mut value: Value = serde_json::from_slice(bytes).map_err(|_| {
         Diagnostic::stable(
             DiagnosticCategory::InvalidContract,
             "malformed_canonical_json",
@@ -133,6 +141,14 @@ where
         )
     })?;
     inspect(&value, 1, limits)?;
+    normalize_numbers(&mut value).map_err(|()| {
+        Diagnostic::stable(
+            DiagnosticCategory::InvalidContract,
+            "malformed_canonical_json",
+            "input is not valid canonical JSON",
+        )
+    })?;
+    sort_object_keys(&mut value);
     let canonical = serde_json::to_vec(&value).map_err(|_| {
         Diagnostic::stable(
             DiagnosticCategory::InvalidContract,
@@ -156,6 +172,65 @@ where
             "canonical JSON does not satisfy the requested contract type",
         )
     })
+}
+
+/// Sort every JSON object lexicographically without relying on
+/// `serde_json::Map`'s backing representation.
+///
+/// Cargo features are additive, so a downstream crate can enable
+/// `serde_json/preserve_order` for the shared dependency even though this
+/// crate does not request it. Re-inserting sorted entries keeps canonical
+/// bytes independent of that feature-unified map backend.
+fn sort_object_keys(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                sort_object_keys(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                sort_object_keys(value);
+            }
+            let mut entries = std::mem::take(values).into_iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            values.extend(entries);
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+/// Rebuild numbers through the semantic representation used by serde_json's
+/// ordinary backend. With `arbitrary_precision` feature-unified downstream,
+/// parsed numbers otherwise retain raw spellings such as `1e0` and integers
+/// beyond `u64`, making canonical acceptance depend on the Cargo feature graph.
+fn normalize_numbers(value: &mut Value) -> Result<(), ()> {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                normalize_numbers(value)?;
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                normalize_numbers(value)?;
+            }
+        }
+        Value::Number(number) => {
+            let normalized = if let Some(value) = number.as_i64() {
+                value.into()
+            } else if let Some(value) = number.as_u64() {
+                value.into()
+            } else if let Some(value) = number.as_f64() {
+                serde_json::Number::from_f64(value).ok_or(())?
+            } else {
+                return Err(());
+            };
+            *number = normalized;
+        }
+        Value::Null | Value::Bool(_) | Value::String(_) => {}
+    }
+    Ok(())
 }
 
 fn inspect(value: &Value, depth: usize, limits: CodecLimits) -> Result<(), Diagnostic> {
@@ -235,7 +310,43 @@ fn count(value: usize) -> i64 {
 mod tests {
     use super::*;
     use crate::value::CanonicalValue;
+    use serde::{Deserialize, Serialize};
     use serde_json::Value;
+
+    #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct OutOfOrderObject {
+        zeta: u8,
+        alpha: OutOfOrderNested,
+    }
+
+    #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct OutOfOrderNested {
+        zeta: u8,
+        alpha: u8,
+    }
+
+    #[test]
+    fn canonical_object_order_is_independent_of_the_serde_json_map_backend() {
+        let value = OutOfOrderObject {
+            zeta: 3,
+            alpha: OutOfOrderNested { zeta: 2, alpha: 1 },
+        };
+        let canonical = br#"{"alpha":{"alpha":1,"zeta":2},"zeta":3}"#;
+        assert_eq!(to_canonical_json(&value).unwrap(), canonical);
+        assert_eq!(
+            from_canonical_json::<OutOfOrderObject>(canonical).unwrap(),
+            value
+        );
+
+        let insertion_order = br#"{"zeta":3,"alpha":{"zeta":2,"alpha":1}}"#;
+        assert_eq!(
+            from_canonical_json::<OutOfOrderObject>(insertion_order)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "non_canonical_json"
+        );
+    }
 
     #[test]
     fn canonical_decoder_distinguishes_malformed_and_noncanonical_input() {
@@ -254,6 +365,57 @@ mod tests {
                 .as_str(),
             "non_canonical_json"
         );
+
+        for noncanonical in [b"1e0" as &[u8], b"1E+0", b"-0"] {
+            for error in [
+                from_canonical_json::<FormatVersion>(noncanonical).unwrap_err(),
+                from_canonical_json::<Value>(noncanonical).unwrap_err(),
+            ] {
+                assert_eq!(error.code().as_str(), "non_canonical_json");
+            }
+        }
+        assert_eq!(
+            from_canonical_json::<Value>(b"01")
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "malformed_canonical_json"
+        );
+    }
+
+    #[test]
+    fn canonical_numbers_are_independent_of_the_serde_json_number_backend() {
+        for canonical in [
+            b"0" as &[u8],
+            b"-1",
+            b"-9223372036854775808",
+            b"18446744073709551615",
+            b"1.0",
+            b"0.0",
+            b"-0.0",
+            b"5e-324",
+        ] {
+            let value = from_canonical_json::<Value>(canonical).unwrap();
+            assert_eq!(to_canonical_json(&value).unwrap(), canonical);
+        }
+
+        for noncanonical in [
+            b"-9223372036854775809" as &[u8],
+            b"18446744073709551616",
+            b"100000000000000000000000000000000000000000000000000",
+            b"4.9406564584124654e-324",
+        ] {
+            assert_eq!(
+                from_canonical_json::<Value>(noncanonical)
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "non_canonical_json"
+            );
+        }
+
+        assert_eq!(to_canonical_json(&1.0_f64).unwrap(), b"1.0");
+        assert_eq!(to_canonical_json(&f64::from_bits(1)).unwrap(), b"5e-324");
     }
 
     #[test]

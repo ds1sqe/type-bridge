@@ -10,6 +10,8 @@ use crate::error::PipelineError;
 use crate::executor::QueryExecutor;
 use crate::interceptor::crud_interceptor::{CrudInterceptor, CrudInterceptorAdapter};
 use crate::interceptor::{Interceptor, InterceptorChain, RequestContext};
+#[cfg(feature = "v2-query")]
+use crate::interceptor::{V2PolicyOutcome, V2PolicyRequest};
 use crate::schema_source::SchemaSource;
 
 /// Input for a structured (AST-based) query.
@@ -82,6 +84,76 @@ pub struct QueryPipeline {
 }
 
 impl QueryPipeline {
+    /// Prove every configured policy explicitly covers typed V2 requests.
+    ///
+    /// Server startup calls this before constructing the V2 router/listener;
+    /// request admission rechecks it defensively through
+    /// [`Self::v2_request_context`].
+    #[cfg(feature = "v2-query")]
+    pub fn validate_v2_coverage(&self) -> Result<(), PipelineError> {
+        self.interceptor_chain
+            .ensure_v2_coverage()
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
+    /// Construct one V2 policy context after proving every configured
+    /// interceptor explicitly supports typed plans.
+    #[cfg(feature = "v2-query")]
+    pub fn v2_request_context(
+        &self,
+        metadata: HashMap<String, serde_json::Value>,
+    ) -> Result<RequestContext, PipelineError> {
+        self.validate_v2_coverage()?;
+        Ok(RequestContext {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            client_id: "unknown".to_owned(),
+            database: self.default_database.clone(),
+            transaction_type: "read".to_owned(),
+            metadata,
+            timestamp: chrono::Utc::now(),
+            crud_info: None,
+        })
+    }
+
+    /// Authenticate and rate-limit V2 transport metadata before envelope
+    /// decoding or other attacker-controlled contract work.
+    #[cfg(feature = "v2-query")]
+    pub async fn begin_v2_request(
+        &self,
+        context: &mut RequestContext,
+    ) -> Result<(), PipelineError> {
+        self.interceptor_chain
+            .execute_v2_transport(context)
+            .await
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
+    /// Authorize one exact validated V2 plan before replay/provider admission.
+    #[cfg(feature = "v2-query")]
+    pub async fn authorize_v2_request(
+        &self,
+        request: &V2PolicyRequest<'_>,
+        context: &mut RequestContext,
+    ) -> Result<(), PipelineError> {
+        self.interceptor_chain
+            .execute_v2_request(request, context)
+            .await
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
+    /// Run configured response and audit policies for every V2 outcome.
+    #[cfg(feature = "v2-query")]
+    pub async fn finish_v2_request(
+        &self,
+        outcome: &V2PolicyOutcome<'_>,
+        context: &RequestContext,
+    ) -> Result<(), PipelineError> {
+        self.interceptor_chain
+            .execute_v2_response(outcome, context)
+            .await
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
     /// Execute a structured (AST-based) query through the full pipeline.
     pub async fn execute_query(&self, input: QueryInput) -> Result<QueryOutput, PipelineError> {
         let start = Instant::now();
@@ -349,6 +421,23 @@ mod tests {
                 })
             })
         }
+
+        #[cfg(feature = "v2-query")]
+        fn supports_v2(&self) -> bool {
+            true
+        }
+
+        #[cfg(feature = "v2-query")]
+        fn on_v2_transport<'a>(
+            &'a self,
+            _ctx: &'a mut RequestContext,
+        ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+            Box::pin(async {
+                Err(InterceptError::AccessDenied {
+                    reason: "test rejection".into(),
+                })
+            })
+        }
     }
 
     struct RejectingResponseInterceptor;
@@ -481,6 +570,68 @@ mod tests {
         let input = make_query_input(vec![]);
         let output = pipeline.execute_query(input).await.unwrap();
         assert_eq!(output.interceptors_applied, vec!["first", "second"]);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "v2-query")]
+    async fn v2_policy_rejection_is_fail_closed() {
+        let pipeline = PipelineBuilder::new(MockExecutor::new())
+            .with_interceptor(RejectingRequestInterceptor)
+            .build()
+            .unwrap();
+        let mut context = pipeline
+            .v2_request_context(HashMap::from([(
+                "transport".to_owned(),
+                serde_json::json!("v2"),
+            )]))
+            .expect("V2-aware policy coverage");
+        let error = pipeline
+            .begin_v2_request(&mut context)
+            .await
+            .expect_err("the same request policy must gate V2 envelopes");
+        assert!(
+            matches!(error, PipelineError::Interceptor(message) if message.contains("test rejection"))
+        );
+    }
+
+    #[cfg(feature = "v2-query")]
+    struct RewritingInterceptor;
+
+    #[cfg(feature = "v2-query")]
+    impl Interceptor for RewritingInterceptor {
+        fn name(&self) -> &str {
+            "rewriter"
+        }
+
+        fn on_request<'a>(
+            &'a self,
+            _clauses: Vec<Clause>,
+            _ctx: &'a mut RequestContext,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(make_simple_clauses()) })
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "v2-query")]
+    async fn v2_rejects_legacy_ast_policies_without_typed_coverage() {
+        let pipeline = PipelineBuilder::new(MockExecutor::new())
+            .with_interceptor(RewritingInterceptor)
+            .build()
+            .unwrap();
+        let startup_error = pipeline
+            .validate_v2_coverage()
+            .expect_err("startup must reject a legacy-only policy before routing");
+        assert!(
+            matches!(startup_error, PipelineError::Interceptor(message) if message.contains("does not declare typed V2 coverage"))
+        );
+        let error = pipeline
+            .v2_request_context(HashMap::new())
+            .expect_err("request admission must retain the defensive recheck");
+        assert!(
+            matches!(error, PipelineError::Interceptor(message) if message.contains("does not declare typed V2 coverage"))
+        );
     }
 
     // =============================================

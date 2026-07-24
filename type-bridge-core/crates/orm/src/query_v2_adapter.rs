@@ -1,7 +1,7 @@
 //! One-way adaptation of validated V1 match requests onto V2 query plans.
 //!
-//! **Status: internal experiment.** The adapter is not wired into any
-//! execution path, is not part of the upgrade contract, and does not
+//! **Status: crate-test-only internal experiment.** The module is absent from
+//! production builds, is not wired into any execution path, and does not
 //! justify any V1 removal; see `docs/guide/v2-deprecations.md`. It maps the
 //! V1 vocabulary that the first public V2 vocabulary can express exactly,
 //! and rejects everything else by name — V2 features never degrade silently
@@ -25,6 +25,7 @@ use std::collections::BTreeSet;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable, ValueComparator,
 };
@@ -32,11 +33,11 @@ use type_bridge_contract::query_plan::{
     OrderDirection, OrderTerm, QueryOperand, QueryOperation, QueryOutput, QueryPattern, QueryPlan,
     ReadStage,
 };
-use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
 use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
+use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 
 use crate::AttributeValue;
 use crate::match_request::{
@@ -47,34 +48,43 @@ use crate::registry::DescriptorRegistry;
 
 /// The V2 program one V1 request adapts to.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdaptedMatchRequest {
+pub(crate) struct AdaptedMatchRequest {
     operation: QueryOperation,
-    plan: QueryPlan,
+    validated: ValidatedQuery,
 }
 
 impl AdaptedMatchRequest {
-    /// Return the adapted reusable plan.
+    /// Return the schema-validated adapted query.
     #[must_use]
-    pub const fn plan(&self) -> &QueryPlan {
-        &self.plan
+    pub(crate) const fn validated(&self) -> &ValidatedQuery {
+        &self.validated
     }
 
     /// Return the adapted closed operation.
     #[must_use]
-    pub const fn operation(&self) -> QueryOperation {
+    pub(crate) const fn operation(&self) -> QueryOperation {
         self.operation
     }
 }
 
 /// Adapt one validated V1 request onto the first public V2 vocabulary.
 ///
-/// `registry` must be the registry that validated the request; it supplies
-/// the canonical provider attribute labels for renamed members.
-pub fn adapt_match_request(
+/// The registry is rechecked against the request's validation proof before
+/// any translation. `context` supplies both the trusted managed identity and
+/// resolved schema authority; adaptation returns only after the resulting V2
+/// plan validates under `limits`.
+pub(crate) fn adapt_match_request(
     validated: &ValidatedMatchRequest,
     registry: &DescriptorRegistry,
-    managed_semantics: &ManagedSemanticSchemaFingerprint,
+    context: &MigrationAssertionValidationContext<'_>,
+    limits: StructuralLimits,
 ) -> Result<AdaptedMatchRequest, Diagnostic> {
+    validated.recheck_schema(registry).map_err(|_| {
+        reject(
+            "query_v2_adapter_registry_mismatch",
+            "validated V1 request does not belong to the supplied registry snapshot",
+        )
+    })?;
     let request = validated.request();
     if request.version != MatchRequestVersion::V1 {
         return Err(reject(
@@ -283,9 +293,13 @@ pub fn adapt_match_request(
         QueryOutput::Rows {
             columns: output_columns,
         },
-        managed_semantics.clone(),
+        context.managed_state().managed_semantic_schema().clone(),
     )?;
-    Ok(AdaptedMatchRequest { operation, plan })
+    let validated = validate_query_plan(&plan, context, limits)?;
+    Ok(AdaptedMatchRequest {
+        operation,
+        validated,
+    })
 }
 
 fn collect_fields(expression: &MatchExpr, fields: &mut Vec<BoundFieldId>) {
@@ -378,7 +392,13 @@ fn adapt_expression(
             }
             vec![QueryPattern::Links {
                 players: vec![AssertionRolePlayer::new(
-                    RoleId::new(relation_id.label().as_str().to_owned(), role.name.clone())?,
+                    RoleId::new(
+                        descriptor_type(role.owner.as_str(), ThingKind::Relation)?
+                            .label()
+                            .as_str()
+                            .to_owned(),
+                        role.name.clone(),
+                    )?,
                     BindingId::new(player.get())?,
                 )],
                 relation: BindingId::new(relation.get())?,
@@ -506,4 +526,24 @@ fn reject(code: &'static str, message: &'static str) -> Diagnostic {
         DiagnosticCode::new(code).expect("static adapter diagnostic code"),
         message,
     )
+}
+
+#[cfg(test)]
+mod literal_tests {
+    use super::*;
+
+    #[test]
+    fn released_only_literal_spellings_reject_with_one_stable_diagnostic() {
+        for value in [
+            AttributeValue::DateTime("2024-01-01T12:30".to_owned()),
+            AttributeValue::Duration("P1Y".to_owned()),
+            AttributeValue::String("x".repeat(1024 * 1024 + 1)),
+        ] {
+            let error = adapt_value(&value).expect_err("noncanonical V2 literal must fail closed");
+            assert_eq!(
+                error.code().as_str(),
+                "query_v2_adapter_value_not_canonical"
+            );
+        }
+    }
 }

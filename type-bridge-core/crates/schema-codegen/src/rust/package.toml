@@ -6,6 +6,7 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+doctest = false
 
 [workspace]
 

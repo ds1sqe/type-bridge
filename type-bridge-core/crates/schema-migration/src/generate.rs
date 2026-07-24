@@ -9,9 +9,8 @@
 
 use std::error::Error;
 use std::fmt;
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::io::{Read as _, Write};
+use std::path::PathBuf;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::limits::StructuralLimits;
@@ -36,6 +35,7 @@ use crate::manifest::{
     delta_diagnostic, encode_verified_manifest, verify_assertion_coverage,
 };
 use crate::profile::schema_lowering_profile_binding;
+use crate::{MigrationAuthoringLock, MigrationDirectory};
 use type_bridge_contract::managed_scope::SemanticProfileBinding;
 
 /// Manifest build rejections that only indict the claimed reverse program.
@@ -258,78 +258,166 @@ pub fn render_migration_preview(
     Ok(format!("{}\n", queries.join("\n\n")))
 }
 
-/// Persist a generated manifest and its TypeQL preview into a directory.
+/// Acquire the shared canonical-history authoring lock without waiting.
 ///
-/// An existing manifest is a conflict, never an overwrite. Both files are
-/// written completely to confined temporaries and flushed before either
-/// final name exists, then published with no-replace links — the preview
-/// first, the authority manifest last. A disk-full, short write, or crash
-/// therefore never leaves a malformed file under a final name, and a
-/// preview orphaned by an earlier crash (its manifest never published) is
-/// replaced instead of wedging every later generation.
-pub fn write_generated_migration(
-    directory: &Path,
+/// Callers that derive a candidate from the directory must acquire this lock
+/// before re-discovery and retain it through
+/// [`write_generated_migration_under_lock`]. This prevents two different
+/// candidates derived from one stale head from becoming sibling authorities.
+pub fn try_acquire_migration_authoring_lock(
+    directory: &MigrationDirectory,
+) -> Result<MigrationAuthoringLock<'_>, Diagnostic> {
+    directory.try_acquire_authoring_lock().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            write_conflict()
+        } else {
+            write_failed()
+        }
+    })
+}
+
+/// Publish a generated manifest while its directory's authoring lock is held.
+///
+/// The lock carries the exact retained directory capability, so a caller
+/// cannot accidentally validate one history and publish into another. An
+/// existing manifest is a conflict, never an overwrite. Both files are
+/// written completely to confined, flushed temporaries and published with
+/// no-replace links, preview first and authority manifest last.
+pub fn write_generated_migration_under_lock(
+    lock: &MigrationAuthoringLock<'_>,
     generated: &GeneratedMigration,
     preview: &str,
 ) -> Result<PathBuf, Diagnostic> {
-    let manifest_path = directory.join(generated.file_name());
-    let preview_path = directory.join(generated.preview_file_name());
-    if manifest_path.exists() {
+    let directory = lock.directory;
+    let manifest_name = generated.file_name();
+    let preview_name = generated.preview_file_name();
+    if directory
+        .entry_exists(manifest_name.as_ref())
+        .map_err(|_| write_failed())?
+    {
         return Err(write_conflict());
     }
-    // A preview without its manifest was never advertised as authority:
-    // an interrupted earlier publication left it behind.
-    if preview_path.exists() {
-        fs::remove_file(&preview_path).map_err(|_| write_failed())?;
+    // The advisory directory lock proves no live writer owns this preview;
+    // without a final manifest it is an interrupted, non-authoritative
+    // publication and can be recovered safely.
+    if directory
+        .entry_exists(preview_name.as_ref())
+        .map_err(|_| write_failed())?
+    {
+        directory
+            .remove_file(preview_name.as_ref())
+            .map_err(|_| write_failed())?;
     }
-
-    let manifest_temp = directory.join(format!(".{}.tmp", generated.file_name()));
-    let preview_temp = directory.join(format!(".{}.tmp", generated.preview_file_name()));
+    let manifest_temp = write_unique_temporary(
+        directory,
+        &generated.file_name(),
+        generated.canonical_bytes(),
+    )?;
+    let preview_temp = match write_unique_temporary(
+        directory,
+        &generated.preview_file_name(),
+        preview.as_bytes(),
+    ) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = directory.remove_file(manifest_temp.as_ref());
+            return Err(error);
+        }
+    };
     let cleanup = |published_preview: bool| {
-        let _ = fs::remove_file(&manifest_temp);
-        let _ = fs::remove_file(&preview_temp);
+        let _ = directory.remove_file(manifest_temp.as_ref());
+        let _ = directory.remove_file(preview_temp.as_ref());
         if published_preview {
-            let _ = fs::remove_file(&preview_path);
+            let _ = directory.remove_file(preview_name.as_ref());
         }
     };
 
-    for (temp, bytes) in [
-        (&manifest_temp, generated.canonical_bytes()),
-        (&preview_temp, preview.as_bytes()),
-    ] {
-        if let Err(diagnostic) = write_temporary(temp, bytes) {
-            cleanup(false);
-            return Err(diagnostic);
+    let published_preview = match publish_no_replace(directory, &preview_temp, &preview_name) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // A prior interrupted writer or concurrent identical writer may
+            // already have published the non-authoritative preview. Reuse it
+            // only when its bounded bytes are exact; never unlink another
+            // writer's candidate.
+            match read_existing_preview(directory, &preview_name) {
+                Ok(existing) if existing == preview.as_bytes() => false,
+                _ => {
+                    cleanup(false);
+                    return Err(write_conflict());
+                }
+            }
         }
-    }
-    if publish_no_replace(&preview_temp, &preview_path).is_err() {
-        cleanup(false);
-        return Err(write_failed());
-    }
-    if let Err(error) = publish_no_replace(&manifest_temp, &manifest_path) {
-        cleanup(true);
+        Err(_) => {
+            cleanup(false);
+            return Err(write_failed());
+        }
+    };
+    if let Err(error) = publish_no_replace(directory, &manifest_temp, &manifest_name) {
+        cleanup(published_preview);
         return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
             write_conflict()
         } else {
             write_failed()
         });
     }
-    let _ = fs::remove_file(&manifest_temp);
-    let _ = fs::remove_file(&preview_temp);
-    Ok(manifest_path)
+    if let Err(error) = sync_authoring_directory(directory) {
+        let _ = directory.remove_file(manifest_temp.as_ref());
+        let _ = directory.remove_file(preview_temp.as_ref());
+        return Err(error);
+    }
+    let _ = directory.remove_file(manifest_temp.as_ref());
+    let _ = directory.remove_file(preview_temp.as_ref());
+    sync_authoring_directory(directory)?;
+    Ok(PathBuf::from(manifest_name))
 }
 
-fn write_temporary(path: &Path, bytes: &[u8]) -> Result<(), Diagnostic> {
-    // A stale temporary from an interrupted run is never authority.
-    let _ = fs::remove_file(path);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|_| write_failed())?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|_| write_failed())
+fn read_existing_preview(directory: &MigrationDirectory, name: &str) -> std::io::Result<Vec<u8>> {
+    let limit = type_bridge_contract::limits::MAX_CANONICAL_BYTES;
+    let file = directory.open_regular_readonly(name.as_ref())?;
+    let mut bytes = Vec::new();
+    file.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::other(
+            "migration preview exceeds byte ceiling",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn write_unique_temporary(
+    directory: &MigrationDirectory,
+    final_name: &str,
+    bytes: &[u8],
+) -> Result<String, Diagnostic> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(1);
+
+    for attempt in 0..128_u64 {
+        let nonce = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+        let name = format!(
+            ".{final_name}.{}.{}.{}.tmp",
+            std::process::id(),
+            nonce,
+            attempt
+        );
+        match directory.create_new(name.as_ref()) {
+            Ok(mut file) => {
+                if file
+                    .write_all(bytes)
+                    .and_then(|()| file.sync_all())
+                    .is_err()
+                {
+                    let _ = directory.remove_file(name.as_ref());
+                    return Err(write_failed());
+                }
+                return Ok(name);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(write_failed()),
+        }
+    }
+    Err(write_failed())
 }
 
 /// Publish a completed temporary under its final name without replacing.
@@ -337,8 +425,16 @@ fn write_temporary(path: &Path, bytes: &[u8]) -> Result<(), Diagnostic> {
 /// A hard link fails when the destination exists, which keeps publication
 /// atomic and conflict-detecting at once; the temporary is removed by the
 /// caller after both publications succeed.
-fn publish_no_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
-    fs::hard_link(temp, target)
+fn publish_no_replace(
+    directory: &MigrationDirectory,
+    temporary: &str,
+    target: &str,
+) -> std::io::Result<()> {
+    directory.hard_link(temporary.as_ref(), target.as_ref())
+}
+
+fn sync_authoring_directory(directory: &MigrationDirectory) -> Result<(), Diagnostic> {
+    directory.sync_all().map_err(|_| write_failed())
 }
 
 fn write_conflict() -> Diagnostic {

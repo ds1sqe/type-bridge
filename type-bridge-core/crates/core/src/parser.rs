@@ -25,10 +25,27 @@ type PResult<T> = winnow::error::Result<T>;
 /// Parse a TypeQL schema string into an unresolved [`TypeSchema`].
 ///
 /// Handles one or more `define` blocks. Functions and structs are parsed into
-/// the schema's `functions` and `structs` maps.
+/// the schema's `functions` and `structs` maps. The released function-body
+/// grammar is tried first for the whole document so inputs accepted by 1.5.x
+/// retain exactly the same definition boundaries. The safer body scanner is
+/// an additive fallback only when that frozen grammar rejects the document.
 pub fn parse_typeql(input: &str) -> Result<TypeSchema, SchemaError> {
+    parse_typeql_with_function_grammar(input, FunctionBodyGrammar::Frozen)
+        .or_else(|_| parse_typeql_with_function_grammar(input, FunctionBodyGrammar::Robust))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FunctionBodyGrammar {
+    Frozen,
+    Robust,
+}
+
+fn parse_typeql_with_function_grammar(
+    input: &str,
+    function_grammar: FunctionBodyGrammar,
+) -> Result<TypeSchema, SchemaError> {
     let mut input_ref = input;
-    match parse_schema(&mut input_ref) {
+    match parse_schema(&mut input_ref, function_grammar) {
         Ok(schema) => Ok(schema),
         Err(_e) => {
             let consumed = input.len() - input_ref.len();
@@ -49,9 +66,12 @@ pub fn parse_typeql(input: &str) -> Result<TypeSchema, SchemaError> {
 // Top-level parsers
 // ---------------------------------------------------------------------------
 
-fn parse_schema(input: &mut &str) -> PResult<TypeSchema> {
+fn parse_schema(input: &mut &str, function_grammar: FunctionBodyGrammar) -> PResult<TypeSchema> {
     ws_comments(input);
-    let blocks: Vec<Vec<Statement>> = repeat(0.., parse_define_block).parse_next(input)?;
+    let blocks: Vec<Vec<Statement>> = match function_grammar {
+        FunctionBodyGrammar::Frozen => repeat(0.., parse_define_block_frozen).parse_next(input)?,
+        FunctionBodyGrammar::Robust => repeat(0.., parse_define_block).parse_next(input)?,
+    };
     ws_comments(input);
 
     if !input.is_empty() {
@@ -190,7 +210,15 @@ fn parse_define_block(input: &mut &str) -> PResult<Vec<Statement>> {
     ws_comments(input);
     literal("define").parse_next(input)?;
     ws_comments_required(input)?;
-    let stmts: Vec<Option<Statement>> = repeat(1.., parse_statement).parse_next(input)?;
+    let stmts: Vec<Option<Statement>> = repeat(0.., parse_statement).parse_next(input)?;
+    Ok(stmts.into_iter().flatten().collect())
+}
+
+fn parse_define_block_frozen(input: &mut &str) -> PResult<Vec<Statement>> {
+    ws_comments(input);
+    literal("define").parse_next(input)?;
+    ws_comments_required(input)?;
+    let stmts: Vec<Option<Statement>> = repeat(1.., parse_statement_frozen).parse_next(input)?;
     Ok(stmts.into_iter().flatten().collect())
 }
 
@@ -219,6 +247,19 @@ fn parse_statement(input: &mut &str) -> PResult<Option<Statement>> {
         parse_entity_def.map(|e| Some(Statement::Entity(e))),
         parse_relation_def.map(|r| Some(Statement::Relation(r))),
         parse_function_def.map(|f| Some(Statement::Function(f))),
+        parse_struct_def.map(|s| Some(Statement::Struct(s))),
+        parse_standalone_plays.map(|p| Some(Statement::Plays(p))),
+    ))
+    .parse_next(input)
+}
+
+fn parse_statement_frozen(input: &mut &str) -> PResult<Option<Statement>> {
+    ws_comments(input);
+    alt((
+        parse_attribute_def.map(|a| Some(Statement::Attribute(a))),
+        parse_entity_def.map(|e| Some(Statement::Entity(e))),
+        parse_relation_def.map(|r| Some(Statement::Relation(r))),
+        parse_function_def_frozen.map(|f| Some(Statement::Function(f))),
         parse_struct_def.map(|s| Some(Statement::Struct(s))),
         parse_standalone_plays.map(|p| Some(Statement::Plays(p))),
     ))
@@ -760,7 +801,11 @@ fn parse_card_annotation(input: &mut &str) -> PResult<Cardinality> {
 pub enum SourceRegionKind {
     /// Ordinary schema text.
     Code,
-    /// A `#` comment running to the end of its line.
+    /// A line or block comment.
+    ///
+    /// The name is retained for source compatibility. Released schema input
+    /// accepts `#`, `//`, and `/* ... */` comments; consumers only need to
+    /// distinguish comments from code and string literals.
     LineComment,
     /// A double- or single-quoted string literal, `\`-escaped.
     StringLiteral,
@@ -777,6 +822,8 @@ pub fn scan_source_regions(source: &str) -> Vec<(core::ops::Range<usize>, Source
     let mut kind = SourceRegionKind::Code;
     let mut close_quote = '"';
     let mut escaped = false;
+    let mut block_comment = false;
+    let mut resume_at = 0;
     let push = |regions: &mut Vec<_>, start: &mut usize, end: usize, kind| {
         if *start < end {
             regions.push((*start..end, kind));
@@ -784,11 +831,25 @@ pub fn scan_source_regions(source: &str) -> Vec<(core::ops::Range<usize>, Source
         *start = end;
     };
     for (index, character) in source.char_indices() {
+        if index < resume_at {
+            continue;
+        }
         match kind {
             SourceRegionKind::Code => match character {
                 '#' => {
                     push(&mut regions, &mut region_start, index, kind);
                     kind = SourceRegionKind::LineComment;
+                    block_comment = false;
+                }
+                '/' if source[index..].starts_with("//") => {
+                    push(&mut regions, &mut region_start, index, kind);
+                    kind = SourceRegionKind::LineComment;
+                    block_comment = false;
+                }
+                '/' if source[index..].starts_with("/*") => {
+                    push(&mut regions, &mut region_start, index, kind);
+                    kind = SourceRegionKind::LineComment;
+                    block_comment = true;
                 }
                 '"' | '\'' => {
                     push(&mut regions, &mut region_start, index, kind);
@@ -799,7 +860,12 @@ pub fn scan_source_regions(source: &str) -> Vec<(core::ops::Range<usize>, Source
                 _ => {}
             },
             SourceRegionKind::LineComment => {
-                if character == '\n' {
+                if block_comment && source[index..].starts_with("*/") {
+                    push(&mut regions, &mut region_start, index + 2, kind);
+                    kind = SourceRegionKind::Code;
+                    block_comment = false;
+                    resume_at = index + 2;
+                } else if !block_comment && character == '\n' {
                     push(&mut regions, &mut region_start, index, kind);
                     kind = SourceRegionKind::Code;
                 }
@@ -861,7 +927,46 @@ pub fn blank_source_extents(source: &str, extents: &[core::ops::Range<usize>]) -
 /// comments and string literals are never candidates, and blanked
 /// extents keep their length so source spans stay valid.
 pub fn strip_function_definitions(source: &str) -> String {
-    let mut extents: Vec<core::ops::Range<usize>> = Vec::new();
+    let extents = released_definition_extents(source)
+        .into_iter()
+        .map(|definition| definition.extent)
+        .collect::<Vec<_>>();
+    blank_source_extents(source, &extents)
+}
+
+/// Kind of one definition recognized by the frozen released parser.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReleasedDefinitionKind {
+    /// A `fun` definition.
+    Function,
+    /// A `struct` definition.
+    Struct,
+}
+
+/// Source extent and stable label of one released function or struct.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReleasedDefinitionExtent {
+    /// Definition kind.
+    pub kind: ReleasedDefinitionKind,
+    /// Parsed definition label.
+    pub label: String,
+    /// Exact byte extent consumed by the frozen released grammar.
+    pub extent: core::ops::Range<usize>,
+}
+
+/// Locate every function and struct definition accepted by the frozen parser.
+///
+/// Extents are ordered, non-overlapping, and use the same parser decisions as
+/// [`strip_function_definitions`]. Callers can therefore retain compatibility
+/// evidence for definitions that a stricter semantic importer must omit.
+pub fn released_definition_extents(source: &str) -> Vec<ReleasedDefinitionExtent> {
+    let function_grammar =
+        if parse_typeql_with_function_grammar(source, FunctionBodyGrammar::Frozen).is_ok() {
+            FunctionBodyGrammar::Frozen
+        } else {
+            FunctionBodyGrammar::Robust
+        };
+    let mut definitions = Vec::new();
     let mut resume_at = 0;
     for (range, kind) in scan_source_regions(source) {
         if kind != SourceRegionKind::Code {
@@ -878,13 +983,19 @@ pub fn strip_function_definitions(source: &str) -> String {
                 "struct"
             };
             let mut cursor = &source[offset..];
-            let consumed = match keyword {
-                "fun" => parse_function_def(&mut cursor).is_ok(),
-                _ => parse_struct_def(&mut cursor).is_ok(),
+            let parsed = match keyword {
+                "fun" => parse_function_def_with_grammar(&mut cursor, function_grammar)
+                    .map(|definition| (ReleasedDefinitionKind::Function, definition.name)),
+                _ => parse_struct_def(&mut cursor)
+                    .map(|definition| (ReleasedDefinitionKind::Struct, definition.name)),
             };
-            if consumed {
+            if let Ok((kind, label)) = parsed {
                 let end = source.len() - cursor.len();
-                extents.push(offset..end);
+                definitions.push(ReleasedDefinitionExtent {
+                    kind,
+                    label,
+                    extent: offset..end,
+                });
                 resume_at = end;
                 search_from = end;
             } else {
@@ -892,7 +1003,7 @@ pub fn strip_function_definitions(source: &str) -> String {
             }
         }
     }
-    blank_source_extents(source, &extents)
+    definitions
 }
 
 fn find_definition_token(source: &str, from: usize, to: usize) -> Option<usize> {
@@ -915,7 +1026,10 @@ fn find_keyword(source: &str, keyword: &str, from: usize, to: usize) -> Option<u
                 || bytes[position - 1] == b'_'
                 || bytes[position - 1] == b'-');
         let after = position + keyword.len();
-        let after_ok = after >= bytes.len() || bytes[after].is_ascii_whitespace();
+        let mut suffix = &source[after..];
+        let suffix_len = suffix.len();
+        ws_comments(&mut suffix);
+        let after_ok = suffix.len() < suffix_len;
         if before_ok && after_ok {
             return Some(position);
         }
@@ -925,6 +1039,17 @@ fn find_keyword(source: &str, keyword: &str, from: usize, to: usize) -> Option<u
 }
 
 fn parse_function_def(input: &mut &str) -> PResult<FunctionType> {
+    parse_function_def_with_grammar(input, FunctionBodyGrammar::Robust)
+}
+
+fn parse_function_def_frozen(input: &mut &str) -> PResult<FunctionType> {
+    parse_function_def_with_grammar(input, FunctionBodyGrammar::Frozen)
+}
+
+fn parse_function_def_with_grammar(
+    input: &mut &str,
+    function_grammar: FunctionBodyGrammar,
+) -> PResult<FunctionType> {
     literal("fun").parse_next(input)?;
     ws_comments_required(input)?;
     let name = identifier(input)?.to_string();
@@ -938,7 +1063,10 @@ fn parse_function_def(input: &mut &str) -> PResult<FunctionType> {
     let return_type = parse_return_type_clause(input)?;
     ws_comments(input);
     literal(":").parse_next(input)?;
-    skip_function_body(input)?;
+    match function_grammar {
+        FunctionBodyGrammar::Frozen => skip_function_body_frozen(input)?,
+        FunctionBodyGrammar::Robust => skip_function_body_robust(input)?,
+    }
     Ok(FunctionType {
         name,
         parameters,
@@ -1030,12 +1158,72 @@ fn parse_return_type(input: &mut &str) -> PResult<ReturnTypeItem> {
 
 /// Skip the function body. A body runs from the signature to the first
 /// `return` clause and its terminating `;` — match that pair and discard it.
-fn skip_function_body(input: &mut &str) -> PResult<()> {
+fn skip_function_body_frozen(input: &mut &str) -> PResult<()> {
     if let Some(pos) = input.find("return") {
-        *input = &input[pos + 6..];
+        *input = &input[pos + "return".len()..];
         if let Some(semi) = input.find(';') {
             *input = &input[semi + 1..];
             return Ok(());
+        }
+    }
+    Err(ContextError::new())
+}
+
+fn skip_function_body_robust(input: &mut &str) -> PResult<()> {
+    let source = *input;
+    let mut return_at = None;
+    for (range, kind) in scan_source_regions(source) {
+        if kind != SourceRegionKind::Code {
+            continue;
+        }
+        let mut cursor = range.start;
+        while let Some(found) = source[cursor..range.end].find("return") {
+            let position = cursor + found;
+            let before_ok = position == 0
+                || !source.as_bytes()[position - 1].is_ascii_alphanumeric()
+                    && !matches!(source.as_bytes()[position - 1], b'_' | b'-');
+            let after = position + "return".len();
+            let after_ok = after >= source.len()
+                || !source.as_bytes()[after].is_ascii_alphanumeric()
+                    && !matches!(source.as_bytes()[after], b'_' | b'-');
+            if before_ok && after_ok {
+                return_at = Some(after);
+                break;
+            }
+            cursor = after;
+        }
+        if return_at.is_some() {
+            break;
+        }
+    }
+    let Some(return_at) = return_at else {
+        return Err(ContextError::new());
+    };
+
+    let mut parentheses = 0_u32;
+    let mut brackets = 0_u32;
+    let mut braces = 0_u32;
+    for (range, kind) in scan_source_regions(&source[return_at..]) {
+        if kind != SourceRegionKind::Code {
+            continue;
+        }
+        for (offset, character) in
+            source[return_at + range.start..return_at + range.end].char_indices()
+        {
+            let position = return_at + range.start + offset;
+            match character {
+                '(' => parentheses += 1,
+                ')' => parentheses = parentheses.saturating_sub(1),
+                '[' => brackets += 1,
+                ']' => brackets = brackets.saturating_sub(1),
+                '{' => braces += 1,
+                '}' => braces = braces.saturating_sub(1),
+                ';' if parentheses == 0 && brackets == 0 && braces == 0 => {
+                    *input = &source[position + 1..];
+                    return Ok(());
+                }
+                _ => {}
+            }
         }
     }
     Err(ContextError::new())
@@ -1884,6 +2072,46 @@ mod tests {
     }
 
     #[test]
+    fn source_regions_classify_every_released_comment_form() {
+        let source = "code # @subkey(a)\nnext // @subkey(b)\r\n/* @subkey(c) ) */ tail";
+        let regions = scan_source_regions(source);
+        let comments = regions
+            .iter()
+            .filter(|(_, kind)| *kind == SourceRegionKind::LineComment)
+            .map(|(range, _)| &source[range.clone()])
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            comments,
+            vec!["# @subkey(a)", "// @subkey(b)\r", "/* @subkey(c) ) */",]
+        );
+        assert!(regions.iter().any(|(range, kind)| {
+            *kind == SourceRegionKind::Code && source[range.clone()].contains("tail")
+        }));
+    }
+
+    #[test]
+    fn source_regions_keep_comment_markers_inside_string_literals() {
+        let source = r##"define attribute note, value string @regex("# // /* */ @subkey(x)");"##;
+        let regions = scan_source_regions(source);
+
+        assert_eq!(
+            regions
+                .iter()
+                .filter(|(_, kind)| *kind == SourceRegionKind::LineComment)
+                .count(),
+            0
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .filter(|(_, kind)| *kind == SourceRegionKind::StringLiteral)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn test_optional_commas() {
         let s1 = parse_typeql("define\nentity person owns name owns age;").unwrap();
         let s2 = parse_typeql("define\nentity person, owns name, owns age;").unwrap();
@@ -1909,6 +2137,81 @@ mod tests {
         assert_eq!(func.return_type.types.len(), 1);
         assert_eq!(func.return_type.types[0].name, "integer");
         assert!(!func.return_type.types[0].optional);
+    }
+
+    #[test]
+    fn released_definition_extents_follow_comments_and_literal_body_markers() {
+        let source = "define\n\
+                      # fun ignored() -> integer: return 0;\n\
+                      fun/* separator */ inspect() -> integer:\n\
+                        opaque-token \"return 9; struct fake, value x string;\"\n\
+                        /* return 8; */\n\
+                        return { call(\"semi;colon\") };\n\
+                      struct payload, value note string;\n\
+                      entity person;\n";
+        let parsed = parse_typeql(source).expect("robust body scanning is additive");
+        assert!(parsed.functions.contains_key("inspect"));
+        assert!(parsed.structs.contains_key("payload"));
+        let definitions = released_definition_extents(source);
+        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions[0].kind, ReleasedDefinitionKind::Function);
+        assert_eq!(definitions[0].label, "inspect");
+        assert!(
+            source[definitions[0].extent.clone()].ends_with("return { call(\"semi;colon\") };")
+        );
+        assert_eq!(definitions[1].kind, ReleasedDefinitionKind::Struct);
+        assert_eq!(definitions[1].label, "payload");
+        assert_eq!(
+            &source[definitions[1].extent.clone()],
+            "struct payload, value note string;"
+        );
+    }
+
+    #[test]
+    fn frozen_function_boundaries_dominate_when_the_released_document_parses() {
+        let source = "define\n\
+                      fun alpha() -> integer:\n\
+                        # return;\n\
+                      fun beta() -> integer:\n\
+                        return 2;\n";
+
+        let parsed = parse_typeql(source).expect("released-compatible document");
+        assert_eq!(
+            parsed
+                .functions
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"],
+        );
+
+        let definitions = released_definition_extents(source);
+        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions[0].label, "alpha");
+        assert_eq!(
+            &source[definitions[0].extent.clone()],
+            "fun alpha() -> integer:\n# return;",
+        );
+        assert_eq!(definitions[1].label, "beta");
+
+        let stripped = strip_function_definitions(source);
+        assert_eq!(stripped.len(), source.len());
+        assert!(!stripped.contains("fun alpha"));
+        assert!(!stripped.contains("fun beta"));
+    }
+
+    #[test]
+    fn stripping_definitions_preserves_following_source_offsets() {
+        let source = "define\n\
+                      fun inspect() -> integer:\n\
+                        opaque-token \"return 9;\" /* return 8; */\n\
+                        return { 1 };\n\
+                      entity person;\n";
+        let person_at = source.find("entity person;").expect("fixture entity");
+        let stripped = strip_function_definitions(source);
+        assert_eq!(stripped.len(), source.len());
+        assert_eq!(&stripped[person_at..], "entity person;\n");
+        assert!(!stripped.contains("opaque-token"));
     }
 
     #[test]
@@ -2159,6 +2462,16 @@ relation friendship
     fn test_empty_input() {
         let schema = parse_typeql("").unwrap();
         assert!(schema.entities.is_empty());
+    }
+
+    #[test]
+    fn test_empty_define_block() {
+        let schema = parse_typeql("define\n").expect("an explicit empty authority parses");
+        assert!(schema.entities.is_empty());
+        assert!(schema.relations.is_empty());
+        assert!(schema.attributes.is_empty());
+        assert!(schema.functions.is_empty());
+        assert!(schema.structs.is_empty());
     }
 
     #[test]

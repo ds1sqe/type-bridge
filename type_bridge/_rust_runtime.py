@@ -498,23 +498,35 @@ def rust_database_for(connection: Any) -> Any:
             "raw Python Transaction handles cannot be shared with the Rust backend"
         )
 
-    cached = getattr(connection, "_rust_backend_database", None)
-    if cached is not None:
-        return cached
+    with connection._transport_lock:
+        cached = getattr(connection, "_rust_backend_database", None)
+        if cached is not None:
+            return cached
 
-    connect_kwargs: dict[str, object] = {"http_port": connection.http_port}
-    if connection.server_version is not None:
-        connect_kwargs["server_version"] = connection.server_version
+        try:
+            prepared = connection._prepared_connection_options()
+            identity = prepared.identity
+            connect_kwargs: dict[str, object] = {"http_port": identity.http_port}
+            if identity.server_version is not None:
+                connect_kwargs["server_version"] = identity.server_version
+            if identity.tls_argument is not None:
+                connect_kwargs["tls"] = identity.tls_argument
+            if prepared.tls_root_ca_snapshot is not None:
+                connect_kwargs["tls_root_ca"] = prepared.tls_root_ca_snapshot
 
-    rust_db = rust_core().PyRustDatabase.connect(
-        connection.address,
-        connection.database_name,
-        connection.username or "admin",
-        connection.password or "password",
-        **connect_kwargs,
-    )
-    setattr(connection, "_rust_backend_database", rust_db)
-    return rust_db
+            rust_db = rust_core().PyRustDatabase.connect(
+                identity.address,
+                identity.database,
+                identity.username or "admin",
+                identity.password or "password",
+                **connect_kwargs,
+            )
+        except Exception:
+            connection._discard_uncommitted_transport()
+            raise
+        setattr(connection, "_rust_backend_database", rust_db)
+        connection._transport_committed = True
+        return rust_db
 
 
 def migration_runner_for(connection: Any) -> Any:
@@ -525,6 +537,19 @@ def migration_runner_for(connection: Any) -> Any:
     path — no second runtime is created.
     """
     return rust_core().PyMigrationRunner(rust_database_for(connection))
+
+
+def require_legacy_writer_open(connection: Any) -> None:
+    """Reject a legacy writer after the target database adopts V2 authority."""
+    migration_runner_for(connection).require_legacy_writer_open()
+
+
+def require_legacy_writer_open_in_transaction(connection: Any) -> None:
+    """Guard an active Python transaction before TypeBridge-owned V1 mutation."""
+    rust_tx = rust_transaction_for(connection)
+    if rust_tx is None:
+        raise TypeError("legacy writer transaction guard requires an active TransactionContext")
+    rust_tx.require_legacy_writer_open()
 
 
 def state_manager_for(connection: Any) -> Any:

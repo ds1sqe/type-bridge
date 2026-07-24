@@ -30,11 +30,26 @@ def load_module(name: str, path: Path) -> ModuleType:
 validator = load_module("validate_node_release_package", VALIDATOR_PATH)
 PACKAGE_NAME = "@type-bridge/node"
 VERSION = "1.5.11"
+PACKAGE_FILES = ["dist", "*.node", "README.md", "THIRD_PARTY_NOTICES.md"]
+README_BYTES = (ROOT / "type-bridge-core/crates/node/README.md").read_bytes()
+NOTICE_BYTES = (ROOT / "type-bridge-core/crates/node/THIRD_PARTY_NOTICES.md").read_bytes()
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write one compact JSON fixture."""
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def package_payload(**overrides: Any) -> dict[str, Any]:
+    """Return the immutable release package contract with selected mutations."""
+    payload: dict[str, Any] = {
+        "name": PACKAGE_NAME,
+        "version": VERSION,
+        "license": validator.MIT_LICENSE,
+        "files": list(PACKAGE_FILES),
+    }
+    payload.update(overrides)
+    return payload
 
 
 def write_tarball(
@@ -56,6 +71,8 @@ def write_tarball(
         "dist/native.js": b"exports.loadNative = () => ({});\n",
         "dist/typed/index.d.ts": b"export {};\n",
         "dist/typed/index.js": b"module.exports = {};\n",
+        validator.README: README_BYTES,
+        validator.THIRD_PARTY_NOTICE: NOTICE_BYTES,
     }
     if omit_runtime_member is not None:
         runtime_members.pop(omit_runtime_member)
@@ -89,8 +106,10 @@ def release_fixture(tmp_path: Path) -> tuple[Path, Path]:
     """Return matching repository metadata and npm tarball paths."""
     repository = tmp_path / "package.json"
     artifact = tmp_path / "type-bridge-node-1.5.11.tgz"
-    package = {"name": PACKAGE_NAME, "version": VERSION}
+    package = package_payload()
     write_json(repository, package)
+    repository.with_name(validator.README).write_bytes(README_BYTES)
+    repository.with_name(validator.THIRD_PARTY_NOTICE).write_bytes(NOTICE_BYTES)
     write_tarball(artifact, package)
     return repository, artifact
 
@@ -113,6 +132,7 @@ def test_matching_identity_tag_and_integrity_pass(tmp_path: Path) -> None:
 
     assert report == {
         "artifact": artifact.name,
+        "allow_prerelease": False,
         "integrity": integrity,
         "name": PACKAGE_NAME,
         "native_modules": sorted(validator.EXPECTED_NATIVE_MODULES),
@@ -126,14 +146,14 @@ def test_matching_identity_tag_and_integrity_pass(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("packed", "tag", "message"),
     [
-        ({"name": "@hostile/replacement", "version": VERSION}, f"v{VERSION}", "identity"),
-        ({"name": PACKAGE_NAME, "version": "9.9.9"}, f"v{VERSION}", "identity"),
-        ({"name": PACKAGE_NAME, "version": VERSION}, "v9.9.9", "Release tag"),
+        (package_payload(name="@hostile/replacement"), f"v{VERSION}", "identity"),
+        (package_payload(version="9.9.9"), f"v{VERSION}", "identity"),
+        (package_payload(), "v9.9.9", "Release tag"),
     ],
 )
 def test_identity_or_tag_mismatch_hard_fails(
     tmp_path: Path,
-    packed: dict[str, str],
+    packed: dict[str, Any],
     tag: str,
     message: str,
 ) -> None:
@@ -142,6 +162,55 @@ def test_identity_or_tag_mismatch_hard_fails(
 
     with pytest.raises(validator.ValidationError, match=message):
         validate(repository, artifact, tag=tag)
+
+
+@pytest.mark.parametrize("license_value", [None, "ISC"])
+def test_packed_package_license_must_be_explicit_mit(
+    tmp_path: Path,
+    license_value: str | None,
+) -> None:
+    repository, artifact = release_fixture(tmp_path)
+    packed = package_payload(license=license_value)
+    if license_value is None:
+        packed.pop("license")
+    write_tarball(artifact, packed)
+
+    with pytest.raises(validator.ValidationError, match="packed package.json license"):
+        validate(repository, artifact)
+
+
+@pytest.mark.parametrize("license_value", [None, "Apache-2.0"])
+def test_repository_package_license_must_be_explicit_mit(
+    tmp_path: Path,
+    license_value: str | None,
+) -> None:
+    repository, artifact = release_fixture(tmp_path)
+    payload = package_payload(license=license_value)
+    if license_value is None:
+        payload.pop("license")
+    write_json(repository, payload)
+
+    with pytest.raises(validator.ValidationError, match="repository package.json license"):
+        validate(repository, artifact)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        ["dist", "*.node", "README.md"],
+        [*PACKAGE_FILES, "scripts"],
+        [*PACKAGE_FILES, "README.md"],
+    ],
+)
+def test_packed_package_files_contract_must_be_exact(
+    tmp_path: Path,
+    files: list[str],
+) -> None:
+    repository, artifact = release_fixture(tmp_path)
+    write_tarball(artifact, package_payload(files=files))
+
+    with pytest.raises(validator.ValidationError, match="packed package.json files contract"):
+        validate(repository, artifact)
 
 
 def test_registry_integrity_mismatch_hard_fails(tmp_path: Path) -> None:
@@ -174,7 +243,7 @@ def test_registry_integrity_rejects_mixed_matching_and_mismatching_tokens(
 def test_prerelease_version_is_rejected_before_latest_publication(tmp_path: Path) -> None:
     repository = tmp_path / "package.json"
     artifact = tmp_path / "type-bridge-node-1.5.11-rc.1.tgz"
-    package = {"name": PACKAGE_NAME, "version": "1.5.11-rc.1"}
+    package = package_payload(version="1.5.11-rc.1")
     write_json(repository, package)
     write_tarball(artifact, package)
 
@@ -186,12 +255,52 @@ def test_prerelease_version_is_rejected_before_latest_publication(tmp_path: Path
         )
 
 
+def test_prerelease_version_is_accepted_only_for_nonpublishing_candidate(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "package.json"
+    artifact = tmp_path / "type-bridge-node-2.0.0-rc.0.tgz"
+    package = package_payload(version="2.0.0-rc.0")
+    write_json(repository, package)
+    repository.with_name(validator.README).write_bytes(README_BYTES)
+    repository.with_name(validator.THIRD_PARTY_NOTICE).write_bytes(NOTICE_BYTES)
+    write_tarball(artifact, package)
+
+    report = validator.validate_release_package(
+        artifact=artifact,
+        repository_package=repository,
+        tag="v2.0.0-rc.0",
+        allow_prerelease=True,
+    )
+
+    assert report["allow_prerelease"] is True
+    assert report["version"] == "2.0.0-rc.0"
+
+
+def test_cli_prerelease_flag_is_explicit_and_defaults_off() -> None:
+    parser = validator.build_parser()
+
+    stable = parser.parse_args(["--artifact", "package.tgz", "--tag", "v2.0.0"])
+    candidate = parser.parse_args(
+        [
+            "--artifact",
+            "package.tgz",
+            "--tag",
+            "v2.0.0-rc.0",
+            "--allow-prerelease",
+        ]
+    )
+
+    assert stable.allow_prerelease is False
+    assert candidate.allow_prerelease is True
+
+
 @pytest.mark.parametrize("hostility", ["duplicate", "unsafe"])
 def test_hostile_archive_structure_hard_fails(tmp_path: Path, hostility: str) -> None:
     repository, artifact = release_fixture(tmp_path)
     write_tarball(
         artifact,
-        {"name": PACKAGE_NAME, "version": VERSION},
+        package_payload(),
         duplicate_package_json=hostility == "duplicate",
         unsafe_member=hostility == "unsafe",
     )
@@ -210,7 +319,7 @@ def test_native_module_inventory_must_be_exact(tmp_path: Path, kind: str) -> Non
         native_modules.add("type_bridge_node.freebsd-x64.node")
     write_tarball(
         artifact,
-        {"name": PACKAGE_NAME, "version": VERSION},
+        package_payload(),
         native_modules=native_modules,
     )
 
@@ -222,7 +331,7 @@ def test_required_compiled_runtime_must_be_present(tmp_path: Path) -> None:
     repository, artifact = release_fixture(tmp_path)
     write_tarball(
         artifact,
-        {"name": PACKAGE_NAME, "version": VERSION},
+        package_payload(),
         omit_runtime_member="dist/typed/index.d.ts",
     )
 
@@ -230,15 +339,93 @@ def test_required_compiled_runtime_must_be_present(tmp_path: Path) -> None:
         validate(repository, artifact)
 
 
+def test_third_party_notice_must_be_present_and_exact(tmp_path: Path) -> None:
+    repository, artifact = release_fixture(tmp_path)
+    write_tarball(
+        artifact,
+        package_payload(),
+        omit_runtime_member=validator.THIRD_PARTY_NOTICE,
+    )
+    with pytest.raises(validator.ValidationError, match="required runtime members"):
+        validate(repository, artifact)
+
+    write_tarball(
+        artifact,
+        package_payload(),
+        extra_members={validator.THIRD_PARTY_NOTICE: b"incomplete notice\n"},
+    )
+    with pytest.raises(validator.ValidationError, match="disagrees with repository source"):
+        validate(repository, artifact)
+
+
+def test_readme_must_be_present_and_exact(tmp_path: Path) -> None:
+    repository, artifact = release_fixture(tmp_path)
+    write_tarball(
+        artifact,
+        package_payload(),
+        omit_runtime_member=validator.README,
+    )
+    with pytest.raises(validator.ValidationError, match="required runtime members"):
+        validate(repository, artifact)
+
+    write_tarball(
+        artifact,
+        package_payload(),
+        extra_members={validator.README: b"drifted readme\n"},
+    )
+    with pytest.raises(validator.ValidationError, match="README.md disagrees"):
+        validate(repository, artifact)
+
+
 def test_stale_duplicate_typescript_output_hard_fails(tmp_path: Path) -> None:
     repository, artifact = release_fixture(tmp_path)
     write_tarball(
         artifact,
-        {"name": PACKAGE_NAME, "version": VERSION},
+        package_payload(),
         extra_members={"dist/typescript/index.js": b"stale duplicate\n"},
     )
 
     with pytest.raises(validator.ValidationError, match="stale duplicate runtime outputs"):
+        validate(repository, artifact)
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        "dist/vendor/typedb-driver-b9/Cargo.toml",
+        "dist/vendor/typedb_protocol_b9/LICENSE",
+        "dist/vendor/type-bridge-typedb-driver-b9/Cargo.toml",
+        "dist/vendor/type_bridge_typedb_protocol_b9/LICENSE",
+    ],
+)
+def test_tarball_rejects_historical_band9_payload_names(
+    tmp_path: Path,
+    member: str,
+) -> None:
+    repository, artifact = release_fixture(tmp_path)
+    write_tarball(
+        artifact,
+        package_payload(),
+        extra_members={member: b"hostile\n"},
+    )
+
+    with pytest.raises(validator.ValidationError, match="Historical band-9 fork payload"):
+        validate(repository, artifact)
+
+
+@pytest.mark.parametrize("member", ["LICENSE", "scripts/postinstall.js", "backdoor.js"])
+def test_tarball_rejects_arbitrary_top_level_extras(
+    tmp_path: Path,
+    member: str,
+) -> None:
+    repository, artifact = release_fixture(tmp_path)
+    write_tarball(
+        artifact,
+        package_payload(),
+        extra_members={member: b"unexpected\n"},
+    )
+
+    with pytest.raises(validator.ValidationError, match="outside the package.json files contract"):
         validate(repository, artifact)
 
 

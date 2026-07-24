@@ -8,6 +8,19 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::AttributeValue;
+use crate::match_request::{
+    BindingId as V1BindingId, BindingPair, BoundFieldId, ComparisonOp, DescriptorId, FetchShape,
+    FetchSlot, FieldId, MatchBinding, MatchExpr, MatchMode, MatchOperation, MatchOrder, MatchPlan,
+    MatchRequest, MissingOrder, RoleEdgeId, RoleId as V1RoleId, RowCardinality, SortDirection,
+    ThingKind, Window, validate_match_request,
+};
+use crate::query_v2::lower_validated_query;
+use crate::query_v2_adapter::{AdaptedMatchRequest, adapt_match_request};
+use crate::{
+    Annotation, DescriptorRegistry, EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor,
+    RoleDescriptor, ValueType,
+};
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -20,24 +33,11 @@ use type_bridge_contract::query_plan::{
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
     DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
-    SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact,
-    ValueFactId,
+    SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId, TypeFact,
+    ValueFact, ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::ValueTypeTag;
-use type_bridge_orm::AttributeValue;
-use type_bridge_orm::match_request::{
-    BindingId as V1BindingId, BindingPair, BoundFieldId, ComparisonOp, DescriptorId, FetchShape,
-    FetchSlot, FieldId, MatchBinding, MatchExpr, MatchMode, MatchOperation, MatchOrder, MatchPlan,
-    MatchRequest, MissingOrder, RoleEdgeId, RoleId as V1RoleId, RowCardinality, SortDirection,
-    ThingKind, Window, validate_match_request,
-};
-use type_bridge_orm::query_v2::lower_validated_query;
-use type_bridge_orm::query_v2_adapter::{AdaptedMatchRequest, adapt_match_request};
-use type_bridge_orm::{
-    Annotation, DescriptorRegistry, EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor,
-    RoleDescriptor, ValueType,
-};
 use type_bridge_query::{MigrationAssertionValidationContext, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
 
@@ -50,6 +50,10 @@ fn schema_fixture() -> SchemaFixture {
     let person = TypeId::new(TypeKind::Entity, "person").expect("type");
     let employment = TypeId::new(TypeKind::Relation, "employment").expect("type");
     let worker = type_bridge_contract::id::RoleId::new("employment", "worker").expect("role");
+    let interaction = TypeId::new(TypeKind::Relation, "interaction").expect("type");
+    let assignment = TypeId::new(TypeKind::Relation, "assignment").expect("type");
+    let participant =
+        type_bridge_contract::id::RoleId::new("interaction", "participant").expect("role");
     let name = AttributeId::new("person-name").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
@@ -88,7 +92,22 @@ fn schema_fixture() -> SchemaFixture {
             .expect("relates fact"),
         ),
         SchemaFact::Plays(PlaysFact::new(
-            PlaysFactId::new(person, worker).expect("plays id"),
+            PlaysFactId::new(person.clone(), worker).expect("plays id"),
+        )),
+        SchemaFact::Type(TypeFact::new(interaction.clone()).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(assignment.clone()).expect("type fact")),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(assignment, interaction.clone()).expect("sub id"),
+        )),
+        SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(interaction, participant.clone()).expect("relates id"),
+                None,
+            )
+            .expect("relates fact"),
+        ),
+        SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(person, participant).expect("plays id"),
         )),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
@@ -158,6 +177,35 @@ fn registry() -> Arc<DescriptorRegistry> {
             meta: Default::default(),
         })
         .expect("register employment");
+    let inherited_participant = RoleDescriptor {
+        role_name: "participant".into(),
+        player_type_names: vec!["person".into()],
+        ..Default::default()
+    };
+    registry
+        .register_relation(RelationDescriptor {
+            type_name: "interaction".into(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: Vec::new(),
+            roles: vec![inherited_participant.clone()],
+            doc: None,
+            meta: Default::default(),
+        })
+        .expect("register parent interaction");
+    registry
+        .register_relation(RelationDescriptor {
+            type_name: "assignment".into(),
+            is_abstract: false,
+            parent_type: Some("interaction".into()),
+            owned_attributes: Vec::new(),
+            // Runtime descriptors are effective projections, so inherited
+            // roles remain present on the child with identical semantics.
+            roles: vec![inherited_participant],
+            doc: None,
+            meta: Default::default(),
+        })
+        .expect("register child assignment");
     registry
 }
 
@@ -210,6 +258,32 @@ fn representative_plan() -> MatchPlan {
     }
 }
 
+fn inherited_role_plan() -> MatchPlan {
+    MatchPlan {
+        bindings: vec![
+            MatchBinding {
+                id: V1BindingId::new(0),
+                descriptor: DescriptorId::new("entity:person"),
+                thing_kind: ThingKind::Entity,
+                match_mode: MatchMode::Exact,
+            },
+            MatchBinding {
+                id: V1BindingId::new(1),
+                descriptor: DescriptorId::new("relation:assignment"),
+                thing_kind: ThingKind::Relation,
+                match_mode: MatchMode::Exact,
+            },
+        ],
+        predicate: Some(MatchExpr::RoleEdge {
+            id: RoleEdgeId::new(0),
+            relation: V1BindingId::new(1),
+            role: V1RoleId::new(DescriptorId::new("relation:interaction"), "participant"),
+            player: V1BindingId::new(0),
+        }),
+        allowed_cross_joins: BTreeSet::new(),
+    }
+}
+
 fn fetch_rows_operation() -> MatchOperation {
     MatchOperation::FetchRows {
         output: FetchShape::Positional {
@@ -238,11 +312,8 @@ fn adapt(
     let registry = registry();
     let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
         .expect("corpus request passes V1 validation");
-    adapt_match_request(
-        &validated,
-        &registry,
-        fixture.managed.managed_semantic_schema(),
-    )
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    adapt_match_request(&validated, &registry, &context, StructuralLimits::CANONICAL)
 }
 
 #[test]
@@ -252,7 +323,7 @@ fn a_representative_v1_request_adapts_validates_and_lowers() {
         .expect("representative adaptation");
     assert_eq!(adapted.operation(), QueryOperation::Rows);
 
-    let plan = adapted.plan();
+    let plan = adapted.validated().plan();
     assert!(
         plan.inputs().is_empty(),
         "V1 requests carry no input columns"
@@ -285,11 +356,10 @@ fn a_representative_v1_request_adapts_validates_and_lowers() {
     // The adapted plan is a real V2 plan: it validates and lowers, and the
     // renamed member surfaces as its provider label, never its field name.
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
-    let validated = validate_query_plan(plan, &context, StructuralLimits::CANONICAL)
-        .expect("adapted plan validates against the schema");
+    let validated = adapted.validated();
     let invocation =
         QueryInvocation::new(plan, adapted.operation(), Vec::new()).expect("input-free invocation");
-    let lowered = lower_validated_query(&validated, &invocation).expect("adapted lowering");
+    let lowered = lower_validated_query(validated, &invocation).expect("adapted lowering");
     for syntax in [
         "$b0 isa person",
         "$b1 isa! employment, links (worker: $b0)",
@@ -323,8 +393,12 @@ fn a_representative_v1_request_adapts_validates_and_lowers() {
     )
     .expect("count adaptation");
     assert_eq!(count.operation(), QueryOperation::Count);
-    validate_query_plan(count.plan(), &context, StructuralLimits::CANONICAL)
-        .expect("adapted count plan validates");
+    validate_query_plan(
+        count.validated().plan(),
+        &context,
+        StructuralLimits::CANONICAL,
+    )
+    .expect("adapted count plan validates");
 
     let exists = adapt(
         representative_plan(),
@@ -364,6 +438,7 @@ fn a_window_without_public_order_adapts_through_the_synthesized_stable_order() {
     .expect("unordered keyed window adapts through the stable order");
     assert!(
         adapted
+            .validated()
             .plan()
             .pipeline()
             .iter()
@@ -372,11 +447,49 @@ fn a_window_without_public_order_adapts_through_the_synthesized_stable_order() {
     );
     assert!(
         adapted
+            .validated()
             .plan()
             .pipeline()
             .iter()
             .any(|stage| matches!(stage, ReadStage::Limit { .. })),
     );
+}
+
+#[test]
+fn an_inherited_role_keeps_its_canonical_declaring_relation() {
+    let fixture = schema_fixture();
+    let adapted = adapt(inherited_role_plan(), fetch_rows_operation(), &fixture)
+        .expect("an exact child relation can use an inherited canonical role");
+    let ReadStage::Match { patterns } = &adapted.validated().plan().pipeline()[0] else {
+        panic!("match opens the adapted pipeline");
+    };
+    let role = patterns
+        .iter()
+        .find_map(|pattern| match pattern {
+            QueryPattern::Links { players, .. } => players.first().map(|player| player.role()),
+            _ => None,
+        })
+        .expect("role edge lowers to links");
+
+    assert_eq!(role.declaring_relation().as_str(), "interaction");
+    assert_eq!(role.label().as_str(), "participant");
+}
+
+#[test]
+fn a_foreign_registry_rejects_before_plan_construction() {
+    let fixture = schema_fixture();
+    let original = registry();
+    let validated = validate_match_request(
+        &original,
+        MatchRequest::v1(representative_plan(), fetch_rows_operation()),
+    )
+    .expect("request validates against its original registry");
+    let foreign = DescriptorRegistry::new();
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+
+    let error = adapt_match_request(&validated, &foreign, &context, StructuralLimits::CANONICAL)
+        .expect_err("foreign registry must not relabel a validated request");
+    assert_eq!(error.code().as_str(), "query_v2_adapter_registry_mismatch");
 }
 
 #[test]
@@ -426,6 +539,18 @@ fn inexpressible_v1_shapes_reject_by_name() {
             fetch_rows_operation(),
         ),
         "query_v2_adapter_string_operator_unsupported",
+    );
+    assert_eq!(
+        adapt_err(
+            with_predicate(MatchExpr::FieldValue {
+                field: name_field(),
+                operator: ComparisonOp::Equal,
+                value: AttributeValue::String("x".repeat(1024 * 1024 + 1)),
+            }),
+            fetch_rows_operation(),
+        ),
+        "query_v2_adapter_value_not_canonical",
+        "a V1-valid literal outside the V2 domain must fail closed by name",
     );
 
     // A subtype-inclusive relation binding under a role edge would be

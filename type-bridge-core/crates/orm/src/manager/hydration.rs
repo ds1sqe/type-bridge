@@ -42,7 +42,7 @@ pub fn hydrate_entity<T: TypeBridgeEntity>(doc: &serde_json::Value) -> Result<T>
         // No "attributes" wrapper — treat the document itself as flat
         // (skip metadata keys starting with '_')
         let mut flat = serde_json::Map::new();
-        for (k, v) in obj {
+        for (k, v) in sorted_object_entries(obj) {
             if !k.starts_with('_') && k != "attributes" {
                 flat.insert(k.clone(), v.clone());
             }
@@ -74,7 +74,7 @@ pub fn hydrate_relation<R: TypeBridgeRelation>(doc: &serde_json::Value) -> Resul
         flatten_wildcard_attributes(attrs)
     } else {
         let mut flat = serde_json::Map::new();
-        for (k, v) in obj {
+        for (k, v) in sorted_object_entries(obj) {
             if !k.starts_with('_') && k != "attributes" {
                 flat.insert(k.clone(), v.clone());
             }
@@ -144,7 +144,7 @@ pub fn flatten_wildcard_attributes(
     attrs: &serde_json::Map<String, serde_json::Value>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut flat = serde_json::Map::new();
-    for (key, value) in attrs {
+    for (key, value) in sorted_object_entries(attrs) {
         if let Some(arr) = value.as_array() {
             let values: Vec<_> = arr.iter().map(unwrap_document_value).collect();
             match values.as_slice() {
@@ -196,7 +196,7 @@ fn flatten_document_attributes(
         flatten_wildcard_attributes(attrs)
     } else {
         let mut flat = serde_json::Map::new();
-        for (key, value) in obj {
+        for (key, value) in sorted_object_entries(obj) {
             if !key.starts_with('_') && key != "attributes" && key != "role_players" {
                 flat.insert(key.clone(), value.clone());
             }
@@ -414,10 +414,18 @@ fn hydrate_dynamic_role_players(
 fn raw_attribute_entries(
     attrs: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<(String, serde_json::Value)> {
-    attrs
-        .iter()
+    sorted_object_entries(attrs)
+        .into_iter()
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
+}
+
+fn sorted_object_entries(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<(&String, &serde_json::Value)> {
+    let mut entries: Vec<_> = object.iter().collect();
+    entries.sort_unstable_by_key(|(key, _)| *key);
+    entries
 }
 
 /// Extract a count value from a reduce query result.

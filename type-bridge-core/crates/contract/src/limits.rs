@@ -2,6 +2,12 @@
 
 /// Maximum canonical artifact size: 16 MiB.
 pub const MAX_CANONICAL_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum remote request/response envelope size: 32 MiB.
+///
+/// Remote envelopes embed a canonical plan plus invocation rows and framing,
+/// so their owning-format budget is deliberately larger than the plan codec's
+/// 16 MiB ceiling while remaining independently bounded.
+pub const MAX_REMOTE_ENVELOPE_BYTES: usize = 32 * 1024 * 1024;
 /// Maximum JSON nesting depth, counting the root as one.
 pub const MAX_CANONICAL_DEPTH: usize = 64;
 /// Maximum direct members in one array or object.
@@ -41,6 +47,27 @@ impl Default for CodecLimits {
 /// Canonical limits used by every contract codec consumer.
 pub const CANONICAL_CODEC_LIMITS: CodecLimits = CodecLimits::CANONICAL;
 
+/// Owning-format limits for V1 remote replies and capability advertisements.
+pub const REMOTE_ENVELOPE_CODEC_LIMITS: CodecLimits = CodecLimits {
+    max_bytes: MAX_REMOTE_ENVELOPE_BYTES,
+    max_depth: MAX_CANONICAL_DEPTH,
+    max_collection_len: MAX_CANONICAL_COLLECTION_LEN,
+    max_string_bytes: MAX_CANONICAL_STRING_BYTES,
+};
+
+/// Owning-format limits for V1 remote query request envelopes.
+///
+/// A request embeds an independently canonical plan beneath exactly one
+/// framing object. The extra level admits a standalone plan at the canonical
+/// depth boundary without relaxing that plan's own revalidation or the limits
+/// for replies and capability advertisements.
+pub const REMOTE_REQUEST_CODEC_LIMITS: CodecLimits = CodecLimits {
+    max_bytes: MAX_REMOTE_ENVELOPE_BYTES,
+    max_depth: MAX_CANONICAL_DEPTH + 1,
+    max_collection_len: MAX_CANONICAL_COLLECTION_LEN,
+    max_string_bytes: MAX_CANONICAL_STRING_BYTES,
+};
+
 /// Maximum number of selected output slots in one typed plan.
 pub const MAX_SELECTED_SLOTS: usize = 16;
 /// Maximum number of bindings in one typed plan.
@@ -57,6 +84,10 @@ pub const MAX_ALLOWED_CROSS_JOINS: usize = 1_024;
 pub const MAX_ORDER_TERMS: usize = 64;
 /// Maximum number of ordering terms for one collected output slot.
 pub const MAX_COLLECTION_ORDER_TERMS: usize = 64;
+/// Maximum number of input rows in one typed invocation.
+pub const MAX_INPUT_ROWS: usize = 4_096;
+/// Maximum encoded bytes across one invocation's input-row batch: 4 MiB.
+pub const MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum UTF-8 bytes in one output or query-variable name.
 pub const MAX_OUTPUT_NAME_BYTES: usize = 128;
 /// Maximum UTF-8 bytes in one serialized semantic identity.
@@ -83,6 +114,10 @@ pub struct StructuralLimits {
     pub order_terms: usize,
     /// Per-collection ordering terms.
     pub collection_order_terms: usize,
+    /// Input rows in one invocation.
+    pub input_rows: usize,
+    /// Encoded bytes across one invocation's input rows.
+    pub input_bytes: usize,
     /// Named output-slot UTF-8 bytes.
     pub output_name_bytes: usize,
     /// Semantic identity UTF-8 bytes.
@@ -102,6 +137,8 @@ impl StructuralLimits {
         allowed_cross_joins: MAX_ALLOWED_CROSS_JOINS,
         order_terms: MAX_ORDER_TERMS,
         collection_order_terms: MAX_COLLECTION_ORDER_TERMS,
+        input_rows: MAX_INPUT_ROWS,
+        input_bytes: MAX_INPUT_BYTES,
         output_name_bytes: MAX_OUTPUT_NAME_BYTES,
         semantic_id_bytes: MAX_SEMANTIC_ID_BYTES,
         diagnostic_bytes: MAX_DIAGNOSTIC_BYTES,
@@ -115,6 +152,21 @@ impl StructuralLimits {
     /// Return whether `actual` fits the binding ceiling.
     pub const fn allows_bindings(self, actual: usize) -> bool {
         actual <= self.bindings
+    }
+
+    /// Return whether `actual` fits the invocation input-row ceiling.
+    pub const fn allows_input_rows(self, actual: usize) -> bool {
+        actual <= self.input_rows
+    }
+
+    /// Return whether `actual` fits the invocation input-byte ceiling.
+    pub const fn allows_input_bytes(self, actual: usize) -> bool {
+        actual <= self.input_bytes
+    }
+
+    /// Return whether `actual` fits the public ordering-term ceiling.
+    pub const fn allows_order_terms(self, actual: usize) -> bool {
+        actual <= self.order_terms
     }
 
     /// Return whether `actual` fits the predicate-node ceiling.

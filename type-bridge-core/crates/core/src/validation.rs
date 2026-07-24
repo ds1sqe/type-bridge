@@ -1,6 +1,7 @@
 use crate::ast::{Clause, Constraint, FetchItem, Pattern, Statement, Value};
 use crate::reserved_words::is_reserved_word;
 use crate::schema::TypeSchema;
+use crate::validation_rule_wire::ReleasedF64;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use unicode_ident::{is_xid_continue, is_xid_start};
@@ -167,7 +168,7 @@ pub enum RuleTarget {
 ///
 /// Each variant corresponds to a different check (presence, pattern matching,
 /// numeric range, allowed values, cardinality, or string length).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum RuleType {
     /// Attribute must be present (non-null, non-missing).
@@ -203,6 +204,49 @@ pub enum RuleType {
         /// The maximum string length (inclusive), or `None` for no upper bound.
         max: Option<u32>,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", content = "data")]
+enum RuleTypeWire {
+    Required,
+    Regex {
+        pattern: String,
+    },
+    Range {
+        min: Option<ReleasedF64>,
+        max: Option<ReleasedF64>,
+    },
+    Values {
+        allowed: Vec<serde_json::Value>,
+    },
+    Cardinality {
+        min: u32,
+        max: Option<u32>,
+    },
+    Length {
+        min: Option<u32>,
+        max: Option<u32>,
+    },
+}
+
+impl<'de> Deserialize<'de> for RuleType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match RuleTypeWire::deserialize(deserializer)? {
+            RuleTypeWire::Required => Ok(Self::Required),
+            RuleTypeWire::Regex { pattern } => Ok(Self::Regex { pattern }),
+            RuleTypeWire::Range { min, max } => Ok(Self::Range {
+                min: min.map(ReleasedF64::into_inner),
+                max: max.map(ReleasedF64::into_inner),
+            }),
+            RuleTypeWire::Values { allowed } => Ok(Self::Values { allowed }),
+            RuleTypeWire::Cardinality { min, max } => Ok(Self::Cardinality { min, max }),
+            RuleTypeWire::Length { min, max } => Ok(Self::Length { min, max }),
+        }
+    }
 }
 
 /// A single custom validation rule.
@@ -3088,6 +3132,57 @@ mod rule_tests {
         let mut engine2 = ValidationEngine::new();
         engine2.load_rules(&exported).unwrap();
         assert_eq!(engine2.rule_count(), 4);
+    }
+
+    #[test]
+    fn range_wire_accepts_feature_unified_numbers_and_content_first_order() {
+        let range: RuleType =
+            serde_json::from_str(r#"{"data":{"min":-1.25,"max":2.5},"type":"Range"}"#)
+                .expect("content-first range numbers");
+        match range {
+            RuleType::Range { min, max } => {
+                assert_eq!(min, Some(-1.25));
+                assert_eq!(max, Some(2.5));
+            }
+            _ => panic!("range fixture decoded as another rule type"),
+        }
+
+        let without_bounds: RuleType =
+            serde_json::from_str(r#"{"data":{},"type":"Range"}"#).expect("missing optional bounds");
+        match without_bounds {
+            RuleType::Range { min, max } => {
+                assert_eq!(min, None);
+                assert_eq!(max, None);
+            }
+            _ => panic!("range fixture decoded as another rule type"),
+        }
+    }
+
+    #[test]
+    fn range_wire_preserves_released_malformed_error_snapshots() {
+        let string_error =
+            serde_json::from_str::<RuleType>(r#"{"type":"Range","data":{"min":"zero","max":1}}"#)
+                .expect_err("string range bound")
+                .to_string();
+        assert_eq!(
+            string_error,
+            "invalid type: string \"zero\", expected f64 at line 1 column 36",
+        );
+
+        let overflow_error =
+            serde_json::from_str::<RuleType>(r#"{"type":"Range","data":{"min":1e400,"max":1}}"#)
+                .expect_err("overflowing range bound")
+                .to_string();
+        assert_eq!(overflow_error, "number out of range at line 1 column 35",);
+
+        let content_first =
+            serde_json::from_str::<RuleType>(r#"{"data":{"min":"zero","max":1},"type":"Range"}"#)
+                .expect_err("content-first string range bound")
+                .to_string();
+        assert_eq!(
+            content_first,
+            "invalid type: string \"zero\", expected f64 at line 1 column 46"
+        );
     }
 
     #[test]

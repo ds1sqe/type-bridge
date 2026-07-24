@@ -1,0 +1,39 @@
+format: typebridge.workspace/v1
+
+schema:
+  root: schema/schema.yaml
+  ownership: exclusive
+  managed-scope: reference-fixture
+
+compatibility:
+  semantic-profile: typedb-3.12.1/v1
+  require: [schema.doc-meta]
+
+migrations:
+  directory: migrations/v2
+  app-label: reference
+  destructive: require-approval
+
+bindings:
+  python:
+    output: generated/python
+  typescript:
+    output: generated/typescript
+  rust:
+    output: generated/rust
+
+secrets:
+  service.api-token:
+    env: EXAMPLE_API_TOKEN
+
+environments:
+  development:
+    database: example-development
+    uri: localhost:1729,[::1]:1729
+    http-port: '8000'
+    tls: 'false'
+    migrate: 'false'
+    credential:
+      username: env:TYPEDB_USERNAME
+      password: env:TYPEDB_PASSWORD
+    requirements: [schema.doc-meta]

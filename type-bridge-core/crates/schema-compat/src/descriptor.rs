@@ -1,6 +1,6 @@
 //! Closed generated-descriptor compatibility input for direct schema facts.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use type_bridge_contract::codec::{FormatVersion, from_canonical_json, to_canonical_json};
@@ -13,7 +13,10 @@ use type_bridge_contract::schema::{
     SourceSpan, SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, Cardinality, ValueTypeTag};
+use type_bridge_core_lib::schema::TypeSchema;
 use type_bridge_schema::FactAssembler;
+
+use crate::released_syntax::ReleasedSyntax;
 
 /// Exact discriminator for the first generated direct-descriptor format.
 pub const GENERATED_DECLARED_DESCRIPTOR_V1: &str = "typebridge.generated-descriptors/v1";
@@ -200,6 +203,23 @@ pub fn typeql_to_generated_descriptors(
     document: DocumentId,
     source: &str,
 ) -> Result<String, SchemaDiagnostics> {
+    if type_bridge_core_lib::parser::parse_typeql(source).is_ok_and(|schema| {
+        schema.attributes.is_empty()
+            && schema.entities.is_empty()
+            && schema.relations.is_empty()
+            && schema.functions.is_empty()
+            && schema.structs.is_empty()
+    }) {
+        return empty_generated_declared_descriptors_json().map_err(|_| {
+            error(
+                "generated_descriptor_encoding_failed",
+                "canonical empty generated-descriptor encoding failed",
+                None,
+            )
+        });
+    }
+
+    let evidence_source = source;
     // The descriptor snapshot deliberately excludes functions, and released
     // generator input carries opaque dummy function bodies the strict
     // grammar rejects; strip them with the released parser's own extents.
@@ -208,20 +228,528 @@ pub fn typeql_to_generated_descriptors(
     // overlap grammar: pin the plain capability, record each construct,
     // and mark the snapshot open-world instead of failing the whole
     // generation.
-    let (source, unsupported) = strip_unportable_constructs(&source);
-    let declared = crate::typeql_to_declared(document, &source)?;
+    let (source, mut unsupported) = strip_unportable_constructs(&source);
+    let declared =
+        released_descriptors_to_declared(document, &source, evidence_source, &mut unsupported)?;
     let mut descriptors = GeneratedDeclaredDescriptorSetV1::from_declared(&declared)?;
     if !unsupported.is_empty() {
+        unsupported.sort_by_key(|(start, _)| *start);
         descriptors.closed_world = false;
-        descriptors.unsupported_constructs = unsupported;
+        descriptors.unsupported_constructs = unsupported
+            .into_iter()
+            .map(|(_, spelling)| spelling)
+            .collect();
     }
     let bytes = to_canonical_json(&descriptors).map_err(|diagnostic| one(diagnostic, None))?;
     Ok(String::from_utf8(bytes).expect("canonical JSON is valid UTF-8"))
 }
 
-/// Blank `ident[]` list markers and the released-only `@distinct`,
-/// `@cascade`, and `@subkey(...)` annotations outside comments and
-/// string literals, recording every construct.
+/// Adapt released descriptors without pretending that an open-world V1
+/// reference or domain-incoherent annotation is a portable V2 fact.
+///
+/// The released parser stores value annotations independently from its final
+/// `value` clause, so inputs such as `value string @regex(...), value integer`
+/// were valid generator inputs. The canonical assembler correctly rejects
+/// that regex for an integer value domain. Keep generation operational by
+/// redacting only the diagnosed annotation from the portable projection and
+/// recording its exact source spelling in the descriptor's open-world list.
+/// The same generator-only lane omits a capability whose parent, owned
+/// attribute, relation, or role is absent from a partial released export.
+/// Strict and lossless V2 importers never call this adapter.
+fn released_descriptors_to_declared(
+    document: DocumentId,
+    source: &str,
+    evidence_source: &str,
+    unsupported: &mut Vec<(usize, String)>,
+) -> Result<DeclaredSchema, SchemaDiagnostics> {
+    let mut portable = source.to_owned();
+    let reference_projection = released_unresolved_ranges(&document, source)?;
+    let omitted_declarations = reference_projection
+        .omitted_declarations
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let omitted_capabilities = reference_projection
+        .omitted
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut redacted = BTreeMap::<usize, String>::new();
+    for (start, end) in &reference_projection.omitted_declarations {
+        let Some(spelling) = evidence_source.get(*start..*end) else {
+            return released_descriptor_projection(
+                document,
+                &portable,
+                &omitted_declarations,
+                &omitted_capabilities,
+                &reference_projection.played_role_declarations,
+            );
+        };
+        redacted.insert(*start, spelling.to_owned());
+    }
+    for (start, end) in reference_projection.omitted {
+        let Some(spelling) = evidence_source.get(start..end) else {
+            return released_descriptor_projection(
+                document,
+                &portable,
+                &omitted_declarations,
+                &omitted_capabilities,
+                &reference_projection.played_role_declarations,
+            );
+        };
+        redacted.insert(start, spelling.to_owned());
+    }
+
+    // Every retry must blank at least one previously visible annotation.  The
+    // source contains a finite number of `@` bytes, so this budget makes the
+    // compatibility repair explicitly bounded even when independent
+    // annotation failures are discovered in different assembler phases.
+    let mut redaction_budget = source.bytes().filter(|byte| *byte == b'@').count();
+    loop {
+        match released_descriptor_projection(
+            document.clone(),
+            &portable,
+            &omitted_declarations,
+            &omitted_capabilities,
+            &reference_projection.played_role_declarations,
+        ) {
+            Ok(declared) => {
+                unsupported.extend(redacted);
+                return Ok(declared);
+            }
+            Err(diagnostics) => {
+                let Some(ranges) =
+                    incompatible_released_annotations(&diagnostics, evidence_source, &redacted)
+                else {
+                    return Err(diagnostics);
+                };
+                if ranges.is_empty() || ranges.len() > redaction_budget {
+                    return Err(diagnostics);
+                }
+                redaction_budget -= ranges.len();
+                for range in &ranges {
+                    redacted.insert(range.start, evidence_source[range.clone()].to_owned());
+                }
+                let extents = released_annotation_redaction_extents(&portable, &ranges);
+                portable = type_bridge_core_lib::parser::blank_source_extents(&portable, &extents);
+            }
+        }
+    }
+}
+
+/// Include a released annotation's immediately preceding comma in its
+/// length-preserving retry redaction.
+///
+/// The frozen parser accepts both `value string @regex(...)` and
+/// `value string, @regex(...)`. [`ReleasedSyntax`] normally removes that
+/// optional comma while the annotation is visible. A descriptor retry blanks
+/// a domain-incoherent annotation before normalizing again, so retaining the
+/// comma would leave `value string, , value integer`. Comments are released
+/// trivia and may appear between the separator and annotation; string
+/// literals remain hard token boundaries.
+fn released_annotation_redaction_extents(
+    source: &str,
+    annotations: &[core::ops::Range<usize>],
+) -> Vec<core::ops::Range<usize>> {
+    let mut extents = Vec::with_capacity(annotations.len().saturating_mul(2));
+    for annotation in annotations {
+        if let Some(separator) = preceding_released_annotation_comma(source, annotation.start) {
+            extents.push(separator);
+        }
+        extents.push(annotation.clone());
+    }
+    extents.sort_by_key(|extent| extent.start);
+    extents.dedup();
+    extents
+}
+
+fn preceding_released_annotation_comma(
+    source: &str,
+    annotation_start: usize,
+) -> Option<core::ops::Range<usize>> {
+    use type_bridge_core_lib::parser::{SourceRegionKind, scan_source_regions};
+
+    for (range, kind) in scan_source_regions(source).into_iter().rev() {
+        if range.start >= annotation_start {
+            continue;
+        }
+        let end = range.end.min(annotation_start);
+        if range.start >= end {
+            continue;
+        }
+        match kind {
+            SourceRegionKind::LineComment => continue,
+            SourceRegionKind::StringLiteral => return None,
+            SourceRegionKind::Code => {
+                for (offset, character) in source[range.start..end].char_indices().rev() {
+                    if character.is_whitespace() {
+                        continue;
+                    }
+                    let position = range.start + offset;
+                    return (character == ',').then_some(position..position + 1);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Build the one-pass unresolved-reference index from a byte-aligned released
+/// projection. Function bodies and generator-only constructs are irrelevant
+/// to reference closure; blanking them lets the strict AST index consume the
+/// same accepted V1 source without changing any capability offset.
+fn released_unresolved_ranges(
+    document: &DocumentId,
+    source: &str,
+) -> Result<crate::ReleasedReferenceProjection, SchemaDiagnostics> {
+    let source = type_bridge_core_lib::parser::strip_function_definitions(source);
+    let (source, _) = strip_unportable_constructs(&source);
+    // The strict TypeQL AST used by the index accepts a narrower comment
+    // vocabulary than the frozen generator. Comment blanking is byte-length
+    // preserving, so indexed capability offsets still address the original
+    // released source exactly.
+    let source = blank_released_comments(&source);
+    ReleasedSyntax::accepted_with_size_policy(
+        &source,
+        crate::TypeqlSourceSizePolicy::TrustedGenerator,
+    )
+    .map(|released| crate::released_unresolved_capability_ranges(document, &released))
+    .transpose()
+    .map(Option::unwrap_or_default)
+}
+
+fn released_descriptor_projection(
+    document: DocumentId,
+    source: &str,
+    omitted_declarations: &BTreeSet<usize>,
+    omitted_capabilities: &BTreeSet<usize>,
+    played_role_declarations: &BTreeMap<usize, String>,
+) -> Result<DeclaredSchema, SchemaDiagnostics> {
+    let size_policy = crate::TypeqlSourceSizePolicy::TrustedGenerator;
+    let Some(released) = ReleasedSyntax::accepted_with_size_policy(source, size_policy) else {
+        return released_typeql_to_declared_stripped_projection_with_references(
+            document,
+            source,
+            size_policy,
+        )
+        .map(crate::function_references::TypeqlDeclaredSchema::into_declared);
+    };
+    let mut released_error =
+        match crate::released_typeql_to_declared_with_references_omitting_capabilities(
+            document.clone(),
+            &released,
+            omitted_declarations,
+            omitted_capabilities,
+            played_role_declarations,
+            size_policy,
+        ) {
+            Ok(declared) => return Ok(declared.into_declared()),
+            Err(error) => error,
+        };
+
+    let without_comments = blank_released_comments(source);
+    if let Some(released) =
+        ReleasedSyntax::accepted_with_size_policy(&without_comments, size_policy)
+    {
+        match crate::released_typeql_to_declared_with_references_omitting_capabilities(
+            document,
+            &released,
+            omitted_declarations,
+            omitted_capabilities,
+            played_role_declarations,
+            size_policy,
+        ) {
+            Ok(declared) => return Ok(declared.into_declared()),
+            Err(error) => released_error = error,
+        }
+    }
+    Err(released_error)
+}
+
+fn incompatible_released_annotations(
+    diagnostics: &SchemaDiagnostics,
+    source: &str,
+    redacted: &BTreeMap<usize, String>,
+) -> Option<Vec<core::ops::Range<usize>>> {
+    let mut ranges = BTreeMap::new();
+    for diagnostic in diagnostics.iter() {
+        let span = diagnostic.primary()?;
+        let start = usize::try_from(span.byte_start()).ok()?;
+        let end = usize::try_from(span.byte_end()).ok()?;
+        if start >= end || redacted.contains_key(&start) {
+            return None;
+        }
+        let spelling = source.get(start..end)?;
+        let annotation = released_annotation_name(spelling)?;
+        if !is_released_annotation_projection_failure(
+            annotation,
+            diagnostic.diagnostic().code().as_str(),
+        ) {
+            return None;
+        }
+        ranges.insert(start, start..end);
+    }
+    (!ranges.is_empty()).then(|| ranges.into_values().collect())
+}
+
+/// Return the exact annotation keyword only when the diagnostic span starts
+/// at a real annotation.  Spans come from the parsed AST; requiring byte zero
+/// to be `@` prevents compatibility recovery from ever scanning string or
+/// comment contents for marker-like text.
+fn released_annotation_name(spelling: &str) -> Option<&str> {
+    let rest = spelling.strip_prefix('@')?;
+    let end = rest
+        .bytes()
+        .position(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+        .unwrap_or(rest.len());
+    (end > 0).then(|| &rest[..end])
+}
+
+/// Closed list of canonical-contract failures that can be introduced only by
+/// projecting an annotation accepted by the frozen V1 parser.  Each arm is
+/// additionally pinned to annotation kinds capable of producing that code;
+/// strict TypeQL/V2 import never calls this generator-only recovery lane.
+fn is_released_annotation_projection_failure(annotation: &str, code: &str) -> bool {
+    let is_value = matches!(annotation, "regex" | "range" | "values" | "key" | "unique");
+    let is_literal_collection = matches!(annotation, "range" | "values");
+    match code {
+        "invalid_cardinality" | "invalid_typeql_cardinality" => annotation == "card",
+        "invalid_regex_annotation" | "invalid_typeql_regex" => annotation == "regex",
+        "invalid_doc_annotation" | "invalid_typeql_doc" => annotation == "doc",
+        "invalid_typeql_meta_key" | "invalid_typeql_meta_value" | "malformed_id" => {
+            annotation == "meta"
+        }
+        "empty_values_annotation"
+        | "values_annotation_member_limit_exceeded"
+        | "mixed_values_annotation_domain"
+        | "duplicate_values_annotation_value" => annotation == "values",
+        "empty_range_annotation"
+        | "mixed_range_annotation_domain"
+        | "unsupported_range_annotation_domain"
+        | "invalid_range_annotation_bounds" => annotation == "range",
+        "invalid_annotation_value_domain" | "unknown_annotation_value_domain" => is_value,
+        // A value annotation on a released attribute with no `value` clause
+        // has both an unknown subject fact and an unknown value domain.
+        "unknown_schema_fact_reference" => {
+            matches!(annotation, "regex" | "range" | "values")
+        }
+        "canonical_string_limit_exceeded" => {
+            matches!(annotation, "range" | "values" | "meta")
+        }
+        "invalid_canonical_scalar"
+        | "invalid_typeql_boolean"
+        | "invalid_typeql_integer"
+        | "invalid_typeql_double"
+        | "invalid_typeql_decimal"
+        | "invalid_typeql_string"
+        | "invalid_typeql_date"
+        | "invalid_typeql_datetime"
+        | "invalid_typeql_datetime_tz"
+        | "invalid_typeql_duration"
+        | "invalid_typeql_literal" => is_literal_collection,
+        "key_annotation_conflict" => annotation == "key",
+        _ => false,
+    }
+}
+
+/// Project released generator TypeQL through the same compatibility
+/// normalization used by descriptor generation.
+///
+/// The caller remains responsible for retaining the raw source as authority:
+/// list markers and released-only annotations are deliberately absent from
+/// this portable declared-fact projection.
+pub fn released_typeql_to_declared_projection(
+    document: DocumentId,
+    source: &str,
+) -> Result<DeclaredSchema, SchemaDiagnostics> {
+    released_typeql_to_declared_projection_with_references(document, source)
+        .map(crate::function_references::TypeqlDeclaredSchema::into_declared)
+}
+
+/// Project released TypeQL without discarding any schema-semantic construct.
+///
+/// This preserves the released parser's multi-`define`, alias, comment, and
+/// re-opened-label compatibility, but deliberately refuses list capabilities,
+/// released-only annotations, and opaque function/struct definitions that the
+/// portable fact graph cannot represent. Authority boundaries that require an
+/// exact schema contract must use this projection instead of
+/// [`released_typeql_to_declared_projection`].
+pub fn released_typeql_to_declared_lossless_projection(
+    document: DocumentId,
+    source: &str,
+) -> Result<DeclaredSchema, SchemaDiagnostics> {
+    released_typeql_to_declared_lossless_projection_with_references(document, source)
+        .map(crate::function_references::TypeqlDeclaredSchema::into_declared)
+}
+
+pub fn released_typeql_to_declared_lossless_projection_with_references(
+    document: DocumentId,
+    source: &str,
+) -> Result<crate::function_references::TypeqlDeclaredSchema, SchemaDiagnostics> {
+    if let Some(released) = ReleasedSyntax::accepted(source) {
+        let mut released_error = match crate::released_typeql_to_declared_with_references(
+            document.clone(),
+            &released,
+            crate::TypeqlSourceSizePolicy::Defensive,
+        ) {
+            Ok(declared) => return Ok(declared),
+            Err(error) => error,
+        };
+
+        let without_comments = blank_released_comments(source);
+        if let Some(released) = ReleasedSyntax::accepted(&without_comments) {
+            match crate::released_typeql_to_declared_with_references(
+                document,
+                &released,
+                crate::TypeqlSourceSizePolicy::Defensive,
+            ) {
+                Ok(declared) => return Ok(declared),
+                Err(error) => released_error = error,
+            }
+        }
+        return Err(released_error);
+    }
+
+    match crate::typeql_to_declared_with_references(document.clone(), source) {
+        Ok(declared) => Ok(declared),
+        Err(_) => {
+            let without_comments = blank_released_comments(source);
+            crate::typeql_to_declared_with_references(document, &without_comments)
+        }
+    }
+}
+
+/// Project released generator TypeQL while retaining references from every
+/// function body accepted by the strict importer.
+///
+/// If the source requires the frozen opaque-function fallback, those stripped
+/// bodies necessarily contribute no function-reference entries; the raw
+/// source remains the caller's authority for compatibility preservation.
+pub fn released_typeql_to_declared_projection_with_references(
+    document: DocumentId,
+    source: &str,
+) -> Result<crate::function_references::TypeqlDeclaredSchema, SchemaDiagnostics> {
+    released_typeql_to_declared_presence_projection_with_references(document, source)
+        .map(|(declared, _)| declared)
+}
+
+/// Project released TypeQL while retaining the byte offsets of constructs
+/// absent from the portable V2 fact vocabulary.
+///
+/// Writer-fence presence uses the offsets only to determine whether a frozen
+/// authority fact itself carries released-only semantics. They are not a
+/// substitute for the lossless projection used by query and adoption
+/// authority.
+pub(crate) fn released_typeql_to_declared_presence_projection_with_references(
+    document: DocumentId,
+    source: &str,
+) -> Result<(crate::function_references::TypeqlDeclaredSchema, Vec<usize>), SchemaDiagnostics> {
+    let (source, stripped) = strip_unportable_constructs(source);
+    released_typeql_to_declared_stripped_projection_with_references(
+        document,
+        &source,
+        crate::TypeqlSourceSizePolicy::Defensive,
+    )
+    .map(|declared| {
+        (
+            declared,
+            stripped.into_iter().map(|(offset, _)| offset).collect(),
+        )
+    })
+}
+
+fn released_typeql_to_declared_stripped_projection_with_references(
+    document: DocumentId,
+    source: &str,
+    size_policy: crate::TypeqlSourceSizePolicy,
+) -> Result<crate::function_references::TypeqlDeclaredSchema, SchemaDiagnostics> {
+    if let Some(released) = ReleasedSyntax::accepted_with_size_policy(source, size_policy) {
+        let mut released_error = match crate::released_typeql_to_declared_with_references(
+            document.clone(),
+            &released,
+            size_policy,
+        ) {
+            Ok(declared) => return Ok(declared),
+            Err(error) => error,
+        };
+
+        let without_comments = blank_released_comments(source);
+        if let Some(released) =
+            ReleasedSyntax::accepted_with_size_policy(&without_comments, size_policy)
+        {
+            match crate::released_typeql_to_declared_with_references(
+                document.clone(),
+                &released,
+                size_policy,
+            ) {
+                Ok(declared) => return Ok(declared),
+                Err(error) => released_error = error,
+            }
+        }
+
+        // Valid live TypeDB functions remain first-class facts. The frozen
+        // opaque-body fallback is used only when the strict importer cannot
+        // parse the released function spelling.
+        let without_definitions =
+            type_bridge_core_lib::parser::strip_function_definitions(&without_comments);
+        if let Some(released) =
+            ReleasedSyntax::accepted_with_size_policy(&without_definitions, size_policy)
+        {
+            return crate::released_typeql_to_declared_with_references(
+                document,
+                &released,
+                size_policy,
+            );
+        }
+        return Err(released_error);
+    }
+
+    match crate::typeql_to_declared_with_references_with_size_policy(
+        document.clone(),
+        source,
+        size_policy,
+    ) {
+        Ok(declared) => Ok(declared),
+        Err(_) => {
+            let without_comments = blank_released_comments(source);
+            match crate::typeql_to_declared_with_references_with_size_policy(
+                document.clone(),
+                &without_comments,
+                size_policy,
+            ) {
+                Ok(declared) => Ok(declared),
+                Err(_) => {
+                    let without_definitions =
+                        type_bridge_core_lib::parser::strip_function_definitions(&without_comments);
+                    crate::typeql_to_declared_with_references_with_size_policy(
+                        document,
+                        &without_definitions,
+                        size_policy,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// Blank released comment spellings before entering parsers that accept a
+/// narrower comment vocabulary. This preserves every byte offset and line
+/// break and never touches markers inside string literals.
+fn blank_released_comments(source: &str) -> String {
+    use type_bridge_core_lib::parser::{
+        SourceRegionKind, blank_source_extents, scan_source_regions,
+    };
+    let comments = scan_source_regions(source)
+        .into_iter()
+        .filter_map(|(range, kind)| (kind == SourceRegionKind::LineComment).then_some(range))
+        .collect::<Vec<_>>();
+    blank_source_extents(source, &comments)
+}
+
+/// Blank `ident[]` list markers, the released-only `@distinct`, `@cascade`,
+/// and `@subkey(...)` annotations, and the frozen parser's boundless
+/// `@range(..)` spelling outside comments and string literals, recording
+/// every construct.
 ///
 /// `@distinct` is only legal on list capabilities, all of which strip
 /// here, so any occurrence belongs to a stripped list. `@cascade` and
@@ -230,7 +758,7 @@ pub fn typeql_to_generated_descriptors(
 /// while the open-world marker records the incompleteness. Redaction is
 /// length-preserving (spans become spaces) so descriptor offsets keep
 /// indexing the original document.
-fn strip_unportable_constructs(source: &str) -> (String, Vec<String>) {
+fn strip_unportable_constructs(source: &str) -> (String, Vec<(usize, String)>) {
     use type_bridge_core_lib::parser::{
         SourceRegionKind, blank_source_extents, scan_source_regions,
     };
@@ -255,16 +783,16 @@ fn strip_unportable_constructs(source: &str) -> (String, Vec<String>) {
                 while start > range.start && ident_byte(bytes[start - 1]) {
                     start -= 1;
                 }
-                stripped.push(format!("{}[]", &source[start..index]));
+                stripped.push((start, format!("{}[]", &source[start..index])));
                 extents.push(index..index + 2);
                 index += 2;
                 continue;
             }
             if byte == b'@'
                 && let Some((construct, length)) =
-                    match_unportable_annotation(&source[index..range.end], &ident_byte)
+                    match_unportable_annotation(source, index, &ident_byte)
             {
-                stripped.push(construct);
+                stripped.push((index, construct));
                 extents.push(index..index + length);
                 index += length;
                 continue;
@@ -277,31 +805,104 @@ fn strip_unportable_constructs(source: &str) -> (String, Vec<String>) {
     (blank_source_extents(source, &extents), stripped)
 }
 
-/// Match a released-only annotation at the start of `rest` (which begins
-/// with `@`), returning its recorded spelling and byte length.
+/// Match a released-only annotation at `start` (which points at `@`),
+/// returning its recorded spelling and byte length.
 fn match_unportable_annotation(
-    rest: &str,
+    source: &str,
+    start: usize,
     ident_byte: &dyn Fn(u8) -> bool,
 ) -> Option<(String, usize)> {
+    let rest = &source[start..];
     let boundary = |after: usize| !ident_byte(*rest.as_bytes().get(after).unwrap_or(&b' '));
     for bare in ["@distinct", "@cascade"] {
         if rest.starts_with(bare) && boundary(bare.len()) {
             return Some((bare.to_owned(), bare.len()));
         }
     }
-    let subkey = "@subkey";
-    if let Some(after) = rest.strip_prefix(subkey) {
-        if let Some(argument) = after.strip_prefix('(')
-            && let Some(close) = argument.find(')')
-        {
-            let length = subkey.len() + 1 + close + 1;
-            return Some((rest[..length].to_owned(), length));
-        }
-        if boundary(subkey.len()) {
-            return Some((subkey.to_owned(), subkey.len()));
+    let range = "@range";
+    if rest.starts_with(range) && boundary(range.len()) {
+        let mut cursor = skip_released_trivia(source, start + range.len())?;
+        if source.as_bytes().get(cursor) == Some(&b'(') {
+            cursor += 1;
+            cursor = skip_released_trivia(source, cursor)?;
+            if source[cursor..].starts_with("..") {
+                cursor += 2;
+                cursor = skip_released_trivia(source, cursor)?;
+                if source.as_bytes().get(cursor) == Some(&b')') {
+                    cursor += 1;
+                    return Some((source[start..cursor].to_owned(), cursor - start));
+                }
+            }
         }
     }
-    None
+    let subkey = "@subkey";
+    if !rest.starts_with(subkey) || !boundary(subkey.len()) {
+        return None;
+    }
+
+    // Mirror the frozen parser's `ws_comments` +
+    // `delimited("(", padded(identifier), ")")` grammar. In particular,
+    // comments between the keyword and argument may contain parentheses;
+    // searching for the first `)` would redact only part of the annotation.
+    let mut cursor = skip_released_trivia(source, start + subkey.len())?;
+    if source.as_bytes().get(cursor) != Some(&b'(') {
+        return None;
+    }
+    cursor += 1;
+    cursor = skip_released_trivia(source, cursor)?;
+    let first = *source.as_bytes().get(cursor)?;
+    if !first.is_ascii_alphabetic() && first != b'_' {
+        return None;
+    }
+    cursor += 1;
+    while source
+        .as_bytes()
+        .get(cursor)
+        .is_some_and(|byte| ident_byte(*byte))
+    {
+        cursor += 1;
+    }
+    cursor = skip_released_trivia(source, cursor)?;
+    if source.as_bytes().get(cursor) != Some(&b')') {
+        return None;
+    }
+    cursor += 1;
+    let length = cursor - start;
+    Some((source[start..cursor].to_owned(), length))
+}
+
+/// Skip exactly the whitespace and comment forms accepted by the frozen V1
+/// generator parser. Unterminated block comments are not trivia: leaving the
+/// annotation intact lets the parser return its released syntax error.
+fn skip_released_trivia(source: &str, mut cursor: usize) -> Option<usize> {
+    loop {
+        let before = cursor;
+        while source[cursor..]
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_whitespace())
+        {
+            cursor += source[cursor..]
+                .chars()
+                .next()
+                .expect("whitespace character exists")
+                .len_utf8();
+        }
+        if source[cursor..].starts_with('#') || source[cursor..].starts_with("//") {
+            cursor = source[cursor..]
+                .find('\n')
+                .map_or(source.len(), |newline| cursor + newline + 1);
+            continue;
+        }
+        if source[cursor..].starts_with("/*") {
+            let close = source[cursor + 2..].find("*/")?;
+            cursor += 2 + close + 2;
+            continue;
+        }
+        if cursor == before {
+            return Some(cursor);
+        }
+    }
 }
 
 /// Project a generation-time TypeQL input into canonical direct-descriptor JSON.
@@ -319,9 +920,170 @@ pub fn generate_package_with_declared_descriptors(
 ) -> Result<type_bridge_core_lib::bindgen::GeneratedPackage, String> {
     let descriptors = generated_declared_descriptors_json(input)
         .map_err(|error| format!("Failed to render declared descriptor snapshot: {error}"))?;
-    let mut package = type_bridge_core_lib::bindgen::generate_from_typeql(input, target, options)?;
+    let document = DocumentId::new("generated/schema.tql")
+        .expect("static generated schema document ID is valid");
+    let reference_projection = released_unresolved_ranges(&document, input)
+        .map_err(|error| format!("Failed to index released schema references: {error}"))?;
+    let ranges = reference_projection
+        .omitted_from_render
+        .into_iter()
+        .filter_map(|(start, end)| {
+            input.get(start..end).and_then(|spelling| {
+                let spelling = spelling.trim_start();
+                let rest = spelling.strip_prefix("relates")?;
+                rest.as_bytes()
+                    .first()
+                    .is_some_and(|byte| {
+                        !byte.is_ascii_alphanumeric() && !matches!(*byte, b'_' | b'-')
+                    })
+                    .then(|| released_render_capability_range(input, start, end))
+            })
+        })
+        .collect::<Vec<_>>();
+    let render_source = type_bridge_core_lib::parser::blank_source_extents(input, &ranges);
+    let mut render_schema = TypeSchema::from_typeql(&render_source).map_err(|error| {
+        format!("Failed to parse released schema for model generation: {error}")
+    })?;
+    sanitize_released_render_schema(&mut render_schema);
+    let mut package = type_bridge_core_lib::bindgen::BindgenPlan::from_schema(&render_schema)
+        .render(target, options);
     attach_declared_descriptors(&mut package, descriptors, target)?;
     Ok(package)
+}
+
+/// Extend a capability span left through its separator for a syntactically
+/// valid byte-preserving render projection. Comments between the comma and
+/// capability are part of the blanked render-only range; descriptor evidence
+/// continues to use the exact capability span.
+fn released_render_capability_range(
+    source: &str,
+    capability_start: usize,
+    capability_end: usize,
+) -> core::ops::Range<usize> {
+    use type_bridge_core_lib::parser::{SourceRegionKind, scan_source_regions};
+
+    let separator = scan_source_regions(&source[..capability_start])
+        .into_iter()
+        .rev()
+        .filter(|(_, kind)| *kind == SourceRegionKind::Code)
+        .find_map(|(range, _)| {
+            source[range.clone()]
+                .char_indices()
+                .rev()
+                .find_map(|(offset, character)| {
+                    (!character.is_whitespace()).then_some((range.start + offset, character))
+                })
+        })
+        .and_then(|(offset, character)| (character == ',').then_some(offset));
+    separator.unwrap_or(capability_start)..capability_end
+}
+
+/// Remove open-world references that cannot be represented by a standalone
+/// generated package.
+///
+/// Released generation accepts partial schema exports. Their raw parsed form
+/// can therefore name a parent, owned attribute, relation role, or role
+/// specialization that is absent from this input. The canonical descriptor
+/// records those exact omissions; the binding projection must make the same
+/// conservative choice instead of emitting missing imports, phantom `plays`
+/// strings, undefined Rust fields, or `player_type = "unknown"` metadata.
+/// This adapter is intentionally private to the released generator lane.
+fn sanitize_released_render_schema(schema: &mut TypeSchema) {
+    let attribute_names = schema.attributes.keys().cloned().collect::<BTreeSet<_>>();
+    for attribute in schema.attributes.values_mut() {
+        if attribute
+            .parent
+            .as_ref()
+            .is_some_and(|parent| !attribute_names.contains(parent))
+        {
+            attribute.parent = None;
+        }
+    }
+
+    let entity_names = schema.entities.keys().cloned().collect::<BTreeSet<_>>();
+    for entity in schema.entities.values_mut() {
+        if entity
+            .parent
+            .as_ref()
+            .is_some_and(|parent| !entity_names.contains(parent))
+        {
+            entity.parent = None;
+        }
+        retain_known_ownerships(&attribute_names, &mut entity.owns, &mut entity.owns_order);
+    }
+
+    let relation_names = schema.relations.keys().cloned().collect::<BTreeSet<_>>();
+    for relation in schema.relations.values_mut() {
+        if relation
+            .parent
+            .as_ref()
+            .is_some_and(|parent| !relation_names.contains(parent))
+        {
+            relation.parent = None;
+        }
+        retain_known_ownerships(
+            &attribute_names,
+            &mut relation.owns,
+            &mut relation.owns_order,
+        );
+    }
+
+    // The byte-aligned source projection removed every invalid direct
+    // specialization before inheritance was resolved. Do not infer direct
+    // provenance from this resolved role vector: inherited specialized roles
+    // carry the same `overrides` field, and coincident local/parent names make
+    // such inference ambiguous. At this point the resolved relation role sets
+    // are authoritative for retaining plays edges.
+    let roles_by_relation = released_roles_by_relation(schema);
+    for entity in schema.entities.values_mut() {
+        entity
+            .plays
+            .retain(|played| released_role_exists(&roles_by_relation, &played.role_ref));
+    }
+    for relation in schema.relations.values_mut() {
+        relation
+            .plays
+            .retain(|played| released_role_exists(&roles_by_relation, &played.role_ref));
+    }
+}
+
+fn retain_known_ownerships(
+    attribute_names: &BTreeSet<String>,
+    owns: &mut Vec<type_bridge_core_lib::schema::OwnedAttribute>,
+    owns_order: &mut Vec<String>,
+) {
+    owns.retain(|owned| attribute_names.contains(&owned.name));
+    owns_order.retain(|name| attribute_names.contains(name));
+}
+
+fn released_role_exists(
+    roles_by_relation: &BTreeMap<String, BTreeSet<String>>,
+    role_ref: &str,
+) -> bool {
+    let Some((relation, role)) = role_ref.split_once(':') else {
+        return false;
+    };
+    !role.contains(':')
+        && roles_by_relation
+            .get(relation)
+            .is_some_and(|roles| roles.contains(role))
+}
+
+fn released_roles_by_relation(schema: &TypeSchema) -> BTreeMap<String, BTreeSet<String>> {
+    schema
+        .relations
+        .iter()
+        .map(|(name, relation)| {
+            (
+                name.clone(),
+                relation
+                    .roles
+                    .iter()
+                    .map(|role| role.name.clone())
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// Render the canonical empty declared-descriptor snapshot: a closed

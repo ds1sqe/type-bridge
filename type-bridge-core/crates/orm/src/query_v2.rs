@@ -1,15 +1,15 @@
 //! Deterministic TypeQL lowering for validated V2 query plans.
 //!
 //! One validated plan plus one bound invocation lowers to exact TypeQL text.
-//! The first revision ships the proven single-row inline transport: input
-//! operands substitute their canonical row literal directly into the pattern
-//! text. Explicit multi-row batches reject before any data I/O until the
-//! native `given` transport capability is proven end to end — rejection,
-//! never silent row-by-row emulation.
+//! Fully populated single-row inputs substitute canonical literals directly
+//! into the pattern text. Multi-row batches and optional absence use the
+//! native driver `given` transport; unsupported scalar domains reject during
+//! provider-independent preflight, never through silent row-by-row emulation.
 
 use std::fmt::Write as _;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperand, QueryOperation, QueryOutput, QueryPattern, QueryPlan,
@@ -61,28 +61,29 @@ pub fn lower_validated_query(
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
 ) -> Result<LoweredQuery, Diagnostic> {
+    lower_validated_query_with_execution_limits(validated, invocation, None, None)
+}
+
+/// Lower one execution with finite provider-side answer sentinels.
+///
+/// These sentinels are deliberately execution-only: they are not part of plan
+/// identity or the public deterministic lowering. The item bound clamps an
+/// existing limit or is appended before `fetch`; every fetched list becomes a
+/// subquery capped at its own `N + 1`. Together they let the consumer inspect
+/// first over-budget evidence and still read the statement's terminal frame.
+fn lower_validated_query_with_execution_limits(
+    validated: &ValidatedQuery,
+    invocation: &QueryInvocation,
+    max_collection_members: Option<u64>,
+    max_provider_items: Option<u64>,
+) -> Result<LoweredQuery, Diagnostic> {
     let plan = validated.plan();
-    if !invocation.binds(plan)? {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_v2_invocation_plan_mismatch",
-            "invocation does not bind the exact validated plan fingerprint",
-        ));
-    }
+    preflight_invocation_transport(plan, invocation)?;
     let (row, given) = match invocation.inputs() {
         [] => (None, None),
-        [row] => (Some(row), None),
+        [row] if !invocation_requires_given(invocation) => (Some(row), None),
         rows => (None, Some(given_rows_spec(plan, rows)?)),
     };
-    if let Some(row) = row
-        && row.values().iter().any(Option::is_none)
-    {
-        return Err(failure(
-            DiagnosticCategory::InvalidContract,
-            "query_v2_missing_input_value",
-            "single-row inline lowering requires every input value to be present",
-        ));
-    }
 
     let mut typeql = String::new();
     for function in plan.functions() {
@@ -161,6 +162,22 @@ pub fn lower_validated_query(
     };
     render_patterns(&mut typeql, plan, patterns, row, 0)?;
 
+    // Reachable is an existential predicate over the declared root
+    // environment, not a request for one row per proof path. TypeQL distinct
+    // does not collapse equal projections produced by different disjunction
+    // branches, so aggregate every proof by the complete visible environment
+    // and then project the synthetic count away. This happens before any
+    // user-authored select/reduce/sort/window stage, and rows that differ in
+    // any declared visible binding remain distinct.
+    let reachability_projection = contains_reachable(patterns);
+    if reachability_projection {
+        typeql.push_str("reduce $RreachableProofCount = count groupby ");
+        render_variable_list(&mut typeql, plan, validated.root_visibility())?;
+        typeql.push_str(";\nselect ");
+        render_variable_list(&mut typeql, plan, validated.root_visibility())?;
+        typeql.push_str(";\n");
+    }
+
     // A binding established only inside a negation is a witness the
     // provider never returns as a column. When the plan carries no
     // explicit Select or Reduce and a witness narrows the environment,
@@ -170,12 +187,22 @@ pub fn lower_validated_query(
         .pipeline()
         .iter()
         .any(|stage| matches!(stage, ReadStage::Select { .. } | ReadStage::Reduce { .. }));
-    if !has_projection_stage && validated.root_visibility().len() < plan.bindings().len() {
+    if !reachability_projection
+        && !has_projection_stage
+        && validated.root_visibility().len() < plan.bindings().len()
+    {
         typeql.push_str("select ");
         render_variable_list(&mut typeql, plan, validated.root_visibility())?;
         typeql.push_str(";\n");
     }
 
+    let exists_probe = matches!(invocation.operation(), QueryOperation::Exists);
+    let max_provider_items = if exists_probe {
+        Some(1)
+    } else {
+        max_provider_items
+    };
+    let mut rendered_limit = false;
     for stage in &plan.pipeline()[1..] {
         match stage {
             ReadStage::Match { .. } => {
@@ -252,9 +279,21 @@ pub fn lower_validated_query(
                 writeln!(typeql, "offset {rows};").expect("writing to String cannot fail");
             }
             ReadStage::Limit { rows } => {
+                let rows = max_provider_items.map_or(*rows, |maximum| (*rows).min(maximum));
                 writeln!(typeql, "limit {rows};").expect("writing to String cannot fail");
+                rendered_limit = true;
             }
         }
+    }
+
+    // The execution bound belongs in the TypeQL statement so the runtime can
+    // consume its terminal frame instead of abandoning a resumable driver
+    // stream. This must precede a document `fetch` output clause. Existing
+    // limits are clamped above, so an explicit `limit 0` remains zero.
+    if let Some(max_provider_items) = max_provider_items
+        && !rendered_limit
+    {
+        writeln!(typeql, "limit {max_provider_items};").expect("writing to String cannot fail");
     }
 
     if let type_bridge_contract::query_plan::QueryOutput::Documents { fields } = plan.output() {
@@ -271,13 +310,26 @@ pub fn lower_validated_query(
                     attribute,
                     owner,
                 } => {
-                    write!(
-                        typeql,
-                        "[ ${}.{} ]",
-                        variable(plan, *owner)?,
-                        attribute.label(),
-                    )
-                    .expect("writing to String cannot fail");
+                    if let Some(max_collection_members) = max_collection_members {
+                        let sentinel_limit = max_collection_members.saturating_add(1);
+                        let fetch_variable = format!("FtbDocumentValue{index}");
+                        write!(
+                            typeql,
+                            "[\n        match ${} has {} ${fetch_variable};\n        \
+                             limit {sentinel_limit};\n        return {{ ${fetch_variable} }};\n    ]",
+                            variable(plan, *owner)?,
+                            attribute.label(),
+                        )
+                        .expect("writing to String cannot fail");
+                    } else {
+                        write!(
+                            typeql,
+                            "[ ${}.{} ]",
+                            variable(plan, *owner)?,
+                            attribute.label(),
+                        )
+                        .expect("writing to String cannot fail");
+                    }
                 }
             }
             typeql.push_str(if index + 1 == fields.len() {
@@ -297,11 +349,12 @@ pub fn lower_validated_query(
     })
 }
 
-/// Build the driver-transported batch for one multi-row invocation.
+/// Build the driver-transported rows for one exact `given` invocation.
 ///
-/// The first given vocabulary transports boolean, integer, double, and
-/// string values; temporal, decimal, and duration inputs keep the proven
-/// single-row inline path until their canonical driver spelling is proven.
+/// The portable given vocabulary transports absence and every scalar domain
+/// the active driver can carry without narrowing. Provider-domain durations
+/// use exact unsigned components after preflight rejects negative or wider
+/// contract values.
 fn given_rows_spec(
     plan: &QueryPlan,
     rows: &[type_bridge_contract::query_plan::InputRow],
@@ -325,14 +378,15 @@ fn given_rows_spec(
         .map(|row| {
             row.values()
                 .iter()
-                .map(|value| {
-                    value.as_ref().and_then(given_value).ok_or_else(|| {
+                .map(|value| match value {
+                    None => Ok(crate::session::backend::GivenValue::Empty),
+                    Some(value) => given_value(value).ok_or_else(|| {
                         failure(
                             DiagnosticCategory::InvalidContract,
-                            "query_v2_missing_input_value",
-                            "given-row lowering requires every input value to be present",
+                            "query_v2_given_value_unsupported",
+                            "this input value has no lossless given transport",
                         )
-                    })
+                    }),
                 })
                 .collect::<Result<Vec<_>, Diagnostic>>()
         })
@@ -349,7 +403,14 @@ const fn given_type_keyword(
         ValueTypeTag::Long => Some("integer"),
         ValueTypeTag::Double => Some("double"),
         ValueTypeTag::String => Some("string"),
-        _ => None,
+        ValueTypeTag::Date => Some("date"),
+        ValueTypeTag::DateTime => Some("datetime"),
+        ValueTypeTag::DateTimeTz => Some("datetime-tz"),
+        ValueTypeTag::Decimal => Some("decimal"),
+        // Provider-domain durations cross `given` as exact components after
+        // shared temporal preflight has rejected negative or overflowing
+        // values.
+        ValueTypeTag::Duration => Some("duration"),
     }
 }
 
@@ -363,8 +424,73 @@ fn given_value(
         CanonicalValue::Long(value) => Some(GivenValue::Integer(*value)),
         CanonicalValue::Double(value) => Some(GivenValue::Double(value.get())),
         CanonicalValue::String(value) => Some(GivenValue::String(value.as_str().to_owned())),
-        _ => None,
+        CanonicalValue::Date(value) => Some(GivenValue::Date(value.to_string())),
+        CanonicalValue::DateTime(value) => Some(GivenValue::Datetime(value.to_string())),
+        CanonicalValue::DateTimeTz(value) => Some(GivenValue::DatetimeTzExact {
+            local: value.local().to_string(),
+            named_zone: match value.zone() {
+                type_bridge_contract::temporal::TimeZoneDesignator::Named(name) => {
+                    Some(name.clone())
+                }
+                type_bridge_contract::temporal::TimeZoneDesignator::Utc
+                | type_bridge_contract::temporal::TimeZoneDesignator::OffsetSeconds(_) => None,
+            },
+            effective_offset_seconds: value.effective_offset_seconds(),
+        }),
+        CanonicalValue::Decimal(value) => Some(GivenValue::Decimal(value.as_str().to_owned())),
+        CanonicalValue::Duration(value) => {
+            let (negative, months, days, seconds, nanosecond) = value.components();
+            let months = u32::try_from(months).ok()?;
+            let days = u32::try_from(days).ok()?;
+            let nanos = seconds
+                .checked_mul(1_000_000_000)?
+                .checked_add(u64::from(nanosecond))?;
+            (!negative).then_some(GivenValue::Duration {
+                months,
+                days,
+                nanos,
+            })
+        }
     }
+}
+
+/// Validate invocation-dependent transport before provider or transaction I/O.
+pub(crate) fn preflight_invocation_transport(
+    plan: &QueryPlan,
+    invocation: &QueryInvocation,
+) -> Result<(), Diagnostic> {
+    if !invocation.binds(plan)? {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "query_v2_invocation_plan_mismatch",
+            "invocation does not bind the exact validated plan fingerprint",
+        ));
+    }
+    for value in invocation
+        .inputs()
+        .iter()
+        .flat_map(|row| row.values())
+        .flatten()
+    {
+        type_bridge_schema::validate_provider_temporal_value(value)?;
+    }
+    if invocation_requires_given(invocation) {
+        given_rows_spec(plan, invocation.inputs())?;
+    }
+    Ok(())
+}
+
+fn invocation_requires_given(invocation: &QueryInvocation) -> bool {
+    invocation.inputs().len() > 1
+        || invocation.inputs().first().is_some_and(|row| {
+            row.values().iter().any(|value| {
+                value.is_none()
+                    || matches!(
+                        value,
+                        Some(type_bridge_contract::value::CanonicalValue::DateTimeTz(_))
+                    )
+            })
+        })
 }
 
 fn render_patterns(
@@ -555,6 +681,20 @@ fn render_scoped_patterns(
     Ok(())
 }
 
+fn contains_reachable(patterns: &[QueryPattern]) -> bool {
+    patterns.iter().any(|pattern| match pattern {
+        QueryPattern::Reachable { .. } => true,
+        QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+            contains_reachable(patterns)
+        }
+        QueryPattern::Isa { .. }
+        | QueryPattern::Has { .. }
+        | QueryPattern::Links { .. }
+        | QueryPattern::Value { .. }
+        | QueryPattern::FunctionCall { .. } => false,
+    })
+}
+
 fn render_variable_list(
     output: &mut String,
     plan: &QueryPlan,
@@ -580,7 +720,7 @@ fn render_operand(
         QueryOperand::Binding { binding } => {
             Ok(format!("${}", local_variable(bindings, *binding)?))
         }
-        QueryOperand::Literal { value } => Ok(render_literal(value)),
+        QueryOperand::Literal { value } => render_literal(value),
         QueryOperand::Input { column } => match row {
             Some(row) => {
                 let value = row
@@ -594,7 +734,7 @@ fn render_operand(
                             "pattern reads an input column absent from the bound row",
                         )
                     })?;
-                Ok(render_literal(value))
+                render_literal(value)
             }
             // Given lowering: the column is a driver-bound row variable.
             None => {
@@ -644,6 +784,78 @@ pub(crate) fn failure(
         DiagnosticCode::new(code).expect("static query lowering diagnostic code"),
         message,
     )
+}
+
+/// Preserve the stable resource diagnostics emitted by the bounded provider
+/// seam while redacting arbitrary driver text for every other provider error.
+pub(crate) fn provider_diagnostic(
+    error: &crate::error::OrmError,
+    generic_code: &'static str,
+    generic_message: &'static str,
+) -> Diagnostic {
+    let crate::error::OrmError::Match(error) = error else {
+        return failure(DiagnosticCategory::Integrity, generic_code, generic_message);
+    };
+    if error.category() != crate::match_request::MatchErrorCategory::ResourceLimit {
+        return failure(DiagnosticCategory::Integrity, generic_code, generic_message);
+    }
+    let (code, message) = match error.code().as_str() {
+        "provider_cancelled" => (
+            "provider_cancelled",
+            "provider answer processing was cancelled",
+        ),
+        "transaction_deadline_exceeded" => (
+            "transaction_deadline_exceeded",
+            "provider transaction deadline expired",
+        ),
+        "processed_item_limit" => (
+            "processed_item_limit",
+            "provider answer exceeded the processed-item ceiling",
+        ),
+        "response_byte_limit" => (
+            "response_byte_limit",
+            "provider answer exceeded the response-byte ceiling",
+        ),
+        "processed_item_counter_overflow" => (
+            "processed_item_counter_overflow",
+            "processed provider item counter overflowed",
+        ),
+        "answer_byte_counter_overflow" => (
+            "answer_byte_counter_overflow",
+            "provider answer byte counter overflowed",
+        ),
+        "query_v2_document_member_limit" => (
+            "query_v2_document_member_limit",
+            "document lists exceed the aggregate member ceiling",
+        ),
+        _ => return failure(DiagnosticCategory::Integrity, generic_code, generic_message),
+    };
+    failure(DiagnosticCategory::ResourceLimit, code, message)
+}
+
+fn query_v2_provider_resource_error(
+    code: &'static str,
+    message: impl Into<String>,
+) -> crate::error::OrmError {
+    crate::match_request::MatchError::new(
+        crate::match_request::MatchErrorCategory::ResourceLimit,
+        code,
+        message,
+    )
+    .at(crate::match_request::MatchErrorPathSegment::ProviderEvidence)
+    .into()
+}
+
+fn query_v2_result_validation_error(diagnostic: Diagnostic) -> QueryV2ExecutionError {
+    if diagnostic.category() == DiagnosticCategory::ResourceLimit
+        && diagnostic.code().as_str() == "query_v2_document_member_limit"
+    {
+        return QueryV2ExecutionError::Provider(query_v2_provider_resource_error(
+            "query_v2_document_member_limit",
+            diagnostic.message().to_owned(),
+        ));
+    }
+    QueryV2ExecutionError::Validation(diagnostic)
 }
 
 /// Return the output projection columns of one validated plan.
@@ -755,6 +967,13 @@ pub enum QueryV2ExecutionError {
     Validation(Diagnostic),
 }
 
+/// Internal observer invoked after evidence validation and before retention.
+pub(crate) trait QueryV2ValidatedItemObserver: Send {
+    fn observe_row(&mut self, row: &QueryResultRow) -> Result<(), Diagnostic>;
+
+    fn observe_document(&mut self, document: &QueryResultDocument) -> Result<(), Diagnostic>;
+}
+
 /// Execute one validated invocation through an open read transaction.
 ///
 /// Rows are streamed under the caller's explicit bounded limits and each
@@ -765,8 +984,10 @@ pub async fn execute_validated_query(
     transaction: &mut crate::session::transaction::Transaction,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
-    limits: crate::session::backend::BoundedAnswerLimits,
+    limits: crate::session::backend::QueryV2AnswerLimits,
 ) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
+    preflight_invocation_transport(validated.plan(), invocation)
+        .map_err(QueryV2ExecutionError::Validation)?;
     let transaction = transaction
         .provider_mut()
         .map_err(QueryV2ExecutionError::Provider)?;
@@ -780,31 +1001,153 @@ pub(crate) async fn execute_with_provider<
     provider: &mut P,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
-    limits: crate::session::backend::BoundedAnswerLimits,
+    limits: crate::session::backend::QueryV2AnswerLimits,
 ) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
-    let lowered =
-        lower_validated_query(validated, invocation).map_err(QueryV2ExecutionError::Validation)?;
+    execute_with_provider_observer(provider, validated, invocation, limits, None).await
+}
 
-    let exists_probe = matches!(lowered.operation(), QueryOperation::Exists);
-    let mut limits = limits;
-    if exists_probe {
-        limits.max_items = 1;
-    }
+pub(crate) async fn execute_with_provider_observer<
+    P: crate::migration_assertion::AssertionProviderCall + ?Sized,
+>(
+    provider: &mut P,
+    validated: &ValidatedQuery,
+    invocation: &QueryInvocation,
+    limits: crate::session::backend::QueryV2AnswerLimits,
+    mut observer: Option<&mut dyn QueryV2ValidatedItemObserver>,
+) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
+    let mut semantic_limits = limits;
+    semantic_limits.max_collection_members = semantic_limits
+        .max_collection_members
+        .min(u64::try_from(MAX_CANONICAL_COLLECTION_LEN).expect("canonical limit fits u64"));
+    let exists_probe = matches!(invocation.operation(), QueryOperation::Exists);
+    let provider_item_sentinel = if exists_probe {
+        1
+    } else {
+        semantic_limits.answer.max_items.saturating_add(1)
+    };
+    let lowered = lower_validated_query_with_execution_limits(
+        validated,
+        invocation,
+        Some(semantic_limits.max_collection_members),
+        Some(provider_item_sentinel),
+    )
+    .map_err(QueryV2ExecutionError::Validation)?;
+    let allow_input_echo = lowered.given_rows().is_some();
+
+    // The statement itself is finite at the semantic item/list sentinels, and
+    // the provider/session seam independently retains the finite raw-answer
+    // byte and aggregate-member ceilings. The consumer repeats those checks on
+    // the projected semantic evidence; neither layer may become unbounded just
+    // because a remote caller meters a different canonical wire encoding.
+    let mut provider_limits = semantic_limits.clone();
+    provider_limits.answer.max_items = provider_item_sentinel;
 
     let mut rows: Vec<QueryResultRow> = Vec::new();
     let mut documents: Vec<QueryResultDocument> = Vec::new();
-    let mut validation: Option<Diagnostic> = None;
+    let max_items = semantic_limits.answer.max_items;
+    let max_bytes = semantic_limits.answer.max_bytes;
+    let max_collection_members = semantic_limits.max_collection_members;
+    let mut processed_items = 0_u64;
+    let mut response_bytes = 0_u64;
+    let mut collection_members = 0_u64;
+    let mut deferred_error: Option<QueryV2ExecutionError> = None;
     let mut consumer = |item| {
+        // Once a deterministic first failure is known, keep draining the
+        // finite statement without parsing or retaining any later evidence.
+        if deferred_error.is_some() {
+            return Ok(crate::session::backend::AnswerControl::Continue);
+        }
+
+        let Some(next_items) = processed_items.checked_add(1) else {
+            deferred_error = Some(QueryV2ExecutionError::Provider(
+                query_v2_provider_resource_error(
+                    "processed_item_counter_overflow",
+                    "processed provider item counter overflowed",
+                ),
+            ));
+            return Ok(crate::session::backend::AnswerControl::Continue);
+        };
+        if next_items > max_items {
+            deferred_error = Some(QueryV2ExecutionError::Provider(
+                query_v2_provider_resource_error(
+                    "processed_item_limit",
+                    "provider answer exceeded the processed-item ceiling",
+                ),
+            ));
+            return Ok(crate::session::backend::AnswerControl::Continue);
+        }
+
+        let value = match &item {
+            crate::session::backend::AnswerItem::Row(value)
+            | crate::session::backend::AnswerItem::Document(value) => value,
+        };
+        let encoded = match serde_json::to_vec(value) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                deferred_error = Some(QueryV2ExecutionError::Provider(
+                    crate::error::OrmError::QueryExecution(format!("Answer encode: {error}")),
+                ));
+                return Ok(crate::session::backend::AnswerControl::Continue);
+            }
+        };
+        let Ok(encoded_bytes) = u64::try_from(encoded.len()) else {
+            deferred_error = Some(QueryV2ExecutionError::Provider(
+                query_v2_provider_resource_error(
+                    "answer_byte_counter_overflow",
+                    "encoded provider answer length exceeds the counter range",
+                ),
+            ));
+            return Ok(crate::session::backend::AnswerControl::Continue);
+        };
+        let Some(next_bytes) = response_bytes.checked_add(encoded_bytes) else {
+            deferred_error = Some(QueryV2ExecutionError::Provider(
+                query_v2_provider_resource_error(
+                    "answer_byte_counter_overflow",
+                    "provider answer byte counter overflowed",
+                ),
+            ));
+            return Ok(crate::session::backend::AnswerControl::Continue);
+        };
+        if next_bytes > max_bytes {
+            deferred_error = Some(QueryV2ExecutionError::Provider(
+                query_v2_provider_resource_error(
+                    "response_byte_limit",
+                    "provider answer exceeded the response-byte ceiling",
+                ),
+            ));
+            return Ok(crate::session::backend::AnswerControl::Continue);
+        }
+        processed_items = next_items;
+        response_bytes = next_bytes;
+
         let validated_item = match (validated.output_schema(), item) {
             (OutputSchema::Rows(schema), crate::session::backend::AnswerItem::Row(row)) => {
-                validate_result_row(&row, validated, schema)
-                    .map(|values| rows.push(QueryResultRow { values }))
+                validate_result_row(&row, validated, schema, allow_input_echo).and_then(|values| {
+                    let row = QueryResultRow { values };
+                    if let Some(observer) = observer.as_deref_mut() {
+                        observer.observe_row(&row)?;
+                    }
+                    rows.push(row);
+                    Ok(())
+                })
             }
             (
                 OutputSchema::Documents(schema),
                 crate::session::backend::AnswerItem::Document(document),
-            ) => validate_result_document(&document, schema)
-                .map(|values| documents.push(QueryResultDocument { values })),
+            ) => validate_result_document(
+                &document,
+                schema,
+                &mut collection_members,
+                max_collection_members,
+            )
+            .and_then(|values| {
+                let document = QueryResultDocument { values };
+                if let Some(observer) = observer.as_deref_mut() {
+                    observer.observe_document(&document)?;
+                }
+                documents.push(document);
+                Ok(())
+            }),
             (OutputSchema::Rows(_), _) => Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "query_v2_result_not_row",
@@ -817,40 +1160,50 @@ pub(crate) async fn execute_with_provider<
             )),
         };
         match validated_item {
-            Ok(()) => Ok(if exists_probe {
-                crate::session::backend::AnswerControl::Stop
-            } else {
-                crate::session::backend::AnswerControl::Continue
-            }),
+            Ok(()) => Ok(crate::session::backend::AnswerControl::Continue),
             Err(diagnostic) => {
-                validation = Some(diagnostic);
-                Ok(crate::session::backend::AnswerControl::Stop)
+                deferred_error = Some(query_v2_result_validation_error(diagnostic));
+                Ok(crate::session::backend::AnswerControl::Continue)
             }
         }
     };
-    match lowered.given_rows() {
+    let provider_result = match lowered.given_rows() {
         Some(spec) => {
             if !provider.supports_given_rows() {
                 return Err(QueryV2ExecutionError::Validation(failure(
                     DiagnosticCategory::InvalidContract,
-                    "query_v2_multi_row_given_unsupported",
-                    "explicit multi-row input requires the native given transport capability",
+                    "query_v2_given_transport_unsupported",
+                    "this invocation requires the native given transport capability",
                 )));
             }
             provider
-                .query_with_rows_bounded(lowered.typeql(), spec.clone(), limits, &mut consumer)
+                .query_v2_with_rows_bounded(
+                    lowered.typeql(),
+                    spec.clone(),
+                    provider_limits,
+                    &mut consumer,
+                )
                 .await
-                .map_err(QueryV2ExecutionError::Provider)?;
         }
         None => {
             provider
-                .query_bounded(lowered.typeql(), limits, &mut consumer)
+                .query_v2_bounded(lowered.typeql(), provider_limits, &mut consumer)
                 .await
-                .map_err(QueryV2ExecutionError::Provider)?;
         }
+    };
+    // A provider failure observed while draining follows the semantic or
+    // evidence failure that made draining necessary. Preserve that first
+    // stable failure just as the former immediate-return path did.
+    if let Some(error) = deferred_error {
+        return Err(error);
     }
-    if let Some(diagnostic) = validation {
-        return Err(QueryV2ExecutionError::Validation(diagnostic));
+    let stats = provider_result.map_err(QueryV2ExecutionError::Provider)?;
+    if stats.stopped_early {
+        return Err(QueryV2ExecutionError::Validation(failure(
+            DiagnosticCategory::InvalidContract,
+            "query_v2_provider_stream_not_exhausted",
+            "provider stopped before the bounded query statement reached its terminal frame",
+        )));
     }
 
     let answers = rows.len() + documents.len();
@@ -868,6 +1221,8 @@ pub(crate) async fn execute_with_provider<
 fn validate_result_document(
     document: &serde_json::Value,
     schema: &DocumentSchema,
+    collection_members: &mut u64,
+    max_collection_members: u64,
 ) -> Result<Vec<DocumentFieldValue>, Diagnostic> {
     let object = document.as_object().ok_or_else(|| {
         failure(
@@ -920,6 +1275,31 @@ fn validate_result_document(
                         "attribute list field is not a JSON array",
                     )
                 })?;
+                let field_members = u64::try_from(elements.len()).map_err(|_| {
+                    failure(
+                        DiagnosticCategory::ResourceLimit,
+                        "query_v2_document_member_limit",
+                        "document list member count exceeds the supported counter range",
+                    )
+                })?;
+                let next_members =
+                    collection_members
+                        .checked_add(field_members)
+                        .ok_or_else(|| {
+                            failure(
+                                DiagnosticCategory::ResourceLimit,
+                                "query_v2_document_member_limit",
+                                "document list member counter overflowed",
+                            )
+                        })?;
+                if next_members > max_collection_members {
+                    return Err(failure(
+                        DiagnosticCategory::ResourceLimit,
+                        "query_v2_document_member_limit",
+                        "document lists exceed the aggregate member ceiling",
+                    ));
+                }
+                *collection_members = next_members;
                 DocumentFieldValue::List(
                     elements
                         .iter()
@@ -939,6 +1319,7 @@ fn validate_result_row(
     row: &serde_json::Value,
     validated: &ValidatedQuery,
     schema: &RowSchema,
+    allow_input_echo: bool,
 ) -> Result<Vec<QueryRowValue>, Diagnostic> {
     use type_bridge_contract::id::{TypeId, TypeKind};
 
@@ -953,12 +1334,16 @@ fn validate_result_row(
     // Given lowerings echo the driver-bound input variables in every row;
     // input names are contract-unique against binding names, so tolerating
     // exactly them stays closed.
-    let inputs: std::collections::BTreeSet<&str> = validated
-        .plan()
-        .inputs()
-        .iter()
-        .map(|column| column.public_name().as_str())
-        .collect();
+    let inputs: std::collections::BTreeSet<&str> = if allow_input_echo {
+        validated
+            .plan()
+            .inputs()
+            .iter()
+            .map(|column| column.public_name().as_str())
+            .collect()
+    } else {
+        std::collections::BTreeSet::new()
+    };
     if visible.iter().any(|name| !object.contains_key(*name))
         || object
             .keys()
@@ -995,7 +1380,8 @@ fn validate_result_row(
                 )
             })?;
         // A pure value binding (empty thing domain, exact scalar) carries a
-        // value concept: no type label, only the typed scalar itself.
+        // value concept. Drivers may include their informational value label,
+        // but it is not a schema type identity.
         if domain.type_ids().is_empty() {
             let Some(expected) = domain.value_type() else {
                 return Err(failure(
@@ -1011,6 +1397,14 @@ fn validate_result_row(
                     DiagnosticCategory::Integrity,
                     "query_v2_result_type_mismatch",
                     "value column evidence is not a provider value concept",
+                ));
+            }
+            reject_unexpected_provider_concept_fields(concept, column.variable(), category)?;
+            if concept.get("label").is_some_and(|label| !label.is_string()) {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_v2_result_concept_malformed",
+                    "provider value concept carries an invalid label",
                 ));
             }
             let actual =
@@ -1037,6 +1431,7 @@ fn validate_result_row(
         }
         let category =
             crate::migration_assertion::string_field(concept, "category", column.variable())?;
+        reject_unexpected_provider_concept_fields(concept, column.variable(), category)?;
         let label = crate::migration_assertion::string_field(concept, "label", column.variable())?;
         let kind =
             crate::migration_assertion::provider_concept_kind(category).ok_or_else(|| {
@@ -1064,11 +1459,15 @@ fn validate_result_row(
             (TypeKind::Entity | TypeKind::Relation, None) => {
                 let iid =
                     crate::migration_assertion::string_field(concept, "iid", column.variable())?;
-                if iid.is_empty() {
+                if !type_bridge_contract::id::is_canonical_thing_iid(iid) {
                     return Err(failure(
                         DiagnosticCategory::InvalidContract,
                         "query_v2_result_concept_malformed",
-                        "thing concept carries an empty instance identity",
+                        if iid.is_empty() {
+                            "thing concept carries an empty instance identity"
+                        } else {
+                            "thing concept carries a malformed instance identity"
+                        },
                     ));
                 }
                 QueryRowValue::Thing {
@@ -1077,6 +1476,26 @@ fn validate_result_row(
                 }
             }
             (TypeKind::Attribute, Some(expected)) => {
+                if let Some(iid) = concept.get("iid") {
+                    let Some(iid) = iid.as_str() else {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_v2_result_concept_malformed",
+                            "attribute concept carries an invalid instance identity",
+                        ));
+                    };
+                    if !type_bridge_contract::id::is_canonical_thing_iid(iid) {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_v2_result_concept_malformed",
+                            if iid.is_empty() {
+                                "attribute concept carries an empty instance identity"
+                            } else {
+                                "attribute concept carries a malformed instance identity"
+                            },
+                        ));
+                    }
+                }
                 let actual = crate::migration_assertion::string_field(
                     concept,
                     "value_type",
@@ -1111,6 +1530,37 @@ fn validate_result_row(
         });
     }
     Ok(values)
+}
+
+fn reject_unexpected_provider_concept_fields(
+    concept: &serde_json::Map<String, serde_json::Value>,
+    binding: &type_bridge_contract::migration_assertion::QueryVariable,
+    category: &str,
+) -> Result<(), Diagnostic> {
+    let allowed: &[&str] = match category {
+        "value" | "Value" => &["category", "label", "value", "value_type"],
+        "entity" | "Entity" | "relation" | "Relation" => &["category", "iid", "label"],
+        "attribute" | "Attribute" => &["category", "iid", "label", "value", "value_type"],
+        // The caller reports an unknown category as a domain mismatch. Keep
+        // that stable diagnostic instead of letting an incidental field win.
+        _ => return Ok(()),
+    };
+    let mut unexpected = concept
+        .keys()
+        .filter(|field| !allowed.contains(&field.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    unexpected.sort();
+    if unexpected.is_empty() {
+        return Ok(());
+    }
+    Err(failure(
+        DiagnosticCategory::InvalidContract,
+        "query_v2_result_concept_malformed",
+        "provider concept evidence contains unexpected typed fields",
+    )
+    .with_detail("binding", binding.as_str())
+    .with_detail("unexpected_fields", unexpected))
 }
 
 /// Return the visible variable names after select and reduce stages.
@@ -1174,9 +1624,13 @@ mod tests {
     use type_bridge_contract::migration_assertion::{
         AssertionBinding, QueryVariable, ValueComparator,
     };
-    use type_bridge_contract::query_plan::{InputColumn, InputColumnId, QueryOutput as PlanOutput};
+    use type_bridge_contract::query_plan::{
+        DocumentField, DocumentSource, InputColumn, InputColumnId, OrderDirection, OrderTerm,
+        QueryOutput as PlanOutput,
+    };
     use type_bridge_contract::schema::{
-        DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan,
+        AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+        DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
         SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
     };
     use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
@@ -1186,11 +1640,12 @@ mod tests {
     use super::*;
     use crate::migration_assertion::AssertionProviderCall;
     use crate::session::backend::{
-        AnswerCancellation, AnswerConsumer, AnswerItem, BoundedAnswerLimits, BoundedAnswerStats,
-        BoxFuture,
+        AnswerCancellation, AnswerConsumer, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
+        BoundedAnswerStats, BoxFuture, QueryV2AnswerLimits,
     };
 
     struct ScriptedProvider {
+        documents: bool,
         rows: Vec<serde_json::Value>,
     }
 
@@ -1208,9 +1663,12 @@ mod tests {
                         break;
                     }
                     processed += 1;
-                    if consumer.accept(AnswerItem::Row(row.clone()))?
-                        == crate::session::backend::AnswerControl::Stop
-                    {
+                    let answer = if self.documents {
+                        AnswerItem::Document(row.clone())
+                    } else {
+                        AnswerItem::Row(row.clone())
+                    };
+                    if consumer.accept(answer)? == crate::session::backend::AnswerControl::Stop {
                         break;
                     }
                 }
@@ -1223,11 +1681,133 @@ mod tests {
         }
     }
 
+    struct DrainProbe {
+        documents: bool,
+        rows: Vec<serde_json::Value>,
+        observed_typeql: String,
+        observed_limits: Option<(u64, u64, u64)>,
+        controls: Vec<crate::session::backend::AnswerControl>,
+        forge_early_stop: bool,
+        fail_after_rows: bool,
+    }
+
+    impl DrainProbe {
+        fn rows(rows: Vec<serde_json::Value>) -> Self {
+            Self {
+                documents: false,
+                rows,
+                observed_typeql: String::new(),
+                observed_limits: None,
+                controls: Vec::new(),
+                forge_early_stop: false,
+                fail_after_rows: false,
+            }
+        }
+
+        fn documents(rows: Vec<serde_json::Value>) -> Self {
+            Self {
+                documents: true,
+                ..Self::rows(rows)
+            }
+        }
+    }
+
+    impl AssertionProviderCall for DrainProbe {
+        fn query_bounded<'a>(
+            &'a mut self,
+            _typeql: &'a str,
+            _limits: BoundedAnswerLimits,
+            _consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, crate::error::OrmError>> {
+            panic!("V2 execution must use the additive V2 provider seam")
+        }
+
+        fn query_v2_bounded<'a>(
+            &'a mut self,
+            typeql: &'a str,
+            limits: QueryV2AnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, crate::error::OrmError>> {
+            Box::pin(async move {
+                self.observed_typeql = typeql.to_owned();
+                self.observed_limits = Some((
+                    limits.answer.max_items,
+                    limits.answer.max_bytes,
+                    limits.max_collection_members,
+                ));
+                let mut processed_items = 0_u64;
+                let mut response_bytes = 0_u64;
+                let mut stopped_early = self.forge_early_stop;
+                for row in &self.rows {
+                    processed_items += 1;
+                    response_bytes +=
+                        u64::try_from(serde_json::to_vec(row).expect("JSON value encodes").len())
+                            .expect("encoded test value length fits u64");
+                    let item = if self.documents {
+                        AnswerItem::Document(row.clone())
+                    } else {
+                        AnswerItem::Row(row.clone())
+                    };
+                    let control = consumer.accept(item)?;
+                    self.controls.push(control);
+                    stopped_early |= control == crate::session::backend::AnswerControl::Stop;
+                }
+                if self.fail_after_rows {
+                    return Err(crate::error::OrmError::Transaction(
+                        "later drain failure".into(),
+                    ));
+                }
+                Ok(BoundedAnswerStats {
+                    processed_items,
+                    response_bytes,
+                    stopped_early,
+                })
+            })
+        }
+    }
+
+    struct RawLimitProbe {
+        row: serde_json::Value,
+        observed_max_bytes: Option<u64>,
+    }
+
+    impl AssertionProviderCall for RawLimitProbe {
+        fn query_bounded<'a>(
+            &'a mut self,
+            _typeql: &'a str,
+            _limits: BoundedAnswerLimits,
+            _consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, crate::error::OrmError>> {
+            panic!("V2 execution must use the additive V2 provider seam")
+        }
+
+        fn query_v2_bounded<'a>(
+            &'a mut self,
+            _typeql: &'a str,
+            limits: QueryV2AnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, crate::error::OrmError>> {
+            Box::pin(async move {
+                self.observed_max_bytes = Some(limits.answer.max_bytes);
+                let mut reader = BoundedAnswerReader::new(limits.answer);
+                reader.accept(AnswerItem::Row(self.row.clone()), consumer)?;
+                Ok(reader.stats())
+            })
+        }
+    }
+
     fn binding_id(id: u16) -> BindingId {
         BindingId::new(id).expect("binding id")
     }
 
-    fn fixture() -> (ValidatedQuery, QueryPlan) {
+    fn fixture_with_output(output: PlanOutput) -> (ValidatedQuery, QueryPlan) {
+        fixture_with_output_and_tail(output, Vec::new())
+    }
+
+    fn fixture_with_output_and_tail(
+        output: PlanOutput,
+        tail: Vec<ReadStage>,
+    ) -> (ValidatedQuery, QueryPlan) {
         let person = TypeId::new(TypeKind::Entity, "person").expect("type");
         let name = AttributeId::new("name").expect("attribute");
         let facts = vec![
@@ -1241,8 +1821,20 @@ mod tests {
                 ValueTypeTag::String,
             )),
             SchemaFact::Owns(OwnsFact::new(
-                OwnsFactId::new(person.clone(), name).expect("owns id"),
+                OwnsFactId::new(person.clone(), name.clone()).expect("owns id"),
             )),
+            SchemaFact::Annotation(
+                AnnotationFact::new(
+                    AnnotationFactId::new(
+                        AnnotationSubjectId::Owns(
+                            OwnsFactId::new(person.clone(), name).expect("owns id"),
+                        ),
+                        AnnotationKindId::Unique,
+                    ),
+                    SchemaAnnotationValue::Presence,
+                )
+                .expect("unique annotation"),
+            ),
         ];
         let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
             let byte = u64::try_from(index).expect("byte");
@@ -1272,6 +1864,30 @@ mod tests {
         let managed = managed_schema_state(&declared, &context).expect("managed state");
         let resolved = resolve(&declared, &profile).expect("resolved schema");
 
+        let mut pipeline = vec![ReadStage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding: binding_id(0),
+                    include_subtypes: false,
+                    type_id: TypeId::new(TypeKind::Entity, "person").expect("type"),
+                },
+                QueryPattern::Has {
+                    attribute: binding_id(1),
+                    attribute_id: AttributeId::new("name").expect("attribute"),
+                    owner: binding_id(0),
+                },
+                QueryPattern::Value {
+                    comparator: ValueComparator::GreaterOrEqual,
+                    left: QueryOperand::Binding {
+                        binding: binding_id(1),
+                    },
+                    right: QueryOperand::Input {
+                        column: InputColumnId::new(0),
+                    },
+                },
+            ],
+        }];
+        pipeline.extend(tail);
         let plan = QueryPlan::new(
             vec![
                 AssertionBinding::new(
@@ -1286,32 +1902,8 @@ mod tests {
                 ValueTypeTag::String,
                 false,
             )],
-            vec![ReadStage::Match {
-                patterns: vec![
-                    QueryPattern::Isa {
-                        binding: binding_id(0),
-                        include_subtypes: false,
-                        type_id: TypeId::new(TypeKind::Entity, "person").expect("type"),
-                    },
-                    QueryPattern::Has {
-                        attribute: binding_id(1),
-                        attribute_id: AttributeId::new("name").expect("attribute"),
-                        owner: binding_id(0),
-                    },
-                    QueryPattern::Value {
-                        comparator: ValueComparator::GreaterOrEqual,
-                        left: QueryOperand::Binding {
-                            binding: binding_id(1),
-                        },
-                        right: QueryOperand::Input {
-                            column: InputColumnId::new(0),
-                        },
-                    },
-                ],
-            }],
-            PlanOutput::Rows {
-                columns: vec![binding_id(0), binding_id(1)],
-            },
+            pipeline,
+            output,
             managed.managed_semantic_schema().clone(),
         )
         .expect("query plan");
@@ -1320,6 +1912,24 @@ mod tests {
             validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
                 .expect("validated query");
         (validated, plan)
+    }
+
+    fn fixture() -> (ValidatedQuery, QueryPlan) {
+        fixture_with_output(PlanOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        })
+    }
+
+    fn document_fixture() -> (ValidatedQuery, QueryPlan) {
+        fixture_with_output(PlanOutput::Documents {
+            fields: vec![DocumentField::new(
+                QueryVariable::new("names").expect("document key"),
+                DocumentSource::AttributeList {
+                    attribute: AttributeId::new("name").expect("attribute"),
+                    owner: binding_id(0),
+                },
+            )],
+        })
     }
 
     fn invocation(plan: &QueryPlan, operation: QueryOperation) -> QueryInvocation {
@@ -1345,12 +1955,82 @@ mod tests {
         })
     }
 
-    fn limits() -> BoundedAnswerLimits {
-        BoundedAnswerLimits {
-            max_items: 100,
-            max_bytes: 1 << 20,
-            deadline: None,
-            cancellation: AnswerCancellation::default(),
+    #[test]
+    fn result_rows_allow_input_echoes_only_for_actual_given_lowerings() {
+        let (validated, _) = fixture();
+        let OutputSchema::Rows(schema) = validated.output_schema() else {
+            panic!("fixture has row output")
+        };
+        let mut row = person_row("0x1", "ada");
+        row.as_object_mut()
+            .expect("row object")
+            .insert("minimum_name".into(), serde_json::json!("provider-forgery"));
+
+        let error = validate_result_row(&row, &validated, schema, false)
+            .expect_err("inline lowering cannot produce an echoed input column");
+        assert_eq!(error.code().as_str(), "query_v2_result_column_mismatch");
+
+        validate_result_row(&row, &validated, schema, true)
+            .expect("given lowerings may echo their driver-bound input columns");
+    }
+
+    fn limits() -> QueryV2AnswerLimits {
+        QueryV2AnswerLimits {
+            answer: BoundedAnswerLimits {
+                max_items: 100,
+                max_bytes: 1 << 20,
+                deadline: None,
+                cancellation: AnswerCancellation::default(),
+            },
+            max_collection_members: 1 << 16,
+        }
+    }
+
+    #[test]
+    fn provider_resource_mapping_is_specific_and_other_errors_are_redacted() {
+        for code in [
+            "provider_cancelled",
+            "transaction_deadline_exceeded",
+            "processed_item_limit",
+            "response_byte_limit",
+            "processed_item_counter_overflow",
+            "answer_byte_counter_overflow",
+            "query_v2_document_member_limit",
+        ] {
+            let provider_error: crate::error::OrmError = crate::match_request::MatchError::new(
+                crate::match_request::MatchErrorCategory::ResourceLimit,
+                code,
+                "provider-private detail",
+            )
+            .into();
+            let diagnostic = provider_diagnostic(
+                &provider_error,
+                "query_remote_provider_failed",
+                "the executor provider call failed",
+            );
+            assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+            assert_eq!(diagnostic.code().as_str(), code);
+            assert!(!diagnostic.message().contains("provider-private"));
+        }
+
+        let unknown_resource: crate::error::OrmError = crate::match_request::MatchError::new(
+            crate::match_request::MatchErrorCategory::ResourceLimit,
+            "future_provider_resource_code",
+            "secret resource detail",
+        )
+        .into();
+        for provider_error in [
+            unknown_resource,
+            crate::error::OrmError::Transaction("secret transaction detail".into()),
+        ] {
+            let diagnostic = provider_diagnostic(
+                &provider_error,
+                "query_remote_provider_failed",
+                "the executor provider call failed",
+            );
+            assert_eq!(diagnostic.category(), DiagnosticCategory::Integrity);
+            assert_eq!(diagnostic.code().as_str(), "query_remote_provider_failed");
+            assert_eq!(diagnostic.message(), "the executor provider call failed");
         }
     }
 
@@ -1358,6 +2038,7 @@ mod tests {
     async fn rows_count_and_exists_share_one_validated_stream() {
         let (validated, plan) = fixture();
         let mut provider = ScriptedProvider {
+            documents: false,
             rows: vec![person_row("0x1", "ada"), person_row("0x2", "grace")],
         };
         let outcome = execute_with_provider(
@@ -1405,7 +2086,10 @@ mod tests {
         .expect("exists outcome");
         assert_eq!(outcome, QueryV2Outcome::Exists(true));
 
-        let mut empty = ScriptedProvider { rows: Vec::new() };
+        let mut empty = ScriptedProvider {
+            documents: false,
+            rows: Vec::new(),
+        };
         let outcome = execute_with_provider(
             &mut empty,
             &validated,
@@ -1418,9 +2102,546 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn row_item_budget_uses_n_plus_one_sentinel_and_drains_to_eof() {
+        let (validated, plan) = fixture();
+        let mut provider =
+            DrainProbe::rows(vec![person_row("0x1", "ada"), person_row("0x2", "grace")]);
+        let mut bounded = limits();
+        bounded.answer.max_items = 1;
+        let expected_max_bytes = bounded.answer.max_bytes;
+        let expected_max_collection_members = bounded.max_collection_members;
+
+        let error = execute_with_provider(
+            &mut provider,
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            bounded,
+        )
+        .await
+        .expect_err("the sentinel row proves the semantic item budget was exceeded");
+        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+            panic!("the released provider resource-error surface is preserved");
+        };
+        assert_eq!(
+            error.category(),
+            crate::match_request::MatchErrorCategory::ResourceLimit
+        );
+        assert_eq!(error.code().as_str(), "processed_item_limit");
+        assert_eq!(
+            error.path().segments(),
+            &[crate::match_request::MatchErrorPathSegment::ProviderEvidence]
+        );
+        assert!(provider.observed_typeql.ends_with("limit 2;\n"));
+        assert_eq!(
+            provider.observed_limits,
+            Some((2, expected_max_bytes, expected_max_collection_members,))
+        );
+        assert_eq!(
+            provider.controls,
+            vec![
+                crate::session::backend::AnswerControl::Continue,
+                crate::session::backend::AnswerControl::Continue,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_budget_failure_precedes_a_later_provider_drain_failure() {
+        let (validated, plan) = fixture();
+        let mut provider =
+            DrainProbe::rows(vec![person_row("0x1", "ada"), person_row("0x2", "grace")]);
+        provider.fail_after_rows = true;
+        let mut bounded = limits();
+        bounded.answer.max_items = 1;
+
+        let error = execute_with_provider(
+            &mut provider,
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            bounded,
+        )
+        .await
+        .expect_err("the first semantic failure wins over a later drain failure");
+        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+            panic!("the item-budget resource error must not be overwritten");
+        };
+        assert_eq!(error.code().as_str(), "processed_item_limit");
+        assert_eq!(
+            provider.controls,
+            vec![
+                crate::session::backend::AnswerControl::Continue,
+                crate::session::backend::AnswerControl::Continue,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn document_byte_budget_drains_to_eof_before_preserving_resource_error() {
+        let (validated, plan) = document_fixture();
+        let document = json!({"names": ["ada"]});
+        let encoded_bytes = u64::try_from(
+            serde_json::to_vec(&document)
+                .expect("JSON value encodes")
+                .len(),
+        )
+        .expect("encoded test value length fits u64");
+        let mut provider = DrainProbe::documents(vec![document]);
+        let mut bounded = limits();
+        bounded.answer.max_bytes = encoded_bytes - 1;
+        bounded.max_collection_members = 1;
+
+        let error = execute_with_provider(
+            &mut provider,
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            bounded,
+        )
+        .await
+        .expect_err("the first document exceeds the semantic byte budget");
+        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+            panic!("the released provider resource-error surface is preserved");
+        };
+        assert_eq!(error.code().as_str(), "response_byte_limit");
+        assert!(provider.observed_typeql.contains("limit 101;\nfetch {\n"));
+        assert!(provider.observed_typeql.contains("        limit 2;\n"));
+        assert_eq!(provider.observed_limits, Some((101, encoded_bytes - 1, 1)));
+        assert_eq!(
+            provider.controls,
+            vec![crate::session::backend::AnswerControl::Continue]
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_provider_bytes_stay_finite_when_projected_output_would_be_small() {
+        let (validated, plan) = fixture();
+        let mut row = person_row("0x1", "ada");
+        row.as_object_mut().expect("row object").insert(
+            "ignored-provider-overhead".to_owned(),
+            json!("x".repeat(4096)),
+        );
+        let mut provider = RawLimitProbe {
+            row,
+            observed_max_bytes: None,
+        };
+        let mut bounded = limits();
+        bounded.answer.max_bytes = 512;
+
+        let error = execute_with_provider(
+            &mut provider,
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            bounded,
+        )
+        .await
+        .expect_err("raw ignored provider data must still meet the finite provider ceiling");
+        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+            panic!("provider byte ceiling retains the stable resource surface");
+        };
+        assert_eq!(error.code().as_str(), "response_byte_limit");
+        assert_eq!(provider.observed_max_bytes, Some(512));
+    }
+
+    #[test]
+    fn exists_lowering_owns_a_final_semantic_limit_before_document_output() {
+        let (validated, plan) = fixture();
+        let lowered = lower_validated_query(&validated, &invocation(&plan, QueryOperation::Exists))
+            .expect("exists lowering");
+        assert!(lowered.typeql().ends_with("limit 1;\n"));
+
+        let (limited, limited_plan) = fixture_with_output_and_tail(
+            PlanOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            vec![
+                ReadStage::Sort {
+                    terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+                },
+                ReadStage::Limit { rows: 7 },
+            ],
+        );
+        let lowered =
+            lower_validated_query(&limited, &invocation(&limited_plan, QueryOperation::Exists))
+                .expect("limited exists lowering");
+        assert!(lowered.typeql().ends_with("limit 1;\n"));
+
+        let (zero, zero_plan) = fixture_with_output_and_tail(
+            PlanOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            vec![
+                ReadStage::Sort {
+                    terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+                },
+                ReadStage::Limit { rows: 0 },
+            ],
+        );
+        let lowered = lower_validated_query(&zero, &invocation(&zero_plan, QueryOperation::Exists))
+            .expect("zero-limit exists lowering");
+        assert!(lowered.typeql().ends_with("limit 0;\n"));
+
+        let (documents, document_plan) = document_fixture();
+        let lowered = lower_validated_query(
+            &documents,
+            &invocation(&document_plan, QueryOperation::Exists),
+        )
+        .expect("document exists lowering");
+        assert!(lowered.typeql().contains("limit 1;\nfetch {\n"));
+    }
+
+    #[test]
+    fn execution_item_sentinel_is_additive_and_clamps_existing_limits() {
+        let (validated, plan) = fixture();
+        let public = lower_validated_query(&validated, &invocation(&plan, QueryOperation::Rows))
+            .expect("public lowering");
+        assert!(!public.typeql().contains("\nlimit "));
+
+        let bounded = lower_validated_query_with_execution_limits(
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            None,
+            Some(2),
+        )
+        .expect("execution lowering");
+        assert!(bounded.typeql().ends_with("limit 2;\n"));
+
+        let (limited, limited_plan) = fixture_with_output_and_tail(
+            PlanOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            vec![
+                ReadStage::Sort {
+                    terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+                },
+                ReadStage::Limit { rows: 7 },
+            ],
+        );
+        let bounded = lower_validated_query_with_execution_limits(
+            &limited,
+            &invocation(&limited_plan, QueryOperation::Rows),
+            None,
+            Some(2),
+        )
+        .expect("clamped execution lowering");
+        assert!(bounded.typeql().ends_with("limit 2;\n"));
+
+        let (documents, document_plan) = document_fixture();
+        let bounded = lower_validated_query_with_execution_limits(
+            &documents,
+            &invocation(&document_plan, QueryOperation::Rows),
+            Some(3),
+            Some(2),
+        )
+        .expect("bounded document lowering");
+        assert!(bounded.typeql().contains("limit 2;\nfetch {\n"));
+        assert!(bounded.typeql().contains("        limit 4;\n"));
+    }
+
+    #[tokio::test]
+    async fn exists_continues_to_provider_eof_and_rejects_false_exhaustion_proof() {
+        struct ExhaustionProbe {
+            row: serde_json::Value,
+            observed_typeql: String,
+            control: Option<crate::session::backend::AnswerControl>,
+            forge_early_stop: bool,
+        }
+
+        impl AssertionProviderCall for ExhaustionProbe {
+            fn query_bounded<'a>(
+                &'a mut self,
+                typeql: &'a str,
+                _limits: BoundedAnswerLimits,
+                consumer: &'a mut dyn AnswerConsumer,
+            ) -> BoxFuture<'a, Result<BoundedAnswerStats, crate::error::OrmError>> {
+                Box::pin(async move {
+                    self.observed_typeql = typeql.to_owned();
+                    let control = consumer.accept(AnswerItem::Row(self.row.clone()))?;
+                    self.control = Some(control);
+                    Ok(BoundedAnswerStats {
+                        processed_items: 1,
+                        response_bytes: 0,
+                        stopped_early: self.forge_early_stop
+                            || control == crate::session::backend::AnswerControl::Stop,
+                    })
+                })
+            }
+        }
+
+        let (validated, plan) = fixture();
+        let invocation = invocation(&plan, QueryOperation::Exists);
+        let mut provider = ExhaustionProbe {
+            row: person_row("0x1", "ada"),
+            observed_typeql: String::new(),
+            control: None,
+            forge_early_stop: false,
+        };
+        let outcome = execute_with_provider(&mut provider, &validated, &invocation, limits())
+            .await
+            .expect("bounded exists reaches EOF");
+        assert_eq!(outcome, QueryV2Outcome::Exists(true));
+        assert!(provider.observed_typeql.ends_with("limit 1;\n"));
+        assert_eq!(
+            provider.control,
+            Some(crate::session::backend::AnswerControl::Continue)
+        );
+
+        provider.forge_early_stop = true;
+        let error = execute_with_provider(&mut provider, &validated, &invocation, limits())
+            .await
+            .expect_err("early-stop stats cannot prove bounded existence");
+        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+            panic!("false exhaustion proof is a validation failure")
+        };
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "query_v2_provider_stream_not_exhausted"
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_item_exists_distinguishes_empty_from_first_over_budget_row() {
+        let (validated, plan) = fixture();
+        let mut zero = limits();
+        zero.answer.max_items = 0;
+
+        let mut empty = DrainProbe::rows(Vec::new());
+        let outcome = execute_with_provider(
+            &mut empty,
+            &validated,
+            &invocation(&plan, QueryOperation::Exists),
+            zero.clone(),
+        )
+        .await
+        .expect("an empty result satisfies a zero-item budget");
+        assert_eq!(outcome, QueryV2Outcome::Exists(false));
+        assert!(empty.observed_typeql.ends_with("limit 1;\n"));
+
+        let (limited, limited_plan) = fixture_with_output_and_tail(
+            PlanOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            vec![
+                ReadStage::Sort {
+                    terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+                },
+                ReadStage::Limit { rows: 0 },
+            ],
+        );
+        let mut no_rows = DrainProbe::rows(Vec::new());
+        let outcome = execute_with_provider(
+            &mut no_rows,
+            &limited,
+            &invocation(&limited_plan, QueryOperation::Exists),
+            zero.clone(),
+        )
+        .await
+        .expect("an explicit zero limit proves false without an answer item");
+        assert_eq!(outcome, QueryV2Outcome::Exists(false));
+        assert!(no_rows.observed_typeql.ends_with("limit 0;\n"));
+
+        let mut matching = DrainProbe::rows(vec![person_row("0x1", "ada")]);
+        let error = execute_with_provider(
+            &mut matching,
+            &validated,
+            &invocation(&plan, QueryOperation::Exists),
+            zero,
+        )
+        .await
+        .expect_err("the first matching row exceeds a zero-item budget");
+        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+            panic!("the stable provider item-limit surface is preserved");
+        };
+        assert_eq!(error.code().as_str(), "processed_item_limit");
+        assert_eq!(
+            matching.controls,
+            vec![crate::session::backend::AnswerControl::Continue]
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_row_evidence_records_first_failure_and_still_drains() {
+        let (validated, plan) = fixture();
+        let malformed = json!({
+            "person": {"category": "entity", "label": "company", "iid": "0x1"},
+            "name": {
+                "category": "attribute",
+                "label": "name",
+                "value": "ada",
+                "value_type": "string"
+            },
+        });
+        let mut provider = DrainProbe::rows(vec![malformed, person_row("0x2", "grace")]);
+
+        let error = execute_with_provider(
+            &mut provider,
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            limits(),
+        )
+        .await
+        .expect_err("foreign evidence must fail after the finite stream is exhausted");
+        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+            panic!("forged evidence remains a validation failure");
+        };
+        assert_eq!(diagnostic.code().as_str(), "query_v2_result_type_mismatch");
+        assert_eq!(
+            provider.controls,
+            vec![
+                crate::session::backend::AnswerControl::Continue,
+                crate::session::backend::AnswerControl::Continue,
+            ]
+        );
+    }
+
+    #[test]
+    fn local_row_evidence_rejects_noncanonical_thing_iids() {
+        let (validated, _) = fixture();
+        let OutputSchema::Rows(schema) = validated.output_schema() else {
+            panic!("row fixture derives a row schema");
+        };
+        let oversized = format!(
+            "0x{}",
+            "a".repeat(type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS + 1)
+        );
+        for malformed in ["0x1; delete $x;", oversized.as_str()] {
+            let error =
+                validate_result_row(&person_row(malformed, "ada"), &validated, schema, false)
+                    .expect_err("malformed Thing IID cannot construct a local typed row");
+            assert_eq!(error.code().as_str(), "query_v2_result_concept_malformed");
+        }
+    }
+
+    #[test]
+    fn provider_concept_field_allowlists_cover_every_category_variant() {
+        let binding = QueryVariable::new("result").expect("binding");
+
+        for category in ["entity", "Entity", "relation", "Relation"] {
+            for (field, value) in [
+                ("value", json!("smuggled")),
+                ("value_type", json!("string")),
+            ] {
+                let mut concept = json!({
+                    "category": category,
+                    "iid": "0x01",
+                    "label": "person"
+                })
+                .as_object()
+                .expect("concept object")
+                .clone();
+                concept.insert(field.to_owned(), value);
+                let error = reject_unexpected_provider_concept_fields(&concept, &binding, category)
+                    .expect_err("thing concepts must reject scalar-only fields");
+                assert_eq!(error.code().as_str(), "query_v2_result_concept_malformed");
+            }
+        }
+
+        for category in ["value", "Value"] {
+            let mut concept = json!({
+                "category": category,
+                "label": "string",
+                "value": "ada",
+                "value_type": "string"
+            })
+            .as_object()
+            .expect("concept object")
+            .clone();
+            reject_unexpected_provider_concept_fields(&concept, &binding, category)
+                .expect("the provider's value label is legitimate evidence");
+            concept.insert("iid".to_owned(), json!("0x01"));
+            let error = reject_unexpected_provider_concept_fields(&concept, &binding, category)
+                .expect_err("value concepts must not smuggle thing identity");
+            assert_eq!(error.code().as_str(), "query_v2_result_concept_malformed");
+        }
+
+        for category in ["attribute", "Attribute"] {
+            let mut concept = json!({
+                "category": category,
+                "iid": "0x01",
+                "label": "name",
+                "value": "ada",
+                "value_type": "string"
+            })
+            .as_object()
+            .expect("concept object")
+            .clone();
+            reject_unexpected_provider_concept_fields(&concept, &binding, category)
+                .expect("attribute identity is an optional provider field");
+            concept.insert("entity_type".to_owned(), json!("person"));
+            let error = reject_unexpected_provider_concept_fields(&concept, &binding, category)
+                .expect_err("attributes must reject fields outside their exact allowlist");
+            assert_eq!(error.code().as_str(), "query_v2_result_concept_malformed");
+        }
+    }
+
+    #[test]
+    fn local_row_validation_rejects_entity_scalar_fields_and_checks_attribute_iid() {
+        let (validated, _) = fixture();
+        let OutputSchema::Rows(schema) = validated.output_schema() else {
+            panic!("row fixture derives a row schema");
+        };
+
+        for (field, value) in [
+            ("value", json!("smuggled")),
+            ("value_type", json!("string")),
+        ] {
+            let mut row = person_row("0x01", "ada");
+            row["person"]
+                .as_object_mut()
+                .expect("person concept")
+                .insert(field.to_owned(), value);
+            let error = validate_result_row(&row, &validated, schema, false)
+                .expect_err("entity scalar fields must fail closed");
+            assert_eq!(error.code().as_str(), "query_v2_result_concept_malformed");
+        }
+
+        let mut identified_attribute = person_row("0x01", "ada");
+        identified_attribute["name"]
+            .as_object_mut()
+            .expect("attribute concept")
+            .insert("iid".to_owned(), json!("0x02"));
+        validate_result_row(&identified_attribute, &validated, schema, false)
+            .expect("a canonical optional attribute IID remains admissible");
+
+        identified_attribute["name"]
+            .as_object_mut()
+            .expect("attribute concept")
+            .insert("iid".to_owned(), json!("not-an-iid"));
+        let error = validate_result_row(&identified_attribute, &validated, schema, false)
+            .expect_err("a present attribute IID must itself be valid evidence");
+        assert_eq!(error.code().as_str(), "query_v2_result_concept_malformed");
+    }
+
+    #[tokio::test]
+    async fn every_operation_rejects_a_forged_early_stop_stat() {
+        let (validated, plan) = fixture();
+        let mut provider = DrainProbe::rows(vec![person_row("0x1", "ada")]);
+        provider.forge_early_stop = true;
+
+        let error = execute_with_provider(
+            &mut provider,
+            &validated,
+            &invocation(&plan, QueryOperation::Rows),
+            limits(),
+        )
+        .await
+        .expect_err("an unterminated rows stream is not complete evidence");
+        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+            panic!("false exhaustion proof is a validation failure");
+        };
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "query_v2_provider_stream_not_exhausted"
+        );
+        assert_eq!(
+            provider.controls,
+            vec![crate::session::backend::AnswerControl::Continue]
+        );
+    }
+
+    #[tokio::test]
     async fn forged_and_malformed_provider_rows_fail_closed() {
         let (validated, plan) = fixture();
         let mut forged = ScriptedProvider {
+            documents: false,
             rows: vec![json!({
                 "person": {"category": "entity", "label": "company", "iid": "0x1"},
                 "name": {
@@ -1445,6 +2666,7 @@ mod tests {
         assert_eq!(diagnostic.code().as_str(), "query_v2_result_type_mismatch");
 
         let mut sparse = ScriptedProvider {
+            documents: false,
             rows: vec![json!({
                 "person": {"category": "entity", "label": "person", "iid": "0x1"},
             })],
@@ -1463,6 +2685,60 @@ mod tests {
         assert_eq!(
             diagnostic.code().as_str(),
             "query_v2_result_column_mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_lists_are_rejected_before_member_materialization() {
+        let (validated, plan) = document_fixture();
+        let invocation = invocation(&plan, QueryOperation::Rows);
+        let zero_limit =
+            lower_validated_query_with_execution_limits(&validated, &invocation, Some(0), None)
+                .expect("bounded document lowering");
+        assert!(
+            zero_limit
+                .typeql()
+                .contains("match $person has name $FtbDocumentValue0;\n        limit 1;\n        return { $FtbDocumentValue0 };")
+        );
+        let canonical_limit = lower_validated_query_with_execution_limits(
+            &validated,
+            &invocation,
+            Some(u64::try_from(MAX_CANONICAL_COLLECTION_LEN).expect("canonical limit")),
+            None,
+        )
+        .expect("canonical document lowering");
+        assert!(
+            canonical_limit
+                .typeql()
+                .contains(&format!("limit {};", MAX_CANONICAL_COLLECTION_LEN + 1)),
+        );
+
+        let mut provider = DrainProbe::documents(vec![json!({"names": ["ada", "grace"]})]);
+        provider.fail_after_rows = true;
+        let mut bounded = limits();
+        bounded.max_collection_members = 1;
+        let error = execute_with_provider(&mut provider, &validated, &invocation, bounded)
+            .await
+            .expect_err("aggregate list members exceed the caller ceiling");
+        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+            panic!("member budget rejection preserves the bounded-provider surface");
+        };
+        assert_eq!(
+            error.category(),
+            crate::match_request::MatchErrorCategory::ResourceLimit
+        );
+        assert_eq!(error.code().as_str(), "query_v2_document_member_limit");
+        assert_eq!(
+            error.message(),
+            "document lists exceed the aggregate member ceiling"
+        );
+        assert_eq!(
+            error.path().segments(),
+            &[crate::match_request::MatchErrorPathSegment::ProviderEvidence]
+        );
+        assert_eq!(
+            provider.controls,
+            vec![crate::session::backend::AnswerControl::Continue]
         );
     }
 }

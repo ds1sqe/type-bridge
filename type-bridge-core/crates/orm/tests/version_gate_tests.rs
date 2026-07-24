@@ -18,9 +18,9 @@ use type_bridge_orm::session::real_driver::{
 
 // ── 1. Cargo.lock pin assertion ──────────────────────────────────────────────
 
-/// Assert that `PINNED_DRIVER_VERSION` matches the `typedb-driver` entry in
-/// `Cargo.lock`, and that the pinned version falls in the expected protocol
-/// band.
+/// Assert that `PINNED_DRIVER_VERSION` matches the
+/// `type-bridge-typedb-driver-b8` entry in `Cargo.lock`, and that the pinned
+/// version falls in the expected protocol band.
 ///
 /// If this test breaks after a dependency bump, update `PINNED_DRIVER_VERSION`
 /// in `crates/orm/src/session/real_driver.rs` to the new value.
@@ -31,14 +31,14 @@ fn cargo_lock_pin() {
     let lock_contents =
         std::fs::read_to_string(lock_path).expect("Cargo.lock not found relative to crate root");
 
-    // Find the typedb-driver package block and extract its version line.
+    // Find the band-8 driver fork package block and extract its version line.
     // The block looks like:
     //   [[package]]
-    //   name = "typedb-driver"
-    //   version = "3.8.1"
+    //   name = "type-bridge-typedb-driver-b8"
+    //   version = "3.11.5"
     let lock_version = lock_contents
         .split("[[package]]")
-        .find(|block| block.contains("name = \"typedb-driver\""))
+        .find(|block| block.contains("name = \"type-bridge-typedb-driver-b8\""))
         .and_then(|block| {
             block
                 .lines()
@@ -50,12 +50,12 @@ fn cargo_lock_pin() {
             let end = line.rfind('"')?;
             Some(&line[start..end])
         })
-        .expect("could not parse typedb-driver version from Cargo.lock");
+        .expect("could not parse type-bridge-typedb-driver-b8 version from Cargo.lock");
 
     assert_eq!(
         lock_version, PINNED_DRIVER_VERSION,
         "PINNED_DRIVER_VERSION ({PINNED_DRIVER_VERSION}) does not match \
-         Cargo.lock typedb-driver version ({lock_version}); \
+         Cargo.lock type-bridge-typedb-driver-b8 version ({lock_version}); \
          update the constant in crates/orm/src/session/real_driver.rs"
     );
 
@@ -120,10 +120,10 @@ fn cargo_lock_pin_b7() {
 }
 
 /// Assert that `PINNED_DRIVER_VERSION_B9` matches the
-/// `type-bridge-typedb-driver-b9` entry in `Cargo.lock`, and that the pinned
-/// fork version falls in the expected protocol band (9).
+/// upstream `typedb-driver` entry in `Cargo.lock`, and that the pinned version
+/// falls in the expected protocol band (9).
 ///
-/// If this test breaks after a fork refresh, update `PINNED_DRIVER_VERSION_B9`
+/// If this test breaks after a driver refresh, update `PINNED_DRIVER_VERSION_B9`
 /// in `crates/typedb-runtime/src/lib.rs` to the new value.
 #[test]
 fn cargo_lock_pin_b9() {
@@ -131,10 +131,10 @@ fn cargo_lock_pin_b9() {
     let lock_contents =
         std::fs::read_to_string(lock_path).expect("Cargo.lock not found relative to crate root");
 
-    // Find the type-bridge-typedb-driver-b9 package block and extract its version.
+    // Find the upstream typedb-driver package block and extract its version.
     let lock_version = lock_contents
         .split("[[package]]")
-        .find(|block| block.contains("name = \"type-bridge-typedb-driver-b9\""))
+        .find(|block| block.contains("name = \"typedb-driver\""))
         .and_then(|block| {
             block
                 .lines()
@@ -145,23 +145,23 @@ fn cargo_lock_pin_b9() {
             let end = line.rfind('"')?;
             Some(&line[start..end])
         })
-        .expect("could not parse type-bridge-typedb-driver-b9 version from Cargo.lock");
+        .expect("could not parse typedb-driver version from Cargo.lock");
 
     assert_eq!(
         lock_version, PINNED_DRIVER_VERSION_B9,
         "PINNED_DRIVER_VERSION_B9 ({PINNED_DRIVER_VERSION_B9}) does not match \
-         Cargo.lock type-bridge-typedb-driver-b9 version ({lock_version}); \
+         Cargo.lock typedb-driver version ({lock_version}); \
          update the constant in crates/typedb-runtime/src/lib.rs"
     );
 
-    // Assert the band-9 fork is in band 9.
+    // Assert the upstream band-9 driver remains in band 9.
     let pinned: core_version::Version = PINNED_DRIVER_VERSION_B9
         .parse()
         .expect("PINNED_DRIVER_VERSION_B9 must be a valid version string");
     assert_eq!(
         core_version::band(&pinned),
         Some(9),
-        "pinned band-9 fork {PINNED_DRIVER_VERSION_B9} is no longer in band 9; \
+        "pinned band-9 driver {PINNED_DRIVER_VERSION_B9} is no longer in band 9; \
          update PINNED_DRIVER_VERSION_B9 and review the compatibility window"
     );
 }

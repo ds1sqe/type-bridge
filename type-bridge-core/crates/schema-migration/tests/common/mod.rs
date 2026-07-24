@@ -30,6 +30,8 @@ pub struct CoordinatorStoreState {
     pub open: Option<JournalEntry<PlanRecord>>,
     pub open_rollback: Option<JournalEntry<RollbackPlanRecord>>,
     pub releases: usize,
+    pub fail_record_applied_once: bool,
+    pub fail_group_event_once: Option<GroupJournalEventKind>,
 }
 
 #[derive(Default)]
@@ -113,6 +115,10 @@ impl MigrationExecutionJournal for CoordinatorStore {
         Box::pin(async move {
             let mut state = self.state.lock().expect("coordinator store");
             Self::checked(&mut state, lease)?;
+            if state.fail_group_event_once == Some(record.kind()) {
+                state.fail_group_event_once = None;
+                return Err(test_diagnostic("coordinator_record_group_event_failed"));
+            }
             let entry = JournalEntry::from_store(Self::sequence(&mut state)?, record);
             state.event_audit.push(entry.record().kind());
             state.events.push(entry.clone());
@@ -128,6 +134,10 @@ impl MigrationExecutionJournal for CoordinatorStore {
         Box::pin(async move {
             let mut state = self.state.lock().expect("coordinator store");
             Self::checked(&mut state, lease)?;
+            if state.fail_record_applied_once {
+                state.fail_record_applied_once = false;
+                return Err(test_diagnostic("coordinator_record_applied_failed"));
+            }
             let entry = JournalEntry::from_store(Self::sequence(&mut state)?, record);
             state.applied.push(entry.clone());
             let active = active_applied_entries(state.applied.clone(), &state.rolled_back)?;

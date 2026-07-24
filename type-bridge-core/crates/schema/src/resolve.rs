@@ -243,12 +243,41 @@ impl EffectiveValueType {
     }
 }
 
+/// One direct subtype edge, including its exact declaration origin and annotations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectiveSub {
+    id: SubFactId,
+    origin: ResolutionOrigin,
+    annotations: BTreeMap<AnnotationKindId, SchemaAnnotationValue>,
+}
+
+impl EffectiveSub {
+    /// Return the exact direct subtype-edge identity.
+    #[must_use]
+    pub const fn id(&self) -> &SubFactId {
+        &self.id
+    }
+
+    /// Return the direct declaration origin.
+    #[must_use]
+    pub const fn origin(&self) -> &ResolutionOrigin {
+        &self.origin
+    }
+
+    /// Return annotations attached to this exact subtype edge.
+    #[must_use]
+    pub const fn annotations(&self) -> &BTreeMap<AnnotationKindId, SchemaAnnotationValue> {
+        &self.annotations
+    }
+}
+
 /// Fully resolved type semantics, rebuilt only from direct facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedType {
     id: TypeId,
     supertypes: Vec<TypeId>,
     subtypes: BTreeSet<TypeId>,
+    direct_sub: Option<EffectiveSub>,
     annotations: BTreeMap<AnnotationKindId, SchemaAnnotationValue>,
     value_type: Option<EffectiveValueType>,
     owns: BTreeMap<AttributeId, EffectiveOwns>,
@@ -278,6 +307,12 @@ impl ResolvedType {
     #[must_use]
     pub const fn subtypes(&self) -> &BTreeSet<TypeId> {
         &self.subtypes
+    }
+
+    /// Return the exact direct subtype edge, if this type declares a parent.
+    #[must_use]
+    pub const fn direct_sub(&self) -> Option<&EffectiveSub> {
+        self.direct_sub.as_ref()
     }
 
     /// Return effective type annotations.
@@ -610,6 +645,14 @@ pub fn resolve_schema_with_capabilities(
             .unwrap_or_else(|| empty_resolved_type(id.clone()));
         resolved.id = id.clone();
         resolved.supertypes = ancestor_chain(&id, &parents);
+        if let Some(parent) = parent {
+            let sub_id = SubFactId::new(id.clone(), parent.clone()).map_err(no_source)?;
+            resolved.direct_sub = Some(EffectiveSub {
+                id: sub_id.clone(),
+                origin: ResolutionOrigin::direct(SchemaFactId::Sub(sub_id.clone())),
+                annotations: annotations_for(&index, AnnotationSubjectId::Sub(sub_id)),
+            });
+        }
 
         let direct_annotations = annotations_for(&index, AnnotationSubjectId::Type(id.clone()));
         if let Some(independent) = inherited
@@ -906,6 +949,7 @@ fn empty_resolved_type(id: TypeId) -> ResolvedType {
         id,
         supertypes: Vec::new(),
         subtypes: BTreeSet::new(),
+        direct_sub: None,
         annotations: BTreeMap::new(),
         value_type: None,
         owns: BTreeMap::new(),

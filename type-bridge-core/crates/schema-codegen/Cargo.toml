@@ -1,18 +1,19 @@
 [package]
 name = "type-bridge-schema-codegen"
-version = "1.5.11"
+version = "2.0.0-rc.0"
 edition = "2024"
 description = "Deterministic projection-only schema emitters for type-bridge"
 license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = false
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "1.5.11" }
+type-bridge-contract = { path = "../contract", version = "2.0.0-rc.0" }
 
 [dev-dependencies]
-type-bridge-schema = { path = "../schema", version = "1.5.11" }
+type-bridge-schema = { path = "../schema", version = "2.0.0-rc.0" }
 
 [lints]
 workspace = true

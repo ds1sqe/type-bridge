@@ -174,7 +174,7 @@ enum SchemaOperationWire {
     },
     Redefine {
         expected: SchemaFactWire,
-        replacement: SchemaFactWire,
+        replacement: Box<SchemaFactWire>,
     },
     Undefine {
         fact: SchemaFactWire,
@@ -193,7 +193,7 @@ impl SchemaOperationWire {
             Self::Redefine {
                 expected,
                 replacement,
-            } => SchemaOperation::redefine(expected.rebuild()?, replacement.rebuild()?),
+            } => SchemaOperation::redefine(expected.rebuild()?, (*replacement).rebuild()?),
             Self::Undefine { fact } => Ok(SchemaOperation::undefine(fact.rebuild()?)),
         }
     }

@@ -297,6 +297,13 @@ fn capabilities_are_derived_from_both_states_and_the_transition_table() {
     assert_eq!(inverse[0].replacement_fact(), Some(&old));
 
     let delta = SchemaDelta::new(PatchFormatVersion::V1, source, target, vec![operation]).unwrap();
+    let bytes = encode_schema_delta(&delta).unwrap();
+    assert_eq!(decode_schema_delta(&bytes).unwrap(), delta);
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        to_canonical_json(&value["operations"][0]).unwrap(),
+        br#"{"expected":{"kind":"annotation","value":{"id":{"kind":{"kind":"doc"},"subject":{"kind":"type","value":{"kind":"entity","label":"person"}}},"value":{"kind":"doc","value":"old"}}},"kind":"redefine","replacement":{"kind":"annotation","value":{"id":{"kind":{"kind":"doc"},"subject":{"kind":"type","value":{"kind":"entity","label":"person"}}},"value":{"kind":"doc","value":"new"}}}}"#,
+    );
     assert_eq!(
         delta
             .required_capabilities()

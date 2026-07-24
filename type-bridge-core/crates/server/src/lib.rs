@@ -14,6 +14,7 @@
 //! |---------|---------|-------------|
 //! | `typedb` | yes | TypeDB backend via [`TypeDBClient`](typedb::TypeDBClient) |
 //! | `axum-transport` | yes | HTTP server with `/query`, `/query/validate`, `/health`, `/schema` endpoints |
+//! | `v2-query` | no | Additive prepared `/v2/capabilities` and `/v2/query` routes |
 //!
 //! Disable defaults with `--no-default-features` to use the core pipeline as
 //! a library without any transport or backend.

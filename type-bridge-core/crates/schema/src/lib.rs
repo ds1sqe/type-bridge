@@ -54,9 +54,9 @@ pub use observed::{
 pub use project::project;
 pub use resolve::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, DescriptorId, DescriptorIndex, EffectiveOwns, EffectivePlays,
-    EffectiveRelates, EffectiveRelatesId, EffectiveValueType, ResolutionOrigin, ResolvedFunction,
-    ResolvedRole, ResolvedSchema, ResolvedStruct, ResolvedType, SchemaDependencyGraph, resolve,
-    resolve_schema_with_capabilities,
+    EffectiveRelates, EffectiveRelatesId, EffectiveSub, EffectiveValueType, ResolutionOrigin,
+    ResolvedFunction, ResolvedRole, ResolvedSchema, ResolvedStruct, ResolvedType,
+    SchemaDependencyGraph, resolve, resolve_schema_with_capabilities,
 };
 pub use safety_condition::{
     DerivedSafetyConditions, RequiredSafetyCondition, SAFETY_CONDITION_CANONICALIZATION,
@@ -75,5 +75,8 @@ pub use semantic::{
     semantic_schema_fingerprint,
 };
 pub use timezone::{
-    TYPEDB_3_12_1_TIMEZONE_POLICY_ID, parse_provider_datetime_tz, resolve_provider_datetime_tz,
+    TYPEDB_3_12_1_TEMPORAL_POLICY_ID, TYPEDB_3_12_1_TIMEZONE_POLICY_ID, parse_provider_datetime_tz,
+    parse_provider_datetime_tz_evidence, resolve_provider_datetime_tz,
+    validate_provider_datetime_tz, validate_provider_duration, validate_provider_temporal_literal,
+    validate_provider_temporal_value,
 };

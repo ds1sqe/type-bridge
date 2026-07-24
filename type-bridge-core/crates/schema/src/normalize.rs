@@ -19,9 +19,7 @@ use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue, ValueTypeTag,
 };
 
-use crate::discovery::DEFAULT_MAX_SOURCE_PATTERN_BYTES;
 use crate::parse_provider_datetime_tz;
-use crate::source_pattern::validate_source_pattern;
 use crate::{FactAssembler, SchemaDocument, SchemaDocumentSet, YamlMapping, YamlNode, YamlScalar};
 
 /// Exact discriminator for the first YAML Schema V2 document grammar.
@@ -65,7 +63,6 @@ impl Normalizer {
             &[
                 "format",
                 "capabilities",
-                "sources",
                 "attributes",
                 "entities",
                 "relations",
@@ -88,9 +85,6 @@ impl Normalizer {
 
         if let Some(entry) = entry(root, "capabilities") {
             self.normalize_capabilities(entry.value())?;
-        }
-        if let Some(entry) = entry(root, "sources") {
-            normalize_sources(entry.value())?;
         }
         if let Some(entry) = entry(root, "extensions") {
             self.normalize_extensions(entry.value())?;
@@ -186,7 +180,10 @@ impl Normalizer {
                 extension.key().span(),
             )?;
             let body = mapping(extension.value())?;
-            check_keys(body, &["required", "payload"])?;
+            // V1 extension declarations are requirement-only. Payload-bearing
+            // handlers are intentionally reserved for a future format version;
+            // accepting and ignoring a payload would make it semantic dead data.
+            check_keys(body, &["required"])?;
             let required = entry(body, "required")
                 .map(|entry| strict_bool(entry.value()))
                 .transpose()?
@@ -271,11 +268,30 @@ impl Normalizer {
             self.queue_doc_meta(body, AnnotationSubjectId::Type(id.clone()))?;
 
             if let Some(sub) = entry(body, "sub") {
-                let parent = scalar(sub.value())?;
+                let (parent, annotations) = match sub.value() {
+                    YamlNode::Scalar(parent) => (parent, None),
+                    YamlNode::Mapping(expanded) => {
+                        check_keys(expanded, &["type", "doc", "meta"])?;
+                        let parent = scalar(required_entry(expanded, "type")?.value())?;
+                        (parent, Some(expanded))
+                    }
+                    YamlNode::Sequence(sequence) => {
+                        return Err(error(
+                            "invalid_schema_sub_shape",
+                            "sub must be a scalar or mapping",
+                            Some(sequence.span().clone()),
+                        ));
+                    }
+                };
                 let parent_id = contract(TypeId::new(kind, parent.value()), parent.span())?;
-                let sub_id =
-                    contract(SubFactId::new(id.clone(), parent_id.clone()), parent.span())?;
-                self.push(SchemaFact::Sub(SubFact::new(sub_id)), parent.span().clone());
+                let sub_id = contract(SubFactId::new(id.clone(), parent_id), parent.span())?;
+                self.push(
+                    SchemaFact::Sub(SubFact::new(sub_id.clone())),
+                    parent.span().clone(),
+                );
+                if let Some(annotations) = annotations {
+                    self.queue_doc_meta(annotations, AnnotationSubjectId::Sub(sub_id))?;
+                }
             }
 
             if kind == TypeKind::Attribute
@@ -874,7 +890,6 @@ fn named_bodies(node: &YamlNode) -> Result<Vec<NamedBody>, SchemaDiagnostics> {
 fn named_mapping_entry(entry: &crate::YamlMappingEntry) -> Result<NamedBody, SchemaDiagnostics> {
     let (body, source) = match entry.value() {
         YamlNode::Mapping(body) => (Some(body.clone()), body.span().clone()),
-        YamlNode::Scalar(value) if value.value().is_empty() => (None, entry.key().span().clone()),
         other => {
             return Err(error(
                 "invalid_named_schema_fact_body",
@@ -1079,33 +1094,6 @@ fn parse_value_type(value: &YamlScalar) -> Result<ValueTypeTag, SchemaDiagnostic
             Some(value.span().clone()),
         )),
     }
-}
-
-fn normalize_sources(node: &YamlNode) -> Result<(), SchemaDiagnostics> {
-    let sources = sequence(node)?;
-    let mut seen = BTreeMap::<String, SourceSpan>::new();
-    for item in sources.items() {
-        let source = scalar(item)?;
-        validate_source_pattern(source.value().to_owned(), DEFAULT_MAX_SOURCE_PATTERN_BYTES)
-            .map_err(|diagnostic| {
-                SchemaDiagnostics::one(SchemaDiagnostic::new(
-                    diagnostic,
-                    Some(source.span().clone()),
-                ))
-            })?;
-        if let Some(previous) = seen.get(source.value()) {
-            return Err(crate::yaml::diagnostic_with_related(
-                DiagnosticCategory::InvalidContract,
-                "duplicate_schema_source_pattern",
-                format!("schema source pattern `{}` is duplicated", source.value()),
-                source.span().clone(),
-                previous.clone(),
-                "first source pattern is here",
-            ));
-        }
-        seen.insert(source.value().to_owned(), source.span().clone());
-    }
-    Ok(())
 }
 
 fn canonical_u64(value: &YamlScalar) -> Result<u64, SchemaDiagnostics> {

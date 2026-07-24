@@ -1,7 +1,7 @@
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
-use type_bridge_contract::schema::DocumentId;
+use type_bridge_contract::schema::{AnnotationKindId, DocumentId, SchemaFactId, SubFactId};
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, SchemaDocumentSet, normalize_documents, resolve,
     resolve_schema_with_capabilities,
@@ -50,6 +50,53 @@ entities:
             .value_type(),
         type_bridge_contract::value::ValueTypeTag::String
     );
+}
+
+#[test]
+fn resolves_exact_direct_sub_origin_and_independent_edge_annotations() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+entities:
+  actor: {}
+  person:
+    doc: "person type"
+    sub:
+      type: actor
+      doc: "person edge"
+      meta: { owner: "schema", stability: "stable" }
+"#,
+    );
+    let resolved = resolve(&schema, &profile()).expect("schema resolves");
+    let actor = TypeId::new(TypeKind::Entity, "actor").expect("type identifier is valid");
+    let person = TypeId::new(TypeKind::Entity, "person").expect("type identifier is valid");
+    let expected = SubFactId::new(person.clone(), actor).expect("sub identifier is valid");
+    let person = &resolved.types()[&person];
+    let direct_sub = person.direct_sub().expect("person retains its direct edge");
+
+    assert_eq!(direct_sub.id(), &expected);
+    assert_eq!(direct_sub.origin().declared(), &SchemaFactId::Sub(expected));
+    assert!(direct_sub.origin().is_direct());
+    assert_eq!(direct_sub.annotations().len(), 3);
+    assert!(
+        direct_sub
+            .annotations()
+            .contains_key(&AnnotationKindId::Doc)
+    );
+    assert!(
+        direct_sub
+            .annotations()
+            .contains_key(&AnnotationKindId::Meta(
+                type_bridge_contract::id::Label::new("owner").unwrap()
+            ))
+    );
+    assert!(
+        direct_sub
+            .annotations()
+            .contains_key(&AnnotationKindId::Meta(
+                type_bridge_contract::id::Label::new("stability").unwrap()
+            ))
+    );
+    assert_eq!(person.annotations().len(), 1);
 }
 
 #[test]
@@ -230,8 +277,8 @@ fn inheritance_cycles_fail_before_resolution_output() {
     let schema = declared(
         r#"format: typebridge.schema/v2
 entities:
-  first: { sub: second }
-  second: { sub: first }
+  cycle-alpha: { sub: cycle-beta }
+  cycle-beta: { sub: cycle-alpha }
 "#,
     );
     assert!(resolve(&schema, &profile()).is_err());

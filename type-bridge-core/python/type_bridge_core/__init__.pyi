@@ -15,6 +15,7 @@ fallback rather than being enumerated here.
 """
 
 from collections.abc import Mapping
+from os import PathLike
 from typing import Any, Never
 
 class ValueCoercer:
@@ -71,15 +72,70 @@ def parse_typeql_query(input: str) -> Any: ...
 def render_models_json(input: str, target: str, options_json: str | None = ...) -> str: ...
 def toml_to_typeql(toml_text: str) -> str: ...
 def run_v2_cli(arguments: list[str]) -> int: ...
+def run_legacy_migration_cli(arguments: list[str]) -> int: ...
+
+class PyAdoptionRevision: ...
+
+class PyAdoptionDirectoryEntry:
+    @property
+    def name(self) -> str: ...
+    def name_bytes(self) -> bytes: ...
+    def is_file(self) -> bool: ...
+    def is_directory(self) -> bool: ...
+    def is_symlink(self) -> bool: ...
+
+class PyAdoptionDirectoryAuthority:
+    @staticmethod
+    def open(path: str) -> PyAdoptionDirectoryAuthority: ...
+    def directory_revision(self) -> PyAdoptionRevision: ...
+    def require_directory_revision(self, revision: PyAdoptionRevision) -> None: ...
+    def entries(
+        self,
+        relative: str,
+        maximum_entries: int,
+        expected_directory: PyAdoptionDirectoryEntry | None = ...,
+    ) -> list[PyAdoptionDirectoryEntry]: ...
+    def inspect(
+        self,
+        relative: str,
+        expected_parent: PyAdoptionDirectoryEntry | None = ...,
+    ) -> PyAdoptionDirectoryEntry | None: ...
+    def read_bounded(
+        self,
+        relative: str,
+        limit: int,
+        expected: PyAdoptionDirectoryEntry | None = ...,
+    ) -> bytes: ...
+    def write_atomic_no_replace(self, name: str, contents: bytes) -> None: ...
+    def validate_publication_name(self, name: str) -> None: ...
+    def remove_if_matches(
+        self,
+        name: str,
+        expected: PyAdoptionDirectoryEntry,
+        expected_bytes: bytes,
+    ) -> bool: ...
 
 # Prepared V2 query facade — opaque authority handle plus canonical
 # plan/envelope bytes; limits accept any int and are range-checked
 # against the unsigned 64-bit wire contract.
 class QueryV2Authority: ...
 
-def query_v2_authority(
-    declared_schema: bytes, scope: str, profile: str
-) -> QueryV2Authority: ...
+class PendingQueryV2Remote:
+    def request_bytes(self) -> bytes: ...
+    def decode_reply(self, response: bytes | bytearray) -> str:
+        """Claim once, snapshot a bounded reply, and verify its request binding."""
+        ...
+
+def query_v2_authority(declared_schema: bytes, scope: str, profile: str) -> QueryV2Authority: ...
+def query_v2_query_only_authority(
+    database: PyRustDatabase,
+    declared_schema: bytes,
+    scope: str,
+    profile: str,
+) -> QueryV2Authority:
+    """Bind a local-only authority to one exact database with no migration controls."""
+    ...
+
 def query_v2_execute_local(
     database: PyRustDatabase,
     authority: QueryV2Authority,
@@ -89,31 +145,22 @@ def query_v2_execute_local(
 ) -> str:
     """Runs with the GIL released; the optional deadline bounds the round trip."""
     ...
-def query_v2_remote_capabilities(advertisement: bytes) -> list[str]: ...
-def query_v2_encode_remote_request(
+
+def query_v2_remote_capabilities(advertisement: bytes) -> list[str]:
+    """Inspect an advertisement already trusted through TLS or out-of-band pinning."""
+    ...
+
+def query_v2_prepare_remote(
     authority: QueryV2Authority,
     plan: bytes,
     invocation_json: str,
     advertisement: bytes,
-    nonce: str,
     max_items: int,
     max_bytes: int,
+    max_collection_members: int,
     deadline_ms: int | None = ...,
-) -> bytes:
-    """Refuse plans or batches the advertisement cannot execute, then encode."""
-    ...
-
-def query_v2_decode_remote_outcome(
-    authority: QueryV2Authority,
-    plan: bytes,
-    invocation_json: str,
-    response: bytes,
-    nonce: str,
-    max_items: int,
-    max_bytes: int,
-    deadline_ms: int | None = ...,
-) -> str:
-    """Limits must repeat the encoded budgets exactly; replies bind the whole request."""
+) -> PendingQueryV2Remote:
+    """Bind a trusted executor advertisement and absolute expiry into one request."""
     ...
 
 # Version gate — SSOT in crates/core/src/version.rs, re-exported here.
@@ -157,7 +204,7 @@ def embedded_driver_versions() -> dict[int, str]:
 
     Returns a dict mapping ``int`` band → ``str`` version for every band
     feature compiled into this build.  The default build returns
-    ``{7: "3.8.1", 8: "3.11.5", 9: "3.12.0"}``.
+    ``{7: "3.8.1", 8: "3.11.5", 9: "3.12.1"}``.
     """
     ...
 
@@ -173,14 +220,27 @@ def check_server_supported(server: str) -> None:
     """
     ...
 
-def server_version(address: str, http_port: int = 8000, tls: bool = False) -> str:
+def server_version(
+    address: str,
+    http_port: int = 8000,
+    tls: bool = False,
+    tls_root_ca: str | PathLike[str] | None = ...,
+) -> str:
     """Query the TypeDB HTTP API for the server version.
 
     Returns the detected version as a string (e.g. ``"3.10.4"``).
     Raises ``VersionError`` when the endpoint is unreachable or the response
-    cannot be parsed.
+    cannot be parsed, and ``ValueError`` for invalid custom-root configuration.
     """
     ...
+
+class _CustomRootCaSnapshot:
+    """Private owner for one Rust-validated immutable CA snapshot."""
+
+    def __init__(self, configured_path: str | PathLike[str]) -> None: ...
+    @property
+    def path(self) -> PathLike[str]: ...
+    def cleanup(self) -> None: ...
 
 class PyRustDatabase:
     """Rust-backed TypeDB database connection."""
@@ -193,13 +253,17 @@ class PyRustDatabase:
         password: str | None = ...,
         http_port: int = 8000,
         server_version: str | None = ...,
+        tls: bool | None = ...,
+        tls_root_ca: str | PathLike[str] | None = ...,
     ) -> PyRustDatabase: ...
+    def close(self) -> None: ...
     def transaction(self, transaction_type: str = "read") -> PyRustTransactionContext: ...
     def __getattr__(self, name: str) -> Any: ...
 
 class PyRustTransactionContext:
     """Rust-backed TypeDB transaction context."""
 
+    def require_legacy_writer_open(self) -> None: ...
     def __getattr__(self, name: str) -> Any: ...
 
 # Internal native typed-match seam. Public authoring types live in

@@ -87,6 +87,39 @@ fn emits_exact_deterministic_es_module_package() {
 }
 
 #[test]
+fn emits_safely_escaped_type_and_direct_sub_documentation() {
+    let emitter = TypeScriptEmitter::new();
+    let resources = emitter.code_resources().unwrap();
+    let projection = projected(
+        r#"format: typebridge.schema/v2
+entities:
+  actor: {}
+  person:
+    doc: |-
+      Type "doc".
+      closing */ kept
+    sub:
+      type: actor
+      doc: |-
+        Edge 'doc' \ path
+        closes */ safely
+"#,
+        &resources,
+    );
+    let package = emitter.emit(&projection).unwrap();
+    let models = std::str::from_utf8(package.get("src/models.ts").unwrap()).unwrap();
+    let documentation = "/**\n * Type \"doc\".\n * closing *\\/ kept\n * \n * Direct subtype of `actor`:\n * Edge 'doc' \\ path\n * closes *\\/ safely\n */\n";
+
+    assert!(models.contains(&format!(
+        "{documentation}export interface Person extends CompleteFacet<"
+    )));
+    assert!(models.contains(&format!(
+        "{documentation}export interface PersonRef extends ReferenceFacet<"
+    )));
+    assert!(!models.contains("closing */ kept\n *"));
+}
+
+#[test]
 fn rejects_projection_without_exact_resource_evidence() {
     let projection = projected(include_str!("acceptance/schema.yaml"), &[]);
     let error = TypeScriptEmitter::new().emit(&projection).unwrap_err();

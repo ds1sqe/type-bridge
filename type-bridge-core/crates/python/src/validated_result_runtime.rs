@@ -670,6 +670,24 @@ mod tests {
             })
         }
 
+        fn query_tuple_typed_bounded<'a>(
+            &'a mut self,
+            _query: &'a TypedFetchRows,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            Box::pin(async move {
+                feed(
+                    vec![AnswerItem::Row(serde_json::json!({
+                        "bindings": [{"binding": 0, "concept_id": "0x01"}],
+                        "satisfied_role_edges": [],
+                    }))],
+                    limits,
+                    consumer,
+                )
+            })
+        }
+
         fn hydrate_typed_bounded<'a>(
             &'a mut self,
             _query: &'a TypedHydrateThings,

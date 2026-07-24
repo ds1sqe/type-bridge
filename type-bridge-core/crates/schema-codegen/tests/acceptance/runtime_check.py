@@ -1,11 +1,11 @@
 import json
 
 from generated_v2 import (
-    Aliases,
     PLAYING_FACTS,
     PROJECTION_FINGERPRINT_JSON,
     RUNTIME_PROJECTION_JSON,
     SEMANTIC_SCHEMA_FINGERPRINT_JSON,
+    Aliases,
     Container,
     Employment,
     Event,
@@ -17,7 +17,6 @@ from generated_v2 import (
     PersonRef,
     RoleToken,
 )
-
 
 descriptor = Employment.__dict__["employee"]
 assert descriptor.name == "employee"
@@ -90,14 +89,10 @@ assert len(PLAYING_FACTS) == 5
 membership_facts = [
     fact
     for fact in PLAYING_FACTS.values()
-    if fact["role"]["declaring_relation"] == "membership"
-    and fact["role"]["label"] == "member"
+    if fact["role"]["declaring_relation"] == "membership" and fact["role"]["label"] == "member"
 ]
 assert len(membership_facts) == 2
-membership_by_player = {
-    fact["id"]["player"]["label"]: fact
-    for fact in membership_facts
-}
+membership_by_player = {fact["id"]["player"]["label"]: fact for fact in membership_facts}
 assert set(membership_by_player) == {"person", "robot"}
 assert membership_by_player["person"]["multiplicity"]["cardinality"]["max"] == "2"
 assert membership_by_player["robot"]["multiplicity"]["cardinality"]["max"] == "1"
@@ -107,8 +102,7 @@ assert "robot membership player" in json.dumps(membership_by_player["robot"])
 event_subject_facts = [
     fact
     for fact in PLAYING_FACTS.values()
-    if fact["role"]["declaring_relation"] == "event"
-    and fact["role"]["label"] == "subject"
+    if fact["role"]["declaring_relation"] == "event" and fact["role"]["label"] == "subject"
 ]
 assert len(event_subject_facts) == 1
 event_subject_fact = event_subject_facts[0]

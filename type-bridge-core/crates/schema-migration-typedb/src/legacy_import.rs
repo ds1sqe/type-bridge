@@ -7,9 +7,12 @@
 //! then applies the zero-operation bridge as a pure journal checkpoint.
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::migration::{MigrationAppLabel, MigrationId, MigrationName};
-use type_bridge_migration::{AppliedMigrationRecord, MigrationGraph, checksum_drift_errors};
-use type_bridge_schema_migration::{LegacyMigrationChecksum, LegacyMigrationReference};
+use type_bridge_migration::{
+    AppliedMigrationRecord, MigrationGraph, checksum_drift_errors, validate_graph,
+};
+use type_bridge_schema_migration::{
+    LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationId, LegacyMigrationReference,
+};
 
 /// Extract the canonical legacy frontier from one checked legacy graph.
 ///
@@ -30,20 +33,11 @@ pub fn extract_legacy_frontier(
         if !is_head {
             continue;
         }
-        let checksum = migration.checksum.as_deref().ok_or_else(|| {
-            failure(
-                "migration_legacy_import_missing_checksum",
-                "legacy frontier migration carries no recorded checksum",
-            )
-            .with_detail(
-                "migration",
-                legacy_key(&migration.app_label, &migration.name),
-            )
-        })?;
-        references.push(LegacyMigrationReference::new(
-            legacy_migration_id(&migration.app_label, &migration.name)?,
-            LegacyMigrationChecksum::new(checksum)?,
-        ));
+        references.push(reference_from_parts(
+            &migration.app_label,
+            &migration.name,
+            migration.checksum.as_deref(),
+        )?);
     }
     if references.is_empty() {
         return Err(failure(
@@ -53,6 +47,46 @@ pub fn extract_legacy_frontier(
     }
     references.sort();
     Ok(references)
+}
+
+/// Digest every checksum-bound node in one checked legacy graph.
+pub fn extract_legacy_applied_set_digest(
+    graph: &MigrationGraph,
+) -> Result<LegacyAppliedSetDigest, Diagnostic> {
+    LegacyAppliedSetDigest::compute(
+        graph
+            .migrations
+            .iter()
+            .map(|migration| {
+                reference_from_parts(
+                    &migration.app_label,
+                    &migration.name,
+                    migration.checksum.as_deref(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    )
+}
+
+/// Digest semantic rows from the released applied ledger.
+///
+/// Row order and `applied_at` are deliberately ignored; exact application
+/// label, migration name, and checksum spellings remain bound.
+pub fn digest_legacy_applied_records(
+    applied: &[AppliedMigrationRecord],
+) -> Result<LegacyAppliedSetDigest, Diagnostic> {
+    LegacyAppliedSetDigest::compute(
+        applied
+            .iter()
+            .map(|record| {
+                reference_from_parts(
+                    &record.app_label,
+                    &record.name,
+                    Some(record.checksum.as_str()),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    )
 }
 
 /// Verify checksum continuity between legacy files and the applied ledger.
@@ -65,6 +99,14 @@ pub fn verify_legacy_continuity(
     graph: &MigrationGraph,
     applied: &[AppliedMigrationRecord],
 ) -> Result<(), Diagnostic> {
+    if let Some(first) = validate_graph(graph, applied).first() {
+        return Err(failure(
+            "migration_legacy_import_invalid_graph",
+            "legacy dependency graph or applied ledger is structurally invalid",
+        )
+        .with_detail("migration", legacy_key(&first.app_label, &first.name))
+        .with_detail("validation", format!("{:?}", first.code)));
+    }
     let drift = checksum_drift_errors(graph, applied);
     if let Some(first) = drift.first() {
         return Err(failure(
@@ -92,10 +134,25 @@ pub fn verify_legacy_continuity(
     Ok(())
 }
 
-fn legacy_migration_id(app_label: &str, name: &str) -> Result<MigrationId, Diagnostic> {
-    Ok(MigrationId::from_components(
-        MigrationAppLabel::new(app_label.to_owned())?,
-        MigrationName::new(name.to_owned())?,
+fn legacy_migration_id(app_label: &str, name: &str) -> Result<LegacyMigrationId, Diagnostic> {
+    LegacyMigrationId::new(app_label.to_owned(), name.to_owned())
+}
+
+fn reference_from_parts(
+    app_label: &str,
+    name: &str,
+    checksum: Option<&str>,
+) -> Result<LegacyMigrationReference, Diagnostic> {
+    let checksum = checksum.ok_or_else(|| {
+        failure(
+            "migration_legacy_import_missing_checksum",
+            "legacy migration carries no recorded checksum",
+        )
+        .with_detail("migration", legacy_key(app_label, name))
+    })?;
+    Ok(LegacyMigrationReference::new(
+        legacy_migration_id(app_label, name)?,
+        LegacyMigrationChecksum::new(checksum)?,
     ))
 }
 
@@ -130,6 +187,7 @@ mod tests {
                 .collect(),
             operations: Vec::new(),
             checksum: checksum.map(str::to_owned),
+            source_sha256: None,
             reversible: true,
         }
     }
@@ -172,6 +230,19 @@ mod tests {
     }
 
     #[test]
+    fn frontier_preserves_nonportable_released_identity_spelling() {
+        let mut migration = spec("0002_A:B with space", Vec::new(), Some("0123456789abcdef"));
+        migration.app_label = "Legacy App: Ω".to_owned();
+        let frontier = extract_legacy_frontier(&MigrationGraph {
+            migrations: vec![migration],
+        })
+        .expect("released identity extracts losslessly");
+
+        assert_eq!(frontier[0].id().app_label().as_str(), "Legacy App: Ω");
+        assert_eq!(frontier[0].id().name().as_str(), "0002_A:B with space");
+    }
+
+    #[test]
     fn continuity_requires_a_fully_applied_undrifted_ledger() {
         let graph = MigrationGraph {
             migrations: vec![
@@ -211,6 +282,106 @@ mod tests {
         assert_eq!(
             pending.code().as_str(),
             "migration_legacy_import_pending_migration"
+        );
+    }
+
+    #[test]
+    fn complete_applied_digest_ignores_order_and_timestamp_but_detects_every_row_drift() {
+        let graph = MigrationGraph {
+            migrations: vec![
+                spec("0001_initial", vec![], Some("0123456789abcdef")),
+                spec(
+                    "0002_addresses",
+                    vec![("example", "0001_initial")],
+                    Some("fedcba9876543210"),
+                ),
+            ],
+        };
+        let expected = extract_legacy_applied_set_digest(&graph).expect("graph digest");
+        let mut first = applied("0001_initial", "0123456789abcdef");
+        first.applied_at = Some("2020-01-01T00:00:00.000000".to_owned());
+        let mut second = applied("0002_addresses", "fedcba9876543210");
+        second.applied_at = Some("2099-12-31T23:59:59.999999".to_owned());
+        assert_eq!(
+            digest_legacy_applied_records(&[second.clone(), first.clone()])
+                .expect("reordered ledger digest"),
+            expected,
+        );
+
+        assert_ne!(
+            digest_legacy_applied_records(&[first.clone()]).expect("missing row digest"),
+            expected,
+        );
+        let mut extra = applied("0003_extra", "aaaaaaaaaaaaaaaa");
+        extra.app_label = "应用 Ω".to_owned();
+        extra.name = "迁移 🚀".to_owned();
+        assert_ne!(
+            digest_legacy_applied_records(&[first.clone(), second.clone(), extra])
+                .expect("extra UTF-8 row digest"),
+            expected,
+        );
+        second.checksum = "aaaaaaaaaaaaaaaa".to_owned();
+        assert_ne!(
+            digest_legacy_applied_records(&[first, second]).expect("checksum drift digest"),
+            expected,
+        );
+    }
+
+    #[test]
+    fn applied_noop_merge_history_preserves_its_checksum_bound_frontier() {
+        let graph = MigrationGraph {
+            migrations: vec![
+                spec("0001_initial", vec![], Some("1111111111111111")),
+                spec(
+                    "0002_left_empty",
+                    vec![("example", "0001_initial")],
+                    Some("2222222222222222"),
+                ),
+                spec(
+                    "0003_right_empty",
+                    vec![("example", "0001_initial")],
+                    Some("3333333333333333"),
+                ),
+                spec(
+                    "0004_empty_merge",
+                    vec![
+                        ("example", "0002_left_empty"),
+                        ("example", "0003_right_empty"),
+                    ],
+                    Some("4444444444444444"),
+                ),
+            ],
+        };
+        let applied = [
+            applied("0001_initial", "1111111111111111"),
+            applied("0002_left_empty", "2222222222222222"),
+            applied("0003_right_empty", "3333333333333333"),
+            applied("0004_empty_merge", "4444444444444444"),
+        ];
+
+        verify_legacy_continuity(&graph, &applied)
+            .expect("a fully applied no-op merge history remains continuous");
+        let frontier = extract_legacy_frontier(&graph).expect("merge frontier extracts");
+        assert_eq!(frontier.len(), 1);
+        assert_eq!(frontier[0].id().name().as_str(), "0004_empty_merge");
+        assert_eq!(frontier[0].checksum().as_str(), "4444444444444444");
+    }
+
+    #[test]
+    fn continuity_runs_the_frozen_graph_validator_first() {
+        let graph = MigrationGraph {
+            migrations: vec![spec(
+                "0001_initial",
+                vec![("example", "9999_missing")],
+                Some("0123456789abcdef"),
+            )],
+        };
+        let error =
+            verify_legacy_continuity(&graph, &[applied("0001_initial", "0123456789abcdef")])
+                .expect_err("missing dependency must fail before frontier extraction");
+        assert_eq!(
+            error.code().as_str(),
+            "migration_legacy_import_invalid_graph"
         );
     }
 }

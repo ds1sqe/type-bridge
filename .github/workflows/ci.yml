@@ -21,10 +21,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13.5"
 
@@ -34,8 +34,18 @@ jobs:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
           components: clippy
 
+      - name: Install pinned cargo-about
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        with:
+          tool: cargo-about@0.9.1
+
+      - name: Verify locked native dependency notice
+        if: runner.os == 'Linux'
+        run: python scripts/ci/generate_native_dependency_notice.py --check
+
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.CARGO_HOME }}/registry
@@ -50,6 +60,18 @@ jobs:
       - name: cargo test
         working-directory: type-bridge-core
         run: cargo test --all-targets
+
+      - name: Check alternate serde_json backends
+        working-directory: type-bridge-core
+        run: cargo test -p type-bridge-contract --features serde-backend-conformance
+
+      - name: Check released validation-rule wire without feature unification
+        working-directory: type-bridge-core
+        env:
+          CARGO_TARGET_DIR: target/rule-wire-standalone
+        run: >-
+          cargo test --locked
+          --manifest-path crates/core/tests/fixtures/rule-wire-standalone/Cargo.toml
 
       - name: Check generated Rust projection package
         working-directory: type-bridge-core
@@ -74,7 +96,7 @@ jobs:
             features: band8,axum-transport
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -82,7 +104,7 @@ jobs:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.CARGO_HOME }}/registry
@@ -101,7 +123,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
@@ -115,7 +137,7 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.CARGO_HOME }}/registry
@@ -159,7 +181,7 @@ jobs:
             artifact: wheels-windows-x86_64
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up QEMU (Linux aarch64 cross-compilation)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -169,7 +191,7 @@ jobs:
 
       - name: Set up Python
         if: runner.os != 'Linux'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13.5"
 
@@ -189,7 +211,7 @@ jobs:
           working-directory: type-bridge-core
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
           path: type-bridge-core/dist/*.whl
@@ -205,7 +227,7 @@ jobs:
         working-directory: type-bridge-core/crates/node
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -213,7 +235,7 @@ jobs:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.CARGO_HOME }}/registry
@@ -222,7 +244,7 @@ jobs:
           key: ${{ runner.os }}-cargo-node-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -249,8 +271,11 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
-      - name: DTS baseline parity
+      - name: DTS comparator tests
         run: npm run test:dts
+
+      - name: DTS baseline parity
+        run: npm run dts:parity
 
       - name: Package smoke
         run: npm run smoke:package
@@ -279,10 +304,10 @@ jobs:
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -292,7 +317,7 @@ jobs:
           enable-cache: true
 
       - name: Download Linux x86_64 core wheel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: wheels-linux-x86_64
           path: tmp/legacy-python-wheels/core
@@ -348,10 +373,10 @@ jobs:
         check: [ruff-lint, ruff-format]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13.5"
 
@@ -385,10 +410,10 @@ jobs:
         target: [type_bridge, examples, tests]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13.5"
 
@@ -444,10 +469,10 @@ jobs:
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -502,7 +527,7 @@ jobs:
           - "typedb/typedb:3.8.3"
           - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
-          - "typedb/typedb:3.12.0"
+          - "typedb/typedb:3.12.1"
         include:
           # Band-7 legs pair the band-7 installed Python driver — a band-7 user
           # has this driver installed, and the gate must not spuriously fire.
@@ -514,8 +539,8 @@ jobs:
             python-driver: "3.11.5"
           # The 3.12 leg pairs the band-9 installed driver a 3.12 user has;
           # server 3.12 accepts it natively.
-          - typedb-server: "typedb/typedb:3.12.0"
-            python-driver: "3.12.0"
+          - typedb-server: "typedb/typedb:3.12.1"
+            python-driver: "3.12.1"
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
@@ -528,10 +553,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13.5"
 
@@ -594,6 +619,7 @@ jobs:
   rust-integration:
     name: Rust integration (${{ matrix.typedb-server }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -612,21 +638,39 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
+      - name: Set up Python for shipped converter lifecycle
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install uv for shipped converter lifecycle
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-rust-integration-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Install the source-tree Python product
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+        run: uv sync --no-dev
 
       - name: Wait for TypeDB server to be ready
         run: |
@@ -653,6 +697,19 @@ jobs:
           -p type-bridge-orm --features integration-tests
           --test integration -- --nocapture
 
+      - name: Run production V1 + V2 server live smoke
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          timeout --foreground 10m
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-server --features v2-query
+          --test v2_query_integration_tests
+          production_binary_serves_v1_health_and_authenticated_v2_query
+          -- --ignored --exact --nocapture
+
       - name: Run generated Rust projection live smoke
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
         env:
@@ -663,6 +720,202 @@ jobs:
           cargo test --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test rust_projection_live
           -- --ignored --nocapture
+
+      - name: Run CLI empty-workspace replay lifecycle
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
+          empty_workspace_to_replayed_history_live
+          -- --ignored --exact --nocapture
+
+      - name: Prove verify does not create databases
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
+          verify_never_creates_databases_live
+          -- --ignored --exact --nocapture
+
+      - name: Run legacy adoption and evolution lifecycle
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
+          adopt_legacy_history_then_evolve_live
+          -- --ignored --exact --nocapture
+
+      - name: Run shipped Python converter to native adoption lifecycle
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
+          shipped_python_converter_to_native_adoption_live
+          -- --ignored --exact --nocapture
+
+  # Required, bounded TLS proof over one server per supported protocol band.
+  # This intentionally runs only typedb-runtime's focused live target: the
+  # broader plaintext, binding, CLI, and remote-envelope suites have separate
+  # gates. Band 7/8 consume the namespaced compatibility packages; band 9 consumes the
+  # official upstream 3.12.1 driver against the current 3.12.1 server baseline.
+  tls-transport-matrix:
+    name: TLS transport (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: band7-packaging
+            typedb-server: "typedb/typedb:3.8.3"
+            server-version: "3.8.3"
+            driver-band: "7"
+            driver-version: "3.8.1"
+          - lane: band8-packaging
+            typedb-server: "typedb/typedb:3.11.5"
+            server-version: "3.11.5"
+            driver-band: "8"
+            driver-version: "3.11.5"
+          - lane: band9-upstream
+            typedb-server: "typedb/typedb:3.12.1"
+            server-version: "3.12.1"
+            driver-band: "9"
+            driver-version: "3.12.1"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-tls-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Start isolated TypeDB and TLS terminator
+        env:
+          TYPEDB_IMAGE: ${{ matrix.typedb-server }}
+          TYPEDB_PORT: "0"
+          TYPEDB_HTTP_PORT: "0"
+          TYPEDB_TLS_PORT: "0"
+          TYPEDB_TLS_HTTP_PORT: "0"
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-tls-ci
+          up -d typedb typedb-tls
+
+      - name: Resolve and verify TLS endpoints
+        env:
+          EXPECTED_SERVER_VERSION: ${{ matrix.server-version }}
+        run: |
+          discover_port() {
+            local container_port="$1"
+            local published=""
+            for attempt in {1..5}; do
+              published="$(docker compose -f docker-compose.yml \
+                -p type-bridge-tls-ci port typedb-tls "$container_port" || true)"
+              if [[ -n "$published" ]]; then
+                printf '%s' "$published" | tail -1 | sed 's/.*://'
+                return 0
+              fi
+              sleep 1
+            done
+            return 1
+          }
+          tls_grpc_port="$(discover_port 1729)"
+          tls_http_port="$(discover_port 8000)"
+          if [[ -z "$tls_grpc_port" || -z "$tls_http_port" ]]; then
+            echo "failed to resolve isolated TLS ports" >&2
+            exit 1
+          fi
+
+          root_ca="$GITHUB_WORKSPACE/tests/fixtures/tls/root-ca.pem"
+          version_body=""
+          for attempt in {1..45}; do
+            if timeout 3 openssl s_client \
+                -connect "127.0.0.1:${tls_grpc_port}" \
+                -servername localhost \
+                -verify_hostname localhost \
+                -verify_return_error \
+                -CAfile "$root_ca" \
+                -alpn h2 </dev/null >/dev/null 2>&1; then
+              version_body="$(curl --fail --silent --max-time 3 \
+                --cacert "$root_ca" \
+                --resolve "localhost:${tls_http_port}:127.0.0.1" \
+                "https://localhost:${tls_http_port}/v1/version" || true)"
+              if [[ "$version_body" == *"\"version\":\"${EXPECTED_SERVER_VERSION}\""* ]]; then
+                break
+              fi
+            fi
+            if [[ "$attempt" == 45 ]]; then
+              echo "TLS endpoints did not report TypeDB ${EXPECTED_SERVER_VERSION}" >&2
+              echo "last version response: ${version_body}" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if curl --fail --silent --max-time 3 \
+              "http://127.0.0.1:${tls_http_port}/v1/version" >/dev/null 2>&1; then
+            echo "TLS-only HTTP endpoint unexpectedly accepted plaintext" >&2
+            exit 1
+          fi
+
+          echo "TYPEDB_TLS_ADDRESS=127.0.0.1:${tls_grpc_port}" >> "$GITHUB_ENV"
+          echo "TYPEDB_TLS_HTTP_PORT=${tls_http_port}" >> "$GITHUB_ENV"
+          echo "TYPEDB_TLS_ROOT_CA=${root_ca}" >> "$GITHUB_ENV"
+
+      # Fetch before scoping SSL_CERT_FILE to the fixture. The Rust native-root
+      # loaders used by core and all three tonic drivers honor this standard
+      # Unix trust-store override; Cargo remains offline while it is active.
+      - name: Fetch the locked Rust graph
+        run: cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
+
+      - name: Run focused custom-root, fallback, and native-root proofs
+        env:
+          CARGO_NET_OFFLINE: "true"
+          SSL_CERT_FILE: ${{ github.workspace }}/tests/fixtures/tls/root-ca.pem
+          TYPE_BRIDGE_TLS_LIVE_REQUIRED: "1"
+          TYPE_BRIDGE_TLS_NATIVE_ROOTS: "1"
+          TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION: ${{ matrix.server-version }}
+          TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND: ${{ matrix.driver-band }}
+          TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION: ${{ matrix.driver-version }}
+        run: >-
+          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-typedb-runtime --test tls_live
+          -- --nocapture --test-threads=1
+
+      - name: Show TLS stack logs on failure
+        if: failure()
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-tls-ci
+          logs --no-color typedb typedb-tls
+
+      - name: Stop isolated TLS stack
+        if: always()
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-tls-ci
+          down -v --remove-orphans
 
   # Cross-language parity gate: the #110 single-core / thin-bindings invariant only
   # holds if a semantic divergence between the Python and Node sides reds CI. These
@@ -681,15 +934,15 @@ jobs:
         typedb-server:
           - "typedb/typedb:3.8.3"
           - "typedb/typedb:3.11.5"
-          - "typedb/typedb:3.12.0"
+          - "typedb/typedb:3.12.1"
         include:
           # Band-7 leg pairs the band-7 installed Python driver.
           - typedb-server: "typedb/typedb:3.8.3"
             python-driver: "3.10.0"
           - typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.11.5"
-          - typedb-server: "typedb/typedb:3.12.0"
-            python-driver: "3.12.0"
+          - typedb-server: "typedb/typedb:3.12.1"
+            python-driver: "3.12.1"
 
     services:
       typedb:
@@ -701,10 +954,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13.5"
 
@@ -714,7 +967,7 @@ jobs:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.CARGO_HOME }}/registry
@@ -766,7 +1019,7 @@ jobs:
             "$(realpath "${root_wheels[0]}")" >> "$GITHUB_ENV"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -853,14 +1106,13 @@ jobs:
     strategy:
       matrix:
         # Fan across all four server lines: band-7 (3.8.3, 3.10.4), band-8
-        # (3.11.5), and both the 3.12.0 compatibility and 3.12.1 V2 acceptance
-        # patches. No python-driver pairing is needed because Node reaches
-        # TypeDB only through the embedded Rust orm seam.
+        # (3.11.5), and the 3.12.1 V2 acceptance baseline. No python-driver
+        # pairing is needed because Node reaches TypeDB only through the
+        # embedded Rust orm seam.
         typedb-server:
           - "typedb/typedb:3.8.3"
           - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
-          - "typedb/typedb:3.12.0"
           - "typedb/typedb:3.12.1"
 
     services:
@@ -873,7 +1125,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -881,7 +1133,7 @@ jobs:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.CARGO_HOME }}/registry
@@ -893,7 +1145,7 @@ jobs:
       # executes the .test.ts files directly via node --test, relying on Node's
       # built-in type stripping, which Node 20 does not have.
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -992,7 +1244,7 @@ jobs:
           # band-8 driver against a 3.12 server — is served.
           - cell: NEG-driver-band9
             typedb-server: "typedb/typedb:3.11.5"
-            python-driver: "3.12.0"
+            python-driver: "3.12.1"
             probe: driver
             http-port: 8000
             expect: installed
@@ -1007,10 +1259,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13.5"
 
@@ -1020,7 +1272,7 @@ jobs:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.CARGO_HOME }}/registry

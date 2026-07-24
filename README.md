@@ -372,15 +372,15 @@ The project includes a Rust core (`type-bridge-core/`) that provides high-perfor
 - **Compilation** — up to 2.5x faster AST-to-TypeQL compilation via serde bridge
 - **Value coercion** — Type-safe value coercion and TypeQL literal formatting
 
-The Rust core is a Cargo workspace with five crates:
+The Rust core has 18 first-party crates plus four namespaced TypeDB
+compatibility-package workspace members. Its main first-party layers are:
 
-| Crate | Description |
-|-------|-------------|
-| `type-bridge-core-lib` | Pure-Rust AST, schema parser, query compiler, and validation engine |
-| `type-bridge-orm` | Async ORM with entity/relation managers, chainable queries, and batch operations |
-| `type-bridge-orm-derive` | Derive macros for `TypeBridgeEntity`, `TypeBridgeRelation`, `TypeBridgeAttribute` |
-| `type-bridge-core` | PyO3 bindings exposing the Rust core to Python |
-| `type-bridge-server` | Transport-agnostic query pipeline with interceptor chain and HTTP API |
+| Layer | Crates |
+|-------|--------|
+| Contracts and semantic engines | `contract`, `schema`, `query`, `schema-migration`, `schema-migration-typedb` |
+| Compatibility and generation | `core`, `schema-compat`, `schema-codegen`, `toml-transpiler`, `migration` |
+| Runtime and ORM | `typedb-runtime`, `orm`, `orm-derive` |
+| Products and bindings | `workspace`, `cli`, `server`, `python`, `node` |
 
 See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instructions and architecture details.
 
@@ -388,7 +388,7 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 
 - Python 3.12–3.14
 - TypeDB 3.8.0–3.12.x server (see the [compatibility table](docs/development/typedb.md#server-and-driver-compatibility) for the full support window; band-7, band-8, and band-9-native 3.12 servers are all served by one artifact)
-- type-bridge-core>=1.5.11
+- type-bridge-core==2.0.0rc0 (the Python facade and native semantic engine release in exact lockstep)
 - pydantic>=2.12.4
 - isodate==0.7.2 (for Duration type support)
 - jinja2>=3.1.0 (for code generation)
@@ -397,11 +397,12 @@ See [`type-bridge-core/README.md`](type-bridge-core/README.md) for build instruc
 
 `typedb-driver` is required only for direct Python driver APIs and
 development/integration tests; install via `uv sync --extra dev` or
-`pip install type-bridge[typedb-driver]`. The development extra selects driver
-3.11.5 on CPython 3.12–3.13 for the default test server and driver 3.12.0 on
-CPython 3.14. The public driver extra permits supported 3.8–3.12 driver lines on
-CPython 3.12–3.13, so choose the line matching the target server; CPython 3.14 is
-limited to driver and server 3.12. The ORM's embedded runtime is unaffected.
+`pip install type-bridge[typedb-driver]`. The development extra selects direct
+Python driver 3.11.5 on CPython 3.12–3.13 for the compatibility lane and driver
+3.12.1 on CPython 3.14. The public driver extra permits supported 3.8–3.12
+driver lines on CPython 3.12–3.13, so choose the line matching the target
+server; CPython 3.14 is limited to driver 3.12.1 and server 3.12. The ORM's
+embedded runtime is unaffected.
 The ORM's embedded runtime handles band-7, band-8, and band-9-native 3.12
 servers automatically. Confirmed 3.12 connections normally negotiate band 9;
 band 8 remains available for discovery/fallback. No extra install is needed for
@@ -413,4 +414,15 @@ See the [CHANGELOG.md](CHANGELOG.md) for detailed release notes and version hist
 
 ## License
 
-MIT License
+TypeBridge-authored code is MIT licensed. Native Python and Node artifacts also
+embed TypeDB components under Apache-2.0 and MPL-2.0. Bands 7 and 8 use
+unofficial TypeBridge-namespaced, packaging-only packages whose Rust source
+behavior is identical to the corresponding upstream release; there is no
+downstream transaction-close or other behavioral patch. The alternate names
+exist solely so Cargo can retain multiple TypeDB protocol bands in one native
+graph. TypeDB remains the upstream project and original owner. Band 9 uses the
+unmodified official upstream packages, with the Rust driver exact-pinned to the
+latest non-yanked stable 3.12.x release at the release cutoff (currently
+3.12.1). Exact source, packaging, and license details ship in
+`THIRD_PARTY_NOTICES.md` inside each native artifact and are documented in
+[`type-bridge-core/vendor/README.md`](type-bridge-core/vendor/README.md).

@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use crate::entity::TypeBridgeEntity;
 use crate::error::Result;
 use crate::relation::TypeBridgeRelation;
-use crate::session::Database;
 use crate::session::backend::TxType;
+use crate::session::{Database, require_legacy_writer_open_in_transaction};
 
 use super::error::SchemaError;
 use super::info::*;
@@ -364,7 +364,13 @@ impl<'db> SchemaManager<'db> {
             .map_err(crate::error::OrmError::Schema)?;
         self.db.check_schema_annotation_support(&typeql)?;
         tracing::debug!(typeql = %typeql, "Syncing schema to database");
-        self.db.execute_raw(&typeql, TxType::Schema).await?;
+        let transaction = self.db.transaction_context(TxType::Schema).await?;
+        if let Err(error) = require_legacy_writer_open_in_transaction(&transaction).await {
+            let _ = transaction.close().await;
+            return Err(error);
+        }
+        transaction.query(&typeql).await?;
+        transaction.commit().await?;
         Ok(())
     }
 }

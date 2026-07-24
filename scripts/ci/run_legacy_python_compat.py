@@ -143,6 +143,40 @@ def parse_probe_report(stdout: str) -> dict[str, Any]:
     return report
 
 
+def validate_distribution_versions(
+    report: dict[str, Any],
+    *,
+    expected_root_version: str,
+    expected_core_version: str,
+) -> None:
+    """Bind the frozen probe result to the intended released-root/candidate-core pair."""
+    expected = {
+        "type-bridge": expected_root_version,
+        "type-bridge-core": expected_core_version,
+    }
+    if report.get("package_version") != expected_root_version:
+        raise RunnerError(
+            "Compatibility probe imported the wrong type_bridge.__version__: "
+            f"actual={report.get('package_version')!r}, expected={expected_root_version!r}"
+        )
+    for field in ("locations", "locations_after_probe"):
+        locations = report.get(field)
+        distributions = locations.get("distributions") if isinstance(locations, dict) else None
+        if not isinstance(distributions, dict):
+            raise RunnerError(
+                f"Compatibility probe omitted installed distribution identities from {field}"
+            )
+        actual: dict[str, object] = {}
+        for name in expected:
+            record = distributions.get(name)
+            actual[name] = record.get("version") if isinstance(record, dict) else None
+        if actual != expected:
+            raise RunnerError(
+                "Compatibility probe used the wrong released-root/candidate-core pair: "
+                f"field={field!r}, actual={actual!r}, expected={expected!r}"
+            )
+
+
 def execute_probe(
     *,
     python: Path,
@@ -207,6 +241,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep the temporary consumer directory for diagnostics",
     )
+    parser.add_argument(
+        "--expected-root-version",
+        help="Require the installed type-bridge distribution to have this version",
+    )
+    parser.add_argument(
+        "--expected-core-version",
+        help="Require the installed type-bridge-core distribution to have this version",
+    )
     parser.add_argument("--probe", type=Path, default=DEFAULT_PROBE, help=argparse.SUPPRESS)
     parser.add_argument("--source-root", type=Path, default=REPOSITORY_ROOT)
     return parser
@@ -215,6 +257,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the isolated compatibility consumer."""
     args = build_parser().parse_args(argv)
+    if (args.expected_root_version is None) != (args.expected_core_version is None):
+        raise RunnerError(
+            "--expected-root-version and --expected-core-version must be provided together"
+        )
     source_root = args.source_root.resolve()
     probe = args.probe.resolve()
     if not probe.is_file():
@@ -257,6 +303,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             consumer_root=consumer_root,
             environment=environment,
         )
+        if args.expected_root_version is not None and args.expected_core_version is not None:
+            validate_distribution_versions(
+                report,
+                expected_root_version=args.expected_root_version,
+                expected_core_version=args.expected_core_version,
+            )
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     finally:

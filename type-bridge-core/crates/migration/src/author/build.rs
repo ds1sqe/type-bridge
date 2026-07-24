@@ -3,11 +3,12 @@
 //! [`author_migration`] is the pure, database-free entry point (#166): it
 //! computes the schema diff, runs the canonical mapping, splices explicit
 //! positioned operations, renders the reviewable `.py`, lowers the checked
-//! sidecar `MigrationSpec` with a checksum over the exact `.py` bytes, and
+//! sidecar `MigrationSpec` with legacy and raw digests of the `.py`, and
 //! renders the immutable snapshot file set — all in memory. Identical
 //! inputs (including the explicit `generated_at`) produce byte-identical
 //! artifacts.
 
+use sha2::{Digest, Sha256};
 use type_bridge_orm::schema::SchemaDiff;
 use type_bridge_orm::schema::info::SchemaInfo;
 
@@ -165,6 +166,7 @@ pub fn author_migration(
     // The sidecar checksum is computed from the exact returned `.py` bytes:
     // the loader recomputes it from the file on disk (drift gate).
     let checksum = migration_file_checksum(&python_source);
+    let source_sha256 = format!("{:x}", Sha256::digest(python_source.as_bytes()));
 
     let spec = MigrationSpec {
         app_label: request.metadata.app_label.clone(),
@@ -180,6 +182,7 @@ pub fn author_migration(
             .collect(),
         operations,
         checksum: Some(checksum),
+        source_sha256: Some(source_sha256),
         reversible: true,
     };
     let sidecar_json = serde_json::to_string(&spec)?;
@@ -334,6 +337,10 @@ mod tests {
         assert_eq!(
             first.spec.checksum.as_deref(),
             Some(migration_file_checksum(&first.python_source).as_str())
+        );
+        assert_eq!(
+            first.spec.source_sha256.as_deref(),
+            Some(format!("{:x}", Sha256::digest(first.python_source.as_bytes())).as_str())
         );
     }
 

@@ -66,6 +66,8 @@ CLI Usage:
     python -m type_bridge.migration makemigrations --name add_phone --models myapp.models
 """
 
+from typing import TYPE_CHECKING
+
 from type_bridge.migration import operations, ref
 from type_bridge.migration.author import AuthoredMigration, author_migration
 from type_bridge.migration.base import Migration, MigrationDependency
@@ -108,7 +110,6 @@ from type_bridge.migration.loader import (
 from type_bridge.migration.operations import CopyAttribute, RunPython
 from type_bridge.migration.registry import ModelRegistry
 from type_bridge.migration.schema_manager import SchemaManager
-from type_bridge.migration.sidecar import SidecarConversionError, generate_sidecars
 from type_bridge.migration.simple_migration import (
     MigrationManager as SimpleMigrationManager,
 )
@@ -127,6 +128,26 @@ from type_bridge.migration.state_schema import (
     without_migration_state_schema,
 )
 from type_bridge.migration.utils import type_exists
+
+if TYPE_CHECKING:
+    from type_bridge.migration.sidecar import SidecarConversionError, generate_sidecars
+
+
+def __getattr__(name: str) -> object:
+    """Load sidecar exports without pre-importing their ``python -m`` target."""
+    if name in {"SidecarConversionError", "generate_sidecars"}:
+        from type_bridge.migration.sidecar import (
+            SidecarConversionError,
+            generate_sidecars,
+        )
+
+        globals().update(
+            SidecarConversionError=SidecarConversionError,
+            generate_sidecars=generate_sidecars,
+        )
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Core classes

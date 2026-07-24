@@ -340,21 +340,10 @@ fn validate_rows(
         row_assignments.push(solution);
     }
 
-    if cardinality == RowCardinality::ExactlyOne {
-        let code = match rows.len() {
-            0 => Some("no_result"),
-            1 => None,
-            _ => Some("not_unique"),
-        };
-        if let Some(code) = code {
-            return Err(MatchError::new(
-                MatchErrorCategory::Cardinality,
-                code,
-                "exactly-one fetch did not produce exactly one distinct selected tuple",
-            )
-            .at(MatchErrorPathSegment::Result)
-            .with_detail("actual", rows.len() as u64));
-        }
+    if cardinality == RowCardinality::ExactlyOne
+        && let Some(error) = exactly_one_cardinality_error(rows.len())
+    {
+        return Err(error);
     }
 
     if !apply_window && rows.len() as u64 > window.limit {
@@ -373,6 +362,28 @@ fn validate_rows(
         rows = rows.into_iter().skip(offset).take(limit).collect();
     }
     Ok(MatchResult::Rows { rows })
+}
+
+/// Return the released exactly-one diagnostic for a proven distinct tuple count.
+///
+/// The executor uses the same constructor when a provider-bounded identity scan
+/// proves cardinality before full graph hydration. Keeping one constructor
+/// prevents the optimized path from drifting in code, message, path, or detail.
+pub(crate) fn exactly_one_cardinality_error(actual: usize) -> Option<MatchError> {
+    let code = match actual {
+        0 => "no_result",
+        1 => return None,
+        _ => "not_unique",
+    };
+    Some(
+        MatchError::new(
+            MatchErrorCategory::Cardinality,
+            code,
+            "exactly-one fetch did not produce exactly one distinct selected tuple",
+        )
+        .at(MatchErrorPathSegment::Result)
+        .with_detail("actual", actual as u64),
+    )
 }
 
 struct PageValidationContract<'a> {

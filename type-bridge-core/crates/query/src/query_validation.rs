@@ -8,14 +8,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{TypeId, TypeKind, is_typeql_3_12_builtin_function_name};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
-    DocumentSource, QueryOutput, QueryPattern, QueryPlan, ReadStage, Reducer,
+    DocumentSource, QueryOperand, QueryOutput, QueryPattern, QueryPlan, ReadStage, Reducer,
 };
+use type_bridge_contract::schema::{AnnotationKindId, SchemaAnnotationValue};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
-use type_bridge_contract::value::ValueTypeTag;
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
 use crate::engine::{self, EngineCode, EngineCodes};
 use crate::{
@@ -61,6 +62,10 @@ const QUERY_ENGINE_CODES: EngineCodes = EngineCodes {
         code: "query_plan_value_domain_mismatch",
         message: "value comparison operands have different scalar domains",
     },
+    value_comparator_unsupported: EngineCode {
+        code: "query_plan_value_comparator_unsupported",
+        message: "ordered comparisons require a provider-orderable scalar domain",
+    },
     binding_not_scalar: EngineCode {
         code: "query_plan_binding_not_scalar",
         message: "value operand binding has no uniform attribute scalar domain",
@@ -93,6 +98,10 @@ const QUERY_ENGINE_CODES: EngineCodes = EngineCodes {
         code: "query_plan_function_argument_type",
         message: "call argument disagrees with the declared parameter type",
     },
+    function_dependency_cycle: EngineCode {
+        code: "query_plan_function_dependency_cycle",
+        message: "function-call result dependencies must be acyclic",
+    },
     value_binding_misuse: EngineCode {
         code: "query_plan_value_binding_misuse",
         message: "a value binding may appear only as a comparison or argument operand",
@@ -108,6 +117,10 @@ const QUERY_ENGINE_CODES: EngineCodes = EngineCodes {
     empty_try_domain: EngineCode {
         code: "query_plan_empty_try_domain",
         message: "try body has an impossible schema domain",
+    },
+    try_binding_shared: EngineCode {
+        code: "query_plan_try_binding_shared",
+        message: "an optional binding belongs to exactly one try body and no negation scope",
     },
     local_unbound: EngineCode {
         code: "query_plan_local_function_unbound",
@@ -198,6 +211,15 @@ pub fn validate_query_plan(
             "query_plan_declared_identity_mismatch",
             "resolved schema declaration identity does not match validation state",
         ));
+    }
+    if plan.functions().iter().any(|function| {
+        is_typeql_3_12_builtin_function_name(function.name().label().as_str())
+            || patterns_contain_typeql_builtin_function(function.body())
+    }) || plan.pipeline().iter().any(|stage| match stage {
+        ReadStage::Match { patterns } => patterns_contain_typeql_builtin_function(patterns),
+        _ => false,
+    }) {
+        return Err(typeql_builtin_function_collision());
     }
     // The supplied limits are validation authority: the plan's entire
     // structure — root pipeline and local functions under one aggregate
@@ -410,14 +432,30 @@ pub fn validate_query_plan(
             }
             ReadStage::Sort { terms } => {
                 for term in terms {
+                    if !positive.contains(&term.binding())
+                        && !reduce_assigned.contains(&term.binding())
+                    {
+                        return Err(plan_failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_stage_unknown_binding",
+                            "sort references a binding outside the mandatory row environment",
+                        ));
+                    }
                     let scalar = binding_domains
                         .get(&term.binding())
                         .and_then(|domain| domain.value_type());
-                    if scalar.is_none() {
+                    let Some(scalar) = scalar else {
                         return Err(plan_failure(
                             DiagnosticCategory::InvalidContract,
                             "query_plan_sort_not_scalar",
                             "sort keys require a validated uniform scalar domain",
+                        ));
+                    };
+                    if !provider_sort_is_orderable(scalar) {
+                        return Err(plan_failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_sort_not_orderable",
+                            "sort keys require a scalar domain ordered by the target provider",
                         ));
                     }
                 }
@@ -431,10 +469,12 @@ pub fn validate_query_plan(
 
     // A window consumes a total order: page membership must not depend on
     // provider iteration among tied rows. Every binding visible at the
-    // window must be determined by the sort tuple — a scalar column by
-    // being a sort key itself (attributes are value-identified), a thing
-    // column through a mandatory root ownership of a sort-key attribute
-    // whose owns edge is unique or key on every type in its domain.
+    // window must be determined by the sort tuple. Besides identity-total
+    // sort keys, the proof admits owners identified by one unique attribute,
+    // deterministic plan-local function results over determined arguments,
+    // and reducer results once the complete group tuple is determined. A
+    // global reduce is already at most one row, so its order is vacuously
+    // total (the structural contract still requires an explicit Sort stage).
     let windowed = plan
         .pipeline()
         .iter()
@@ -450,14 +490,14 @@ pub fn validate_query_plan(
             .flatten()
             .map(|term| term.binding())
             .collect();
-        let window_environment: Vec<BindingId> = if let Some(ReadStage::Reduce {
-            assignments,
-            groups,
-        }) = plan
-            .pipeline()
-            .iter()
-            .find(|stage| matches!(stage, ReadStage::Reduce { .. }))
-        {
+        let reduce = plan.pipeline().iter().find_map(|stage| match stage {
+            ReadStage::Reduce {
+                assignments,
+                groups,
+            } => Some((assignments.as_slice(), groups.as_slice())),
+            _ => None,
+        });
+        let window_environment: Vec<BindingId> = if let Some((assignments, groups)) = reduce {
             groups
                 .iter()
                 .copied()
@@ -480,37 +520,73 @@ pub fn validate_query_plan(
                 "offset and limit require a sort tuple proven total for every visible column",
             )
         };
-        for binding in window_environment {
-            if sort_keys.contains(&binding) {
-                continue;
+        let global_reduce = reduce.is_some_and(|(_, groups)| groups.is_empty());
+        if !global_reduce {
+            let mut determined = BTreeSet::new();
+            for binding in &sort_keys {
+                let domain = binding_domains.get(binding).ok_or_else(&not_total)?;
+                if !sort_key_domain_is_identity_total(domain, schema) {
+                    return Err(not_total());
+                }
+                determined.insert(*binding);
             }
-            let domain = binding_domains.get(&binding).ok_or_else(&not_total)?;
-            if domain.value_type().is_some() {
-                // An unsorted scalar column can tie under the sort tuple
-                // while differing in value: pages would split arbitrarily.
-                return Err(not_total());
+
+            loop {
+                let previous_len = determined.len();
+                for pattern in patterns {
+                    match pattern {
+                        QueryPattern::Has {
+                            owner,
+                            attribute,
+                            attribute_id,
+                        } if determined.contains(attribute) => {
+                            let owner_domain = binding_domains.get(owner).ok_or_else(&not_total)?;
+                            if !owner_domain.type_ids().is_empty()
+                                && binding_domains.get(attribute).is_some_and(|domain| {
+                                    sort_key_domain_is_identity_total(domain, schema)
+                                })
+                                && one_unique_owns_scope_covers_domain(
+                                    owner_domain.type_ids(),
+                                    attribute_id,
+                                    schema,
+                                )
+                            {
+                                determined.insert(*owner);
+                            }
+                        }
+                        QueryPattern::FunctionCall {
+                            arguments,
+                            assigned,
+                            function,
+                        } if locals.contains_key(function)
+                            && arguments.iter().all(|argument| match argument {
+                                QueryOperand::Binding { binding } => determined.contains(binding),
+                                QueryOperand::Literal { .. } | QueryOperand::Input { .. } => true,
+                            }) =>
+                        {
+                            // Plan-local functions are closed aggregate
+                            // programs and therefore deterministic for one
+                            // argument tuple. Schema functions intentionally
+                            // receive no such proof from their signature.
+                            determined.insert(*assigned);
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some((assignments, groups)) = reduce
+                    && groups.iter().all(|group| determined.contains(group))
+                {
+                    determined.extend(assignments.iter().map(|assignment| assignment.assigned()));
+                }
+                if determined.len() == previous_len {
+                    break;
+                }
             }
-            // A thing column is determined by a sort key it owns through a
-            // unique or key edge: equal key value implies the same owner.
-            let determined = patterns.iter().any(|pattern| {
-                let QueryPattern::Has {
-                    owner,
-                    attribute,
-                    attribute_id,
-                } = pattern
-                else {
-                    return false;
-                };
-                *owner == binding
-                    && sort_keys.contains(attribute)
-                    && !domain.type_ids().is_empty()
-                    && domain.type_ids().iter().all(|type_id| {
-                        schema.types().get(type_id).is_some_and(|resolved| {
-                            resolved.unique_attributes().contains(attribute_id)
-                        })
-                    })
-            });
-            if !determined {
+
+            if window_environment
+                .iter()
+                .any(|binding| !determined.contains(binding))
+            {
                 return Err(not_total());
             }
         }
@@ -553,6 +629,13 @@ pub fn validate_query_plan(
                             }
                         }
                         DocumentSource::AttributeList { attribute, owner } => {
+                            if !positive.contains(owner) {
+                                return Err(plan_failure(
+                                    DiagnosticCategory::InvalidContract,
+                                    "query_plan_output_not_visible",
+                                    "attribute lists require a mandatory owner binding",
+                                ));
+                            }
                             let attribute_type = TypeId::new(
                                 TypeKind::Attribute,
                                 attribute.label().as_str().to_owned(),
@@ -605,6 +688,143 @@ pub fn validate_query_plan(
     })
 }
 
+const fn provider_sort_is_orderable(value_type: ValueTypeTag) -> bool {
+    !matches!(value_type, ValueTypeTag::Duration)
+}
+
+fn sort_key_domain_is_identity_total(
+    domain: &BindingDomain,
+    schema: &type_bridge_schema::ResolvedSchema,
+) -> bool {
+    let Some(value_type) = domain.value_type() else {
+        return false;
+    };
+    // TypeDB compares attributes by scalar value, not by the complete typed
+    // identity. Signed double zero and datetime-tz values with different
+    // designators can remain distinct identities while comparing equal, so
+    // those domains never receive an injectivity proof here.
+    if !provider_comparison_equality_matches_canonical_identity(value_type) {
+        return false;
+    }
+    if domain.type_ids().len() <= 1 {
+        return true;
+    }
+
+    finite_attribute_value_domains_are_pairwise_disjoint(domain, value_type, schema)
+}
+
+const fn provider_comparison_equality_matches_canonical_identity(value_type: ValueTypeTag) -> bool {
+    matches!(
+        value_type,
+        ValueTypeTag::String
+            | ValueTypeTag::Long
+            | ValueTypeTag::Boolean
+            | ValueTypeTag::Date
+            | ValueTypeTag::DateTime
+            | ValueTypeTag::Decimal
+    )
+}
+
+/// Prove a polymorphic scalar domain has no cross-type provider comparison ties.
+///
+/// `@values` is an exhaustive restriction. For scalar domains whose canonical
+/// equality agrees with provider comparison equality, exact set disjointness
+/// therefore proves that two different attribute types cannot contribute tied
+/// identities. Missing or malformed resolved evidence fails closed.
+fn finite_attribute_value_domains_are_pairwise_disjoint(
+    domain: &BindingDomain,
+    value_type: ValueTypeTag,
+    schema: &type_bridge_schema::ResolvedSchema,
+) -> bool {
+    let mut seen = BTreeSet::<&CanonicalValue>::new();
+    for type_id in domain.type_ids() {
+        if type_id.kind() != TypeKind::Attribute {
+            return false;
+        }
+        let Some(resolved) = schema.types().get(type_id) else {
+            return false;
+        };
+        if !resolved.is_constructible() {
+            return false;
+        }
+        let Some(resolved_value) = resolved.value_type() else {
+            return false;
+        };
+        if resolved_value.value_type() != value_type {
+            return false;
+        }
+        let Some(SchemaAnnotationValue::Values(values)) =
+            resolved_value.annotations().get(&AnnotationKindId::Values)
+        else {
+            return false;
+        };
+        for value in values.iter() {
+            if value.value_type() != value_type || !seen.insert(value) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Prove one attribute value identifies an owner across the complete domain.
+///
+/// TypeDB scopes `@unique` (and the uniqueness implied by `@key`) to the
+/// owner type that declared the owns fact and that type's descendants. Two
+/// unrelated owner types may each declare the same attribute unique while
+/// still owning the same value. Requiring one shared declaration origin keeps
+/// a sort key injective across the whole union instead of proving uniqueness
+/// independently for each member.
+fn one_unique_owns_scope_covers_domain(
+    domain: &BTreeSet<TypeId>,
+    attribute: &type_bridge_contract::id::AttributeId,
+    schema: &type_bridge_schema::ResolvedSchema,
+) -> bool {
+    let mut origin = None;
+    for type_id in domain {
+        let Some(owns) = schema
+            .types()
+            .get(type_id)
+            .and_then(|resolved| resolved.owns().get(attribute))
+        else {
+            return false;
+        };
+        if !owns.is_unique() {
+            return false;
+        }
+        match &origin {
+            Some(expected) if expected != owns.origin().declared() => return false,
+            Some(_) => {}
+            None => origin = Some(owns.origin().declared().clone()),
+        }
+    }
+    origin.is_some()
+}
+
+fn typeql_builtin_function_collision() -> Diagnostic {
+    plan_failure(
+        DiagnosticCategory::InvalidContract,
+        "query_plan_builtin_function_collision",
+        "TypeQL 3.12 built-in function names cannot identify schema calls or plan-local functions",
+    )
+}
+
+fn patterns_contain_typeql_builtin_function(patterns: &[QueryPattern]) -> bool {
+    patterns.iter().any(|pattern| match pattern {
+        QueryPattern::FunctionCall { function, .. } => {
+            is_typeql_3_12_builtin_function_name(function.label().as_str())
+        }
+        QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+            patterns_contain_typeql_builtin_function(patterns)
+        }
+        QueryPattern::Isa { .. }
+        | QueryPattern::Has { .. }
+        | QueryPattern::Links { .. }
+        | QueryPattern::Value { .. }
+        | QueryPattern::Reachable { .. } => false,
+    })
+}
+
 fn plan_failure(
     category: DiagnosticCategory,
     code: &'static str,
@@ -615,4 +835,33 @@ fn plan_failure(
         DiagnosticCode::new(code).expect("static query-plan diagnostic code"),
         message,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use type_bridge_contract::id::FunctionId;
+
+    use super::*;
+
+    #[test]
+    fn builtin_function_collision_scan_descends_every_pattern_container() {
+        let assigned = BindingId::new(0).expect("binding");
+        let nested = vec![QueryPattern::Not {
+            patterns: vec![QueryPattern::Try {
+                patterns: vec![QueryPattern::FunctionCall {
+                    arguments: Vec::new(),
+                    assigned,
+                    function: FunctionId::new("abs").expect("contextual function ID"),
+                }],
+            }],
+        }];
+        assert!(patterns_contain_typeql_builtin_function(&nested));
+
+        let safe = vec![QueryPattern::FunctionCall {
+            arguments: Vec::new(),
+            assigned,
+            function: FunctionId::new("absolute").expect("function ID"),
+        }];
+        assert!(!patterns_contain_typeql_builtin_function(&safe));
+    }
 }

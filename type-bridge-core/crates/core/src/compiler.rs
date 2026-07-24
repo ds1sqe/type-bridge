@@ -186,6 +186,70 @@ impl QueryCompiler {
         Ok(parameters.finish(typeql))
     }
 
+    /// Compile a provider-bounded scan over distinct public tuple identities.
+    ///
+    /// Unlike [`Self::compile_typed_fetch_rows`], this intentionally projects
+    /// only `query.projection`. It is a cardinality/window proof, not complete
+    /// provider evidence; callers must run a separate complete-evidence query
+    /// before materializing a successful result.
+    pub fn compile_typed_tuple_scan(
+        &self,
+        query: &TypedFetchRows,
+    ) -> Result<String, TypedCompileError> {
+        let mut parameters = TypedParameterMode::Inline;
+        self.render_typed_tuple_scan(query, &mut parameters)
+    }
+
+    /// Prepare a distinct public-tuple scan for TypeDB 3.12 `given` transport.
+    pub fn prepare_typed_tuple_scan(
+        &self,
+        query: &TypedFetchRows,
+    ) -> Result<PreparedTypedStatement, TypedCompileError> {
+        let mut parameters = TypedParameterMode::Prepared(Vec::new());
+        let typeql = self.render_typed_tuple_scan(query, &mut parameters)?;
+        Ok(parameters.finish(typeql))
+    }
+
+    fn render_typed_tuple_scan(
+        &self,
+        query: &TypedFetchRows,
+        parameters: &mut TypedParameterMode,
+    ) -> Result<String, TypedCompileError> {
+        validate_typed_fetch_rows(query)?;
+        if !query.distinct || !query.order.is_empty() || query.offset != 0 || query.limit != 2 {
+            return Err(TypedCompileError::new(
+                "typed tuple scan requires distinct unordered identities at offset zero and limit two",
+            ));
+        }
+
+        let mut patterns = query
+            .targets
+            .iter()
+            .map(|target| {
+                format!(
+                    "{} {} {}",
+                    binding_variable(target.binding),
+                    if target.exact { "isa!" } else { "isa" },
+                    target.type_name
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(predicate) = &query.predicate {
+            patterns.push(self.render_typed_predicate(&query.fields, predicate, parameters)?);
+        }
+        let projection = query
+            .projection
+            .iter()
+            .map(|binding| binding_variable(*binding))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(format!(
+            "match\n{};\nselect {projection};\ndistinct;\nlimit {};",
+            patterns.join(";\n"),
+            query.limit
+        ))
+    }
+
     fn render_typed_fetch_rows(
         &self,
         query: &TypedFetchRows,
@@ -339,7 +403,18 @@ impl QueryCompiler {
         query: &TypedPageRematch,
     ) -> Result<String, TypedCompileError> {
         let mut parameters = TypedParameterMode::Inline;
-        self.render_typed_page_rematch(query, &mut parameters)
+        self.render_typed_page_rematch(query, None, &mut parameters)
+    }
+
+    /// Compile one exact root-IID page re-match with a provider-owned answer
+    /// ceiling before its document fetch.
+    pub fn compile_typed_page_rematch_bounded(
+        &self,
+        query: &TypedPageRematch,
+        limit: u64,
+    ) -> Result<String, TypedCompileError> {
+        let mut parameters = TypedParameterMode::Inline;
+        self.render_typed_page_rematch(query, Some(limit), &mut parameters)
     }
 
     /// Prepare one exact root-IID page re-match with deterministic `given`
@@ -349,13 +424,26 @@ impl QueryCompiler {
         query: &TypedPageRematch,
     ) -> Result<PreparedTypedStatement, TypedCompileError> {
         let mut parameters = TypedParameterMode::Prepared(Vec::new());
-        let typeql = self.render_typed_page_rematch(query, &mut parameters)?;
+        let typeql = self.render_typed_page_rematch(query, None, &mut parameters)?;
+        Ok(parameters.finish(typeql))
+    }
+
+    /// Prepare one exact root-IID page re-match with a provider-owned answer
+    /// ceiling before its document fetch.
+    pub fn prepare_typed_page_rematch_bounded(
+        &self,
+        query: &TypedPageRematch,
+        limit: u64,
+    ) -> Result<PreparedTypedStatement, TypedCompileError> {
+        let mut parameters = TypedParameterMode::Prepared(Vec::new());
+        let typeql = self.render_typed_page_rematch(query, Some(limit), &mut parameters)?;
         Ok(parameters.finish(typeql))
     }
 
     fn render_typed_page_rematch(
         &self,
         query: &TypedPageRematch,
+        limit: Option<u64>,
         parameters: &mut TypedParameterMode,
     ) -> Result<String, TypedCompileError> {
         validate_typed_page_rematch(query)?;
@@ -401,8 +489,9 @@ impl QueryCompiler {
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let limit = limit.map_or_else(String::new, |limit| format!("\nlimit {limit};"));
         Ok(format!(
-            "match\n{};\nfetch {{ {bindings} }};",
+            "match\n{};{limit}\nfetch {{ {bindings} }};",
             patterns.join(";\n")
         ))
     }
@@ -485,6 +574,11 @@ impl QueryCompiler {
             }
         }
 
+        let answer_limit = u64::try_from(identities.len()).map_err(|_| {
+            TypedCompileError::new(
+                "typed hydration identity count exceeds the provider limit range",
+            )
+        })?;
         let branches = query
             .targets
             .iter()
@@ -505,7 +599,7 @@ impl QueryCompiler {
             }
         };
         Ok(format!(
-            "match\n{branches};\n$thing isa! $type;\nfetch {{ \"binding\": $binding, \"concept_id\": iid($thing), \"concrete_type\": label($type), \"attributes\": {{ $thing.* }}{roles} }};"
+            "match\n{branches};\n$thing isa! $type;\nlimit {answer_limit};\nfetch {{ \"binding\": $binding, \"concept_id\": iid($thing), \"concrete_type\": label($type), \"attributes\": {{ $thing.* }}{roles} }};"
         ))
     }
 
@@ -1056,6 +1150,18 @@ fn validate_typed_fetch_rows(query: &TypedFetchRows) -> Result<(), TypedCompileE
     {
         return Err(TypedCompileError::new(
             "typed selected-row projection references an unknown binding",
+        ));
+    }
+    if query
+        .projection
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != query.projection.len()
+    {
+        return Err(TypedCompileError::new(
+            "typed selected-row projection contains duplicate bindings",
         ));
     }
     let fields = query
@@ -3210,6 +3316,72 @@ mod tests {
     }
 
     #[test]
+    fn typed_tuple_scan_selects_the_complete_public_tuple_and_keeps_hidden_witnesses() {
+        let query = TypedFetchRows {
+            targets: vec![
+                TypedMatchTarget {
+                    binding: 0,
+                    kind: TypedThingKind::Entity,
+                    type_name: "person".into(),
+                    exact: true,
+                },
+                TypedMatchTarget {
+                    binding: 1,
+                    kind: TypedThingKind::Relation,
+                    type_name: "employment".into(),
+                    exact: false,
+                },
+                TypedMatchTarget {
+                    binding: 2,
+                    kind: TypedThingKind::Entity,
+                    type_name: "company".into(),
+                    exact: true,
+                },
+            ],
+            fields: vec![],
+            predicate: Some(TypedMatchPredicate::RoleEdge {
+                edge: 0,
+                relation: 1,
+                role_name: "employee".into(),
+                player: 0,
+            }),
+            projection: vec![2, 0],
+            distinct: true,
+            order: vec![],
+            offset: 0,
+            limit: 2,
+        };
+
+        let expected = concat!(
+            "match\n",
+            "$b0 isa! person;\n",
+            "$b1 isa employment;\n",
+            "$b2 isa! company;\n",
+            "$b1 links (employee: $b0);\n",
+            "select $b2, $b0;\n",
+            "distinct;\n",
+            "limit 2;",
+        );
+        assert_eq!(
+            compiler().compile_typed_tuple_scan(&query).unwrap(),
+            expected
+        );
+        let prepared = compiler().prepare_typed_tuple_scan(&query).unwrap();
+        assert!(prepared.parameters.is_empty());
+        assert_eq!(prepared.typeql, expected);
+
+        let mut wrong_limit = query;
+        wrong_limit.limit = 3;
+        assert_eq!(
+            compiler()
+                .compile_typed_tuple_scan(&wrong_limit)
+                .unwrap_err()
+                .message(),
+            "typed tuple scan requires distinct unordered identities at offset zero and limit two"
+        );
+    }
+
+    #[test]
     fn typed_fetch_rows_rejects_lossy_unknown_references() {
         let query = TypedFetchRows {
             targets: vec![TypedMatchTarget {
@@ -3497,6 +3669,14 @@ mod tests {
         assert_eq!(rendered.matches("fetch {").count(), 2);
         assert!(rendered.contains("\"b0\""));
         assert!(rendered.contains("\"b1\""));
+        let bounded = compiler()
+            .compile_typed_page_rematch_bounded(&rematch, 7)
+            .unwrap();
+        assert!(bounded.contains("\nlimit 7;\nfetch {"));
+        let prepared = compiler()
+            .prepare_typed_page_rematch_bounded(&rematch, 7)
+            .unwrap();
+        assert!(prepared.typeql.contains("\nlimit 7;\nfetch {"));
 
         let mut invalid = rematch;
         invalid.root_concept_ids = vec!["0x01; match $evil isa thing".into()];
@@ -3562,6 +3742,7 @@ mod tests {
         assert!(rendered.contains("$thing iid 0x01; $thing isa employment; let $binding = 3"));
         assert!(rendered.contains("$thing iid 0x0a; $thing isa employment; let $binding = 3"));
         assert!(rendered.contains("$thing isa! $type"));
+        assert!(rendered.contains("\nlimit 2;\nfetch {"));
         assert!(rendered.contains("$thing links ($role: $player)"));
         assert!(!rendered.contains("relation $type"));
         assert!(rendered.contains("$player isa! $player_type"));
@@ -3572,6 +3753,7 @@ mod tests {
         let rendered = compiler().compile_typed_hydrate_things(&entity).unwrap();
         assert!(rendered.contains("$thing iid 0x02; $thing isa person; let $binding = 4"));
         assert!(rendered.contains("$thing isa! $type"));
+        assert!(rendered.contains("\nlimit 1;\nfetch {"));
         assert!(!rendered.contains("links"));
         assert!(!rendered.contains("\"roles\""));
 

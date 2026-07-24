@@ -2,8 +2,9 @@
 """Validate the exact Python distribution set a release will publish.
 
 The validator uses only the Python standard library. It rejects missing or
-extra artifacts, unsafe/corrupt archives, filename/metadata disagreement,
-invalid wheel RECORD hashes, platform-matrix drift, and source-tree bytecode.
+extra artifacts, unsafe/corrupt archives, filename/metadata/license
+disagreement, invalid wheel RECORD hashes, platform-matrix drift, retired
+band-9 fork payloads, and source-tree bytecode.
 """
 
 from __future__ import annotations
@@ -29,6 +30,23 @@ from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+try:
+    from python_release_contract import (
+        ContractError as PythonReleaseContractError,
+    )
+    from python_release_contract import (
+        validate_python_package_version,
+        validate_root_python_manifest_lockstep,
+    )
+except ModuleNotFoundError:
+    from scripts.ci.python_release_contract import (
+        ContractError as PythonReleaseContractError,
+    )
+    from scripts.ci.python_release_contract import (
+        validate_python_package_version,
+        validate_root_python_manifest_lockstep,
+    )
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CORE_WHEEL_BUCKETS = frozenset(
     {
@@ -37,6 +55,74 @@ CORE_WHEEL_BUCKETS = frozenset(
         "macos-x86_64",
         "macos-arm64",
         "windows-x86_64",
+    }
+)
+CORE_WHEEL_NOTICE = "type_bridge_core/THIRD_PARTY_NOTICES.md"
+CORE_SDIST_NOTICE = "python/type_bridge_core/THIRD_PARTY_NOTICES.md"
+MIT_LICENSE = "MIT"
+ROOT_LICENSE_FILE = "LICENSE"
+HISTORICAL_BAND9_COMPONENT = re.compile(r"(?:^|-)typedb-(?:driver|protocol)-b9(?:-|$)")
+LICENSE_LIKE_BASENAME = re.compile(
+    r"^(?:licen[cs]e|copying|notice|third[-_]?party[-_]?(?:licenses?|notices?))"
+    r"(?:$|[._-])",
+    flags=re.IGNORECASE,
+)
+CORE_SDIST_WORKSPACE_MEMBERS = (
+    "crates/contract",
+    "crates/schema",
+    "crates/query",
+    "crates/schema-migration",
+    "crates/schema-migration-typedb",
+    "crates/schema-codegen",
+    "crates/schema-compat",
+    "crates/workspace",
+    "crates/cli",
+    "crates/core",
+    "crates/migration",
+    "crates/python",
+    "crates/typedb-runtime",
+    "crates/orm",
+    "crates/orm-derive",
+    "crates/toml-transpiler",
+    "vendor/typedb-protocol-b7",
+    "vendor/typedb-driver-b7",
+    "vendor/typedb-protocol-b8",
+    "vendor/typedb-driver-b8",
+)
+CORE_SDIST_SOURCE_ROOTS = CORE_SDIST_WORKSPACE_MEMBERS + ("python/type_bridge_core",)
+# Cargo and Maturin omit nested packages from the enclosing crate archive.
+# This unpublished workspace exists only to exercise the released rule wire
+# against an isolated serde_json feature set; it is not a core sdist input.
+CORE_SDIST_EXCLUDED_NESTED_PACKAGE_ROOTS = frozenset(
+    {"crates/core/tests/fixtures/rule-wire-standalone"}
+)
+CORE_SDIST_FIRST_PARTY_CRATE_ROOTS = tuple(
+    source_root for source_root in CORE_SDIST_SOURCE_ROOTS if source_root.startswith("crates/")
+)
+CORE_SDIST_GENERATED_LICENSES = frozenset(
+    f"{source_root}/{ROOT_LICENSE_FILE}" for source_root in CORE_SDIST_FIRST_PARTY_CRATE_ROOTS
+)
+CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS = frozenset(
+    f"{source_root}/Cargo.toml"
+    for source_root in CORE_SDIST_WORKSPACE_MEMBERS
+    if source_root.startswith("crates/")
+)
+CORE_SDIST_README_TRANSFORMS = frozenset(
+    {
+        "crates/core/Cargo.toml",
+        "crates/python/Cargo.toml",
+        "crates/schema-compat/Cargo.toml",
+    }
+)
+CORE_SDIST_TRANSFORMED_MANIFESTS = (
+    CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS | CORE_SDIST_README_TRANSFORMS | {"Cargo.toml"}
+)
+CORE_SDIST_VENDOR_LICENSES = frozenset(
+    {
+        "vendor/typedb-driver-b7/LICENSE",
+        "vendor/typedb-driver-b8/LICENSE",
+        "vendor/typedb-protocol-b7/LICENSE",
+        "vendor/typedb-protocol-b8/LICENSE",
     }
 )
 
@@ -54,12 +140,17 @@ class PackageSpec:
     distribution: str
     version: str
     requires_python: str
+    license: str
+    license_files: tuple[str, ...]
     dependencies: tuple[str, ...]
     optional_dependencies: tuple[tuple[str, tuple[str, ...]], ...]
     entry_points: tuple[tuple[str, tuple[tuple[str, str], ...]], ...]
     pure: bool
     wheel_members: frozenset[str]
     sdist_members: frozenset[str]
+    distribution_notice: bytes | None
+    distribution_license: bytes | None
+    repository_root: Path
 
     @property
     def scripts(self) -> tuple[tuple[str, str], ...]:
@@ -91,6 +182,105 @@ class WheelFilename:
 def normalize_name(value: str) -> str:
     """Return the PEP 503 comparison form for a distribution name."""
     return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def reject_historical_band9_member(name: str, *, artifact: Path) -> None:
+    """Reject any archived path component that identifies a retired band-9 fork."""
+    for component in PurePosixPath(name).parts:
+        if HISTORICAL_BAND9_COMPONENT.search(normalize_name(component)) is not None:
+            raise ValidationError(f"Historical band-9 fork payload in {artifact.name}: {name!r}")
+
+
+def is_license_like_member(name: str) -> bool:
+    """Return whether an archive member looks like license or notice material."""
+    return LICENSE_LIKE_BASENAME.match(PurePosixPath(name).name) is not None
+
+
+def require_regular_authority(path: Path, *, label: str) -> None:
+    """Require one local release authority to be a non-symlink regular file."""
+    if path.is_symlink() or not path.is_file():
+        raise ValidationError(f"{label} is missing, non-regular, or symbolic: {path}")
+
+
+def core_sdist_source_authorities(repository_root: Path) -> dict[str, Path]:
+    """Derive the exact checked-out source inventory maturin must place in the core sdist."""
+    core_root = repository_root / "type-bridge-core"
+    authorities = {
+        "Cargo.lock": core_root / "Cargo.lock",
+        "Cargo.toml": core_root / "Cargo.toml",
+        "pyproject.toml": core_root / "pyproject.toml",
+        ROOT_LICENSE_FILE: core_root / ROOT_LICENSE_FILE,
+    }
+    for name, authority in authorities.items():
+        require_regular_authority(authority, label=f"Core sdist authority for {name}")
+
+    for source_root in CORE_SDIST_SOURCE_ROOTS:
+        directory = core_root / source_root
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValidationError(f"Core sdist source root is missing or symbolic: {directory}")
+        for candidate in sorted(directory.rglob("*")):
+            relative = candidate.relative_to(core_root)
+            name = relative.as_posix()
+            if any(
+                name == excluded_root or name.startswith(f"{excluded_root}/")
+                for excluded_root in CORE_SDIST_EXCLUDED_NESTED_PACKAGE_ROOTS
+            ):
+                continue
+            if candidate.is_symlink():
+                raise ValidationError(f"Core sdist authority is symbolic: {relative}")
+            if candidate.is_dir():
+                continue
+            if not candidate.is_file():
+                raise ValidationError(f"Core sdist authority is non-regular: {relative}")
+            if source_root == "python/type_bridge_core" and (
+                "__pycache__" in relative.parts
+                or candidate.suffix in {".pyc", ".pyo", ".so", ".pyd", ".dylib"}
+            ):
+                continue
+            if name in authorities:
+                raise ValidationError(f"Duplicate core sdist authority: {name}")
+            authorities[name] = candidate
+    canonical_license = core_root / ROOT_LICENSE_FILE
+    canonical_license_bytes = canonical_license.read_bytes()
+    for generated_license in CORE_SDIST_GENERATED_LICENSES:
+        checked_in = authorities.get(generated_license)
+        if checked_in is None:
+            authorities[generated_license] = canonical_license
+        elif checked_in.read_bytes() != canonical_license_bytes:
+            raise ValidationError(
+                "Checked-in core sdist license projection disagrees with the canonical "
+                f"TypeBridge license: {generated_license}"
+            )
+    return authorities
+
+
+def expected_core_sdist_manifest(name: str, authority: Path) -> dict[str, Any]:
+    """Return the one permitted semantic maturin transformation for a core manifest."""
+    try:
+        expected = tomllib.loads(authority.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ValidationError(
+            f"Invalid local Cargo manifest authority {authority}: {error}"
+        ) from error
+    if name == "Cargo.toml":
+        workspace = expected.get("workspace")
+        if not isinstance(workspace, dict):
+            raise ValidationError(f"Local workspace manifest has no [workspace]: {authority}")
+        workspace["members"] = list(CORE_SDIST_WORKSPACE_MEMBERS)
+    elif name in CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS:
+        package = expected.get("package")
+        if not isinstance(package, dict):
+            raise ValidationError(f"Local crate manifest has no [package]: {authority}")
+        package["license-file"] = ROOT_LICENSE_FILE
+        if name in CORE_SDIST_README_TRANSFORMS:
+            if "readme" in package:
+                raise ValidationError(
+                    f"Builder-only package.readme unexpectedly exists in local authority: {authority}"
+                )
+            package["readme"] = "README.md"
+    else:
+        raise ValidationError(f"No core sdist manifest transformation policy for {name}")
+    return expected
 
 
 def normalized_distribution(value: str) -> str:
@@ -256,6 +446,17 @@ def project_entry_points(
 
 def load_package_specs(repository_root: Path, expected_version: str) -> dict[str, PackageSpec]:
     """Load authoritative package metadata from both checked-out pyprojects."""
+    try:
+        validate_root_python_manifest_lockstep(
+            repository_root / "pyproject.toml",
+            expected_version,
+        )
+        validate_python_package_version(
+            repository_root / "type_bridge/__init__.py",
+            expected_version,
+        )
+    except PythonReleaseContractError as error:
+        raise ValidationError(str(error)) from error
     root_members = source_package_members(repository_root, "type_bridge")
     core_members = source_package_members(
         repository_root,
@@ -269,21 +470,45 @@ def load_package_specs(repository_root: Path, expected_version: str) -> dict[str
             core_members,
             frozenset({"PKG-INFO", "pyproject.toml", "Cargo.toml", "crates/python/Cargo.toml"})
             | frozenset(f"python/{name}" for name in core_members),
+            repository_root
+            / "type-bridge-core"
+            / "python"
+            / "type_bridge_core"
+            / "THIRD_PARTY_NOTICES.md",
+            (ROOT_LICENSE_FILE,),
+            repository_root / "type-bridge-core" / ROOT_LICENSE_FILE,
         ),
         "root": (
             repository_root / "pyproject.toml",
             True,
             root_members,
-            root_members | {"PKG-INFO", "pyproject.toml"},
+            root_members | {"PKG-INFO", "pyproject.toml", ROOT_LICENSE_FILE},
+            None,
+            (ROOT_LICENSE_FILE,),
+            repository_root / ROOT_LICENSE_FILE,
         ),
     }
     specs: dict[str, PackageSpec] = {}
-    for key, (pyproject, pure, wheel_members, sdist_members) in definitions.items():
+    for key, (
+        pyproject,
+        pure,
+        wheel_members,
+        sdist_members,
+        notice_path,
+        license_files,
+        license_path,
+    ) in definitions.items():
         try:
             project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
             name = str(project["name"])
             version = str(project["version"])
             requires_python = str(project["requires-python"])
+            raw_license = project.get("license")
+            if raw_license != {"text": MIT_LICENSE}:
+                raise ValidationError(
+                    f"Python project license must remain {MIT_LICENSE} in {pyproject}: "
+                    f"actual={raw_license!r}"
+                )
             raw_dependencies = project.get("dependencies", [])
             if not isinstance(raw_dependencies, list) or not all(
                 isinstance(value, str) for value in raw_dependencies
@@ -309,6 +534,8 @@ def load_package_specs(repository_root: Path, expected_version: str) -> dict[str
                 optional_dependencies.append((extra, tuple(values)))
             optional_dependencies.sort(key=lambda item: normalize_extra(item[0]))
             entry_points = project_entry_points(project, source=str(pyproject))
+            distribution_notice = notice_path.read_bytes() if notice_path is not None else None
+            distribution_license = license_path.read_bytes() if license_path is not None else None
         except (KeyError, OSError, tomllib.TOMLDecodeError) as error:
             raise ValidationError(
                 f"Could not read release metadata from {pyproject}: {error}"
@@ -323,12 +550,17 @@ def load_package_specs(repository_root: Path, expected_version: str) -> dict[str
             distribution=normalized_distribution(name),
             version=version,
             requires_python=requires_python,
+            license=MIT_LICENSE,
+            license_files=license_files,
             dependencies=dependencies,
             optional_dependencies=tuple(optional_dependencies),
             entry_points=entry_points,
             pure=pure,
             wheel_members=wheel_members,
             sdist_members=sdist_members,
+            distribution_notice=distribution_notice,
+            distribution_license=distribution_license,
+            repository_root=repository_root,
         )
     return specs
 
@@ -468,6 +700,7 @@ def parse_metadata(
         "Metadata-Version",
         "Name",
         "Version",
+        "License",
         "Requires-Python",
     ),
 ) -> Message:
@@ -486,7 +719,7 @@ def parse_metadata(
 
 def validate_metadata(message: Message, spec: PackageSpec, *, source: str) -> None:
     """Match archive metadata to the repository package contract."""
-    for field in ("Metadata-Version", "Name", "Version", "Requires-Python"):
+    for field in ("Metadata-Version", "Name", "Version", "License", "Requires-Python"):
         if len(message.get_all(field, [])) != 1:
             raise ValidationError(f"{source} must declare {field} exactly once")
     if normalize_name(str(message["Name"])) != normalize_name(spec.name):
@@ -494,6 +727,22 @@ def validate_metadata(message: Message, spec: PackageSpec, *, source: str) -> No
     if str(message["Version"]) != spec.version:
         raise ValidationError(
             f"{source} has version {message['Version']!r}, expected {spec.version!r}"
+        )
+    if str(message["License"]) != spec.license:
+        raise ValidationError(
+            f"{source} has license {message['License']!r}, expected {spec.license!r}"
+        )
+    license_expressions = message.get_all("License-Expression", [])
+    if license_expressions:
+        raise ValidationError(
+            f"{source} must use only the emitted License: {spec.license} metadata form; "
+            f"License-Expression={list(map(str, license_expressions))!r}"
+        )
+    actual_license_files = tuple(map(str, message.get_all("License-File", [])))
+    if actual_license_files != spec.license_files:
+        raise ValidationError(
+            f"{source} License-File metadata disagrees: "
+            f"actual={actual_license_files!r}, expected={spec.license_files!r}"
         )
     actual_python = normalize_requires_python(str(message["Requires-Python"]))
     expected_python = normalize_requires_python(spec.requires_python)
@@ -742,6 +991,7 @@ def validate_wheel(path: Path, spec: PackageSpec) -> dict[str, Any]:
         infos: dict[str, zipfile.ZipInfo] = {}
         for info in archive.infolist():
             name = safe_archive_name(info.filename.rstrip("/"), archive=path)
+            reject_historical_band9_member(name, artifact=path)
             if name in infos:
                 raise ValidationError(f"Duplicate wheel member in {path.name}: {name}")
             if info.flag_bits & 0x1:
@@ -778,6 +1028,26 @@ def validate_wheel(path: Path, spec: PackageSpec) -> dict[str, Any]:
             archive.read(metadata_name), source=f"{path.name}:{metadata_name}"
         )
         validate_metadata(metadata, spec, source=f"{path.name}:{metadata_name}")
+        expected_license_members = {
+            f"{dist_info}/licenses/{license_file}" for license_file in spec.license_files
+        }
+        if spec.distribution_notice is not None:
+            expected_license_members.add(CORE_WHEEL_NOTICE)
+        actual_license_members = {name for name in infos if is_license_like_member(name)}
+        if actual_license_members != expected_license_members:
+            raise ValidationError(
+                f"Wheel {path.name} license-file inventory disagrees: "
+                f"actual={sorted(actual_license_members)}, "
+                f"expected={sorted(expected_license_members)}"
+            )
+        if spec.distribution_license is not None:
+            for license_file in spec.license_files:
+                member_name = f"{dist_info}/licenses/{license_file}"
+                if archive.read(member_name) != spec.distribution_license:
+                    raise ValidationError(
+                        f"Wheel {path.name} license file disagrees with repository source: "
+                        f"{member_name}"
+                    )
         validate_wheel_scripts(archive, infos, dist_info, spec, path=path)
         wheel_metadata = parse_metadata(
             archive.read(wheel_name),
@@ -842,6 +1112,13 @@ def validate_wheel(path: Path, spec: PackageSpec) -> dict[str, Any]:
                 f"Wheel {path.name} package inventory disagrees: "
                 f"missing={missing_package}, extra={extra_package}"
             )
+        if spec.distribution_notice is not None:
+            if CORE_WHEEL_NOTICE not in infos:
+                raise ValidationError(f"Core wheel {path.name} is missing {CORE_WHEEL_NOTICE}")
+            if archive.read(CORE_WHEEL_NOTICE) != spec.distribution_notice:
+                raise ValidationError(
+                    f"Core wheel {path.name} third-party notice disagrees with repository source"
+                )
         validate_wheel_record(archive, infos, record_name, path=path)
 
     return {
@@ -872,9 +1149,11 @@ def validate_sdist(path: Path, spec: PackageSpec) -> dict[str, Any]:
             if PurePosixPath(name).parts[0] != archive_root:
                 raise ValidationError(f"Sdist member escapes canonical root in {path.name}: {name}")
             relative = PurePosixPath(*PurePosixPath(name).parts[1:]).as_posix()
+            reject_historical_band9_member(relative, artifact=path)
             if relative in members:
                 raise ValidationError(f"Duplicate sdist member in {path.name}: {name}")
             if member.issym():
+                reject_historical_band9_member(member.linkname, artifact=path)
                 target = safe_sdist_symlink_target(
                     name,
                     member.linkname,
@@ -899,6 +1178,77 @@ def validate_sdist(path: Path, spec: PackageSpec) -> dict[str, Any]:
                 raise ValidationError(
                     f"Symbolic link target is missing or non-regular in {path.name}: "
                     f"{name!r} -> {target!r}"
+                )
+
+        if spec.key == "core":
+            authorities = core_sdist_source_authorities(spec.repository_root)
+            expected_inventory = set(authorities) | {"PKG-INFO"}
+            if members.keys() != expected_inventory:
+                missing_sources = sorted(expected_inventory - members.keys())
+                unexpected_sources = sorted(members.keys() - expected_inventory)
+                raise ValidationError(
+                    f"Core sdist {path.name} source inventory disagrees: "
+                    f"missing={missing_sources}, unexpected={unexpected_sources}"
+                )
+            non_regular_sources = sorted(
+                name for name, member in members.items() if not member.isfile()
+            )
+            if non_regular_sources:
+                raise ValidationError(
+                    f"Core sdist {path.name} has non-regular sources: {non_regular_sources}"
+                )
+            for name, authority in authorities.items():
+                stream = archive.extractfile(members[name])
+                if stream is None:
+                    raise ValidationError(f"Could not read core sdist source {name} in {path.name}")
+                payload = stream.read()
+                if name in CORE_SDIST_TRANSFORMED_MANIFESTS:
+                    try:
+                        actual_manifest = tomllib.loads(payload.decode("utf-8"))
+                    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+                        raise ValidationError(
+                            f"Invalid transformed manifest {name} in {path.name}: {error}"
+                        ) from error
+                    expected_manifest = expected_core_sdist_manifest(name, authority)
+                    if actual_manifest != expected_manifest:
+                        raise ValidationError(
+                            f"Core sdist transformed manifest exceeds policy in {path.name}: {name}"
+                        )
+                elif payload != authority.read_bytes():
+                    raise ValidationError(
+                        f"Core sdist source disagrees with repository checkout in "
+                        f"{path.name}: {name}"
+                    )
+
+        expected_license_members = (
+            {ROOT_LICENSE_FILE}
+            if spec.key == "root"
+            else {
+                ROOT_LICENSE_FILE,
+                CORE_SDIST_NOTICE,
+                *CORE_SDIST_GENERATED_LICENSES,
+                *CORE_SDIST_VENDOR_LICENSES,
+            }
+        )
+        actual_license_members = {name for name in members if is_license_like_member(name)}
+        if actual_license_members != expected_license_members:
+            raise ValidationError(
+                f"Sdist {path.name} license-file inventory disagrees: "
+                f"actual={sorted(actual_license_members)}, "
+                f"expected={sorted(expected_license_members)}"
+            )
+        if spec.key == "root":
+            license_member = members.get(ROOT_LICENSE_FILE)
+            if license_member is None or not license_member.isfile():
+                raise ValidationError(f"Root sdist {path.name} is missing {ROOT_LICENSE_FILE}")
+            license_stream = archive.extractfile(license_member)
+            if (
+                license_stream is None
+                or spec.distribution_license is None
+                or license_stream.read() != spec.distribution_license
+            ):
+                raise ValidationError(
+                    f"Root sdist {path.name} license file disagrees with repository source"
                 )
 
         missing = sorted(spec.sdist_members - members.keys())
@@ -929,6 +1279,15 @@ def validate_sdist(path: Path, spec: PackageSpec) -> dict[str, Any]:
                 f"Sdist {path.name} package inventory disagrees: "
                 f"missing={missing_package}, extra={extra_package}"
             )
+        if spec.distribution_notice is not None:
+            notice_member = members.get(CORE_SDIST_NOTICE)
+            if notice_member is None or not notice_member.isfile():
+                raise ValidationError(f"Core sdist {path.name} is missing {CORE_SDIST_NOTICE}")
+            notice_stream = archive.extractfile(notice_member)
+            if notice_stream is None or notice_stream.read() != spec.distribution_notice:
+                raise ValidationError(
+                    f"Core sdist {path.name} third-party notice disagrees with repository source"
+                )
         package_info = members["PKG-INFO"]
         stream = archive.extractfile(package_info)
         if stream is None:
@@ -947,6 +1306,11 @@ def validate_sdist(path: Path, spec: PackageSpec) -> dict[str, Any]:
             raise ValidationError(f"Sdist pyproject name disagrees in {path.name}")
         if str(project.get("version", "")) != spec.version:
             raise ValidationError(f"Sdist pyproject version disagrees in {path.name}")
+        if project.get("license") != {"text": spec.license}:
+            raise ValidationError(
+                f"Sdist pyproject license disagrees in {path.name}: "
+                f"actual={project.get('license')!r}, expected={{'text': {spec.license!r}}}"
+            )
         actual_python = normalize_requires_python(str(project.get("requires-python", "")))
         if actual_python != normalize_requires_python(spec.requires_python):
             raise ValidationError(f"Sdist pyproject Requires-Python disagrees in {path.name}")

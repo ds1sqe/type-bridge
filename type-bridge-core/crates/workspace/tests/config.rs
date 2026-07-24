@@ -559,20 +559,49 @@ fn environment_uris_admit_only_plain_host_addresses() {
     };
     for accepted in [
         "localhost:1729",
+        "127.0.0.1:65535",
+        "typedb.example.internal.:1",
         "[::1]:1729",
-        "db-1.internal:1729,db-2.internal:1729",
+        "[2001:db8::1]:1729",
+        "db-1.internal:1729,db-2.internal:1729,[2001:db8::2]:1730",
     ] {
         let (username, password) = environment();
         WorkspaceEnvironment::new(accepted, "app", username, password)
             .unwrap_or_else(|error| panic!("{accepted}: {error:?}"));
     }
-    // Userinfo, schemes, query strings, whitespace, and control bytes
-    // would smuggle credentials into an address that driver errors and
-    // tracing echo verbatim.
+    // Empty members, missing/invalid ports, malformed hosts/brackets,
+    // userinfo, schemes, paths, whitespace, and control bytes must all fail
+    // before an address can reach driver errors or tracing.
     for rejected in [
+        "",
+        ",",
+        "host:1729,",
+        ",host:1729",
+        "host:1729,,other:1729",
+        "host",
+        "host:",
+        ":1729",
+        "host:0",
+        "host:65536",
+        "host:not-a-port",
+        "host:+1729",
+        "host::1729",
+        "-host:1729",
+        "host-:1729",
+        "host..internal:1729",
+        "host_name:1729",
+        "[::1]",
+        "[::1]:",
+        "[::1]:0",
+        "[::1]:65536",
+        "[::1]1729",
+        "[::1:1729",
+        "::1:1729",
+        "[127.0.0.1]:1729",
         "admin:secret@host:1729",
         "typedb://host:1729",
         "host:1729?tls=false",
+        "host:1729/path",
         "host 1729",
         "host:1729\n",
     ] {
@@ -585,4 +614,71 @@ fn environment_uris_admit_only_plain_host_addresses() {
             "{rejected}"
         );
     }
+}
+
+#[test]
+fn environment_database_contract_remains_nonempty_scalar_only() {
+    use type_bridge_workspace::{SecretReference, WorkspaceEnvironment};
+
+    let references = || {
+        (
+            SecretReference::environment("TYPEDB_USERNAME").unwrap(),
+            SecretReference::environment("TYPEDB_PASSWORD").unwrap(),
+        )
+    };
+    let (username, password) = references();
+    WorkspaceEnvironment::new("localhost:1729", "app-prod_01", username, password)
+        .expect("a nonempty database scalar remains accepted");
+
+    let (username, password) = references();
+    let error = WorkspaceEnvironment::new("localhost:1729", "", username, password)
+        .expect_err("an empty database is rejected");
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::InvalidWorkspaceValue
+    );
+    assert_eq!(error.to_string(), "environment database must be non-empty");
+}
+
+#[test]
+fn normalized_endpoint_sets_reject_managed_and_reserved_journal_aliases() {
+    use type_bridge_workspace::{SecretReference, WorkspaceEnvironment};
+
+    let environment = |uri: &str, database: &str| {
+        WorkspaceEnvironment::new(
+            uri,
+            database,
+            SecretReference::environment("TYPEDB_USERNAME").unwrap(),
+            SecretReference::environment("TYPEDB_PASSWORD").unwrap(),
+        )
+        .unwrap()
+    };
+    let source = CanonicalSource::new();
+    let secrets = AcceptSecrets::new();
+    let extensions = AcceptExtensions::new();
+    let error = base_builder()
+        .environment(
+            "primary",
+            environment("DB-1.EXAMPLE.:1729,[2001:0db8::1]:01730", "production"),
+        )
+        .environment(
+            "journal-alias",
+            environment("[2001:db8::1]:1730", "production__tbv2_journal"),
+        )
+        .build(&services(&source, &secrets, &extensions))
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::EnvironmentDatabaseCollision
+    );
+    assert_eq!(error.detail(), Some("journal-alias,primary"));
+
+    base_builder()
+        .environment("primary", environment("db-1.example:1729", "production"))
+        .environment(
+            "separate-cluster",
+            environment("db-2.example:1729", "production__tbv2_journal"),
+        )
+        .build(&services(&source, &secrets, &extensions))
+        .expect("database namespaces on distinct endpoint sets do not alias");
 }

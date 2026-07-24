@@ -7,6 +7,8 @@ use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationAppLabel;
+#[cfg(unix)]
+use type_bridge_contract::schema::SchemaFact;
 use type_bridge_schema::{
     SchemaSourceCapture, SchemaSourceObservation, SchemaSourceService, SchemaSourceServiceError,
     SystemSchemaSourceService,
@@ -15,7 +17,8 @@ use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
     SchemaSetPath, SecretReference, SecretReferenceService, TypeBridgeConfig,
     TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace, TypeBridgeWorkspaceError,
-    TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode, WorkspaceRoot, WorkspaceServiceError,
+    TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode, WorkspaceDirectoryAuthority,
+    WorkspaceRoot, WorkspaceServiceError,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -274,7 +277,7 @@ fn located_and_programmatic_configs_converge_on_one_source_workspace_state() {
     };
     let available = capabilities();
     let workspace_services =
-        TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available);
+        TypeBridgeWorkspaceServices::with_source(&source, &secrets, &extensions, &available);
 
     let config = programmatic_config(directory.root(), &source, &secrets, &extensions);
     let programmatic = TypeBridgeWorkspace::from_config(config, &workspace_services).unwrap();
@@ -317,6 +320,170 @@ fn located_and_programmatic_configs_converge_on_one_source_workspace_state() {
 }
 
 #[test]
+fn production_authority_must_exactly_match_programmatic_and_located_roots() {
+    let directory = TempDirectory::new();
+    directory.write(
+        "child/schema/schema.yaml",
+        "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+    );
+    directory.write(
+        "child/schema/fragments/model.yaml",
+        "format: typebridge.schema/v2\nentities: {person: {}}\n",
+    );
+    let child_root =
+        WorkspaceRoot::new(fs::canonicalize(directory.0.join("child")).unwrap()).unwrap();
+    let authority = WorkspaceDirectoryAuthority::open(directory.root()).unwrap();
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = ExtensionPolicy {
+        calls: AtomicUsize::new(0),
+        reject: false,
+    };
+    let available = capabilities();
+    let services = TypeBridgeWorkspaceServices::new(&authority, &secrets, &extensions, &available);
+
+    let config = programmatic_config(child_root.clone(), &authority, &secrets, &extensions);
+    let error = TypeBridgeWorkspace::from_config(config, &services)
+        .err()
+        .expect("an ancestor authority must not own a child workspace config");
+    assert_eq!(
+        error.config().unwrap().code(),
+        WorkspaceConfigErrorCode::WorkspaceRootNotCanonical
+    );
+    assert_eq!(
+        error.config().unwrap().detail(),
+        Some("workspace_root_authority_mismatch")
+    );
+
+    let unsupported = workspace_yaml().replace("typedb-3.12.1/v1", "unsupported-profile/v1");
+    let located = TypeBridgeConfigSpec::parse_yaml(
+        unsupported,
+        ConfigOrigin::new(
+            child_root,
+            "typebridge.yaml",
+            "mismatched authority fixture",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let error = TypeBridgeWorkspace::from_located_config(located, &services)
+        .err()
+        .expect("authority mismatch must reject before located config resolution");
+    assert_eq!(
+        error.config().unwrap().code(),
+        WorkspaceConfigErrorCode::WorkspaceRootNotCanonical
+    );
+    assert_eq!(
+        error.config().unwrap().detail(),
+        Some("workspace_root_authority_mismatch")
+    );
+}
+
+#[test]
+fn generated_output_names_are_portable_direct_children() {
+    let directory = TempDirectory::new();
+    let authority = WorkspaceDirectoryAuthority::open(directory.root()).unwrap();
+    let output = authority.output_root().unwrap();
+
+    for name in [
+        "nested/models.py",
+        "nested\\models.py",
+        "models.py:stream",
+        "models.py.",
+        "models.py ",
+        "models?.py",
+        "models*.py",
+        "models<copy>.py",
+        "models|copy.py",
+        "models\"copy.py",
+        "NUL",
+        "con.json",
+        "COM0",
+        "com1.py",
+        "COM¹.log",
+        "LPT³",
+        "CLOCK$",
+        "conout$.txt",
+        "line\nbreak.py",
+    ] {
+        assert!(
+            output.write_atomic(name.as_ref(), b"rejected").is_err(),
+            "nonportable output name {name:?} was accepted"
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let non_utf8 = OsString::from_vec(vec![b'm', 0xff, b'.', b'p', b'y']);
+        assert!(
+            output.write_atomic(&non_utf8, b"rejected").is_err(),
+            "non-UTF-8 output name was accepted"
+        );
+    }
+
+    output
+        .write_atomic("models.py".as_ref(), b"portable")
+        .expect("portable direct output writes");
+    assert_eq!(
+        fs::read(directory.0.join("models.py")).unwrap(),
+        b"portable"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn retained_root_owns_schema_capture_after_ambient_root_replacement() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let authority = WorkspaceDirectoryAuthority::open(directory.root()).unwrap();
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = ExtensionPolicy {
+        calls: AtomicUsize::new(0),
+        reject: false,
+    };
+    let available = capabilities();
+    let config = programmatic_config(directory.root(), &authority, &secrets, &extensions);
+    let services = TypeBridgeWorkspaceServices::new(&authority, &secrets, &extensions, &available);
+
+    let held_root = directory.0.with_extension("schema-authority-retained");
+    fs::rename(&directory.0, &held_root).expect("validated root moves");
+    fs::create_dir_all(directory.0.join("schema/fragments")).expect("replacement root creates");
+    fs::write(
+        directory.0.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+    )
+    .expect("replacement manifest writes");
+    fs::write(
+        directory.0.join("schema/fragments/model.yaml"),
+        "format: typebridge.schema/v2\nentities: {company: {}}\n",
+    )
+    .expect("replacement schema writes");
+
+    let workspace = TypeBridgeWorkspace::from_config(config, &services)
+        .expect("schema capture remains on the retained root");
+    let labels = workspace
+        .declared_schema()
+        .facts()
+        .filter_map(|fact| match fact {
+            SchemaFact::Type(fact) => Some(fact.id().label().as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        labels.contains(&"person"),
+        "retained schema was not captured"
+    );
+    assert!(
+        !labels.contains(&"company"),
+        "ambient replacement redirected schema capture"
+    );
+
+    fs::remove_dir_all(&directory.0).expect("replacement root removes");
+    fs::rename(&held_root, &directory.0).expect("retained root restores for cleanup");
+}
+
+#[test]
 fn discovery_content_drift_and_reselection_fail_closed_through_injected_sources() {
     let drift = TempDirectory::new();
     drift.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
@@ -335,7 +502,7 @@ fn discovery_content_drift_and_reselection_fail_closed_through_injected_sources(
     let config = programmatic_config(drift.root(), &source, &secrets, &extensions);
     let error = TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available),
+        &TypeBridgeWorkspaceServices::with_source(&source, &secrets, &extensions, &available),
     )
     .err()
     .expect("content drift must reject workspace construction");
@@ -351,7 +518,7 @@ fn discovery_content_drift_and_reselection_fail_closed_through_injected_sources(
     let config = programmatic_config(reselection.root(), &source, &secrets, &extensions);
     let error = TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available),
+        &TypeBridgeWorkspaceServices::with_source(&source, &secrets, &extensions, &available),
     )
     .err()
     .expect("source reselection must reject workspace construction");
@@ -373,7 +540,7 @@ fn unknown_references_and_inheritance_cycles_remain_source_aware_failures() {
     let config = programmatic_config(unknown.root(), &source, &secrets, &extensions);
     let error = TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available),
+        &TypeBridgeWorkspaceServices::with_source(&source, &secrets, &extensions, &available),
     )
     .err()
     .expect("unknown schema reference must reject workspace construction");
@@ -394,7 +561,7 @@ fn unknown_references_and_inheritance_cycles_remain_source_aware_failures() {
     let config = programmatic_config(cycle.root(), &source, &secrets, &extensions);
     let error = TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available),
+        &TypeBridgeWorkspaceServices::with_source(&source, &secrets, &extensions, &available),
     )
     .err()
     .expect("inheritance cycle must reject workspace construction");
@@ -415,7 +582,7 @@ fn unavailable_config_constraints_fail_before_schema_capture() {
     let config = programmatic_config(directory.root(), &source, &secrets, &accept_extensions);
     let error = TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(&source, &secrets, &accept_extensions, &missing),
+        &TypeBridgeWorkspaceServices::with_source(&source, &secrets, &accept_extensions, &missing),
     )
     .err()
     .expect("missing configured capability must reject before capture");
@@ -444,7 +611,12 @@ fn unavailable_config_constraints_fail_before_schema_capture() {
     };
     let error = TypeBridgeWorkspace::from_config(
         config,
-        &TypeBridgeWorkspaceServices::new(&source, &secrets, &reject_extensions, &capabilities()),
+        &TypeBridgeWorkspaceServices::with_source(
+            &source,
+            &secrets,
+            &reject_extensions,
+            &capabilities(),
+        ),
     )
     .err()
     .expect("missing extension must reject before capture");

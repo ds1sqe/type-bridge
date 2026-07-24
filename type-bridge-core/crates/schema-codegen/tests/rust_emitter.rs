@@ -70,6 +70,46 @@ fn emits_exact_deterministic_dependency_free_crate() {
     assert!(tokens.contains("pub const plays_event_container_item"));
     let manifest = String::from_utf8(first.get("Cargo.toml").unwrap().to_vec()).unwrap();
     assert!(!manifest.contains("dependencies"));
+    assert!(manifest.contains("doctest = false"));
+}
+
+#[test]
+fn emits_safely_line_prefixed_type_and_direct_sub_documentation() {
+    let emitter = RustEmitter::new();
+    let resources = emitter.code_resources().unwrap();
+    let projection = projected(
+        r#"format: typebridge.schema/v2
+entities:
+  actor: {}
+  person:
+    doc: |-
+      Type "doc".
+      closing */ kept
+      ```rust
+      compile_error!("schema documentation must never execute");
+      ```
+          compile_error!("indented schema documentation must never execute");
+    sub:
+      type: actor
+      doc: |-
+        Edge 'doc' \ path
+        closes */ safely
+"#,
+        &resources,
+    );
+    let package = emitter.emit(&projection).unwrap();
+    let read = std::str::from_utf8(package.get("src/read.rs").unwrap()).unwrap();
+    let reference = std::str::from_utf8(package.get("src/reference.rs").unwrap()).unwrap();
+    let manifest = std::str::from_utf8(package.get("Cargo.toml").unwrap()).unwrap();
+    let documentation = "/// Type \"doc\".\n/// closing */ kept\n/// ```rust\n/// compile_error!(\"schema documentation must never execute\");\n/// ```\n///     compile_error!(\"indented schema documentation must never execute\");\n/// \n/// Direct subtype of `actor`:\n/// Edge 'doc' \\ path\n/// closes */ safely\n";
+
+    assert!(manifest.contains("doctest = false"));
+    assert!(read.contains(&format!(
+        "{documentation}#[derive(Clone, Debug, PartialEq)]\npub struct Person"
+    )));
+    assert!(reference.contains(&format!(
+        "{documentation}#[derive(Clone, Debug, PartialEq)]\npub struct PersonRef"
+    )));
 }
 
 #[test]

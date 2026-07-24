@@ -5,7 +5,7 @@ Covers:
 - ``schema`` / ``migration`` / ``--manifest`` invocations run the in-process
   V2 CLI shipped inside the native extension (no external binary involved)
 - a real split-YAML workspace passes ``schema check`` through the entry point
-- legacy verbs still take the released subprocess-forwarding path
+- legacy verbs and global help/version forms use the released native parser
 - exit codes propagate unchanged
 """
 
@@ -25,8 +25,6 @@ def test_v2_invocations_are_detected() -> None:
     assert _is_v2_invocation(["migration", "make", "--name", "init"])
     assert _is_v2_invocation(["--manifest", "x.yaml", "schema", "check"])
     assert _is_v2_invocation(["--manifest=x.yaml", "schema", "check"])
-    assert _is_v2_invocation(["--help"])
-    assert _is_v2_invocation(["--version"])
 
 
 def test_legacy_invocations_still_forward() -> None:
@@ -36,9 +34,35 @@ def test_legacy_invocations_still_forward() -> None:
         ["makemigrations", "--name", "add_phone"],
         ["plan"],
         ["sqlmigrate", "0001_initial"],
+        ["--help"],
+        ["-h"],
+        ["--version"],
+        ["-V"],
         [],
     ):
         assert not _is_v2_invocation(argv)
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h", "--version", "-V"])
+def test_global_forms_run_verbatim_through_the_released_native_parser(
+    flag: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[list[str]] = []
+
+    class Native:
+        @staticmethod
+        def run_legacy_migration_cli(arguments: list[str]) -> int:
+            observed.append(arguments)
+            return 27
+
+    monkeypatch.setattr("type_bridge._rust_runtime.rust_core", lambda: Native())
+    monkeypatch.setattr("sys.argv", ["type-bridge", flag])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 27
+    assert observed == [["type-bridge-migration", flag]]
 
 
 def _write_workspace(root: Path) -> Path:
@@ -76,3 +100,38 @@ def test_v2_failure_exit_code_propagates(tmp_path: Path, monkeypatch: pytest.Mon
     with pytest.raises(SystemExit) as excinfo:
         main()
     assert excinfo.value.code == 1
+
+
+@pytest.mark.parametrize("verb", ["schema", "migration"])
+def test_v2_verb_help_remains_available_in_process(
+    verb: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("sys.argv", ["type-bridge", verb, "--help"])
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    stdout, stderr = capfd.readouterr()
+
+    assert excinfo.value.code == 0
+    assert f"Usage: type-bridge {verb}" in stdout
+    assert stderr == ""
+
+
+def test_v2_version_remains_available_after_an_opt_in_manifest_selector(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    observed: list[tuple[object, str, str]] = []
+    for arguments in (
+        ["--manifest=unused.yaml", "--version"],
+        ["--manifest", "unused.yaml", "-V"],
+    ):
+        monkeypatch.setattr("sys.argv", ["type-bridge", *arguments])
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+        stdout, stderr = capfd.readouterr()
+        observed.append((excinfo.value.code, stdout, stderr))
+
+    assert observed[0] == observed[1]
+    assert observed[0][0] == 0

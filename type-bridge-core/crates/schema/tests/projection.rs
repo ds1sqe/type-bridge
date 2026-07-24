@@ -1,13 +1,15 @@
 use std::collections::BTreeSet;
 
+use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectionConfig, ProjectionHandler,
     ReferenceConstructionPolicy,
 };
+use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema::{
-    AnnotationKindId, AnnotationSubjectId, DocumentId, RelatesFactId,
+    AnnotationKindId, AnnotationSubjectId, DocumentId, RelatesFactId, SchemaFactId, SubFactId,
 };
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
@@ -35,6 +37,88 @@ fn projection_for(
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is valid");
     let resolved = resolve(&declared, &profile).expect("fixture resolves");
     project(&resolved, target, &config, &[handler], &[]).expect("fixture projects")
+}
+
+#[test]
+fn expanded_sub_survives_normalize_resolve_all_projections_and_wire_round_trip() {
+    let source = r#"format: typebridge.schema/v2
+entities:
+  actor: {}
+  person:
+    doc: "person type"
+    sub:
+      type: actor
+      doc: "person edge"
+      meta: { owner: "schema", stability: "stable" }
+"#;
+    let actor = TypeId::new(TypeKind::Entity, "actor").unwrap();
+    let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let sub_id = SubFactId::new(person.clone(), actor).unwrap();
+
+    for (target, config, handler) in [
+        (
+            BindingTarget::Python,
+            ProjectionConfig::python(),
+            ProjectionHandler::python_v1(),
+        ),
+        (
+            BindingTarget::TypeScript,
+            ProjectionConfig::typescript(),
+            ProjectionHandler::typescript_v1(),
+        ),
+        (
+            BindingTarget::Rust,
+            ProjectionConfig::rust(),
+            ProjectionHandler::rust_v1(),
+        ),
+    ] {
+        let projected = projection_for(source, target, config, handler);
+        let direct_sub = projected.models()[&person]
+            .declaration()
+            .direct_sub()
+            .expect("projected child retains its exact direct edge");
+        assert_eq!(direct_sub.id(), &sub_id);
+        assert_eq!(direct_sub.origin(), &SchemaFactId::Sub(sub_id.clone()));
+        assert_eq!(direct_sub.annotations().len(), 3);
+        assert_eq!(
+            direct_sub
+                .annotations()
+                .keys()
+                .map(|id| id.kind().clone())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                AnnotationKindId::Doc,
+                AnnotationKindId::Meta(type_bridge_contract::id::Label::new("owner").unwrap()),
+                AnnotationKindId::Meta(type_bridge_contract::id::Label::new("stability").unwrap(),),
+            ]),
+        );
+
+        let projection_bytes = to_canonical_json(&projected).unwrap();
+        let projection_json: serde_json::Value = serde_json::from_slice(&projection_bytes).unwrap();
+        let person_wire = projection_json["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"]["label"] == "person")
+            .unwrap();
+        assert_eq!(
+            person_wire["declaration"]["direct_sub"]["origin"]["kind"],
+            "sub"
+        );
+        assert_eq!(
+            person_wire["declaration"]["direct_sub"]["annotations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        let semantic_bytes = to_canonical_json(projected.semantic_fingerprint()).unwrap();
+        let binding_bytes = to_canonical_json(projected.projection_fingerprint()).unwrap();
+        let decoded =
+            decode_runtime_projection_verified(&projection_bytes, &semantic_bytes, &binding_bytes)
+                .unwrap();
+        assert_eq!(decoded, projected);
+    }
 }
 
 #[test]
@@ -352,7 +436,7 @@ fn typescript_runtime_reserved_names_fail_before_emission() {
         r#"format: typebridge.schema/v2
 relations:
   bad:
-    relates: [iid]
+    relates: [prototype]
 "#,
     )])
     .unwrap();

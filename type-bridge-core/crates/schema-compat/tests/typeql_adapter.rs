@@ -1,5 +1,8 @@
 use type_bridge_contract::schema::{DocumentId, SchemaFact};
-use type_bridge_schema_compat::{typeql_to_declared, typeql_to_facts};
+use type_bridge_schema_compat::{
+    released_typeql_to_declared_projection, typeql_to_declared, typeql_to_declared_with_references,
+    typeql_to_facts,
+};
 
 fn document() -> DocumentId {
     DocumentId::new("schema/main.tql").expect("valid test document")
@@ -44,10 +47,52 @@ fn typeql_reopened_type_declarations_merge_into_one_identity() {
 }
 
 #[test]
+fn released_normalization_does_not_loosen_the_strict_importer() {
+    let source = "define\nattribute email, value string, @regex(\"x\");\n";
+    let diagnostics = typeql_to_declared(document(), source)
+        .expect_err("strict TypeQL retains its annotation separator grammar");
+    assert_eq!(
+        diagnostics
+            .iter()
+            .next()
+            .expect("diagnostic")
+            .diagnostic()
+            .code()
+            .as_str(),
+        "invalid_typeql_schema"
+    );
+    released_typeql_to_declared_projection(document(), source)
+        .expect("released compatibility projection normalizes the frozen grammar");
+}
+
+#[test]
+fn released_merge_algebra_does_not_change_strict_duplicate_errors() {
+    for source in [
+        "define\nentity person @doc(\"first\") @doc(\"last\");\n",
+        "define\nattribute name, value string;\nentity person, owns name, owns name;\n",
+    ] {
+        let diagnostics = typeql_to_declared(document(), source)
+            .expect_err("strict duplicate facts must remain errors");
+        assert_eq!(
+            diagnostics
+                .iter()
+                .next()
+                .expect("diagnostic")
+                .diagnostic()
+                .code()
+                .as_str(),
+            "duplicate_schema_fact",
+            "fixture: {source}"
+        );
+    }
+}
+
+#[test]
 fn typeql_duplicate_fact_reports_both_source_locations() {
-    // Genuine duplicates of a non-type fact still fail with both spans.
-    let source = "define\nattribute name, value string;\n\
-                  entity person, owns name, owns name;\n";
+    // Released object capabilities use the frozen parser's first-wins merge
+    // semantics. Definables outside that merge algebra remain strict facts.
+    let source = "define\nstruct score: points value integer;\n\
+                  struct score: points value integer;\n";
     let diagnostics = typeql_to_declared(document(), source).expect_err("duplicate must fail");
     let diagnostic = diagnostics.iter().next().expect("one diagnostic");
 
@@ -132,4 +177,24 @@ fn nonportable_v1_annotations_fail_at_the_adapter_boundary() {
             "fixture must parse and reject at the portability boundary: {source}"
         );
     }
+}
+
+#[test]
+fn oversized_body_only_schema_references_reject_without_panicking() {
+    let oversized = "x".repeat(256);
+    let source = format!(
+        "define\nentity person;\nfun inspect($candidate: person) -> {{ person }}:\n  match $candidate isa {oversized};\n  return {{ $candidate }};\n"
+    );
+    let diagnostics = typeql_to_declared_with_references(document(), &source)
+        .expect_err("body-only references must obey the canonical identifier bound");
+    assert_eq!(
+        diagnostics
+            .iter()
+            .next()
+            .expect("one diagnostic")
+            .diagnostic()
+            .code()
+            .as_str(),
+        "typeql_function_reference_invalid",
+    );
 }

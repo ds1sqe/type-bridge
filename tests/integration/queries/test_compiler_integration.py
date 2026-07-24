@@ -125,15 +125,17 @@ def db(docker_typedb):
         http_port=TEST_DB_HTTP_PORT,
     )
     database.connect()
-    if database.database_exists():
-        database.delete_database()
-    database.create_database()
     try:
-        yield database
-    finally:
         if database.database_exists():
             database.delete_database()
-        database.close()
+        database.create_database()
+        yield database
+    finally:
+        try:
+            if database.database_exists():
+                database.delete_database()
+        finally:
+            database.close()
 
 
 @pytest.fixture

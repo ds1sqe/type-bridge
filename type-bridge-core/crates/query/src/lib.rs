@@ -491,6 +491,10 @@ const ASSERTION_ENGINE_CODES: engine::EngineCodes = engine::EngineCodes {
         code: "migration_assertion_value_domain_mismatch",
         message: "value comparison operands have different scalar domains",
     },
+    value_comparator_unsupported: engine::EngineCode {
+        code: "migration_assertion_value_comparator_unsupported",
+        message: "ordered comparisons require a provider-orderable scalar domain",
+    },
     binding_not_scalar: engine::EngineCode {
         code: "migration_assertion_binding_not_scalar",
         message: "value operand binding has no uniform attribute scalar domain",
@@ -525,6 +529,10 @@ const ASSERTION_ENGINE_CODES: engine::EngineCodes = engine::EngineCodes {
         code: "migration_assertion_unknown_binding",
         message: "assertion patterns cannot call schema functions",
     },
+    function_dependency_cycle: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot call schema functions",
+    },
     value_binding_misuse: engine::EngineCode {
         code: "migration_assertion_unknown_binding",
         message: "assertion patterns cannot call schema functions",
@@ -538,6 +546,10 @@ const ASSERTION_ENGINE_CODES: engine::EngineCodes = engine::EngineCodes {
         message: "assertion patterns cannot express optional blocks",
     },
     empty_try_domain: engine::EngineCode {
+        code: "migration_assertion_unknown_binding",
+        message: "assertion patterns cannot express optional blocks",
+    },
+    try_binding_shared: engine::EngineCode {
         code: "migration_assertion_unknown_binding",
         message: "assertion patterns cannot express optional blocks",
     },

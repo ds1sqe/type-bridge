@@ -188,28 +188,177 @@ entities:
 }
 
 #[test]
-fn sources_use_the_strict_discovery_pattern_grammar() {
-    for (pattern, expected) in [
+fn fragment_level_sources_are_rejected() {
+    let source = r#"format: typebridge.schema/v2
+sources: [fragments/*.yaml]
+"#;
+    let error = normalize_documents(&documents(source))
+        .expect_err("source discovery belongs to the workspace manifest");
+    let diagnostic = error.iter().next().unwrap();
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "unknown_schema_document_key",
+    );
+    let span = diagnostic
+        .primary()
+        .expect("unknown key retains its source span");
+    let start = source.find("sources").unwrap();
+    assert_eq!(span.document().as_str(), "schema.yaml");
+    assert_eq!(
+        (span.byte_start(), span.byte_end()),
+        (start as u64, (start + 7) as u64)
+    );
+    assert_eq!((span.line(), span.column()), (2, 1));
+    assert_eq!((span.end_line(), span.end_column()), (2, 8));
+}
+
+#[test]
+fn scalar_and_expanded_sub_facts_have_equal_declared_identity() {
+    let scalar = r#"format: typebridge.schema/v2
+attributes:
+  base-name: { value: string }
+  display-name: { sub: base-name }
+entities:
+  actor: {}
+  person: { sub: actor }
+relations:
+  association: {}
+  friendship: { sub: association }
+"#;
+    let expanded = r#"format: typebridge.schema/v2
+attributes:
+  base-name: { value: string }
+  display-name: { sub: { type: base-name } }
+entities:
+  actor: {}
+  person: { sub: { type: actor } }
+relations:
+  association: {}
+  friendship: { sub: { type: association } }
+"#;
+
+    let scalar = normalize_documents(&documents(scalar)).expect("scalar sub facts normalize");
+    let expanded = normalize_documents(&documents(expanded)).expect("expanded sub facts normalize");
+    assert_eq!(
+        scalar.declared_identity_fingerprint(),
+        expanded.declared_identity_fingerprint(),
+    );
+}
+
+#[test]
+fn expanded_sub_facts_attach_doc_and_meta_to_the_edge() {
+    let source = r#"format: typebridge.schema/v2
+attributes:
+  base-name: { value: string }
+  display-name:
+    sub: { type: base-name, doc: "attribute edge", meta: { owner: "schema" } }
+entities:
+  actor: {}
+  person:
+    sub: { type: actor, doc: "entity edge", meta: { owner: "schema" } }
+relations:
+  association: {}
+  friendship:
+    sub: { type: association, doc: "relation edge", meta: { owner: "schema" } }
+"#;
+    let declared = normalize_documents(&documents(source)).expect("expanded sub facts normalize");
+    let edge_annotations = declared
+        .facts()
+        .filter(|fact| {
+            matches!(
+                fact,
+                SchemaFact::Annotation(annotation)
+                    if matches!(annotation.id().subject(), AnnotationSubjectId::Sub(_))
+            )
+        })
+        .count();
+    assert_eq!(edge_annotations, 6);
+}
+
+#[test]
+fn expanded_sub_shape_is_closed() {
+    for (sub, code) in [
+        ("[base]", "invalid_schema_sub_shape"),
         (
-            "fragments/cafe\u{301}.yaml",
-            "schema_source_pattern_not_nfc",
+            "{ type: base, future: true }",
+            "unknown_schema_document_key",
         ),
-        ("fragments/[ab].yaml", "unsupported_schema_glob_syntax"),
-        ("fragments/{a,b}.yaml", "unsupported_schema_glob_syntax"),
     ] {
-        let source = format!("format: typebridge.schema/v2\nsources:\n  - '{pattern}'\n");
-        let error = normalize_documents(&documents(&source))
-            .expect_err("invalid source pattern must fail normalization");
+        let source = format!(
+            "format: typebridge.schema/v2\nentities:\n  base: {{}}\n  child:\n    sub: {sub}\n"
+        );
+        let error = normalize_documents(&documents(&source)).expect_err("shape must fail closed");
         assert_eq!(
-            error
-                .iter()
-                .next()
-                .expect("one source-pattern diagnostic")
-                .diagnostic()
-                .code()
-                .as_str(),
-            expected,
-            "pattern {pattern}",
+            error.iter().next().unwrap().diagnostic().code().as_str(),
+            code
+        );
+    }
+}
+
+#[test]
+fn unknown_expanded_sub_key_reports_the_exact_key_span() {
+    let source = r#"format: typebridge.schema/v2
+entities:
+  base: {}
+  child:
+    sub:
+      type: base
+      future: true
+"#;
+    let error = normalize_documents(&documents(source)).expect_err("unknown key must fail closed");
+    let diagnostic = error.iter().next().unwrap();
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "unknown_schema_document_key",
+    );
+    let span = diagnostic
+        .primary()
+        .expect("unknown key retains its source span");
+    let start = source.find("future").unwrap();
+    assert_eq!(span.document().as_str(), "schema.yaml");
+    assert_eq!(
+        (span.byte_start(), span.byte_end()),
+        (start as u64, (start + 6) as u64)
+    );
+    assert_eq!((span.line(), span.column()), (7, 7));
+    assert_eq!((span.end_line(), span.end_column()), (7, 13));
+}
+
+#[test]
+fn bare_null_named_fact_bodies_are_rejected() {
+    let source = r#"format: typebridge.schema/v2
+attributes:
+  name: { value: string }
+entities:
+  person:
+    owns:
+      name:
+"#;
+    let error = normalize_documents(&documents(source)).expect_err("null is not an empty body");
+    assert_eq!(
+        error.iter().next().unwrap().diagnostic().code().as_str(),
+        "invalid_named_schema_fact_body",
+    );
+}
+
+#[test]
+fn v1_extensions_are_requirement_only_and_never_ignore_payloads() {
+    let supported = r#"format: typebridge.schema/v2
+extensions:
+  acme.schema.audit:
+    required: true
+"#;
+    normalize_documents(&documents(supported)).expect("dotted requirement ID is supported");
+
+    for key in ["payload", "data"] {
+        let source = format!(
+            "format: typebridge.schema/v2\nextensions:\n  acme.schema.audit:\n    required: true\n    {key}: {{ enabled: true }}\n"
+        );
+        let error = normalize_documents(&documents(&source))
+            .expect_err("unimplemented extension bodies must fail closed");
+        assert_eq!(
+            error.iter().next().unwrap().diagnostic().code().as_str(),
+            "unknown_schema_document_key",
         );
     }
 }

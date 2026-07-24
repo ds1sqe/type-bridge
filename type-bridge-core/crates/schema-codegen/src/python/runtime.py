@@ -307,11 +307,7 @@ def _validate_projected(
         values: tuple[object, ...] = value
     else:
         values = (value,)
-    specifications = (
-        _sequence(create["players"])
-        if role
-        else (create["value"],)
-    )
+    specifications = _sequence(create["players"]) if role else (create["value"],)
     for item in values:
         if not any(
             _matches_projected(item, _mapping(specification), role=role)
@@ -333,9 +329,8 @@ def _matches_projected(
         if kind == "model":
             model_use = _mapping(specification["value"])
         elif kind == "struct":
-            return (
-                isinstance(value, _ProjectedStructValue)
-                and value.__struct_id__ == _canonical(specification["value"])
+            return isinstance(value, _ProjectedStructValue) and value.__struct_id__ == _canonical(
+                specification["value"]
             )
         else:
             return _matches_scalar(value, _string(specification["value"]))

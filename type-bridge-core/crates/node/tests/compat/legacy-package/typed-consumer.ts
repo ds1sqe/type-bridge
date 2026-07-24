@@ -1,17 +1,24 @@
 import {
   Entity,
   Key,
+  QueryV2Authority,
   Relation,
   attr,
   field,
   loadNative,
+  queryV2ExecuteLocal,
+  queryV2PrepareRemote,
+  queryV2RemoteCapabilities,
   role,
   type EntityDescriptor,
   type ModelClass,
   type ModelInstance,
   type ParentModelClass,
+  type PendingQueryV2Remote,
+  type QueryV2RemoteLimits,
   type ResolvedTypeFlags,
   type RustDatabase,
+  type RustDatabaseConnectOptions,
   type RustTransactionContext,
 } from "@type-bridge/node";
 import {
@@ -48,6 +55,12 @@ type Equal<Left, Right> =
       : false
     : false;
 type Expect<Condition extends true> = Condition;
+
+const secureConnectOptions: RustDatabaseConnectOptions = {
+  tlsEnabled: true,
+  tlsRootCa: "/run/secrets/type-db-root.pem",
+};
+void secureConnectOptions;
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -178,6 +191,45 @@ function assertPackedStaticSurface(
 }
 
 void assertPackedStaticSurface;
+
+function assertPackedPreparedV2Surface(
+  database: RustDatabase,
+  authority: QueryV2Authority,
+  plan: Uint8Array,
+  advertisement: Uint8Array,
+  response: Uint8Array,
+): void {
+  const invocation = JSON.stringify({ operation: "rows", rows: [] });
+  const limits: QueryV2RemoteLimits = {
+    maxItems: 100n,
+    maxBytes: 1_048_576n,
+    maxCollectionMembers: 1_000n,
+    deadlineMs: 30_000n,
+  };
+  const local: Promise<string> = queryV2ExecuteLocal(
+    database,
+    authority,
+    plan,
+    invocation,
+    limits.deadlineMs,
+  );
+  const capabilities: readonly string[] = queryV2RemoteCapabilities(advertisement);
+  const pending: PendingQueryV2Remote = queryV2PrepareRemote(
+    authority,
+    plan,
+    invocation,
+    advertisement,
+    limits,
+  );
+  const request: Uint8Array = pending.requestBytes();
+  const outcome: Promise<string> = pending.decodeReply(response);
+  void local;
+  void capabilities;
+  void request;
+  void outcome;
+}
+
+void assertPackedPreparedV2Surface;
 
 function assertLegacyRootStructuralSurface(
   instanceShape: Readonly<{

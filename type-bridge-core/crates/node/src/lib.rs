@@ -24,13 +24,13 @@ pub use match_runtime::{
 };
 pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use tokio::runtime::Runtime;
 use type_bridge_core_lib::bindgen::{BindgenOptions, TargetLanguage};
 use type_bridge_core_lib::schema::TypeSchema;
 use type_bridge_core_lib::version as core_version;
@@ -39,8 +39,8 @@ use type_bridge_orm::{
     AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
     DynamicEntityManager, DynamicEntityRow, DynamicExpr, DynamicRelationManager,
     DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, EntityDescriptor, Filter, OrmError,
-    OwnedAttributeDescriptor, RelationDescriptor, SchemaInfo, TransactionContext, TxType,
-    TypeDescriptor, ValueType,
+    OwnedAttributeDescriptor, ProviderRuntimeOwner, RelationDescriptor, SchemaInfo,
+    TransactionContext, TxType, TypeDescriptor, ValueType,
 };
 
 /// JSON-deserialized spec for expression-tree queries.
@@ -244,11 +244,11 @@ impl NodeDescriptorRegistry {
 #[napi]
 pub struct NodeRustDatabase {
     db: Arc<type_bridge_orm::Database>,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
 }
 
 impl NodeRustDatabase {
-    pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<Runtime>) {
+    pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<ProviderRuntimeOwner>) {
         (Arc::clone(&self.db), Arc::clone(&self.runtime))
     }
 }
@@ -260,6 +260,12 @@ impl NodeRustDatabase {
     #[napi(js_name = "isConnected")]
     pub fn is_connected(&self) -> bool {
         self.db.is_connected()
+    }
+
+    /// Explicitly close the Rust provider connection.
+    #[napi(js_name = "close")]
+    pub fn close(&self) -> Result<()> {
+        self.db.close().map_err(napi_orm_error)
     }
 
     /// Return the database name bound to this handle.
@@ -357,11 +363,11 @@ impl NodeRustDatabase {
 #[napi]
 pub struct NodeRustTransactionContext {
     context: TransactionContext,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
 }
 
 impl NodeRustTransactionContext {
-    pub(crate) fn handles(&self) -> (TransactionContext, Arc<Runtime>) {
+    pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
     }
 }
@@ -445,7 +451,7 @@ impl NodeRustTransactionContext {
 pub struct NodeDynamicEntityManager {
     db: Option<Arc<type_bridge_orm::Database>>,
     tx: Option<TransactionContext>,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
     descriptor: Arc<EntityDescriptor>,
 }
 
@@ -701,7 +707,7 @@ impl NodeDynamicEntityManager {
 pub struct NodeDynamicRelationManager {
     db: Option<Arc<type_bridge_orm::Database>>,
     tx: Option<TransactionContext>,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
     descriptor: Arc<RelationDescriptor>,
 }
 
@@ -992,6 +998,10 @@ impl NodeDynamicRelationManager {
 /// propagate or surface the error; tests should propagate it so that a
 /// missing server is a clear failure rather than a silent skip.
 #[napi(js_name = "ensureRustDatabase")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the stable N-API function keeps the released positional connection fields and appends TLS options"
+)]
 pub fn ensure_rust_database(
     address: String,
     database: String,
@@ -999,8 +1009,14 @@ pub fn ensure_rust_database(
     password: Option<String>,
     http_port: Option<u32>,
     server_version: Option<String>,
+    tls_enabled: Option<bool>,
+    tls_root_ca: Option<String>,
 ) -> Result<()> {
-    let runtime = Runtime::new().map(Arc::new).map_err(|error| {
+    let options = napi_secure_connect_options(http_port, server_version, tls_enabled, tls_root_ca)?;
+    let prepared = options
+        .prepare_transport()
+        .map_err(napi_secure_connect_error)?;
+    let runtime = ProviderRuntimeOwner::new().map(Arc::new).map_err(|error| {
         Error::new(
             Status::GenericFailure,
             format!("Failed to create Tokio runtime: {error}"),
@@ -1008,16 +1024,19 @@ pub fn ensure_rust_database(
     })?;
     let username = username.unwrap_or_else(|| "admin".to_string());
     let password = password.unwrap_or_else(|| "password".to_string());
-    let options = napi_connect_options(http_port, server_version)?;
     runtime
-        .block_on(type_bridge_orm::ensure_database_exists(
-            &address, &database, &username, &password, options,
+        .block_on(type_bridge_orm::ensure_database_exists_prepared_secure(
+            &address, &database, &username, &password, prepared,
         ))
-        .map_err(napi_orm_error)
+        .map_err(napi_secure_connect_error)
 }
 
 /// Connect to TypeDB using the shared Rust ORM session layer.
 #[napi(js_name = "connectRustDatabase")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the stable N-API function keeps the released positional connection fields and appends TLS options"
+)]
 pub fn connect_rust_database(
     address: String,
     database: String,
@@ -1025,8 +1044,14 @@ pub fn connect_rust_database(
     password: Option<String>,
     http_port: Option<u32>,
     server_version: Option<String>,
+    tls_enabled: Option<bool>,
+    tls_root_ca: Option<String>,
 ) -> Result<NodeRustDatabase> {
-    let runtime = Runtime::new().map(Arc::new).map_err(|error| {
+    let options = napi_secure_connect_options(http_port, server_version, tls_enabled, tls_root_ca)?;
+    let prepared = options
+        .prepare_transport()
+        .map_err(napi_secure_connect_error)?;
+    let runtime = ProviderRuntimeOwner::new().map(Arc::new).map_err(|error| {
         Error::new(
             Status::GenericFailure,
             format!("Failed to create Tokio runtime: {error}"),
@@ -1034,12 +1059,13 @@ pub fn connect_rust_database(
     })?;
     let username = username.unwrap_or_else(|| "admin".to_string());
     let password = password.unwrap_or_else(|| "password".to_string());
-    let options = napi_connect_options(http_port, server_version)?;
     let db = runtime
-        .block_on(type_bridge_orm::Database::connect_with_options(
-            &address, &database, &username, &password, options,
-        ))
-        .map_err(napi_orm_error)?;
+        .block_on(
+            type_bridge_orm::Database::connect_prepared_secure_with_options(
+                &address, &database, &username, &password, prepared,
+            ),
+        )
+        .map_err(napi_secure_connect_error)?;
 
     Ok(NodeRustDatabase {
         db: Arc::new(db),
@@ -1635,20 +1661,8 @@ fn relation_rows_to_json(rows: &[DynamicRelationRow]) -> Result<String> {
 
 fn entity_row_to_json(row: &DynamicEntityRow) -> Value {
     let mut obj = Map::new();
-    obj.insert(
-        "iid".to_string(),
-        row.iid
-            .as_ref()
-            .map(|iid| Value::String(iid.clone()))
-            .unwrap_or(Value::Null),
-    );
-    obj.insert(
-        "type_name".to_string(),
-        row.type_name
-            .as_ref()
-            .map(|type_name| Value::String(type_name.clone()))
-            .unwrap_or(Value::Null),
-    );
+    // Insert in lexical order so bytes stay identical with both serde_json map
+    // backends (`BTreeMap` by default and `IndexMap` under preserve_order).
     obj.insert(
         "attributes".to_string(),
         Value::Array(
@@ -1663,18 +1677,46 @@ fn entity_row_to_json(row: &DynamicEntityRow) -> Value {
                 .collect(),
         ),
     );
+    obj.insert(
+        "iid".to_string(),
+        row.iid
+            .as_ref()
+            .map(|iid| Value::String(iid.clone()))
+            .unwrap_or(Value::Null),
+    );
+    obj.insert(
+        "type_name".to_string(),
+        row.type_name
+            .as_ref()
+            .map(|type_name| Value::String(type_name.clone()))
+            .unwrap_or(Value::Null),
+    );
     Value::Object(obj)
 }
 
 fn relation_row_to_json(row: &DynamicRelationRow) -> Value {
-    let mut obj = match entity_row_to_json(&DynamicEntityRow {
-        iid: row.iid.clone(),
-        type_name: row.type_name.clone(),
-        attributes: row.attributes.clone(),
-    }) {
-        Value::Object(obj) => obj,
-        _ => Map::new(),
-    };
+    let mut obj = Map::new();
+    obj.insert(
+        "attributes".to_string(),
+        Value::Array(
+            row.attributes
+                .iter()
+                .map(|(name, value)| {
+                    Value::Array(vec![
+                        Value::String(name.clone()),
+                        attribute_value_to_json(value),
+                    ])
+                })
+                .collect(),
+        ),
+    );
+    obj.insert(
+        "iid".to_string(),
+        row.iid
+            .as_ref()
+            .map(|iid| Value::String(iid.clone()))
+            .unwrap_or(Value::Null),
+    );
     obj.insert(
         "role_players".to_string(),
         Value::Array(
@@ -1683,8 +1725,16 @@ fn relation_row_to_json(row: &DynamicRelationRow) -> Value {
                 .map(|player| {
                     let mut obj = Map::new();
                     obj.insert(
-                        "role_name".to_string(),
-                        Value::String(player.role_name.clone()),
+                        "attributes".to_string(),
+                        Value::Array(
+                            player
+                                .attributes
+                                .iter()
+                                .map(|(name, value)| {
+                                    Value::Array(vec![Value::String(name.clone()), value.clone()])
+                                })
+                                .collect(),
+                        ),
                     );
                     obj.insert(
                         "player_iid".to_string(),
@@ -1703,21 +1753,20 @@ fn relation_row_to_json(row: &DynamicRelationRow) -> Value {
                             .unwrap_or(Value::Null),
                     );
                     obj.insert(
-                        "attributes".to_string(),
-                        Value::Array(
-                            player
-                                .attributes
-                                .iter()
-                                .map(|(name, value)| {
-                                    Value::Array(vec![Value::String(name.clone()), value.clone()])
-                                })
-                                .collect(),
-                        ),
+                        "role_name".to_string(),
+                        Value::String(player.role_name.clone()),
                     );
                     Value::Object(obj)
                 })
                 .collect(),
         ),
+    );
+    obj.insert(
+        "type_name".to_string(),
+        row.type_name
+            .as_ref()
+            .map(|type_name| Value::String(type_name.clone()))
+            .unwrap_or(Value::Null),
     );
     Value::Object(obj)
 }
@@ -1756,17 +1805,45 @@ fn tx_type_name(tx_type: TxType) -> &'static str {
     }
 }
 
-/// Build [`type_bridge_orm::ConnectOptions`] from optional parameters coming
+/// Build typed secure connection options from optional parameters coming
 /// across the NAPI boundary.
 ///
 /// NAPI does not expose `u16` natively; callers pass an optional `u32` and we
 /// clamp it here.  `None` → default (8000).  An out-of-range value is a caller
 /// error, not a configuration error, so we return a hard `InvalidArg`.
-fn napi_connect_options(
+fn napi_secure_connect_options(
     http_port: Option<u32>,
     server_version: Option<String>,
-) -> Result<type_bridge_orm::ConnectOptions> {
-    let mut opts = type_bridge_orm::ConnectOptions::default();
+    tls_enabled: Option<bool>,
+    tls_root_ca: Option<String>,
+) -> Result<type_bridge_orm::SecureConnectOptions> {
+    let tls_mode = match (tls_enabled, tls_root_ca) {
+        (None | Some(false), None) => type_bridge_orm::TlsMode::Disabled,
+        (Some(true), None) => type_bridge_orm::TlsMode::NativeRoots,
+        (Some(true), Some(path)) if path.is_empty() => {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "tlsRootCa must not be empty".to_string(),
+            ));
+        }
+        (Some(true), Some(path)) => type_bridge_orm::TlsMode::CustomRootCa(PathBuf::from(path)),
+        (Some(false), Some(_)) => {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "tlsRootCa contradicts explicit tlsEnabled=false".to_string(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "tlsRootCa requires explicit tlsEnabled=true".to_string(),
+            ));
+        }
+    };
+    let mut opts = type_bridge_orm::SecureConnectOptions {
+        tls_mode,
+        ..type_bridge_orm::SecureConnectOptions::default()
+    };
     if let Some(port) = http_port {
         opts.http_port = u16::try_from(port).map_err(|_| {
             Error::new(
@@ -1784,6 +1861,15 @@ fn napi_connect_options(
         })?);
     }
     Ok(opts)
+}
+
+fn napi_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> napi::Error {
+    let status = if error.configuration_code().is_some() {
+        Status::InvalidArg
+    } else {
+        Status::GenericFailure
+    };
+    Error::new(status, error.to_string())
 }
 
 fn napi_orm_error(error: OrmError) -> napi::Error {
@@ -1806,6 +1892,40 @@ fn napi_orm_error(error: OrmError) -> napi::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_tls_inputs_follow_the_canonical_truth_table() {
+        assert!(matches!(
+            napi_secure_connect_options(None, None, None, None)
+                .unwrap()
+                .tls_mode,
+            type_bridge_orm::TlsMode::Disabled
+        ));
+        assert!(matches!(
+            napi_secure_connect_options(None, None, Some(false), None)
+                .unwrap()
+                .tls_mode,
+            type_bridge_orm::TlsMode::Disabled
+        ));
+        assert!(matches!(
+            napi_secure_connect_options(None, None, Some(true), None)
+                .unwrap()
+                .tls_mode,
+            type_bridge_orm::TlsMode::NativeRoots
+        ));
+        assert!(matches!(
+            napi_secure_connect_options(None, None, Some(true), Some("ca.pem".into()))
+                .unwrap()
+                .tls_mode,
+            type_bridge_orm::TlsMode::CustomRootCa(path)
+                if path == std::path::Path::new("ca.pem")
+        ));
+        assert!(
+            napi_secure_connect_options(None, None, Some(false), Some("ca.pem".into())).is_err()
+        );
+        assert!(napi_secure_connect_options(None, None, None, Some("ca.pem".into())).is_err());
+        assert!(napi_secure_connect_options(None, None, Some(true), Some(String::new())).is_err());
+    }
 
     fn person_descriptor_json() -> String {
         r#"{
@@ -2136,6 +2256,32 @@ mod tests {
         assert_eq!(
             entity_rows_to_json(&[row]).expect("row should serialize"),
             r#"[{"attributes":[["person-name",{"String":"Alice"}],["age",{"Long":"9007199254740993"}]],"iid":"0xabc","type_name":"person"}]"#
+        );
+    }
+
+    #[test]
+    fn dynamic_relation_rows_have_backend_independent_key_order() {
+        let row = DynamicRelationRow {
+            iid: Some("0xrel".to_string()),
+            type_name: Some("employment".to_string()),
+            attributes: vec![(
+                "since".to_string(),
+                AttributeValue::Date("2026-07-22".to_string()),
+            )],
+            role_players: vec![type_bridge_orm::DynamicRolePlayer {
+                role_name: "employee".to_string(),
+                player_iid: Some("0xperson".to_string()),
+                player_type_name: Some("person".to_string()),
+                attributes: vec![(
+                    "person-name".to_string(),
+                    serde_json::json!({"String": "Alice"}),
+                )],
+            }],
+        };
+
+        assert_eq!(
+            relation_rows_to_json(&[row]).expect("row should serialize"),
+            r#"[{"attributes":[["since",{"Date":"2026-07-22"}]],"iid":"0xrel","role_players":[{"attributes":[["person-name",{"String":"Alice"}]],"player_iid":"0xperson","player_type_name":"person","role_name":"employee"}],"type_name":"employment"}]"#
         );
     }
 

@@ -1,8 +1,43 @@
 use super::backend::{DriverBackend, QueryResultKind, TransactionType};
-use super::real_driver::RealTypeDBBackend;
-use crate::config::TypeDBSection;
+#[cfg(feature = "v2-query")]
+use super::real_driver::sanitize_prepared_connect_error;
+use super::real_driver::{RealTypeDBBackend, prepare_secure_connect_options};
+use crate::config::{SecureTypeDBSection, TypeDBSection};
 use crate::error::PipelineError;
 use crate::executor::QueryExecutor;
+use type_bridge_typedb_runtime::PreparedSecureConnectOptions;
+
+/// One immutable server connection identity bound to one prepared transport.
+///
+/// The fields are intentionally private: a caller cannot pair trust material,
+/// HTTP discovery settings, or a selected driver band with a different host or
+/// credential set after preparation.
+#[doc(hidden)]
+pub struct PreparedSecureTypeDBConnection {
+    address: String,
+    #[cfg(feature = "v2-query")]
+    database: String,
+    username: String,
+    password: String,
+    options: PreparedSecureConnectOptions,
+}
+
+impl PreparedSecureTypeDBConnection {
+    /// Connect the V2 ORM authority through this exact prepared identity.
+    #[cfg(feature = "v2-query")]
+    #[doc(hidden)]
+    pub async fn connect_database(&self) -> Result<type_bridge_orm::Database, PipelineError> {
+        type_bridge_orm::Database::connect_prepared_secure_with_options(
+            &self.address,
+            &self.database,
+            &self.username,
+            &self.password,
+            self.options.clone(),
+        )
+        .await
+        .map_err(sanitize_prepared_connect_error)
+    }
+}
 
 /// Wrapper around the TypeDB Rust driver providing a clean async API
 /// for query execution and schema retrieval.
@@ -15,6 +50,47 @@ impl TypeDBClient {
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn connect(config: &TypeDBSection) -> Result<Self, PipelineError> {
         let backend = RealTypeDBBackend::connect(config).await?;
+        Ok(Self {
+            backend: Box::new(backend),
+        })
+    }
+
+    /// Connect using the standalone server's validated secure configuration.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    pub async fn connect_secure(config: &SecureTypeDBSection) -> Result<Self, PipelineError> {
+        let prepared = Self::prepare_secure_transport(config)?;
+        Self::connect_prepared_secure(&prepared).await
+    }
+
+    /// Validate and snapshot one secure transport policy for reuse.
+    pub fn prepare_secure_transport(
+        config: &SecureTypeDBSection,
+    ) -> Result<PreparedSecureTypeDBConnection, PipelineError> {
+        // Resolve trust before retaining any credential-bearing connection
+        // identity, then bind both into one opaque value.
+        let options = prepare_secure_connect_options(config)?;
+        let connection = &config.connection;
+        Ok(PreparedSecureTypeDBConnection {
+            address: connection.address.clone(),
+            #[cfg(feature = "v2-query")]
+            database: connection.database.clone(),
+            username: connection.username.clone(),
+            password: connection.password.clone(),
+            options,
+        })
+    }
+
+    /// Connect through an already prepared immutable transport snapshot.
+    pub async fn connect_prepared_secure(
+        prepared: &PreparedSecureTypeDBConnection,
+    ) -> Result<Self, PipelineError> {
+        let backend = RealTypeDBBackend::connect_prepared_secure(
+            &prepared.address,
+            &prepared.username,
+            &prepared.password,
+            prepared.options.clone(),
+        )
+        .await?;
         Ok(Self {
             backend: Box::new(backend),
         })
@@ -137,6 +213,7 @@ pub(crate) fn parse_transaction_type(tx_type: &str) -> Result<TransactionType, P
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::collections::VecDeque;
+    use std::error::Error as _;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -840,6 +917,48 @@ mod tests {
         let client = make_client(backend);
         let executor: Box<dyn QueryExecutor> = Box::new(client);
         assert!(executor.is_connected());
+    }
+
+    #[tokio::test]
+    async fn prepared_first_and_v2_connections_never_expose_credentials_or_provider_identity() {
+        const ADDRESS: &str = "admin:TB_ADDRESS_SECRET@provider.invalid:1729";
+        const USERNAME: &str = "TB_USERNAME_SECRET";
+        const PASSWORD: &str = "TB_PASSWORD_SECRET";
+        let config = SecureTypeDBSection::new(
+            TypeDBSection {
+                address: ADDRESS.to_owned(),
+                database: "db".to_owned(),
+                username: USERNAME.to_owned(),
+                password: PASSWORD.to_owned(),
+                http_port: 8000,
+                server_version: Some("3.12.1".to_owned()),
+            },
+            crate::config::OutboundTlsMode::Disabled,
+        );
+        let prepared = TypeDBClient::prepare_secure_transport(&config).unwrap();
+
+        let first = match TypeDBClient::connect_prepared_secure(&prepared).await {
+            Ok(_) => panic!("malformed provider address unexpectedly connected"),
+            Err(error) => error,
+        };
+        let rendered = format!("{first}\n{first:?}");
+        for secret in [ADDRESS, USERNAME, PASSWORD] {
+            assert!(!rendered.contains(secret), "{secret}: {rendered}");
+        }
+        assert!(first.source().is_none());
+
+        #[cfg(feature = "v2-query")]
+        {
+            let second = match prepared.connect_database().await {
+                Ok(_) => panic!("malformed V2 provider address unexpectedly connected"),
+                Err(error) => error,
+            };
+            let rendered = format!("{second}\n{second:?}");
+            for secret in [ADDRESS, USERNAME, PASSWORD] {
+                assert!(!rendered.contains(secret), "{secret}: {rendered}");
+            }
+            assert!(second.source().is_none());
+        }
     }
 
     // =============================================

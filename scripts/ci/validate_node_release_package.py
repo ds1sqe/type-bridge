@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate an npm release tarball's identity, tag, archive, and optional SRI."""
+"""Validate an npm tarball's identity, MIT license, inventory, sources, and SRI."""
 
 from __future__ import annotations
 
@@ -40,6 +40,18 @@ EXPECTED_NATIVE_MODULES = frozenset(
         "type_bridge_node.win32-x64-msvc.node",
     }
 )
+MIT_LICENSE = "MIT"
+README = "README.md"
+THIRD_PARTY_NOTICE = "THIRD_PARTY_NOTICES.md"
+EXPECTED_PACKAGE_FILES = frozenset(
+    {
+        "dist",
+        "*.node",
+        README,
+        THIRD_PARTY_NOTICE,
+    }
+)
+HISTORICAL_BAND9_COMPONENT = re.compile(r"(?:^|-)typedb-(?:driver|protocol)-b9(?:-|$)")
 REQUIRED_RUNTIME_MEMBERS = frozenset(
     {
         "dist/index.d.ts",
@@ -49,6 +61,8 @@ REQUIRED_RUNTIME_MEMBERS = frozenset(
         "dist/typed/index.d.ts",
         "dist/typed/index.js",
         "package.json",
+        README,
+        THIRD_PARTY_NOTICE,
     }
 )
 FORBIDDEN_RUNTIME_PREFIXES = ("dist/typescript/",)
@@ -87,8 +101,22 @@ def safe_member_name(raw_name: str, *, artifact: Path) -> str:
     return normalized
 
 
-def read_packed_package(artifact: Path) -> tuple[dict[str, Any], frozenset[str]]:
-    """Inspect the complete npm tarball and return metadata plus regular files."""
+def normalized_component(value: str) -> str:
+    """Normalize separators in one package member component for identity checks."""
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def reject_historical_band9_member(name: str, *, artifact: Path) -> None:
+    """Reject any archived path component that identifies a retired band-9 fork."""
+    for component in PurePosixPath(name).parts:
+        if HISTORICAL_BAND9_COMPONENT.search(normalized_component(component)) is not None:
+            raise ValidationError(f"Historical band-9 fork payload in {artifact.name}: {name!r}")
+
+
+def read_packed_package(
+    artifact: Path,
+) -> tuple[dict[str, Any], frozenset[str], bytes | None, bytes | None]:
+    """Inspect the npm tarball and return metadata, files, README, and notice."""
     if not artifact.is_file() or artifact.is_symlink() or not artifact.name.endswith(".tgz"):
         raise ValidationError(f"npm artifact must be one regular .tgz file: {artifact}")
     try:
@@ -103,6 +131,7 @@ def read_packed_package(artifact: Path) -> tuple[dict[str, Any], frozenset[str]]
             raise ValidationError(f"Corrupt npm artifact {artifact}: {error}") from error
         for member in archive_members:
             name = safe_member_name(member.name.rstrip("/"), artifact=artifact)
+            reject_historical_band9_member(name.removeprefix("package/"), artifact=artifact)
             if name in members:
                 raise ValidationError(f"Duplicate npm archive member in {artifact.name}: {name}")
             if not (member.isdir() or member.isfile()):
@@ -125,7 +154,19 @@ def read_packed_package(artifact: Path) -> tuple[dict[str, Any], frozenset[str]]
         regular_files = frozenset(
             name.removeprefix("package/") for name, member in members.items() if member.isfile()
         )
-        return payload, regular_files
+
+        def packed_member_bytes(relative: str) -> bytes | None:
+            member = members.get(f"package/{relative}")
+            if member is None or not member.isfile():
+                return None
+            member_stream = archive.extractfile(member)
+            if member_stream is None:
+                raise ValidationError(f"Could not read package/{relative} from {artifact.name}")
+            return member_stream.read()
+
+        readme_bytes = packed_member_bytes(README)
+        notice_bytes = packed_member_bytes(THIRD_PARTY_NOTICE)
+        return payload, regular_files, readme_bytes, notice_bytes
 
 
 def validate_runtime_inventory(artifact: Path, regular_files: frozenset[str]) -> None:
@@ -154,6 +195,20 @@ def validate_runtime_inventory(artifact: Path, regular_files: frozenset[str]) ->
             f"{artifact.name} has an invalid native module inventory: "
             f"missing={missing!r}, unexpected={unexpected!r}"
         )
+    fixed_members = {
+        "package.json",
+        README,
+        THIRD_PARTY_NOTICE,
+        *EXPECTED_NATIVE_MODULES,
+    }
+    unexpected_members = sorted(
+        name for name in regular_files if name not in fixed_members and not name.startswith("dist/")
+    )
+    if unexpected_members:
+        raise ValidationError(
+            f"{artifact.name} contains members outside the package.json files contract: "
+            f"{unexpected_members!r}"
+        )
 
 
 def validate_native_directory(directory: Path) -> dict[str, Any]:
@@ -179,7 +234,12 @@ def validate_native_directory(directory: Path) -> dict[str, Any]:
     }
 
 
-def package_identity(package: dict[str, Any], *, label: str) -> tuple[str, str]:
+def package_identity(
+    package: dict[str, Any],
+    *,
+    label: str,
+    allow_prerelease: bool = False,
+) -> tuple[str, str]:
     """Return one non-empty npm package name/version pair."""
     name = package.get("name")
     version = package.get("version")
@@ -188,12 +248,43 @@ def package_identity(package: dict[str, Any], *, label: str) -> tuple[str, str]:
     match = SEMVER_PATTERN.fullmatch(version)
     if match is None:
         raise ValidationError(f"{label} declares an invalid semantic version: {version!r}")
-    if match.group(4) is not None:
+    if match.group(4) is not None and not allow_prerelease:
         raise ValidationError(
             f"{label} declares prerelease version {version!r}; "
             "this workflow publishes only stable versions to npm's latest tag"
         )
     return name, version
+
+
+def validate_package_contract(package: dict[str, Any], *, label: str) -> None:
+    """Require the immutable license and files contract in one package.json."""
+    license_value = package.get("license")
+    if license_value != MIT_LICENSE:
+        raise ValidationError(
+            f"{label} license must remain {MIT_LICENSE}: actual={license_value!r}"
+        )
+    raw_files = package.get("files")
+    if (
+        not isinstance(raw_files, list)
+        or not all(isinstance(value, str) for value in raw_files)
+        or len(raw_files) != len(set(raw_files))
+        or frozenset(raw_files) != EXPECTED_PACKAGE_FILES
+    ):
+        raise ValidationError(
+            f"{label} files contract disagrees: "
+            f"actual={raw_files!r}, expected={sorted(EXPECTED_PACKAGE_FILES)!r}"
+        )
+
+
+def read_repository_member(repository_package: Path, name: str) -> bytes:
+    """Read one required regular file beside the repository package.json."""
+    path = repository_package.with_name(name)
+    if not path.is_file() or path.is_symlink():
+        raise ValidationError(f"repository {name} is missing or non-regular: {path}")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise ValidationError(f"Could not read repository {name} {path}: {error}") from error
 
 
 def artifact_sri(path: Path, algorithm: str = "sha512") -> str:
@@ -250,13 +341,24 @@ def validate_release_package(
     repository_package: Path,
     tag: str,
     registry_integrity: str | None = None,
+    allow_prerelease: bool = False,
 ) -> dict[str, Any]:
     """Validate archive identity against repository metadata and the release tag."""
     repository = read_json_file(repository_package, label="repository package.json")
-    packed, regular_files = read_packed_package(artifact)
+    packed, regular_files, packed_readme, packed_notice = read_packed_package(artifact)
     validate_runtime_inventory(artifact, regular_files)
-    repository_name, repository_version = package_identity(repository, label="repository package")
-    packed_name, packed_version = package_identity(packed, label="packed package")
+    validate_package_contract(repository, label="repository package.json")
+    validate_package_contract(packed, label="packed package.json")
+    repository_name, repository_version = package_identity(
+        repository,
+        label="repository package",
+        allow_prerelease=allow_prerelease,
+    )
+    packed_name, packed_version = package_identity(
+        packed,
+        label="packed package",
+        allow_prerelease=allow_prerelease,
+    )
     if (packed_name, packed_version) != (repository_name, repository_version):
         raise ValidationError(
             "Packed npm identity disagrees with repository package.json: "
@@ -274,6 +376,12 @@ def validate_release_package(
             f"npm tarball filename disagrees with package identity: "
             f"artifact={artifact.name!r}, expected={expected_filename!r}"
         )
+    repository_readme = read_repository_member(repository_package, README)
+    if packed_readme != repository_readme:
+        raise ValidationError(f"Packed npm {README} disagrees with repository source")
+    repository_notice = read_repository_member(repository_package, THIRD_PARTY_NOTICE)
+    if packed_notice != repository_notice:
+        raise ValidationError(f"Packed npm {THIRD_PARTY_NOTICE} disagrees with repository source")
     integrity = artifact_sri(artifact)
     registry_match = False
     if registry_integrity is not None:
@@ -281,6 +389,7 @@ def validate_release_package(
         registry_match = True
     return {
         "artifact": artifact.name,
+        "allow_prerelease": allow_prerelease,
         "integrity": integrity,
         "name": repository_name,
         "native_modules": sorted(EXPECTED_NATIVE_MODULES),
@@ -300,6 +409,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repository-package", type=Path)
     parser.add_argument("--tag")
     parser.add_argument("--registry-integrity")
+    parser.add_argument(
+        "--allow-prerelease",
+        action="store_true",
+        help=(
+            "accept a SemVer prerelease identity for non-publishing candidate validation; "
+            "never use this flag in an npm publication job"
+        ),
+    )
     return parser
 
 
@@ -319,6 +436,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         repository_package=args.repository_package.resolve(),
         tag=args.tag,
         registry_integrity=args.registry_integrity,
+        allow_prerelease=args.allow_prerelease,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

@@ -1,5 +1,7 @@
 //! Parsed partitioning of provider schema exports around the control namespace.
 
+use std::sync::Arc;
+
 use serde_json::Value;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
@@ -8,12 +10,40 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_schema::{DeltaError, ManagedDeltaContext, managed_schema_state};
 use type_bridge_schema_compat::{
-    LEGACY_LEDGER_SCHEMA_TYPEQL, SchemaReference, TypeqlDeclaredSchema, is_legacy_ledger_label,
-    typeql_to_declared, typeql_to_declared_with_references,
+    AdoptedGenesisAuthority, LEGACY_LEDGER_SCHEMA_TYPEQL, SchemaReference, TypeqlDeclaredSchema,
+    is_legacy_ledger_label, parse_adopted_genesis_authority_with_internal,
+    released_typeql_to_declared_lossless_projection,
+    released_typeql_to_declared_lossless_projection_with_references,
+    released_typeql_to_declared_projection, released_typeql_to_declared_projection_with_references,
+    typeql_to_declared,
+};
+
+pub use type_bridge_schema_compat::{
+    LiveQueryControlPresence, rebuild_live_query_authority, rebuild_live_query_authority_state,
 };
 
 use crate::control_schema::{MANAGED_FENCE_SCHEMA_TYPEQL, TYPEBRIDGE_INTERNAL_PREFIX};
 use crate::is_typebridge_internal_label;
+
+/// Compatibility authority accompanying one exact managed-schema observation.
+///
+/// Fresh V2 histories admit only schemas representable by the canonical fact
+/// graph. Adopted V1 histories additionally retain an independently verified
+/// raw authority for released-only constructs and must compare that authority
+/// against the same provider export used for candidate matching.
+#[derive(Clone, Debug)]
+pub(crate) enum ManagedObservationAuthority {
+    ExactPortable,
+    Adopted(Arc<AdoptedGenesisAuthority>),
+}
+
+impl ManagedObservationAuthority {
+    pub(crate) fn from_adopted(authority: Option<&Arc<AdoptedGenesisAuthority>>) -> Self {
+        authority.map_or(Self::ExactPortable, |authority| {
+            Self::Adopted(Arc::clone(authority))
+        })
+    }
+}
 
 /// One parsed TypeDB export partitioned into managed-user and internal facts.
 #[derive(Clone, Debug)]
@@ -55,11 +85,30 @@ pub fn partition_typeql_export(
     document: DocumentId,
     source: &str,
 ) -> Result<PartitionedDeclaredSchema, Diagnostic> {
-    let full = typeql_to_declared(document, source).map_err(|_| {
+    let full = released_typeql_to_declared_projection(document, source).map_err(|_| {
         failure(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_export_invalid",
             "TypeDB schema export cannot be normalized into V2 facts",
+        )
+    })?;
+    partition_declared_schema(full)
+}
+
+/// Parse one provider export without any compatibility projection loss.
+///
+/// Reserved control databases use this path because list capabilities,
+/// released-only annotations, and opaque definitions are semantic differences,
+/// not generator compatibility details.
+pub(crate) fn partition_typeql_export_lossless(
+    document: DocumentId,
+    source: &str,
+) -> Result<PartitionedDeclaredSchema, Diagnostic> {
+    let full = released_typeql_to_declared_lossless_projection(document, source).map_err(|_| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_export_invalid",
+            "TypeDB schema export cannot be losslessly normalized into V2 facts",
         )
     })?;
     partition_declared_schema(full)
@@ -136,11 +185,12 @@ pub(crate) fn partition_declared_schema(
 ///
 /// The candidates supply scope, semantic-profile, format, and
 /// required-capability context; their fingerprint claims never enter the
-/// observation. The export is parsed once, its function bodies must be
-/// statically free of reserved and dynamic type references, its reserved
-/// partition must equal the frozen fence-mirror contract exactly, every
-/// non-internal fact is treated as managed, and the state rebuilt from live
-/// facts must equal exactly one distinct candidate.
+/// observation. The same export supplies both portable facts and any explicit
+/// adopted compatibility authority, its function bodies must be statically
+/// free of reserved and dynamic type references, its reserved partition must
+/// equal the frozen fence-mirror contract exactly, every non-internal fact is
+/// treated as managed, and the state rebuilt from live facts must equal exactly
+/// one distinct candidate.
 pub fn observe_managed_state_from_export(
     document: DocumentId,
     export: &str,
@@ -148,13 +198,25 @@ pub fn observe_managed_state_from_export(
     source_candidate: &ManagedSchemaState,
     target_candidate: &ManagedSchemaState,
 ) -> Result<ManagedSchemaState, Diagnostic> {
-    let parsed = typeql_to_declared_with_references(document, export).map_err(|_| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_typedb_export_invalid",
-            "TypeDB schema export cannot be normalized into V2 facts",
-        )
-    })?;
+    observe_managed_state_from_export_with_authority(
+        document,
+        export,
+        available_capabilities,
+        source_candidate,
+        target_candidate,
+        &ManagedObservationAuthority::ExactPortable,
+    )
+}
+
+pub(crate) fn observe_managed_state_from_export_with_authority(
+    document: DocumentId,
+    export: &str,
+    available_capabilities: &CapabilitySet,
+    source_candidate: &ManagedSchemaState,
+    target_candidate: &ManagedSchemaState,
+    authority: &ManagedObservationAuthority,
+) -> Result<ManagedSchemaState, Diagnostic> {
+    let parsed = parse_authoritative_export(document, export, authority)?;
     reject_reserved_function_references(&parsed)?;
     let partitioned = partition_declared_schema(parsed.into_declared())?;
     verify_fence_mirror_partition(partitioned.internal())?;
@@ -199,6 +261,22 @@ pub fn rebuild_live_managed_state(
     context_schema: &DeclaredSchema,
     context: &ManagedDeltaContext,
 ) -> Result<ManagedSchemaState, Diagnostic> {
+    rebuild_live_managed_state_with_authority(
+        document,
+        export,
+        context_schema,
+        context,
+        &ManagedObservationAuthority::ExactPortable,
+    )
+}
+
+pub(crate) fn rebuild_live_managed_state_with_authority(
+    document: DocumentId,
+    export: &str,
+    context_schema: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+    authority: &ManagedObservationAuthority,
+) -> Result<ManagedSchemaState, Diagnostic> {
     let donor = managed_schema_state(context_schema, context).map_err(|error| match error {
         DeltaError::Contract(diagnostic) => diagnostic,
         DeltaError::Schema(diagnostics) => diagnostics
@@ -213,18 +291,58 @@ pub fn rebuild_live_managed_state(
                 )
             }),
     })?;
-    let parsed = typeql_to_declared_with_references(document, export).map_err(|_| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_typedb_export_invalid",
-            "TypeDB schema export cannot be normalized into V2 facts",
-        )
-    })?;
+    let parsed = parse_authoritative_export(document, export, authority)?;
     reject_reserved_function_references(&parsed)?;
     let partitioned = partition_declared_schema(parsed.into_declared())?;
     verify_fence_mirror_partition(partitioned.internal())?;
     verify_legacy_control_partition(partitioned.legacy_control())?;
     rebuild_candidate_state(&partitioned, context.available_capabilities(), &donor)
+}
+
+fn parse_authoritative_export(
+    document: DocumentId,
+    export: &str,
+    authority: &ManagedObservationAuthority,
+) -> Result<TypeqlDeclaredSchema, Diagnostic> {
+    match authority {
+        ManagedObservationAuthority::ExactPortable => {
+            released_typeql_to_declared_lossless_projection_with_references(document, export)
+                .map_err(|_| export_invalid())
+        }
+        ManagedObservationAuthority::Adopted(expected) => {
+            let expected_internal = expected_fence_mirror_schema()?;
+            let live = parse_adopted_genesis_authority_with_internal(
+                document.clone(),
+                export,
+                Some(&expected_internal),
+            )?;
+            expected.ensure_released_extension_identity_matches(&live)?;
+            released_typeql_to_declared_projection_with_references(document, export)
+                .map_err(|_| export_invalid())
+        }
+    }
+}
+
+fn expected_fence_mirror_schema() -> Result<DeclaredSchema, Diagnostic> {
+    typeql_to_declared(
+        DocumentId::new("typebridge-managed-fence-schema.typeql")?,
+        MANAGED_FENCE_SCHEMA_TYPEQL,
+    )
+    .map_err(|_| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_frozen_schema_invalid",
+            "frozen TypeDB fence-mirror schema cannot be normalized",
+        )
+    })
+}
+
+fn export_invalid() -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "migration_typedb_export_invalid",
+        "TypeDB schema export cannot be losslessly normalized into V2 facts",
+    )
 }
 
 fn reject_reserved_function_references(parsed: &TypeqlDeclaredSchema) -> Result<(), Diagnostic> {
@@ -262,15 +380,7 @@ fn reject_reserved_function_references(parsed: &TypeqlDeclaredSchema) -> Result<
 }
 
 fn verify_fence_mirror_partition(internal: &DeclaredSchema) -> Result<(), Diagnostic> {
-    let expected_document = DocumentId::new("typebridge-managed-fence-schema.typeql")?;
-    let expected =
-        typeql_to_declared(expected_document, MANAGED_FENCE_SCHEMA_TYPEQL).map_err(|_| {
-            failure(
-                DiagnosticCategory::InvalidContract,
-                "migration_typedb_frozen_schema_invalid",
-                "frozen TypeDB fence-mirror schema cannot be normalized",
-            )
-        })?;
+    let expected = expected_fence_mirror_schema()?;
     if internal.declared_identity_fingerprint() != expected.declared_identity_fingerprint() {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -421,12 +531,15 @@ mod tests {
     fn candidate_state(user_typeql: &str) -> ManagedSchemaState {
         let document = DocumentId::new("observer-candidate.typeql").expect("document id");
         let declared = typeql_to_declared(document, user_typeql).expect("candidate schema");
-        let context = ManagedDeltaContext::new(
+        managed_schema_state(&declared, &observation_context()).expect("candidate state")
+    }
+
+    fn observation_context() -> ManagedDeltaContext {
+        ManagedDeltaContext::new(
             ManagedScopeId::new("observer-test-scope").expect("scope"),
             SemanticProfileId::new("typedb-3.12.1/v1").expect("profile"),
             available_capabilities(),
-        );
-        managed_schema_state(&declared, &context).expect("candidate state")
+        )
     }
 
     fn export_with_user(user_definables: &str) -> String {
@@ -476,6 +589,150 @@ mod tests {
             error.code().as_str(),
             "migration_typedb_observation_no_candidate_match",
         );
+    }
+
+    #[test]
+    fn fresh_authority_refuses_scalar_projection_of_released_list_semantics() {
+        let scalar =
+            candidate_state("define\nattribute tag, value string;\nentity person, owns tag;\n");
+        let export = export_with_user(
+            "attribute tag, value string;\nentity person, owns tag[] @distinct;\n",
+        );
+        let error = observe_managed_state_from_export(
+            observation_document(),
+            &export,
+            &available_capabilities(),
+            &scalar,
+            &scalar,
+        )
+        .expect_err("fresh V2 authority cannot erase released list semantics");
+        assert_eq!(error.code().as_str(), "migration_typedb_export_invalid");
+
+        let declared = typeql_to_declared(
+            DocumentId::new("observer-query-candidate.typeql").expect("document id"),
+            "define\nattribute tag, value string;\nentity person, owns tag;\n",
+        )
+        .expect("query candidate");
+        let query_error = rebuild_live_query_authority_state(
+            DocumentId::new("observer-query-live.typeql").expect("document id"),
+            &export,
+            &declared,
+            &observation_context(),
+        )
+        .expect_err("query and fresh migration authority must reject the same lossy export");
+        assert_eq!(query_error.code(), error.code());
+    }
+
+    #[test]
+    fn adopted_authority_accepts_its_exact_released_list_semantics() {
+        let released = "define\nattribute tag, value string;\n\
+                        entity person, owns tag[] @distinct;\n";
+        let adopted = type_bridge_schema_compat::parse_adopted_genesis_authority(
+            DocumentId::new("observer-adopted-genesis.typeql").expect("document id"),
+            released,
+        )
+        .expect("released list schema is adoptable");
+        let authority = ManagedObservationAuthority::Adopted(Arc::new(adopted));
+        let scalar =
+            candidate_state("define\nattribute tag, value string;\nentity person, owns tag;\n");
+        let export = export_with_user(
+            "attribute tag, value string;\nentity person, owns tag[] @distinct;\n",
+        );
+        let observed = observe_managed_state_from_export_with_authority(
+            observation_document(),
+            &export,
+            &available_capabilities(),
+            &scalar,
+            &scalar,
+            &authority,
+        )
+        .expect("matching adopted extensions accompany the portable candidate");
+        assert_eq!(observed, scalar);
+    }
+
+    #[test]
+    fn adopted_authority_rejects_extension_tampering_in_the_observed_export() {
+        let adopted = type_bridge_schema_compat::parse_adopted_genesis_authority(
+            DocumentId::new("observer-adopted-genesis.typeql").expect("document id"),
+            "define\nattribute tag, value string;\nentity person, owns tag[] @distinct;\n",
+        )
+        .expect("released list schema is adoptable");
+        let authority = ManagedObservationAuthority::Adopted(Arc::new(adopted));
+        let scalar =
+            candidate_state("define\nattribute tag, value string;\nentity person, owns tag;\n");
+        let export = export_with_user("attribute tag, value string;\nentity person, owns tag[];\n");
+        let error = observe_managed_state_from_export_with_authority(
+            observation_document(),
+            &export,
+            &available_capabilities(),
+            &scalar,
+            &scalar,
+            &authority,
+        )
+        .expect_err("the exact fenced export must retain adopted @distinct authority");
+        assert_eq!(error.code().as_str(), "migration_adopted_extension_drift");
+    }
+
+    #[test]
+    fn adopted_authority_binds_opaque_definitions_to_the_same_observed_export() {
+        let released = "define\nentity person;\n\
+                        fun inspect() -> integer:\n\
+                          opaque-token\n\
+                          return { 1 };\n\
+                        struct payload, value note string;\n";
+        let adopted = type_bridge_schema_compat::parse_adopted_genesis_authority(
+            DocumentId::new("observer-adopted-opaque-genesis.typeql").expect("document id"),
+            released,
+        )
+        .expect("released opaque definitions are adoptable");
+        let authority = ManagedObservationAuthority::Adopted(Arc::new(adopted));
+        let candidate = candidate_state("define\nentity person;\n");
+
+        let exact = export_with_user(
+            "entity person;\n\
+             fun inspect() -> integer:\n\
+               opaque-token /* export formatting is not authority */\n\
+               return { 1 };\n\
+             struct payload, value note string;\n",
+        );
+        let observed = observe_managed_state_from_export_with_authority(
+            observation_document(),
+            &exact,
+            &available_capabilities(),
+            &candidate,
+            &candidate,
+            &authority,
+        )
+        .expect("the exact export retains every opaque adopted definition");
+        assert_eq!(observed, candidate);
+
+        for tampered in [
+            export_with_user(
+                "entity person;\n\
+                 fun inspect() -> integer:\n\
+                   opaque-token\n\
+                   return { 2 };\n\
+                 struct payload, value note string;\n",
+            ),
+            export_with_user(
+                "entity person;\n\
+                 fun inspect() -> integer:\n\
+                   opaque-token\n\
+                   return { 1 };\n\
+                 struct payload, value count integer;\n",
+            ),
+        ] {
+            let error = observe_managed_state_from_export_with_authority(
+                observation_document(),
+                &tampered,
+                &available_capabilities(),
+                &candidate,
+                &candidate,
+                &authority,
+            )
+            .expect_err("same-export comparison must reject opaque-definition drift");
+            assert_eq!(error.code().as_str(), "migration_adopted_extension_drift");
+        }
     }
 
     #[test]

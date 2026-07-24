@@ -87,6 +87,39 @@ const manager = db.entityManager(person);
 manager.insert(attrs);
 ```
 
+Scheme-free `host:port` addresses are recommended. Released matching URI forms
+remain accepted: `http://host:port` with disabled TLS and
+`https://host:port` with enabled TLS. The upstream driver rejects a URI scheme
+that contradicts `tlsEnabled`. TLS is opt-in through `tlsEnabled`; with no
+`tlsRootCa`, an enabled connection uses native trust roots, while a custom PEM
+bundle requires both options explicitly:
+
+```ts
+const secureDb = RustDatabase.connect("db.example.com:1729", "example", {
+  tlsEnabled: true,
+  tlsRootCa: "/run/secrets/type-db-root.pem",
+});
+```
+
+`tlsRootCa` with an omitted or false `tlsEnabled` is a configuration error and
+never enables TLS implicitly.
+
+### Connection close and cancellation
+
+`db.close()` synchronously marks the connection terminal and dispatches the
+upstream driver's shutdown request; once dispatched, the connection admits no
+new work. The unmodified upstream 3.12.1 driver releases its final callback
+worker when the last native driver lease drops, so a retained closed handle is
+not a synchronous worker-join boundary. Close is also not an out-of-band
+cancellation channel for the released synchronous CRUD and query APIs. While
+one of those native calls occupies the JavaScript event-loop thread, JavaScript
+cannot dispatch `db.close()` concurrently to interrupt it.
+
+For V2 work that must remain cancellable, use the Promise-returning
+`queryV2ExecuteLocal(...)` surface and supply its `deadlineMs` argument. Remote
+V2 requests likewise carry the bounded `QueryV2RemoteLimits.deadlineMs` expiry.
+Do not rely on a later synchronous `db.close()` call as the timeout mechanism.
+
 ## Immutable Typed Queries
 
 The additive `./typed` subpath builds owner-aware matches over the same model
@@ -123,6 +156,89 @@ queries must register constructors that JavaScript cannot discover with
 `session.registerModels(...)`. See the
 [typed-query guide](https://ds1sqe.github.io/type-bridge/guide/typed-queries/)
 for the complete contract and transaction rules.
+
+## Prepared V2 Execution
+
+The package root also exposes the supported prepared-plan execution boundary.
+Plans are canonical bytes authored by the Rust V2 plan API; Node validates and
+executes those bytes but does not yet provide a plan-builder facade:
+
+```ts
+import {
+  QueryV2Authority,
+  queryV2PrepareRemote,
+} from "@type-bridge/node";
+
+const authority = new QueryV2Authority(declaredSchemaBytes, scope, profile);
+const pending = queryV2PrepareRemote(
+  authority,
+  planBytes,
+  JSON.stringify({ operation: "rows", rows: [] }),
+  capabilityAdvertisementBytes,
+  {
+    maxItems: 1_000n,
+    maxBytes: 8_388_608n,
+    maxCollectionMembers: 10_000n,
+    deadlineMs: 30_000n,
+  },
+);
+
+const response = await fetch(executorUrl, {
+  method: "POST",
+  body: pending.requestBytes(),
+});
+const outcomeJson = await pending.decodeReply(
+  new Uint8Array(await response.arrayBuffer()),
+);
+```
+
+`maxBytes` limits the complete signed wire size of a successful typed response.
+Authenticated structured failures instead use the protocol hard ceiling, so a
+zero or otherwise tiny success budget can still return the bound diagnostic
+explaining why no success could fit.
+
+The constructor above creates managed/offline authority and is the authority
+accepted by remote preparation. For local execution against a database with no
+migration controls, bind a separate local-only handle:
+
+```ts
+import {
+  QueryV2Authority,
+  queryV2ExecuteLocal,
+} from "@type-bridge/node";
+
+const localAuthority = QueryV2Authority.queryOnly(
+  database,
+  declaredSchemaBytes,
+  scope,
+  profile,
+);
+const outcomeJson = await queryV2ExecuteLocal(
+  database,
+  localAuthority,
+  planBytes,
+  JSON.stringify({ operation: "rows", rows: [] }),
+);
+```
+
+`queryOnly` binds the exact native database identity, requires both V2 and
+legacy migration controls to be absent, and is rejected by
+`queryV2PrepareRemote`. Managed local execution instead requires the exact V2
+migration-control singleton to be free.
+
+Each pending request accepts exactly one reply. A second `decodeReply` call is
+rejected before parsing the supplied bytes, including when the first reply was
+a remote failure. Reply parsing and typed evidence validation run on a worker
+and `decodeReply` returns a `Promise`, so maximal envelopes do not block the
+JavaScript event loop. Preparation binds the exact capability advertisement
+and its executor epoch and reply-signing identity into the request. The
+advertisement is an explicit trust input: retrieve it over authenticated TLS
+for the intended executor or pin/provision its exact bytes or fingerprint out
+of band. Fetching it over unauthenticated HTTP is discovery only and cannot
+authenticate the key an intermediary supplies. `deadlineMs` is resolved once to an
+absolute expiry (30 seconds by default and at most five minutes), so a captured
+request cannot regain a fresh relative deadline after replay-cache eviction or
+a standalone executor restart.
 
 ## Descriptor Shape
 

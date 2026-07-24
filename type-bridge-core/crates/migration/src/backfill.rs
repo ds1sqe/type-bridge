@@ -23,6 +23,7 @@ use type_bridge_orm::session::backend::QueryResult;
 
 use crate::error::MigrationError;
 use crate::plan::ExecutionStep;
+use crate::state::require_legacy_writer_open_in_transaction;
 
 use serde::{Deserialize, Serialize};
 use type_bridge_orm::TxType;
@@ -171,6 +172,14 @@ pub(crate) async fn prepare_backfill(
             .map_err(|e| MigrationError::BackfillQuery {
                 message: format!("backfill step {step_index}: failed to open write tx: {e}"),
             })?;
+    if let Err(error) = require_legacy_writer_open_in_transaction(&transaction).await {
+        let _ = transaction.rollback().await;
+        return Err(MigrationError::BackfillQuery {
+            message: format!(
+                "backfill step {step_index}: legacy cutover guard rejected the write: {error}"
+            ),
+        });
+    }
     if let Err(error) = transaction.query(&step.forward).await {
         let _ = transaction.rollback().await;
         return Err(MigrationError::BackfillQuery {
@@ -422,6 +431,34 @@ mod tests {
         assert!(
             !wq.contains("reduce"),
             "write query must not contain 'reduce' (it is the insert, not a count query); got: {wq}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cutover_rejects_backfill_before_the_write_query() {
+        let (backend, log) = MockMigrationBackend::with_legacy_cutover();
+        let db = Database::with_backend(Box::new(backend), "test");
+
+        let error = execute_backfill(&db, &backfill_step(), 0)
+            .await
+            .expect_err("cutover must reject the backfill write");
+        assert!(
+            error
+                .to_string()
+                .contains(crate::LEGACY_WRITER_CUTOVER_MESSAGE)
+        );
+        let events = log.lock().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, MockEvent::Query(TxType::Write, _))),
+            "no user write query may run after cutover: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, MockEvent::Rollback)),
+            "the rejected write transaction must be rolled back: {events:?}"
         );
     }
 

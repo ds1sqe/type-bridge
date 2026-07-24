@@ -7,6 +7,7 @@ use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
+use type_bridge_contract::query_given_rows_capability;
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryInvocation, QueryOperand,
     QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage,
@@ -16,7 +17,11 @@ use type_bridge_contract::schema::{
     DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
     SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
-use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+use type_bridge_contract::temporal::{CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration};
+use type_bridge_contract::value::{
+    CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
+};
+use type_bridge_orm::GivenValue;
 use type_bridge_orm::query_v2::lower_validated_query;
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
@@ -152,6 +157,70 @@ fn string_row(value: &str) -> InputRow {
     ))])
 }
 
+fn validated_transport_query(
+    columns: impl IntoIterator<Item = (&'static str, ValueTypeTag, bool)>,
+) -> (ValidatedQuery, QueryPlan) {
+    let person = type_id(TypeKind::Entity, "person");
+    let declared = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        [SourcedSchemaFact::new(
+            SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
+            SourceSpan::new(
+                DocumentId::new("query-v2-given-transport-fixture").expect("document"),
+                0,
+                1,
+                1,
+                1,
+                1,
+                2,
+            )
+            .expect("span"),
+        )],
+    )
+    .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-v2-given-transport-scope").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+    let inputs = columns
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, value_type, optional))| {
+            InputColumn::new(
+                InputColumnId::new(u16::try_from(index).expect("input ordinal")),
+                QueryVariable::new(name).expect("input name"),
+                value_type,
+                optional,
+            )
+        })
+        .collect();
+    let plan = QueryPlan::new(
+        vec![binding(0, "person")],
+        inputs,
+        vec![ReadStage::Match {
+            patterns: vec![QueryPattern::Isa {
+                binding: binding_id(0),
+                include_subtypes: false,
+                type_id: person,
+            }],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("transport query plan");
+    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
+    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated transport query");
+    (validated, plan)
+}
+
 #[test]
 fn single_row_inline_lowering_is_deterministic_golden_text() {
     let (validated, plan) = validated_person_query();
@@ -226,6 +295,377 @@ fn multi_row_and_absent_values_reject_before_data_io() {
     let error =
         lower_validated_query(&validated, &foreign).expect_err("invocations bind exactly one plan");
     assert_eq!(error.code().as_str(), "query_v2_invocation_plan_mismatch");
+}
+
+#[test]
+fn given_lowering_carries_temporal_decimal_and_optional_absence_without_inline_text() {
+    let columns = [
+        ("flag", ValueTypeTag::Boolean, false),
+        ("number", ValueTypeTag::Long, false),
+        ("ratio", ValueTypeTag::Double, false),
+        ("text", ValueTypeTag::String, false),
+        ("day", ValueTypeTag::Date, false),
+        ("moment", ValueTypeTag::DateTime, false),
+        ("zoned", ValueTypeTag::DateTimeTz, false),
+        ("amount", ValueTypeTag::Decimal, false),
+        ("maybe", ValueTypeTag::String, true),
+    ];
+    let (validated, plan) = validated_transport_query(columns);
+    let local = "2026-07-13T10:30:00"
+        .parse::<CanonicalDateTime>()
+        .expect("datetime");
+    let row = |suffix: &str, maybe| {
+        InputRow::new(vec![
+            Some(CanonicalValue::Boolean(true)),
+            Some(CanonicalValue::Long(42)),
+            Some(CanonicalValue::Double(
+                CanonicalDouble::new(1.5).expect("double"),
+            )),
+            Some(CanonicalValue::String(
+                CanonicalString::new(format!("value-{suffix}")).expect("string"),
+            )),
+            Some(CanonicalValue::Date("2026-07-13".parse().expect("date"))),
+            Some(CanonicalValue::DateTime(local)),
+            Some(CanonicalValue::DateTimeTz(
+                CanonicalDateTimeTz::new_named_resolved(local, "Europe/Amsterdam", 7_200)
+                    .expect("resolved named datetime-tz"),
+            )),
+            Some(CanonicalValue::Decimal(
+                DecimalValue::new("12.30dec").expect("decimal"),
+            )),
+            maybe,
+        ])
+    };
+    let invocation = QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![
+            row("one", None),
+            row(
+                "two",
+                Some(CanonicalValue::String(
+                    CanonicalString::new("present").expect("string"),
+                )),
+            ),
+        ],
+    )
+    .expect("temporal given invocation");
+    assert!(
+        invocation
+            .transport_capabilities()
+            .contains(&query_given_rows_capability())
+    );
+
+    let lowered = lower_validated_query(&validated, &invocation).expect("given lowering");
+    assert!(lowered.typeql().starts_with(
+        "given $flag: boolean, $number: integer, $ratio: double, $text: string, \
+         $day: date, $moment: datetime, $zoned: datetime-tz, $amount: decimal, \
+         $maybe: string;\nmatch\n"
+    ));
+    assert!(!lowered.typeql().contains("value-one"));
+    let rows = &lowered.given_rows().expect("given rows").rows;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][4], GivenValue::Date("2026-07-13".into()));
+    assert_eq!(
+        rows[0][5],
+        GivenValue::Datetime("2026-07-13T10:30:00".into())
+    );
+    assert_eq!(
+        rows[0][6],
+        GivenValue::DatetimeTzExact {
+            local: "2026-07-13T10:30:00".into(),
+            named_zone: Some("Europe/Amsterdam".into()),
+            effective_offset_seconds: 7_200,
+        }
+    );
+    assert_eq!(rows[0][7], GivenValue::Decimal("12.3".into()));
+    assert_eq!(rows[0][8], GivenValue::Empty);
+}
+
+#[test]
+fn single_datetime_tz_inputs_use_one_exact_given_lowering() {
+    use type_bridge_contract::temporal::TimeZoneDesignator;
+
+    let (validated, plan) = validated_transport_query([("zoned", ValueTypeTag::DateTimeTz, false)]);
+    let fixed_local = "1900-01-01T12:00:00"
+        .parse::<CanonicalDateTime>()
+        .expect("datetime");
+    let values = [
+        (
+            CanonicalDateTimeTz::new_named_resolved(
+                "2024-07-01T12:00:00".parse().expect("named local"),
+                "Europe/Amsterdam",
+                7_200,
+            )
+            .expect("ordinary named value"),
+            Some("Europe/Amsterdam"),
+            "2024-07-01T12:00:00",
+            7_200,
+        ),
+        (
+            CanonicalDateTimeTz::new_named_resolved(
+                "2024-07-01T12:00:00".parse().expect("named local"),
+                "europe/amsterdam",
+                7_200,
+            )
+            .expect("case-insensitive named value"),
+            Some("europe/amsterdam"),
+            "2024-07-01T12:00:00",
+            7_200,
+        ),
+        (
+            CanonicalDateTimeTz::new_fixed(fixed_local, TimeZoneDesignator::OffsetSeconds(1_172))
+                .expect("second-resolution fixed value"),
+            None,
+            "1900-01-01T12:00:00",
+            1_172,
+        ),
+        (
+            CanonicalDateTimeTz::new_named_resolved(
+                "2024-10-27T01:30:00".parse().expect("overlap local"),
+                "Europe/London",
+                3_600,
+            )
+            .expect("explicit earlier overlap side"),
+            Some("Europe/London"),
+            "2024-10-27T01:30:00",
+            3_600,
+        ),
+    ];
+
+    for (value, named_zone, expected_local, effective_offset_seconds) in values {
+        let invocation = QueryInvocation::new(
+            &plan,
+            QueryOperation::Rows,
+            vec![InputRow::new(vec![Some(CanonicalValue::DateTimeTz(value))])],
+        )
+        .expect("single datetime-tz invocation");
+        assert!(
+            invocation
+                .transport_capabilities()
+                .contains(&query_given_rows_capability())
+        );
+        let lowered = lower_validated_query(&validated, &invocation)
+            .expect("datetime-tz uses exact driver transport");
+        assert!(lowered.typeql().starts_with("given $zoned: datetime-tz;\n"));
+        assert_eq!(
+            lowered.given_rows().expect("given rows").rows,
+            [vec![GivenValue::DatetimeTzExact {
+                local: expected_local.into(),
+                named_zone: named_zone.map(str::to_owned),
+                effective_offset_seconds,
+            }]]
+        );
+        assert!(!lowered.typeql().contains("Europe/Amsterdam"));
+        assert!(!lowered.typeql().contains("+00:19"));
+    }
+}
+
+#[test]
+fn forged_or_unresolvable_named_datetime_tz_inputs_fail_before_lowering() {
+    let (validated, plan) = validated_transport_query([("zoned", ValueTypeTag::DateTimeTz, false)]);
+    let cases = [
+        (
+            "2024-07-01T12:00:00",
+            "Europe/Amsterdam",
+            1_172,
+            "provider_datetime_tz_offset_mismatch",
+        ),
+        (
+            "2024-07-01T12:00:00",
+            "Not/A_Real_Zone",
+            0,
+            "unknown_named_timezone",
+        ),
+        (
+            "2024-03-31T01:30:00",
+            "Europe/London",
+            3_600,
+            "nonexistent_named_timezone_local_datetime",
+        ),
+    ];
+
+    for (local, zone, offset, expected_code) in cases {
+        let value = CanonicalDateTimeTz::new_named_resolved(
+            local.parse().expect("local datetime"),
+            zone,
+            offset,
+        )
+        .expect("structurally valid carried value");
+        let invocation = QueryInvocation::new(
+            &plan,
+            QueryOperation::Rows,
+            vec![InputRow::new(vec![Some(CanonicalValue::DateTimeTz(value))])],
+        )
+        .expect("portable invocation contract");
+        assert_eq!(
+            lower_validated_query(&validated, &invocation)
+                .expect_err("provider-invalid named input must fail preflight")
+                .code()
+                .as_str(),
+            expected_code
+        );
+    }
+}
+
+#[test]
+fn fixed_datetime_tz_utc_overflow_fails_before_given_runtime_construction() {
+    use type_bridge_contract::temporal::TimeZoneDesignator;
+
+    let (validated, plan) = validated_transport_query([("zoned", ValueTypeTag::DateTimeTz, false)]);
+    for (local, offset) in [
+        ("-262143-01-01T00:00:00", 86_399),
+        ("+262142-12-31T23:59:59.999999999", -86_399),
+    ] {
+        let value = CanonicalDateTimeTz::new_fixed(
+            local.parse().expect("canonical provider edge"),
+            TimeZoneDesignator::OffsetSeconds(offset),
+        )
+        .expect("structurally valid fixed datetime-tz");
+        let invocation = QueryInvocation::new(
+            &plan,
+            QueryOperation::Rows,
+            vec![InputRow::new(vec![Some(CanonicalValue::DateTimeTz(value))])],
+        )
+        .expect("portable invocation contract");
+        assert_eq!(
+            lower_validated_query(&validated, &invocation)
+                .expect_err("UTC overflow must fail before GivenRows reaches the runtime")
+                .code()
+                .as_str(),
+            "provider_datetime_tz_out_of_range",
+        );
+    }
+}
+
+#[test]
+fn single_row_optional_absence_uses_given_while_present_value_stays_inline() {
+    let (validated, plan) = validated_transport_query([("maybe", ValueTypeTag::String, true)]);
+    let absent = QueryInvocation::new(&plan, QueryOperation::Rows, vec![InputRow::new(vec![None])])
+        .expect("absent optional input");
+    let lowered = lower_validated_query(&validated, &absent).expect("one-row given lowering");
+    assert!(lowered.typeql().starts_with("given $maybe: string;\n"));
+    assert_eq!(
+        lowered.given_rows().expect("given rows").rows,
+        [vec![GivenValue::Empty]]
+    );
+
+    let present = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("inline")])
+        .expect("present optional input");
+    let lowered = lower_validated_query(&validated, &present).expect("inline lowering");
+    assert!(lowered.given_rows().is_none());
+    assert!(!lowered.typeql().starts_with("given "));
+}
+
+#[test]
+fn optional_duration_absence_uses_an_empty_given_cell() {
+    let (validated, plan) =
+        validated_transport_query([("maybe_elapsed", ValueTypeTag::Duration, true)]);
+    let absent = QueryInvocation::new(&plan, QueryOperation::Rows, vec![InputRow::new(vec![None])])
+        .expect("absent optional duration input");
+
+    let lowered = lower_validated_query(&validated, &absent)
+        .expect("absence does not require a duration value conversion");
+    assert!(
+        lowered
+            .typeql()
+            .starts_with("given $maybe_elapsed: duration;\n")
+    );
+    assert_eq!(
+        lowered.given_rows().expect("given rows").rows,
+        [vec![GivenValue::Empty]]
+    );
+}
+
+#[test]
+fn duration_batches_use_lossless_given_components_through_the_driver_boundary() {
+    let (validated, plan) = validated_transport_query([("elapsed", ValueTypeTag::Duration, false)]);
+    let value = CanonicalValue::Duration(
+        "P1DT2S"
+            .parse::<CanonicalDuration>()
+            .expect("canonical duration"),
+    );
+    let boundary = CanonicalDuration::new(
+        false,
+        u64::from(u32::MAX),
+        u64::from(u32::MAX),
+        u64::MAX / 1_000_000_000,
+        u32::try_from(u64::MAX % 1_000_000_000).unwrap(),
+    )
+    .unwrap();
+    let invocation = QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![
+            InputRow::new(vec![Some(value)]),
+            InputRow::new(vec![Some(CanonicalValue::Duration(boundary))]),
+        ],
+    )
+    .expect("duration batch is a valid portable invocation");
+    let lowered = lower_validated_query(&validated, &invocation)
+        .expect("provider-domain duration batches use exact components");
+    assert!(lowered.typeql().starts_with("given $elapsed: duration;\n"));
+    assert_eq!(
+        lowered.given_rows().expect("given rows").rows,
+        [
+            vec![GivenValue::Duration {
+                months: 0,
+                days: 1,
+                nanos: 2_000_000_000,
+            }],
+            vec![GivenValue::Duration {
+                months: u32::MAX,
+                days: u32::MAX,
+                nanos: u64::MAX,
+            }],
+        ]
+    );
+}
+
+#[test]
+fn single_duration_inputs_enforce_the_exact_driver_domain_before_provider_use() {
+    let (validated, plan) = validated_transport_query([("elapsed", ValueTypeTag::Duration, false)]);
+    let invalid = [
+        CanonicalDuration::new(true, 0, 1, 0, 0).unwrap(),
+        CanonicalDuration::new(false, u64::from(u32::MAX) + 1, 0, 0, 0).unwrap(),
+        CanonicalDuration::new(false, 0, u64::from(u32::MAX) + 1, 0, 0).unwrap(),
+        CanonicalDuration::new(false, 0, 0, u64::MAX / 1_000_000_000 + 1, 0).unwrap(),
+    ];
+    for value in invalid {
+        let invocation = QueryInvocation::new(
+            &plan,
+            QueryOperation::Rows,
+            vec![InputRow::new(vec![Some(CanonicalValue::Duration(value))])],
+        )
+        .expect("portable invocation contract");
+        assert_eq!(
+            lower_validated_query(&validated, &invocation)
+                .expect_err("provider-invalid duration must fail preflight")
+                .code()
+                .as_str(),
+            "provider_duration_out_of_range"
+        );
+    }
+
+    let boundary = CanonicalDuration::new(
+        false,
+        u64::from(u32::MAX),
+        u64::from(u32::MAX),
+        u64::MAX / 1_000_000_000,
+        u32::try_from(u64::MAX % 1_000_000_000).unwrap(),
+    )
+    .unwrap();
+    let invocation = QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![InputRow::new(vec![Some(CanonicalValue::Duration(
+            boundary,
+        ))])],
+    )
+    .expect("boundary duration invocation");
+    let lowered = lower_validated_query(&validated, &invocation)
+        .expect("boundary duration passes single-row preflight");
+    assert!(lowered.given_rows().is_none());
 }
 
 #[test]
@@ -778,8 +1218,8 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
 
     let node = type_id(TypeKind::Entity, "node");
     let edge = type_id(TypeKind::Relation, "edge");
-    let from = RoleId::new("edge", "from").expect("role");
-    let to = RoleId::new("edge", "to").expect("role");
+    let from = RoleId::new("edge", "origin").expect("role");
+    let to = RoleId::new("edge", "destination").expect("role");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(node.clone()).expect("type fact")),
         SchemaFact::Type(TypeFact::new(edge.clone()).expect("type fact")),
@@ -860,12 +1300,14 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
     assert_eq!(
         lowered.typeql(),
         "match\n\
-         { (from: $start, to: $finish) isa! edge; } or \
-         { (from: $start, to: $R0h1) isa! edge; \
-         (from: $R0h1, to: $finish) isa! edge; } or \
-         { (from: $start, to: $R0h1) isa! edge; \
-         (from: $R0h1, to: $R0h2) isa! edge; \
-         (from: $R0h2, to: $finish) isa! edge; };\n",
+         { (origin: $start, destination: $finish) isa! edge; } or \
+         { (origin: $start, destination: $R0h1) isa! edge; \
+         (origin: $R0h1, destination: $finish) isa! edge; } or \
+         { (origin: $start, destination: $R0h1) isa! edge; \
+         (origin: $R0h1, destination: $R0h2) isa! edge; \
+         (origin: $R0h2, destination: $finish) isa! edge; };\n\
+         reduce $RreachableProofCount = count groupby $start, $finish;\n\
+         select $start, $finish;\n",
     );
 }
 

@@ -329,6 +329,7 @@ interface NativeMarshalling {
 }
 export interface NativeRustDatabase {
     isConnected(): boolean;
+    close(): void;
     databaseName(): string;
     databaseExists(): boolean;
     createDatabase(): void;
@@ -346,6 +347,29 @@ export interface NativeRustTransactionContext {
     transactionType(): TransactionType;
     entityManagerJson(descriptorJson: string): NativeDynamicEntityManager;
     relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
+}
+declare const nativeQueryV2AuthorityKind: unique symbol;
+/** @internal Opaque N-API authority; use {@link QueryV2Authority}. */
+interface NativeQueryV2Authority {
+    readonly [nativeQueryV2AuthorityKind]: "query-v2-authority";
+}
+interface NativePendingQueryV2Remote {
+    requestBytes(): Uint8Array;
+    decodeReply(response: Uint8Array): Promise<string>;
+}
+/** Opaque one-shot decoder for one exact prepared V2 remote request. */
+export interface PendingQueryV2Remote {
+    /** Exact canonical bytes to send to the executor's `/v2/query` route. */
+    requestBytes(): Uint8Array;
+    /** Atomically consume and decode the only accepted request-bound reply off-thread. */
+    decodeReply(response: Uint8Array): Promise<string>;
+}
+interface NativeQueryV2Runtime {
+    queryV2Authority(declaredSchema: Uint8Array, scope: string, profile: string): NativeQueryV2Authority;
+    queryV2QueryOnlyAuthority(database: NativeRustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): NativeQueryV2Authority;
+    queryV2ExecuteLocal(database: NativeRustDatabase, authority: NativeQueryV2Authority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
+    queryV2RemoteCapabilities(advertisement: Uint8Array): string[];
+    queryV2PrepareRemote(authority: NativeQueryV2Authority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, deadlineMs?: bigint | null): NativePendingQueryV2Remote;
 }
 export interface NativeDynamicEntityManager {
     insertJson(attributesJson: string): string;
@@ -385,14 +409,14 @@ export interface NativeDynamicRelationManager {
     queryGroupByAggregateJson(specJson: string, groupFieldsJson: string, aggregatesJson: string): string;
 }
 export interface NativeRuntime {
-    ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null): void;
-    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null): NativeRustDatabase;
+    ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null): void;
+    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null): NativeRustDatabase;
 }
 interface NativeSchemaParser {
     parseSchemaJson(input: string): string;
     renderModelsJson(input: string, target: string, optionsJson?: string | null): string;
 }
-export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
+export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser, NativeQueryV2Runtime {
     NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
     generateDefineBlockJson(schemaInfoJson: string): string;
 }
@@ -403,6 +427,10 @@ export interface RustDatabaseConnectOptions {
     httpPort?: number;
     /** Exact TypeDB server version; skips HTTP probing for gRPC-only deployments. */
     serverVersion?: string | null;
+    /** Enable TLS using native trust roots, or a custom root when tlsRootCa is set. */
+    tlsEnabled?: boolean;
+    /** PEM root-CA path. Requires an explicit tlsEnabled: true. */
+    tlsRootCa?: string;
 }
 export interface EnsureDatabaseOptions {
     username?: string | null;
@@ -411,6 +439,10 @@ export interface EnsureDatabaseOptions {
     httpPort?: number;
     /** Exact TypeDB server version; skips HTTP probing for gRPC-only deployments. */
     serverVersion?: string | null;
+    /** Enable TLS using native trust roots, or a custom root when tlsRootCa is set. */
+    tlsEnabled?: boolean;
+    /** PEM root-CA path. Requires an explicit tlsEnabled: true. */
+    tlsRootCa?: string;
 }
 /**
  * Ensure the named TypeDB database exists, creating it if absent.
@@ -421,6 +453,33 @@ export interface EnsureDatabaseOptions {
  */
 export declare function ensureDatabase(address: string, database: string, options?: EnsureDatabaseOptions): void;
 export { loadNative };
+/** Opaque declared-schema authority for prepared V2 plan execution. */
+export declare class QueryV2Authority {
+    #private;
+    constructor(declaredSchema: Uint8Array, scope: string, profile: string);
+    /** Build a local-only authority for an exact database with no migration controls. */
+    static queryOnly(database: RustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): QueryV2Authority;
+}
+/** Caller ceilings bound into one prepared V2 remote request.
+ * `deadlineMs` is resolved once into an absolute expiry (30 seconds by
+ * default, maximum five minutes).
+ */
+export interface QueryV2RemoteLimits {
+    readonly maxItems: bigint;
+    /** Maximum signed bytes for a successful typed response. Authenticated
+     * failure envelopes use the protocol hard ceiling so their diagnostic is
+     * still available when this success budget is zero or otherwise tiny.
+     */
+    readonly maxBytes: bigint;
+    readonly maxCollectionMembers: bigint;
+    readonly deadlineMs?: bigint | null;
+}
+/** Execute canonical prepared-plan bytes against a local Rust database. */
+export declare function queryV2ExecuteLocal(database: RustDatabase, authority: QueryV2Authority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
+/** Decode the executor's exact prepared-query capability advertisement. */
+export declare function queryV2RemoteCapabilities(advertisement: Uint8Array): readonly string[];
+/** Prepare one request bound to the exact advertised executor epoch and expiry. */
+export declare function queryV2PrepareRemote(authority: QueryV2Authority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, limits: QueryV2RemoteLimits): PendingQueryV2Remote;
 export declare function generateDefineBlock(info: SchemaInfo): string;
 export declare class DescriptorRegistry {
     #private;
@@ -450,6 +509,7 @@ export declare class RustDatabase {
     static connect(address: string, database: string, options?: RustDatabaseConnectOptions): RustDatabase;
     static connect(native: NativeRuntime, address: string, database: string, options?: RustDatabaseConnectOptions): RustDatabase;
     isConnected(): boolean;
+    close(): void;
     databaseName(): string;
     databaseExists(): boolean;
     createDatabase(): void;

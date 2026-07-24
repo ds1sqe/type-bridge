@@ -27,12 +27,13 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_migration::{
     AppliedRecord, ExecutionFence, ExecutionScope, GroupEventRecord, GroupJournalEventKind,
-    JournalEntry, JournalSequence, LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError,
-    MigrationApplyTarget, MigrationExecutionOutcome, MigrationHistoryGraph, MigrationLease,
-    MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision, SchemaLoweringBinding,
-    SchemaMigrationDraft, StatementUnit, VerifiedMigrationApplyStep, build_verified_manifest,
-    build_verified_migration_apply_plan, execute_verified_migration_apply_plan,
-    schema_lowering_profile_binding, typedb_3_12_1_profile,
+    JournalEntry, JournalSequence, LeaseHolderId, LegacyAppliedSetDigest, LegacyMigrationChecksum,
+    LegacyMigrationReference, MigrationApplyApproval, MigrationApplyPlanError,
+    MigrationApplyTarget, MigrationExecutionOutcome, MigrationExecutionPosition,
+    MigrationHistoryGraph, MigrationLease, MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision,
+    SchemaLoweringBinding, SchemaMigrationDraft, StatementUnit, VerifiedMigrationApplyStep,
+    build_legacy_frontier_bridge, build_verified_manifest, build_verified_migration_apply_plan,
+    execute_verified_migration_apply_plan, schema_lowering_profile_binding, typedb_3_12_1_profile,
 };
 
 fn type_fact(label: &str) -> SchemaFact {
@@ -368,6 +369,149 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
     let state = store.state.lock().expect("coordinator store");
     assert_eq!(state.applied.len(), 3);
     assert_eq!(state.releases, 1);
+}
+
+#[test]
+fn zero_group_applied_checkpoint_failure_is_retry_safe_at_manifest_position() {
+    let head = declared(&["person"]);
+    let context = context();
+    let frontier = vec![LegacyMigrationReference::new(
+        migration_id("0001_initial"),
+        LegacyMigrationChecksum::new("0123456789abcdef").expect("legacy checksum"),
+    )];
+    let applied_set =
+        LegacyAppliedSetDigest::compute(frontier.clone()).expect("legacy applied set");
+    let bridge = build_legacy_frontier_bridge(
+        migration_id("0000_legacy_frontier"),
+        frontier,
+        applied_set,
+        &head,
+        &context,
+    )
+    .expect("legacy bridge");
+    let graph = MigrationHistoryGraph::from_verified([bridge.clone()]).expect("history");
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .expect("bridge plan");
+    assert!(plan.migrations()[0].transaction_groups().is_empty());
+
+    let store = CoordinatorStore::default();
+    store
+        .state
+        .lock()
+        .expect("coordinator store")
+        .fail_record_applied_once = true;
+    let provider = CoordinatorProvider {
+        available: context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(plan.source_state().expect("source").clone()),
+    };
+    let holder = LeaseHolderId::new("bridge-checkpoint").expect("holder");
+    let outcome = block_on(execute_verified_migration_apply_plan(
+        &store, &provider, &holder, &plan,
+    ))
+    .expect("retry-safe execution outcome");
+    match outcome {
+        MigrationExecutionOutcome::RetrySafe {
+            migration_id,
+            position,
+            diagnostic,
+        } => {
+            assert_eq!(migration_id, bridge.id().clone());
+            assert_eq!(position, MigrationExecutionPosition::ManifestCheckpoint);
+            assert_eq!(
+                diagnostic.code().as_str(),
+                "coordinator_record_applied_failed"
+            );
+        }
+        other => panic!("expected manifest-checkpoint retry, got {other:?}"),
+    }
+    {
+        let state = store.state.lock().expect("coordinator store");
+        assert!(state.applied.is_empty());
+        assert!(state.open.is_some());
+    }
+
+    let retry = block_on(execute_verified_migration_apply_plan(
+        &store, &provider, &holder, &plan,
+    ))
+    .expect("checkpoint retry");
+    assert!(matches!(retry, MigrationExecutionOutcome::Applied));
+    let state = store.state.lock().expect("coordinator store");
+    assert_eq!(state.applied.len(), 1);
+    assert!(state.open.is_none());
+}
+
+#[test]
+fn committed_group_checkpoint_failure_retains_transaction_group_position() {
+    let source = declared(&["person"]);
+    let target = declared(&["person", "company"]);
+    let context = context();
+    let migration = manifest("0001_company", Vec::new(), &source, &target, &context);
+    let graph = MigrationHistoryGraph::from_verified([migration.clone()]).expect("history");
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &additive_policy(),
+        &[],
+    )
+    .expect("ordinary plan");
+    assert_eq!(plan.migrations()[0].transaction_groups().len(), 1);
+
+    let store = CoordinatorStore::default();
+    store
+        .state
+        .lock()
+        .expect("coordinator store")
+        .fail_group_event_once = Some(GroupJournalEventKind::Committed);
+    let provider = CoordinatorProvider {
+        available: context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(plan.source_state().expect("source").clone()),
+    };
+    let holder = LeaseHolderId::new("group-checkpoint").expect("holder");
+    let outcome = block_on(execute_verified_migration_apply_plan(
+        &store, &provider, &holder, &plan,
+    ))
+    .expect("retry-safe execution outcome");
+    match outcome {
+        MigrationExecutionOutcome::RetrySafe {
+            migration_id,
+            position,
+            diagnostic,
+        } => {
+            assert_eq!(migration_id, migration.id().clone());
+            assert_eq!(position, MigrationExecutionPosition::TransactionGroup(0));
+            assert_eq!(
+                diagnostic.code().as_str(),
+                "coordinator_record_group_event_failed"
+            );
+        }
+        other => panic!("expected transaction-group retry, got {other:?}"),
+    }
+
+    let retry = block_on(execute_verified_migration_apply_plan(
+        &store, &provider, &holder, &plan,
+    ))
+    .expect("group checkpoint retry");
+    assert!(matches!(retry, MigrationExecutionOutcome::Applied));
+    let state = store.state.lock().expect("coordinator store");
+    assert_eq!(state.applied.len(), 1);
+    assert!(state.open.is_none());
 }
 
 #[test]

@@ -11,6 +11,50 @@ pub enum CommitFailureCertainty {
     Unknown,
 }
 
+/// A classified commit result for recovery-aware callers.
+///
+/// [`OrmError`] retains its released, exhaustively matchable variant set.
+/// Ordinary commit callers receive provider failures as
+/// [`OrmError::Transaction`]; callers that must distinguish a proven abort
+/// can opt into [`crate::Transaction::commit_classified`].
+#[derive(Debug, Error)]
+pub enum ClassifiedCommitError {
+    /// An ORM transaction-lifecycle error without stronger commit evidence.
+    #[error(transparent)]
+    Orm(#[from] OrmError),
+
+    /// A provider commit failure with explicit durability certainty.
+    #[error("Transaction error: Commit failed: {message}")]
+    Driver {
+        /// Whether the failed response proves that the commit was aborted.
+        certainty: CommitFailureCertainty,
+        /// The original provider error text.
+        message: String,
+    },
+}
+
+impl ClassifiedCommitError {
+    /// Returns the durability certainty carried by a provider commit failure.
+    #[must_use]
+    pub const fn commit_failure_certainty(&self) -> Option<CommitFailureCertainty> {
+        match self {
+            Self::Driver { certainty, .. } => Some(*certainty),
+            Self::Orm(_) => None,
+        }
+    }
+
+    /// Convert to the released ORM error surface.
+    #[must_use]
+    pub fn into_orm_error(self) -> OrmError {
+        match self {
+            Self::Orm(error) => error,
+            Self::Driver { message, .. } => {
+                OrmError::Transaction(format!("Commit failed: {message}"))
+            }
+        }
+    }
+}
+
 /// Unified error type for the ORM crate.
 #[derive(Debug, Error)]
 pub enum OrmError {
@@ -38,15 +82,6 @@ pub enum OrmError {
     /// Transaction already committed or rolled back.
     #[error("Transaction error: {0}")]
     Transaction(String),
-
-    /// A provider commit failure with an explicit durability certainty.
-    #[error("Transaction error: Commit failed: {message}")]
-    Commit {
-        /// Whether the failed response proves that the commit was aborted.
-        certainty: CommitFailureCertainty,
-        /// The original provider error text.
-        message: String,
-    },
 
     /// Failed to hydrate query results into Rust structs.
     #[error("Hydration error for type '{type_name}': {message}")]
@@ -102,17 +137,6 @@ pub enum OrmError {
     /// A lifecycle hook rejected or failed the operation.
     #[error("Hook error: {0}")]
     Hook(#[from] crate::hooks::HookError),
-}
-
-impl OrmError {
-    /// Returns the durability certainty carried by a commit failure.
-    #[must_use]
-    pub const fn commit_failure_certainty(&self) -> Option<CommitFailureCertainty> {
-        match self {
-            Self::Commit { certainty, .. } => Some(*certainty),
-            _ => None,
-        }
-    }
 }
 
 /// Convenience Result alias for ORM operations.

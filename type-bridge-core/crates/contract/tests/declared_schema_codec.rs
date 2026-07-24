@@ -92,7 +92,7 @@ fn declared_schema() -> DeclaredSchema {
                 StructId::new("name_record").unwrap(),
                 vec![
                     StructField::new(Label::new("value").unwrap(), ValueTypeTag::String, false),
-                    StructField::new(Label::new("alias").unwrap(), ValueTypeTag::String, true),
+                    StructField::new(Label::new("alternate").unwrap(), ValueTypeTag::String, true),
                 ],
             )
             .unwrap(),

@@ -96,6 +96,7 @@ nav:
     - Queries & Expressions: guide/queries.md
     - Immutable Typed Queries: guide/typed-queries.md
     - Schema Management: guide/schema.md
+    - Split-YAML & Workspace V1: guide/split-yaml-v1.md
     - Migrations: guide/migrations.md
     - Code Generator: guide/generator.md
     - TOML Schema DSL: guide/toml.md

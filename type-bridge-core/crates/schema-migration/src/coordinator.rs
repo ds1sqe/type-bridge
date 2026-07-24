@@ -112,6 +112,15 @@ pub trait MigrationExecutionProvider: Send + Sync {
     ) -> ExecutionFuture<'a, Box<dyn PreparedMigrationGroup + 'a>>;
 }
 
+/// Exact execution position associated with a non-success apply outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MigrationExecutionPosition {
+    /// One zero-based verifier-owned transaction group.
+    TransactionGroup(usize),
+    /// The manifest-level applied-ledger checkpoint after all groups complete.
+    ManifestCheckpoint,
+}
+
 /// Terminal result of one coordinator invocation.
 #[derive(Debug)]
 pub enum MigrationExecutionOutcome {
@@ -119,19 +128,19 @@ pub enum MigrationExecutionOutcome {
     Applied,
     /// A later invocation may safely retry or repair journal-only progress.
     RetrySafe {
-        /// Migration containing the interrupted group.
+        /// Migration containing the interrupted execution position.
         migration_id: MigrationId,
-        /// Zero-based verifier-owned group position.
-        group_ordinal: usize,
+        /// Exact group or manifest-checkpoint position that may be retried.
+        position: MigrationExecutionPosition,
         /// Privacy-safe provider or journal failure.
         diagnostic: Diagnostic,
     },
     /// Evidence cannot distinguish replay from duplication.
     RequiresExplicitRecovery {
-        /// Migration containing the ambiguous group.
+        /// Migration containing the ambiguous execution position.
         migration_id: MigrationId,
-        /// Zero-based verifier-owned group position.
-        group_ordinal: usize,
+        /// Exact group or manifest-checkpoint position requiring recovery.
+        position: MigrationExecutionPosition,
         /// Privacy-safe reason automatic progress was refused.
         diagnostic: Diagnostic,
     },
@@ -198,20 +207,7 @@ where
     let lease = store.acquire(&scope, holder).await?;
     let result = execute_under_lease(store, provider, &lease, plan).await;
     let release = store.release(&lease).await;
-    match result {
-        Ok(MigrationExecutionOutcome::Applied) => {
-            release?;
-            Ok(MigrationExecutionOutcome::Applied)
-        }
-        Ok(outcome) => {
-            let _ = release;
-            Ok(outcome)
-        }
-        Err(error) => {
-            let _ = release;
-            Err(error)
-        }
-    }
+    finish_apply_lease_release(result, release)
 }
 
 async fn execute_under_lease<S, P>(
@@ -332,14 +328,22 @@ where
                     )
                 })?;
                 if let Err(error) = transaction.execute_assertion(validated).await {
-                    let _ = transaction.rollback().await;
-                    return Err(error);
+                    return Err(rollback_prepared_group_error(
+                        transaction,
+                        error,
+                        "apply assertion execution",
+                    )
+                    .await);
                 }
             }
             for unit in lowering.units() {
                 if let Err(error) = transaction.execute_statement_unit(unit).await {
-                    let _ = transaction.rollback().await;
-                    return Err(error);
+                    return Err(rollback_prepared_group_error(
+                        transaction,
+                        error,
+                        "apply statement execution",
+                    )
+                    .await);
                 }
             }
             let before = GroupEventRecord::new(
@@ -350,8 +354,12 @@ where
                 None,
             )?;
             if let Err(error) = store.record_group_event(lease, before).await {
-                let _ = transaction.rollback().await;
-                return Err(error);
+                return Err(rollback_prepared_group_error(
+                    transaction,
+                    error,
+                    "apply before-commit journal checkpoint",
+                )
+                .await);
             }
 
             match transaction.commit(lease).await {
@@ -455,7 +463,7 @@ where
         if observed.as_ref() != Some(migration.manifest().target_state()) {
             return Ok(MigrationExecutionOutcome::RequiresExplicitRecovery {
                 migration_id: migration.manifest().id().clone(),
-                group_ordinal: last_group_ordinal(migration)?,
+                position: MigrationExecutionPosition::ManifestCheckpoint,
                 diagnostic: failure(
                     DiagnosticCategory::Integrity,
                     "migration_execution_manifest_target_mismatch",
@@ -467,7 +475,7 @@ where
         if let Err(error) = store.record_applied(lease, applied).await {
             return Ok(MigrationExecutionOutcome::RetrySafe {
                 migration_id: migration.manifest().id().clone(),
-                group_ordinal: last_group_ordinal(migration)?,
+                position: MigrationExecutionPosition::ManifestCheckpoint,
                 diagnostic: error,
             });
         }
@@ -510,20 +518,7 @@ where
     let lease = store.acquire(&scope, holder).await?;
     let result = execute_rollback_under_lease(store, provider, &lease, plan).await;
     let release = store.release(&lease).await;
-    match result {
-        Ok(MigrationRollbackOutcome::RolledBack) => {
-            release?;
-            Ok(MigrationRollbackOutcome::RolledBack)
-        }
-        Ok(outcome) => {
-            let _ = release;
-            Ok(outcome)
-        }
-        Err(error) => {
-            let _ = release;
-            Err(error)
-        }
-    }
+    finish_rollback_lease_release(result, release)
 }
 
 async fn execute_rollback_under_lease<S, P>(
@@ -638,8 +633,12 @@ where
             let mut transaction = provider.prepare_group(lease, source, target).await?;
             for unit in step.lowering().units() {
                 if let Err(error) = transaction.execute_statement_unit(unit).await {
-                    let _ = transaction.rollback().await;
-                    return Err(error);
+                    return Err(rollback_prepared_group_error(
+                        transaction,
+                        error,
+                        "rollback statement execution",
+                    )
+                    .await);
                 }
             }
             let before = RollbackStepEventRecord::new(
@@ -650,8 +649,12 @@ where
                 None,
             )?;
             if let Err(error) = store.record_rollback_step_event(lease, before).await {
-                let _ = transaction.rollback().await;
-                return Err(error);
+                return Err(rollback_prepared_group_error(
+                    transaction,
+                    error,
+                    "rollback before-commit journal checkpoint",
+                )
+                .await);
             }
 
             match transaction.commit(lease).await {
@@ -1399,6 +1402,161 @@ fn is_completion_event(event: GroupJournalEventKind) -> bool {
     )
 }
 
+fn finish_apply_lease_release(
+    result: Result<MigrationExecutionOutcome, Diagnostic>,
+    release: Result<(), Diagnostic>,
+) -> Result<MigrationExecutionOutcome, Diagnostic> {
+    match (result, release) {
+        (Ok(outcome), Ok(())) => Ok(outcome),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(MigrationExecutionOutcome::Applied), Err(cleanup)) => Err(lease_release_uncertainty(
+            "apply", "applied", None, &cleanup,
+        )),
+        (
+            Ok(MigrationExecutionOutcome::RetrySafe {
+                migration_id,
+                position,
+                diagnostic: primary,
+            }),
+            Err(cleanup),
+        ) => Ok(MigrationExecutionOutcome::RetrySafe {
+            migration_id,
+            position,
+            diagnostic: lease_release_uncertainty("apply", "retry_safe", Some(&primary), &cleanup),
+        }),
+        (
+            Ok(MigrationExecutionOutcome::RequiresExplicitRecovery {
+                migration_id,
+                position,
+                diagnostic: primary,
+            }),
+            Err(cleanup),
+        ) => Ok(MigrationExecutionOutcome::RequiresExplicitRecovery {
+            migration_id,
+            position,
+            diagnostic: lease_release_uncertainty(
+                "apply",
+                "requires_explicit_recovery",
+                Some(&primary),
+                &cleanup,
+            ),
+        }),
+        (Err(primary), Err(cleanup)) => Err(lease_release_uncertainty(
+            "apply",
+            "error",
+            Some(&primary),
+            &cleanup,
+        )),
+    }
+}
+
+fn finish_rollback_lease_release(
+    result: Result<MigrationRollbackOutcome, Diagnostic>,
+    release: Result<(), Diagnostic>,
+) -> Result<MigrationRollbackOutcome, Diagnostic> {
+    match (result, release) {
+        (Ok(outcome), Ok(())) => Ok(outcome),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(MigrationRollbackOutcome::RolledBack), Err(cleanup)) => Err(lease_release_uncertainty(
+            "rollback",
+            "rolled_back",
+            None,
+            &cleanup,
+        )),
+        (
+            Ok(MigrationRollbackOutcome::RetrySafe {
+                migration_id,
+                step_ordinal,
+                diagnostic: primary,
+            }),
+            Err(cleanup),
+        ) => Ok(MigrationRollbackOutcome::RetrySafe {
+            migration_id,
+            step_ordinal,
+            diagnostic: lease_release_uncertainty(
+                "rollback",
+                "retry_safe",
+                Some(&primary),
+                &cleanup,
+            ),
+        }),
+        (
+            Ok(MigrationRollbackOutcome::RequiresExplicitRecovery {
+                migration_id,
+                step_ordinal,
+                diagnostic: primary,
+            }),
+            Err(cleanup),
+        ) => Ok(MigrationRollbackOutcome::RequiresExplicitRecovery {
+            migration_id,
+            step_ordinal,
+            diagnostic: lease_release_uncertainty(
+                "rollback",
+                "requires_explicit_recovery",
+                Some(&primary),
+                &cleanup,
+            ),
+        }),
+        (Err(primary), Err(cleanup)) => Err(lease_release_uncertainty(
+            "rollback",
+            "error",
+            Some(&primary),
+            &cleanup,
+        )),
+    }
+}
+
+fn lease_release_uncertainty(
+    operation: &'static str,
+    outcome: &'static str,
+    primary: Option<&Diagnostic>,
+    cleanup: &Diagnostic,
+) -> Diagnostic {
+    let mut diagnostic = failure(
+        DiagnosticCategory::Integrity,
+        "migration_execution_lease_release_uncertain",
+        "migration execution lease release was not acknowledged; lease ownership is uncertain",
+    )
+    .with_detail("operation", operation)
+    .with_detail("outcome", outcome)
+    .with_detail("cleanup_code", cleanup.code().as_str().to_owned())
+    .with_detail("cleanup", cleanup.to_string());
+    if let Some(primary) = primary {
+        diagnostic = diagnostic
+            .with_detail("primary_code", primary.code().as_str().to_owned())
+            .with_detail("primary", primary.to_string());
+    }
+    diagnostic
+}
+
+async fn rollback_prepared_group_error<'a>(
+    transaction: Box<dyn PreparedMigrationGroup + 'a>,
+    primary: Diagnostic,
+    operation: &'static str,
+) -> Diagnostic {
+    finish_prepared_group_rollback(primary, transaction.rollback().await, operation)
+}
+
+fn finish_prepared_group_rollback(
+    primary: Diagnostic,
+    cleanup: Result<(), Diagnostic>,
+    operation: &'static str,
+) -> Diagnostic {
+    match cleanup {
+        Ok(()) => primary,
+        Err(cleanup) => failure(
+            DiagnosticCategory::Integrity,
+            "migration_execution_rollback_cleanup_uncertain",
+            "prepared migration transaction rollback was not acknowledged; live state requires fresh observation",
+        )
+        .with_detail("operation", operation)
+        .with_detail("primary_code", primary.code().as_str().to_owned())
+        .with_detail("primary", primary.to_string())
+        .with_detail("cleanup_code", cleanup.code().as_str().to_owned())
+        .with_detail("cleanup", cleanup.to_string()),
+    }
+}
+
 fn retry_safe(
     migration: &VerifiedMigrationApplyManifest,
     group: &VerifiedMigrationTransactionGroup,
@@ -1406,7 +1564,7 @@ fn retry_safe(
 ) -> MigrationExecutionOutcome {
     MigrationExecutionOutcome::RetrySafe {
         migration_id: migration.manifest().id().clone(),
-        group_ordinal: group.ordinal(),
+        position: MigrationExecutionPosition::TransactionGroup(group.ordinal()),
         diagnostic,
     }
 }
@@ -1418,24 +1576,9 @@ fn explicit_recovery(
 ) -> MigrationExecutionOutcome {
     MigrationExecutionOutcome::RequiresExplicitRecovery {
         migration_id: migration.manifest().id().clone(),
-        group_ordinal: group.ordinal(),
+        position: MigrationExecutionPosition::TransactionGroup(group.ordinal()),
         diagnostic,
     }
-}
-
-fn last_group_ordinal(migration: &VerifiedMigrationApplyManifest) -> Result<usize, Diagnostic> {
-    let ordinal = migration
-        .transaction_groups()
-        .last()
-        .ok_or_else(|| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "migration_execution_manifest_without_group",
-                "verified migration manifest has no transaction group",
-            )
-        })?
-        .ordinal();
-    Ok(ordinal)
 }
 
 fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
@@ -1444,4 +1587,255 @@ fn failure(category: DiagnosticCategory, code: &'static str, message: &'static s
         DiagnosticCode::new(code).expect("static migration coordinator diagnostic code"),
         message,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+    use type_bridge_contract::migration::{MigrationAppLabel, MigrationName};
+
+    use super::*;
+
+    fn test_migration_id() -> MigrationId {
+        MigrationId::from_components(
+            MigrationAppLabel::new("example").expect("test app label"),
+            MigrationName::new("0001_cleanup").expect("test migration name"),
+        )
+    }
+
+    fn assert_lease_release_uncertainty(
+        diagnostic: &Diagnostic,
+        operation: &str,
+        outcome: &str,
+        primary: Option<&Diagnostic>,
+        cleanup: &Diagnostic,
+    ) {
+        assert_eq!(diagnostic.category(), DiagnosticCategory::Integrity);
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "migration_execution_lease_release_uncertain"
+        );
+        assert_eq!(
+            diagnostic.details().get("operation"),
+            Some(&DiagnosticDetailValue::Text(operation.to_owned()))
+        );
+        assert_eq!(
+            diagnostic.details().get("outcome"),
+            Some(&DiagnosticDetailValue::Text(outcome.to_owned()))
+        );
+        assert_eq!(
+            diagnostic.details().get("cleanup_code"),
+            Some(&DiagnosticDetailValue::Text(
+                cleanup.code().as_str().to_owned()
+            ))
+        );
+        assert_eq!(
+            diagnostic.details().get("cleanup"),
+            Some(&DiagnosticDetailValue::Text(cleanup.to_string()))
+        );
+        if let Some(primary) = primary {
+            assert_eq!(
+                diagnostic.details().get("primary_code"),
+                Some(&DiagnosticDetailValue::Text(
+                    primary.code().as_str().to_owned()
+                ))
+            );
+            assert_eq!(
+                diagnostic.details().get("primary"),
+                Some(&DiagnosticDetailValue::Text(primary.to_string()))
+            );
+        } else {
+            assert!(!diagnostic.details().contains_key("primary_code"));
+            assert!(!diagnostic.details().contains_key("primary"));
+        }
+    }
+
+    #[test]
+    fn apply_retry_safe_outcome_retains_its_position_when_lease_release_fails() {
+        let migration_id = test_migration_id();
+        let primary = failure(
+            DiagnosticCategory::InvalidContract,
+            "coordinator_test_primary",
+            "primary failure",
+        );
+        let cleanup = failure(
+            DiagnosticCategory::Integrity,
+            "coordinator_test_release",
+            "lease release failure",
+        );
+
+        let outcome = finish_apply_lease_release(
+            Ok(MigrationExecutionOutcome::RetrySafe {
+                migration_id: migration_id.clone(),
+                position: MigrationExecutionPosition::TransactionGroup(3),
+                diagnostic: primary.clone(),
+            }),
+            Err(cleanup.clone()),
+        )
+        .expect("a non-success outcome retains its typed semantics");
+
+        let MigrationExecutionOutcome::RetrySafe {
+            migration_id: observed_id,
+            position,
+            diagnostic,
+        } = outcome
+        else {
+            panic!("retry-safe outcome changed variant");
+        };
+        assert_eq!(observed_id, migration_id);
+        assert_eq!(position, MigrationExecutionPosition::TransactionGroup(3));
+        assert_lease_release_uncertainty(
+            &diagnostic,
+            "apply",
+            "retry_safe",
+            Some(&primary),
+            &cleanup,
+        );
+    }
+
+    #[test]
+    fn rollback_explicit_recovery_retains_its_step_when_lease_release_fails() {
+        let migration_id = test_migration_id();
+        let primary = failure(
+            DiagnosticCategory::Integrity,
+            "coordinator_test_ambiguous",
+            "ambiguous rollback state",
+        );
+        let cleanup = failure(
+            DiagnosticCategory::Integrity,
+            "coordinator_test_release",
+            "lease release failure",
+        );
+
+        let outcome = finish_rollback_lease_release(
+            Ok(MigrationRollbackOutcome::RequiresExplicitRecovery {
+                migration_id: migration_id.clone(),
+                step_ordinal: 5,
+                diagnostic: primary.clone(),
+            }),
+            Err(cleanup.clone()),
+        )
+        .expect("an explicit-recovery outcome retains its typed semantics");
+
+        let MigrationRollbackOutcome::RequiresExplicitRecovery {
+            migration_id: observed_id,
+            step_ordinal,
+            diagnostic,
+        } = outcome
+        else {
+            panic!("explicit-recovery outcome changed variant");
+        };
+        assert_eq!(observed_id, migration_id);
+        assert_eq!(step_ordinal, 5);
+        assert_lease_release_uncertainty(
+            &diagnostic,
+            "rollback",
+            "requires_explicit_recovery",
+            Some(&primary),
+            &cleanup,
+        );
+    }
+
+    #[test]
+    fn primary_execution_error_and_lease_release_failure_are_both_retained() {
+        let primary = failure(
+            DiagnosticCategory::InvalidContract,
+            "coordinator_test_primary",
+            "primary failure",
+        );
+        let cleanup = failure(
+            DiagnosticCategory::Integrity,
+            "coordinator_test_release",
+            "lease release failure",
+        );
+
+        let diagnostic = finish_apply_lease_release(Err(primary.clone()), Err(cleanup.clone()))
+            .expect_err("both failures require one uncertainty diagnostic");
+
+        assert_lease_release_uncertainty(&diagnostic, "apply", "error", Some(&primary), &cleanup);
+    }
+
+    #[test]
+    fn completed_outcome_still_surfaces_an_unacknowledged_lease_release() {
+        let cleanup = failure(
+            DiagnosticCategory::Integrity,
+            "coordinator_test_release",
+            "lease release failure",
+        );
+
+        let diagnostic = finish_rollback_lease_release(
+            Ok(MigrationRollbackOutcome::RolledBack),
+            Err(cleanup.clone()),
+        )
+        .expect_err("completed execution cannot hide lease release uncertainty");
+
+        assert_lease_release_uncertainty(&diagnostic, "rollback", "rolled_back", None, &cleanup);
+    }
+
+    #[test]
+    fn acknowledged_prepared_group_rollback_preserves_the_primary_diagnostic() {
+        let primary = failure(
+            DiagnosticCategory::InvalidContract,
+            "coordinator_test_primary",
+            "primary failure",
+        )
+        .with_detail("primary_detail", "retained");
+
+        let diagnostic =
+            finish_prepared_group_rollback(primary.clone(), Ok(()), "apply statement execution");
+
+        assert_eq!(diagnostic, primary);
+    }
+
+    #[test]
+    fn failed_prepared_group_rollback_combines_primary_and_cleanup_evidence() {
+        let primary = failure(
+            DiagnosticCategory::InvalidContract,
+            "coordinator_test_primary",
+            "primary failure",
+        );
+        let cleanup = failure(
+            DiagnosticCategory::Integrity,
+            "coordinator_test_cleanup",
+            "rollback failure",
+        );
+
+        let diagnostic = finish_prepared_group_rollback(
+            primary.clone(),
+            Err(cleanup.clone()),
+            "rollback before-commit journal checkpoint",
+        );
+
+        assert_eq!(diagnostic.category(), DiagnosticCategory::Integrity);
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "migration_execution_rollback_cleanup_uncertain"
+        );
+        assert_eq!(
+            diagnostic.details().get("operation"),
+            Some(&DiagnosticDetailValue::Text(
+                "rollback before-commit journal checkpoint".to_owned()
+            ))
+        );
+        assert_eq!(
+            diagnostic.details().get("primary_code"),
+            Some(&DiagnosticDetailValue::Text(
+                "coordinator_test_primary".to_owned()
+            ))
+        );
+        assert_eq!(
+            diagnostic.details().get("primary"),
+            Some(&DiagnosticDetailValue::Text(primary.to_string()))
+        );
+        assert_eq!(
+            diagnostic.details().get("cleanup_code"),
+            Some(&DiagnosticDetailValue::Text(
+                "coordinator_test_cleanup".to_owned()
+            ))
+        );
+        assert_eq!(
+            diagnostic.details().get("cleanup"),
+            Some(&DiagnosticDetailValue::Text(cleanup.to_string()))
+        );
+    }
 }

@@ -8,18 +8,29 @@ mod adopted_genesis;
 mod descriptor;
 mod function_references;
 mod literal;
+mod live_authority;
+mod released_syntax;
 
 pub use adopted_genesis::{
-    ADOPTED_GENESIS_FILE_NAME, LEGACY_LEDGER_SCHEMA_TYPEQL, is_legacy_ledger_label,
-    parse_adopted_genesis,
+    ADOPTED_GENESIS_FILE_NAME, AdoptedGenesisAuthority, LEGACY_LEDGER_SCHEMA_TYPEQL,
+    is_legacy_ledger_label, parse_adopted_genesis, parse_adopted_genesis_authority,
+    parse_adopted_genesis_authority_with_internal,
 };
 pub use function_references::{FunctionBodyReferences, SchemaReference, TypeqlDeclaredSchema};
+pub use live_authority::{
+    LiveLegacyLedgerPresence, LiveQueryAuthorityState, LiveQueryControlPresence,
+    MANAGED_FENCE_SCHEMA_TYPEQL, legacy_ledger_schema_presence, managed_fence_schema_presence,
+    rebuild_live_query_authority, rebuild_live_query_authority_state,
+};
 
 pub use descriptor::{
     GENERATED_DECLARED_DESCRIPTOR_PATH, GENERATED_DECLARED_DESCRIPTOR_V1,
     GeneratedDeclaredDescriptorSetV1, attach_declared_descriptors,
     empty_generated_declared_descriptors_json, generate_package_with_declared_descriptors,
     generated_declared_descriptors_json, generated_descriptors_to_declared,
+    released_typeql_to_declared_lossless_projection,
+    released_typeql_to_declared_lossless_projection_with_references,
+    released_typeql_to_declared_projection, released_typeql_to_declared_projection_with_references,
     typeql_to_generated_descriptors,
 };
 
@@ -32,7 +43,7 @@ pub use shadow::{
     ShadowUnavailableLane, ShadowVerdict, V1ShadowInternalError, V1ShadowReport, v1_shadow_report,
 };
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
@@ -63,9 +74,37 @@ use typeql::schema::definable::{
 use typeql::type_::{NamedType, NamedTypeAny, TypeRef, TypeRefAny};
 
 use crate::literal::{canonical_literal, validate_quoted_string};
+use crate::released_syntax::{ReleasedAnnotationTarget, ReleasedSyntax};
 
 /// Defensive source bound applied before entering the third-party parser.
 pub const MAX_TYPEQL_SCHEMA_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TypeqlSourceSizePolicy {
+    Defensive,
+    TrustedGenerator,
+}
+
+impl TypeqlSourceSizePolicy {
+    const fn allows(self, source_len: usize) -> bool {
+        matches!(self, Self::TrustedGenerator) || source_len <= MAX_TYPEQL_SCHEMA_BYTES
+    }
+}
+
+fn ensure_typeql_source_size(
+    source: &str,
+    size_policy: TypeqlSourceSizePolicy,
+) -> Result<(), SchemaDiagnostics> {
+    if size_policy.allows(source.len()) {
+        return Ok(());
+    }
+    Err(error(
+        DiagnosticCategory::InvalidContract,
+        "typeql_schema_size_limit",
+        "TypeQL schema source exceeds the compatibility parser limit",
+        None,
+    ))
+}
 
 /// Parse one TypeQL `define` query into the canonical declared schema graph
 /// and derive neutral references from every function body.
@@ -73,18 +112,590 @@ pub fn typeql_to_declared_with_references(
     document: DocumentId,
     source: &str,
 ) -> Result<TypeqlDeclaredSchema, SchemaDiagnostics> {
-    if source.len() > MAX_TYPEQL_SCHEMA_BYTES {
-        return Err(error(
+    typeql_to_declared_with_references_with_size_policy(
+        document,
+        source,
+        TypeqlSourceSizePolicy::Defensive,
+    )
+}
+
+pub(crate) fn typeql_to_declared_with_references_with_size_policy(
+    document: DocumentId,
+    source: &str,
+    size_policy: TypeqlSourceSizePolicy,
+) -> Result<TypeqlDeclaredSchema, SchemaDiagnostics> {
+    ensure_typeql_source_size(source, size_policy)?;
+    typeql_to_declared_with_references_impl(document, source, source, None, None, None, None)
+}
+
+pub(crate) fn released_typeql_to_declared_with_references(
+    document: DocumentId,
+    released: &ReleasedSyntax,
+    size_policy: TypeqlSourceSizePolicy,
+) -> Result<TypeqlDeclaredSchema, SchemaDiagnostics> {
+    ensure_typeql_source_size(released.original_source(), size_policy)?;
+    let reference_projection = released_unresolved_capability_ranges(&document, released)?;
+    typeql_to_declared_with_references_impl(
+        document,
+        released.original_source(),
+        released.source(),
+        Some(released),
+        None,
+        None,
+        Some(&reference_projection.played_role_declarations),
+    )
+}
+
+pub(crate) fn released_typeql_to_declared_with_references_omitting_capabilities(
+    document: DocumentId,
+    released: &ReleasedSyntax,
+    omitted_declarations: &BTreeSet<usize>,
+    omitted_capabilities: &BTreeSet<usize>,
+    played_role_declarations: &BTreeMap<usize, String>,
+    size_policy: TypeqlSourceSizePolicy,
+) -> Result<TypeqlDeclaredSchema, SchemaDiagnostics> {
+    ensure_typeql_source_size(released.original_source(), size_policy)?;
+    typeql_to_declared_with_references_impl(
+        document,
+        released.original_source(),
+        released.source(),
+        Some(released),
+        Some(omitted_declarations),
+        Some(omitted_capabilities),
+        Some(played_role_declarations),
+    )
+}
+
+/// Index every non-portable declaration and causally unresolved capability in
+/// one released-schema pass.
+///
+/// Descriptor generation is intentionally open-world, but retrying the whole
+/// parser once per missing reference makes a small partial export quadratic.
+/// This index mirrors the released merge algebra, validates the surviving
+/// direct role graph in memory, and returns original byte ranges for every
+/// declaration/fact the generator-only projection must omit plus the declaring
+/// role scope for valid inherited plays edges. Descriptor omissions are kept
+/// separate from the older render-only role repair so newly unsupported
+/// canonical identities cannot change released model bytes.
+#[derive(Default)]
+pub(crate) struct ReleasedReferenceProjection {
+    pub(crate) omitted_declarations: BTreeMap<usize, usize>,
+    pub(crate) omitted: BTreeMap<usize, usize>,
+    pub(crate) omitted_from_render: BTreeMap<usize, usize>,
+    pub(crate) played_role_declarations: BTreeMap<usize, String>,
+}
+
+pub(crate) fn released_unresolved_capability_ranges(
+    document: &DocumentId,
+    released: &ReleasedSyntax,
+) -> Result<ReleasedReferenceProjection, SchemaDiagnostics> {
+    let queries = typeql::parse_queries(released.source()).map_err(|parse_error| {
+        error(
             DiagnosticCategory::InvalidContract,
-            "typeql_schema_size_limit",
-            "TypeQL schema source exceeds the compatibility parser limit",
+            "invalid_typeql_schema",
+            format!("TypeQL schema parsing failed: {parse_error}"),
             None,
-        ));
+        )
+    })?;
+    let mut definables = Vec::new();
+    for query in queries {
+        match query.structure {
+            QueryStructure::Schema(SchemaQuery::Define(define)) => {
+                definables.extend(define.definables);
+            }
+            _ => {
+                return Err(error(
+                    DiagnosticCategory::InvalidContract,
+                    "expected_typeql_define",
+                    "schema compatibility input must contain only define queries",
+                    query_span(document, released.original_source(), query.span)?,
+                ));
+            }
+        }
+    }
+    restore_released_labels(released, &mut definables);
+    let declarations = definables
+        .iter()
+        .filter_map(|definable| match definable {
+            Definable::TypeDeclaration(declaration) => Some(declaration),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let kinds = infer_type_kinds(document, released.original_source(), &declarations, true)?;
+    let mut omitted_declarations = BTreeMap::new();
+    let mut invalid_type_labels = BTreeSet::new();
+    for (declaration, kind) in declarations.iter().zip(&kinds) {
+        let label = typeql_label(&declaration.label);
+        let portable = TypeId::new(*kind, label.clone())
+            .and_then(TypeFact::new)
+            .is_ok();
+        if !portable {
+            invalid_type_labels.insert(label);
+            if let Some(span) = declaration.span {
+                omitted_declarations.insert(span.begin_offset, span.end_offset);
+            }
+        }
+    }
+    // Every reopening of a non-portable identity belongs to the same omitted
+    // declaration closure, including a kindless standalone `plays` line.
+    for declaration in &declarations {
+        if invalid_type_labels.contains(&typeql_label(&declaration.label))
+            && let Some(span) = declaration.span
+        {
+            omitted_declarations.insert(span.begin_offset, span.end_offset);
+        }
+    }
+    let ids = declarations
+        .iter()
+        .zip(&kinds)
+        .filter(|(declaration, _)| {
+            !declaration
+                .span
+                .is_some_and(|span| omitted_declarations.contains_key(&span.begin_offset))
+        })
+        .map(|(declaration, kind)| (typeql_label(&declaration.label), *kind))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut last_attribute_declaration = BTreeMap::new();
+    let mut last_sub_capability = BTreeMap::new();
+    let mut last_value_capability = BTreeMap::new();
+    for (declaration_index, (declaration, kind)) in declarations.iter().zip(&kinds).enumerate() {
+        let label = typeql_label(&declaration.label);
+        if *kind == TypeKind::Attribute {
+            last_attribute_declaration.insert(label.clone(), declaration_index);
+        }
+        for (capability_index, capability) in declaration.capabilities.iter().enumerate() {
+            if matches!(capability.base, CapabilityBase::Sub(_)) {
+                last_sub_capability.insert(label.clone(), (declaration_index, capability_index));
+            }
+            if matches!(capability.base, CapabilityBase::ValueType(_)) {
+                last_value_capability.insert(label.clone(), (declaration_index, capability_index));
+            }
+        }
     }
 
+    struct IndexedCapability<'a> {
+        owner: String,
+        owner_kind: TypeKind,
+        capability: &'a Capability,
+        start: usize,
+        end: usize,
+    }
+
+    let mut effective = Vec::new();
+    let mut first_object_capability = BTreeSet::new();
+    for (declaration_index, (declaration, kind)) in declarations.iter().zip(&kinds).enumerate() {
+        if declaration
+            .span
+            .is_some_and(|span| omitted_declarations.contains_key(&span.begin_offset))
+        {
+            continue;
+        }
+        let owner = typeql_label(&declaration.label);
+        if *kind == TypeKind::Attribute
+            && last_attribute_declaration.get(&owner) != Some(&declaration_index)
+        {
+            continue;
+        }
+        for (capability_index, capability) in declaration.capabilities.iter().enumerate() {
+            if matches!(capability.base, CapabilityBase::Sub(_))
+                && last_sub_capability.get(&owner) != Some(&(declaration_index, capability_index))
+            {
+                continue;
+            }
+            if matches!(capability.base, CapabilityBase::ValueType(_))
+                && last_value_capability.get(&owner) != Some(&(declaration_index, capability_index))
+            {
+                continue;
+            }
+            if *kind != TypeKind::Attribute
+                && let Some(identity) = released_object_capability_identity(capability)
+                && !first_object_capability.insert((owner.clone(), identity))
+            {
+                continue;
+            }
+            let Some(span) = capability.span else {
+                continue;
+            };
+            effective.push(IndexedCapability {
+                owner: owner.clone(),
+                owner_kind: *kind,
+                capability,
+                start: span.begin_offset,
+                end: span.end_offset,
+            });
+        }
+    }
+
+    let mut omitted = BTreeMap::new();
+    let mut parents = BTreeMap::<String, String>::new();
+    for indexed in &effective {
+        match &indexed.capability.base {
+            CapabilityBase::Sub(sub) => {
+                let parent = typeql_label(&sub.supertype_label);
+                if root_kind(&parent).is_some() {
+                    continue;
+                }
+                match ids.get(&parent) {
+                    None => {
+                        omitted.insert(indexed.start, indexed.end);
+                    }
+                    Some(parent_kind) if *parent_kind == indexed.owner_kind => {
+                        parents.insert(indexed.owner.clone(), parent);
+                    }
+                    Some(_) => {}
+                }
+            }
+            CapabilityBase::Owns(owns) => {
+                if let Ok(attribute) = plain_type_ref(&owns.owned)
+                    && !ids.contains_key(&attribute)
+                {
+                    omitted.insert(indexed.start, indexed.end);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut roles = BTreeMap::<(String, String), ReleasedIndexedRole>::new();
+    let mut role_names_by_relation = BTreeMap::<String, Vec<String>>::new();
+    for (capability_index, indexed) in effective.iter().enumerate() {
+        let CapabilityBase::Relates(relates) = &indexed.capability.base else {
+            continue;
+        };
+        let Ok(role) = plain_type_ref(&relates.related) else {
+            continue;
+        };
+        let specializes = relates
+            .specialised
+            .as_ref()
+            .and_then(|specialized| plain_type_ref(specialized).ok());
+        let role_is_portable = Label::new(&role).is_ok()
+            && specializes
+                .as_ref()
+                .is_none_or(|label| Label::new(label).is_ok());
+        if !role_is_portable {
+            omitted.insert(indexed.start, indexed.end);
+            continue;
+        }
+        role_names_by_relation
+            .entry(indexed.owner.clone())
+            .or_default()
+            .push(role.clone());
+        roles.insert(
+            (indexed.owner.clone(), role),
+            ReleasedIndexedRole {
+                capability_index,
+                specializes,
+            },
+        );
+    }
+
+    let relation_names = ids
+        .iter()
+        .filter_map(|(name, kind)| (*kind == TypeKind::Relation).then_some(name.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut played_role_names_by_relation = BTreeMap::<String, BTreeSet<String>>::new();
+    for indexed in &effective {
+        if let CapabilityBase::Plays(plays) = &indexed.capability.base {
+            let relation = typeql_label(&plays.role.scope);
+            let role = typeql_label(&plays.role.name);
+            if Label::new(&relation).is_err() || Label::new(&role).is_err() {
+                omitted.insert(indexed.start, indexed.end);
+                continue;
+            }
+            played_role_names_by_relation
+                .entry(relation)
+                .or_default()
+                .insert(role);
+        }
+    }
+    let role_resolution = released_role_validities(
+        &relation_names,
+        &role_names_by_relation,
+        &played_role_names_by_relation,
+        &roles,
+        &parents,
+    );
+    for (key, validity) in &role_resolution.direct {
+        if *validity == ReleasedRoleValidity::Invalid {
+            let indexed = &effective[roles[key].capability_index];
+            omitted.insert(indexed.start, indexed.end);
+        }
+    }
+
+    let mut omitted_from_render = BTreeMap::new();
+    for (key, validity) in &role_resolution.direct {
+        if *validity == ReleasedRoleValidity::Invalid {
+            let indexed = &effective[roles[key].capability_index];
+            omitted_from_render.insert(indexed.start, indexed.end);
+        }
+    }
+
+    let mut played_role_declarations = BTreeMap::new();
+    let mut first_portable_plays = BTreeSet::new();
+    for indexed in &effective {
+        let CapabilityBase::Plays(plays) = &indexed.capability.base else {
+            continue;
+        };
+        if omitted.contains_key(&indexed.start) {
+            continue;
+        }
+        let relation = typeql_label(&plays.role.scope);
+        let role = typeql_label(&plays.role.name);
+        match ids.get(&relation) {
+            None => {
+                omitted.insert(indexed.start, indexed.end);
+            }
+            Some(TypeKind::Relation) => {
+                match role_resolution.plays.get(&(relation.clone(), role.clone())) {
+                    Some(ReleasedRoleValidity::Valid) => {
+                        if let Some(declaration) =
+                            role_resolution.play_declarations.get(&(relation, role))
+                        {
+                            let identity = (
+                                indexed.owner.clone(),
+                                declaration.clone(),
+                                typeql_label(&plays.role.name),
+                            );
+                            if first_portable_plays.insert(identity) {
+                                played_role_declarations.insert(indexed.start, declaration.clone());
+                            } else {
+                                // Distinct released role refs may collapse to
+                                // the same inherited direct role identity.
+                                // Preserve the first frozen capability and
+                                // record the later alias as open-world evidence
+                                // instead of feeding a duplicate fact to the
+                                // canonical assembler.
+                                omitted.insert(indexed.start, indexed.end);
+                            }
+                        }
+                    }
+                    Some(ReleasedRoleValidity::Invalid) | None => {
+                        omitted.insert(indexed.start, indexed.end);
+                    }
+                    Some(ReleasedRoleValidity::Indeterminate) => {}
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
+    Ok(ReleasedReferenceProjection {
+        omitted_declarations,
+        omitted,
+        omitted_from_render,
+        played_role_declarations,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReleasedRoleValidity {
+    Valid,
+    Invalid,
+    Indeterminate,
+}
+
+#[derive(Clone, Debug)]
+struct ReleasedIndexedRole {
+    capability_index: usize,
+    specializes: Option<String>,
+}
+
+struct ReleasedRoleResolution {
+    direct: BTreeMap<(String, String), ReleasedRoleValidity>,
+    plays: BTreeMap<(String, String), ReleasedRoleValidity>,
+    play_declarations: BTreeMap<(String, String), String>,
+}
+
+/// Resolve direct role specializations in relation-tree order without
+/// recursion or repeated ancestry walks.
+///
+/// `direct_labels` indexes valid direct declarations on the current ancestor
+/// path. Specialization does not remove its target from this index: the
+/// canonical assembler binds `as <label>` to a direct ancestor declaration,
+/// including one already replaced in the effective role view.
+///
+/// `effective_labels` separately mirrors the frozen generator's inherited
+/// local role names. A valid specialization removes its immediate inherited
+/// target name and adds its local name; plays checks query that set after the
+/// relation's own declarations have been applied. Explicit exit frames
+/// restore both views before visiting a sibling.
+///
+/// This is O((relations + roles) log roles), uses a heap work stack for deep
+/// inheritance, and exactly models the released parser after invalid direct
+/// specializations have been omitted: an omitted role contributes no label
+/// for a descendant specialization to bind.
+fn released_role_validities(
+    relation_names: &BTreeSet<String>,
+    role_names_by_relation: &BTreeMap<String, Vec<String>>,
+    played_role_names_by_relation: &BTreeMap<String, BTreeSet<String>>,
+    roles: &BTreeMap<(String, String), ReleasedIndexedRole>,
+    parents: &BTreeMap<String, String>,
+) -> ReleasedRoleResolution {
+    let mut children = BTreeMap::<String, Vec<String>>::new();
+    let mut roots = Vec::new();
+    for relation in relation_names {
+        match parents
+            .get(relation)
+            .filter(|parent| relation_names.contains(*parent))
+        {
+            Some(parent) => children
+                .entry(parent.clone())
+                .or_default()
+                .push(relation.clone()),
+            None => roots.push(relation.clone()),
+        }
+    }
+
+    // Any relation not reachable from a root participates in, or descends
+    // from, an inheritance cycle. Preserve its capabilities as indeterminate
+    // so the canonical assembler reports the cycle instead of this
+    // compatibility index inventing a different omission.
+    let mut direct = roles
+        .keys()
+        .cloned()
+        .map(|key| (key, ReleasedRoleValidity::Indeterminate))
+        .collect::<BTreeMap<_, _>>();
+    let mut plays = played_role_names_by_relation
+        .iter()
+        .flat_map(|(relation, role_names)| {
+            role_names.iter().map(|role_name| {
+                (
+                    (relation.clone(), role_name.clone()),
+                    ReleasedRoleValidity::Indeterminate,
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut direct_labels = BTreeSet::<String>::new();
+    let mut effective_roles = BTreeMap::<String, String>::new();
+    enum Traversal {
+        Enter(String),
+        Exit {
+            direct: Vec<(String, bool)>,
+            effective: Vec<(String, Option<String>)>,
+        },
+    }
+    let mut work = roots
+        .into_iter()
+        .rev()
+        .map(Traversal::Enter)
+        .collect::<Vec<_>>();
+    let mut play_declarations = BTreeMap::new();
+
+    while let Some(frame) = work.pop() {
+        match frame {
+            Traversal::Enter(relation) => {
+                let mut additions = BTreeSet::new();
+                let mut removals = BTreeSet::new();
+                if let Some(role_names) = role_names_by_relation.get(&relation) {
+                    for role_name in role_names {
+                        let key = (relation.clone(), role_name.clone());
+                        let role = &roles[&key];
+                        let resolved = match role.specializes.as_ref() {
+                            Some(specialized) if direct_labels.contains(specialized) => {
+                                removals.insert(specialized.clone());
+                                ReleasedRoleValidity::Valid
+                            }
+                            Some(_) => ReleasedRoleValidity::Invalid,
+                            None => ReleasedRoleValidity::Valid,
+                        };
+                        direct.insert(key, resolved);
+                        if resolved == ReleasedRoleValidity::Valid {
+                            additions.insert(role_name.clone());
+                        }
+                    }
+                }
+
+                let affected = removals.union(&additions).cloned().collect::<Vec<_>>();
+                let mut previous_effective = Vec::with_capacity(affected.len());
+                for role_name in affected {
+                    let previous = effective_roles.get(&role_name).cloned();
+                    previous_effective.push((role_name.clone(), previous));
+                    if additions.contains(&role_name) {
+                        effective_roles.insert(role_name, relation.clone());
+                    } else {
+                        effective_roles.remove(&role_name);
+                    }
+                }
+                let mut previous_direct = Vec::with_capacity(additions.len());
+                for role_name in &additions {
+                    let was_visible = direct_labels.contains(role_name);
+                    previous_direct.push((role_name.clone(), was_visible));
+                    direct_labels.insert(role_name.clone());
+                }
+
+                if let Some(played_role_names) = played_role_names_by_relation.get(&relation) {
+                    for role_name in played_role_names {
+                        let declaration = effective_roles.get(role_name);
+                        plays.insert(
+                            (relation.clone(), role_name.clone()),
+                            if declaration.is_some() {
+                                ReleasedRoleValidity::Valid
+                            } else {
+                                ReleasedRoleValidity::Invalid
+                            },
+                        );
+                        if let Some(declaration) = declaration {
+                            play_declarations
+                                .insert((relation.clone(), role_name.clone()), declaration.clone());
+                        }
+                    }
+                }
+
+                work.push(Traversal::Exit {
+                    direct: previous_direct,
+                    effective: previous_effective,
+                });
+                if let Some(relation_children) = children.get(&relation) {
+                    work.extend(
+                        relation_children
+                            .iter()
+                            .rev()
+                            .cloned()
+                            .map(Traversal::Enter),
+                    );
+                }
+            }
+            Traversal::Exit { direct, effective } => {
+                for (role_name, was_visible) in direct {
+                    if was_visible {
+                        direct_labels.insert(role_name);
+                    } else {
+                        direct_labels.remove(&role_name);
+                    }
+                }
+                for (role_name, previous) in effective {
+                    if let Some(declaration) = previous {
+                        effective_roles.insert(role_name, declaration);
+                    } else {
+                        effective_roles.remove(&role_name);
+                    }
+                }
+            }
+        }
+    }
+
+    ReleasedRoleResolution {
+        direct,
+        plays,
+        play_declarations,
+    }
+}
+
+fn typeql_to_declared_with_references_impl(
+    document: DocumentId,
+    source: &str,
+    parser_source: &str,
+    released: Option<&ReleasedSyntax>,
+    omitted_released_declarations: Option<&BTreeSet<usize>>,
+    omitted_released_capabilities: Option<&BTreeSet<usize>>,
+    played_role_declarations: Option<&BTreeMap<usize, String>>,
+) -> Result<TypeqlDeclaredSchema, SchemaDiagnostics> {
     // Released schema sources may carry several define blocks; every query
     // must still be a define, and their definables merge in source order.
-    let queries = typeql::parse_queries(source).map_err(|parse_error| {
+    let queries = typeql::parse_queries(parser_source).map_err(|parse_error| {
         error(
             DiagnosticCategory::InvalidContract,
             "invalid_typeql_schema",
@@ -116,6 +727,9 @@ pub fn typeql_to_declared_with_references(
             }
         }
     }
+    if let Some(released) = released {
+        restore_released_labels(released, &mut definables);
+    }
 
     let declarations: Vec<&TypeDeclaration> = definables
         .iter()
@@ -124,15 +738,18 @@ pub fn typeql_to_declared_with_references(
             _ => None,
         })
         .collect();
-    let kinds = infer_type_kinds(&document, source, &declarations)?;
+    let kinds = infer_type_kinds(&document, source, &declarations, released.is_some())?;
     let mut ids = BTreeMap::new();
     let mut assembler = FactAssembler::new(FormatVersion::V1);
     let mut function_body_references = BTreeMap::new();
 
-    for (declaration, kind) in declarations.iter().zip(kinds) {
+    for (declaration, kind) in declarations.iter().zip(&kinds) {
+        if released_declaration_is_omitted(declaration, omitted_released_declarations) {
+            continue;
+        }
         let label = typeql_label(&declaration.label);
         let declaration_span = source_span(&document, source, declaration.span)?;
-        let id = TypeId::new(kind, label.clone())
+        let id = TypeId::new(*kind, label.clone())
             .map_err(|diagnostic| contract(diagnostic, declaration_span.clone()))?;
         // Released renders re-open declared labels freely — kindless
         // standalone `plays` lines and explicit split declarations alike —
@@ -152,27 +769,247 @@ pub fn typeql_to_declared_with_references(
         ids.entry(label).or_insert(id);
     }
 
-    for declaration in &declarations {
-        let label = typeql_label(&declaration.label);
-        let id = ids.get(&label).cloned().ok_or_else(|| {
-            error(
-                DiagnosticCategory::InvalidContract,
-                "unknown_typeql_type",
-                format!("TypeQL declaration `{label}` has no inferred type identity"),
-                query_span(&document, source, declaration.span)
-                    .ok()
-                    .flatten(),
-            )
-        })?;
-        insert_annotations(
-            &mut assembler,
-            AnnotationSubjectId::Type(id.clone()),
-            &declaration.annotations,
-            &document,
-            source,
-        )?;
-        for capability in &declaration.capabilities {
-            insert_capability(&mut assembler, &ids, &id, capability, &document, source)?;
+    if released.is_none() {
+        // Keep the strict adapter's original fact-insertion order and
+        // duplicate diagnostics. Released merge behavior belongs only to the
+        // compatibility projection below.
+        for declaration in &declarations {
+            let label = typeql_label(&declaration.label);
+            let id = ids.get(&label).cloned().ok_or_else(|| {
+                error(
+                    DiagnosticCategory::InvalidContract,
+                    "unknown_typeql_type",
+                    format!("TypeQL declaration `{label}` has no inferred type identity"),
+                    query_span(&document, source, declaration.span)
+                        .ok()
+                        .flatten(),
+                )
+            })?;
+            insert_annotations(
+                &mut assembler,
+                AnnotationSubjectId::Type(id.clone()),
+                &declaration.annotations,
+                &document,
+                source,
+            )?;
+            for capability in &declaration.capabilities {
+                insert_capability(
+                    &mut assembler,
+                    &ids,
+                    &id,
+                    capability,
+                    CapabilityAnnotations::Strict(&capability.annotations),
+                    &document,
+                    source,
+                )?;
+            }
+        }
+    } else {
+        // Reproduce the released parser's merge algebra before entering the
+        // strict fact assembler. Attribute declarations are map replacements
+        // (the final declaration wins); entity and relation declarations merge,
+        // with type annotations accumulated under their own last-write/OR
+        // identities and `sub` taking the final spelling.
+        let mut last_attribute_declaration = BTreeMap::new();
+        let mut last_sub_capability = BTreeMap::new();
+        let mut last_value_capability = BTreeMap::new();
+        for (declaration_index, (declaration, kind)) in declarations.iter().zip(&kinds).enumerate()
+        {
+            if released_declaration_is_omitted(declaration, omitted_released_declarations) {
+                continue;
+            }
+            let label = typeql_label(&declaration.label);
+            if *kind == TypeKind::Attribute {
+                last_attribute_declaration.insert(label.clone(), declaration_index);
+            }
+            for (capability_index, capability) in declaration.capabilities.iter().enumerate() {
+                if matches!(&capability.base, CapabilityBase::Sub(_)) {
+                    last_sub_capability
+                        .insert(label.clone(), (declaration_index, capability_index));
+                }
+                if matches!(&capability.base, CapabilityBase::ValueType(_)) {
+                    last_value_capability
+                        .insert(label.clone(), (declaration_index, capability_index));
+                }
+            }
+        }
+
+        let mut merged_type_annotations: BTreeMap<String, Vec<Annotation>> = BTreeMap::new();
+        let mut merged_value_annotations: BTreeMap<String, Vec<Annotation>> = BTreeMap::new();
+        for (declaration_index, (declaration, kind)) in declarations.iter().zip(&kinds).enumerate()
+        {
+            if released_declaration_is_omitted(declaration, omitted_released_declarations) {
+                continue;
+            }
+            let label = typeql_label(&declaration.label);
+            if *kind == TypeKind::Attribute
+                && last_attribute_declaration.get(&label) != Some(&declaration_index)
+            {
+                continue;
+            }
+            if let Some(released) = released {
+                for annotation in declaration.annotations.iter().chain(
+                    declaration
+                        .capabilities
+                        .iter()
+                        .flat_map(|capability| &capability.annotations),
+                ) {
+                    match released_annotation_target(released, annotation) {
+                        Some(ReleasedAnnotationTarget::Value) => merged_value_annotations
+                            .entry(label.clone())
+                            .or_default()
+                            .push(annotation.clone()),
+                        Some(ReleasedAnnotationTarget::Type) => merged_type_annotations
+                            .entry(label.clone())
+                            .or_default()
+                            .push(annotation.clone()),
+                        Some(ReleasedAnnotationTarget::Capability) => {}
+                        None if *kind == TypeKind::Attribute => {
+                            let target = released_attribute_annotation_target(annotation);
+                            let annotations = match target {
+                                ReleasedAnnotationTarget::Value => &mut merged_value_annotations,
+                                ReleasedAnnotationTarget::Type => &mut merged_type_annotations,
+                                ReleasedAnnotationTarget::Capability => continue,
+                            };
+                            annotations
+                                .entry(label.clone())
+                                .or_default()
+                                .push(annotation.clone());
+                        }
+                        None => {}
+                    }
+                }
+            } else {
+                merged_type_annotations
+                    .entry(label)
+                    .or_default()
+                    .extend(declaration.annotations.iter().cloned());
+            }
+        }
+        for (label, annotations) in merged_type_annotations {
+            let id = ids.get(&label).cloned().ok_or_else(|| {
+                error(
+                    DiagnosticCategory::InvalidContract,
+                    "unknown_typeql_type",
+                    format!("TypeQL declaration `{label}` has no inferred type identity"),
+                    None,
+                )
+            })?;
+            insert_released_annotations(
+                &mut assembler,
+                AnnotationSubjectId::Type(id.clone()),
+                &annotations,
+                &document,
+                source,
+            )?;
+        }
+
+        // The released generator observes the first owns/plays/relates capability
+        // by identity, including that capability's annotations. Its parser keeps
+        // duplicates in the initial declaration internally, but every released
+        // emitter resolves the ordered name back to the first matching capability;
+        // compatible projection therefore deduplicates both within one declaration
+        // and across later reopenings. Attribute declarations are replacements,
+        // and within the final declaration their last `sub` and `value` clauses win.
+        let mut first_object_capability = BTreeMap::new();
+        for (declaration_index, (declaration, kind)) in declarations.iter().zip(&kinds).enumerate()
+        {
+            if released_declaration_is_omitted(declaration, omitted_released_declarations) {
+                continue;
+            }
+            let label = typeql_label(&declaration.label);
+            if *kind == TypeKind::Attribute
+                && last_attribute_declaration.get(&label) != Some(&declaration_index)
+            {
+                continue;
+            }
+            let id = ids.get(&label).cloned().ok_or_else(|| {
+                error(
+                    DiagnosticCategory::InvalidContract,
+                    "unknown_typeql_type",
+                    format!("TypeQL declaration `{label}` has no inferred type identity"),
+                    query_span(&document, source, declaration.span)
+                        .ok()
+                        .flatten(),
+                )
+            })?;
+            for (capability_index, capability) in declaration.capabilities.iter().enumerate() {
+                if matches!(&capability.base, CapabilityBase::Sub(_))
+                    && last_sub_capability.get(&label)
+                        != Some(&(declaration_index, capability_index))
+                {
+                    continue;
+                }
+                if matches!(&capability.base, CapabilityBase::ValueType(_))
+                    && last_value_capability.get(&label)
+                        != Some(&(declaration_index, capability_index))
+                {
+                    continue;
+                }
+                if *kind != TypeKind::Attribute
+                    && let Some(capability_id) = released_object_capability_identity(capability)
+                {
+                    let key = (label.clone(), capability_id);
+                    if first_object_capability.contains_key(&key) {
+                        continue;
+                    }
+                    first_object_capability.insert(key, (declaration_index, capability_index));
+                }
+                if omitted_released_capabilities.is_some_and(|omitted| {
+                    capability
+                        .span
+                        .is_some_and(|span| omitted.contains(&span.begin_offset))
+                }) {
+                    continue;
+                }
+                let released_annotations;
+                let annotations = if let Some(released) = released {
+                    released_annotations = capability
+                        .annotations
+                        .iter()
+                        .filter(|annotation| {
+                            released_annotation_target(released, annotation)
+                                == Some(ReleasedAnnotationTarget::Capability)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    released_annotations.as_slice()
+                } else {
+                    capability.annotations.as_slice()
+                };
+                insert_capability(
+                    &mut assembler,
+                    &ids,
+                    &id,
+                    capability,
+                    CapabilityAnnotations::Released {
+                        annotations,
+                        played_role_declaration: capability.span.and_then(|span| {
+                            played_role_declarations
+                                .and_then(|declarations| declarations.get(&span.begin_offset))
+                                .map(String::as_str)
+                        }),
+                    },
+                    &document,
+                    source,
+                )?;
+            }
+        }
+
+        for (label, annotations) in merged_value_annotations {
+            let Some(first) = annotations.first() else {
+                continue;
+            };
+            let annotation_span = source_span(&document, source, first.span())?;
+            let attribute = AttributeId::new(&label)
+                .map_err(|diagnostic| contract(diagnostic, annotation_span))?;
+            insert_released_annotations(
+                &mut assembler,
+                AnnotationSubjectId::Value(ValueFactId::new(attribute)),
+                &annotations,
+                &document,
+                source,
+            )?;
         }
     }
 
@@ -186,10 +1023,11 @@ pub fn typeql_to_declared_with_references(
                 insert_function(&mut assembler, function, &document, source)?;
                 let function_id = FunctionId::new(function.signature.ident.as_str_unchecked())
                     .expect("TypeQL emitted a function identifier rejected by the contract");
-                function_body_references.insert(
-                    function_id,
-                    function_references::collect_function_body_references(&function.block),
-                );
+                let body_span = source_span(&document, source, function.block.span)?;
+                let references =
+                    function_references::collect_function_body_references(&function.block)
+                        .map_err(|diagnostic| contract(diagnostic, body_span))?;
+                function_body_references.insert(function_id, references);
             }
         }
     }
@@ -197,6 +1035,14 @@ pub fn typeql_to_declared_with_references(
     assembler
         .finish()
         .map(|declared| TypeqlDeclaredSchema::new(declared, function_body_references))
+}
+
+fn restore_released_labels(released: &ReleasedSyntax, definables: &mut [Definable]) {
+    for definable in definables {
+        if let Definable::TypeDeclaration(declaration) = definable {
+            released.restore_label(&mut declaration.label);
+        }
+    }
 }
 
 /// Parse one TypeQL `define` query into the canonical declared schema graph.
@@ -255,10 +1101,66 @@ pub fn toml_to_facts(
     Ok(declared.facts().cloned().collect())
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum ReleasedObjectCapabilityIdentity {
+    Owns(String),
+    Relates(String),
+    Plays(String, String),
+}
+
+fn released_declaration_is_omitted(
+    declaration: &TypeDeclaration,
+    omitted: Option<&BTreeSet<usize>>,
+) -> bool {
+    omitted.is_some_and(|omitted| {
+        declaration
+            .span
+            .is_some_and(|span| omitted.contains(&span.begin_offset))
+    })
+}
+
+fn released_object_capability_identity(
+    capability: &Capability,
+) -> Option<ReleasedObjectCapabilityIdentity> {
+    match &capability.base {
+        CapabilityBase::Owns(owns) => plain_type_ref(&owns.owned)
+            .ok()
+            .map(ReleasedObjectCapabilityIdentity::Owns),
+        CapabilityBase::Relates(relates) => plain_type_ref(&relates.related)
+            .ok()
+            .map(ReleasedObjectCapabilityIdentity::Relates),
+        CapabilityBase::Plays(plays) => Some(ReleasedObjectCapabilityIdentity::Plays(
+            typeql_label(&plays.role.scope),
+            typeql_label(&plays.role.name),
+        )),
+        _ => None,
+    }
+}
+
+fn released_annotation_target(
+    released: &ReleasedSyntax,
+    annotation: &Annotation,
+) -> Option<ReleasedAnnotationTarget> {
+    annotation
+        .span()
+        .map(|span| span.begin_offset)
+        .and_then(|start| released.annotation_target(start))
+}
+
+fn released_attribute_annotation_target(annotation: &Annotation) -> ReleasedAnnotationTarget {
+    match annotation {
+        Annotation::Regex(_) | Annotation::Range(_) | Annotation::Values(_) => {
+            ReleasedAnnotationTarget::Value
+        }
+        _ => ReleasedAnnotationTarget::Type,
+    }
+}
+
 fn infer_type_kinds(
     document: &DocumentId,
     source: &str,
     declarations: &[&TypeDeclaration],
+    released: bool,
 ) -> Result<Vec<TypeKind>, SchemaDiagnostics> {
     let mut inferred = Vec::with_capacity(declarations.len());
     for declaration in declarations {
@@ -345,6 +1247,48 @@ fn infer_type_kinds(
         }
     }
 
+    if released {
+        for (declaration, kind) in declarations.iter().zip(&mut inferred) {
+            let plays_only = declaration.kind.is_none()
+                && !declaration.capabilities.is_empty()
+                && declaration
+                    .capabilities
+                    .iter()
+                    .all(|capability| matches!(capability.base, CapabilityBase::Plays(_)));
+            if !plays_only {
+                continue;
+            }
+            match kind {
+                Some(TypeKind::Attribute) => {
+                    return Err(at(
+                        document,
+                        source,
+                        declaration.span,
+                        "conflicting_typeql_kind",
+                        format!(
+                            "released standalone plays label `{}` conflicts with an attribute declaration",
+                            typeql_label(&declaration.label)
+                        ),
+                    ));
+                }
+                Some(TypeKind::Entity | TypeKind::Relation) => {}
+                Some(TypeKind::Struct) => {
+                    return Err(at(
+                        document,
+                        source,
+                        declaration.span,
+                        "conflicting_typeql_kind",
+                        format!(
+                            "released standalone plays label `{}` cannot resolve to a struct",
+                            typeql_label(&declaration.label)
+                        ),
+                    ));
+                }
+                None => *kind = Some(TypeKind::Entity),
+            }
+        }
+    }
+
     declarations
         .iter()
         .zip(inferred)
@@ -365,20 +1309,49 @@ fn infer_type_kinds(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+enum CapabilityAnnotations<'a> {
+    Strict(&'a [Annotation]),
+    Released {
+        annotations: &'a [Annotation],
+        played_role_declaration: Option<&'a str>,
+    },
+}
+
+impl CapabilityAnnotations<'_> {
+    const fn annotations(&self) -> &[Annotation] {
+        match self {
+            Self::Strict(annotations) | Self::Released { annotations, .. } => annotations,
+        }
+    }
+
+    const fn played_role_declaration(&self) -> Option<&str> {
+        match self {
+            Self::Strict(_) => None,
+            Self::Released {
+                played_role_declaration,
+                ..
+            } => *played_role_declaration,
+        }
+    }
+}
+
 fn insert_capability(
     assembler: &mut FactAssembler,
     ids: &BTreeMap<String, TypeId>,
     owner: &TypeId,
     capability: &Capability,
+    annotations: CapabilityAnnotations<'_>,
     document: &DocumentId,
     source: &str,
 ) -> Result<(), SchemaDiagnostics> {
+    let annotation_slice = annotations.annotations();
     let capability_span = source_span(document, source, capability.span)?;
     let subject = match &capability.base {
         CapabilityBase::Sub(sub) => {
             let parent_label = typeql_label(&sub.supertype_label);
             if root_kind(&parent_label).is_some() {
-                reject_annotations_if_present(capability, document, source)?;
+                reject_annotations_if_present(annotation_slice, document, source)?;
                 return Ok(());
             }
             let parent = ids.get(&parent_label).cloned().ok_or_else(|| {
@@ -489,7 +1462,10 @@ fn insert_capability(
             AnnotationSubjectId::Relates(id)
         }
         CapabilityBase::Plays(plays) => {
-            let relation_label = typeql_label(&plays.role.scope);
+            let relation_label = annotations
+                .played_role_declaration()
+                .map(str::to_owned)
+                .unwrap_or_else(|| typeql_label(&plays.role.scope));
             let role_label = typeql_label(&plays.role.name);
             let relation = Label::new(&relation_label)
                 .map_err(|diagnostic| contract(diagnostic, capability_span.clone()))?;
@@ -518,13 +1494,14 @@ fn insert_capability(
         }
     };
 
-    insert_annotations(
-        assembler,
-        subject,
-        &capability.annotations,
-        document,
-        source,
-    )
+    match annotations {
+        CapabilityAnnotations::Strict(_) => {
+            insert_annotations(assembler, subject, annotation_slice, document, source)
+        }
+        CapabilityAnnotations::Released { .. } => {
+            insert_released_annotations(assembler, subject, annotation_slice, document, source)
+        }
+    }
 }
 
 fn insert_struct(
@@ -711,7 +1688,57 @@ fn insert_annotations(
     source: &str,
 ) -> Result<(), SchemaDiagnostics> {
     for annotation in annotations {
+        insert_released_annotations(
+            assembler,
+            subject.clone(),
+            core::slice::from_ref(annotation),
+            document,
+            source,
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_released_annotations(
+    assembler: &mut FactAssembler,
+    subject: AnnotationSubjectId,
+    annotations: &[Annotation],
+    document: &DocumentId,
+    source: &str,
+) -> Result<(), SchemaDiagnostics> {
+    // The frozen parser stores one value per annotation identity: presence
+    // flags accumulate, while doc/regex/values/card and each meta key use the
+    // final spelling. Repeated attribute ranges update only the bounds present
+    // in each spelling (`@range(1..) @range(..5)` becomes `1..5`). Stage the
+    // merged facts before handing them to the strict assembler so compatible
+    // repetitions do not look like direct fact duplication.
+    let mut merged = BTreeMap::new();
+    let mut released_range: Option<(
+        Option<&typeql::value::Literal>,
+        Option<&typeql::value::Literal>,
+        SourceSpan,
+    )> = None;
+    for annotation in annotations {
         let annotation_span = source_span(document, source, annotation.span())?;
+        if let Annotation::Range(range) = annotation {
+            let (lower, upper, latest_span) =
+                released_range.get_or_insert((None, None, annotation_span.clone()));
+            if let Some(minimum) = range.min.as_ref() {
+                *lower = Some(minimum);
+            }
+            if let Some(maximum) = range.max.as_ref() {
+                *upper = Some(maximum);
+            }
+            *latest_span = annotation_span;
+            continue;
+        }
+        let kind = annotation_identity_kind(annotation, annotation_span.clone())?;
+        merged.insert(
+            AnnotationFactId::new(subject.clone(), kind),
+            (annotation, annotation_span),
+        );
+    }
+    for (id, (annotation, annotation_span)) in merged {
         let (kind, value) = match annotation {
             Annotation::Abstract(_) => {
                 (AnnotationKindId::Abstract, SchemaAnnotationValue::Presence)
@@ -849,12 +1876,66 @@ fn insert_annotations(
                 )
             }
         };
-        let id = AnnotationFactId::new(subject.clone(), kind);
+        debug_assert_eq!(id.kind(), &kind);
         let fact = AnnotationFact::new(id, value)
             .map_err(|diagnostic| contract(diagnostic, annotation_span.clone()))?;
         assembler.insert_fact(SchemaFact::Annotation(fact), annotation_span)?;
     }
+    if let Some((lower, upper, annotation_span)) = released_range
+        && (lower.is_some() || upper.is_some())
+    {
+        let lower = lower
+            .map(|literal| annotation_literal(literal, document, source))
+            .transpose()?;
+        let upper = upper
+            .map(|literal| annotation_literal(literal, document, source))
+            .transpose()?;
+        let range = CanonicalValueRange::new(lower, upper)
+            .map_err(|diagnostic| contract(diagnostic, annotation_span.clone()))?;
+        let id = AnnotationFactId::new(subject, AnnotationKindId::Range);
+        let fact = AnnotationFact::new(id, SchemaAnnotationValue::Range(range))
+            .map_err(|diagnostic| contract(diagnostic, annotation_span.clone()))?;
+        assembler.insert_fact(SchemaFact::Annotation(fact), annotation_span)?;
+    }
     Ok(())
+}
+
+fn annotation_identity_kind(
+    annotation: &Annotation,
+    annotation_span: SourceSpan,
+) -> Result<AnnotationKindId, SchemaDiagnostics> {
+    Ok(match annotation {
+        Annotation::Abstract(_) => AnnotationKindId::Abstract,
+        Annotation::Independent(_) => AnnotationKindId::Independent,
+        Annotation::Key(_) => AnnotationKindId::Key,
+        Annotation::Unique(_) => AnnotationKindId::Unique,
+        Annotation::Cardinality(_) => AnnotationKindId::Card,
+        Annotation::Regex(_) => AnnotationKindId::Regex,
+        Annotation::Doc(_) => AnnotationKindId::Doc,
+        Annotation::Range(_) => AnnotationKindId::Range,
+        Annotation::Values(_) => AnnotationKindId::Values,
+        Annotation::Meta(meta) => {
+            validate_annotation_string(&meta.key, "meta_key", annotation_span.clone())?;
+            let key = meta.key.unescape().map_err(|unescape_error| {
+                error(
+                    DiagnosticCategory::InvalidContract,
+                    "invalid_typeql_meta_key",
+                    format!("TypeQL metadata key decoding failed: {unescape_error}"),
+                    Some(annotation_span.clone()),
+                )
+            })?;
+            AnnotationKindId::meta(key)
+                .map_err(|diagnostic| contract(diagnostic, annotation_span))?
+        }
+        Annotation::Cascade(_) | Annotation::Distinct(_) | Annotation::Subkey(_) => {
+            return Err(error(
+                DiagnosticCategory::UnsupportedCapability,
+                "unsupported_typeql_annotation",
+                "TypeQL annotation has no portable V2 annotation identity",
+                Some(annotation_span),
+            ));
+        }
+    })
 }
 
 fn validate_annotation_string(
@@ -889,11 +1970,11 @@ fn annotation_literal(
 }
 
 fn reject_annotations_if_present(
-    capability: &Capability,
+    annotations: &[Annotation],
     document: &DocumentId,
     source: &str,
 ) -> Result<(), SchemaDiagnostics> {
-    if let Some(annotation) = capability.annotations.first() {
+    if let Some(annotation) = annotations.first() {
         return Err(at(
             document,
             source,
@@ -1113,4 +2194,76 @@ fn contract(diagnostic: Diagnostic, span: SourceSpan) -> SchemaDiagnostics {
 
 fn contract_without_span(diagnostic: Diagnostic) -> SchemaDiagnostics {
     SchemaDiagnostics::one(SchemaDiagnostic::new(diagnostic, None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trusted_generator_size_policy_does_not_widen_defensive_inputs() {
+        assert!(TypeqlSourceSizePolicy::Defensive.allows(MAX_TYPEQL_SCHEMA_BYTES));
+        assert!(!TypeqlSourceSizePolicy::Defensive.allows(MAX_TYPEQL_SCHEMA_BYTES + 1));
+        assert!(TypeqlSourceSizePolicy::TrustedGenerator.allows(MAX_TYPEQL_SCHEMA_BYTES + 1));
+    }
+
+    #[test]
+    fn deep_role_specialization_index_uses_heap_stack_and_one_tree_walk() {
+        const DEPTH: usize = 25_000;
+        let mut relation_names = BTreeSet::new();
+        let mut role_names_by_relation = BTreeMap::<String, Vec<String>>::new();
+        let mut roles = BTreeMap::new();
+        let mut parents = BTreeMap::new();
+
+        for index in 0..DEPTH {
+            let relation = format!("relation-{index}");
+            let role = if index == 0 {
+                "root-role".to_owned()
+            } else {
+                format!("role-{index}")
+            };
+            relation_names.insert(relation.clone());
+            role_names_by_relation.insert(relation.clone(), vec![role.clone()]);
+            roles.insert(
+                (relation.clone(), role),
+                ReleasedIndexedRole {
+                    capability_index: index,
+                    specializes: (index != 0).then(|| "root-role".to_owned()),
+                },
+            );
+            if index != 0 {
+                parents.insert(relation, format!("relation-{}", index - 1));
+            }
+        }
+
+        let leaf = format!("relation-{}", DEPTH - 1);
+        let leaf_role = format!("role-{}", DEPTH - 1);
+        let played = BTreeMap::from([(
+            leaf.clone(),
+            BTreeSet::from(["root-role".to_owned(), leaf_role.clone()]),
+        )]);
+        let resolution = released_role_validities(
+            &relation_names,
+            &role_names_by_relation,
+            &played,
+            &roles,
+            &parents,
+        );
+
+        assert_eq!(resolution.direct.len(), DEPTH);
+        assert!(
+            resolution
+                .direct
+                .values()
+                .all(|validity| *validity == ReleasedRoleValidity::Valid)
+        );
+        assert_eq!(
+            resolution.plays.get(&(leaf.clone(), leaf_role)),
+            Some(&ReleasedRoleValidity::Valid)
+        );
+        assert_eq!(
+            resolution.plays.get(&(leaf, "root-role".to_owned())),
+            Some(&ReleasedRoleValidity::Invalid)
+        );
+    }
 }

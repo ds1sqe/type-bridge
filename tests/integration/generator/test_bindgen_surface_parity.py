@@ -127,9 +127,7 @@ def _strip_declared_snapshot(package: dict[str, str]) -> dict[str, str]:
     parity of the model rendering itself, which the raw core-lib example
     cannot attach.
     """
-    package = {
-        path: text for path, text in package.items() if path != "declared-schema.json"
-    }
+    package = {path: text for path, text in package.items() if path != "declared-schema.json"}
     registry = package.get("registry.py")
     if registry is not None:
         marker = "\nGENERATED_DECLARED_DESCRIPTORS_JSON: str = "
@@ -316,9 +314,7 @@ def test_comprehensive_toml_bindgen_surface_parity(tmp_path: Path) -> None:
             _assert_same_package(
                 f"{toml_path.name} {target} TypeScript native",
                 expected,
-                _strip_declared_snapshot(
-                    _run_typescript_native(typeql_path, target, options_path)
-                ),
+                _strip_declared_snapshot(_run_typescript_native(typeql_path, target, options_path)),
             )
             _assert_same_package(
                 f"{toml_path.name} {target} Python writer",

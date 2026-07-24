@@ -29,7 +29,7 @@ pub mod version;
 use type_bridge_core_lib as core;
 
 use pyo3::prelude::*;
-use pyo3::types::PyBool;
+use pyo3::types::{PyBool, PyDict, PyList};
 use pythonize::{depythonize, pythonize};
 
 /// Python-facing wrapper around the Rust [`type_bridge_core_lib::validation::ValidationEngine`].
@@ -395,9 +395,7 @@ impl ValueCoercer {
             .inner
             .coerce(&json_val, target_type)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        pythonize(py, &coerced)
-            .map(|obj| obj.unbind())
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        coerced_value_to_python(py, &coerced)
     }
 
     /// Batch coerce. Takes list of (value, type) tuples, returns list of dicts.
@@ -414,9 +412,7 @@ impl ValueCoercer {
         let py_results: Vec<PyObject> = results
             .into_iter()
             .map(|r| match r {
-                Ok(cv) => pythonize(py, &cv)
-                    .map(|obj| obj.unbind())
-                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
+                Ok(cv) => coerced_value_to_python(py, &cv),
                 Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e.to_string())),
             })
             .collect::<PyResult<Vec<_>>>()?;
@@ -434,6 +430,78 @@ impl ValueCoercer {
         };
         Ok(self.inner.format_typeql(&coerced))
     }
+}
+
+fn pythonize_serde_value<T>(py: Python<'_>, value: &T) -> PyResult<PyObject>
+where
+    T: serde::Serialize + ?Sized,
+{
+    pythonize(py, value)
+        .map(|obj| obj.unbind())
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// Convert JSON without exposing serde_json's private arbitrary-precision
+/// number representation to Python.
+fn json_value_to_python(py: Python<'_>, value: &serde_json::Value) -> PyResult<PyObject> {
+    match value {
+        serde_json::Value::Null => Ok(py.None()),
+        serde_json::Value::Bool(value) => pythonize_serde_value(py, value),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                return pythonize_serde_value(py, &value);
+            }
+            if let Some(value) = value.as_u64() {
+                return pythonize_serde_value(py, &value);
+            }
+
+            let token = value.to_string();
+            if token.contains(['.', 'e', 'E']) {
+                if let Some(value) = value.as_f64() {
+                    return pythonize_serde_value(py, &value);
+                }
+                return Ok(py
+                    .import("builtins")?
+                    .getattr("float")?
+                    .call1((token,))?
+                    .unbind());
+            }
+
+            // With serde_json's `arbitrary_precision` feature, integers outside
+            // u64/i64 have no primitive accessor. Let Python preserve them as an
+            // arbitrary-precision int instead of silently rounding through f64.
+            Ok(py
+                .import("builtins")?
+                .getattr("int")?
+                .call1((token,))?
+                .unbind())
+        }
+        serde_json::Value::String(value) => pythonize_serde_value(py, value),
+        serde_json::Value::Array(values) => {
+            let values = values
+                .iter()
+                .map(|value| json_value_to_python(py, value))
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok(PyList::new(py, values)?.into_any().unbind())
+        }
+        serde_json::Value::Object(values) => {
+            let result = PyDict::new(py);
+            for (key, value) in values {
+                result.set_item(key, json_value_to_python(py, value)?)?;
+            }
+            Ok(result.into_any().unbind())
+        }
+    }
+}
+
+fn coerced_value_to_python(
+    py: Python<'_>,
+    coerced: &core::value_coercion::CoercedValue,
+) -> PyResult<PyObject> {
+    let result = PyDict::new(py);
+    result.set_item("value", json_value_to_python(py, &coerced.value)?)?;
+    result.set_item("value_type", &coerced.value_type)?;
+    Ok(result.into_any().unbind())
 }
 
 /// Convert a Python object to a serde_json::Value for Rust processing.
@@ -570,9 +638,7 @@ fn coerce_value(py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> P
     let coerced = coercer
         .coerce(&json_val, target_type)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    pythonize(py, &coerced)
-        .map(|obj| obj.unbind())
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    coerced_value_to_python(py, &coerced)
 }
 
 /// Parse a TypeQL query string into a list of clause dicts.
@@ -633,6 +699,17 @@ fn run_v2_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
     py.allow_threads(|| type_bridge_cli::run_cli(arguments))
 }
 
+/// Run the released V1 migration CLI in-process over process-style arguments.
+///
+/// This is the wheel-safe counterpart of the standalone
+/// `type-bridge-migration` binary. It calls the same Rust parser and command
+/// runner, releases the GIL for connected commands, and returns rather than
+/// terminating the Python host process.
+#[pyfunction]
+fn run_legacy_migration_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
+    py.allow_threads(|| type_bridge_migration::legacy_cli::run_cli(arguments))
+}
+
 #[pymodule]
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationEngine>()?;
@@ -646,6 +723,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
     m.add_function(wrap_pyfunction!(transpiler::toml_to_typeql, m)?)?;
     m.add_function(wrap_pyfunction!(run_v2_cli, m)?)?;
+    m.add_function(wrap_pyfunction!(run_legacy_migration_cli, m)?)?;
 
     // Values
     m.add_class::<ast::LiteralValue>()?;

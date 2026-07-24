@@ -28,7 +28,7 @@ fn parse_digits(value: &str) -> Option<u32> {
         .flatten()
 }
 
-/// A Gregorian date in the binding-neutral year range 1 through 9999.
+/// A Gregorian date in the canonical TypeDB year range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CanonicalDate {
     year: i32,
@@ -155,12 +155,18 @@ impl FromStr for CanonicalTime {
             Some(_) => return Err(invalid_temporal("datetime")),
             None => (&value[6..], 0),
         };
-        Self::new(
+        let parsed = Self::new(
             hour,
             minute,
-            parse_digits(seconds).ok_or_else(|| invalid_temporal("datetime"))? as u8,
+            u8::try_from(parse_digits(seconds).ok_or_else(|| invalid_temporal("datetime"))?)
+                .map_err(|_| invalid_temporal("datetime"))?,
             nanos,
-        )
+        )?;
+        if parsed.to_string() != value {
+            Err(invalid_temporal("datetime"))
+        } else {
+            Ok(parsed)
+        }
     }
 }
 
@@ -395,7 +401,12 @@ impl fmt::Display for CanonicalDateTimeTz {
                     "{sign}{:02}:{:02}",
                     absolute / 3600,
                     (absolute % 3600) / 60
-                )
+                )?;
+                let seconds = absolute % 60;
+                if seconds != 0 {
+                    write!(f, ":{seconds:02}")?;
+                }
+                Ok(())
             }
         }
     }
@@ -407,35 +418,71 @@ impl FromStr for CanonicalDateTimeTz {
             return Err(invalid_temporal("datetime_tz"));
         }
         if let Some(local) = value.strip_suffix('Z') {
-            return Self::new_fixed(local.parse()?, TimeZoneDesignator::Utc);
+            let parsed = Self::new_fixed(local.parse()?, TimeZoneDesignator::Utc)?;
+            return if parsed.to_string() == value {
+                Ok(parsed)
+            } else {
+                Err(invalid_temporal("datetime_tz"))
+            };
         }
         if value.ends_with(']') {
             return Err(invalid_temporal("datetime_tz"));
         }
-        if value.len() < 6 {
-            return Err(invalid_temporal("datetime_tz"));
-        }
-        let split = value.len() - 6;
-        let offset = &value[split..];
-        if !matches!(&offset[..1], "+" | "-") || &offset[3..4] != ":" {
-            return Err(invalid_temporal("datetime_tz"));
-        }
-        let hours =
-            parse_digits(&offset[1..3]).ok_or_else(|| invalid_temporal("datetime_tz"))? as i32;
-        let minutes =
-            parse_digits(&offset[4..]).ok_or_else(|| invalid_temporal("datetime_tz"))? as i32;
-        if minutes > 59 {
-            return Err(invalid_temporal("datetime_tz"));
-        }
-        let mut seconds = hours * 3600 + minutes * 60;
-        if &offset[..1] == "-" {
-            seconds = -seconds;
-        }
-        Self::new_fixed(
+        let (split, seconds) = [9_usize, 6]
+            .into_iter()
+            .find_map(|width| {
+                let split = value.len().checked_sub(width)?;
+                let offset = &value[split..];
+                parse_fixed_offset_seconds(offset).map(|seconds| (split, seconds))
+            })
+            .ok_or_else(|| invalid_temporal("datetime_tz"))?;
+        let parsed = Self::new_fixed(
             value[..split].parse()?,
             TimeZoneDesignator::OffsetSeconds(seconds),
-        )
+        )?;
+        if parsed.to_string() != value {
+            Err(invalid_temporal("datetime_tz"))
+        } else {
+            Ok(parsed)
+        }
     }
+}
+
+fn parse_fixed_offset_seconds(value: &str) -> Option<i32> {
+    let bytes = value.as_bytes();
+    if !matches!(
+        bytes,
+        [b'+' | b'-', _, _, b':', _, _] | [b'+' | b'-', _, _, b':', _, _, b':', _, _]
+    ) || !bytes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !matches!(index, 0 | 3 | 6))
+        .all(|(_, byte)| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let component = |left: usize, right: usize| {
+        std::str::from_utf8(&bytes[left..right])
+            .ok()?
+            .parse::<i32>()
+            .ok()
+    };
+    let hours = component(1, 3)?;
+    let minutes = component(4, 6)?;
+    let seconds = if bytes.len() == 9 {
+        component(7, 9)?
+    } else {
+        0
+    };
+    if hours > 23 || minutes > 59 || seconds > 59 {
+        return None;
+    }
+    let magnitude = hours * 3_600 + minutes * 60 + seconds;
+    Some(if bytes[0] == b'-' {
+        -magnitude
+    } else {
+        magnitude
+    })
 }
 
 /// A normalized ISO-8601-subset duration.
@@ -505,14 +552,17 @@ impl fmt::Display for CanonicalDuration {
 }
 
 fn canonical_unsigned(value: &str) -> Option<u64> {
-    let parsed = parse_digits(value)?.into();
-    let parsed = value.parse::<u64>().ok().unwrap_or(parsed);
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let parsed = value.parse::<u64>().ok()?;
     (parsed.to_string() == value).then_some(parsed)
 }
 
 impl FromStr for CanonicalDuration {
     type Err = Diagnostic;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let original = value;
         let (negative, value) = value
             .strip_prefix('-')
             .map_or((false, value), |value| (true, value));
@@ -520,7 +570,12 @@ impl FromStr for CanonicalDuration {
             .strip_prefix('P')
             .ok_or_else(|| invalid_temporal("duration"))?;
         if body == "T0S" {
-            return Self::new(negative, 0, 0, 0, 0);
+            let parsed = Self::new(negative, 0, 0, 0, 0)?;
+            return if parsed.to_string() == original {
+                Ok(parsed)
+            } else {
+                Err(invalid_temporal("duration"))
+            };
         }
         let (date, time) = body
             .split_once('T')
@@ -572,7 +627,12 @@ impl FromStr for CanonicalDuration {
         if months == 0 && days == 0 && seconds == 0 && nanosecond == 0 {
             return Err(invalid_temporal("duration"));
         }
-        Self::new(negative, months, days, seconds, nanosecond)
+        let parsed = Self::new(negative, months, days, seconds, nanosecond)?;
+        if parsed.to_string() != original {
+            Err(invalid_temporal("duration"))
+        } else {
+            Ok(parsed)
+        }
     }
 }
 
@@ -614,7 +674,7 @@ mod tests {
         );
         assert!("2023-02-29".parse::<CanonicalDate>().is_err());
         assert_eq!(
-            "2024-01-02T03:04:05.1200"
+            "2024-01-02T03:04:05.12"
                 .parse::<CanonicalDateTime>()
                 .unwrap()
                 .to_string(),
@@ -634,6 +694,19 @@ mod tests {
                 .to_string(),
             "P2M3DT4.5S"
         );
+    }
+
+    #[test]
+    fn temporal_parsers_reject_noncanonical_normalizing_spellings() {
+        for invalid in ["00:00:256", "03:04:05.1200", "03:04:005", "03:04:05.0"] {
+            assert!(invalid.parse::<CanonicalTime>().is_err(), "{invalid}");
+        }
+        for invalid in ["2024-01-02T03:04:05.1200", "2024-01-02T03:04:05+01:00:00"] {
+            assert!(invalid.parse::<CanonicalDateTimeTz>().is_err(), "{invalid}");
+        }
+        for invalid in ["-PT0S", "PT1.20S"] {
+            assert!(invalid.parse::<CanonicalDuration>().is_err(), "{invalid}");
+        }
     }
 
     #[test]
@@ -686,5 +759,27 @@ mod tests {
         let later_overlap =
             CanonicalDateTimeTz::new_named_resolved(local, "Europe/London", 0).unwrap();
         assert!(value.semantic_utc_nanoseconds() < later_overlap.semantic_utc_nanoseconds());
+    }
+
+    #[test]
+    fn fixed_datetime_tz_round_trips_second_resolution_offsets() {
+        let value = CanonicalDateTimeTz::new_fixed(
+            "1900-01-01T12:00:00.25".parse().expect("local datetime"),
+            TimeZoneDesignator::OffsetSeconds(1_172),
+        )
+        .expect("historical fixed offset");
+        assert_eq!(value.to_string(), "1900-01-01T12:00:00.25+00:19:32");
+        assert_eq!(
+            value.to_string().parse::<CanonicalDateTimeTz>().unwrap(),
+            value
+        );
+
+        for invalid in [
+            "1900-01-01T12:00:00+00:19:60",
+            "1900-01-01T12:00:00+24:00:00",
+            "1900-01-01T12:00:00+00:19:3",
+        ] {
+            assert!(invalid.parse::<CanonicalDateTimeTz>().is_err(), "{invalid}");
+        }
     }
 }

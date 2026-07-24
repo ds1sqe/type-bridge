@@ -249,6 +249,92 @@ fn closed_wire_rejects_unknown_duplicate_missing_and_wrong_types_with_spans() {
 }
 
 #[test]
+fn set_like_capability_lists_reject_duplicates_at_the_second_span() {
+    let duplicate_global =
+        WORKSPACE_YAML.replace("    - schema.annotations", "    - schema.doc-meta");
+    let error = TypeBridgeConfigSpec::parse_yaml(duplicate_global, origin()).unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::DuplicateCapabilityRequirement
+    );
+    assert_eq!(
+        error.detail(),
+        Some("compatibility.require:schema.doc-meta")
+    );
+    assert_eq!(error.source_span().unwrap().line(), 11);
+
+    let duplicate_environment = format!(
+        "{WORKSPACE_YAML}environments:\n  dev:\n    database: example\n    uri: localhost:1729\n    credential:\n      username: env:TYPEDB_USERNAME\n      password: env:TYPEDB_PASSWORD\n    requirements:\n      - schema.doc-meta\n      - schema.doc-meta\n"
+    );
+    let duplicate_line = u32::try_from(duplicate_environment.lines().count()).unwrap();
+    let error = TypeBridgeConfigSpec::parse_yaml(duplicate_environment, origin()).unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::DuplicateCapabilityRequirement
+    );
+    assert_eq!(
+        error.detail(),
+        Some("environments.requirements:schema.doc-meta")
+    );
+    assert_eq!(error.source_span().unwrap().line(), duplicate_line);
+}
+
+#[test]
+fn invalid_environment_uri_and_database_report_their_value_spans() {
+    let source = CanonicalSource(Cell::new(0));
+    let secrets = AcceptSecrets(Cell::new(0));
+    let extensions = AcceptExtensions(Cell::new(0));
+    let service_set = services(&source, &secrets, &extensions);
+    let manifest = |database: &str, uri: &str| {
+        format!(
+            "{WORKSPACE_YAML}environments:\n  development:\n    database: {database}\n    uri: {uri}\n    credential:\n      username: env:TYPEDB_USERNAME\n      password: env:TYPEDB_PASSWORD\n"
+        )
+    };
+    let scalar_position = |source: &str, needle: &str| {
+        source
+            .lines()
+            .enumerate()
+            .find_map(|(line, text)| {
+                text.find(needle).map(|column| {
+                    (
+                        u32::try_from(line + 1).unwrap(),
+                        u32::try_from(column + 1).unwrap(),
+                    )
+                })
+            })
+            .expect("fixture contains the authored scalar")
+    };
+
+    let invalid_uri = manifest("example", "host:65536");
+    let expected_uri = scalar_position(&invalid_uri, "host:65536");
+    let error = TypeBridgeConfigSpec::parse_yaml(invalid_uri, origin())
+        .unwrap()
+        .resolve(&service_set)
+        .expect_err("an out-of-range endpoint port is rejected");
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::InvalidWorkspaceValue
+    );
+    assert_eq!(error.origin(), Some("virtual workspace config"));
+    let span = error.source_span().expect("URI diagnostic is spanned");
+    assert_eq!((span.line(), span.column()), expected_uri);
+
+    let empty_database = manifest("''", "localhost:1729");
+    let expected_database = scalar_position(&empty_database, "''");
+    let error = TypeBridgeConfigSpec::parse_yaml(empty_database, origin())
+        .unwrap()
+        .resolve(&service_set)
+        .expect_err("an empty database is rejected");
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::InvalidWorkspaceValue
+    );
+    assert_eq!(error.origin(), Some("virtual workspace config"));
+    let span = error.source_span().expect("database diagnostic is spanned");
+    assert_eq!((span.line(), span.column()), expected_database);
+}
+
+#[test]
 fn format_encoding_and_origin_are_explicit_and_fail_closed() {
     let unsupported = WORKSPACE_YAML.replace("typebridge.workspace/v1", "typebridge.workspace/v2");
     let error = TypeBridgeConfigSpec::parse_yaml(unsupported, origin()).unwrap_err();

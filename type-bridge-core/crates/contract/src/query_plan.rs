@@ -90,14 +90,15 @@ pub fn query_plan_capability_vocabulary() -> CapabilitySet {
     .collect()
 }
 
-/// Return the transport capability multi-row `given` invocations require.
+/// Return the transport capability exact `given` invocations require.
 ///
-/// Plans never require this capability — it is derived from invocation
-/// cardinality by [`QueryInvocation::transport_capabilities`], so it is
-/// not part of [`query_plan_capability_vocabulary`]. Executors advertise
-/// it only when their provider can transport explicit input rows, which
-/// makes multi-row admission truthful at preflight instead of failing
-/// after a transaction exists.
+/// Plans never require this capability — it is derived from the invocation's
+/// row count and values by [`QueryInvocation::transport_capabilities`], so it
+/// is not part of [`query_plan_capability_vocabulary`]. Batches, explicit
+/// absence, and datetime-tz values select this transport. Executors advertise
+/// it only when their provider can transport explicit input rows, which makes
+/// admission truthful at preflight instead of failing after a transaction
+/// exists.
 #[must_use]
 pub fn query_given_rows_capability() -> CapabilityId {
     CapabilityId::new(CAP_INPUT_GIVEN_ROWS).expect("static capability id is canonical")
@@ -265,7 +266,7 @@ pub enum QueryPattern {
     },
     /// Existential bounded reachability along one role-directed relation.
     ///
-    /// Holds when the target is reachable from the source in at most
+    /// Holds when the target is reachable from the source in one through
     /// `max_depth` hops, each hop one relation instance from the `role_from`
     /// player to the `role_to` player. The bound is mandatory and finite;
     /// lowering unrolls it provider-side, never by repeated client queries.
@@ -763,13 +764,11 @@ impl QueryPlan {
                     "plan binding IDs must be ordered dense zero-based ordinals",
                 ));
             }
-            if binding.variable().as_str().len() > limits.output_name_bytes {
-                return Err(failure(
-                    DiagnosticCategory::ResourceLimit,
-                    "query_plan_name_limit",
-                    "a query variable name exceeds the structural ceiling",
-                ));
-            }
+            validate_query_name_limit(
+                binding.variable(),
+                limits,
+                "a query variable name exceeds the structural ceiling",
+            )?;
             if !names.insert(binding.variable().clone()) {
                 return Err(failure(
                     DiagnosticCategory::InvalidContract,
@@ -793,24 +792,11 @@ impl QueryPlan {
                     "input column IDs must be ordered dense zero-based ordinals",
                 ));
             }
-            // The public contract accepts `None` for optional columns, but
-            // neither inline nor given lowering can transport absence yet.
-            // Reserve the value state instead of admitting plans no
-            // provider path can execute.
-            if column.optional() {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_plan_optional_input_reserved",
-                    "optional input columns are reserved until absence transport is defined",
-                ));
-            }
-            if column.public_name().as_str().len() > limits.output_name_bytes {
-                return Err(failure(
-                    DiagnosticCategory::ResourceLimit,
-                    "query_plan_name_limit",
-                    "an input column name exceeds the structural ceiling",
-                ));
-            }
+            validate_query_name_limit(
+                column.public_name(),
+                limits,
+                "an input column name exceeds the structural ceiling",
+            )?;
             if !names.insert(column.public_name().clone()) {
                 return Err(failure(
                     DiagnosticCategory::InvalidContract,
@@ -864,6 +850,11 @@ impl QueryPlan {
                 }
                 let mut keys = BTreeSet::new();
                 for field in fields {
+                    validate_query_name_limit(
+                        field.key(),
+                        limits,
+                        "a document output key exceeds the structural ceiling",
+                    )?;
                     if !keys.insert(field.key().clone()) {
                         return Err(failure(
                             DiagnosticCategory::InvalidContract,
@@ -1053,11 +1044,25 @@ impl QueryInvocation {
                     "the plan declares input columns and requires at least one row",
                 ));
             }
-            if !limits.allows_selected_slots(inputs.len()) {
+            if !limits.allows_input_rows(inputs.len()) {
                 return Err(failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_invocation_row_limit",
                     "invocation input row count exceeds the structural ceiling",
+                ));
+            }
+            let input_bytes = serde_json::to_vec(&inputs).map_err(|_| {
+                failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_invocation_inputs_unencodable",
+                    "invocation input rows cannot be encoded",
+                )
+            })?;
+            if !limits.allows_input_bytes(input_bytes.len()) {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_invocation_input_byte_limit",
+                    "invocation input rows exceed the structural byte ceiling",
                 ));
             }
             for row in &inputs {
@@ -1123,16 +1128,23 @@ impl QueryInvocation {
     /// Return capabilities this invocation's transport requires beyond
     /// the plan's own.
     ///
-    /// A multi-row input batch rides the native `given` transport, so it
-    /// requires [`query_given_rows_capability`]; empty and single-row
-    /// invocations lower inline and require nothing extra. Both client
-    /// preflight and executor admission check this set against the
-    /// advertisement so untransportable invocations fail before any I/O
-    /// or provider resource.
+    /// A multi-row input batch rides the native `given` transport. A single
+    /// row with an absent optional cell also requires `given`, because inline
+    /// literal substitution has no absence spelling. Datetime-tz inputs use
+    /// `given` at every cardinality so named and fixed/second-offset values
+    /// have one exact lowering. Both client preflight and executor admission
+    /// check this set against the advertisement so untransportable
+    /// invocations fail before any I/O or provider resource.
     #[must_use]
     pub fn transport_capabilities(&self) -> CapabilitySet {
         let mut capabilities = CapabilitySet::new();
-        if self.inputs.len() > 1 {
+        if self.inputs.len() > 1
+            || self.inputs.first().is_some_and(|row| {
+                row.values().iter().any(|value| {
+                    value.is_none() || matches!(value, Some(CanonicalValue::DateTimeTz(_)))
+                })
+            })
+        {
             capabilities.insert(query_given_rows_capability());
         }
         capabilities
@@ -1205,6 +1217,11 @@ fn validate_local_functions(
                     "plan binding IDs must be ordered dense zero-based ordinals",
                 ));
             }
+            validate_query_name_limit(
+                binding.variable(),
+                limits,
+                "a local query variable name exceeds the structural ceiling",
+            )?;
             if !local_names.insert(binding.variable().clone()) {
                 return Err(failure(
                     DiagnosticCategory::InvalidContract,
@@ -1275,6 +1292,21 @@ fn validate_local_functions(
     Ok(())
 }
 
+fn validate_query_name_limit(
+    name: &QueryVariable,
+    limits: StructuralLimits,
+    message: &'static str,
+) -> Result<(), Diagnostic> {
+    if name.as_str().len() > limits.output_name_bytes {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "query_plan_name_limit",
+            message,
+        ));
+    }
+    Ok(())
+}
+
 fn validate_pipeline(
     pipeline: &[ReadStage],
     binding_count: usize,
@@ -1307,9 +1339,10 @@ fn validate_pipeline(
         inspect_pattern(pattern, 1, binding_count, input_count, limits, nodes)?;
     }
 
-    // The row environment starts as the pattern-referenced bindings: a
-    // declared binding no pattern mentions has no row presence, and a
-    // reduce assignment must stay outside the pattern conjunction.
+    // Keep every pattern reference for freshness checks, but derive the row
+    // environment only from bindings positively established in the root
+    // conjunction. Negation-local witnesses never become row columns merely
+    // because their binding IDs are referenced in a nested scope.
     let mut pattern_bound = BTreeSet::new();
     for pattern in patterns {
         collect_pattern_bindings(pattern, &mut pattern_bound);
@@ -1318,22 +1351,22 @@ fn validate_pipeline(
     // them or an explicit absence. Each optional binding belongs to exactly
     // one try body; sharing one across bodies has no single presence source.
     let mut root_mandatory = BTreeSet::new();
+    let mut scoped_positive = BTreeSet::new();
     for pattern in patterns {
-        if !matches!(pattern, QueryPattern::Try { .. }) {
-            collect_pattern_bindings(pattern, &mut root_mandatory);
-        }
+        collect_direct_positive_bindings(pattern, &mut root_mandatory);
+        collect_negation_positive_bindings(pattern, &mut scoped_positive);
     }
     let mut optional = BTreeSet::new();
     for pattern in patterns {
         let QueryPattern::Try { patterns } = pattern else {
             continue;
         };
-        let mut body_refs = BTreeSet::new();
+        let mut body_positive = BTreeSet::new();
         for child in patterns {
-            collect_pattern_bindings(child, &mut body_refs);
+            collect_direct_positive_bindings(child, &mut body_positive);
         }
-        for reference in &body_refs {
-            if optional.contains(reference) {
+        for local in body_positive.difference(&root_mandatory) {
+            if !optional.insert(*local) {
                 return Err(failure(
                     DiagnosticCategory::InvalidContract,
                     "query_plan_try_binding_shared",
@@ -1341,9 +1374,15 @@ fn validate_pipeline(
                 ));
             }
         }
-        optional.extend(body_refs.difference(&root_mandatory).copied());
     }
-    let mut mandatory: BTreeSet<BindingId> = pattern_bound.difference(&optional).copied().collect();
+    if !scoped_positive.is_disjoint(&optional) {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "query_plan_try_binding_shared",
+            "an optional binding cannot also be a negation-local witness",
+        ));
+    }
+    let mut mandatory = root_mandatory;
     let mut previous_ordinal = 0u8;
     let mut has_sort = false;
     for stage in rest {
@@ -1470,7 +1509,7 @@ fn validate_pipeline(
                 optional.clear();
             }
             ReadStage::Sort { terms } => {
-                if terms.is_empty() || terms.len() > limits.boolean_terms {
+                if terms.is_empty() || !limits.allows_order_terms(terms.len()) {
                     return Err(failure(
                         DiagnosticCategory::ResourceLimit,
                         "query_plan_sort_term_limit",
@@ -1748,6 +1787,48 @@ fn collect_pattern_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<Bind
             }
             bindings.insert(*assigned);
         }
+    }
+}
+
+/// Collect bindings positively established by one pattern in its current
+/// lexical scope. References used only as value/function operands are not
+/// producers, and nested scopes are deliberately not traversed.
+fn collect_direct_positive_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<BindingId>) {
+    match pattern {
+        QueryPattern::Isa { binding, .. } => {
+            bindings.insert(*binding);
+        }
+        QueryPattern::Has {
+            owner, attribute, ..
+        } => {
+            bindings.extend([*owner, *attribute]);
+        }
+        QueryPattern::Links {
+            relation, players, ..
+        } => {
+            bindings.insert(*relation);
+            bindings.extend(players.iter().map(AssertionRolePlayer::player));
+        }
+        QueryPattern::Reachable { source, target, .. } => {
+            bindings.extend([*source, *target]);
+        }
+        QueryPattern::FunctionCall { assigned, .. } => {
+            bindings.insert(*assigned);
+        }
+        QueryPattern::Value { .. } | QueryPattern::Not { .. } | QueryPattern::Try { .. } => {}
+    }
+}
+
+/// Collect bindings established only inside negation scopes, including nested
+/// negations. Optional blocks cannot occur below a negation in this vocabulary,
+/// so every nested positive producer is a scoped witness.
+fn collect_negation_positive_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<BindingId>) {
+    let QueryPattern::Not { patterns } = pattern else {
+        return;
+    };
+    for child in patterns {
+        collect_direct_positive_bindings(child, bindings);
+        collect_negation_positive_bindings(child, bindings);
     }
 }
 

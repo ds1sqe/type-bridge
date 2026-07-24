@@ -19,7 +19,9 @@ use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,
     execute_migration_assertion,
 };
-use type_bridge_orm::{CommitFailureCertainty, Database, OrmError, Transaction};
+use type_bridge_orm::{
+    ClassifiedCommitError, CommitFailureCertainty, Database, OrmError, Transaction,
+};
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 use type_bridge_schema::BUILTIN_SCHEMA_CAPABILITY_IDS;
 use type_bridge_schema_migration::{
@@ -28,7 +30,10 @@ use type_bridge_schema_migration::{
     typedb_3_12_1_profile,
 };
 
-use crate::observation::observe_managed_state_from_export;
+use crate::observation::{
+    ManagedObservationAuthority, observe_managed_state_from_export_with_authority,
+};
+use crate::runner::LegacyExecutionBinding;
 use crate::store::require_active_managed_fence;
 
 const SUPPORTED_SERVER: (u32, u32, u32) = (3, 12, 1);
@@ -37,6 +42,8 @@ const SUPPORTED_SERVER: (u32, u32, u32) = (3, 12, 1);
 pub struct TypeDbMigrationProvider {
     database: Arc<Database>,
     capabilities: CapabilitySet,
+    legacy_binding: Option<(LegacyExecutionBinding, String)>,
+    observation_authority: ManagedObservationAuthority,
 }
 
 impl TypeDbMigrationProvider {
@@ -46,7 +53,32 @@ impl TypeDbMigrationProvider {
         Ok(Self {
             database,
             capabilities: execution_capability_vocabulary()?,
+            legacy_binding: None,
+            observation_authority: ManagedObservationAuthority::ExactPortable,
         })
+    }
+
+    /// Bind the runner-validated legacy pair state into every managed SCHEMA
+    /// transaction opened by this provider.
+    pub(crate) fn new_with_legacy_binding(
+        database: Arc<Database>,
+        legacy_binding: LegacyExecutionBinding,
+        managed_scope: String,
+        observation_authority: ManagedObservationAuthority,
+    ) -> Result<Self, Diagnostic> {
+        let mut provider = Self::new(database)?;
+        provider.legacy_binding = Some((legacy_binding, managed_scope));
+        provider.observation_authority = observation_authority;
+        Ok(provider)
+    }
+
+    pub(crate) fn new_with_observation_authority(
+        database: Arc<Database>,
+        observation_authority: ManagedObservationAuthority,
+    ) -> Result<Self, Diagnostic> {
+        let mut provider = Self::new(database)?;
+        provider.observation_authority = observation_authority;
+        Ok(provider)
     }
 
     async fn observe_in_transaction(
@@ -57,14 +89,25 @@ impl TypeDbMigrationProvider {
         target_candidate: &ManagedSchemaState,
     ) -> Result<ManagedSchemaState, Diagnostic> {
         require_active_managed_fence(transaction, lease).await?;
+        if let Some((binding, managed_scope)) = &self.legacy_binding {
+            binding
+                .validate_contents(transaction, managed_scope)
+                .await?;
+        }
         let export = self.database.schema_text().await.map_err(map_orm_error)?;
         require_active_managed_fence(transaction, lease).await?;
-        observe_managed_state_from_export(
+        if let Some((binding, managed_scope)) = &self.legacy_binding {
+            binding
+                .validate_contents(transaction, managed_scope)
+                .await?;
+        }
+        observe_managed_state_from_export_with_authority(
             observation_document()?,
             &export,
             &self.capabilities,
             source_candidate,
             target_candidate,
+            &self.observation_authority,
         )
     }
 }
@@ -89,8 +132,8 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
             let observed = self
                 .observe_in_transaction(&mut transaction, lease, source_candidate, target_candidate)
                 .await;
-            let _ = transaction.rollback().await;
-            observed
+            finish_provider_schema_guard(&mut transaction, observed, "managed-state observation")
+                .await
         })
     }
 
@@ -112,17 +155,26 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
             let observed = match observed {
                 Ok(observed) => observed,
                 Err(error) => {
-                    let _ = transaction.rollback().await;
-                    return Err(error);
+                    return finish_provider_schema_guard(
+                        &mut transaction,
+                        Err(error),
+                        "transaction-group source observation",
+                    )
+                    .await;
                 }
             };
             if observed != *source {
-                let _ = transaction.rollback().await;
-                return Err(failure(
+                let primary = failure(
                     DiagnosticCategory::Integrity,
                     "migration_typedb_prepare_source_mismatch",
                     "live managed state is not the exact transaction-group source",
-                ));
+                );
+                return finish_provider_schema_guard(
+                    &mut transaction,
+                    Err(primary),
+                    "transaction-group source mismatch",
+                )
+                .await;
             }
             Ok(Box::new(TypeDbPreparedGroup {
                 transaction,
@@ -181,20 +233,21 @@ impl PreparedMigrationGroup for TypeDbPreparedGroup<'_> {
         Box::pin(async move {
             let mut this = *self;
             if let Err(error) = require_active_managed_fence(&mut this.transaction, lease).await {
-                let _ = this.transaction.rollback().await;
+                let error = finish_provider_schema_guard::<()>(
+                    &mut this.transaction,
+                    Err(error),
+                    "transaction-group pre-commit fence",
+                )
+                .await
+                .expect_err("an error result remains an error after cleanup");
                 return Err(GroupCommitFailure::new(
                     GroupCommitCertainty::DefinitelyAborted,
                     error,
                 ));
             }
-            this.transaction.commit().await.map_err(|error| {
-                let certainty = match error.commit_failure_certainty() {
-                    Some(CommitFailureCertainty::DefinitelyAborted) => {
-                        GroupCommitCertainty::DefinitelyAborted
-                    }
-                    Some(CommitFailureCertainty::Unknown) | None => GroupCommitCertainty::Unknown,
-                };
-                GroupCommitFailure::new(certainty, map_orm_error(error))
+            this.transaction.commit_classified().await.map_err(|error| {
+                let certainty = group_commit_certainty(&error);
+                GroupCommitFailure::new(certainty, map_orm_error(error.into_orm_error()))
             })
         })
     }
@@ -207,6 +260,13 @@ impl PreparedMigrationGroup for TypeDbPreparedGroup<'_> {
             let mut this = *self;
             this.transaction.rollback().await.map_err(map_orm_error)
         })
+    }
+}
+
+fn group_commit_certainty(error: &ClassifiedCommitError) -> GroupCommitCertainty {
+    match error.commit_failure_certainty() {
+        Some(CommitFailureCertainty::DefinitelyAborted) => GroupCommitCertainty::DefinitelyAborted,
+        Some(CommitFailureCertainty::Unknown) | None => GroupCommitCertainty::Unknown,
     }
 }
 
@@ -271,6 +331,43 @@ fn map_orm_error(error: OrmError) -> Diagnostic {
     .with_detail("provider", error.to_string())
 }
 
+async fn finish_provider_schema_guard<T>(
+    transaction: &mut Transaction,
+    primary: Result<T, Diagnostic>,
+    operation: &'static str,
+) -> Result<T, Diagnostic> {
+    match (primary, transaction.rollback().await) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup)) => Err(provider_schema_cleanup_failure(cleanup, None, operation)),
+        (Err(primary), Err(cleanup)) => Err(provider_schema_cleanup_failure(
+            cleanup,
+            Some(&primary),
+            operation,
+        )),
+    }
+}
+
+fn provider_schema_cleanup_failure(
+    cleanup: OrmError,
+    primary: Option<&Diagnostic>,
+    operation: &'static str,
+) -> Diagnostic {
+    let mut diagnostic = failure(
+        DiagnosticCategory::Integrity,
+        "migration_typedb_schema_guard_cleanup_uncertain",
+        "provider schema transaction termination was not acknowledged",
+    )
+    .with_detail("operation", operation)
+    .with_detail("cleanup", cleanup.to_string());
+    if let Some(primary) = primary {
+        diagnostic = diagnostic
+            .with_detail("primary_code", primary.code().as_str().to_owned())
+            .with_detail("primary", primary.to_string());
+    }
+    diagnostic
+}
+
 fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         category,
@@ -329,5 +426,35 @@ mod tests {
         let actual: std::collections::BTreeSet<String> =
             capabilities.iter().map(ToString::to_string).collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn classified_commit_evidence_maps_without_widening_legacy_orm_errors() {
+        let aborted = ClassifiedCommitError::Driver {
+            certainty: CommitFailureCertainty::DefinitelyAborted,
+            message: "server rejected commit".to_owned(),
+        };
+        assert_eq!(
+            group_commit_certainty(&aborted),
+            GroupCommitCertainty::DefinitelyAborted,
+        );
+        assert!(matches!(
+            aborted.into_orm_error(),
+            OrmError::Transaction(message) if message == "Commit failed: server rejected commit"
+        ));
+
+        let unknown = ClassifiedCommitError::Driver {
+            certainty: CommitFailureCertainty::Unknown,
+            message: "connection dropped".to_owned(),
+        };
+        assert_eq!(
+            group_commit_certainty(&unknown),
+            GroupCommitCertainty::Unknown,
+        );
+        let lifecycle = ClassifiedCommitError::from(OrmError::Transaction("consumed".to_owned()));
+        assert_eq!(
+            group_commit_certainty(&lifecycle),
+            GroupCommitCertainty::Unknown,
+        );
     }
 }

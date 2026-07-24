@@ -43,14 +43,29 @@ class RustTypeDBManager[T: "TypeDBType"]:
 
     @property
     def _manager(self) -> Any:
-        if self._manager_instance is None:
-            if self._kind == "entity":
-                self._manager_instance = rust_manager_for_entity(self._connection, self._descriptor)
-            else:
-                self._manager_instance = rust_manager_for_relation(
-                    self._connection, self._descriptor
-                )
-        return self._manager_instance
+        # A database-backed native manager owns an Arc to the current Rust
+        # connection.  Keeping that adapter here would outlive
+        # ``Database.close()`` and, after a context-manager reconnect, route
+        # released CRUD manager objects back to the terminal connection.  Build
+        # database adapters per operation so close can release its final lease
+        # and a later operation resolves the replacement connection.  Borrowed
+        # transaction adapters remain cached because they must stay pinned to
+        # exactly one transaction.  A non-None value assigned explicitly (the
+        # frozen compatibility probe uses this seam) remains authoritative.
+        if self._manager_instance is not None:
+            return self._manager_instance
+
+        from type_bridge.session import Database
+
+        if self._kind == "entity":
+            manager = rust_manager_for_entity(self._connection, self._descriptor)
+        else:
+            manager = rust_manager_for_relation(self._connection, self._descriptor)
+
+        if isinstance(self._connection, Database):
+            return manager
+        self._manager_instance = manager
+        return manager
 
     def add_hook(self, hook: Any) -> Self:
         self._hook_runner.add(hook)

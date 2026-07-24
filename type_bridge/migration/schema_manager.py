@@ -222,6 +222,13 @@ class SchemaManager:
             # Delete and recreate database
             logger.info("Force mode: recreating database from scratch")
             if self.db.database_exists():
+                # Database deletion cannot share a TypeDB transaction. Reject an
+                # adopted target before the first administrative mutation; the
+                # adoption procedure still requires old credentials to be
+                # revoked so an out-of-date binary cannot race this preflight.
+                from type_bridge import _rust_runtime
+
+                _rust_runtime.require_legacy_writer_open(self.db)
                 logger.debug("Deleting existing database")
                 self.db.delete_database()
             self.db.create_database()
@@ -240,6 +247,9 @@ class SchemaManager:
 
         logger.debug("Applying schema to database")
         with self.db.transaction("schema") as tx:
+            from type_bridge import _rust_runtime
+
+            _rust_runtime.require_legacy_writer_open_in_transaction(tx)
             tx.execute(schema)
             tx.commit()
         logger.info("Schema synchronized successfully")
@@ -334,6 +344,9 @@ class SchemaManager:
             """
 
             with self.db.transaction("write") as tx:
+                from type_bridge import _rust_runtime
+
+                _rust_runtime.require_legacy_writer_open_in_transaction(tx)
                 tx.execute(insert_query)
                 tx.commit()
 
@@ -355,6 +368,9 @@ class SchemaManager:
                 $t;
                 """
                 with self.db.transaction("write") as tx2:
+                    from type_bridge import _rust_runtime
+
+                    _rust_runtime.require_legacy_writer_open_in_transaction(tx2)
                     tx2.execute(delete_query)
                     tx2.commit()
 
@@ -368,6 +384,12 @@ class SchemaManager:
         """Drop all schema definitions."""
         logger.info("Dropping schema")
         if self.db.database_exists():
+            # Database deletion cannot share the guard's read transaction.
+            # Reject an adopted target before the first administrative
+            # mutation, matching force-sync's permanent writer fence.
+            from type_bridge import _rust_runtime
+
+            _rust_runtime.require_legacy_writer_open(self.db)
             self.db.delete_database()
             logger.info("Schema dropped (database deleted)")
         else:

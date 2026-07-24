@@ -249,11 +249,15 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
     assert_eq!(plan.migrations().len(), 2);
 
     let catalog = VerifiedMigrationCatalog::new([&first, &second]).expect("catalog");
-    let store =
-        TypeDbMigrationStore::new(Arc::clone(&managed), Arc::clone(&journal_database), catalog)
-            .expect("paired store")
-            .bind_plan(&plan)
-            .expect("bind exact plan");
+    let store = TypeDbMigrationStore::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal_database),
+        context.scope_id().clone(),
+        catalog,
+    )
+    .expect("paired store")
+    .bind_plan(&plan)
+    .expect("bind exact plan");
     let provider =
         TypeDbMigrationProvider::new(Arc::clone(&managed)).expect("version-gated provider");
     let holder = LeaseHolderId::new("live-provider-coordinator").expect("holder");

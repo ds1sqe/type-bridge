@@ -1,6 +1,10 @@
+#[cfg(feature = "v2-query")]
+use futures::future::join_all;
 use type_bridge_core_lib::ast::Clause;
 
 use super::traits::{InterceptError, Interceptor, RequestContext};
+#[cfg(feature = "v2-query")]
+use super::traits::{V2PolicyOutcome, V2PolicyRequest};
 
 pub struct InterceptorChain {
     interceptors: Vec<Box<dyn Interceptor>>,
@@ -33,6 +37,74 @@ impl InterceptorChain {
             interceptor.on_response(result, ctx).await?;
         }
         Ok(())
+    }
+
+    /// Fail closed if any configured legacy-AST policy has not explicitly
+    /// declared typed V2 coverage.
+    #[cfg(feature = "v2-query")]
+    pub fn ensure_v2_coverage(&self) -> Result<(), InterceptError> {
+        if let Some(interceptor) = self
+            .interceptors
+            .iter()
+            .find(|interceptor| !interceptor.supports_v2())
+        {
+            return Err(InterceptError::ValidationFailed {
+                reason: format!(
+                    "interceptor {:?} does not declare typed V2 coverage",
+                    interceptor.name(),
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Run header/identity policy before decoding an untrusted V2 envelope.
+    #[cfg(feature = "v2-query")]
+    pub async fn execute_v2_transport(
+        &self,
+        ctx: &mut RequestContext,
+    ) -> Result<(), InterceptError> {
+        for interceptor in &self.interceptors {
+            interceptor.on_v2_transport(ctx).await?;
+        }
+        Ok(())
+    }
+
+    /// Run typed plan policy after validation and before replay/provider work.
+    #[cfg(feature = "v2-query")]
+    pub async fn execute_v2_request(
+        &self,
+        request: &V2PolicyRequest<'_>,
+        ctx: &mut RequestContext,
+    ) -> Result<(), InterceptError> {
+        for interceptor in &self.interceptors {
+            interceptor.on_v2_request(request, ctx).await?;
+        }
+        Ok(())
+    }
+
+    /// Run every V2 response hook even when one rejects, so audit evidence is
+    /// not skipped by interceptor ordering. The first error remains decisive.
+    #[cfg(feature = "v2-query")]
+    pub async fn execute_v2_response(
+        &self,
+        outcome: &V2PolicyOutcome<'_>,
+        ctx: &RequestContext,
+    ) -> Result<(), InterceptError> {
+        // Poll every hook concurrently. A stuck policy can still consume the
+        // transport's bounded audit grace, but cannot prevent later audit
+        // hooks from being invoked at all.
+        let results = join_all(
+            self.interceptors
+                .iter()
+                .rev()
+                .map(|interceptor| interceptor.on_v2_response(outcome, ctx)),
+        )
+        .await;
+        results
+            .into_iter()
+            .find_map(Result::err)
+            .map_or(Ok(()), Err)
     }
 
     pub fn interceptor_names(&self) -> Vec<&str> {
@@ -199,6 +271,47 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push(format!("resp:{}", self.name));
+                Ok(())
+            })
+        }
+    }
+
+    #[cfg(feature = "v2-query")]
+    struct V2ResponseInterceptor {
+        count: Arc<AtomicUsize>,
+        hangs: bool,
+        name: &'static str,
+    }
+
+    #[cfg(feature = "v2-query")]
+    impl Interceptor for V2ResponseInterceptor {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn on_request<'a>(
+            &'a self,
+            clauses: Vec<Clause>,
+            _ctx: &'a mut RequestContext,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
+        {
+            Box::pin(async move { Ok(clauses) })
+        }
+
+        fn supports_v2(&self) -> bool {
+            true
+        }
+
+        fn on_v2_response<'a>(
+            &'a self,
+            _outcome: &'a V2PolicyOutcome<'a>,
+            _ctx: &'a RequestContext,
+        ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+            Box::pin(async move {
+                self.count.fetch_add(1, Ordering::SeqCst);
+                if self.hangs {
+                    std::future::pending::<()>().await;
+                }
                 Ok(())
             })
         }
@@ -390,6 +503,42 @@ mod tests {
         // "third" is last added but first in reverse — it fails, so "second" and "first" never run
         assert_eq!(first_resp.load(Ordering::SeqCst), 0);
         assert_eq!(second_resp.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "v2-query")]
+    async fn hanging_v2_response_hook_does_not_starve_other_auditors() {
+        let hanging_count = Arc::new(AtomicUsize::new(0));
+        let audit_count = Arc::new(AtomicUsize::new(0));
+        let chain = InterceptorChain::new(vec![
+            Box::new(V2ResponseInterceptor {
+                count: Arc::clone(&audit_count),
+                hangs: false,
+                name: "audit",
+            }),
+            Box::new(V2ResponseInterceptor {
+                count: Arc::clone(&hanging_count),
+                hangs: true,
+                name: "hanging",
+            }),
+        ]);
+        let context = make_ctx();
+        let outcome = V2PolicyOutcome::new(false, "transaction_deadline_exceeded", 0);
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                chain.execute_v2_response(&outcome, &context),
+            )
+            .await
+            .is_err(),
+            "the test hanging hook must consume the external audit bound",
+        );
+        assert_eq!(hanging_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            audit_count.load(Ordering::SeqCst),
+            1,
+            "the later auditor must be invoked despite a hanging peer",
+        );
     }
 
     // --- interceptor_names tests ---

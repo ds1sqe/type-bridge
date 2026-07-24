@@ -12,7 +12,7 @@ use type_bridge_contract::projection::{
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::ValueTypeTag;
 
-use crate::{GeneratedPackage, invalid};
+use crate::{GeneratedPackage, documentation_annotation, invalid, model_documentation};
 
 macro_rules! canonical_text {
     ($value:expr) => {{
@@ -251,6 +251,9 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     for id in projection.emission().model_shells() {
         let model = model(projection, id)?;
         let members = read_members(projection, model)?;
+        if let Some(documentation) = model_documentation(model) {
+            render_rustdoc(&mut output, &documentation);
+        }
         render_record(
             &mut output,
             model.target_name().as_str(),
@@ -289,6 +292,9 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 projected_type(projection, read.value())?,
                 read.multiplicity(),
             ));
+        }
+        if let Some(documentation) = model_documentation(model) {
+            render_rustdoc(&mut output, &documentation);
         }
         let _ = writeln!(
             output,
@@ -362,6 +368,9 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
         );
         for token in model.query_tokens().fields().values() {
             let value = projected_type(projection, projected_field_value(model, token.id())?)?;
+            if let Some(documentation) = documentation_annotation(token.annotations()) {
+                render_indented_rustdoc(&mut output, "  ", documentation);
+            }
             let _ = writeln!(
                 output,
                 "  pub const {}: FieldToken<{owner}, {value}> = FieldToken::new({}, {});",
@@ -374,6 +383,9 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             let union = token
                 .player_union_target_name()
                 .ok_or_else(|| facet_error("role union is absent"))?;
+            if let Some(documentation) = documentation_annotation(token.annotations()) {
+                render_indented_rustdoc(&mut output, "  ", documentation);
+            }
             let _ = writeln!(
                 output,
                 "  pub const {}: RoleToken<{owner}, {}> = RoleToken::new({}, {});",
@@ -395,6 +407,9 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             .target_name()
             .as_str();
         let (owner, union) = role_owner_and_union(projection, playing.role())?;
+        if let Some(documentation) = documentation_annotation(playing.annotations()) {
+            render_rustdoc(&mut output, documentation);
+        }
         let _ = writeln!(
             output,
             "#[allow(non_upper_case_globals)]\npub const {name}: PlaysToken<{player}, {owner}, {union}> = PlaysToken::new({}, {});\n",
@@ -492,6 +507,9 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 .collect::<Result<Vec<_>, _>>()?,
         );
         let returns = function_return_type(projection, function.returns())?;
+        if let Some(documentation) = documentation_annotation(function.annotations()) {
+            render_rustdoc(&mut output, documentation);
+        }
         let _ = writeln!(
             output,
             "#[allow(non_upper_case_globals)]\npub const {}: FunctionToken<{arguments}, {returns}> = FunctionToken::new({}, {});\n",
@@ -954,6 +972,30 @@ fn option_u64(value: Option<u64>) -> String {
 
 fn rust_literal(value: &str) -> String {
     format!("{value:?}")
+}
+
+fn render_rustdoc(output: &mut String, documentation: &str) {
+    render_indented_rustdoc(output, "", documentation);
+}
+
+fn render_indented_rustdoc(output: &mut String, indentation: &str, documentation: &str) {
+    for line in documentation.split('\n') {
+        let _ = writeln!(output, "{indentation}/// {}", safe_rustdoc_line(line));
+    }
+}
+
+fn safe_rustdoc_line(line: &str) -> String {
+    let mut escaped = String::new();
+    for character in line.chars() {
+        match character {
+            '\r' => escaped.push_str("\\r"),
+            character if character.is_control() && character != '\t' => {
+                let _ = write!(escaped, "\\u{{{:x}}}", u32::from(character));
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 fn facet_error(message: &'static str) -> Diagnostic {

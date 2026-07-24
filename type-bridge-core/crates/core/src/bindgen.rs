@@ -468,13 +468,17 @@ where
     ) where
         F: Fn(&T) -> Option<&str>,
     {
+        let Some(value) = map.get(name) else {
+            // Released bindgen accepts partial schema exports. An unresolved
+            // parent participates in no local ordering edge and must not be
+            // emitted as if it were a declaration in this map.
+            return;
+        };
         if visited.contains(name) {
             return;
         }
         visited.insert(name.to_string());
-        if let Some(value) = map.get(name)
-            && let Some(parent) = get_parent(value)
-        {
+        if let Some(parent) = get_parent(value) {
             visit(parent, map, get_parent, visited, result);
         }
         result.push(name.to_string());
@@ -3149,6 +3153,35 @@ relation friendship, relates friend @card(1..2);"
         ] {
             let package = plan.render(target, &BindgenOptions::default());
             assert!(!package.files.is_empty());
+        }
+    }
+
+    #[test]
+    fn unresolved_parents_do_not_become_phantom_topological_entries() {
+        let parents = BTreeMap::from([("child".to_owned(), Some("missing-parent".to_owned()))]);
+        assert_eq!(
+            topological_sort(&parents, |parent| parent.as_deref()),
+            vec!["child"]
+        );
+
+        let plan = BindgenPlan::from_typeql(
+            "define\n\
+             attribute child-attribute, sub missing-attribute;\n\
+             entity child-entity, sub missing-entity;\n\
+             relation child-relation, sub missing-relation;\n",
+        )
+        .expect("released bindgen accepts an open-world partial schema");
+        for target in [
+            TargetLanguage::Python,
+            TargetLanguage::TypeScript,
+            TargetLanguage::Rust,
+        ] {
+            assert!(
+                !plan
+                    .render(target, &BindgenOptions::default())
+                    .files
+                    .is_empty()
+            );
         }
     }
 

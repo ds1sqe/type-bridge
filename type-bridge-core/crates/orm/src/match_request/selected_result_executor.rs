@@ -2,10 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::Value;
+use type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS;
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedHydrationDescriptor, TypedHydrationField,
     TypedHydrationRole, TypedHydrationTarget, TypedPageRematch, TypedRootScan, TypedThingKind,
@@ -22,13 +24,16 @@ use super::result::{
     BoundConceptEvidence, ConceptId, HydratedAttribute, HydratedRole, HydratedRolePlayer,
     HydratedThing, ProviderResultEvidence, ProviderSolutionEvidence, ValidatedMatchResult,
 };
-use super::result_validation::{ResultValidationLimits, validate_provider_result_with_limits};
+use super::result_validation::{
+    ResultValidationLimits, exactly_one_cardinality_error, validate_provider_result_with_limits,
+};
 use super::validation::ValidatedMatchRequest;
 use crate::descriptor::{TypeDescriptor, TypeDescriptorRef};
 use crate::error::OrmError;
 use crate::registry::DescriptorRegistry;
 use crate::session::backend::{
-    AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, TxType,
+    AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
+    MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS, TxType,
 };
 use crate::session::{Database, Transaction, TransactionContext};
 use crate::value::AttributeValue;
@@ -36,6 +41,13 @@ use crate::value::AttributeValue;
 const MAX_PROCESSED_ITEMS: u64 = 100_000;
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TRANSACTION_DURATION: Duration = Duration::from_secs(30);
+const OWNED_TRANSACTION_CLOSE_GRACE: Duration = Duration::from_secs(1);
+const TUPLE_PROOF_ROWS: u64 = 2;
+const TUPLE_PROOF_ROW_ENVELOPE_BYTES: u64 = 64;
+// The fixed allowance covers JSON keys, the IID prefix, column name, category,
+// separators, and escaping. The concrete TypeDB label is request-derived
+// separately so released V1 schemas are not subjected to a V2 label ceiling.
+const TUPLE_PROOF_BINDING_FIXED_BYTES: u64 = 192 + MAX_THING_IID_HEX_DIGITS as u64;
 const MAX_STATEMENTS: u8 = 3;
 
 /// Caller policy clamped to the selected executor's hard ceilings.
@@ -125,6 +137,18 @@ struct ExecutionBudget {
     max_statements: u8,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct StatementResourceLimits {
+    max_items: u64,
+    max_bytes: u64,
+    charge_to_caller: bool,
+}
+
+struct FiniteStatementLimits {
+    provider: BoundedAnswerLimits,
+    resources: StatementResourceLimits,
+}
+
 impl ExecutionBudget {
     fn new(limits: &MatchExecutionLimits, deadline: Option<Instant>) -> Self {
         Self {
@@ -137,7 +161,10 @@ impl ExecutionBudget {
         }
     }
 
-    fn begin_statement(&mut self) -> Result<BoundedAnswerLimits, OrmError> {
+    fn begin_statement(
+        &mut self,
+        provider_max_items: u64,
+    ) -> Result<FiniteStatementLimits, OrmError> {
         self.statements = self.statements.checked_add(1).ok_or_else(|| {
             resource_error(
                 "statement_count_limit",
@@ -150,12 +177,49 @@ impl ExecutionBudget {
                 "match execution exceeded its statement ceiling",
             ));
         }
-        Ok(BoundedAnswerLimits {
-            max_items: self.remaining_items,
-            max_bytes: self.remaining_bytes,
-            deadline: self.deadline,
-            cancellation: self.cancellation.clone(),
+        let max_items = provider_max_items.min(self.remaining_items);
+        let max_bytes = self.remaining_bytes;
+        Ok(FiniteStatementLimits {
+            provider: BoundedAnswerLimits {
+                max_items,
+                max_bytes,
+                deadline: self.deadline,
+                cancellation: self.cancellation.clone(),
+            },
+            resources: StatementResourceLimits {
+                max_items,
+                max_bytes,
+                charge_to_caller: true,
+            },
         })
+    }
+
+    fn begin_exactly_one_proof(
+        &self,
+        provider_max_items: u64,
+        max_bytes: u64,
+    ) -> FiniteStatementLimits {
+        // The tuple verifier is internal overhead added after the released V1
+        // contract. Give it an independent structural ceiling so it neither
+        // weakens safety nor spends the caller's statement/item/byte budgets.
+        let max_items = provider_max_items.min(TUPLE_PROOF_ROWS);
+        FiniteStatementLimits {
+            provider: BoundedAnswerLimits {
+                max_items,
+                max_bytes,
+                deadline: self.deadline,
+                cancellation: self.cancellation.clone(),
+            },
+            resources: StatementResourceLimits {
+                max_items,
+                max_bytes,
+                charge_to_caller: false,
+            },
+        }
+    }
+
+    const fn remaining_items(&self) -> u64 {
+        self.remaining_items
     }
 
     fn charge(&mut self, stats: crate::session::backend::BoundedAnswerStats) {
@@ -195,9 +259,8 @@ impl ExecutionBudget {
         &self,
         future: impl Future<Output = Result<T, OrmError>>,
     ) -> Result<T, OrmError> {
-        // Cleanup must be polled once even when execution consumed the budget.
-        // The result-first biased race invokes close, then cancellation or the
-        // original deadline bounds a close future that remains pending.
+        // Preserve the released successful-execution cleanup race: poll close
+        // once, then let the invocation's cancellation/deadline bound it.
         self.race_provider(future).await
     }
 
@@ -237,6 +300,39 @@ impl ExecutionBudget {
     }
 }
 
+async fn dispatch_failed_execution_close(
+    mut transaction: Transaction,
+) -> Option<Result<(), OrmError>> {
+    let mut close = Box::pin(async move {
+        transaction
+            .close()
+            .await
+            .map_err(provider_transaction_close_error)
+    });
+    let immediate = std::future::poll_fn(|context| {
+        Poll::Ready(match close.as_mut().poll(context) {
+            Poll::Ready(result) => Some(result),
+            Poll::Pending => None,
+        })
+    })
+    .await;
+    if immediate.is_none() {
+        let _cleanup_task = tokio::spawn(async move {
+            match tokio::time::timeout(OWNED_TRANSACTION_CLOSE_GRACE, close).await {
+                Ok(Ok(())) => {}
+                Ok(Err(close_error)) => tracing::warn!(
+                    %close_error,
+                    "owned match transaction background cleanup failed"
+                ),
+                Err(_) => {
+                    tracing::warn!("owned match transaction background cleanup exceeded its grace")
+                }
+            }
+        });
+    }
+    immediate
+}
+
 impl Default for MatchExecutionLimits {
     fn default() -> Self {
         Self::tightened(
@@ -274,6 +370,7 @@ impl<'a> SelectedResultExecutor<'a> {
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
         let statement = self.preflight(validated)?;
+        let exactly_one_selection = exactly_one_tuple_proof_selection(&statement);
         let deadline = tokio::time::Instant::now()
             .checked_add(self.limits.timeout)
             .map(tokio::time::Instant::into_std);
@@ -286,13 +383,33 @@ impl<'a> SelectedResultExecutor<'a> {
                     .map_err(provider_transaction_open_error)
             })
             .await?;
-        let execution = match self
-            .collect_from_transaction(&mut transaction, validated, statement, &mut budget)
-            .await
-        {
-            Ok(evidence) => self.validate(validated, evidence, &budget),
-            Err(error) => Err(error),
+        let execution = async {
+            let evidence = self
+                .collect_from_transaction(&mut transaction, validated, statement, &mut budget)
+                .await?;
+            let result = self.validate(validated, evidence, &budget)?;
+            if let Some(selection) = exactly_one_selection {
+                self.prove_exactly_one_transaction(&mut transaction, selection, &mut budget)
+                    .await?;
+            }
+            Ok(result)
+        }
+        .await;
+        let result = match execution {
+            Err(error) => {
+                if let Some(Err(close_error)) = dispatch_failed_execution_close(transaction).await {
+                    tracing::warn!(
+                        %close_error,
+                        execution_error = %error,
+                        "owned match execution failed and transaction cleanup also failed"
+                    );
+                }
+                return Err(error);
+            }
+            Ok(result) => result,
         };
+        // Released V1 callers observe close errors, cancellation, and the
+        // original transaction deadline after successful execution.
         let close = budget
             .await_cleanup(async {
                 transaction
@@ -301,10 +418,9 @@ impl<'a> SelectedResultExecutor<'a> {
                     .map_err(provider_transaction_close_error)
             })
             .await;
-        match (execution, close) {
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error),
-            (Ok(result), Ok(())) => Ok(result),
+        match close {
+            Err(error) => Err(error),
+            Ok(()) => Ok(result),
         }
     }
 
@@ -314,6 +430,7 @@ impl<'a> SelectedResultExecutor<'a> {
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
         let statement = self.preflight(validated)?;
+        let exactly_one_selection = exactly_one_tuple_proof_selection(&statement);
         if context.tx_type() != TxType::Read {
             return Err(MatchError::new(
                 MatchErrorCategory::InvalidPlan,
@@ -330,7 +447,12 @@ impl<'a> SelectedResultExecutor<'a> {
         let evidence = self
             .collect_from_context(context, validated, statement, &mut budget)
             .await?;
-        self.validate(validated, evidence, &budget)
+        let result = self.validate(validated, evidence, &budget)?;
+        if let Some(selection) = exactly_one_selection {
+            self.prove_exactly_one_context(context, selection, &mut budget)
+                .await?;
+        }
+        Ok(result)
     }
 
     fn preflight(
@@ -352,6 +474,10 @@ impl<'a> SelectedResultExecutor<'a> {
         match plan {
             LoweredMatchExecution::FetchRows(statement) => {
                 self.collect_rows_transaction(transaction, validated, statement, budget)
+                    .await
+            }
+            LoweredMatchExecution::ExactlyOneBy { evidence, .. } => {
+                self.collect_rows_transaction(transaction, validated, evidence, budget)
                     .await
             }
             LoweredMatchExecution::CountBy { root, scan } => {
@@ -416,6 +542,10 @@ impl<'a> SelectedResultExecutor<'a> {
                 self.collect_rows_context(context, validated, statement, budget)
                     .await
             }
+            LoweredMatchExecution::ExactlyOneBy { evidence, .. } => {
+                self.collect_rows_context(context, validated, evidence, budget)
+                    .await
+            }
             LoweredMatchExecution::CountBy { root, scan } => {
                 let value = self
                     .scan_roots_context(context, scan, root, RootScanPurpose::Count, budget)
@@ -461,21 +591,31 @@ impl<'a> SelectedResultExecutor<'a> {
         mut statement: TypedFetchRows,
         budget: &mut ExecutionBudget,
     ) -> Result<ProviderResultEvidence, OrmError> {
+        let scan_mode = solution_scan_mode(validated, &statement)?;
         statement.offset = 0;
-        statement.limit = self.limits.max_items.max(1);
-        let mut solutions = SolutionConsumer::new(validated)?;
-        let limits = budget.begin_statement()?;
-        let scan_limit = limits.max_items;
+        statement.limit = scan_mode.statement_limit(self.limits.max_items.max(1));
+        let mut solutions = SolutionConsumer::new(validated, scan_mode.stops_at_prefix())?;
+        let FiniteStatementLimits {
+            provider: limits,
+            resources,
+        } = budget.begin_statement(statement.limit)?;
+        let scan_limit = resources.max_items;
+        let mut draining = DrainingConsumer::new(&mut solutions, resources);
         let stats = budget
             .await_provider(async {
                 transaction
-                    .query_typed_bounded(&statement, limits, &mut solutions)
+                    .query_typed_bounded(&statement, limits, &mut draining)
                     .await
                     .map_err(provider_statement_error)
             })
-            .await?;
-        budget.charge(stats);
-        require_solution_scan_proof(stats, scan_limit)?;
+            .await;
+        let stats = draining.complete(stats, budget)?;
+        require_selected_solution_scan_proof(
+            stats,
+            scan_limit,
+            scan_mode,
+            solutions.reached_prefix(),
+        )?;
         let solutions = solutions.finish();
         if solutions.is_empty() {
             return Ok(rows_evidence(validated, Vec::new()));
@@ -488,16 +628,21 @@ impl<'a> SelectedResultExecutor<'a> {
             self.limits.semantic_limits(),
         )?;
         for batch in batches {
-            let limits = budget.begin_statement()?;
+            let FiniteStatementLimits {
+                provider: limits,
+                resources,
+            } = budget.begin_statement(hydration_answer_limit(&batch)?)?;
+            let mut draining = DrainingConsumer::new(&mut hydration, resources);
             let stats = budget
                 .await_provider(async {
                     transaction
-                        .hydrate_typed_bounded(&batch, limits, &mut hydration)
+                        .hydrate_typed_bounded(&batch, limits, &mut draining)
                         .await
                         .map_err(provider_statement_error)
                 })
-                .await?;
-            budget.charge(stats);
+                .await;
+            let stats = draining.complete(stats, budget)?;
+            require_provider_exhaustion(stats)?;
         }
         rows_evidence_from_hydration(validated, solutions, hydration.finish()?)
     }
@@ -509,21 +654,31 @@ impl<'a> SelectedResultExecutor<'a> {
         mut statement: TypedFetchRows,
         budget: &mut ExecutionBudget,
     ) -> Result<ProviderResultEvidence, OrmError> {
+        let scan_mode = solution_scan_mode(validated, &statement)?;
         statement.offset = 0;
-        statement.limit = self.limits.max_items.max(1);
-        let mut solutions = SolutionConsumer::new(validated)?;
-        let limits = budget.begin_statement()?;
-        let scan_limit = limits.max_items;
+        statement.limit = scan_mode.statement_limit(self.limits.max_items.max(1));
+        let mut solutions = SolutionConsumer::new(validated, scan_mode.stops_at_prefix())?;
+        let FiniteStatementLimits {
+            provider: limits,
+            resources,
+        } = budget.begin_statement(statement.limit)?;
+        let scan_limit = resources.max_items;
+        let mut draining = DrainingConsumer::new(&mut solutions, resources);
         let stats = budget
             .await_provider(async {
                 context
-                    .query_typed_bounded(&statement, limits, &mut solutions)
+                    .query_typed_bounded(&statement, limits, &mut draining)
                     .await
                     .map_err(provider_statement_error)
             })
-            .await?;
-        budget.charge(stats);
-        require_solution_scan_proof(stats, scan_limit)?;
+            .await;
+        let stats = draining.complete(stats, budget)?;
+        require_selected_solution_scan_proof(
+            stats,
+            scan_limit,
+            scan_mode,
+            solutions.reached_prefix(),
+        )?;
         let solutions = solutions.finish();
         if solutions.is_empty() {
             return Ok(rows_evidence(validated, Vec::new()));
@@ -536,18 +691,124 @@ impl<'a> SelectedResultExecutor<'a> {
             self.limits.semantic_limits(),
         )?;
         for batch in batches {
-            let limits = budget.begin_statement()?;
+            let FiniteStatementLimits {
+                provider: limits,
+                resources,
+            } = budget.begin_statement(hydration_answer_limit(&batch)?)?;
+            let mut draining = DrainingConsumer::new(&mut hydration, resources);
             let stats = budget
                 .await_provider(async {
                     context
-                        .hydrate_typed_bounded(&batch, limits, &mut hydration)
+                        .hydrate_typed_bounded(&batch, limits, &mut draining)
                         .await
                         .map_err(provider_statement_error)
                 })
-                .await?;
-            budget.charge(stats);
+                .await;
+            let stats = draining.complete(stats, budget)?;
+            require_provider_exhaustion(stats)?;
         }
         rows_evidence_from_hydration(validated, solutions, hydration.finish()?)
+    }
+
+    async fn prove_exactly_one_transaction(
+        &self,
+        transaction: &mut Transaction,
+        selection: TypedFetchRows,
+        budget: &mut ExecutionBudget,
+    ) -> Result<(), OrmError> {
+        if !transaction.supports_exactly_one_tuple_proof()? {
+            return Ok(());
+        }
+        let tuples = self
+            .scan_tuples_transaction(transaction, selection, budget)
+            .await?;
+        if let Some(error) = exactly_one_cardinality_error(tuples) {
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    async fn prove_exactly_one_context(
+        &self,
+        context: &TransactionContext,
+        selection: TypedFetchRows,
+        budget: &mut ExecutionBudget,
+    ) -> Result<(), OrmError> {
+        if !budget
+            .await_provider(context.supports_exactly_one_tuple_proof())
+            .await?
+        {
+            return Ok(());
+        }
+        let tuples = self.scan_tuples_context(context, selection, budget).await?;
+        if let Some(error) = exactly_one_cardinality_error(tuples) {
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    async fn scan_tuples_transaction(
+        &self,
+        transaction: &mut Transaction,
+        selection: TypedFetchRows,
+        budget: &mut ExecutionBudget,
+    ) -> Result<usize, OrmError> {
+        let mut tuples = TupleConsumer::new(&selection.projection);
+        let max_bytes = exactly_one_proof_byte_limit(self.registry, &selection)?;
+        let FiniteStatementLimits {
+            provider: limits,
+            resources,
+        } = budget.begin_exactly_one_proof(selection.limit, max_bytes);
+        let mut draining = DrainingConsumer::new(&mut tuples, resources);
+        let stats = budget
+            .await_provider(async {
+                transaction
+                    .query_tuple_typed_bounded(&selection, limits, &mut draining)
+                    .await
+                    .map_err(provider_statement_error)
+            })
+            .await;
+        let stats = draining.complete(stats, budget)?;
+        require_provider_exhaustion(stats)?;
+        if stats.processed_items > selection.limit {
+            return Err(decode_error(
+                "tuple_scan_limit_mismatch",
+                "provider returned more distinct tuples than the typed statement limit",
+            ));
+        }
+        Ok(tuples.len())
+    }
+
+    async fn scan_tuples_context(
+        &self,
+        context: &TransactionContext,
+        selection: TypedFetchRows,
+        budget: &mut ExecutionBudget,
+    ) -> Result<usize, OrmError> {
+        let mut tuples = TupleConsumer::new(&selection.projection);
+        let max_bytes = exactly_one_proof_byte_limit(self.registry, &selection)?;
+        let FiniteStatementLimits {
+            provider: limits,
+            resources,
+        } = budget.begin_exactly_one_proof(selection.limit, max_bytes);
+        let mut draining = DrainingConsumer::new(&mut tuples, resources);
+        let stats = budget
+            .await_provider(async {
+                context
+                    .query_tuple_typed_bounded(&selection, limits, &mut draining)
+                    .await
+                    .map_err(provider_statement_error)
+            })
+            .await;
+        let stats = draining.complete(stats, budget)?;
+        require_provider_exhaustion(stats)?;
+        if stats.processed_items > selection.limit {
+            return Err(decode_error(
+                "tuple_scan_limit_mismatch",
+                "provider returned more distinct tuples than the typed statement limit",
+            ));
+        }
+        Ok(tuples.len())
     }
 
     async fn scan_roots_transaction(
@@ -558,22 +819,39 @@ impl<'a> SelectedResultExecutor<'a> {
         purpose: RootScanPurpose,
         budget: &mut ExecutionBudget,
     ) -> Result<Vec<String>, OrmError> {
-        let limits = budget.begin_statement()?;
-        let scan_limit = limits.max_items;
+        let scan_limit = budget.remaining_items();
         if purpose == RootScanPurpose::Count {
             scan.limit = Some(scan_limit.max(1));
         }
-        let mut roots = RootConsumer::new(root, purpose);
+        let statement_limit = scan.limit.ok_or_else(|| {
+            decode_error(
+                "root_scan_missing_provider_limit",
+                "typed root statement is missing its provider-owned answer ceiling",
+            )
+        })?;
+        let FiniteStatementLimits {
+            provider: limits,
+            resources,
+        } = budget.begin_statement(statement_limit)?;
+        let retain_limit = (purpose != RootScanPurpose::Count)
+            .then_some(scan.limit)
+            .flatten();
+        let mut roots = RootConsumer::new(root, retain_limit);
+        let mut draining = DrainingConsumer::new(&mut roots, resources);
         let stats = budget
             .await_provider(async {
                 transaction
-                    .query_root_typed_bounded(&scan, limits, &mut roots)
+                    .query_root_typed_bounded(&scan, limits, &mut draining)
                     .await
                     .map_err(provider_statement_error)
             })
-            .await?;
-        budget.charge(stats);
-        require_solution_scan_proof(stats, scan_limit)?;
+            .await;
+        let stats = draining.complete(stats, budget)?;
+        if purpose == RootScanPurpose::Count {
+            require_solution_scan_proof(stats, scan_limit)?;
+        } else {
+            require_provider_exhaustion(stats)?;
+        }
         Ok(roots.finish())
     }
 
@@ -585,22 +863,39 @@ impl<'a> SelectedResultExecutor<'a> {
         purpose: RootScanPurpose,
         budget: &mut ExecutionBudget,
     ) -> Result<Vec<String>, OrmError> {
-        let limits = budget.begin_statement()?;
-        let scan_limit = limits.max_items;
+        let scan_limit = budget.remaining_items();
         if purpose == RootScanPurpose::Count {
             scan.limit = Some(scan_limit.max(1));
         }
-        let mut roots = RootConsumer::new(root, purpose);
+        let statement_limit = scan.limit.ok_or_else(|| {
+            decode_error(
+                "root_scan_missing_provider_limit",
+                "typed root statement is missing its provider-owned answer ceiling",
+            )
+        })?;
+        let FiniteStatementLimits {
+            provider: limits,
+            resources,
+        } = budget.begin_statement(statement_limit)?;
+        let retain_limit = (purpose != RootScanPurpose::Count)
+            .then_some(scan.limit)
+            .flatten();
+        let mut roots = RootConsumer::new(root, retain_limit);
+        let mut draining = DrainingConsumer::new(&mut roots, resources);
         let stats = budget
             .await_provider(async {
                 context
-                    .query_root_typed_bounded(&scan, limits, &mut roots)
+                    .query_root_typed_bounded(&scan, limits, &mut draining)
                     .await
                     .map_err(provider_statement_error)
             })
-            .await?;
-        budget.charge(stats);
-        require_solution_scan_proof(stats, scan_limit)?;
+            .await;
+        let stats = draining.complete(stats, budget)?;
+        if purpose == RootScanPurpose::Count {
+            require_solution_scan_proof(stats, scan_limit)?;
+        } else {
+            require_provider_exhaustion(stats)?;
+        }
         Ok(roots.finish())
     }
 
@@ -626,13 +921,7 @@ impl<'a> SelectedResultExecutor<'a> {
         };
         let window = page_window(validated)?;
         let roots = self
-            .scan_roots_transaction(
-                transaction,
-                selection,
-                root,
-                RootScanPurpose::Page(window.limit),
-                budget,
-            )
+            .scan_roots_transaction(transaction, selection, root, RootScanPurpose::Page, budget)
             .await?;
         if roots.is_empty() {
             return Ok(page_evidence(
@@ -652,17 +941,21 @@ impl<'a> SelectedResultExecutor<'a> {
             &roots,
             self.limits.semantic_limits(),
         )?;
-        let limits = budget.begin_statement()?;
-        let scan_limit = limits.max_items;
+        let scan_limit = budget.remaining_items();
+        let FiniteStatementLimits {
+            provider: limits,
+            resources,
+        } = budget.begin_statement(scan_limit.max(1))?;
+        let mut draining = DrainingConsumer::new(&mut consumer, resources);
         let stats = budget
             .await_provider(async {
                 transaction
-                    .rematch_page_typed_bounded(&rematch, limits, &mut consumer)
+                    .rematch_page_typed_bounded(&rematch, limits, &mut draining)
                     .await
                     .map_err(provider_statement_error)
             })
-            .await?;
-        budget.charge(stats);
+            .await;
+        let stats = draining.complete(stats, budget)?;
         require_solution_scan_proof(stats, scan_limit)?;
         let solutions = consumer.finish()?;
         Ok(page_evidence(
@@ -692,13 +985,7 @@ impl<'a> SelectedResultExecutor<'a> {
         };
         let window = page_window(validated)?;
         let roots = self
-            .scan_roots_context(
-                context,
-                selection,
-                root,
-                RootScanPurpose::Page(window.limit),
-                budget,
-            )
+            .scan_roots_context(context, selection, root, RootScanPurpose::Page, budget)
             .await?;
         if roots.is_empty() {
             return Ok(page_evidence(
@@ -718,17 +1005,21 @@ impl<'a> SelectedResultExecutor<'a> {
             &roots,
             self.limits.semantic_limits(),
         )?;
-        let limits = budget.begin_statement()?;
-        let scan_limit = limits.max_items;
+        let scan_limit = budget.remaining_items();
+        let FiniteStatementLimits {
+            provider: limits,
+            resources,
+        } = budget.begin_statement(scan_limit.max(1))?;
+        let mut draining = DrainingConsumer::new(&mut consumer, resources);
         let stats = budget
             .await_provider(async {
                 context
-                    .rematch_page_typed_bounded(&rematch, limits, &mut consumer)
+                    .rematch_page_typed_bounded(&rematch, limits, &mut draining)
                     .await
                     .map_err(provider_statement_error)
             })
-            .await?;
-        budget.charge(stats);
+            .await;
+        let stats = draining.complete(stats, budget)?;
         require_solution_scan_proof(stats, scan_limit)?;
         let solutions = consumer.finish()?;
         Ok(page_evidence(
@@ -754,21 +1045,323 @@ impl<'a> SelectedResultExecutor<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SolutionScanMode {
+    ProviderTerminal {
+        statement_limit: u64,
+        released_prefix: u64,
+    },
+    ReleasedPrefix,
+}
+
+impl SolutionScanMode {
+    const fn statement_limit(self, released_scan_limit: u64) -> u64 {
+        match self {
+            Self::ProviderTerminal {
+                statement_limit, ..
+            } => statement_limit,
+            Self::ReleasedPrefix => released_scan_limit,
+        }
+    }
+
+    const fn stops_at_prefix(self) -> bool {
+        matches!(self, Self::ReleasedPrefix)
+    }
+}
+
+fn solution_scan_mode(
+    validated: &ValidatedMatchRequest,
+    statement: &TypedFetchRows,
+) -> Result<SolutionScanMode, OrmError> {
+    let released_prefix = released_solution_prefix(validated)?;
+    if provider_distinct_matches_public_projection(statement) {
+        return Ok(SolutionScanMode::ProviderTerminal {
+            statement_limit: released_prefix.max(1),
+            released_prefix,
+        });
+    }
+    Ok(SolutionScanMode::ReleasedPrefix)
+}
+
+fn released_solution_prefix(validated: &ValidatedMatchRequest) -> Result<u64, OrmError> {
+    let MatchOperation::FetchRows {
+        window,
+        cardinality,
+        ..
+    } = &validated.request().operation
+    else {
+        return Err(decode_error(
+            "unsupported_selected_operation",
+            "selected solution decoder supports only FetchRows",
+        ));
+    };
+    Ok(match cardinality {
+        RowCardinality::ExactlyOne => 2,
+        RowCardinality::BoundedMany => window.offset.saturating_add(window.limit),
+    })
+}
+
+fn provider_distinct_matches_public_projection(statement: &TypedFetchRows) -> bool {
+    if !statement.distinct {
+        return false;
+    }
+    let targets = statement
+        .targets
+        .iter()
+        .map(|target| target.binding)
+        .collect::<BTreeSet<_>>();
+    let projection = statement
+        .projection
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if targets.len() != statement.targets.len()
+        || projection.len() != statement.projection.len()
+        || targets != projection
+    {
+        return false;
+    }
+
+    // The typed compiler also SELECTs every order field. Lowering admits only
+    // at-most-one scalar order fields, so each is functionally determined by
+    // its projected owner and cannot split one public identity into extra rows.
+    statement.order.iter().all(|order| {
+        let mut fields = statement
+            .fields
+            .iter()
+            .filter(|field| field.id == order.field);
+        fields
+            .next()
+            .is_some_and(|field| projection.contains(&field.owner))
+            && fields.next().is_none()
+    })
+}
+
+fn exactly_one_tuple_proof_selection(execution: &LoweredMatchExecution) -> Option<TypedFetchRows> {
+    let LoweredMatchExecution::ExactlyOneBy {
+        selection,
+        evidence,
+    } = execution
+    else {
+        return None;
+    };
+    // A terminal DISTINCT evidence stream over exactly the public projection
+    // already proves V1 cardinality. Re-query only when hidden witnesses can
+    // duplicate a public row and the released prefix scan cannot prove it.
+    (!provider_distinct_matches_public_projection(evidence)).then(|| selection.clone())
+}
+
+fn require_selected_solution_scan_proof(
+    stats: crate::session::backend::BoundedAnswerStats,
+    max_items: u64,
+    mode: SolutionScanMode,
+    reached_prefix: bool,
+) -> Result<(), OrmError> {
+    match mode {
+        SolutionScanMode::ReleasedPrefix if stats.stopped_early && reached_prefix => return Ok(()),
+        SolutionScanMode::ReleasedPrefix => {
+            if stats.processed_items >= max_items {
+                return Err(solution_scan_limit_error(max_items));
+            }
+            require_provider_exhaustion(stats)?;
+        }
+        SolutionScanMode::ProviderTerminal {
+            released_prefix, ..
+        } => {
+            // Keep the released caller-budget precedence even though a wider
+            // finite TypeQL limit can sometimes prove natural EOF exactly at
+            // the tightened item ceiling.
+            if max_items < released_prefix && stats.processed_items >= max_items {
+                return Err(solution_scan_limit_error(max_items));
+            }
+            require_provider_exhaustion(stats)?;
+        }
+    }
+    Ok(())
+}
+
 fn require_solution_scan_proof(
     stats: crate::session::backend::BoundedAnswerStats,
     max_items: u64,
 ) -> Result<(), OrmError> {
-    if !stats.stopped_early && stats.processed_items >= max_items {
-        return Err(MatchError::new(
-            MatchErrorCategory::ResourceLimit,
-            "solution_scan_limit",
-            "provider solution ceiling was reached before result completeness was proven",
-        )
-        .at(MatchErrorPathSegment::ProviderEvidence)
-        .with_detail("limit", max_items)
-        .into());
+    require_provider_exhaustion(stats)?;
+    if stats.processed_items >= max_items {
+        return Err(solution_scan_limit_error(max_items));
     }
     Ok(())
+}
+
+fn solution_scan_limit_error(max_items: u64) -> OrmError {
+    MatchError::new(
+        MatchErrorCategory::ResourceLimit,
+        "solution_scan_limit",
+        "provider solution ceiling was reached before result completeness was proven",
+    )
+    .at(MatchErrorPathSegment::ProviderEvidence)
+    .with_detail("limit", max_items)
+    .into()
+}
+
+fn require_provider_exhaustion(
+    stats: crate::session::backend::BoundedAnswerStats,
+) -> Result<(), OrmError> {
+    if stats.stopped_early {
+        return Err(decode_error(
+            "provider_stream_not_exhausted",
+            "provider stopped before the bounded typed statement reached its terminal frame",
+        ));
+    }
+    Ok(())
+}
+
+fn exactly_one_proof_byte_limit(
+    registry: &DescriptorRegistry,
+    selection: &TypedFetchRows,
+) -> Result<u64, OrmError> {
+    let projected_bindings = selection.projection.len();
+    if projected_bindings == 0 || projected_bindings > super::limits::MAX_BINDINGS {
+        return Err(decode_error(
+            "tuple_proof_shape_limit",
+            "distinct-tuple proof projection exceeds the validated binding ceiling",
+        ));
+    }
+    let bindings = u64::try_from(projected_bindings).map_err(|_| {
+        resource_error(
+            "answer_byte_counter_overflow",
+            "distinct-tuple proof binding count exceeds the counter range",
+        )
+    })?;
+    let projected = selection
+        .projection
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if projected.len() != projected_bindings {
+        return Err(decode_error(
+            "tuple_proof_shape_limit",
+            "distinct-tuple proof projection contains duplicate bindings",
+        ));
+    }
+    let mut targets = BTreeMap::new();
+    for target in &selection.targets {
+        if projected.contains(&target.binding) && targets.insert(target.binding, target).is_some() {
+            return Err(decode_error(
+                "tuple_proof_shape_limit",
+                "distinct-tuple proof contains duplicate projected targets",
+            ));
+        }
+    }
+    if targets.len() != projected_bindings {
+        return Err(decode_error(
+            "tuple_proof_shape_limit",
+            "distinct-tuple proof projection is missing a typed target",
+        ));
+    }
+
+    // Exact targets can only return their declared label. Subtype-inclusive
+    // targets can return registered descendants of the same thing kind. Do
+    // not let unrelated registry entries or unprojected targets inflate this
+    // internal proof allowance.
+    let snapshot = if targets.values().any(|target| !target.exact) {
+        registry.snapshot()
+    } else {
+        Vec::new()
+    };
+    let mut entity_children = BTreeMap::<&str, Vec<&str>>::new();
+    let mut relation_children = BTreeMap::<&str, Vec<&str>>::new();
+    for descriptor in &snapshot {
+        match descriptor {
+            TypeDescriptor::Entity(descriptor) => {
+                if let Some(parent) = descriptor.parent_type.as_deref() {
+                    entity_children
+                        .entry(parent)
+                        .or_default()
+                        .push(&descriptor.type_name);
+                }
+            }
+            TypeDescriptor::Relation(descriptor) => {
+                if let Some(parent) = descriptor.parent_type.as_deref() {
+                    relation_children
+                        .entry(parent)
+                        .or_default()
+                        .push(&descriptor.type_name);
+                }
+            }
+        }
+    }
+    let mut entity_maxima = BTreeMap::<&str, usize>::new();
+    let mut relation_maxima = BTreeMap::<&str, usize>::new();
+    let max_label_bytes = targets
+        .values()
+        .map(|target| {
+            if target.exact {
+                return target.type_name.len();
+            }
+            match target.kind {
+                TypedThingKind::Entity => {
+                    *entity_maxima.entry(&target.type_name).or_insert_with(|| {
+                        max_target_closure_label_bytes(&entity_children, &target.type_name)
+                    })
+                }
+                TypedThingKind::Relation => {
+                    *relation_maxima.entry(&target.type_name).or_insert_with(|| {
+                        max_target_closure_label_bytes(&relation_children, &target.type_name)
+                    })
+                }
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    let max_label_bytes = u64::try_from(max_label_bytes).map_err(|_| {
+        resource_error(
+            "answer_byte_counter_overflow",
+            "distinct-tuple proof label length exceeds the counter range",
+        )
+    })?;
+    let binding_bytes = TUPLE_PROOF_BINDING_FIXED_BYTES
+        .checked_add(max_label_bytes)
+        .ok_or_else(|| {
+            resource_error(
+                "answer_byte_counter_overflow",
+                "distinct-tuple proof byte ceiling overflowed",
+            )
+        })?;
+    let derived_limit = TUPLE_PROOF_ROW_ENVELOPE_BYTES
+        .checked_add(bindings.checked_mul(binding_bytes).ok_or_else(|| {
+            resource_error(
+                "answer_byte_counter_overflow",
+                "distinct-tuple proof byte ceiling overflowed",
+            )
+        })?)
+        .and_then(|row| row.checked_mul(TUPLE_PROOF_ROWS))
+        .ok_or_else(|| {
+            resource_error(
+                "answer_byte_counter_overflow",
+                "distinct-tuple proof byte ceiling overflowed",
+            )
+        })?;
+    Ok(derived_limit.min(MAX_RESPONSE_BYTES))
+}
+
+fn max_target_closure_label_bytes<'a>(
+    children: &BTreeMap<&'a str, Vec<&'a str>>,
+    root: &'a str,
+) -> usize {
+    let mut maximum = root.len();
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(parent) = pending.pop() {
+        if !visited.insert(parent) {
+            continue;
+        }
+        if let Some(descendants) = children.get(parent) {
+            for descendant in descendants {
+                maximum = maximum.max(descendant.len());
+                pending.push(descendant);
+            }
+        }
+    }
+    maximum
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -931,21 +1524,280 @@ fn count_attribute_values(attributes: &[HydratedAttribute]) -> Result<u64, OrmEr
 enum RootScanPurpose {
     Count,
     Exists,
-    Page(u64),
+    Page,
+}
+
+/// Preserve the first semantic/decode failure while making a bounded attempt
+/// to consume the current provider statement through its terminal frame.
+///
+/// The TypeDB driver uses resumable answer streams; returning an error from a
+/// nested consumer would abandon the stream just like `AnswerControl::Stop`.
+/// Later answers are not decoded and both the provider reader and this adapter
+/// enforce finite item/byte ceilings. If the small suffix allowance is spent,
+/// `Stop` terminates this statement. Owned execution then closes its private
+/// transaction; borrowed execution never closes its caller-owned context.
+struct DrainingConsumer<'a> {
+    inner: &'a mut dyn AnswerConsumer,
+    limits: StatementResourceLimits,
+    processed_items: u64,
+    response_bytes: u64,
+    drained_items: u64,
+    drained_bytes: u64,
+    first_error: Option<OrmError>,
+    consumer_stopped: bool,
+}
+
+impl<'a> DrainingConsumer<'a> {
+    fn new(inner: &'a mut dyn AnswerConsumer, limits: StatementResourceLimits) -> Self {
+        Self {
+            inner,
+            limits,
+            processed_items: 0,
+            response_bytes: 0,
+            drained_items: 0,
+            drained_bytes: 0,
+            first_error: None,
+            consumer_stopped: false,
+        }
+    }
+
+    fn complete(
+        mut self,
+        provider: Result<crate::session::backend::BoundedAnswerStats, OrmError>,
+        budget: &mut ExecutionBudget,
+    ) -> Result<crate::session::backend::BoundedAnswerStats, OrmError> {
+        // Sticky consumer failures bypass the provider future's map_err seam;
+        // route them through the same released redaction boundary before they
+        // can reach a caller or the dual-failure cleanup warning.
+        let first_error = self.first_error.take().map(provider_statement_error);
+        match (first_error, provider) {
+            (Some(error), Ok(stats)) => {
+                let stats = self.reconcile_stats(stats);
+                if self.limits.charge_to_caller {
+                    budget.charge(stats);
+                }
+                Err(error)
+            }
+            (None, Ok(stats)) => {
+                let stats = self.reconcile_stats(stats);
+                if self.limits.charge_to_caller {
+                    budget.charge(stats);
+                }
+                Ok(stats)
+            }
+            (Some(error), Err(_)) => Err(error),
+            (None, Err(error)) => Err(error),
+        }
+    }
+
+    fn reconcile_stats(
+        &self,
+        mut provider: crate::session::backend::BoundedAnswerStats,
+    ) -> crate::session::backend::BoundedAnswerStats {
+        // Third-party backends are an open extension seam. Never let a custom
+        // provider weaken the caller's remaining budget by reporting fewer
+        // items or bytes than this local consumer actually observed.
+        provider.processed_items = provider.processed_items.max(self.processed_items);
+        provider.response_bytes = provider.response_bytes.max(self.response_bytes);
+        provider.stopped_early |= self.consumer_stopped;
+        provider
+    }
+
+    fn reject(&mut self, error: OrmError) -> Result<AnswerControl, OrmError> {
+        self.first_error = Some(error);
+        Ok(if self.has_drain_capacity() {
+            AnswerControl::Continue
+        } else {
+            AnswerControl::Stop
+        })
+    }
+
+    fn has_drain_capacity(&self) -> bool {
+        self.processed_items < self.limits.max_items
+            && self.response_bytes < self.limits.max_bytes
+            && self.drained_items < MAX_ERROR_DRAIN_ITEMS
+            && self.drained_bytes < MAX_ERROR_DRAIN_BYTES
+    }
+
+    fn accept_suffix(&mut self, item: AnswerItem) -> AnswerControl {
+        let Ok(item_bytes) = item.encoded_bytes() else {
+            return AnswerControl::Stop;
+        };
+        let Some(next_items) = self.processed_items.checked_add(1) else {
+            return AnswerControl::Stop;
+        };
+        let Some(next_bytes) = self.response_bytes.checked_add(item_bytes) else {
+            return AnswerControl::Stop;
+        };
+        let Some(next_drained_items) = self.drained_items.checked_add(1) else {
+            return AnswerControl::Stop;
+        };
+        let Some(next_drained_bytes) = self.drained_bytes.checked_add(item_bytes) else {
+            return AnswerControl::Stop;
+        };
+        if next_items > self.limits.max_items
+            || next_bytes > self.limits.max_bytes
+            || next_drained_items > MAX_ERROR_DRAIN_ITEMS
+            || next_drained_bytes > MAX_ERROR_DRAIN_BYTES
+        {
+            return AnswerControl::Stop;
+        }
+        self.processed_items = next_items;
+        self.response_bytes = next_bytes;
+        self.drained_items = next_drained_items;
+        self.drained_bytes = next_drained_bytes;
+        if self.has_drain_capacity() {
+            AnswerControl::Continue
+        } else {
+            AnswerControl::Stop
+        }
+    }
+}
+
+impl AnswerConsumer for DrainingConsumer<'_> {
+    fn accept(&mut self, item: AnswerItem) -> Result<AnswerControl, OrmError> {
+        if self.first_error.is_some() {
+            return Ok(self.accept_suffix(item));
+        }
+
+        let next_items = match self.processed_items.checked_add(1) {
+            Some(next_items) => next_items,
+            None => {
+                return self.reject(resource_error(
+                    "processed_item_counter_overflow",
+                    "processed provider item counter overflowed",
+                ));
+            }
+        };
+        if next_items > self.limits.max_items {
+            return self.reject(resource_error(
+                "processed_item_limit",
+                "provider answer exceeded the processed-item ceiling",
+            ));
+        }
+        let item_bytes = match item.encoded_bytes() {
+            Ok(item_bytes) => item_bytes,
+            Err(error) => return self.reject(error),
+        };
+        let next_bytes = match self.response_bytes.checked_add(item_bytes) {
+            Some(next_bytes) => next_bytes,
+            None => {
+                return self.reject(resource_error(
+                    "answer_byte_counter_overflow",
+                    "provider answer byte counter overflowed",
+                ));
+            }
+        };
+        if next_bytes > self.limits.max_bytes {
+            return self.reject(resource_error(
+                "response_byte_limit",
+                "provider answer exceeded the response-byte ceiling",
+            ));
+        }
+        self.processed_items = next_items;
+        self.response_bytes = next_bytes;
+        match self.inner.accept(item) {
+            Ok(AnswerControl::Continue) => Ok(AnswerControl::Continue),
+            Ok(AnswerControl::Stop) => {
+                self.consumer_stopped = true;
+                Ok(AnswerControl::Stop)
+            }
+            Err(error) => self.reject(error),
+        }
+    }
+}
+
+struct TupleConsumer {
+    selected: Vec<BindingId>,
+    expected: BTreeSet<BindingId>,
+    seen: BTreeSet<Vec<String>>,
+}
+
+impl TupleConsumer {
+    fn new(selected: &[u16]) -> Self {
+        let selected = selected
+            .iter()
+            .copied()
+            .map(BindingId::new)
+            .collect::<Vec<_>>();
+        Self {
+            expected: selected.iter().copied().collect(),
+            selected,
+            seen: BTreeSet::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.seen.len()
+    }
+}
+
+impl AnswerConsumer for TupleConsumer {
+    fn accept(&mut self, item: AnswerItem) -> Result<AnswerControl, OrmError> {
+        let AnswerItem::Row(value) = item else {
+            return Err(decode_error(
+                "tuple_answer_kind",
+                "distinct-tuple statement returned a document instead of a row",
+            ));
+        };
+        let wire: SolutionWire = serde_json::from_value(value).map_err(|error| {
+            decode_error_owned(
+                "malformed_tuple_row",
+                format!("invalid distinct-tuple row: {error}"),
+            )
+        })?;
+        if !wire.satisfied_role_edges.is_empty() {
+            return Err(decode_error(
+                "malformed_tuple_row",
+                "distinct-tuple row must not claim role-edge evidence",
+            ));
+        }
+        let mut bindings = BTreeMap::new();
+        for assignment in wire.bindings {
+            let binding = BindingId::new(assignment.binding);
+            if !self.expected.contains(&binding) {
+                return Err(decode_error(
+                    "unknown_provider_binding",
+                    "distinct-tuple row contains an unselected binding",
+                ));
+            }
+            validate_provider_iid(&assignment.concept_id)?;
+            if bindings.insert(binding, assignment.concept_id).is_some() {
+                return Err(decode_error(
+                    "duplicate_provider_binding",
+                    "distinct-tuple row assigns one binding more than once",
+                ));
+            }
+        }
+        if bindings.len() != self.expected.len() {
+            return Err(decode_error(
+                "missing_provider_binding",
+                "provider solution omits a positive binding",
+            ));
+        }
+        self.seen.insert(
+            self.selected
+                .iter()
+                .map(|binding| bindings[binding].clone())
+                .collect(),
+        );
+        // The TypeQL statement owns `limit 2`; consume its terminal frame.
+        Ok(AnswerControl::Continue)
+    }
 }
 
 struct RootConsumer {
     root: BindingId,
-    purpose: RootScanPurpose,
+    retain_limit: Option<u64>,
     seen: BTreeSet<String>,
     roots: Vec<String>,
 }
 
 impl RootConsumer {
-    fn new(root: BindingId, purpose: RootScanPurpose) -> Self {
+    fn new(root: BindingId, retain_limit: Option<u64>) -> Self {
         Self {
             root,
-            purpose,
+            retain_limit,
             seen: BTreeSet::new(),
             roots: Vec::new(),
         }
@@ -984,19 +1836,17 @@ impl AnswerConsumer for RootConsumer {
             ));
         }
         validate_provider_iid(&assignment.concept_id)?;
-        if self.seen.insert(assignment.concept_id.clone()) {
+        if self
+            .retain_limit
+            .is_none_or(|limit| (self.roots.len() as u64) < limit)
+            && self.seen.insert(assignment.concept_id.clone())
+        {
             self.roots.push(assignment.concept_id.clone());
         }
-        let complete = match self.purpose {
-            RootScanPurpose::Count => false,
-            RootScanPurpose::Exists => !self.roots.is_empty(),
-            RootScanPurpose::Page(limit) => self.roots.len() as u64 >= limit,
-        };
-        Ok(if complete {
-            AnswerControl::Stop
-        } else {
-            AnswerControl::Continue
-        })
+        // Every root-selection statement carries its semantic limit in TypeQL.
+        // Continue through the provider's terminal stream frame instead of
+        // abandoning a resumable stream after the final desired identity.
+        Ok(AnswerControl::Continue)
     }
 }
 
@@ -1025,19 +1875,14 @@ struct SolutionConsumer {
     expected: BTreeSet<BindingId>,
     selected: Vec<BindingId>,
     stop_after: u64,
+    stop_at_prefix: bool,
     seen: BTreeSet<Vec<String>>,
     solutions: Vec<UnhydratedSolution>,
 }
 
 impl SolutionConsumer {
-    fn new(validated: &ValidatedMatchRequest) -> Result<Self, OrmError> {
-        let MatchOperation::FetchRows {
-            output,
-            window,
-            cardinality,
-            ..
-        } = &validated.request().operation
-        else {
+    fn new(validated: &ValidatedMatchRequest, stop_at_prefix: bool) -> Result<Self, OrmError> {
+        let MatchOperation::FetchRows { output, .. } = &validated.request().operation else {
             return Err(decode_error(
                 "unsupported_selected_operation",
                 "selected solution decoder supports only FetchRows",
@@ -1052,10 +1897,6 @@ impl SolutionConsumer {
                 )),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let stop_after = match cardinality {
-            RowCardinality::ExactlyOne => 2,
-            RowCardinality::BoundedMany => window.offset.saturating_add(window.limit),
-        };
         Ok(Self {
             expected: validated
                 .request()
@@ -1065,7 +1906,8 @@ impl SolutionConsumer {
                 .map(|binding| binding.id)
                 .collect(),
             selected,
-            stop_after,
+            stop_after: released_solution_prefix(validated)?,
+            stop_at_prefix,
             seen: BTreeSet::new(),
             solutions: Vec::new(),
         })
@@ -1073,6 +1915,10 @@ impl SolutionConsumer {
 
     fn finish(self) -> Vec<UnhydratedSolution> {
         self.solutions
+    }
+
+    fn reached_prefix(&self) -> bool {
+        self.solutions.len() as u64 >= self.stop_after
     }
 }
 
@@ -1118,7 +1964,7 @@ impl AnswerConsumer for SolutionConsumer {
             .iter()
             .map(|binding| bindings[binding].clone())
             .collect::<Vec<_>>();
-        if self.seen.insert(identity) {
+        if (self.solutions.len() as u64) < self.stop_after && self.seen.insert(identity) {
             self.solutions.push(UnhydratedSolution {
                 bindings,
                 satisfied_role_edges: wire
@@ -1128,11 +1974,13 @@ impl AnswerConsumer for SolutionConsumer {
                     .collect(),
             });
         }
-        Ok(if self.solutions.len() as u64 >= self.stop_after {
-            AnswerControl::Stop
-        } else {
-            AnswerControl::Continue
-        })
+        if self.stop_at_prefix && self.solutions.len() as u64 >= self.stop_after {
+            return Ok(AnswerControl::Stop);
+        }
+        // The provider statement is itself capped. Continue until its terminal
+        // frame so a successful bounded result never abandons a resumable
+        // TypeDB stream; retain only the semantic prefix needed by the caller.
+        Ok(AnswerControl::Continue)
     }
 }
 
@@ -2133,6 +2981,23 @@ fn hydration_batches(
         .collect())
 }
 
+fn hydration_answer_limit(batch: &TypedHydrateThings) -> Result<u64, OrmError> {
+    batch.targets.iter().try_fold(0_u64, |total, target| {
+        let identities = u64::try_from(target.concept_ids.len()).map_err(|_| {
+            resource_error(
+                "processed_item_counter_overflow",
+                "typed hydration identity count exceeds the provider counter range",
+            )
+        })?;
+        total.checked_add(identities).ok_or_else(|| {
+            resource_error(
+                "processed_item_counter_overflow",
+                "typed hydration identity counter overflowed",
+            )
+        })
+    })
+}
+
 fn typed_hydration_descriptor(descriptor: &TypeDescriptor) -> TypedHydrationDescriptor {
     let (kind, fields, roles) = match descriptor {
         TypeDescriptor::Entity(descriptor) => (
@@ -2301,6 +3166,7 @@ fn sanitized_provider_statement_error(error: MatchError) -> Option<OrmError> {
         "malformed_provider_concept_id",
         "malformed_root_row",
         "malformed_solution_row",
+        "malformed_tuple_row",
         "missing_hydrated_concept",
         "missing_provider_binding",
         "missing_provider_concept_id",
@@ -2311,6 +3177,7 @@ fn sanitized_provider_statement_error(error: MatchError) -> Option<OrmError> {
         "root_binding_mismatch",
         "selected_root_set_mismatch",
         "solution_answer_kind",
+        "tuple_answer_kind",
         "unexpected_hydrated_concept",
         "unexpected_hydrated_root",
         "unknown_hydrated_attribute",
@@ -2343,12 +3210,7 @@ fn sanitized_provider_statement_error(error: MatchError) -> Option<OrmError> {
 }
 
 fn validate_provider_iid(value: &str) -> Result<(), OrmError> {
-    let valid = value.strip_prefix("0x").is_some_and(|digits| {
-        !digits.is_empty()
-            && digits.len() <= 256
-            && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
-    });
-    if valid {
+    if type_bridge_contract::id::is_canonical_thing_iid(value) {
         Ok(())
     } else {
         Err(decode_error(
@@ -2439,6 +3301,151 @@ mod tests {
         );
     }
 
+    #[test]
+    fn exactly_one_proof_bytes_are_derived_from_bounded_identity_shape() {
+        fn selection(type_name: &str, projected_bindings: usize) -> TypedFetchRows {
+            let bindings = (0..projected_bindings)
+                .map(|binding| u16::try_from(binding).unwrap())
+                .collect::<Vec<_>>();
+            TypedFetchRows {
+                targets: bindings
+                    .iter()
+                    .copied()
+                    .map(|binding| type_bridge_core_lib::ast::TypedMatchTarget {
+                        binding,
+                        kind: TypedThingKind::Entity,
+                        type_name: type_name.to_owned(),
+                        exact: true,
+                    })
+                    .collect(),
+                fields: Vec::new(),
+                predicate: None,
+                projection: bindings,
+                distinct: true,
+                order: Vec::new(),
+                offset: 0,
+                limit: TUPLE_PROOF_ROWS,
+            }
+        }
+
+        let registry = person_registry();
+        let one = selection("person", 1);
+        let maximum_shape = selection("person", super::super::limits::MAX_BINDINGS);
+        let one_binding = exactly_one_proof_byte_limit(&registry, &one).unwrap();
+        let maximum = exactly_one_proof_byte_limit(&registry, &maximum_shape).unwrap();
+        assert!(one_binding < 1536);
+        assert!(maximum < 400 * 1024);
+        assert!(
+            exactly_one_proof_byte_limit(
+                &registry,
+                &selection("person", super::super::limits::MAX_BINDINGS + 1),
+            )
+            .is_err()
+        );
+
+        let unrelated_registry = person_registry();
+        let unrelated_label = format!("unrelated_{}", "x".repeat(4096));
+        unrelated_registry
+            .register_entity(EntityDescriptor {
+                type_name: unrelated_label.clone(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: Vec::new(),
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(
+            exactly_one_proof_byte_limit(&unrelated_registry, &one).unwrap(),
+            one_binding
+        );
+        let mut with_unprojected_target = one.clone();
+        with_unprojected_target
+            .targets
+            .push(type_bridge_core_lib::ast::TypedMatchTarget {
+                binding: u16::MAX,
+                kind: TypedThingKind::Entity,
+                type_name: unrelated_label,
+                exact: true,
+            });
+        assert_eq!(
+            exactly_one_proof_byte_limit(&registry, &with_unprojected_target).unwrap(),
+            one_binding
+        );
+
+        let closure_registry = person_registry();
+        closure_registry
+            .register_entity(EntityDescriptor {
+                type_name: format!("person_{}", "x".repeat(140 * 1024)),
+                is_abstract: false,
+                parent_type: Some("person".into()),
+                owned_attributes: Vec::new(),
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        let mut subtype_shape = maximum_shape.clone();
+        for target in &mut subtype_shape.targets {
+            target.exact = false;
+        }
+        assert_eq!(
+            exactly_one_proof_byte_limit(&closure_registry, &subtype_shape).unwrap(),
+            MAX_RESPONSE_BYTES
+        );
+
+        let iid = format!("0x{}", "f".repeat(MAX_THING_IID_HEX_DIGITS));
+        let assignments = (0..super::super::limits::MAX_BINDINGS)
+            .map(|_| serde_json::json!({"binding": u16::MAX, "concept_id": iid.clone()}))
+            .collect::<Vec<_>>();
+        let row = AnswerItem::Row(serde_json::json!({
+            "bindings": assignments,
+            "satisfied_role_edges": [],
+        }));
+        let two_maximum_rows = row.encoded_bytes().unwrap().checked_mul(2).unwrap();
+        assert!(two_maximum_rows <= maximum);
+
+        let concept = serde_json::json!({
+            "category": "entity",
+            "label": "person",
+            "iid": iid.clone(),
+        });
+        let raw_row = AnswerItem::Row(serde_json::Value::Object(
+            (0..super::super::limits::MAX_BINDINGS)
+                .map(|binding| (format!("$b{binding}"), concept.clone()))
+                .collect(),
+        ));
+        let two_raw_rows = raw_row.encoded_bytes().unwrap().checked_mul(2).unwrap();
+        assert!(two_raw_rows <= maximum);
+
+        let long_label = format!("legacy_{}", "x".repeat(4096));
+        let long_registry = DescriptorRegistry::new();
+        long_registry
+            .register_entity(EntityDescriptor {
+                type_name: long_label.clone(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: Vec::new(),
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        let long_shape = selection(&long_label, 1);
+        let long_limit = exactly_one_proof_byte_limit(&long_registry, &long_shape).unwrap();
+        assert!(long_limit > one_binding);
+        let long_concept = serde_json::json!({
+            "category": "entity",
+            "label": long_label,
+            "iid": iid,
+        });
+        let long_raw_row = AnswerItem::Row(serde_json::json!({"$b0": long_concept}));
+        let two_long_rows = long_raw_row
+            .encoded_bytes()
+            .unwrap()
+            .checked_mul(2)
+            .unwrap();
+        assert!(two_long_rows <= long_limit);
+    }
+
     #[tokio::test]
     async fn execution_budget_rechecks_cancellation_after_a_ready_provider_error() {
         let cancellation = AnswerCancellation::default();
@@ -2467,10 +3474,35 @@ mod tests {
         root_answers: usize,
         hydration_answers: usize,
         rematch_answers: usize,
+        tuple_answers: usize,
         solution_statements: Vec<TypedFetchRows>,
+        solution_limits: Vec<(u64, u64)>,
+        tuple_statements: Vec<TypedFetchRows>,
+        tuple_limits: Vec<(u64, u64)>,
         root_statements: Vec<TypedRootScan>,
+        root_limits: Vec<(u64, u64)>,
         rematch_statements: Vec<TypedPageRematch>,
+        rematch_limits: Vec<(u64, u64)>,
         hydration_statements: Vec<TypedHydrateThings>,
+        hydration_limits: Vec<(u64, u64)>,
+    }
+
+    struct ProofCapabilityLockState {
+        pause_hydration: AtomicBool,
+        hydration_entered: Notify,
+        resume_hydration: Notify,
+        blocker_entered: Notify,
+    }
+
+    impl ProofCapabilityLockState {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                pause_hydration: AtomicBool::new(true),
+                hydration_entered: Notify::new(),
+                resume_hydration: Notify::new(),
+                blocker_entered: Notify::new(),
+            })
+        }
     }
 
     struct RecordingBackend {
@@ -2478,7 +3510,12 @@ mod tests {
         capabilities: CapabilitySet,
         solutions: RecordedAnswers,
         hydrations: RecordedAnswers,
+        tuple_proof: bool,
+        tuple_response_override: Option<Result<Vec<AnswerItem>, String>>,
         close_failure: Option<String>,
+        forged_early_stop: Option<RecordedAnswerKind>,
+        forged_underreported_stats: Option<RecordedAnswerKind>,
+        proof_capability_lock: Option<Arc<ProofCapabilityLockState>>,
     }
 
     impl DriverBackend for RecordingBackend {
@@ -2494,14 +3531,25 @@ mod tests {
             let events = Arc::clone(&self.events);
             let solutions = Arc::clone(&self.solutions);
             let hydrations = Arc::clone(&self.hydrations);
+            let tuple_proof = self.tuple_proof;
+            let tuple_response_override = self.tuple_response_override.clone();
             let close_failure = self.close_failure.clone();
+            let forged_early_stop = self.forged_early_stop;
+            let forged_underreported_stats = self.forged_underreported_stats;
+            let proof_capability_lock = self.proof_capability_lock.clone();
             Box::pin(async move {
                 events.lock().unwrap().opens += 1;
                 Ok(Box::new(RecordingTransaction {
                     events,
                     solutions,
                     hydrations,
+                    tuple_proof,
+                    pending_tuple_evidence: None,
+                    tuple_response_override,
                     close_failure,
+                    forged_early_stop,
+                    forged_underreported_stats,
+                    proof_capability_lock,
                 }) as Box<dyn TransactionOps>)
             })
         }
@@ -2515,12 +3563,25 @@ mod tests {
         events: Arc<Mutex<Events>>,
         solutions: RecordedAnswers,
         hydrations: RecordedAnswers,
+        tuple_proof: bool,
+        pending_tuple_evidence: Option<Result<Vec<AnswerItem>, String>>,
+        tuple_response_override: Option<Result<Vec<AnswerItem>, String>>,
         close_failure: Option<String>,
+        forged_early_stop: Option<RecordedAnswerKind>,
+        forged_underreported_stats: Option<RecordedAnswerKind>,
+        proof_capability_lock: Option<Arc<ProofCapabilityLockState>>,
     }
 
     impl TransactionOps for RecordingTransaction {
         fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            Box::pin(async { panic!("selected executor used legacy string query") })
+            let proof_capability_lock = self.proof_capability_lock.clone();
+            Box::pin(async move {
+                let Some(state) = proof_capability_lock else {
+                    panic!("selected executor used legacy string query")
+                };
+                state.blocker_entered.notify_one();
+                std::future::pending::<Result<QueryResult, OrmError>>().await
+            })
         }
 
         fn query_typed_bounded<'a>(
@@ -2530,22 +3591,94 @@ mod tests {
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
             let query = query.clone();
+            let recorded_limits = (limits.max_items, limits.max_bytes);
             let events = Arc::clone(&self.events);
+            let forged_early_stop = self.forged_early_stop;
+            let forged_underreported_stats = self.forged_underreported_stats;
+            // Evidence runs before the internal tuple proof so released
+            // statement/item/byte errors retain precedence. Preserve the same
+            // recorded snapshot for the proof instead of consuming a second
+            // synthetic provider response.
             let response = self
                 .solutions
                 .lock()
                 .unwrap()
                 .pop_front()
                 .unwrap_or(Ok(vec![]));
+            self.pending_tuple_evidence = self.tuple_proof.then(|| response.clone());
             Box::pin(async move {
-                events.lock().unwrap().solution_statements.push(query);
-                feed_recorded(
+                let response = response.map(|items| {
+                    items
+                        .into_iter()
+                        .take(query.limit as usize)
+                        .collect::<Vec<_>>()
+                });
+                let mut locked = events.lock().unwrap();
+                locked.solution_statements.push(query);
+                locked.solution_limits.push(recorded_limits);
+                drop(locked);
+                let stats = feed_recorded(
                     response,
                     limits,
                     consumer,
                     &events,
                     RecordedAnswerKind::Solution,
-                )
+                )?;
+                Ok(forge_provider_stats(
+                    stats,
+                    forged_early_stop,
+                    forged_underreported_stats,
+                    RecordedAnswerKind::Solution,
+                ))
+            })
+        }
+
+        fn supports_exactly_one_tuple_proof(&self) -> bool {
+            self.tuple_proof
+        }
+
+        fn query_tuple_typed_bounded<'a>(
+            &'a mut self,
+            query: &'a TypedFetchRows,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            let query = query.clone();
+            let recorded_limits = (limits.max_items, limits.max_bytes);
+            let events = Arc::clone(&self.events);
+            let forged_early_stop = self.forged_early_stop;
+            let forged_underreported_stats = self.forged_underreported_stats;
+            let pending_tuple_evidence = self.pending_tuple_evidence.take();
+            let response = self
+                .tuple_response_override
+                .take()
+                .or(pending_tuple_evidence)
+                .unwrap_or_else(|| {
+                    self.solutions
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or(Ok(vec![]))
+                });
+            Box::pin(async move {
+                let mut locked = events.lock().unwrap();
+                locked.tuple_statements.push(query.clone());
+                locked.tuple_limits.push(recorded_limits);
+                drop(locked);
+                let response = project_recorded_tuple(response, &query.projection, query.limit);
+                let stats = feed_recorded(
+                    response,
+                    limits,
+                    consumer,
+                    &events,
+                    RecordedAnswerKind::Tuple,
+                )?;
+                Ok(forge_provider_stats(
+                    stats,
+                    forged_early_stop,
+                    forged_underreported_stats,
+                    RecordedAnswerKind::Tuple,
+                ))
             })
         }
 
@@ -2556,7 +3689,12 @@ mod tests {
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
             let query = query.clone();
+            let recorded_limits = (limits.max_items, limits.max_bytes);
+            let answer_limit = hydration_answer_limit(&query);
             let events = Arc::clone(&self.events);
+            let forged_early_stop = self.forged_early_stop;
+            let forged_underreported_stats = self.forged_underreported_stats;
+            let proof_capability_lock = self.proof_capability_lock.clone();
             let response = self
                 .hydrations
                 .lock()
@@ -2564,14 +3702,32 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(vec![]));
             Box::pin(async move {
-                events.lock().unwrap().hydration_statements.push(query);
-                feed_recorded(
+                if let Some(state) = proof_capability_lock
+                    && state.pause_hydration.swap(false, AtomicOrdering::SeqCst)
+                {
+                    state.hydration_entered.notify_one();
+                    state.resume_hydration.notified().await;
+                }
+                let answer_limit = usize::try_from(answer_limit?).unwrap_or(usize::MAX);
+                let response =
+                    response.map(|items| items.into_iter().take(answer_limit).collect::<Vec<_>>());
+                let mut locked = events.lock().unwrap();
+                locked.hydration_statements.push(query);
+                locked.hydration_limits.push(recorded_limits);
+                drop(locked);
+                let stats = feed_recorded(
                     response,
                     limits,
                     consumer,
                     &events,
                     RecordedAnswerKind::Hydration,
-                )
+                )?;
+                Ok(forge_provider_stats(
+                    stats,
+                    forged_early_stop,
+                    forged_underreported_stats,
+                    RecordedAnswerKind::Hydration,
+                ))
             })
         }
 
@@ -2582,7 +3738,10 @@ mod tests {
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
             let query = query.clone();
+            let recorded_limits = (limits.max_items, limits.max_bytes);
             let events = Arc::clone(&self.events);
+            let forged_early_stop = self.forged_early_stop;
+            let forged_underreported_stats = self.forged_underreported_stats;
             let response = self
                 .solutions
                 .lock()
@@ -2590,14 +3749,24 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(vec![]));
             Box::pin(async move {
-                events.lock().unwrap().root_statements.push(query);
-                feed_recorded(
+                let response = project_recorded_roots(response, query.root, query.limit);
+                let mut locked = events.lock().unwrap();
+                locked.root_statements.push(query);
+                locked.root_limits.push(recorded_limits);
+                drop(locked);
+                let stats = feed_recorded(
                     response,
                     limits,
                     consumer,
                     &events,
                     RecordedAnswerKind::Root,
-                )
+                )?;
+                Ok(forge_provider_stats(
+                    stats,
+                    forged_early_stop,
+                    forged_underreported_stats,
+                    RecordedAnswerKind::Root,
+                ))
             })
         }
 
@@ -2608,7 +3777,11 @@ mod tests {
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
             let query = query.clone();
+            let recorded_limits = (limits.max_items, limits.max_bytes);
+            let answer_limit = usize::try_from(limits.max_items).unwrap_or(usize::MAX);
             let events = Arc::clone(&self.events);
+            let forged_early_stop = self.forged_early_stop;
+            let forged_underreported_stats = self.forged_underreported_stats;
             let response = self
                 .hydrations
                 .lock()
@@ -2616,14 +3789,25 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(vec![]));
             Box::pin(async move {
-                events.lock().unwrap().rematch_statements.push(query);
-                feed_recorded(
+                let response =
+                    response.map(|items| items.into_iter().take(answer_limit).collect::<Vec<_>>());
+                let mut locked = events.lock().unwrap();
+                locked.rematch_statements.push(query);
+                locked.rematch_limits.push(recorded_limits);
+                drop(locked);
+                let stats = feed_recorded(
                     response,
                     limits,
                     consumer,
                     &events,
                     RecordedAnswerKind::Rematch,
-                )
+                )?;
+                Ok(forge_provider_stats(
+                    stats,
+                    forged_early_stop,
+                    forged_underreported_stats,
+                    RecordedAnswerKind::Rematch,
+                ))
             })
         }
 
@@ -2665,12 +3849,29 @@ mod tests {
         Ok(reader.stats())
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
     enum RecordedAnswerKind {
         Solution,
+        Tuple,
         Root,
         Hydration,
         Rematch,
+    }
+
+    fn forge_provider_stats(
+        mut stats: BoundedAnswerStats,
+        forged_early_stop: Option<RecordedAnswerKind>,
+        forged_underreported_stats: Option<RecordedAnswerKind>,
+        current: RecordedAnswerKind,
+    ) -> BoundedAnswerStats {
+        if forged_early_stop == Some(current) {
+            stats.stopped_early = true;
+        }
+        if forged_underreported_stats == Some(current) {
+            stats.processed_items = 0;
+            stats.response_bytes = 0;
+        }
+        stats
     }
 
     fn feed_recorded(
@@ -2688,6 +3889,7 @@ mod tests {
                 let mut events = events.lock().unwrap();
                 let answers = match kind {
                     RecordedAnswerKind::Solution => &mut events.solution_answers,
+                    RecordedAnswerKind::Tuple => &mut events.tuple_answers,
                     RecordedAnswerKind::Root => &mut events.root_answers,
                     RecordedAnswerKind::Hydration => &mut events.hydration_answers,
                     RecordedAnswerKind::Rematch => &mut events.rematch_answers,
@@ -2699,6 +3901,86 @@ mod tests {
             }
         }
         Ok(reader.stats())
+    }
+
+    fn project_recorded_tuple(
+        response: Result<Vec<AnswerItem>, String>,
+        projection: &[u16],
+        limit: u64,
+    ) -> Result<Vec<AnswerItem>, String> {
+        response.map(|items| {
+            let mut seen = BTreeSet::new();
+            let mut projected = Vec::new();
+            for item in items {
+                let identity = recorded_tuple_identity(&item, projection);
+                let item = match item {
+                    AnswerItem::Row(Value::Object(mut row)) => {
+                        if let Some(Value::Array(bindings)) = row.get_mut("bindings") {
+                            bindings.retain(|assignment| {
+                                assignment
+                                    .get("binding")
+                                    .and_then(Value::as_u64)
+                                    .and_then(|binding| u16::try_from(binding).ok())
+                                    .is_some_and(|binding| projection.contains(&binding))
+                            });
+                            row.insert("satisfied_role_edges".into(), Value::Array(Vec::new()));
+                        }
+                        AnswerItem::Row(Value::Object(row))
+                    }
+                    other => other,
+                };
+                if identity.is_none_or(|identity| seen.insert(identity)) {
+                    projected.push(item);
+                    if projected.len() as u64 >= limit {
+                        break;
+                    }
+                }
+            }
+            projected
+        })
+    }
+
+    fn project_recorded_roots(
+        response: Result<Vec<AnswerItem>, String>,
+        root: u16,
+        limit: Option<u64>,
+    ) -> Result<Vec<AnswerItem>, String> {
+        response.map(|items| {
+            let mut seen = BTreeSet::new();
+            let mut projected = Vec::new();
+            for item in items {
+                let identity = recorded_binding_iid(&item, root).map(str::to_owned);
+                if identity.is_none_or(|identity| seen.insert(identity)) {
+                    projected.push(item);
+                    if limit.is_some_and(|limit| projected.len() as u64 >= limit) {
+                        break;
+                    }
+                }
+            }
+            projected
+        })
+    }
+
+    fn recorded_tuple_identity(item: &AnswerItem, projection: &[u16]) -> Option<Vec<String>> {
+        projection
+            .iter()
+            .map(|binding| recorded_binding_iid(item, *binding).map(str::to_owned))
+            .collect()
+    }
+
+    fn recorded_binding_iid(item: &AnswerItem, expected: u16) -> Option<&str> {
+        let AnswerItem::Row(Value::Object(row)) = item else {
+            return None;
+        };
+        let Value::Array(bindings) = row.get("bindings")? else {
+            return None;
+        };
+        bindings.iter().find_map(|assignment| {
+            let binding = assignment.get("binding")?.as_u64()?;
+            (binding == u64::from(expected))
+                .then(|| assignment.get("concept_id")?.as_str())
+                .flatten()
+        })
     }
 
     #[derive(Default)]
@@ -2900,6 +4182,7 @@ mod tests {
     enum PendingProviderPhase {
         Open,
         Statement,
+        StatementThenClose,
         Close,
     }
 
@@ -2920,7 +4203,10 @@ mod tests {
                 opens: AtomicUsize::new(0),
                 statements: AtomicUsize::new(0),
                 closes: AtomicUsize::new(0),
-                pending_statement: AtomicBool::new(phase == PendingProviderPhase::Statement),
+                pending_statement: AtomicBool::new(matches!(
+                    phase,
+                    PendingProviderPhase::Statement | PendingProviderPhase::StatementThenClose
+                )),
             })
         }
     }
@@ -2993,7 +4279,10 @@ mod tests {
             self.state.closes.fetch_add(1, AtomicOrdering::SeqCst);
             let state = Arc::clone(&self.state);
             Box::pin(async move {
-                if state.phase == PendingProviderPhase::Close {
+                if matches!(
+                    state.phase,
+                    PendingProviderPhase::Close | PendingProviderPhase::StatementThenClose
+                ) {
                     state.entered.notify_one();
                     std::future::pending::<()>().await;
                 }
@@ -3068,6 +4357,43 @@ mod tests {
                 order: vec![],
                 window: Window { offset: 0, limit },
                 cardinality,
+            },
+        )
+    }
+
+    fn person_with_hidden_witness_request(registry: &DescriptorRegistry) -> MatchRequest {
+        let person = BindingId::new(0);
+        let witness = BindingId::new(1);
+        let descriptor = registry.descriptor_id("person").unwrap();
+        MatchRequest::v1(
+            MatchPlan {
+                bindings: vec![
+                    MatchBinding {
+                        id: person,
+                        descriptor: descriptor.clone(),
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                    MatchBinding {
+                        id: witness,
+                        descriptor,
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                ],
+                predicate: None,
+                allowed_cross_joins: BTreeSet::from([BindingPair::new(person, witness)]),
+            },
+            MatchOperation::FetchRows {
+                output: FetchShape::Positional {
+                    slots: vec![FetchSlot::One { binding: person }],
+                },
+                order: vec![],
+                window: Window {
+                    offset: 0,
+                    limit: 1,
+                },
+                cardinality: RowCardinality::ExactlyOne,
             },
         )
     }
@@ -3238,9 +4564,128 @@ mod tests {
             capabilities,
             solutions: Arc::new(Mutex::new(solutions.into())),
             hydrations: Arc::new(Mutex::new(hydrations.into())),
+            tuple_proof: true,
+            tuple_response_override: None,
             close_failure,
+            forged_early_stop: None,
+            forged_underreported_stats: None,
+            proof_capability_lock: None,
         };
         (Database::with_backend(Box::new(backend), "test"), events)
+    }
+
+    fn database_with_forged_early_stop(
+        capabilities: CapabilitySet,
+        solutions: Vec<Result<Vec<AnswerItem>, String>>,
+        hydrations: Vec<Result<Vec<AnswerItem>, String>>,
+        forged_early_stop: RecordedAnswerKind,
+    ) -> (Database, Arc<Mutex<Events>>) {
+        let events = Arc::new(Mutex::new(Events::default()));
+        let backend = RecordingBackend {
+            events: Arc::clone(&events),
+            capabilities,
+            solutions: Arc::new(Mutex::new(solutions.into())),
+            hydrations: Arc::new(Mutex::new(hydrations.into())),
+            tuple_proof: true,
+            tuple_response_override: None,
+            close_failure: None,
+            forged_early_stop: Some(forged_early_stop),
+            forged_underreported_stats: None,
+            proof_capability_lock: None,
+        };
+        (Database::with_backend(Box::new(backend), "test"), events)
+    }
+
+    fn database_with_tuple_response(
+        capabilities: CapabilitySet,
+        solutions: Vec<Result<Vec<AnswerItem>, String>>,
+        hydrations: Vec<Result<Vec<AnswerItem>, String>>,
+        tuple_response: Result<Vec<AnswerItem>, String>,
+    ) -> (Database, Arc<Mutex<Events>>) {
+        let events = Arc::new(Mutex::new(Events::default()));
+        let backend = RecordingBackend {
+            events: Arc::clone(&events),
+            capabilities,
+            solutions: Arc::new(Mutex::new(solutions.into())),
+            hydrations: Arc::new(Mutex::new(hydrations.into())),
+            tuple_proof: true,
+            tuple_response_override: Some(tuple_response),
+            close_failure: None,
+            forged_early_stop: None,
+            forged_underreported_stats: None,
+            proof_capability_lock: None,
+        };
+        (Database::with_backend(Box::new(backend), "test"), events)
+    }
+
+    fn database_with_underreported_stats(
+        capabilities: CapabilitySet,
+        solutions: Vec<Result<Vec<AnswerItem>, String>>,
+        hydrations: Vec<Result<Vec<AnswerItem>, String>>,
+        forged_underreported_stats: RecordedAnswerKind,
+    ) -> (Database, Arc<Mutex<Events>>) {
+        let events = Arc::new(Mutex::new(Events::default()));
+        let backend = RecordingBackend {
+            events: Arc::clone(&events),
+            capabilities,
+            solutions: Arc::new(Mutex::new(solutions.into())),
+            hydrations: Arc::new(Mutex::new(hydrations.into())),
+            tuple_proof: true,
+            tuple_response_override: None,
+            close_failure: None,
+            forged_early_stop: None,
+            forged_underreported_stats: Some(forged_underreported_stats),
+            proof_capability_lock: None,
+        };
+        (Database::with_backend(Box::new(backend), "test"), events)
+    }
+
+    fn database_without_tuple_proof(
+        capabilities: CapabilitySet,
+        solutions: Vec<Result<Vec<AnswerItem>, String>>,
+        hydrations: Vec<Result<Vec<AnswerItem>, String>>,
+    ) -> (Database, Arc<Mutex<Events>>) {
+        let events = Arc::new(Mutex::new(Events::default()));
+        let backend = RecordingBackend {
+            events: Arc::clone(&events),
+            capabilities,
+            solutions: Arc::new(Mutex::new(solutions.into())),
+            hydrations: Arc::new(Mutex::new(hydrations.into())),
+            tuple_proof: false,
+            tuple_response_override: None,
+            close_failure: None,
+            forged_early_stop: None,
+            forged_underreported_stats: None,
+            proof_capability_lock: None,
+        };
+        (Database::with_backend(Box::new(backend), "test"), events)
+    }
+
+    fn database_with_proof_capability_lock()
+    -> (Database, Arc<Mutex<Events>>, Arc<ProofCapabilityLockState>) {
+        let events = Arc::new(Mutex::new(Events::default()));
+        let proof_capability_lock = ProofCapabilityLockState::new();
+        let backend = RecordingBackend {
+            events: Arc::clone(&events),
+            capabilities: CapabilitySet::all(),
+            solutions: Arc::new(Mutex::new(
+                vec![Ok(vec![solution(&[(0, "0x01")], &[])])].into(),
+            )),
+            hydrations: Arc::new(Mutex::new(
+                vec![Ok(vec![person_hydration(0, "0x01", "Alice")])].into(),
+            )),
+            tuple_proof: true,
+            tuple_response_override: None,
+            close_failure: None,
+            forged_early_stop: None,
+            forged_underreported_stats: None,
+            proof_capability_lock: Some(Arc::clone(&proof_capability_lock)),
+        };
+        (
+            Database::with_backend(Box::new(backend), "test"),
+            events,
+            proof_capability_lock,
+        )
     }
 
     fn match_code(error: &OrmError) -> &str {
@@ -3296,6 +4741,46 @@ mod tests {
             assert!(stage_error.details().is_empty());
             assert!(!stage_error.to_string().contains("top-secret"));
         }
+    }
+
+    #[tokio::test]
+    async fn drained_decode_failure_is_canonical_and_redacted_before_cleanup_warning() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_root_request(&registry, |root| MatchOperation::CountBy { root }),
+        )
+        .unwrap();
+        let sentinel = "credential=top-secret";
+        let malformed = AnswerItem::Row(serde_json::json!({
+            "bindings": [{"binding": sentinel, "concept_id": "0x01"}],
+            "satisfied_role_edges": [],
+        }));
+        let (database, events) = database_with_close_failure(
+            CapabilitySet::all(),
+            vec![Ok(vec![malformed])],
+            vec![],
+            Some(format!("close {sentinel}")),
+        );
+
+        let error = database
+            .execute_match(&registry, &validated)
+            .await
+            .unwrap_err();
+        let canonical = match_error(&error);
+        assert_eq!(canonical.category(), MatchErrorCategory::ResultDecode);
+        assert_eq!(canonical.code().as_str(), "malformed_root_row");
+        assert_eq!(
+            canonical.message(),
+            "provider evidence failed canonical typed match decoding"
+        );
+        assert_eq!(
+            canonical.path().segments(),
+            &[MatchErrorPathSegment::ProviderEvidence]
+        );
+        assert!(canonical.details().is_empty());
+        assert!(!error.to_string().contains(sentinel));
+        assert_eq!(events.lock().unwrap().closes, 1);
     }
 
     #[test]
@@ -3371,7 +4856,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_close_failure_returns_no_result_and_is_canonical() {
+    async fn owned_close_failure_after_success_preserves_released_error_precedence() {
         let registry = person_registry();
         let validated = validate_match_request(
             &registry,
@@ -3388,18 +4873,8 @@ mod tests {
         let error = database
             .execute_match(&registry, &validated)
             .await
-            .unwrap_err();
-        let canonical = match_error(&error);
-
-        assert_eq!(canonical.category(), MatchErrorCategory::Provider);
-        assert_eq!(
-            canonical.code().as_str(),
-            "provider_transaction_close_failed"
-        );
-        assert_eq!(
-            canonical.path().segments(),
-            &[MatchErrorPathSegment::ProviderEvidence]
-        );
+            .expect_err("released V1 returns a close failure after successful execution");
+        assert_eq!(match_code(&error), "provider_transaction_close_failed");
         assert!(!error.to_string().contains("top-secret"));
         let events = events.lock().unwrap();
         assert_eq!(events.opens, 1);
@@ -3489,7 +4964,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn count_and_exists_use_distinct_root_streams_and_exists_stops_early() {
+    async fn count_and_exists_use_distinct_root_streams_and_exists_reaches_semantic_eof() {
         let registry = person_registry();
         let count = validate_match_request(
             &registry,
@@ -3749,8 +5224,8 @@ mod tests {
             CapabilitySet::all(),
             vec![Ok(vec![
                 solution(&[(0, "0x01")], &[]),
-                solution(&[(0, "0x01")], &[]),
-                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x02")], &[]),
+                solution(&[(0, "0x03")], &[]),
             ])],
             vec![],
         );
@@ -3788,16 +5263,16 @@ mod tests {
             CapabilitySet::all(),
             vec![Ok(vec![
                 solution(&[(0, "0x01")], &[]),
-                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x02")], &[]),
             ])],
-            vec![],
+            vec![Ok(vec![person_rematch("0x01", "Alice")])],
         );
         let error = short
             .execute_match_with_limits(
                 &registry,
                 &page,
                 MatchExecutionLimits::tightened(
-                    2,
+                    4,
                     4096,
                     Duration::from_secs(1),
                     AnswerCancellation::default(),
@@ -3805,8 +5280,8 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(match_code(&error), "solution_scan_limit");
-        assert!(events.lock().unwrap().rematch_statements.is_empty());
+        assert_eq!(match_code(&error), "selected_root_set_mismatch");
+        assert_eq!(events.lock().unwrap().rematch_statements.len(), 1);
         assert_eq!(events.lock().unwrap().closes, 1);
     }
 
@@ -3979,6 +5454,7 @@ mod tests {
             vec![Ok(vec![
                 person_hydration(0, "0x01", "Alice"),
                 person_hydration(0, "0x02", "Bob"),
+                person_hydration(0, "0x03", "Cara"),
             ])],
         );
         let error = multiple
@@ -3986,11 +5462,16 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(match_code(&error), "not_unique");
-        assert_eq!(events.lock().unwrap().closes, 1);
+        let events = events.lock().unwrap();
+        assert!(events.tuple_statements.is_empty());
+        assert_eq!(events.solution_answers, 2);
+        assert_eq!(events.solution_statements[0].offset, 0);
+        assert_eq!(events.solution_statements[0].limit, 2);
+        assert_eq!(events.closes, 1);
     }
 
     #[tokio::test]
-    async fn hidden_witness_duplicates_collapse_before_one_batched_hydration() {
+    async fn hidden_witness_duplicates_drain_released_scan_before_hydration_and_proof() {
         let registry = person_registry();
         registry
             .register_entity(EntityDescriptor {
@@ -4049,12 +5530,16 @@ mod tests {
                 "roles": [],
             }))
         };
+        let company_iids = (0_u16..64)
+            .map(|index| format!("0x{:02x}", 0x10 + index))
+            .collect::<Vec<_>>();
+        let hidden_witnesses = company_iids
+            .iter()
+            .map(|company_iid| solution(&[(0, "0x01"), (1, company_iid)], &[]))
+            .collect();
         let (database, events) = database(
             CapabilitySet::all(),
-            vec![Ok(vec![
-                solution(&[(0, "0x01"), (1, "0x10")], &[]),
-                solution(&[(0, "0x01"), (1, "0x11")], &[]),
-            ])],
+            vec![Ok(hidden_witnesses)],
             vec![Ok(vec![
                 person_hydration(0, "0x01", "Alice"),
                 company("0x10", "Acme"),
@@ -4067,11 +5552,781 @@ mod tests {
         };
         assert_eq!(rows.len(), 1);
         let events = events.lock().unwrap();
+        assert_eq!(events.tuple_answers, 1);
+        assert_eq!(events.solution_answers, 64);
         assert_eq!(events.hydration_statements.len(), 1);
         assert_eq!(
             events.hydration_statements[0].targets[1].concept_ids,
             vec!["0x10"]
         );
+    }
+
+    #[tokio::test]
+    async fn exactly_one_cardinality_uses_the_complete_public_tuple() {
+        let registry = person_registry();
+        registry
+            .register_entity(EntityDescriptor {
+                type_name: "company".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![key("name")],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        let person = BindingId::new(0);
+        let company = BindingId::new(1);
+        let request = MatchRequest::v1(
+            MatchPlan {
+                bindings: vec![
+                    MatchBinding {
+                        id: person,
+                        descriptor: registry.descriptor_id("person").unwrap(),
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                    MatchBinding {
+                        id: company,
+                        descriptor: registry.descriptor_id("company").unwrap(),
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                ],
+                predicate: None,
+                allowed_cross_joins: BTreeSet::from([BindingPair::new(person, company)]),
+            },
+            MatchOperation::FetchRows {
+                output: FetchShape::Positional {
+                    slots: vec![
+                        FetchSlot::One { binding: person },
+                        FetchSlot::One { binding: company },
+                    ],
+                },
+                order: vec![],
+                window: Window {
+                    offset: 0,
+                    limit: 1,
+                },
+                cardinality: RowCardinality::ExactlyOne,
+            },
+        );
+        let validated = validate_match_request(&registry, request).unwrap();
+        let (database, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![
+                solution(&[(0, "0x01"), (1, "0x10")], &[]),
+                solution(&[(0, "0x01"), (1, "0x11")], &[]),
+            ])],
+            vec![Ok(vec![
+                person_hydration(0, "0x01", "Alice"),
+                AnswerItem::Document(serde_json::json!({
+                    "binding": 1,
+                    "concept_id": "0x10",
+                    "concrete_type": "company",
+                    "kind": "entity",
+                    "attributes": [
+                        {"field": "name", "value_type": "string", "values": ["Acme"]}
+                    ],
+                    "roles": [],
+                })),
+                AnswerItem::Document(serde_json::json!({
+                    "binding": 1,
+                    "concept_id": "0x11",
+                    "concrete_type": "company",
+                    "kind": "entity",
+                    "attributes": [
+                        {"field": "name", "value_type": "string", "values": ["Beta"]}
+                    ],
+                    "roles": [],
+                })),
+            ])],
+        );
+
+        let error = database
+            .execute_match(&registry, &validated)
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "not_unique");
+        let events = events.lock().unwrap();
+        assert!(events.tuple_statements.is_empty());
+        assert_eq!(events.solution_answers, 2);
+        assert_eq!(events.hydration_answers, 3);
+        assert_eq!(events.hydration_statements.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn provider_limits_are_finite_and_error_suffix_drain_is_bounded() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_request(&registry, RowCardinality::BoundedMany, 100),
+        )
+        .unwrap();
+
+        let mut hostile_suffix = vec![AnswerItem::Row(serde_json::json!({"malformed": true}))];
+        hostile_suffix
+            .extend((0..100).map(|index| solution(&[(0, &format!("0x{:x}", index + 1))], &[])));
+        let (malformed, events) = database(CapabilitySet::all(), vec![Ok(hostile_suffix)], vec![]);
+        let error = malformed
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    100,
+                    4096,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "malformed_solution_row");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!(
+                observed.solution_answers,
+                usize::try_from(MAX_ERROR_DRAIN_ITEMS).unwrap() + 1
+            );
+            assert_eq!(observed.solution_limits, [(100, 4096)]);
+            assert_eq!(observed.closes, 1);
+        }
+
+        let (byte_limited, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![],
+        );
+        let error = byte_limited
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    10,
+                    1,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "response_byte_limit");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!(observed.solution_limits, [(10, 1)]);
+            assert!(
+                observed
+                    .solution_limits
+                    .iter()
+                    .all(|(_, max_bytes)| *max_bytes != u64::MAX)
+            );
+            assert_eq!(observed.closes, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_error_drain_does_not_close_caller_owned_context() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_request(&registry, RowCardinality::BoundedMany, 100),
+        )
+        .unwrap();
+        let mut hostile_suffix = vec![AnswerItem::Row(serde_json::json!({"malformed": true}))];
+        hostile_suffix
+            .extend((0..100).map(|index| solution(&[(0, &format!("0x{:x}", index + 1))], &[])));
+        let (database, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(hostile_suffix), Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![Ok(vec![person_hydration(0, "0x01", "Alice")])],
+        );
+        let context = database.transaction_context(TxType::Read).await.unwrap();
+
+        let error = context
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    100,
+                    4096,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "malformed_solution_row");
+        assert_eq!(events.lock().unwrap().closes, 0);
+
+        context.execute_match(&registry, &validated).await.unwrap();
+        assert_eq!(events.lock().unwrap().closes, 0);
+        context.close().await.unwrap();
+        assert_eq!(events.lock().unwrap().closes, 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_exactly_one_uses_only_released_statement_item_and_byte_budgets() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_request(&registry, RowCardinality::ExactlyOne, 1),
+        )
+        .unwrap();
+        let selected = solution(&[(0, "0x01")], &[]);
+        let hydrated = person_hydration(0, "0x01", "Alice");
+        let selected_bytes = selected.encoded_bytes().unwrap();
+        let hydrated_bytes = hydrated.encoded_bytes().unwrap();
+        let released_bytes = selected_bytes.checked_add(hydrated_bytes).unwrap();
+        let (successful, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![selected])],
+            vec![Ok(vec![hydrated])],
+        );
+        let result = successful
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    2,
+                    released_bytes,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                )
+                .with_max_statements(2),
+            )
+            .await
+            .unwrap();
+        let super::super::result::MatchResult::Rows { rows } = result.result() else {
+            panic!("expected rows")
+        };
+        assert_eq!(rows.len(), 1);
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!((observed.tuple_answers, observed.solution_answers), (0, 1));
+            assert_eq!(observed.hydration_answers, 1);
+            assert!(observed.tuple_limits.is_empty());
+            assert_eq!(observed.solution_limits, [(2, released_bytes)]);
+            assert_eq!(observed.hydration_limits, [(1, hydrated_bytes)]);
+            assert!(
+                observed
+                    .solution_limits
+                    .iter()
+                    .chain(&observed.hydration_limits)
+                    .all(|(_, max_bytes)| *max_bytes != u64::MAX)
+            );
+            assert_eq!(observed.closes, 1);
+        }
+
+        let (item_limited, item_events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![Ok(vec![person_hydration(0, "0x01", "Alice")])],
+        );
+        let error = item_limited
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    1,
+                    released_bytes,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                )
+                .with_max_statements(2),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "solution_scan_limit");
+        {
+            let observed = item_events.lock().unwrap();
+            assert_eq!((observed.tuple_answers, observed.solution_answers), (0, 1));
+            assert!(observed.hydration_limits.is_empty());
+        }
+
+        let (byte_limited, byte_events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![Ok(vec![person_hydration(0, "0x01", "Alice")])],
+        );
+        let error = byte_limited
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    2,
+                    released_bytes - 1,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                )
+                .with_max_statements(2),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "response_byte_limit");
+        let observed = byte_events.lock().unwrap();
+        assert_eq!((observed.tuple_answers, observed.solution_answers), (0, 1));
+        assert_eq!(observed.hydration_limits[0].1, hydrated_bytes - 1);
+    }
+
+    #[tokio::test]
+    async fn exactly_one_released_budget_errors_precede_internal_tuple_proof() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_request(&registry, RowCardinality::ExactlyOne, 1),
+        )
+        .unwrap();
+        let two_solutions = || {
+            Ok(vec![
+                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x02")], &[]),
+            ])
+        };
+
+        let (owned, events) = database(CapabilitySet::all(), vec![two_solutions()], vec![]);
+        let error = owned
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::default().with_max_statements(0),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "statement_count_limit");
+        {
+            let observed = events.lock().unwrap();
+            assert!(observed.solution_statements.is_empty());
+            assert!(observed.tuple_statements.is_empty());
+            assert_eq!(observed.closes, 1);
+        }
+
+        let (item_limited, events) = database(CapabilitySet::all(), vec![two_solutions()], vec![]);
+        let error = item_limited
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    0,
+                    4096,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "processed_item_limit");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!(observed.solution_answers, 1);
+            assert!(observed.tuple_statements.is_empty());
+            assert_eq!(observed.closes, 1);
+        }
+
+        let (empty_item_limited, events) = database(CapabilitySet::all(), vec![Ok(vec![])], vec![]);
+        let error = empty_item_limited
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    0,
+                    4096,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "solution_scan_limit");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!(observed.solution_statements.len(), 1);
+            assert!(observed.tuple_statements.is_empty());
+            assert_eq!(observed.closes, 1);
+        }
+
+        let (byte_limited, events) = database(CapabilitySet::all(), vec![two_solutions()], vec![]);
+        let error = byte_limited
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    10,
+                    0,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "response_byte_limit");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!(observed.solution_answers, 1);
+            assert!(observed.tuple_statements.is_empty());
+            assert_eq!(observed.closes, 1);
+        }
+
+        let first = solution(&[(0, "0x01")], &[]);
+        let second = solution(&[(0, "0x02")], &[]);
+        let first_bytes = first.encoded_bytes().unwrap();
+        let (second_row_byte_limited, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![first.clone(), second])],
+            vec![],
+        );
+        let error = second_row_byte_limited
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    10,
+                    first_bytes,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "response_byte_limit");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!(observed.solution_answers, 2);
+            assert!(observed.hydration_statements.is_empty());
+            assert!(observed.tuple_statements.is_empty());
+            assert_eq!(observed.closes, 1);
+        }
+
+        let (malformed_second_row, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![
+                first,
+                AnswerItem::Row(serde_json::json!({"bindings": []})),
+            ])],
+            vec![],
+        );
+        let error = malformed_second_row
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    10,
+                    4096,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "missing_provider_binding");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!(observed.solution_answers, 2);
+            assert!(observed.hydration_statements.is_empty());
+            assert!(observed.tuple_statements.is_empty());
+            assert_eq!(observed.closes, 1);
+        }
+
+        let (borrowed, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![Ok(vec![person_hydration(0, "0x01", "Alice")])],
+        );
+        let context = borrowed.transaction_context(TxType::Read).await.unwrap();
+        let error = context
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::default().with_max_statements(0),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "statement_count_limit");
+        {
+            let observed = events.lock().unwrap();
+            assert!(observed.solution_statements.is_empty());
+            assert!(observed.tuple_statements.is_empty());
+            assert_eq!(observed.closes, 0);
+        }
+        context.execute_match(&registry, &validated).await.unwrap();
+        assert_eq!(events.lock().unwrap().closes, 0);
+        context.close().await.unwrap();
+        assert_eq!(events.lock().unwrap().closes, 1);
+
+        let error = context
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::default().with_max_statements(0),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "statement_count_limit");
+    }
+
+    #[tokio::test]
+    async fn local_observation_prevents_custom_backend_budget_underreporting() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_request(&registry, RowCardinality::ExactlyOne, 1),
+        )
+        .unwrap();
+        let selected = solution(&[(0, "0x01")], &[]);
+        let hydrated = person_hydration(0, "0x01", "Alice");
+        let selected_bytes = selected.encoded_bytes().unwrap();
+        let hydrated_bytes = hydrated.encoded_bytes().unwrap();
+        let released_bytes = selected_bytes.checked_add(hydrated_bytes).unwrap();
+
+        let (item_limited, item_events) = database_with_underreported_stats(
+            CapabilitySet::all(),
+            vec![Ok(vec![selected.clone()])],
+            vec![Ok(vec![hydrated.clone()])],
+            RecordedAnswerKind::Solution,
+        );
+        let error = item_limited
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    1,
+                    released_bytes,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                )
+                .with_max_statements(2),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "solution_scan_limit");
+        assert!(item_events.lock().unwrap().hydration_limits.is_empty());
+
+        let (byte_limited, byte_events) = database_with_underreported_stats(
+            CapabilitySet::all(),
+            vec![Ok(vec![selected])],
+            vec![Ok(vec![hydrated])],
+            RecordedAnswerKind::Solution,
+        );
+        let error = byte_limited
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    2,
+                    released_bytes - 1,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                )
+                .with_max_statements(2),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "response_byte_limit");
+        assert_eq!(
+            byte_events.lock().unwrap().hydration_limits[0].1,
+            hydrated_bytes - 1
+        );
+    }
+
+    #[tokio::test]
+    async fn hidden_witness_tuple_proof_rejects_oversized_provider_rows_after_released_evidence() {
+        let registry = person_registry();
+        let validated =
+            validate_match_request(&registry, person_with_hidden_witness_request(&registry))
+                .unwrap();
+        let LoweredMatchExecution::ExactlyOneBy { selection, .. } =
+            lower_match_execution(&registry, &validated).unwrap()
+        else {
+            panic!("expected exactly-one lowering")
+        };
+        let proof_limit = exactly_one_proof_byte_limit(&registry, &selection).unwrap();
+        let oversized = AnswerItem::Row(serde_json::json!({
+            "bindings": [{"binding": 0, "concept_id": "0x02"}],
+            "satisfied_role_edges": [],
+            "padding": "x".repeat(usize::try_from(proof_limit).unwrap()),
+        }));
+        let (database, events) = database_with_tuple_response(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01"), (1, "0x10")], &[])])],
+            vec![Ok(vec![
+                person_hydration(0, "0x01", "Alice"),
+                person_hydration(1, "0x10", "Witness"),
+            ])],
+            Ok(vec![oversized]),
+        );
+
+        let error = database
+            .execute_match(&registry, &validated)
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "response_byte_limit");
+        let observed = events.lock().unwrap();
+        assert_eq!(observed.tuple_limits, [(2, proof_limit)]);
+        assert_eq!(observed.solution_answers, 1);
+        assert_eq!(observed.hydration_answers, 2);
+        assert_eq!(observed.tuple_answers, 1);
+        assert_eq!(observed.closes, 1);
+    }
+
+    #[tokio::test]
+    async fn custom_typed_backend_keeps_released_exactly_one_full_scan_path() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_request(&registry, RowCardinality::ExactlyOne, 1),
+        )
+        .unwrap();
+        let selected = solution(&[(0, "0x01")], &[]);
+        let hydrated = person_hydration(0, "0x01", "Alice");
+        let max_bytes = selected
+            .encoded_bytes()
+            .unwrap()
+            .checked_add(hydrated.encoded_bytes().unwrap())
+            .unwrap();
+        let (database, events) = database_without_tuple_proof(
+            CapabilitySet::all(),
+            vec![Ok(vec![selected])],
+            vec![Ok(vec![hydrated])],
+        );
+
+        let result = database
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    2,
+                    max_bytes,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                )
+                .with_max_statements(2),
+            )
+            .await
+            .unwrap();
+        let super::super::result::MatchResult::Rows { rows } = result.result() else {
+            panic!("expected rows")
+        };
+        assert_eq!(rows.len(), 1);
+        let observed = events.lock().unwrap();
+        assert!(observed.tuple_statements.is_empty());
+        assert_eq!(observed.solution_statements.len(), 1);
+        assert_eq!(observed.hydration_statements.len(), 1);
+        assert_eq!(observed.closes, 1);
+    }
+
+    #[tokio::test]
+    async fn every_selected_stream_rejects_forged_early_stop_before_accepting_evidence() {
+        let registry = person_registry();
+
+        let bounded = validate_match_request(
+            &registry,
+            person_request(&registry, RowCardinality::BoundedMany, 2),
+        )
+        .unwrap();
+        let (database, events) = database_with_forged_early_stop(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![Ok(vec![person_hydration(0, "0x01", "Alice")])],
+            RecordedAnswerKind::Solution,
+        );
+        let error = database
+            .execute_match(&registry, &bounded)
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "provider_stream_not_exhausted");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!(observed.solution_answers, 1);
+            assert!(observed.hydration_statements.is_empty());
+            assert_eq!(observed.closes, 1);
+        }
+
+        let count = validate_match_request(
+            &registry,
+            person_root_request(&registry, |root| MatchOperation::CountBy { root }),
+        )
+        .unwrap();
+        let (database, events) = database_with_forged_early_stop(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![],
+            RecordedAnswerKind::Root,
+        );
+        let error = database.execute_match(&registry, &count).await.unwrap_err();
+        assert_eq!(match_code(&error), "provider_stream_not_exhausted");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!(observed.root_answers, 1);
+            assert_eq!(observed.closes, 1);
+        }
+
+        let page =
+            validate_match_request(&registry, person_page_request(&registry, false)).unwrap();
+        let (database, events) = database_with_forged_early_stop(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![Ok(vec![person_rematch("0x01", "Alice")])],
+            RecordedAnswerKind::Rematch,
+        );
+        let error = database.execute_match(&registry, &page).await.unwrap_err();
+        assert_eq!(match_code(&error), "provider_stream_not_exhausted");
+        {
+            let observed = events.lock().unwrap();
+            assert_eq!((observed.root_answers, observed.rematch_answers), (1, 1));
+            assert_eq!(observed.closes, 1);
+        }
+
+        let (database, events) = database_with_forged_early_stop(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![Ok(vec![person_hydration(0, "0x01", "Alice")])],
+            RecordedAnswerKind::Hydration,
+        );
+        let error = database
+            .execute_match(&registry, &bounded)
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "provider_stream_not_exhausted");
+        let observed = events.lock().unwrap();
+        assert_eq!(
+            (observed.solution_answers, observed.hydration_answers),
+            (1, 1)
+        );
+        assert_eq!(observed.closes, 1);
+    }
+
+    #[tokio::test]
+    async fn tightened_item_ceiling_keeps_released_solution_scan_error_before_forged_stop() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_request(&registry, RowCardinality::BoundedMany, 2),
+        )
+        .unwrap();
+        let (database, events) = database_with_forged_early_stop(
+            CapabilitySet::all(),
+            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![],
+            RecordedAnswerKind::Solution,
+        );
+
+        let error = database
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    1,
+                    4096,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(match_code(&error), "solution_scan_limit");
+        let observed = events.lock().unwrap();
+        assert_eq!(observed.solution_answers, 1);
+        assert!(observed.hydration_statements.is_empty());
+        assert_eq!(observed.closes, 1);
     }
 
     #[tokio::test]
@@ -4112,7 +6367,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attribute_budget_rejects_the_first_over_limit_document_before_another_read() {
+    async fn full_projection_small_window_over_hard_ceiling_reads_only_its_finite_prefix() {
+        let registry = person_registry();
+        let mut request = person_request(&registry, RowCardinality::BoundedMany, 1);
+        let MatchOperation::FetchRows { window, .. } = &mut request.operation else {
+            unreachable!()
+        };
+        window.offset = 2;
+        let validated = validate_match_request(&registry, request).unwrap();
+        let solutions = (1..=MAX_PROCESSED_ITEMS + 1)
+            .map(|index| {
+                let concept_id = format!("0x{index:x}");
+                solution(&[(0, &concept_id)], &[])
+            })
+            .collect::<Vec<_>>();
+        let (database, events) = database_without_tuple_proof(
+            CapabilitySet::all(),
+            vec![Ok(solutions)],
+            vec![Ok(vec![
+                person_hydration(0, "0x1", "Alice"),
+                person_hydration(0, "0x2", "Bob"),
+                person_hydration(0, "0x3", "Cara"),
+            ])],
+        );
+
+        let result = database.execute_match(&registry, &validated).await.unwrap();
+        let super::super::result::MatchResult::Rows { rows } = result.result() else {
+            panic!("expected rows")
+        };
+        let super::super::result::SlotValue::One(person) = &rows[0].slots()[0] else {
+            panic!("expected singular slot")
+        };
+        assert_eq!(person.concept_id().as_str(), "0x3");
+        let observed = events.lock().unwrap();
+        assert_eq!(observed.solution_answers, 3);
+        let statement = &observed.solution_statements[0];
+        assert_eq!(statement.offset, 0);
+        assert_eq!(statement.limit, 3);
+        assert!(!statement.order.is_empty());
+        assert!(statement.order.iter().all(|order| {
+            statement
+                .fields
+                .iter()
+                .find(|field| field.id == order.field)
+                .is_some_and(|field| statement.projection.contains(&field.owner))
+        }));
+        assert_eq!(observed.solution_limits[0].0, 3);
+        assert_eq!(observed.hydration_answers, 3);
+        assert_eq!(observed.closes, 1);
+    }
+
+    #[tokio::test]
+    async fn attribute_budget_keeps_first_error_while_draining_hydration_to_eof() {
         let registry = DescriptorRegistry::new();
         registry
             .register_entity(EntityDescriptor {
@@ -4138,7 +6444,7 @@ mod tests {
             .unwrap();
         let validated = validate_match_request(
             &registry,
-            person_request(&registry, RowCardinality::ExactlyOne, 1),
+            person_request(&registry, RowCardinality::BoundedMany, 2),
         )
         .unwrap();
         let over_limit = AnswerItem::Document(serde_json::json!({
@@ -4154,10 +6460,13 @@ mod tests {
         }));
         let (database, events) = database(
             CapabilitySet::all(),
-            vec![Ok(vec![solution(&[(0, "0x01")], &[])])],
+            vec![Ok(vec![
+                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x02")], &[]),
+            ])],
             vec![Ok(vec![
                 over_limit,
-                person_hydration(0, "0x01", "must-not-be-read"),
+                person_hydration(0, "0x02", "drained-after-first-error"),
             ])],
         );
         let error = database
@@ -4181,7 +6490,7 @@ mod tests {
             MatchErrorCategory::ResourceLimit
         );
         let events = events.lock().unwrap();
-        assert_eq!((events.solution_answers, events.hydration_answers), (1, 1));
+        assert_eq!((events.solution_answers, events.hydration_answers), (2, 2));
         assert_eq!(events.closes, 1);
     }
 
@@ -4344,7 +6653,7 @@ mod tests {
                     rematch(("0x01", "Alice"), ("0x11", "must-not-be-read")),
                 ],
                 1,
-                2,
+                3,
             ),
             (
                 true,
@@ -4356,7 +6665,7 @@ mod tests {
                     rematch(("0x01", "Alice"), ("0x12", "must-not-be-read")),
                 ],
                 1,
-                3,
+                4,
             ),
             (
                 true,
@@ -4367,7 +6676,7 @@ mod tests {
                     rematch(("0x02", "Bob"), ("0x11", "must-not-be-read")),
                 ],
                 2,
-                2,
+                3,
             ),
         ];
 
@@ -4622,7 +6931,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn owned_deadline_polls_close_once_but_bounds_a_pending_close() {
+    async fn owned_pending_close_after_success_preserves_released_deadline_error() {
         let registry = person_registry();
         let validated = validate_match_request(
             &registry,
@@ -4646,12 +6955,57 @@ mod tests {
         });
 
         state.entered.notified().await;
-        tokio::time::advance(Duration::from_secs(5)).await;
+        tokio::time::advance(OWNED_TRANSACTION_CLOSE_GRACE).await;
+        tokio::task::yield_now().await;
+        assert!(!execution.is_finished());
+        tokio::time::advance(Duration::from_secs(4)).await;
         tokio::task::yield_now().await;
         assert!(execution.is_finished());
         let error = execution.await.unwrap().unwrap_err();
         assert_eq!(match_code(&error), "transaction_deadline_exceeded");
         assert_eq!(state.statements.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_statement_dispatches_close_without_extending_the_deadline() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_root_request(&registry, |root| MatchOperation::CountBy { root }),
+        )
+        .unwrap();
+        let (database, state) = pending_provider_database(PendingProviderPhase::StatementThenClose);
+        let execution = tokio::spawn(async move {
+            database
+                .execute_match_with_limits(
+                    &registry,
+                    &validated,
+                    MatchExecutionLimits::tightened(
+                        10,
+                        4096,
+                        Duration::from_secs(5),
+                        AnswerCancellation::default(),
+                    ),
+                )
+                .await
+        });
+
+        state.entered.notified().await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+        state.entered.notified().await;
+        tokio::task::yield_now().await;
+        assert!(execution.is_finished());
+        let error = execution.await.unwrap().unwrap_err();
+        assert_eq!(match_code(&error), "transaction_deadline_exceeded");
+        assert_eq!(state.statements.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 1);
+
+        // The detached close retains a bounded lifetime after the public
+        // deadline; advancing its grace must not re-enter provider cleanup.
+        tokio::time::advance(OWNED_TRANSACTION_CLOSE_GRACE).await;
+        tokio::task::yield_now().await;
         assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 1);
     }
 
@@ -4702,42 +7056,139 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_heavy_scan_ceiling_never_becomes_short_success_or_false_exact_one() {
-        let registry = person_registry();
-        for (cardinality, limit) in [
-            (RowCardinality::ExactlyOne, 1),
-            (RowCardinality::BoundedMany, 2),
-        ] {
-            let validated =
-                validate_match_request(&registry, person_request(&registry, cardinality, limit))
-                    .unwrap();
-            let (database, events) = database(
-                CapabilitySet::all(),
-                vec![Ok(vec![
-                    solution(&[(0, "0x01")], &[]),
-                    solution(&[(0, "0x01")], &[]),
-                    solution(&[(0, "0x01")], &[]),
-                ])],
-                vec![],
-            );
-            let error = database
+    async fn borrowed_terminal_exactly_one_skips_redundant_tuple_proof_lock_wait() {
+        let registry = Arc::new(person_registry());
+        let validated = Arc::new(
+            validate_match_request(
+                &registry,
+                person_request(&registry, RowCardinality::ExactlyOne, 1),
+            )
+            .unwrap(),
+        );
+        let (database, events, state) = database_with_proof_capability_lock();
+        let context = database.transaction_context(TxType::Read).await.unwrap();
+        let execution_context = context.clone();
+        let execution_registry = Arc::clone(&registry);
+        let execution_validated = Arc::clone(&validated);
+        let execution = tokio::spawn(async move {
+            execution_context
                 .execute_match_with_limits(
-                    &registry,
-                    &validated,
+                    &execution_registry,
+                    &execution_validated,
                     MatchExecutionLimits::tightened(
-                        3,
+                        10,
                         4096,
-                        Duration::from_secs(1),
+                        Duration::from_secs(5),
                         AnswerCancellation::default(),
                     ),
                 )
                 .await
-                .unwrap_err();
-            assert_eq!(match_code(&error), "solution_scan_limit");
-            let events = events.lock().unwrap();
-            assert!(events.hydration_statements.is_empty());
-            assert_eq!(events.closes, 1);
-        }
+        });
+
+        // Queue a caller-owned raw query while hydration still holds the
+        // context mutex. Tokio's FIFO mutex grants that waiter the lock next,
+        // but the terminal DISTINCT stream has already proved cardinality and
+        // selected execution must return without reacquiring the mutex.
+        state.hydration_entered.notified().await;
+        let blocker_context = context.clone();
+        let blocker =
+            tokio::spawn(async move { blocker_context.query("match $x isa thing;").await });
+        tokio::task::yield_now().await;
+        state.resume_hydration.notify_one();
+        state.blocker_entered.notified().await;
+
+        let result = execution.await.unwrap().unwrap();
+        let super::super::result::MatchResult::Rows { rows } = result.result() else {
+            panic!("expected rows")
+        };
+        assert_eq!(rows.len(), 1);
+
+        blocker.abort();
+        let _cancelled = blocker.await;
+        assert!(context.supports_exactly_one_tuple_proof().await.unwrap());
+        let events = events.lock().unwrap();
+        assert_eq!(events.solution_statements.len(), 1);
+        assert_eq!(events.hydration_statements.len(), 1);
+        assert!(events.tuple_statements.is_empty());
+        assert_eq!(events.closes, 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_heavy_bounded_many_scan_ceiling_never_becomes_short_success() {
+        let registry = person_registry();
+        registry
+            .register_entity(EntityDescriptor {
+                type_name: "company".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![key("name")],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        let person = BindingId::new(0);
+        let company = BindingId::new(1);
+        let validated = validate_match_request(
+            &registry,
+            MatchRequest::v1(
+                MatchPlan {
+                    bindings: vec![
+                        MatchBinding {
+                            id: person,
+                            descriptor: registry.descriptor_id("person").unwrap(),
+                            thing_kind: ThingKind::Entity,
+                            match_mode: MatchMode::Exact,
+                        },
+                        MatchBinding {
+                            id: company,
+                            descriptor: registry.descriptor_id("company").unwrap(),
+                            thing_kind: ThingKind::Entity,
+                            match_mode: MatchMode::Exact,
+                        },
+                    ],
+                    predicate: None,
+                    allowed_cross_joins: BTreeSet::from([BindingPair::new(person, company)]),
+                },
+                MatchOperation::FetchRows {
+                    output: FetchShape::Positional {
+                        slots: vec![FetchSlot::One { binding: person }],
+                    },
+                    order: Vec::new(),
+                    window: Window {
+                        offset: 0,
+                        limit: 2,
+                    },
+                    cardinality: RowCardinality::BoundedMany,
+                },
+            ),
+        )
+        .unwrap();
+        let (database, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![
+                solution(&[(0, "0x01"), (1, "0x10")], &[]),
+                solution(&[(0, "0x01"), (1, "0x11")], &[]),
+                solution(&[(0, "0x01"), (1, "0x12")], &[]),
+            ])],
+            vec![],
+        );
+        let error = database
+            .execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    3,
+                    4096,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&error), "solution_scan_limit");
+        let events = events.lock().unwrap();
+        assert!(events.hydration_statements.is_empty());
+        assert_eq!(events.closes, 1);
     }
 
     #[tokio::test]
@@ -4886,6 +7337,7 @@ mod tests {
         context.execute_match(&registry, &validated).await.unwrap();
         let events = events.lock().unwrap();
         assert_eq!(events.opens, 1);
+        assert!(events.tuple_statements.is_empty());
         assert_eq!(events.solution_statements.len(), 2);
         assert_eq!(events.hydration_statements.len(), 1);
         assert_eq!((events.closes, events.commits, events.rollbacks), (0, 0, 0));

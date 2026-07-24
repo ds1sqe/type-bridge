@@ -5,12 +5,12 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    InputColumn, InputColumnId, OrderDirection, OrderTerm, QueryOperand, QueryOutput, QueryPattern,
-    QueryPlan, ReadStage, decode_query_plan,
+    InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryInvocation, QueryOperand,
+    QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage, decode_query_plan,
 };
 use type_bridge_contract::query_plan_capability_vocabulary;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
-use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 
 fn binding(id: u16, variable: &str) -> AssertionBinding {
     AssertionBinding::new(
@@ -689,6 +689,53 @@ fn try_blocks_export_optional_bindings_and_reject_unsound_shapes() {
     .expect_err("two try bodies sharing a local");
     assert_eq!(error.code().as_str(), "query_plan_try_binding_shared");
 
+    // A negation-local witness cannot poison the mandatory environment of a
+    // try export. In particular, absence has no sort position and therefore
+    // cannot define a stable window boundary.
+    let error = build(
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    person_isa(0),
+                    QueryPattern::Not {
+                        patterns: vec![has_age(0, 1)],
+                    },
+                    QueryPattern::Try {
+                        patterns: vec![has_age(0, 1)],
+                    },
+                ],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+            },
+            ReadStage::Limit { rows: 1 },
+        ],
+        vec![binding_id(0)],
+    )
+    .expect_err("negation-local witness reused as a sorted try export");
+    assert_eq!(error.code().as_str(), "query_plan_try_binding_shared");
+
+    // The same poisoning must not hide duplicate ownership by two try bodies.
+    let error = build(
+        vec![ReadStage::Match {
+            patterns: vec![
+                person_isa(0),
+                QueryPattern::Not {
+                    patterns: vec![has_age(0, 1)],
+                },
+                QueryPattern::Try {
+                    patterns: vec![has_age(0, 1)],
+                },
+                QueryPattern::Try {
+                    patterns: vec![has_age(0, 1)],
+                },
+            ],
+        }],
+        vec![binding_id(0)],
+    )
+    .expect_err("negation-local witness reused by two try bodies");
+    assert_eq!(error.code().as_str(), "query_plan_try_binding_shared");
+
     // Try blocks stay in the root conjunction with a flat first vocabulary.
     let error = build(
         vec![ReadStage::Match {
@@ -925,8 +972,8 @@ fn bounded_reachability_requires_a_finite_root_bound() {
     let reachable = |max_depth: u8| QueryPattern::Reachable {
         max_depth,
         relation: TypeId::new(TypeKind::Relation, "edge").expect("type id"),
-        role_from: RoleId::new("edge", "from").expect("role"),
-        role_to: RoleId::new("edge", "to").expect("role"),
+        role_from: RoleId::new("edge", "origin").expect("role"),
+        role_to: RoleId::new("edge", "destination").expect("role"),
         source: binding_id(0),
         target: binding_id(1),
     };
@@ -986,8 +1033,8 @@ fn bounded_reachability_requires_a_finite_root_bound() {
 }
 
 #[test]
-fn optional_input_columns_are_reserved() {
-    let error = QueryPlan::new(
+fn optional_input_columns_admit_only_typed_values_or_explicit_absence() {
+    let plan = QueryPlan::new(
         vec![binding(0, "person"), binding(1, "age")],
         vec![InputColumn::new(
             InputColumnId::new(0),
@@ -1019,8 +1066,23 @@ fn optional_input_columns_are_reserved() {
         },
         managed_semantics(b"optional-input-fixture"),
     )
-    .expect_err("no transport implements absent input values");
-    assert_eq!(error.code().as_str(), "query_plan_optional_input_reserved");
+    .expect("optional input plan");
+
+    QueryInvocation::new(&plan, QueryOperation::Rows, vec![InputRow::new(vec![None])])
+        .expect("an optional input admits explicit absence");
+    QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![InputRow::new(vec![Some(CanonicalValue::Long(18))])],
+    )
+    .expect("an optional input still admits its exact declared type");
+    let error = QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![InputRow::new(vec![Some(CanonicalValue::Boolean(true))])],
+    )
+    .expect_err("optional does not weaken the declared scalar type");
+    assert_eq!(error.code().as_str(), "query_invocation_value_type");
 }
 
 #[test]
@@ -1052,6 +1114,11 @@ fn caller_limits_recheck_the_whole_plan_structure() {
             |limits: &mut StructuralLimits| limits.selected_slots = 1,
             "query_plan_output_limit",
         ),
+        (
+            "sort terms",
+            |limits: &mut StructuralLimits| limits.order_terms = 0,
+            "query_plan_sort_term_limit",
+        ),
     ] {
         let mut limits = StructuralLimits::CANONICAL;
         apply(&mut limits);
@@ -1060,6 +1127,121 @@ fn caller_limits_recheck_the_whole_plan_structure() {
             .expect_err("stricter limits must reject");
         assert_eq!(error.code().as_str(), code, "{case}");
     }
+}
+
+#[test]
+fn caller_name_limits_cover_document_keys_and_local_bindings() {
+    use type_bridge_contract::id::{FunctionId, Label};
+    use type_bridge_contract::limits::StructuralLimits;
+    use type_bridge_contract::query_plan::{
+        DocumentField, DocumentSource, LocalFunction, LocalReturn, Reducer,
+    };
+
+    let document_plan = QueryPlan::new(
+        vec![binding(0, "p"), binding(1, "a")],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![
+                person_isa(0),
+                QueryPattern::Has {
+                    attribute: binding_id(1),
+                    attribute_id: AttributeId::new("age").expect("attribute id"),
+                    owner: binding_id(0),
+                },
+            ],
+        }],
+        QueryOutput::Documents {
+            fields: vec![DocumentField::new(
+                QueryVariable::new("age").expect("document key"),
+                DocumentSource::Binding {
+                    binding: binding_id(1),
+                },
+            )],
+        },
+        managed_semantics(b"document-name-limit-fixture"),
+    )
+    .expect("canonical document plan");
+
+    let local_plan = QueryPlan::new_with_functions(
+        vec![binding(0, "p"), binding(1, "c")],
+        vec![LocalFunction::new(
+            FunctionId::new("age_count_of").expect("function id"),
+            vec![binding(0, "subject"), binding(1, "age")],
+            vec![Label::new("person").expect("label")],
+            vec![QueryPattern::Has {
+                attribute: binding_id(1),
+                attribute_id: AttributeId::new("age").expect("attribute id"),
+                owner: binding_id(0),
+            }],
+            LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long),
+        )],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![
+                person_isa(0),
+                QueryPattern::FunctionCall {
+                    arguments: vec![QueryOperand::Binding {
+                        binding: binding_id(0),
+                    }],
+                    assigned: binding_id(1),
+                    function: FunctionId::new("age_count_of").expect("function id"),
+                },
+            ],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+        managed_semantics(b"local-name-limit-fixture"),
+    )
+    .expect("canonical local-function plan");
+
+    let mut limits = StructuralLimits::CANONICAL;
+    limits.output_name_bytes = 1;
+    for (case, plan) in [
+        ("document key", &document_plan),
+        ("local binding", &local_plan),
+    ] {
+        let error = plan
+            .check_structural_limits(limits)
+            .expect_err("tightened name limit must cover every name");
+        assert_eq!(error.code().as_str(), "query_plan_name_limit", "{case}");
+    }
+}
+
+#[test]
+fn invocation_row_and_byte_budgets_are_independent_of_output_slots() {
+    use type_bridge_contract::limits::{MAX_INPUT_BYTES, MAX_INPUT_ROWS};
+
+    let plan = full_pipeline_plan();
+    let too_many_rows = (0..=MAX_INPUT_ROWS)
+        .map(|_| InputRow::new(vec![Some(CanonicalValue::Long(1))]))
+        .collect();
+    assert_eq!(
+        QueryInvocation::new(&plan, QueryOperation::Rows, too_many_rows)
+            .expect_err("input rows have their own ceiling")
+            .code()
+            .as_str(),
+        "query_invocation_row_limit",
+    );
+
+    // Input bytes are charged before per-cell type validation. Five bounded
+    // strings exceed the aggregate 4 MiB invocation budget while remaining
+    // far below the canonical string ceiling individually.
+    let chunk = "x".repeat((MAX_INPUT_BYTES / 5) + 32);
+    let too_many_bytes = (0..5)
+        .map(|_| {
+            InputRow::new(vec![Some(CanonicalValue::String(
+                CanonicalString::new(chunk.clone()).expect("bounded input string"),
+            ))])
+        })
+        .collect();
+    assert_eq!(
+        QueryInvocation::new(&plan, QueryOperation::Rows, too_many_bytes)
+            .expect_err("input bytes have their own ceiling")
+            .code()
+            .as_str(),
+        "query_invocation_input_byte_limit",
+    );
 }
 
 #[test]
@@ -1118,4 +1300,31 @@ fn predicate_nodes_charge_one_aggregate_budget_across_local_functions() {
     three_nodes.predicate_nodes = 3;
     plan.check_structural_limits(three_nodes)
         .expect("exact aggregate fits");
+}
+
+#[test]
+fn typeql_reserved_labels_cannot_enter_plan_or_local_function_contracts() {
+    use type_bridge_contract::id::{FunctionId, Label};
+
+    assert_eq!(
+        TypeId::new(TypeKind::Entity, "isa")
+            .expect_err("reserved type label")
+            .code()
+            .as_str(),
+        "malformed_id",
+    );
+    assert_eq!(
+        FunctionId::new("match")
+            .expect_err("reserved schema or local function name")
+            .code()
+            .as_str(),
+        "malformed_id",
+    );
+    assert_eq!(
+        Label::new("return")
+            .expect_err("reserved local-function parameter type")
+            .code()
+            .as_str(),
+        "malformed_id",
+    );
 }

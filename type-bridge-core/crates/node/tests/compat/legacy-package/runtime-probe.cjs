@@ -8,6 +8,9 @@ const expectedPackageRoot = fs.realpathSync(process.env.TYPE_BRIDGE_EXPECTED_PAC
 const sourcePackageRoot = fs.realpathSync(process.env.TYPE_BRIDGE_SOURCE_PACKAGE_ROOT);
 const resolvedEntry = fs.realpathSync(require.resolve("@type-bridge/node"));
 const resolvedTypedEntry = fs.realpathSync(require.resolve("@type-bridge/node/typed"));
+const resolvedRuntimeProjectionEntry = fs.realpathSync(
+  require.resolve("@type-bridge/node/runtime-projection"),
+);
 
 function isWithin(candidate, root) {
   const relative = path.relative(root, candidate);
@@ -30,6 +33,14 @@ assert.ok(
   !isWithin(resolvedTypedEntry, sourcePackageRoot),
   `typed import leaked to the source package: ${resolvedTypedEntry}`,
 );
+assert.ok(
+  isWithin(resolvedRuntimeProjectionEntry, expectedPackageRoot),
+  `runtime-projection import escaped the packed install: ${resolvedRuntimeProjectionEntry}`,
+);
+assert.ok(
+  !isWithin(resolvedRuntimeProjectionEntry, sourcePackageRoot),
+  `runtime-projection import leaked to the source package: ${resolvedRuntimeProjectionEntry}`,
+);
 assert.equal(
   fs.lstatSync(expectedPackageRoot).isSymbolicLink(),
   false,
@@ -48,6 +59,7 @@ assert.equal(
 
 const typeBridge = require("@type-bridge/node");
 const typedBridge = require("@type-bridge/node/typed");
+const runtimeProjection = require("@type-bridge/node/runtime-projection");
 assert.equal(typeof typeBridge.TypedQuery, "function", "root TypedQuery export must load");
 assert.equal(typeof typeBridge.Entity, "function", "root model export must load");
 assert.equal(typeof typeBridge.loadNative, "function", "root native loader must load");
@@ -58,13 +70,18 @@ assert.equal(
 );
 assert.equal(typeof typedBridge.QuerySession, "function", "typed QuerySession export must load");
 assert.equal(typeof typedBridge.references, "function", "typed references export must load");
+assert.equal(
+  typeof runtimeProjection.installRuntimeProjection,
+  "function",
+  "runtime-projection installer export must load",
+);
 const installedManifest = JSON.parse(
   fs.readFileSync(path.join(expectedPackageRoot, "package.json"), "utf8"),
 );
 assert.deepEqual(
   Object.keys(installedManifest.exports),
-  [".", "./typed"],
-  "packed artifact must preserve the legacy root and publish the typed subpath",
+  [".", "./typed", "./runtime-projection"],
+  "packed artifact must preserve the legacy root and publish both additive subpaths",
 );
 assert.deepEqual(
   installedManifest.exports["."],
@@ -83,6 +100,15 @@ assert.deepEqual(
     default: "./dist/typed/index.js",
   },
   "typed export must resolve only to packed dist artifacts",
+);
+assert.deepEqual(
+  installedManifest.exports["./runtime-projection"],
+  {
+    types: "./dist/runtime-projection.d.ts",
+    require: "./dist/runtime-projection.js",
+    default: "./dist/runtime-projection.js",
+  },
+  "runtime-projection export must resolve only to packed dist artifacts",
 );
 
 const native = typeBridge.loadNative();

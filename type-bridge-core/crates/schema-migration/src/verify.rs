@@ -92,6 +92,17 @@ impl MigrationVerifyReport {
     pub const fn observed_semantics(&self) -> Option<&ManagedSemanticSchemaFingerprint> {
         self.observed_semantics.as_ref()
     }
+
+    /// Prepend one independently observed applied-ledger drift.
+    ///
+    /// Backend adapters use this for read-only legacy cutover bindings that
+    /// are outside the canonical V2 journal but remain part of its permanent
+    /// lineage authority. Inserting at the front preserves the documented
+    /// ordering in which applied-ledger defects precede semantic drift.
+    pub fn prepend_applied_ledger_drift(&mut self, diagnostic: Diagnostic) {
+        self.findings
+            .insert(0, MigrationDriftFinding::AppliedLedger { diagnostic });
+    }
 }
 
 /// Verify the migration state triad and report every drift finding.

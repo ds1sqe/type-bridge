@@ -23,6 +23,13 @@ executes against TypeDB, then runs response interceptors.
 cargo run -p type-bridge-server -- --config config.toml
 ```
 
+The complete configuration below enables the additive V2 routes and therefore
+requires:
+
+```bash
+cargo run -p type-bridge-server --features v2-query -- --config config.toml
+```
+
 ### As a library
 
 ```rust,ignore
@@ -70,36 +77,81 @@ let output = pipeline.execute_query(input).await?;
 The server reads a TOML config file:
 
 ```toml
+[server]
+host = "0.0.0.0"     # default
+port = 8080           # default
+
+# Optional HTTPS listener identity. Relative paths resolve from this file.
+[server.tls]
+cert-path = "certs/server.pem"
+key-path = "certs/server.key"
+
 [typedb]
 address = "localhost:1729"
 database = "my_database"
 username = "admin"
 password = "password"
 http_port = 8000              # default; used for connect-time version probing
-server_version = "3.11.5"     # optional; skips HTTP probing for gRPC-only TypeDB
-
-[server]
-host = "0.0.0.0"     # default
-port = 3000           # default
+server_version = "3.12.1"     # optional; skips HTTP probing for gRPC-only TypeDB
+tls = true
+tls-root-ca = "certs/root.pem" # optional; omit for native trust roots
 
 [schema]
-file = "schema.tql"   # optional: path to TypeQL schema
+source_file = "schema.tql"    # optional: path to TypeQL schema
 
 [interceptors]
 enabled = ["audit-log"]
 
-[audit_log]
+[interceptors.audit-log]
 output = "file"                 # "stdout" or "file"
 file_path = "/var/log/audit.jsonl"
 
 [logging]
 level = "info"        # default
-format = "text"       # "text" or "json"
+format = "json"       # default; "text" is also supported
+
+# Additive prepared V2 routes; requires --features v2-query.
+[v2]
+enabled = true
+declared_schema_file = "declared-schema.json"
+scope = "production"
+profile = "typedb-3.12.1/v1"
+authority_mode = "managed" # default; or the explicit "query_only"
 ```
+
+The complete example above is kept as a runtime-parser fixture at
+[`tests/fixtures/runtime-server.toml`](tests/fixtures/runtime-server.toml).
+Set `typedb.tls = true` without `tls-root-ca` to use native trust roots. The
+server validates configured trust and identity files before constructing a
+TypeDB client or binding its listener. The configuration itself must be a
+regular-file target no larger than 1 MiB; special targets and oversized input
+are rejected before parsing.
+
+The V2 surface fails startup unless `declared_schema_file` is canonical, the
+profile exactly matches the connected server, and the selected live authority
+is valid. `managed` requires the complete V2 migration-control schema and its
+free singleton for `scope`. `query_only` requires both V2 and legacy migration
+controls to be absent. It is not an automatic fallback.
+
+A relative `declared_schema_file` is resolved against the configuration-file
+directory. Every path component and the final target must be free of symbolic
+links; the target must be a non-empty regular file no larger than 16 MiB. The
+configuration loader reads and compares the file twice, retains the verified
+bytes as an immutable snapshot, and does not reopen it while serving requests.
+After replacing the file, reload the complete configuration; changing the
+public path field on a loaded value is rejected.
+
+Prepared query execution captures the exact schema export under a bounded
+TypeDB schema-exclusion fence. On TypeDB 3.12.1 that fence uses a `WRITE`
+transaction even though emitted V2 TypeQL is read-only, so the server
+credential needs that transaction permission and an executing request can
+delay concurrent schema work. The default absolute request deadline is 30
+seconds and the hard maximum is five minutes.
 
 ## HTTP API
 
-All endpoints require `Content-Type: application/json`.
+The V1 JSON `POST` endpoints below require
+`Content-Type: application/json`. `GET` routes do not.
 
 ### `POST /query` — execute structured query
 
@@ -131,11 +183,31 @@ All endpoints require `Content-Type: application/json`.
 
 ### `GET /health` — health check
 
-Returns `{"status": "ok", "connected": true}`.
+Returns the stable V1 object
+`{"status":"ok","version":"<package-version>","typedb_connected":true}`.
 
 ### `GET /schema` — loaded schema
 
 Returns the loaded TypeQL schema as JSON, or `500` if no schema is loaded.
+
+### `GET /v2/capabilities` — prepared executor advertisement
+
+When V2 is enabled, returns the canonical capability advertisement after the
+configured transport policy and a bounded live schema/profile check. Discovery
+does not open a query transaction or acquire the migration-control singleton;
+exact fenced admission happens at startup and for the request that executes a
+plan. The advertisement carries the executor epoch and reply-signing identity,
+so clients must obtain it over authenticated TLS for the intended server or
+pin/provision its exact bytes or fingerprint out of band. Plain-HTTP discovery
+does not authenticate that trust input.
+
+### `POST /v2/query` — execute a prepared V2 envelope
+
+Accepts the canonical request bytes produced by the prepared bindings. Replay,
+executor identity, nonce, plan fingerprint, expiry, capability, and byte-budget
+checks run before provider transaction construction. Successes and failures use
+the versioned canonical remote envelope; callers should decode them through the
+one-shot request handle that created the request.
 
 ## Custom interceptors
 
@@ -200,6 +272,7 @@ impl QueryExecutor for MyBackend {
 |---------|---------|--------|
 | `typedb` | yes | Enables `TypeDBClient` through the shared TypeDB runtime |
 | `axum-transport` | yes | Enables HTTP server with Axum |
+| `v2-query` | no | Adds `/v2/capabilities` and `/v2/query`; implies `axum-transport` |
 
 Build as bare library (no transport, no TypeDB):
 

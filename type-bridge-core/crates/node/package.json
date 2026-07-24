@@ -1,6 +1,6 @@
 {
   "name": "@type-bridge/node",
-  "version": "1.5.11",
+  "version": "2.0.0-rc.0",
   "description": "Node.js NAPI facade for the type-bridge Rust ORM runtime",
   "license": "MIT",
   "main": "dist/index.js",
@@ -25,7 +25,8 @@
   "files": [
     "dist",
     "*.node",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "build": "npm run build:native && npm run build:types",

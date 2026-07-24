@@ -7,13 +7,12 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::BindingTarget;
-use type_bridge_schema::SystemSchemaSourceService;
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MAX_WORKSPACE_LOCK_BYTES,
     MigrationV2Directory, OutputDirectory, SchemaSetPath, SecretReference, SecretReferenceService,
     TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace,
-    TypeBridgeWorkspaceServices, WorkspaceLockErrorCode, WorkspaceRoot, WorkspaceServiceError,
-    generate_workspace_lock, verify_workspace_lock,
+    TypeBridgeWorkspaceServices, WorkspaceDirectoryAuthority, WorkspaceLockErrorCode,
+    WorkspaceRoot, WorkspaceServiceError, generate_workspace_lock, verify_workspace_lock,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -91,7 +90,7 @@ fn programmatic_workspace(
     app_label: &str,
     with_output: bool,
 ) -> TypeBridgeWorkspace {
-    let source = SystemSchemaSourceService;
+    let source = WorkspaceDirectoryAuthority::open(directory.root()).unwrap();
     let secrets = Secrets;
     let extensions = Extensions;
     let available = capabilities();
@@ -133,7 +132,7 @@ fn located_workspace(
     source_text: &str,
     bytes: bool,
 ) -> TypeBridgeWorkspace {
-    let source = SystemSchemaSourceService;
+    let source = WorkspaceDirectoryAuthority::open(directory.root()).unwrap();
     let secrets = Secrets;
     let extensions = Extensions;
     let available = capabilities();

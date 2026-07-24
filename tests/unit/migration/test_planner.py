@@ -501,6 +501,52 @@ def test_run_python_migration_receives_db_and_records_state(
     ]
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_run_python_cutover_rejects_before_callback_or_external_state(
+    monkeypatch: pytest.MonkeyPatch,
+    reverse: bool,
+) -> None:
+    """Both Python callback directions guard before run-log or user mutation."""
+    from type_bridge.session import Database
+
+    callbacks: list[str] = []
+
+    def forwards(_db: Any) -> None:
+        callbacks.append("forwards")
+
+    def backwards(_db: Any) -> None:
+        callbacks.append("backwards")
+
+    class PythonMigration(Migration):
+        operations: ClassVar[list[ops.Operation]] = [ops.RunPython(forwards, reverse=backwards)]
+
+    state_manager = _RecordingStateManager()
+    database = object.__new__(Database)
+    executor = MigrationExecutor(
+        db=database,
+        migrations_dir=Path("migrations"),
+        state_manager=state_manager,
+    )
+    loaded = _loaded(PythonMigration(), "app", "0001_python", "csum-py")
+
+    def reject_cutover(_database: object) -> None:
+        raise RuntimeError(
+            "legacy migration writes are permanently disabled for this database after V2 adoption"
+        )
+
+    monkeypatch.setattr(
+        "type_bridge._rust_runtime.require_legacy_writer_open",
+        reject_cutover,
+    )
+
+    with pytest.raises(MigrationError, match="permanently disabled"):
+        executor._execute_loaded_python_path(loaded, reverse=reverse)
+
+    assert callbacks == []
+    assert state_manager.calls == []
+    assert state_manager.run_calls == []
+
+
 def test_run_python_rollback_uses_reverse_callable_and_records_unapplied(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

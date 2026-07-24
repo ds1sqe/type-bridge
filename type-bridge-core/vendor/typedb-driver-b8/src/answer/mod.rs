@@ -1,0 +1,143 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use std::{fmt, sync::Arc};
+
+pub use self::{concept_document::ConceptDocument, concept_row::ConceptRow, json::JSON};
+use crate::{
+    BoxStream, Result,
+    answer::{concept_document::ConceptDocumentHeader, concept_row::ConceptRowHeader},
+};
+
+pub mod concept_document;
+pub mod concept_row;
+mod json;
+
+pub enum QueryAnswer {
+    Ok(QueryType),
+    ConceptRowStream(Arc<ConceptRowHeader>, BoxStream<'static, Result<ConceptRow>>),
+    ConceptDocumentStream(Arc<ConceptDocumentHeader>, BoxStream<'static, Result<ConceptDocument>>),
+}
+
+impl QueryAnswer {
+    /// Retrieves the executed query's type (shared by all elements in this stream).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// query_answer.get_query_type()
+    /// ```
+    pub fn get_query_type(&self) -> QueryType {
+        match self {
+            &QueryAnswer::Ok(query_type) => query_type,
+            QueryAnswer::ConceptRowStream(header, _) => header.query_type,
+            QueryAnswer::ConceptDocumentStream(header, _) => header.query_type,
+        }
+    }
+
+    /// Checks if the <code>QueryAnswer</code> is an <code>Ok</code> response.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// query_answer.is_ok()
+    /// ```
+    pub fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok(_))
+    }
+
+    /// Checks if the <code>QueryAnswer</code> is a <code>ConceptRowStream</code>.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// query_answer.is_row_stream()
+    /// ```
+    pub fn is_row_stream(&self) -> bool {
+        matches!(self, Self::ConceptRowStream(_, _))
+    }
+
+    /// Checks if the <code>QueryAnswer</code> is a <code>ConceptDocumentStream</code>.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// query_answer.is_document_stream()
+    /// ```
+    pub fn is_document_stream(&self) -> bool {
+        matches!(self, Self::ConceptDocumentStream(_, _))
+    }
+
+    /// Unwraps the <code>QueryAnswer</code> into a <code>ConceptRowStream</code>.
+    /// Panics if it is not a <code>ConceptRowStream</code>.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// query_answer.into_rows()
+    /// ```
+    pub fn into_rows(self) -> BoxStream<'static, Result<ConceptRow>> {
+        let Self::ConceptRowStream(_, stream) = self else { panic!("Query answer is not a rows stream.") };
+        stream
+    }
+
+    /// Unwraps the <code>QueryAnswer</code> into a <code>ConceptDocumentStream</code>.
+    /// Panics if it is not a <code>ConceptDocumentStream</code>.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// query_answer.into_documents()
+    /// ```
+    pub fn into_documents(self) -> BoxStream<'static, Result<ConceptDocument>> {
+        if let Self::ConceptDocumentStream(_, stream) = self {
+            stream
+        } else {
+            panic!("Query answer is not a documents stream.")
+        }
+    }
+}
+
+impl fmt::Debug for QueryAnswer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QueryAnswer::Ok(_) => write!(f, "QueryAnswer::Ok"),
+            QueryAnswer::ConceptRowStream(_, _) => write!(f, "QueryAnswer::ConceptRowStream(<stream>)"),
+            QueryAnswer::ConceptDocumentStream(_, _) => write!(f, "QueryAnswer::ConceptDocumentStream(<stream>)"),
+        }
+    }
+}
+
+/// This enum is used to specify the type of the query resulted in this answer.
+///
+/// # Examples
+///
+/// ```rust
+/// concept_row.get_query_type()
+/// ```
+#[repr(C)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
+pub enum QueryType {
+    /// A read-only query (e.g. <code>match</code>).
+    ReadQuery,
+    /// A data-modifying query (e.g. <code>insert</code>, <code>delete</code>, <code>update</code>).
+    WriteQuery,
+    /// A schema-modifying query (e.g. <code>define</code>, <code>undefine</code>, <code>redefine</code>).
+    SchemaQuery,
+}

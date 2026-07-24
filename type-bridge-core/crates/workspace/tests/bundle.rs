@@ -12,15 +12,15 @@ use type_bridge_contract::fingerprint::{
 use type_bridge_contract::managed_scope::{ManagedScopeBinding, ManagedScopeId};
 use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
-use type_bridge_schema::SystemSchemaSourceService;
 use type_bridge_workspace::{
     BundleProjectionContext, BundleVerificationContext, ExtensionRegistryService,
     ExtensionRequirement, MAX_SCHEMA_BUNDLE_BYTES, MigrationV2Directory, OutputDirectory,
     SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION, SCHEMA_BUNDLE_FINGERPRINT_DOMAIN,
     SchemaBundleErrorCode, SchemaSetPath, SecretReference, SecretReferenceService,
     TYPEBRIDGE_SCHEMA_BUNDLE_V1, TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeRuntime,
-    TypeBridgeWorkspace, TypeBridgeWorkspaceServices, WorkspaceRoot, WorkspaceServiceError,
-    build_verified_schema_bundle, decode_verified_schema_bundle, encode_verified_schema_bundle,
+    TypeBridgeWorkspace, TypeBridgeWorkspaceServices, WorkspaceDirectoryAuthority, WorkspaceRoot,
+    WorkspaceServiceError, build_verified_schema_bundle, decode_verified_schema_bundle,
+    encode_verified_schema_bundle,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -93,7 +93,7 @@ fn extension() -> ExtensionRequirement {
 }
 
 fn workspace(directory: &TempDirectory) -> TypeBridgeWorkspace {
-    let source = SystemSchemaSourceService;
+    let source = WorkspaceDirectoryAuthority::open(directory.root()).unwrap();
     let secrets = Secrets;
     let extensions = Extensions;
     let available = capabilities();

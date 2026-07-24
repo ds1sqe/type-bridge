@@ -12,7 +12,7 @@ use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use super::ids::{BoundFieldId, DescriptorId, FieldId};
 use super::model::{
     ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchMode, MatchOperation, MissingOrder,
-    SortDirection, ThingKind,
+    RowCardinality, SortDirection, ThingKind,
 };
 use super::validation::{StableOrderSpec, ValidatedMatchRequest};
 use crate::descriptor::TypeDescriptorRef;
@@ -23,6 +23,10 @@ use crate::value::AttributeValue;
 #[derive(Debug, Clone)]
 pub(crate) enum LoweredMatchExecution {
     FetchRows(TypedFetchRows),
+    ExactlyOneBy {
+        selection: TypedFetchRows,
+        evidence: TypedFetchRows,
+    },
     CountBy {
         root: super::ids::BindingId,
         scan: TypedRootScan,
@@ -54,6 +58,20 @@ pub(crate) fn lower_match_execution(
 ) -> Result<LoweredMatchExecution, MatchError> {
     let request = validated.request();
     match &request.operation {
+        MatchOperation::FetchRows {
+            cardinality: RowCardinality::ExactlyOne,
+            ..
+        } => {
+            let evidence = lower_fetch_rows(registry, validated)?;
+            let mut selection = evidence.clone();
+            selection.order.clear();
+            selection.offset = 0;
+            selection.limit = 2;
+            Ok(LoweredMatchExecution::ExactlyOneBy {
+                selection,
+                evidence,
+            })
+        }
         MatchOperation::FetchRows { .. } => Ok(LoweredMatchExecution::FetchRows(lower_fetch_rows(
             registry, validated,
         )?)),
@@ -721,6 +739,43 @@ mod tests {
             first.predicate,
             Some(TypedMatchPredicate::And { .. })
         ));
+    }
+
+    #[test]
+    fn exactly_one_lowers_every_public_slot_into_one_distinct_tuple_proof() {
+        let registry = registry();
+        let mut request = graph_request(&registry, MatchMode::Subtypes);
+        let MatchOperation::FetchRows {
+            window,
+            cardinality,
+            ..
+        } = &mut request.operation
+        else {
+            unreachable!()
+        };
+        *window = Window {
+            offset: 0,
+            limit: 1,
+        };
+        *cardinality = RowCardinality::ExactlyOne;
+        let validated = validate_match_request(&registry, request).unwrap();
+
+        let LoweredMatchExecution::ExactlyOneBy {
+            selection,
+            evidence,
+        } = lower_match_execution(&registry, &validated).unwrap()
+        else {
+            panic!("expected exactly-one tuple proof")
+        };
+        assert_eq!(selection.projection, vec![2, 0, 1]);
+        assert_eq!(selection.projection, evidence.projection);
+        assert_eq!(selection.targets, evidence.targets);
+        assert_eq!(selection.predicate, evidence.predicate);
+        assert!(selection.distinct);
+        assert!(selection.order.is_empty());
+        assert_eq!(selection.offset, 0);
+        assert_eq!(selection.limit, 2);
+        assert_eq!(evidence.limit, 1);
     }
 
     #[test]

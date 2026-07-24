@@ -14,6 +14,7 @@ use type_bridge_contract::migration::{
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
 };
+use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{ConnectOptions, Database};
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
@@ -24,8 +25,8 @@ use type_bridge_schema_migration::{
     build_verified_migration_apply_plan, typedb_3_12_1_profile,
 };
 use type_bridge_schema_migration_typedb::{
-    TypeDbMigrationStore, VerifiedMigrationCatalog, derived_journal_database_name,
-    partition_typeql_export, require_active_managed_fence,
+    JOURNAL_CONTROL_SCHEMA_TYPEQL, TypeDbMigrationStore, VerifiedMigrationCatalog,
+    derived_journal_database_name, partition_typeql_export, require_active_managed_fence,
 };
 
 fn connection() -> (String, String, String, String, ConnectOptions) {
@@ -39,6 +40,16 @@ fn connection() -> (String, String, String, String, ConnectOptions) {
         options.http_port = port.parse().expect("TYPEDB_HTTP_PORT must be a u16");
     }
     (address, database, username, password, options)
+}
+
+fn alternate_loopback_address(address: &str) -> String {
+    if let Some(port) = address.strip_prefix("localhost:") {
+        format!("127.0.0.1:{port}")
+    } else if let Some(port) = address.strip_prefix("127.0.0.1:") {
+        format!("localhost:{port}")
+    } else {
+        panic!("isolated provider-authority test requires a localhost loopback address")
+    }
 }
 
 async fn databases() -> (Arc<Database>, Arc<Database>) {
@@ -151,14 +162,250 @@ fn additive_policy() -> MigrationSafetyPolicy {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated TypeDB 3.12.1 server"]
+async fn foreign_journal_schema_rejects_without_mutating_either_database() {
+    let (managed, journal) = databases().await;
+    let mut transaction = journal
+        .schema_transaction()
+        .await
+        .expect("schema transaction");
+    transaction
+        .query("define entity journal-collision-probe;")
+        .await
+        .expect("install unrelated user schema");
+    transaction.commit().await.expect("commit unrelated schema");
+    let journal_before = journal.schema_text().await.expect("journal export before");
+    let managed_before = managed.schema_text().await.expect("managed export before");
+    let scope = ManagedScopeId::new("foreign-journal-scope").unwrap();
+    let catalog =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+    let store =
+        TypeDbMigrationStore::new(Arc::clone(&managed), Arc::clone(&journal), scope, catalog)
+            .unwrap();
+
+    let error = store
+        .ensure_control_schema()
+        .await
+        .expect_err("foreign schema must not be claimed");
+    assert_eq!(
+        error.code().as_str(),
+        "migration_typedb_journal_database_not_exclusive"
+    );
+    assert_eq!(journal.schema_text().await.unwrap(), journal_before);
+    assert_eq!(managed.schema_text().await.unwrap(), managed_before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+async fn different_provider_authority_rejects_before_mutating_either_database() {
+    let (managed, journal) = databases().await;
+    let (address, _, username, password, options) = connection();
+    let alternate = alternate_loopback_address(&address);
+    let journal_through_other_authority = Arc::new(
+        Database::connect_with_options(
+            &alternate,
+            journal.database_name(),
+            &username,
+            &password,
+            options,
+        )
+        .await
+        .expect("connect the same live journal through a distinct endpoint authority"),
+    );
+    let managed_before = managed.schema_text().await.unwrap();
+    let journal_before = journal.schema_text().await.unwrap();
+    let scope = ManagedScopeId::new("different-provider-authority-scope").unwrap();
+    let catalog =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+
+    let result = TypeDbMigrationStore::new(
+        Arc::clone(&managed),
+        journal_through_other_authority,
+        scope,
+        catalog,
+    );
+    let Err(error) = result else {
+        panic!("different endpoint authorities must reject at construction");
+    };
+    assert_eq!(
+        error.code().as_str(),
+        "migration_typedb_database_authority_mismatch"
+    );
+    assert_eq!(managed.schema_text().await.unwrap(), managed_before);
+    assert_eq!(journal.schema_text().await.unwrap(), journal_before);
+    let rendered = format!("{error}\n{error:?}");
+    assert!(!rendered.contains(&address));
+    assert!(!rendered.contains(&alternate));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence() {
+    let (managed, journal) = databases().await;
+    let mut transaction = journal
+        .schema_transaction()
+        .await
+        .expect("schema transaction");
+    transaction
+        .query(JOURNAL_CONTROL_SCHEMA_TYPEQL)
+        .await
+        .expect("install exact owner-aware schema without its owner row");
+    transaction.commit().await.expect("commit exact schema");
+    let journal_schema = journal.schema_text().await.unwrap();
+    let managed_before = managed.schema_text().await.unwrap();
+    let scope = ManagedScopeId::new("journal-owner-scope").unwrap();
+    let catalog =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+    let missing = TypeDbMigrationStore::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        scope.clone(),
+        catalog,
+    )
+    .unwrap()
+    .ensure_control_schema()
+    .await
+    .expect_err("an exact schema without the immutable owner must reject");
+    assert_eq!(
+        missing.code().as_str(),
+        "migration_typedb_journal_owner_mismatch"
+    );
+    assert_eq!(journal.schema_text().await.unwrap(), journal_schema);
+    assert_eq!(managed.schema_text().await.unwrap(), managed_before);
+
+    let mut transaction = journal
+        .write_transaction()
+        .await
+        .expect("write transaction");
+    transaction
+        .query(
+            "insert $owner isa typebridge-internal-v2-journal-owner, \
+             has typebridge-internal-v2-journal-owner-key \"typebridge-journal-owner/v1\", \
+             has typebridge-internal-v2-journal-owner-managed-database \"another-database\", \
+             has typebridge-internal-v2-journal-owner-managed-scope \"another-scope\";",
+        )
+        .await
+        .expect("insert a foreign owner");
+    transaction.commit().await.expect("commit foreign owner");
+    let catalog =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+    let wrong =
+        TypeDbMigrationStore::new(Arc::clone(&managed), Arc::clone(&journal), scope, catalog)
+            .unwrap()
+            .ensure_control_schema()
+            .await
+            .expect_err("a foreign immutable owner must reject");
+    assert_eq!(
+        wrong.code().as_str(),
+        "migration_typedb_journal_owner_mismatch"
+    );
+    assert_eq!(journal.schema_text().await.unwrap(), journal_schema);
+    assert_eq!(managed.schema_text().await.unwrap(), managed_before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps() {
+    let (managed, journal) = databases().await;
+    let scope_id = ManagedScopeId::new("concurrent-journal-scope").unwrap();
+    let scope = ExecutionScope::new(scope_id.clone());
+    let catalog_a =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+    let store_a = TypeDbMigrationStore::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        scope_id.clone(),
+        catalog_a,
+    )
+    .unwrap();
+    let journal_before = journal.schema_text().await.unwrap();
+    let managed_before = managed.schema_text().await.unwrap();
+    let verify_error = store_a
+        .load_applied_read_only(&scope)
+        .await
+        .expect_err("read-only verification cannot bootstrap an empty journal");
+    assert_eq!(
+        verify_error.code().as_str(),
+        "migration_typedb_journal_control_schema_absent"
+    );
+    assert_eq!(journal.schema_text().await.unwrap(), journal_before);
+    assert_eq!(managed.schema_text().await.unwrap(), managed_before);
+    assert!(!journal_before.contains("typebridge-internal-v2-"));
+    assert!(!managed_before.contains("typebridge-internal-v2-"));
+
+    let catalog_b =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+    let store_b = TypeDbMigrationStore::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        scope_id.clone(),
+        catalog_b,
+    )
+    .unwrap();
+    let (first, second) = tokio::join!(
+        store_a.ensure_control_schema(),
+        store_b.ensure_control_schema()
+    );
+    first.expect("first serialized bootstrap succeeds");
+    second.expect("concurrent serialized verification succeeds");
+
+    let mut transaction = journal.read_transaction().await.unwrap();
+    let owners = transaction
+        .query(
+            "match $owner isa typebridge-internal-v2-journal-owner, \
+             has typebridge-internal-v2-journal-owner-key $key, \
+             has typebridge-internal-v2-journal-owner-managed-database $database, \
+             has typebridge-internal-v2-journal-owner-managed-scope $scope; \
+             fetch { \"key\": $key, \"database\": $database, \"scope\": $scope };",
+        )
+        .await
+        .unwrap();
+    let (QueryResult::Documents(owners) | QueryResult::Rows(owners)) = owners else {
+        panic!("owner query must return documents");
+    };
+    assert_eq!(owners.len(), 1);
+    transaction.close().await.unwrap();
+
+    let catalog_resume =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+    let resumed = TypeDbMigrationStore::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        scope_id,
+        catalog_resume,
+    )
+    .unwrap();
+    resumed
+        .ensure_control_schema()
+        .await
+        .expect("a restarted apply/adopt process verifies the existing owner");
+    assert!(
+        resumed
+            .load_applied_read_only(&scope)
+            .await
+            .expect("read-only verification resumes against the owned journal")
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.1 server"]
 async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
     let (managed_database, journal_database) = databases().await;
+    let scope_id = ManagedScopeId::new("journal-live-scope").expect("managed scope id");
     let catalog =
         VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
             .expect("empty verified catalog");
     let store = TypeDbMigrationStore::new(
         Arc::clone(&managed_database),
         Arc::clone(&journal_database),
+        scope_id.clone(),
         catalog,
     )
     .expect("bind exact managed/journal pair");
@@ -167,8 +414,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         .await
         .expect("install and verify frozen control schema");
 
-    let scope =
-        ExecutionScope::new(ManagedScopeId::new("live-execution-store").expect("managed scope id"));
+    let scope = ExecutionScope::new(scope_id);
     let owner_a = LeaseHolderId::new("live-owner-a").expect("lease owner A");
     let owner_b = LeaseHolderId::new("live-owner-b").expect("lease owner B");
 
@@ -251,6 +497,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
     let journal = TypeDbMigrationStore::new(
         Arc::clone(&managed_database),
         Arc::clone(&journal_database),
+        context.scope_id().clone(),
         catalog,
     )
     .expect("bind exact managed/journal pair")
@@ -264,7 +511,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         .acquire(&journal_scope, &executor_a)
         .await
         .expect("journal fence one");
-    assert_eq!(lease_one.fence().get(), 1);
+    assert_eq!(lease_one.fence().get(), 4);
 
     let plan_record = PlanRecord::from_verified_plan(
         &lease_one,
@@ -340,7 +587,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         .acquire(&journal_scope, &executor_b)
         .await
         .expect("recovery takeover");
-    assert_eq!(lease_two.fence().get(), 2);
+    assert_eq!(lease_two.fence().get(), 5);
     let recovered = journal
         .load_open_plan(&lease_two)
         .await
@@ -427,6 +674,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
     let reopened = TypeDbMigrationStore::new(
         Arc::clone(&managed_database),
         Arc::clone(&journal_database),
+        context.scope_id().clone(),
         reopened_catalog,
     )
     .expect("rebind exact managed/journal pair")
@@ -437,7 +685,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         .acquire(&journal_scope, &executor_c)
         .await
         .expect("fence three after restart");
-    assert_eq!(lease_three.fence().get(), 3);
+    assert_eq!(lease_three.fence().get(), 6);
     let rehydrated = reopened
         .load_applied(&lease_three)
         .await

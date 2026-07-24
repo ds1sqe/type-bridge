@@ -37,6 +37,7 @@ pub mod reserved_words;
 pub mod schema;
 /// Schema-aware query validation plus a custom validation-rule DSL.
 pub mod validation;
+mod validation_rule_wire;
 /// Coerces raw values into TypeDB value-types and formats TypeQL literals.
 pub mod value_coercion;
 /// TypeDB compatibility window, protocol-band map, and connect-time version gate.

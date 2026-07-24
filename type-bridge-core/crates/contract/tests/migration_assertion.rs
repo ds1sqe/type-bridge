@@ -68,7 +68,13 @@ fn canonical_bytes_and_fingerprint_are_exact_and_stable() {
         "bindings": [{"id": 0, "variable": "person"}],
         "expectation": "no_rows",
         "format": 1,
-        "managed_semantics": plan.managed_semantics(),
+        "managed_semantics": {
+            "algorithm": "sha256",
+            "canonicalization": "typebridge.managed-semantic/v1",
+            "digest": "a336bb9ede38708e9b2356e682450ce8638dfecf7f1fee9118edd2b8b6e5ff61",
+            "domain": "typebridge.schema.managed-semantic",
+            "semantic_profile": "typedb-3.12.1/v1"
+        },
         "outputs": [0],
         "patterns": [{
             "binding": 0,

@@ -12,8 +12,8 @@ use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain
 use crate::id::{AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKind};
 use crate::limits::MAX_CANONICAL_COLLECTION_LEN;
 use crate::schema::{
-    AnnotationFactId, AnnotationSubjectId, OwnsFactId, PlaysFactId, SchemaAnnotationValue,
-    ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationSubjectId, OwnsFactId, PlaysFactId,
+    SchemaAnnotationValue, SchemaFactId, SubFactId, ValueFactId,
 };
 use crate::schema_fingerprint::SemanticSchemaFingerprint;
 use crate::value::{Cardinality, ValueTypeTag};
@@ -960,10 +960,10 @@ pub struct ProjectedAnnotation {
 }
 
 impl ProjectedAnnotation {
-    /// Construct one projected annotation from trusted resolved values.
-    #[must_use]
-    pub const fn new(id: AnnotationFactId, value: SchemaAnnotationValue) -> Self {
-        Self { id, value }
+    /// Construct one projected annotation through the authoritative annotation contract.
+    pub fn new(id: AnnotationFactId, value: SchemaAnnotationValue) -> Result<Self, Diagnostic> {
+        AnnotationFact::new(id.clone(), value.clone())?;
+        Ok(Self { id, value })
     }
     /// Return the effective-subject annotation identity.
     #[must_use]
@@ -1172,10 +1172,71 @@ impl DeclaredRoleProjection {
     }
 }
 
+/// The exact direct subtype declaration retained by every runtime projection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DirectSubProjection {
+    id: SubFactId,
+    origin: SchemaFactId,
+    #[serde(serialize_with = "serialize_map_values")]
+    annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
+}
+
+impl DirectSubProjection {
+    /// Construct one direct subtype declaration from resolved schema values.
+    pub fn new(
+        id: SubFactId,
+        origin: SchemaFactId,
+        annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
+    ) -> Result<Self, Diagnostic> {
+        if origin != SchemaFactId::Sub(id.clone()) {
+            return Err(invalid_projection(
+                "invalid_projected_sub_origin",
+                "projected subtype origin must identify its exact direct edge",
+            ));
+        }
+        if annotations.iter().any(|(key, value)| {
+            key != value.id()
+                || !matches!(key.subject(), AnnotationSubjectId::Sub(subject) if subject == &id)
+        }) {
+            return Err(invalid_projection(
+                "invalid_projected_sub_annotation",
+                "subtype annotations require matching exact edge subjects",
+            ));
+        }
+        ensure_collection_limit(annotations.len(), "too_many_projected_annotations")?;
+        Ok(Self {
+            id,
+            origin,
+            annotations,
+        })
+    }
+
+    /// Return the exact direct subtype-edge identity.
+    #[must_use]
+    pub const fn id(&self) -> &SubFactId {
+        &self.id
+    }
+
+    /// Return the direct declaration origin.
+    #[must_use]
+    pub const fn origin(&self) -> &SchemaFactId {
+        &self.origin
+    }
+
+    /// Return annotations attached to this exact subtype edge.
+    #[must_use]
+    pub const fn annotations(&self) -> &BTreeMap<AnnotationFactId, ProjectedAnnotation> {
+        &self.annotations
+    }
+}
+
 /// The nominal declaration facet of one model.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DeclarationProjection {
     parent: Option<TypeId>,
+    // Pre-release wire ledger: before any 2.0.0 artifact shipped,
+    // binding-projection/v1 gained the exact direct subtype declaration.
+    direct_sub: Option<DirectSubProjection>,
     value_type: Option<ValueTypeTag>,
     is_abstract: bool,
     is_constructible: bool,
@@ -1212,6 +1273,7 @@ impl DeclarationProjection {
         }
         Ok(Self {
             parent,
+            direct_sub: None,
             value_type,
             is_abstract,
             is_constructible,
@@ -1221,6 +1283,23 @@ impl DeclarationProjection {
             direct_roles,
             direct_plays,
         })
+    }
+    /// Attach the direct subtype identity, origin, and annotations.
+    pub fn with_direct_sub(
+        mut self,
+        direct_sub: Option<DirectSubProjection>,
+    ) -> Result<Self, Diagnostic> {
+        if direct_sub
+            .as_ref()
+            .is_some_and(|sub| self.parent.as_ref() != Some(sub.id().supertype()))
+        {
+            return Err(invalid_projection(
+                "invalid_projected_sub_parent",
+                "projected direct subtype edge must match the nominal parent",
+            ));
+        }
+        self.direct_sub = direct_sub;
+        Ok(self)
     }
     /// Attach effective attribute-value constraints without changing legacy construction.
     pub fn with_value_annotations(
@@ -1243,6 +1322,11 @@ impl DeclarationProjection {
     #[must_use]
     pub const fn parent(&self) -> Option<&TypeId> {
         self.parent.as_ref()
+    }
+    /// Return the exact direct subtype declaration, if this model has a parent.
+    #[must_use]
+    pub const fn direct_sub(&self) -> Option<&DirectSubProjection> {
+        self.direct_sub.as_ref()
     }
     /// Return an attribute's effective scalar domain.
     #[must_use]
@@ -1693,6 +1777,13 @@ impl ModelProjection {
         query_tokens: QueryTokenProjection,
     ) -> Result<Self, Diagnostic> {
         if query_tokens.type_id() != &id
+            || match (declaration.parent(), declaration.direct_sub()) {
+                (None, None) => false,
+                (Some(parent), Some(sub)) => {
+                    sub.id().subtype() != &id || sub.id().supertype() != parent
+                }
+                (None, Some(_)) | (Some(_), None) => true,
+            }
             || query_tokens
                 .fields()
                 .values()
@@ -2296,6 +2387,13 @@ impl RuntimeProjection {
             let parent_is_valid = declaration.parent().is_none_or(|parent| {
                 models.contains_key(parent) && shell_positions[parent] < shell_positions[model.id()]
             });
+            let direct_sub_is_valid = match (declaration.parent(), declaration.direct_sub()) {
+                (None, None) => true,
+                (Some(parent), Some(sub)) => {
+                    sub.id().subtype() == model.id() && sub.id().supertype() == parent
+                }
+                (None, Some(_)) | (Some(_), None) => false,
+            };
             let direct_fields_are_valid = declaration
                 .direct_fields()
                 .iter()
@@ -2363,6 +2461,7 @@ impl RuntimeProjection {
                         ))
                 });
             parent_is_valid
+                && direct_sub_is_valid
                 && direct_fields_are_valid
                 && direct_roles_are_valid
                 && direct_plays_are_valid

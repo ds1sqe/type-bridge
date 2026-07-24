@@ -5,12 +5,13 @@ use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, CompleteReadProjection, CreateFieldProjection,
     CreateProjection, CreateRoleProjection, DeclarationProjection, DeclaredRoleProjection,
-    EmissionPlan, FieldTokenProjection, FunctionParameterProjection, FunctionProjection,
-    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection, PlayingProjection,
-    ProjectedAnnotation, ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity,
-    ProjectedTypeRef, ProjectionConfig, ProjectionHandler, QueryTokenProjection,
-    ReadFieldProjection, ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection,
-    RuntimeProjection, RustCreatePolicy, StructFieldProjection, StructProjection, TargetIdentifier,
+    DirectSubProjection, EmissionPlan, FieldTokenProjection, FunctionParameterProjection,
+    FunctionProjection, FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
+    PlayingProjection, ProjectedAnnotation, ProjectedModelForm, ProjectedModelUse,
+    ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig, ProjectionHandler,
+    QueryTokenProjection, ReadFieldProjection, ReadRoleProjection, ReferenceReadProjection,
+    RoleTokenProjection, RuntimeProjection, RustCreatePolicy, StructFieldProjection,
+    StructProjection, TargetIdentifier,
 };
 use type_bridge_contract::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, FunctionReturnMode, OwnsFactId,
@@ -191,12 +192,14 @@ impl NameRegistry {
 fn annotations(
     subject: AnnotationSubjectId,
     values: &BTreeMap<AnnotationKindId, SchemaAnnotationValue>,
-) -> BTreeMap<AnnotationFactId, ProjectedAnnotation> {
+) -> Result<BTreeMap<AnnotationFactId, ProjectedAnnotation>, SchemaDiagnostics> {
     values
         .iter()
         .map(|(kind, value)| {
             let id = AnnotationFactId::new(subject.clone(), kind.clone());
-            (id.clone(), ProjectedAnnotation::new(id, value.clone()))
+            ProjectedAnnotation::new(id.clone(), value.clone())
+                .map(|annotation| (id, annotation))
+                .map_err(no_source)
         })
         .collect()
 }
@@ -475,7 +478,7 @@ pub fn project(
         let type_annotations = annotations(
             AnnotationSubjectId::Type(id.clone()),
             resolved_type.annotations(),
-        );
+        )?;
         let ordered_field_ids = ordered_owns(resolved_type);
         let mut field_tokens = BTreeMap::new();
         let mut direct_fields = Vec::new();
@@ -507,7 +510,7 @@ pub fn project(
                 annotations(
                     AnnotationSubjectId::Owns(owns.id().clone()),
                     owns.annotations(),
-                ),
+                )?,
             )
             .map_err(no_source)?;
             let attribute_model =
@@ -579,7 +582,7 @@ pub fn project(
                 annotations(
                     effective_relates_annotation_subject(relates)?,
                     relates.annotations(),
-                ),
+                )?,
             )
             .map_err(no_source)?;
             if let Some(name) = player_union_name {
@@ -641,7 +644,7 @@ pub fn project(
                 annotations(
                     AnnotationSubjectId::Plays(plays.id().clone()),
                     plays.annotations(),
-                ),
+                )?,
             )
             .map_err(no_source)?
             .with_target_name(plays_name);
@@ -666,10 +669,25 @@ pub fn project(
             annotations(
                 AnnotationSubjectId::Value(ValueFactId::new(attribute)),
                 value.annotations(),
-            )
+            )?
         } else {
             BTreeMap::new()
         };
+        let direct_sub = resolved_type
+            .direct_sub()
+            .map(|sub| {
+                let annotations = annotations(
+                    AnnotationSubjectId::Sub(sub.id().clone()),
+                    sub.annotations(),
+                )?;
+                DirectSubProjection::new(
+                    sub.id().clone(),
+                    sub.origin().declared().clone(),
+                    annotations,
+                )
+                .map_err(no_source)
+            })
+            .transpose()?;
         let declaration = DeclarationProjection::new(
             resolved_type.supertypes().first().cloned(),
             resolved_type.value_type().map(|value| value.value_type()),
@@ -680,6 +698,8 @@ pub fn project(
             direct_roles,
             direct_plays,
         )
+        .map_err(no_source)?
+        .with_direct_sub(direct_sub)
         .map_err(no_source)?
         .with_value_annotations(value_annotations)
         .map_err(no_source)?;
@@ -802,7 +822,7 @@ pub fn project(
             .with_annotations(annotations(
                 AnnotationSubjectId::Function(id.clone()),
                 function.annotations(),
-            ))
+            )?)
             .map_err(no_source)?,
         );
     }

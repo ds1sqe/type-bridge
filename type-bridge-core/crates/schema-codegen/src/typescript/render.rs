@@ -15,7 +15,7 @@ use type_bridge_contract::value::ValueTypeTag;
 use super::reserved::{
     MODEL_RESERVED_NAMES, PUBLIC_RUNTIME_NAMES, PUBLIC_SCHEMA_NAMES, is_typescript_keyword,
 };
-use crate::{GeneratedPackage, invalid};
+use crate::{GeneratedPackage, documentation_annotation, invalid, model_documentation};
 
 macro_rules! canonical_text {
     ($value:expr) => {
@@ -125,6 +125,10 @@ fn render_model_shell(
 ) -> Result<(), Diagnostic> {
     let name = model.target_name().as_str();
     let id = identity_literal!(model.id());
+    let documentation = model_documentation(model);
+    if let Some(documentation) = &documentation {
+        render_jsdoc(output, documentation);
+    }
     if let Some(value_type) = model_value_type(model)? {
         let value = scalar_type(value_type);
         let _ = writeln!(
@@ -144,6 +148,9 @@ fn render_model_shell(
                 .ok_or_else(|| facet_error("complete-read field has no query token"))?;
             let value = projected_type(projection, field.value(), "", "Structs.")?;
             let value = apply_multiplicity(value, field.multiplicity(), Position::Read);
+            if let Some(documentation) = documentation_annotation(token.annotations()) {
+                render_indented_jsdoc(output, "  ", documentation);
+            }
             let _ = writeln!(
                 output,
                 "  readonly {}: {value};",
@@ -158,6 +165,9 @@ fn render_model_shell(
                 .ok_or_else(|| facet_error("complete-read role has no query token"))?;
             let value = projected_union(projection, read.players(), "")?;
             let value = apply_multiplicity(value, read.multiplicity(), Position::Read);
+            if let Some(documentation) = documentation_annotation(token.annotations()) {
+                render_indented_jsdoc(output, "  ", documentation);
+            }
             let _ = writeln!(
                 output,
                 "  readonly {}: {value};",
@@ -180,6 +190,9 @@ fn render_model_shell(
             } else {
                 "?"
             };
+            if let Some(documentation) = documentation_annotation(token.annotations()) {
+                render_indented_jsdoc(output, "  ", documentation);
+            }
             let _ = writeln!(
                 output,
                 "  readonly {}{optional}: {value};",
@@ -199,6 +212,9 @@ fn render_model_shell(
             } else {
                 "?"
             };
+            if let Some(documentation) = documentation_annotation(token.annotations()) {
+                render_indented_jsdoc(output, "  ", documentation);
+            }
             let _ = writeln!(
                 output,
                 "  readonly {}{optional}: {value};",
@@ -219,6 +235,9 @@ fn render_model_shell(
             let read = read_field(model, key)?;
             let value = projected_type(projection, read.value(), "", "Structs.")?;
             let value = apply_multiplicity(value, read.multiplicity(), Position::Read);
+            if let Some(documentation) = documentation_annotation(token.annotations()) {
+                render_indented_jsdoc(output, "  ", documentation);
+            }
             let _ = writeln!(
                 output,
                 "  readonly {}: {value};",
@@ -226,9 +245,13 @@ fn render_model_shell(
             );
         }
         let reference_name = reference_name.as_str();
+        output.push_str("}\n\n");
+        if let Some(documentation) = &documentation {
+            render_jsdoc(output, documentation);
+        }
         let _ = writeln!(
             output,
-            "}}\n\nexport interface {reference_name} extends ReferenceFacet<{id}>, {name}ReferenceInput {{}}\n"
+            "export interface {reference_name} extends ReferenceFacet<{id}>, {name}ReferenceInput {{}}\n"
         );
     }
 
@@ -236,6 +259,9 @@ fn render_model_shell(
     for (owns, token) in model.query_tokens().fields() {
         let value = projected_type(projection, field_value(model, owns)?, "", "Structs.")?;
         let attribute = identity_literal!(owns.attribute());
+        if let Some(documentation) = documentation_annotation(token.annotations()) {
+            render_indented_jsdoc(output, "  ", documentation);
+        }
         let _ = writeln!(
             output,
             "  readonly {}: FieldToken<{id}, {attribute}, {value}>;",
@@ -248,6 +274,9 @@ fn render_model_shell(
     for token in model.query_tokens().roles().values() {
         let role = identity_literal!(token.role());
         let players = logical_player_union(projection, token.accepted_players(), "")?;
+        if let Some(documentation) = documentation_annotation(token.annotations()) {
+            render_indented_jsdoc(output, "  ", documentation);
+        }
         let _ = writeln!(
             output,
             "  readonly {}: RoleToken<{id}, {role}, {players}>;",
@@ -572,6 +601,9 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
             )
         };
         let returns = function_return(projection, function.returns())?;
+        if let Some(documentation) = documentation_annotation(function.annotations()) {
+            render_jsdoc(&mut output, documentation);
+        }
         let _ = writeln!(
             output,
             "export const {name}: FunctionToken<{id}, {arguments}, {returns}> = defineFunctionToken({{\n  id: {id},\n  name: {},\n  metadata: {},\n}});\n",
@@ -592,6 +624,9 @@ fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             .as_str();
         let player = identity_literal!(playing.id().player());
         let role = identity_literal!(playing.role());
+        if let Some(documentation) = documentation_annotation(playing.annotations()) {
+            render_jsdoc(&mut output, documentation);
+        }
         let _ = writeln!(
             output,
             "export const {name} = definePlaysToken<{player}, {role}>({{\n  player: {player},\n  role: {role},\n  name: {},\n  multiplicity: {},\n  metadata: {},\n}});\n",
@@ -821,6 +856,32 @@ fn model_value_type(model: &ModelProjection) -> Result<Option<ValueTypeTag>, Dia
 fn js_string(value: &str) -> Result<String, Diagnostic> {
     Ok(String::from_utf8(to_canonical_json(&value)?)
         .expect("canonical JSON emitted by the contract is UTF-8"))
+}
+
+fn render_jsdoc(output: &mut String, documentation: &str) {
+    render_indented_jsdoc(output, "", documentation);
+}
+
+fn render_indented_jsdoc(output: &mut String, indentation: &str, documentation: &str) {
+    let _ = writeln!(output, "{indentation}/**");
+    for line in documentation.split('\n') {
+        let _ = writeln!(output, "{indentation} * {}", safe_jsdoc_line(line));
+    }
+    let _ = writeln!(output, "{indentation} */");
+}
+
+fn safe_jsdoc_line(line: &str) -> String {
+    let mut escaped = String::new();
+    for character in line.chars() {
+        match character {
+            '\r' => escaped.push_str("\\r"),
+            character if character.is_control() && character != '\t' => {
+                let _ = write!(escaped, "\\u{{{:x}}}", u32::from(character));
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped.replace("*/", "*\\/")
 }
 
 fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic> {

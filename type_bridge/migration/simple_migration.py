@@ -16,7 +16,7 @@ class MigrationManager:
         superseded by :class:`~type_bridge.migration.executor.MigrationExecutor`
         (for applying migrations) and
         :class:`~type_bridge.migration.generator.MigrationGenerator` (for
-        generating migrations).  It will be removed in a future release.
+        generating migrations).  No removal version is scheduled.
     """
 
     def __init__(self, db: Database):
@@ -30,8 +30,8 @@ class MigrationManager:
             db: Database connection
         """
         warnings.warn(
-            "MigrationManager (SimpleMigrationManager) is deprecated and will be removed "
-            "in a future release.  Use MigrationExecutor and MigrationGenerator instead.",
+            "MigrationManager (SimpleMigrationManager) is deprecated; no removal version "
+            "is scheduled.  Use MigrationExecutor and MigrationGenerator instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -56,6 +56,9 @@ class MigrationManager:
             logger.debug(f"Migration schema:\n{schema}")
 
             with self.db.transaction("schema") as tx:
+                from type_bridge import _rust_runtime
+
+                _rust_runtime.require_legacy_writer_open_in_transaction(tx)
                 tx.execute(schema)
                 tx.commit()
 

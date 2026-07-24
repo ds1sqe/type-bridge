@@ -34,7 +34,11 @@ class Credentials:
     def __init__(self, username: str, password: str) -> None: ...
 
 class DriverOptions:
-    def __init__(self, is_tls_enabled: bool = False) -> None: ...
+    def __init__(
+        self,
+        is_tls_enabled: bool = False,
+        tls_root_ca_path: str | None = ...,
+    ) -> None: ...
 
 class Driver:
     databases: Any

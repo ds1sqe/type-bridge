@@ -6,14 +6,12 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple, PyType};
 use pythonize::pythonize;
-use tokio::runtime::Runtime;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::ProjectedModelForm;
 #[cfg(test)]
 use type_bridge_contract::projection::RuntimeProjection;
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
-use type_bridge_orm::InstalledRuntimeProjection;
 use type_bridge_orm::attribute::ValueType;
 use type_bridge_orm::descriptor::{
     EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
@@ -25,8 +23,9 @@ use type_bridge_orm::dynamic::{
 use type_bridge_orm::manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::session::{Database, TransactionContext};
 use type_bridge_orm::value::AttributeValue;
+use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 
-use crate::orm_runtime::{PyRustDatabase, PyRustTransactionContext};
+use crate::orm_runtime::{PyRustDatabase, PyRustTransactionContext, provider_block_on};
 
 struct RegisteredModel {
     complete: Py<PyType>,
@@ -169,7 +168,7 @@ pub struct PyProjectedModelManager {
     type_id: TypeId,
     database: Option<Arc<Database>>,
     transaction: Option<TransactionContext>,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
 }
 
 #[pymethods]
@@ -186,8 +185,7 @@ impl PyProjectedModelManager {
                     &instance,
                 )?;
                 let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.insert(&attributes))
+                provider_block_on(py, self.runtime.as_ref(), manager.insert(&attributes))
                     .map_err(py_orm_error)?
             }
             TypeDescriptor::Relation(descriptor) => {
@@ -205,9 +203,12 @@ impl PyProjectedModelManager {
                     &instance,
                 )?;
                 let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.insert(&attributes, &players))
-                    .map_err(py_orm_error)?
+                provider_block_on(
+                    py,
+                    self.runtime.as_ref(),
+                    manager.insert(&attributes, &players),
+                )
+                .map_err(py_orm_error)?
             }
         };
         instance.call_method1("attach_runtime_iid", (iid,))?;
@@ -216,14 +217,12 @@ impl PyProjectedModelManager {
 
     /// Fetch all exact instances of this projected type using `isa!`.
     fn all(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let values = PyList::empty(py);
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
-                let rows = self
-                    .runtime
-                    .block_on(manager.all_exact())
+                let rows = provider_block_on(py, self.runtime.as_ref(), manager.all_exact())
                     .map_err(py_orm_error)?;
+                let values = PyList::empty(py);
                 for row in rows {
                     values.append(hydrate_entity(
                         py,
@@ -232,13 +231,13 @@ impl PyProjectedModelManager {
                         &row,
                     )?)?;
                 }
+                Ok(values.into_any().unbind())
             }
             TypeDescriptor::Relation(descriptor) => {
                 let manager = self.relation_manager(Arc::new(descriptor))?;
-                let rows = self
-                    .runtime
-                    .block_on(manager.all_exact())
+                let rows = provider_block_on(py, self.runtime.as_ref(), manager.all_exact())
                     .map_err(py_orm_error)?;
+                let values = PyList::empty(py);
                 for row in rows {
                     values.append(hydrate_relation(
                         py,
@@ -247,20 +246,20 @@ impl PyProjectedModelManager {
                         &row,
                     )?)?;
                 }
+                Ok(values.into_any().unbind())
             }
         }
-        Ok(values.into_any().unbind())
     }
 
     /// Fetch one exact instance by TypeDB IID using `isa!`.
     fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
+        let iid = iid.to_owned();
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
-                let row = self
-                    .runtime
-                    .block_on(manager.get_by_iid_exact(iid))
-                    .map_err(py_orm_error)?;
+                let row =
+                    provider_block_on(py, self.runtime.as_ref(), manager.get_by_iid_exact(&iid))
+                        .map_err(py_orm_error)?;
                 match row {
                     Some(row) => hydrate_entity(py, self.package.as_ref(), &self.type_id, &row),
                     None => Ok(py.None()),
@@ -268,10 +267,9 @@ impl PyProjectedModelManager {
             }
             TypeDescriptor::Relation(descriptor) => {
                 let manager = self.relation_manager(Arc::new(descriptor))?;
-                let rows = self
-                    .runtime
-                    .block_on(manager.get_by_iid_exact(iid))
-                    .map_err(py_orm_error)?;
+                let rows =
+                    provider_block_on(py, self.runtime.as_ref(), manager.get_by_iid_exact(&iid))
+                        .map_err(py_orm_error)?;
                 match rows.as_slice() {
                     [] => Ok(py.None()),
                     [row] => hydrate_relation(py, self.package.as_ref(), &self.type_id, row),

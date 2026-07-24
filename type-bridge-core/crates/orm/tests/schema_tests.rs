@@ -3,9 +3,20 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use type_bridge_contract::reserved::{
+    LEGACY_CUTOVER_ANCHOR_ENTITY, LEGACY_CUTOVER_ANCHOR_FINGERPRINT, LEGACY_CUTOVER_ANCHOR_KEY,
+    LEGACY_CUTOVER_ANCHOR_SCOPE, LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY,
+    LEGACY_CUTOVER_SENTINEL_APP_LABEL, LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
+    LEGACY_CUTOVER_SENTINEL_NAME, LEGACY_LEDGER_APP_LABEL, LEGACY_LEDGER_APPLIED_AT,
+    LEGACY_LEDGER_APPLIED_ENTITY, LEGACY_LEDGER_CHECKSUM, LEGACY_LEDGER_MIGRATION_ID,
+    LEGACY_LEDGER_NAME, LEGACY_WRITER_CUTOVER_MESSAGE, LEGACY_WRITER_GUARD_QUERY_TAG,
+    MANAGED_CONTROL_ENTITY, MANAGED_CONTROL_LEASE_FENCE, MANAGED_CONTROL_LEASE_HOLDER,
+    MANAGED_CONTROL_LEASE_STATE, MANAGED_CONTROL_SCOPE,
+};
 use type_bridge_orm::schema::info::*;
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
 use type_bridge_orm::*;
+use type_bridge_schema_compat::{LEGACY_LEDGER_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL};
 
 // ── Test entities ───────────────────────────────────────────────────
 
@@ -192,6 +203,14 @@ impl TypeBridgeRelation for Employment {
 struct MockBackend {
     responses: Arc<Mutex<Vec<QueryResult>>>,
     queries: Arc<Mutex<Vec<(String, TxType)>>>,
+    legacy_cutover_present: bool,
+    managed_core_present: bool,
+    legacy_ledger_without_anchor: bool,
+    malformed_cutover_binding: bool,
+    legacy_guard_error: bool,
+    schema_snapshot_error: bool,
+    legacy_ledger_missing: bool,
+    schema_snapshot_override: Option<String>,
 }
 
 impl MockBackend {
@@ -199,7 +218,143 @@ impl MockBackend {
         Self {
             responses: Arc::new(Mutex::new(responses)),
             queries: Arc::new(Mutex::new(Vec::new())),
+            legacy_cutover_present: false,
+            managed_core_present: false,
+            legacy_ledger_without_anchor: false,
+            malformed_cutover_binding: false,
+            legacy_guard_error: false,
+            schema_snapshot_error: false,
+            legacy_ledger_missing: false,
+            schema_snapshot_override: None,
         }
+    }
+
+    fn with_legacy_cutover() -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(Vec::new())),
+            queries: Arc::new(Mutex::new(Vec::new())),
+            legacy_cutover_present: true,
+            managed_core_present: true,
+            legacy_ledger_without_anchor: false,
+            malformed_cutover_binding: false,
+            legacy_guard_error: false,
+            schema_snapshot_error: false,
+            legacy_ledger_missing: false,
+            schema_snapshot_override: None,
+        }
+    }
+
+    fn with_malformed_legacy_cutover() -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(Vec::new())),
+            queries: Arc::new(Mutex::new(Vec::new())),
+            legacy_cutover_present: true,
+            managed_core_present: true,
+            legacy_ledger_without_anchor: false,
+            malformed_cutover_binding: true,
+            legacy_guard_error: false,
+            schema_snapshot_error: false,
+            legacy_ledger_missing: false,
+            schema_snapshot_override: None,
+        }
+    }
+
+    fn with_legacy_name_collision_without_anchor(responses: Vec<QueryResult>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses)),
+            queries: Arc::new(Mutex::new(Vec::new())),
+            legacy_cutover_present: false,
+            managed_core_present: true,
+            legacy_ledger_without_anchor: true,
+            malformed_cutover_binding: false,
+            legacy_guard_error: false,
+            schema_snapshot_error: false,
+            legacy_ledger_missing: false,
+            schema_snapshot_override: None,
+        }
+    }
+
+    fn with_legacy_guard_error() -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(Vec::new())),
+            queries: Arc::new(Mutex::new(Vec::new())),
+            legacy_cutover_present: false,
+            managed_core_present: false,
+            legacy_ledger_without_anchor: false,
+            malformed_cutover_binding: false,
+            legacy_guard_error: true,
+            schema_snapshot_error: false,
+            legacy_ledger_missing: false,
+            schema_snapshot_override: None,
+        }
+    }
+
+    fn with_cutover_lookalikes_without_managed_core(responses: Vec<QueryResult>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses)),
+            queries: Arc::new(Mutex::new(Vec::new())),
+            legacy_cutover_present: true,
+            managed_core_present: false,
+            legacy_ledger_without_anchor: false,
+            malformed_cutover_binding: false,
+            legacy_guard_error: false,
+            schema_snapshot_error: false,
+            legacy_ledger_missing: false,
+            schema_snapshot_override: None,
+        }
+    }
+
+    fn with_schema_snapshot_error(responses: Vec<QueryResult>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses)),
+            queries: Arc::new(Mutex::new(Vec::new())),
+            legacy_cutover_present: false,
+            managed_core_present: false,
+            legacy_ledger_without_anchor: false,
+            malformed_cutover_binding: false,
+            legacy_guard_error: false,
+            schema_snapshot_error: true,
+            legacy_ledger_missing: false,
+            schema_snapshot_override: None,
+        }
+    }
+
+    fn with_managed_rows_and_missing_legacy_ledger() -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(Vec::new())),
+            queries: Arc::new(Mutex::new(Vec::new())),
+            legacy_cutover_present: true,
+            managed_core_present: true,
+            legacy_ledger_without_anchor: false,
+            malformed_cutover_binding: false,
+            legacy_guard_error: false,
+            schema_snapshot_error: false,
+            legacy_ledger_missing: true,
+            schema_snapshot_override: None,
+        }
+    }
+
+    fn with_managed_rows_and_partial_legacy_ledger() -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(Vec::new())),
+            queries: Arc::new(Mutex::new(Vec::new())),
+            legacy_cutover_present: true,
+            managed_core_present: true,
+            legacy_ledger_without_anchor: true,
+            malformed_cutover_binding: false,
+            legacy_guard_error: false,
+            schema_snapshot_error: false,
+            legacy_ledger_missing: false,
+            schema_snapshot_override: None,
+        }
+    }
+
+    fn with_writer_fence_schema(schema: String, legacy_cutover_present: bool) -> Self {
+        let mut backend = Self::new(vec![QueryResult::Ok]);
+        backend.schema_snapshot_override = Some(schema);
+        backend.legacy_cutover_present = legacy_cutover_present;
+        backend.managed_core_present = legacy_cutover_present;
+        backend
     }
 
     #[allow(dead_code)]
@@ -216,11 +371,27 @@ impl DriverBackend for MockBackend {
     ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
         let responses = Arc::clone(&self.responses);
         let queries = Arc::clone(&self.queries);
+        let legacy_cutover_present = self.legacy_cutover_present;
+        let managed_core_present = self.managed_core_present;
+        let legacy_ledger_without_anchor = self.legacy_ledger_without_anchor;
+        let malformed_cutover_binding = self.malformed_cutover_binding;
+        let legacy_guard_error = self.legacy_guard_error;
+        let schema_snapshot_error = self.schema_snapshot_error;
+        let legacy_ledger_missing = self.legacy_ledger_missing;
+        let schema_snapshot_override = self.schema_snapshot_override.clone();
         Box::pin(async move {
             Ok(Box::new(MockTransaction {
                 responses,
                 queries,
                 tx_type,
+                legacy_cutover_present,
+                managed_core_present,
+                legacy_ledger_without_anchor,
+                malformed_cutover_binding,
+                legacy_guard_error,
+                schema_snapshot_error,
+                legacy_ledger_missing,
+                schema_snapshot_override,
             }) as Box<dyn TransactionOps>)
         })
     }
@@ -234,14 +405,255 @@ struct MockTransaction {
     responses: Arc<Mutex<Vec<QueryResult>>>,
     queries: Arc<Mutex<Vec<(String, TxType)>>>,
     tx_type: TxType,
+    legacy_cutover_present: bool,
+    managed_core_present: bool,
+    legacy_ledger_without_anchor: bool,
+    malformed_cutover_binding: bool,
+    legacy_guard_error: bool,
+    schema_snapshot_error: bool,
+    legacy_ledger_missing: bool,
+    schema_snapshot_override: Option<String>,
+}
+
+const MOCK_CUTOVER_FINGERPRINT: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+fn managed_fence_schema_with_extensions() -> String {
+    MANAGED_FENCE_SCHEMA_TYPEQL.replace(
+        "owns typebridge-internal-v2-lease-holder @card(0..1)",
+        "owns typebridge-internal-v2-lease-holder[] @distinct @card(0..1)",
+    )
+}
+
+fn legacy_ledger_schema_with_extensions() -> String {
+    LEGACY_LEDGER_SCHEMA_TYPEQL.replacen(
+        "owns migration_checksum;",
+        "owns migration_checksum[] @distinct;",
+        1,
+    )
+}
+
+fn canonical_writer_fence_schema_with_function_reference() -> String {
+    format!(
+        "{MANAGED_FENCE_SCHEMA_TYPEQL}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}\n\
+         define\nentity person;\n\
+         fun inspect($candidate: person) -> {{ person }}:\n\
+           match $candidate isa person;\n\
+           $control isa typebridge-internal-v2-migration-control;\n\
+           return {{ $candidate }};\n"
+    )
+}
+
+fn canonical_writer_fence_schema_with_structured_user_attribute() -> String {
+    format!(
+        "{MANAGED_FENCE_SCHEMA_TYPEQL}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}\n\
+         define\n\
+         struct payload: field value string;\n\
+         attribute payload-attr, value payload;"
+    )
+}
+
+fn legacy_guard_result(
+    typeql: &str,
+    cutover_present: bool,
+    managed_core_present: bool,
+    ledger_without_anchor: bool,
+    malformed_binding: bool,
+) -> QueryResult {
+    if !cutover_present {
+        if ledger_without_anchor && typeql.contains("match entity $t") {
+            return QueryResult::Documents(vec![
+                serde_json::json!({"label": LEGACY_LEDGER_APPLIED_ENTITY}),
+                serde_json::json!({"label": LEGACY_CUTOVER_ANCHOR_ENTITY}),
+            ]);
+        }
+        if ledger_without_anchor && typeql.contains("match attribute $t") {
+            return QueryResult::Documents(
+                [
+                    LEGACY_CUTOVER_ANCHOR_KEY,
+                    LEGACY_CUTOVER_ANCHOR_SCOPE,
+                    LEGACY_CUTOVER_ANCHOR_FINGERPRINT,
+                    LEGACY_LEDGER_MIGRATION_ID,
+                    LEGACY_LEDGER_APP_LABEL,
+                    LEGACY_LEDGER_NAME,
+                    LEGACY_LEDGER_APPLIED_AT,
+                    LEGACY_LEDGER_CHECKSUM,
+                ]
+                .into_iter()
+                .map(|label| serde_json::json!({"label": label}))
+                .collect(),
+            );
+        }
+        if ledger_without_anchor && typeql.contains(&format!("isa {LEGACY_LEDGER_APPLIED_ENTITY}"))
+        {
+            return QueryResult::Documents(vec![serde_json::json!({"exists": true})]);
+        }
+        return QueryResult::Documents(Vec::new());
+    }
+    if typeql.contains("match entity $t") {
+        let mut labels = vec![
+            serde_json::json!({"label": LEGACY_CUTOVER_ANCHOR_ENTITY}),
+            serde_json::json!({"label": LEGACY_LEDGER_APPLIED_ENTITY}),
+        ];
+        if managed_core_present {
+            labels.push(serde_json::json!({"label": MANAGED_CONTROL_ENTITY}));
+        }
+        return QueryResult::Documents(labels);
+    }
+    if typeql.contains("match attribute $t") {
+        let mut labels = vec![
+            LEGACY_CUTOVER_ANCHOR_KEY,
+            LEGACY_CUTOVER_ANCHOR_SCOPE,
+            LEGACY_CUTOVER_ANCHOR_FINGERPRINT,
+            LEGACY_LEDGER_MIGRATION_ID,
+            LEGACY_LEDGER_APP_LABEL,
+            LEGACY_LEDGER_NAME,
+            LEGACY_LEDGER_APPLIED_AT,
+            LEGACY_LEDGER_CHECKSUM,
+        ];
+        if managed_core_present {
+            labels.extend([
+                MANAGED_CONTROL_SCOPE,
+                MANAGED_CONTROL_LEASE_HOLDER,
+                MANAGED_CONTROL_LEASE_FENCE,
+                MANAGED_CONTROL_LEASE_STATE,
+            ]);
+        }
+        return QueryResult::Documents(
+            labels
+                .into_iter()
+                .map(|label| serde_json::json!({"label": label}))
+                .collect(),
+        );
+    }
+    if typeql.contains(&format!("isa {MANAGED_CONTROL_ENTITY}")) {
+        if typeql.contains("\"scope\": $scope") {
+            return QueryResult::Documents(vec![serde_json::json!({
+                "scope": "mock-scope",
+                "fence": "1",
+                "state": "free",
+            })]);
+        }
+        if typeql.contains("\"holder\": $holder") {
+            return QueryResult::Documents(Vec::new());
+        }
+        return QueryResult::Documents(vec![serde_json::json!({"exists": true})]);
+    }
+    if typeql.contains(&format!("isa {LEGACY_CUTOVER_ANCHOR_ENTITY}")) {
+        if typeql.contains("\"fingerprint\": $fingerprint") {
+            return QueryResult::Documents(vec![serde_json::json!({
+                "key": LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY,
+                "scope": "mock-scope",
+                "fingerprint": MOCK_CUTOVER_FINGERPRINT,
+            })]);
+        }
+        return QueryResult::Documents(vec![serde_json::json!({"exists": true})]);
+    }
+    if typeql.contains(&format!("isa {LEGACY_LEDGER_APPLIED_ENTITY}")) {
+        if typeql.contains("\"checksum\": $checksum") {
+            let checksum = if malformed_binding {
+                "1111111111111111111111111111111111111111111111111111111111111111"
+            } else {
+                MOCK_CUTOVER_FINGERPRINT
+            };
+            return QueryResult::Documents(vec![serde_json::json!({
+                "app": LEGACY_CUTOVER_SENTINEL_APP_LABEL,
+                "applied": LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
+                "checksum": checksum,
+            })]);
+        }
+        return QueryResult::Documents(vec![serde_json::json!({"exists": true})]);
+    }
+    QueryResult::Documents(Vec::new())
 }
 
 impl TransactionOps for MockTransaction {
+    fn schema_snapshot(&mut self) -> BoxFuture<'_, std::result::Result<Option<String>, OrmError>> {
+        if self.schema_snapshot_error {
+            return Box::pin(async {
+                Err(OrmError::Connection(
+                    "injected pre-authority schema export failure".to_owned(),
+                ))
+            });
+        }
+        if let Some(schema_snapshot) = self.schema_snapshot_override.clone() {
+            return Box::pin(async move { Ok(Some(schema_snapshot)) });
+        }
+        if self.managed_core_present && self.legacy_ledger_missing {
+            return Box::pin(async { Ok(Some(MANAGED_FENCE_SCHEMA_TYPEQL.to_owned())) });
+        }
+        if self.managed_core_present && self.legacy_ledger_without_anchor {
+            return Box::pin(async {
+                Ok(Some(format!(
+                    "{MANAGED_FENCE_SCHEMA_TYPEQL}\ndefine\n\
+                     attribute migration_app_label, value string;\n\
+                     attribute migration_applied_at, value datetime;\n\
+                     attribute migration_checksum, value string;\n\
+                     attribute migration_direction, value string;\n\
+                     attribute migration_error, value string;\n\
+                     attribute migration_executor_ip, value string;\n\
+                     attribute migration_executor_mac, value string;\n\
+                     attribute migration_finished_at, value datetime;\n\
+                     attribute migration_id, value string;\n\
+                     attribute migration_name, value string;\n\
+                     attribute migration_run_id, value string;\n\
+                     attribute migration_started_at, value datetime;\n\
+                     attribute migration_status, value string;\n\
+                     entity type_bridge_migration;\n\
+                     entity type_bridge_migration_run;"
+                )))
+            });
+        }
+        if self.managed_core_present || self.legacy_guard_error {
+            return Box::pin(async {
+                Ok(Some(format!(
+                    "{MANAGED_FENCE_SCHEMA_TYPEQL}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}"
+                )))
+            });
+        }
+        if self.legacy_cutover_present {
+            return Box::pin(async {
+                Ok(Some(
+                    r#"define
+attribute typebridge-internal-v2-control-scope, value string;
+attribute typebridge-internal-v2-lease-holder, value string;
+attribute typebridge-internal-v2-lease-fence, value string;
+attribute typebridge-internal-v2-lease-state, value string;
+attribute typebridge-internal-v2-legacy-cutover-key, value string;
+attribute typebridge-internal-v2-legacy-cutover-scope, value string;
+attribute typebridge-internal-v2-legacy-cutover-fingerprint, value string;
+entity typebridge-internal-v2-migration-control;
+entity typebridge-internal-v2-legacy-cutover;
+"#
+                    .to_owned(),
+                ))
+            });
+        }
+        Box::pin(async { Ok(None) })
+    }
+
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
         self.queries
             .lock()
             .unwrap()
             .push((typeql.to_string(), self.tx_type));
+        if typeql.starts_with(LEGACY_WRITER_GUARD_QUERY_TAG) {
+            if self.legacy_guard_error {
+                return Box::pin(async {
+                    Err(OrmError::Connection(
+                        "injected legacy-writer guard failure".to_owned(),
+                    ))
+                });
+            }
+            let result = legacy_guard_result(
+                typeql,
+                self.legacy_cutover_present,
+                self.managed_core_present,
+                self.legacy_ledger_without_anchor,
+                self.malformed_cutover_binding,
+            );
+            return Box::pin(async move { Ok(result) });
+        }
         let result = self
             .responses
             .lock()
@@ -467,6 +879,494 @@ async fn sync_schema_skip_if_exists_no_error() {
         result.is_ok(),
         "skip_if_exists should return Ok: {:?}",
         result.err()
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_rejects_an_anchor_bound_cutover_before_user_typeql() {
+    let backend = MockBackend::with_legacy_cutover();
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("an adopted database must reject the V1 schema writer");
+
+    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    let queries = queries.lock().unwrap();
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| { query.starts_with(LEGACY_WRITER_GUARD_QUERY_TAG) })
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_keeps_a_canonical_cutover_closed_with_a_reserved_function_reference() {
+    let backend = MockBackend::with_writer_fence_schema(
+        canonical_writer_fence_schema_with_function_reference(),
+        true,
+    );
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("a function body reference must not reopen canonical cutover authority");
+
+    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    let queries = queries.lock().unwrap();
+    assert!(
+        queries
+            .iter()
+            .any(|(query, _)| { query.contains(&format!("isa {MANAGED_CONTROL_ENTITY}")) })
+    );
+    assert!(
+        queries
+            .iter()
+            .any(|(query, _)| query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
+    );
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| !query.trim_start().starts_with("define"))
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_keeps_a_canonical_cutover_closed_with_a_structured_user_attribute() {
+    let backend = MockBackend::with_writer_fence_schema(
+        canonical_writer_fence_schema_with_structured_user_attribute(),
+        true,
+    );
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("an unrelated structured value must not reopen canonical cutover authority");
+
+    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    let queries = queries.lock().unwrap();
+    assert!(
+        queries
+            .iter()
+            .any(|(query, _)| { query.contains(&format!("isa {MANAGED_CONTROL_ENTITY}")) })
+    );
+    assert!(
+        queries
+            .iter()
+            .any(|(query, _)| query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
+    );
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| !query.trim_start().starts_with("define"))
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_fails_before_row_probes_for_an_unclassifiable_authority_export() {
+    let export = format!("define attribute {MANAGED_CONTROL_SCOPE}, value");
+    let backend = MockBackend::with_writer_fence_schema(export, false);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("an unclassifiable export mentioning authority must fail closed");
+
+    assert!(error.to_string().contains(
+        "the live schema could not establish absence or exact presence of the managed fence"
+    ));
+    assert!(queries.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn sync_schema_allows_an_unrelated_structured_user_schema() {
+    let backend = MockBackend::with_writer_fence_schema(
+        "define struct payload: field value string; attribute payload-attr, value payload;"
+            .to_owned(),
+        false,
+    );
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    schema
+        .sync_schema(true, false)
+        .await
+        .expect("an unsupported user value shape without authority labels remains V1-writable");
+
+    assert!(queries.lock().unwrap().iter().any(|(query, tx_type)| {
+        *tx_type == TxType::Schema && query.trim_start().starts_with("define")
+    }));
+}
+
+#[tokio::test]
+async fn sync_schema_allows_a_structured_extension_on_an_incomplete_label_collision() {
+    let export = format!(
+        "define\n\
+         struct payload: field value string;\n\
+         attribute payload-attr, value payload;\n\
+         entity {MANAGED_CONTROL_ENTITY}, owns payload-attr;"
+    );
+    let backend = MockBackend::with_writer_fence_schema(export, false);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    schema
+        .sync_schema(true, false)
+        .await
+        .expect("a determinate incomplete label collision remains V1-writable");
+
+    assert!(queries.lock().unwrap().iter().any(|(query, tx_type)| {
+        *tx_type == TxType::Schema && query.trim_start().starts_with("define")
+    }));
+}
+
+#[tokio::test]
+async fn sync_schema_allows_a_structured_value_on_an_incomplete_attribute_collision() {
+    let export = format!(
+        "define\n\
+         struct payload: field value string;\n\
+         attribute {MANAGED_CONTROL_SCOPE}, value payload;"
+    );
+    let backend = MockBackend::with_writer_fence_schema(export, false);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    schema
+        .sync_schema(true, false)
+        .await
+        .expect("a determinate structured attribute collision remains V1-writable");
+
+    assert!(queries.lock().unwrap().iter().any(|(query, tx_type)| {
+        *tx_type == TxType::Schema && query.trim_start().starts_with("define")
+    }));
+}
+
+#[tokio::test]
+async fn sync_schema_keeps_canonical_cutover_closed_with_a_structured_control_extension() {
+    let export = format!(
+        "{MANAGED_FENCE_SCHEMA_TYPEQL}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}\n\
+         define\n\
+         struct payload: field value string;\n\
+         attribute payload-attr, value payload;\n\
+         entity {MANAGED_CONTROL_ENTITY}, owns payload-attr;"
+    );
+    let backend = MockBackend::with_writer_fence_schema(export, true);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("a structured control extension cannot reopen canonical cutover authority");
+
+    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    assert!(
+        queries
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(query, _)| !query.trim_start().starts_with("define"))
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_treats_an_unoccupied_managed_extension_as_a_released_collision() {
+    let export = format!(
+        "{}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}",
+        managed_fence_schema_with_extensions()
+    );
+    let backend = MockBackend::with_writer_fence_schema(export, false);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    schema
+        .sync_schema(true, false)
+        .await
+        .expect("released-only managed extensions without marker rows remain open");
+
+    let queries = queries.lock().unwrap();
+    assert!(
+        queries
+            .iter()
+            .any(|(query, _)| { query.contains(&format!("isa {MANAGED_CONTROL_ENTITY}")) })
+    );
+    assert!(queries.iter().any(|(query, tx_type)| {
+        *tx_type == TxType::Schema && query.trim_start().starts_with("define")
+    }));
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| !query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_fails_before_ledger_probes_when_managed_extensions_have_marker_rows() {
+    let export = format!(
+        "{}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}",
+        managed_fence_schema_with_extensions()
+    );
+    let backend = MockBackend::with_writer_fence_schema(export, true);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("managed marker rows turn a frozen-fact extension into corruption");
+
+    assert!(error.to_string().contains("cutover state is inconsistent"));
+    let queries = queries.lock().unwrap();
+    assert!(
+        queries
+            .iter()
+            .any(|(query, _)| { query.contains(&format!("isa {MANAGED_CONTROL_ENTITY}")) })
+    );
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| !query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
+    );
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| !query.trim_start().starts_with("define"))
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_treats_an_unoccupied_ledger_extension_as_a_released_collision() {
+    let export = format!(
+        "{MANAGED_FENCE_SCHEMA_TYPEQL}\n{}",
+        legacy_ledger_schema_with_extensions()
+    );
+    let backend = MockBackend::with_writer_fence_schema(export, false);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    schema
+        .sync_schema(true, false)
+        .await
+        .expect("released-only ledger extensions without marker rows remain open");
+
+    let queries = queries.lock().unwrap();
+    assert!(queries.iter().any(|(query, tx_type)| {
+        *tx_type == TxType::Schema && query.trim_start().starts_with("define")
+    }));
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| !query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_fails_before_sentinel_probes_when_ledger_extensions_have_marker_rows() {
+    let export = format!(
+        "{MANAGED_FENCE_SCHEMA_TYPEQL}\n{}",
+        legacy_ledger_schema_with_extensions()
+    );
+    let backend = MockBackend::with_writer_fence_schema(export, true);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("ledger marker rows turn a frozen-fact extension into corruption");
+
+    assert!(error.to_string().contains("cutover state is inconsistent"));
+    let queries = queries.lock().unwrap();
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| !query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
+    );
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| !query.trim_start().starts_with("define"))
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_allows_legacy_ledger_lookalikes_beside_an_exact_managed_core() {
+    let backend = MockBackend::with_legacy_name_collision_without_anchor(vec![QueryResult::Ok]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    schema
+        .sync_schema(true, false)
+        .await
+        .expect("legacy labels without frozen owns are not writer-fence authority");
+
+    let queries = queries.lock().unwrap();
+    assert!(queries.iter().any(|(query, tx_type)| {
+        *tx_type == TxType::Schema && query.trim_start().starts_with("define")
+    }));
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| { !query.contains(LEGACY_CUTOVER_SENTINEL_NAME) })
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_allows_complete_cutover_row_lookalikes_without_the_managed_core() {
+    let backend = MockBackend::with_cutover_lookalikes_without_managed_core(vec![QueryResult::Ok]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    schema
+        .sync_schema(true, false)
+        .await
+        .expect("marker-like rows cannot establish authority without the frozen managed core");
+
+    let queries = queries.lock().unwrap();
+    assert!(queries.iter().any(|(query, tx_type)| {
+        *tx_type == TxType::Schema && query.trim_start().starts_with("define")
+    }));
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| { !query.contains(&format!("isa {MANAGED_CONTROL_ENTITY}")) })
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_fails_closed_when_managed_rows_lose_the_frozen_legacy_schema() {
+    for backend in [
+        MockBackend::with_managed_rows_and_missing_legacy_ledger(),
+        MockBackend::with_managed_rows_and_partial_legacy_ledger(),
+    ] {
+        let queries = Arc::clone(&backend.queries);
+        let db = Database::with_backend(Box::new(backend), "testdb");
+        let mut schema = SchemaManager::new(&db);
+        schema.register_entity::<Person>();
+
+        let error = schema
+            .sync_schema(true, false)
+            .await
+            .expect_err("managed control/anchor rows make ledger-schema loss corruption");
+
+        assert!(error.to_string().contains("cutover state is inconsistent"));
+        let queries = queries.lock().unwrap();
+        assert!(
+            queries
+                .iter()
+                .all(|(query, _)| !query.trim_start().starts_with("define"))
+        );
+        assert!(
+            queries
+                .iter()
+                .all(|(query, _)| !query.contains(LEGACY_CUTOVER_SENTINEL_NAME)),
+            "an unproven ledger schema must never be queried: {queries:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sync_schema_fails_closed_on_a_mismatched_anchor_sentinel_pair() {
+    let backend = MockBackend::with_malformed_legacy_cutover();
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("a malformed anchored pair must fail closed");
+
+    assert!(error.to_string().contains("cutover state is inconsistent"));
+    assert!(!error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    let queries = queries.lock().unwrap();
+    assert!(
+        queries
+            .iter()
+            .all(|(query, _)| !query.trim_start().starts_with("define"))
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_never_treats_a_provider_guard_error_as_open() {
+    let backend = MockBackend::with_legacy_guard_error();
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("provider failure must reject the V1 schema writer");
+
+    assert!(matches!(error, OrmError::Connection(_)));
+    assert!(
+        queries
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(query, _)| !query.trim_start().starts_with("define"))
+    );
+}
+
+#[tokio::test]
+async fn sync_schema_fails_closed_when_an_authoritative_backend_cannot_export_schema() {
+    let backend = MockBackend::with_schema_snapshot_error(vec![QueryResult::Ok]);
+    let queries = Arc::clone(&backend.queries);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let mut schema = SchemaManager::new(&db);
+    schema.register_entity::<Person>();
+
+    let error = schema
+        .sync_schema(true, false)
+        .await
+        .expect_err("a real schema-export failure must not bypass an adopted fence");
+
+    assert!(matches!(error, OrmError::Connection(_)));
+    assert!(
+        queries
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(query, _)| !query.trim_start().starts_with("define"))
     );
 }
 

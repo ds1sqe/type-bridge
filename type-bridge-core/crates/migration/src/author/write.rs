@@ -132,6 +132,7 @@ mod tests {
                 dependencies: vec![],
                 operations: vec![],
                 checksum: None,
+                source_sha256: None,
                 reversible: true,
             },
             files: files

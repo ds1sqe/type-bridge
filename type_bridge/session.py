@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import warnings
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, overload
 
 import type_bridge.typedb_driver as typedb_driver
@@ -21,6 +24,79 @@ if TYPE_CHECKING:
     from typedb.driver import Transaction as TypeDBTransaction
 
 logger = logging.getLogger(__name__)
+
+
+def _snapshot_tls_root_ca(path: str) -> tuple[Any, str]:
+    """Capture one Rust-validated, same-handle CA snapshot."""
+    import type_bridge_core
+
+    snapshot = type_bridge_core._CustomRootCaSnapshot(path)
+    return snapshot, os.fspath(snapshot.path)
+
+
+def _resolve_transport_options(
+    address: str,
+    tls: bool | None,
+    tls_root_ca: str | os.PathLike[str] | None,
+) -> tuple[str, bool, str | None]:
+    """Resolve the released Python address inference into explicit TLS inputs."""
+    if tls is not None and type(tls) is not bool:
+        raise TypeError("tls must be True, False, or None")
+
+    root: str | None = None
+    if tls_root_ca is not None:
+        try:
+            root_value = os.fspath(tls_root_ca)
+        except TypeError as error:
+            raise TypeError("tls_root_ca must be a string or path-like object") from error
+        if not isinstance(root_value, str):
+            raise TypeError("tls_root_ca must resolve to a string path")
+        root = root_value
+        if tls is False:
+            raise ValueError("tls_root_ca contradicts explicit tls=False")
+        if tls is None:
+            raise ValueError("tls_root_ca requires explicit tls=True")
+        if not root:
+            raise ValueError("tls_root_ca must not be empty")
+
+    # Preserve the released, case-sensitive inference exactly. Explicit false
+    # overrides an https:// prefix; mixed/upper-case spellings do not infer TLS.
+    tls_enabled = address.startswith("https://") if tls is None else tls
+    normalized_scheme = address.lower()
+    if normalized_scheme.startswith("https://"):
+        # A mixed-case HTTPS spelling did not enable TLS in the released
+        # case-sensitive inference. Preserve it until the preparation boundary
+        # can reject it; silently stripping it would turn an upstream scheme
+        # mismatch into a plaintext connection.
+        plain_address = (
+            address[len("https://") :]
+            if address.startswith("https://") or tls is not None
+            else address
+        )
+    elif normalized_scheme.startswith("http://"):
+        plain_address = address[len("http://") :]
+    else:
+        plain_address = address
+    return plain_address, tls_enabled, root
+
+
+@dataclass(frozen=True, slots=True)
+class _ConnectionIdentity:
+    address: str
+    database: str
+    username: str | None
+    password: str | None
+    http_port: int
+    server_version: str | None
+    tls_enabled: bool
+    tls_argument: bool | None
+    configured_tls_root_ca: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedConnection:
+    identity: _ConnectionIdentity
+    tls_root_ca_snapshot: str | None
 
 
 def _tx_type_name(tx_type: TransactionType) -> str:
@@ -175,6 +251,8 @@ class Database:
         *,
         http_port: int = typedb_driver.DEFAULT_HTTP_PORT,
         server_version: str | None = None,
+        tls: bool | None = None,
+        tls_root_ca: str | os.PathLike[str] | None = None,
     ):
         """Initialize database connection.
 
@@ -191,15 +269,115 @@ class Database:
             server_version: Exact TypeDB server version to use for connect-time
                 validation instead of probing the HTTP API. Use this for
                 gRPC-only deployments with the HTTP API disabled.
+            tls: Explicit TLS policy. ``True`` uses native roots, ``False``
+                disables TLS, and omission preserves the released exact
+                lowercase ``https://`` address-prefix inference.
+            tls_root_ca: PEM root-CA path for an explicitly enabled TLS
+                connection. A root path never enables TLS implicitly.
         """
+        # Establish destructor-safe ownership state before any validation can
+        # raise. Python may invoke ``__del__`` for an object whose ``__init__``
+        # exited early, including the fail-closed TLS checks below.
+        self._driver: Driver | None = driver
+        self._owns_driver: bool = driver is None
+        self._tls_root_ca_snapshot: Any | None = None
+        self._tls_root_ca_snapshot_path: str | None = None
+        self._transport_lock = threading.RLock()
+        self._prepared_connection: _PreparedConnection | None = None
+        self._transport_committed = False
         self.address = address
+
+        # Reject contradictory or ill-typed policy before any connect path can
+        # create a native host. The resolved value is recalculated at connect
+        # time so mutation of the released public attributes keeps working.
+        _, _, normalized_tls_root_ca = _resolve_transport_options(address, tls, tls_root_ca)
         self.database_name = database
         self.username = username
         self.password = password
         self.http_port = http_port
         self.server_version = server_version
-        self._driver: Driver | None = driver
-        self._owns_driver: bool = driver is None  # Track ownership
+        self.tls = tls
+        self.tls_root_ca = normalized_tls_root_ca
+
+    def _resolved_transport_options(self) -> tuple[str, bool, str | None]:
+        return _resolve_transport_options(self.address, self.tls, self.tls_root_ca)
+
+    def _current_connection_identity(self) -> _ConnectionIdentity:
+        address, tls_enabled, tls_root_ca = self._resolved_transport_options()
+        if (
+            self.tls is None
+            and self.address.lower().startswith("https://")
+            and not self.address.startswith("https://")
+        ):
+            raise ValueError(
+                "mixed-case HTTPS scheme does not enable TLS; use lowercase https:// "
+                "or pass tls=True explicitly"
+            )
+        return _ConnectionIdentity(
+            address=address,
+            database=self.database_name,
+            username=self.username,
+            password=self.password,
+            http_port=self.http_port,
+            server_version=self.server_version,
+            tls_enabled=tls_enabled,
+            tls_argument=(
+                tls_enabled if self.tls is not None or self.address.startswith("https://") else None
+            ),
+            configured_tls_root_ca=tls_root_ca,
+        )
+
+    def _prepared_connection_options(self) -> _PreparedConnection:
+        """Bind and retain one complete connection/transport identity.
+
+        The Rust ORM and the lazily constructed direct Python driver both call
+        this boundary while holding ``_transport_lock``. Once either path first
+        consumes the configuration, a later consumer must observe the same
+        address, credentials, version gate, TLS policy, and custom-root bytes.
+        """
+        with self._transport_lock:
+            identity = self._current_connection_identity()
+            prepared = self._prepared_connection
+            if prepared is not None:
+                if identity != prepared.identity:
+                    raise ValueError(
+                        "connection settings changed after transport preparation; "
+                        "call close() before reconfiguring this Database"
+                    )
+                return _PreparedConnection(
+                    prepared.identity,
+                    self._retained_tls_root_ca_path(),
+                )
+
+            snapshot_path: str | None = None
+            if identity.configured_tls_root_ca is not None:
+                snapshot, snapshot_path = _snapshot_tls_root_ca(identity.configured_tls_root_ca)
+                self._tls_root_ca_snapshot = snapshot
+                self._tls_root_ca_snapshot_path = snapshot_path
+            prepared = _PreparedConnection(identity, snapshot_path)
+            self._prepared_connection = prepared
+            return prepared
+
+    def _retained_tls_root_ca_path(self) -> str | None:
+        """Rewind and return the retained core snapshot's driver path."""
+        snapshot = self._tls_root_ca_snapshot
+        if snapshot is None:
+            return None
+        path = os.fspath(snapshot.path)
+        self._tls_root_ca_snapshot_path = path
+        return path
+
+    def _discard_uncommitted_transport(self) -> None:
+        """Drop a failed first-attempt snapshot when no backend owns it."""
+        with self._transport_lock:
+            if self._transport_committed:
+                return
+            snapshot = self._tls_root_ca_snapshot
+            if snapshot is not None:
+                snapshot.cleanup()
+            self._tls_root_ca_snapshot = None
+            self._tls_root_ca_snapshot_path = None
+            self._prepared_connection = None
 
     def connect(self) -> None:
         """Connect to TypeDB server through the Rust runtime.
@@ -222,67 +400,190 @@ class Database:
 
     def _connect_python_driver(self) -> None:
         """Connect using the external Python TypeDB driver for direct driver access."""
-        if self._driver is not None:
-            return
+        with self._transport_lock:
+            if self._driver is not None:
+                return
 
-        logger.debug(
-            f"Connecting Python TypeDB driver at {self.address} (database: {self.database_name})"
-        )
-        is_tls_enabled = self.address.startswith("https://")
-        logger.debug(f"TLS enabled: {is_tls_enabled}")
-
-        detected_driver = typedb_driver.driver_version()
-        typedb_driver._ensure_driver_interpreter_supported(detected_driver)
-        detected_server = (
-            self.server_version
-            if self.server_version is not None
-            else typedb_driver.server_version(
-                self.address,
-                http_port=self.http_port,
-                tls=is_tls_enabled,
+            logger.debug(
+                f"Connecting Python TypeDB driver at {self.address} "
+                f"(database: {self.database_name})"
             )
-        )
-        version.ensure_supported(detected_driver, detected_server)
-        version.ensure_runtime_supported(detected_server)
-        logger.debug(f"Version gate passed: driver={detected_driver}, server={detected_server}")
+            try:
+                prepared = self._prepared_connection_options()
+                identity = prepared.identity
+                tls_root_ca = prepared.tls_root_ca_snapshot
+                logger.debug(f"TLS enabled: {identity.tls_enabled}")
 
-        driver_options = create_driver_options(is_tls_enabled=is_tls_enabled)
-        credentials = (
-            Credentials(self.username, self.password) if self.username and self.password else None
-        )
-
-        try:
-            if credentials:
-                logger.debug("Using provided credentials for authentication")
-                self._driver = TypeDB.driver(self.address, credentials, driver_options)
-            else:
-                logger.debug("Using default credentials for local connection")
-                self._driver = TypeDB.driver(
-                    self.address, Credentials("admin", "password"), driver_options
+                detected_driver = typedb_driver.driver_version()
+                typedb_driver._ensure_driver_interpreter_supported(detected_driver)
+                if identity.server_version is not None:
+                    detected_server = identity.server_version
+                elif tls_root_ca is None:
+                    detected_server = typedb_driver.server_version(
+                        identity.address,
+                        http_port=identity.http_port,
+                        tls=identity.tls_enabled,
+                    )
+                else:
+                    tls_root_ca = self._retained_tls_root_ca_path()
+                    assert tls_root_ca is not None
+                    detected_server = typedb_driver.server_version(
+                        identity.address,
+                        http_port=identity.http_port,
+                        tls=identity.tls_enabled,
+                        tls_root_ca=tls_root_ca,
+                    )
+                version.ensure_supported(detected_driver, detected_server)
+                version.ensure_runtime_supported(detected_server)
+                logger.debug(
+                    f"Version gate passed: driver={detected_driver}, server={detected_server}"
                 )
-            self._owns_driver = True
-            logger.info(f"Connected Python TypeDB driver at {self.address}")
-        except Exception as e:
-            logger.error(f"Failed to connect Python TypeDB driver at {self.address}: {e}")
-            raise
+
+                if tls_root_ca is None:
+                    driver_options = create_driver_options(is_tls_enabled=identity.tls_enabled)
+                else:
+                    tls_root_ca = self._retained_tls_root_ca_path()
+                    assert tls_root_ca is not None
+                    driver_options = create_driver_options(
+                        is_tls_enabled=identity.tls_enabled,
+                        tls_root_ca=tls_root_ca,
+                    )
+                credentials = (
+                    Credentials(identity.username, identity.password)
+                    if identity.username and identity.password
+                    else None
+                )
+
+                if credentials:
+                    logger.debug("Using provided credentials for authentication")
+                    self._driver = TypeDB.driver(identity.address, credentials, driver_options)
+                else:
+                    logger.debug("Using default credentials for local connection")
+                    self._driver = TypeDB.driver(
+                        identity.address,
+                        Credentials("admin", "password"),
+                        driver_options,
+                    )
+                self._owns_driver = True
+                self._transport_committed = True
+                logger.info(f"Connected Python TypeDB driver at {self.address}")
+            except Exception as error:
+                self._discard_uncommitted_transport()
+                logger.error(f"Failed to connect Python TypeDB driver at {self.address}: {error}")
+                raise
 
     def close(self) -> None:
         """Close connection to TypeDB server.
 
         If the driver was injected via __init__, this method only clears the
         reference without closing the driver (the caller retains ownership).
-        If the driver was created internally, it will be closed.
+        If the driver was created internally, the owned Python driver closes
+        first. If that close fails, the complete
+        transport remains attached for a released-style retry. After it
+        succeeds, embedded-Rust and snapshot cleanup are attempted. A Rust
+        close failure is logged and masked to preserve the released Python
+        ``Database.close()`` contract; snapshot failures retain their normal
+        error behavior.
         """
-        if self._driver:
-            if self._owns_driver:
-                logger.debug(f"Closing connection to TypeDB at {self.address}")
-                self._driver.close()
-                logger.info(f"Disconnected from TypeDB at {self.address}")
-            else:
-                logger.debug("Clearing driver reference (external driver, not closing)")
-            self._driver = None
-        if hasattr(self, "_rust_backend_database"):
-            delattr(self, "_rust_backend_database")
+        first_error: Exception | None = None
+        with self._transport_lock:
+            # Detach every owned resource before calling external cleanup code.
+            # This makes repeated and re-entrant close calls harmless even when
+            # one of the cleanup operations fails.
+            driver = self._driver
+            owns_driver = self._owns_driver
+            # The released close path used `if self._driver:` rather than an
+            # identity check. Preserve that observable injection seam: a
+            # falsey driver double is neither closed nor detached, and an
+            # exception from its truth probe occurs before any cleanup state
+            # is mutated.
+            released_driver_present = bool(driver) if driver is not None else False
+            had_rust_database = hasattr(self, "_rust_backend_database")
+            rust_database = getattr(self, "_rust_backend_database", None)
+            snapshot = self._tls_root_ca_snapshot
+            snapshot_path = self._tls_root_ca_snapshot_path
+            prepared = self._prepared_connection
+            transport_committed = self._transport_committed
+            if released_driver_present:
+                self._driver = None
+            if hasattr(self, "_rust_backend_database"):
+                delattr(self, "_rust_backend_database")
+            self._tls_root_ca_snapshot = None
+            self._tls_root_ca_snapshot_path = None
+            self._prepared_connection = None
+            self._transport_committed = False
+
+            python_close_failed = False
+            if released_driver_present:
+                assert driver is not None
+                if owns_driver:
+                    logger.debug(f"Closing connection to TypeDB at {self.address}")
+                    try:
+                        driver.close()
+                    except Exception as error:
+                        first_error = error
+                        python_close_failed = True
+                    else:
+                        logger.info(f"Disconnected from TypeDB at {self.address}")
+                else:
+                    logger.debug("Clearing driver reference (external driver, not closing)")
+
+            restored_failed_transport = False
+            if python_close_failed and self._driver is None:
+                # Released close() left the complete owned transport attached
+                # when its first (Python-driver) close raised. Restore that
+                # ordering and retry state unless re-entrant work installed a
+                # replacement while the external close callback was running.
+                self._driver = driver
+                self._owns_driver = owns_driver
+                if had_rust_database:
+                    setattr(self, "_rust_backend_database", rust_database)
+                self._tls_root_ca_snapshot = snapshot
+                self._tls_root_ca_snapshot_path = snapshot_path
+                self._prepared_connection = prepared
+                self._transport_committed = transport_committed
+                restored_failed_transport = True
+
+            if not restored_failed_transport and rust_database is not None:
+                try:
+                    rust_close = getattr(rust_database, "close", None)
+                    # Older test doubles and third-party compatibility shims
+                    # may predate the explicit native-close seam. Real Rust
+                    # handles always expose it; legacy stand-ins remain safely
+                    # releasable.
+                    if callable(rust_close):
+                        rust_close()
+                except Exception:
+                    logger.warning("Embedded Rust backend cleanup failed; releasing the handle")
+
+            if not restored_failed_transport and snapshot is not None:
+                try:
+                    snapshot.cleanup()
+                except Exception as error:
+                    if first_error is None:
+                        first_error = error
+
+        if first_error is not None:
+            raise first_error
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Preserve released pickling for pristine connection configs."""
+        with self._transport_lock:
+            if self._prepared_connection is not None:
+                raise TypeError("a Database with prepared transport cannot be pickled")
+            state = self.__dict__.copy()
+            state.pop("_transport_lock", None)
+            return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        state.setdefault("tls", None)
+        state.setdefault("tls_root_ca", None)
+        state.setdefault("_tls_root_ca_snapshot", None)
+        state.setdefault("_tls_root_ca_snapshot_path", None)
+        state.setdefault("_prepared_connection", None)
+        state.setdefault("_transport_committed", False)
+        self.__dict__.update(state)
+        self._transport_lock = threading.RLock()
 
     def __enter__(self) -> Database:
         """Context manager entry."""
@@ -296,26 +597,38 @@ class Database:
 
     def __del__(self) -> None:
         """Destructor that warns if driver was not properly closed."""
-        if self._driver is not None and self._owns_driver:
-            warnings.warn(
-                f"Database connection to {self.address} was not closed. "
-                "Use 'with Database(...) as db:' or call db.close() explicitly.",
-                ResourceWarning,
-                stacklevel=2,
-            )
-            # Attempt to close to prevent resource leak
-            try:
-                self._driver.close()
-            except Exception:
-                pass  # Ignore errors during cleanup
+        lock = getattr(self, "_transport_lock", None)
+        if lock is None:
+            return
+        with lock:
+            driver = getattr(self, "_driver", None)
+            if driver is not None and getattr(self, "_owns_driver", False):
+                warnings.warn(
+                    f"Database connection to {getattr(self, 'address', '<unknown>')} was not "
+                    "closed. Use 'with Database(...) as db:' or call db.close() explicitly.",
+                    ResourceWarning,
+                    stacklevel=2,
+                )
+                # Attempt to close to prevent resource leak
+                try:
+                    driver.close()
+                except Exception:
+                    pass  # Ignore errors during cleanup
+            snapshot = getattr(self, "_tls_root_ca_snapshot", None)
+            if snapshot is not None:
+                try:
+                    snapshot.cleanup()
+                except Exception:
+                    pass
 
     @property
     def driver(self) -> Driver:
         """Get the TypeDB driver, connecting if necessary."""
-        if self._driver is None:
-            self._connect_python_driver()
-        assert self._driver is not None, "Driver should be initialized after connect()"
-        return self._driver
+        with self._transport_lock:
+            if self._driver is None:
+                self._connect_python_driver()
+            assert self._driver is not None, "Driver should be initialized after connect()"
+            return self._driver
 
     def create_database(self) -> None:
         """Create the database if it doesn't exist."""

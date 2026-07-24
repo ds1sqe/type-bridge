@@ -69,6 +69,26 @@ result = schema.validate_query(clauses)
 print(result)  # {"is_valid": true, "errors": []}
 ```
 
+## Prepared V2 remote execution
+
+The module exposes `query_v2_authority(...)`, `query_v2_prepare_remote(...)`,
+and the returned one-shot `PendingQueryV2Remote` handle for canonical Rust V2
+plans. The capability-advertisement bytes passed to preparation are an explicit
+trust input: obtain them over authenticated TLS for the intended executor, or
+pin/provision their exact bytes or fingerprint out of band. Fetching
+`/v2/capabilities` over unauthenticated HTTP is discovery only; it cannot
+authenticate the reply-signing key supplied by an intermediary.
+
+Preparation pins the advertisement, executor epoch, signing key and key ID.
+`decode_reply(...)` accepts exactly one signed response and authenticates its
+outer envelope before constructing a typed outcome. The `max_bytes` request
+argument limits the complete signed wire size of a successful typed response;
+authenticated structured failures instead use the protocol hard ceiling, so a
+zero or otherwise tiny success budget still surfaces its bound diagnostic.
+Replay or foreign request bindings are rejected with stable V2 diagnostics. A
+standalone executor rotates its epoch and signing identity on restart, so
+authenticate and accept the replacement advertisement explicitly.
+
 ## License
 
 MIT

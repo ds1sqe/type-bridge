@@ -454,7 +454,7 @@ class TestCreateDriverOptionsBandNone:
         assert "type-bridge[typedb-driver]" in msg
         assert "typedb-driver~=3.10" not in msg
         if sys.version_info >= (3, 14):
-            assert "driver 3.12.0" in msg
+            assert "driver 3.12.1" in msg
             assert "TypeDB 3.12" in msg
 
     def test_python314_rejects_band8_before_native_option_constructors(
@@ -1032,6 +1032,7 @@ class TestSchemaAnnotationGate:
 
     def test_sync_schema_gates_annotations_before_apply(self, monkeypatch):
         """The gate must fire on the generated TypeQL before any transaction."""
+        from type_bridge import _rust_runtime
         from type_bridge.migration.schema_manager import SchemaManager
 
         db = MagicMock()
@@ -1039,6 +1040,11 @@ class TestSchemaAnnotationGate:
         schema_text = 'define\nentity gate-person @doc("Gated.");'
         monkeypatch.setattr(manager, "generate_schema", lambda: schema_text)
         monkeypatch.setattr(manager, "has_existing_schema", lambda: False)
+        monkeypatch.setattr(
+            _rust_runtime,
+            "require_legacy_writer_open_in_transaction",
+            lambda _tx: None,
+        )
 
         manager.sync_schema()
 

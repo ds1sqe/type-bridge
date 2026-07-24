@@ -5,16 +5,29 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
     BindingTarget, CompleteReadProjection, CreateProjection, DeclarationProjection, EmissionPlan,
-    ModelProjection, ProjectedMultiplicity, ProjectionConfig, ProjectionHandler,
-    QueryTokenProjection, ReadRoleProjection, ReferenceReadProjection, RuntimeProjection,
-    TargetIdentifier,
+    ModelProjection, ProjectedAnnotation, ProjectedMultiplicity, ProjectionConfig,
+    ProjectionHandler, QueryTokenProjection, ReadRoleProjection, ReferenceReadProjection,
+    RuntimeProjection, TargetIdentifier,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
+use type_bridge_contract::schema::{
+    AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DocText, SchemaAnnotationValue,
+    ValueFactId,
+};
 use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
 use type_bridge_contract::value::Cardinality;
 
 fn fixture() -> RuntimeProjection {
     let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let annotation_id = AnnotationFactId::new(
+        AnnotationSubjectId::Type(person.clone()),
+        AnnotationKindId::Doc,
+    );
+    let annotation = ProjectedAnnotation::new(
+        annotation_id.clone(),
+        SchemaAnnotationValue::Doc(DocText::new("A person.").unwrap()),
+    )
+    .unwrap();
     let model = ModelProjection::new(
         person.clone(),
         TargetIdentifier::python("Person").unwrap(),
@@ -23,7 +36,7 @@ fn fixture() -> RuntimeProjection {
             None,
             false,
             true,
-            BTreeMap::new(),
+            BTreeMap::from([(annotation_id, annotation)]),
             vec![],
             BTreeMap::new(),
             BTreeSet::new(),
@@ -176,6 +189,50 @@ fn noncanonical_and_tampered_projection_bytes_fail_closed() {
             .as_str(),
         "runtime_projection_fingerprint_mismatch",
     );
+}
+
+fn decode_mutated_projection(
+    runtime: &RuntimeProjection,
+    mutate: impl FnOnce(&mut serde_json::Value),
+) -> type_bridge_contract::diagnostic::Diagnostic {
+    let semantic = to_canonical_json(runtime.semantic_fingerprint()).unwrap();
+    let binding = to_canonical_json(runtime.projection_fingerprint()).unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&to_canonical_json(runtime).unwrap()).unwrap();
+    mutate(&mut value);
+    decode_runtime_projection_verified(&to_canonical_json(&value).unwrap(), &semantic, &binding)
+        .unwrap_err()
+}
+
+#[test]
+fn projection_wire_rejects_invalid_annotation_subjects_and_payloads() {
+    let runtime = fixture();
+    let error = decode_mutated_projection(&runtime, |value| {
+        value["models"][0]["declaration"]["annotations"][0]["id"]["subject"] =
+            serde_json::to_value(AnnotationSubjectId::Value(ValueFactId::new(
+                type_bridge_contract::id::AttributeId::new("person").unwrap(),
+            )))
+            .unwrap();
+    });
+    assert_eq!(error.code().as_str(), "invalid_annotation_subject");
+
+    let error = decode_mutated_projection(&runtime, |value| {
+        value["models"][0]["declaration"]["annotations"][0]["value"] =
+            serde_json::to_value(SchemaAnnotationValue::Presence).unwrap();
+    });
+    assert_eq!(error.code().as_str(), "invalid_annotation_payload");
+}
+
+#[test]
+fn projection_wire_rejects_duplicate_annotations_before_map_rebuild() {
+    let runtime = fixture();
+    let error = decode_mutated_projection(&runtime, |value| {
+        let annotations = value["models"][0]["declaration"]["annotations"]
+            .as_array_mut()
+            .unwrap();
+        annotations.push(annotations[0].clone());
+    });
+    assert_eq!(error.code().as_str(), "duplicate_projected_annotation");
 }
 
 #[test]

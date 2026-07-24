@@ -274,6 +274,35 @@ def test_typed_hidden_witnesses_deduplicate_selected_identity(typed_query_graph)
 
 
 @pytest.mark.integration
+def test_typed_exact_one_scans_past_duplicate_hidden_witnesses(
+    typed_query_graph,
+) -> None:
+    session = QuerySession(typed_query_graph)
+    person = session.var(LivePerson, subtypes=True)
+    employment = session.var(LiveEmployment)
+    company = session.var(LiveCompany)
+    query = (
+        session.query(person)
+        .match(employment, company)
+        .where(
+            employment.role(LiveEmployment.employee).connects(person),
+            employment.role(LiveEmployment.employer).connects(company),
+        )
+    )
+
+    # Alice has multiple hidden employment witnesses, but cardinality belongs
+    # to the distinct selected person identity rather than provider rows.
+    rows = query.rows(
+        limit=10,
+        order_by=(person.field(LIVE_PERSON_NAME).asc(),),
+    )
+    assert [_name(value) for value in rows] == ["Alice", "Bob", "Dave"]
+    with pytest.raises(type_bridge_core.MatchRequestError) as multiple:
+        query.one()
+    assert multiple.value.code == "not_unique"
+
+
+@pytest.mark.integration
 def test_typed_five_slot_cycle_and_complete_relation_hydration(typed_query_graph) -> None:
     session = QuerySession(typed_query_graph)
     first_person = session.var(LivePerson, subtypes=True)

@@ -5,9 +5,10 @@ use std::sync::Mutex;
 
 use common::{CoordinatorProvider, CoordinatorStore, block_on};
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
-use type_bridge_contract::codec::FormatVersion;
+use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::limits::{MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_STRING_BYTES};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::{
     MigrationAppLabel, MigrationId, MigrationName, MigrationStep, MigrationStepId, SchemaDeltaStep,
@@ -20,12 +21,12 @@ use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta,
 };
 use type_bridge_schema_migration::{
-    LeaseHolderId, LegacyMigrationChecksum, LegacyMigrationReference, MigrationApplyTarget,
-    MigrationExecutionOutcome, MigrationHistoryGraph, MigrationSafetyPolicy, SchemaLoweringBinding,
-    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge,
-    build_verified_manifest, build_verified_migration_apply_plan, decode_verified_manifest,
-    encode_verified_manifest, execute_verified_migration_apply_plan, typedb_3_12_1_profile,
-    verified_manifest_digest,
+    LeaseHolderId, LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationId,
+    LegacyMigrationReference, MigrationApplyTarget, MigrationExecutionOutcome,
+    MigrationHistoryGraph, MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
+    VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge, build_verified_manifest,
+    build_verified_migration_apply_plan, decode_verified_manifest, encode_verified_manifest,
+    execute_verified_migration_apply_plan, typedb_3_12_1_profile, verified_manifest_digest,
 };
 
 fn migration_id(name: &str) -> MigrationId {
@@ -40,6 +41,20 @@ fn legacy_reference(name: &str, checksum: &str) -> LegacyMigrationReference {
         migration_id(name),
         LegacyMigrationChecksum::new(checksum).expect("fixture legacy checksum"),
     )
+}
+
+fn legacy_applied_set(references: &[LegacyMigrationReference]) -> LegacyAppliedSetDigest {
+    LegacyAppliedSetDigest::compute(references.to_vec()).expect("fixture legacy applied set")
+}
+
+fn build_bridge(
+    id: MigrationId,
+    references: Vec<LegacyMigrationReference>,
+    head: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<VerifiedSchemaMigrationManifest, type_bridge_contract::diagnostic::Diagnostic> {
+    let applied_set = legacy_applied_set(&references);
+    build_legacy_frontier_bridge(id, references, applied_set, head, context)
 }
 
 fn type_fact(label: &str) -> SchemaFact {
@@ -122,7 +137,7 @@ fn ordinary_manifest(
 fn bridge_builds_round_trips_and_binds_the_frontier() {
     let head = declared(&["person"]);
     let context = context();
-    let bridge = build_legacy_frontier_bridge(
+    let bridge = build_bridge(
         migration_id("0000_legacy_frontier"),
         vec![
             legacy_reference("0002_addresses", "00c0ffee00c0ffee"),
@@ -153,12 +168,62 @@ fn bridge_builds_round_trips_and_binds_the_frontier() {
     );
 
     let bytes = encode_verified_manifest(&bridge).expect("bridge encoding");
+    let encoded: serde_json::Value = serde_json::from_slice(&bytes).expect("bridge JSON");
+    assert_eq!(
+        encoded["legacy_parents"][0],
+        serde_json::json!({
+            "app_label": "example",
+            "checksum": {
+                "algorithm": "python-source-sha256/16",
+                "value": "0123456789abcdef",
+            },
+            "name": "0001_initial",
+        }),
+        "portable legacy references retain the original wire shape",
+    );
+    assert_eq!(
+        encoded["legacy_applied_set"],
+        serde_json::json!({
+            "algorithm": "sha256",
+            "canonicalization": "typebridge.legacy-applied-set/v1",
+            "digest": bridge.legacy_applied_set().expect("applied set").as_str(),
+        }),
+        "the complete applied-set binding is mandatory and self-describing",
+    );
     let decoded = decode_verified_manifest(&bytes, (&head, &context)).expect("bridge decoding");
     assert_eq!(decoded, bridge);
 
+    let mut missing_applied_set = encoded.clone();
+    missing_applied_set
+        .as_object_mut()
+        .expect("manifest object")
+        .remove("legacy_applied_set");
+    let error = decode_verified_manifest(
+        &to_canonical_json(&missing_applied_set).expect("tampered canonical encoding"),
+        (&head, &context),
+    )
+    .expect_err("bridge wire without its complete applied set must reject");
+    assert_eq!(
+        error.code().as_str(),
+        "migration_manifest_legacy_applied_set_missing"
+    );
+
+    let mut foreign_vocabulary = encoded.clone();
+    foreign_vocabulary["legacy_applied_set"]["canonicalization"] =
+        serde_json::json!("typebridge.legacy-applied-set/v999");
+    let error = decode_verified_manifest(
+        &to_canonical_json(&foreign_vocabulary).expect("tampered canonical encoding"),
+        (&head, &context),
+    )
+    .expect_err("foreign applied-set vocabulary must reject");
+    assert_eq!(
+        error.code().as_str(),
+        "migration_manifest_legacy_applied_set_contract"
+    );
+
     // The recorded frontier is digest-bound: a different tagged checksum is
     // a different bridge identity.
-    let tampered = build_legacy_frontier_bridge(
+    let tampered = build_bridge(
         migration_id("0000_legacy_frontier"),
         vec![
             legacy_reference("0002_addresses", "00c0ffee00c0ffee"),
@@ -175,13 +240,112 @@ fn bridge_builds_round_trips_and_binds_the_frontier() {
 }
 
 #[test]
+fn bridge_round_trips_nonportable_released_frontier_identity_losslessly() {
+    let head = declared(&["person"]);
+    let context = context();
+    let legacy_id = LegacyMigrationId::new("Legacy App: Ω", "0002_A:B with space")
+        .expect("released UTF-8 identity is bounded but need not use V2 grammar");
+    let bridge = build_bridge(
+        migration_id("0000_legacy_frontier"),
+        vec![LegacyMigrationReference::new(
+            legacy_id,
+            LegacyMigrationChecksum::new("0123456789abcdef").expect("legacy checksum"),
+        )],
+        &head,
+        &context,
+    )
+    .expect("nonportable frontier bridge");
+
+    let bytes = encode_verified_manifest(&bridge).expect("bridge encodes");
+    let encoded: serde_json::Value = serde_json::from_slice(&bytes).expect("bridge JSON");
+    assert_eq!(encoded["legacy_parents"][0]["app_label"], "Legacy App: Ω");
+    assert_eq!(encoded["legacy_parents"][0]["name"], "0002_A:B with space");
+    let decoded = decode_verified_manifest(&bytes, (&head, &context)).expect("bridge decodes");
+    assert_eq!(
+        decoded.legacy_parents()[0].id().app_label().as_str(),
+        "Legacy App: Ω"
+    );
+    assert_eq!(
+        decoded.legacy_parents()[0].id().name().as_str(),
+        "0002_A:B with space"
+    );
+
+    assert!(LegacyMigrationId::new("", "0001_initial").is_err());
+    assert!(LegacyMigrationId::new("example", "").is_err());
+    assert!(
+        LegacyMigrationId::new("x".repeat(MAX_CANONICAL_STRING_BYTES + 1), "0001_initial").is_err()
+    );
+}
+
+#[test]
+fn complete_applied_set_digest_is_unambiguous_order_independent_and_bounded() {
+    let first = LegacyMigrationReference::new(
+        LegacyMigrationId::new("a", "bc").expect("first identity"),
+        LegacyMigrationChecksum::new("0123456789abcdef").expect("checksum"),
+    );
+    let second = LegacyMigrationReference::new(
+        LegacyMigrationId::new("ab", "c").expect("second identity"),
+        LegacyMigrationChecksum::new("0123456789abcdef").expect("checksum"),
+    );
+    let unicode = LegacyMigrationReference::new(
+        LegacyMigrationId::new("应用 Ω", "迁移 🚀").expect("UTF-8 identity"),
+        LegacyMigrationChecksum::new("fedcba9876543210").expect("checksum"),
+    );
+
+    let ordered = LegacyAppliedSetDigest::compute([first.clone(), second.clone(), unicode.clone()])
+        .expect("ordered digest");
+    let reordered = LegacyAppliedSetDigest::compute([unicode, second.clone(), first.clone()])
+        .expect("reordered digest");
+    assert_eq!(ordered, reordered, "row order is not semantic");
+    assert_ne!(
+        LegacyAppliedSetDigest::compute([first]).expect("first digest"),
+        LegacyAppliedSetDigest::compute([second]).expect("second digest"),
+        "length prefixes must distinguish component boundaries",
+    );
+
+    let too_many = vec![
+        legacy_reference("0001_initial", "0123456789abcdef");
+        MAX_CANONICAL_COLLECTION_LEN + 1
+    ];
+    let error = LegacyAppliedSetDigest::compute(too_many)
+        .expect_err("the digest collector must reject an oversized set before sorting");
+    assert_eq!(
+        error.code().as_str(),
+        "migration_legacy_applied_set_too_many_rows"
+    );
+}
+
+#[test]
+fn bridge_constructor_bounds_the_independent_frontier_vector() {
+    let parents = vec![
+        legacy_reference("0001_initial", "0123456789abcdef");
+        MAX_CANONICAL_COLLECTION_LEN + 1
+    ];
+    let applied_set = legacy_applied_set(&[legacy_reference("0001_initial", "0123456789abcdef")]);
+    let error = SchemaMigrationDraft::legacy_bridge(
+        migration_id("0000_legacy_frontier"),
+        parents,
+        applied_set,
+    )
+    .expect_err("the independently supplied frontier must be bounded before sorting");
+    assert_eq!(
+        error.code().as_str(),
+        "migration_manifest_legacy_frontier_too_large"
+    );
+}
+
+#[test]
 fn bridge_invariants_fail_closed() {
     let head = declared(&["person"]);
     let context = context();
 
-    let empty =
-        SchemaMigrationDraft::legacy_bridge(migration_id("0000_legacy_frontier"), Vec::new())
-            .expect_err("an empty legacy frontier is not a bridge");
+    let fixture_set = legacy_applied_set(&[legacy_reference("0001_initial", "0123456789abcdef")]);
+    let empty = SchemaMigrationDraft::legacy_bridge(
+        migration_id("0000_legacy_frontier"),
+        Vec::new(),
+        fixture_set.clone(),
+    )
+    .expect_err("an empty legacy frontier is not a bridge");
     assert_eq!(
         empty.code().as_str(),
         "migration_manifest_empty_legacy_frontier"
@@ -193,6 +357,7 @@ fn bridge_invariants_fail_closed() {
             legacy_reference("0001_initial", "0123456789abcdef"),
             legacy_reference("0001_initial", "fedcba9876543210"),
         ],
+        fixture_set,
     )
     .expect_err("a legacy identity may enter the frontier once");
     assert_eq!(
@@ -228,7 +393,7 @@ fn bridged_lineage_admits_no_root_beside_the_bridge() {
     let head = declared(&["person"]);
     let target = declared(&["company", "person"]);
     let context = context();
-    let bridge = build_legacy_frontier_bridge(
+    let bridge = build_bridge(
         migration_id("0000_legacy_frontier"),
         vec![legacy_reference("0001_initial", "0123456789abcdef")],
         &head,
@@ -255,7 +420,7 @@ fn bridged_lineage_admits_no_root_beside_the_bridge() {
         "migration_history_root_beside_legacy_bridge"
     );
 
-    let second_bridge = build_legacy_frontier_bridge(
+    let second_bridge = build_bridge(
         migration_id("0000_second_frontier"),
         vec![legacy_reference("0009_other", "fedcba9876543210")],
         &head,
@@ -275,7 +440,7 @@ fn bridge_applies_as_a_pure_ledger_checkpoint() {
     let head = declared(&["person"]);
     let target = declared(&["company", "person"]);
     let context = context();
-    let bridge = build_legacy_frontier_bridge(
+    let bridge = build_bridge(
         migration_id("0000_legacy_frontier"),
         vec![legacy_reference("0001_initial", "0123456789abcdef")],
         &head,

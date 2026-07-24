@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use type_bridge_contract::capability::CapabilityId;
@@ -15,8 +16,9 @@ use type_bridge_schema_migration::{MigrationSafetyPolicy, SafetyClass, SafetyPol
 use crate::{
     ExtensionRequirement, MigrationV2Directory, OutputDirectory, SchemaSetPath, SecretReference,
     SecretSlot, TypeBridgeConfig, TypeBridgeConfigServices, WorkspaceConfigError,
-    WorkspaceConfigErrorCode, WorkspaceEnvironment, WorkspaceRoot, confined_relative_path,
-    workspace_paths_overlap,
+    WorkspaceConfigErrorCode, WorkspaceEnvironment, WorkspaceRoot, WorkspaceRootCa,
+    WorkspaceTransportPolicy, confined_relative_path, validate_environment_database,
+    validate_environment_uri, workspace_paths_overlap,
 };
 
 /// The only accepted language-neutral workspace manifest discriminator.
@@ -122,6 +124,8 @@ struct EnvironmentWire {
     migrate: Option<SpannedString>,
     password: SpannedString,
     requirements: Vec<SpannedString>,
+    tls: Option<SpannedString>,
+    tls_root_ca: Option<SpannedString>,
     uri: SpannedString,
     username: SpannedString,
 }
@@ -332,17 +336,27 @@ impl LocatedConfigSpec {
             builder = builder.require_extension(requirement);
         }
         for (name, wire_environment) in wire.environments {
+            let transport_policy = resolve_environment_transport(
+                &origin,
+                wire_environment.tls.as_ref(),
+                wire_environment.tls_root_ca.as_ref(),
+                services.sources,
+            )?;
             let username = SecretReference::parse_symbolic(&wire_environment.username.value)
                 .map_err(|error| sourced(error, &origin, &wire_environment.username.span))?;
             let password = SecretReference::parse_symbolic(&wire_environment.password.value)
                 .map_err(|error| sourced(error, &origin, &wire_environment.password.span))?;
-            let mut environment = WorkspaceEnvironment::new(
+            validate_environment_uri(&wire_environment.uri.value)
+                .map_err(|error| sourced(error, &origin, &wire_environment.uri.span))?;
+            validate_environment_database(&wire_environment.database.value)
+                .map_err(|error| sourced(error, &origin, &wire_environment.database.span))?;
+            let mut environment = WorkspaceEnvironment::from_validated(
                 wire_environment.uri.value,
                 wire_environment.database.value,
                 username,
                 password,
-            )
-            .map_err(|error| sourced(error, &origin, &name.span))?;
+            );
+            environment = environment.with_transport_policy(transport_policy);
             if let Some(port) = wire_environment.http_port {
                 let parsed = port
                     .value
@@ -481,6 +495,58 @@ fn output_field(target: BindingTarget) -> &'static str {
         BindingTarget::Python => "bindings.python.output",
         BindingTarget::TypeScript => "bindings.typescript.output",
         BindingTarget::Rust => "bindings.rust.output",
+    }
+}
+
+fn resolve_environment_transport(
+    origin: &ConfigOrigin,
+    tls: Option<&SpannedString>,
+    root_ca: Option<&SpannedString>,
+    sources: &dyn crate::WorkspaceSourceService,
+) -> Result<WorkspaceTransportPolicy, WorkspaceConfigError> {
+    let tls = match tls {
+        None => None,
+        Some(authored) => match authored.value.as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => {
+                return Err(sourced(
+                    WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::InvalidTlsBoolean,
+                        "environments.tls admits only true or false",
+                    ),
+                    origin,
+                    &authored.span,
+                ));
+            }
+        },
+    };
+
+    match (tls, root_ca) {
+        (None, None) | (Some(false), None) => Ok(WorkspaceTransportPolicy::Disabled),
+        (Some(true), None) => Ok(WorkspaceTransportPolicy::NativeRoots),
+        (None, Some(root_ca)) => Err(sourced(
+            WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::TlsRootCaRequiresTls,
+                "environments.tls-root-ca requires explicit tls: true",
+            ),
+            origin,
+            &root_ca.span,
+        )),
+        (Some(false), Some(root_ca)) => Err(sourced(
+            WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::TlsRootCaWithDisabledTls,
+                "environments.tls-root-ca contradicts tls: false",
+            ),
+            origin,
+            &root_ca.span,
+        )),
+        (Some(true), Some(root_ca)) => {
+            let relative = resolve_owned_path(origin, root_ca, "environments.tls-root-ca")?;
+            let root_ca = WorkspaceRootCa::new(origin.workspace_root(), relative, sources)
+                .map_err(|error| sourced(error, origin, &root_ca.span))?;
+            Ok(WorkspaceTransportPolicy::CustomRootCa(root_ca))
+        }
     }
 }
 
@@ -737,7 +803,7 @@ fn parse_compatibility(
         origin,
     )?;
     let capabilities = require
-        .map(|node| string_sequence(node, "compatibility.require", origin))
+        .map(|node| capability_sequence(node, "compatibility.require", origin))
         .transpose()?
         .unwrap_or_default();
     Ok((semantic_profile, capabilities))
@@ -807,6 +873,8 @@ fn parse_environment(
     let mut uri = None;
     let mut http_port = None;
     let mut migrate = None;
+    let mut tls = None;
+    let mut tls_root_ca = None;
     let mut credential = None;
     let mut requirements = None;
     for entry in value.entries() {
@@ -815,6 +883,8 @@ fn parse_environment(
             "uri" => uri = Some(entry.value()),
             "http-port" => http_port = Some(entry.value()),
             "migrate" => migrate = Some(entry.value()),
+            "tls" => tls = Some(entry.value()),
+            "tls-root-ca" => tls_root_ca = Some(entry.value()),
             "credential" => credential = Some(entry.value()),
             "requirements" => requirements = Some(entry.value()),
             unknown => {
@@ -871,9 +941,15 @@ fn parse_environment(
             origin,
         )?,
         requirements: requirements
-            .map(|node| string_sequence(node, "environments.requirements", origin))
+            .map(|node| capability_sequence(node, "environments.requirements", origin))
             .transpose()?
             .unwrap_or_default(),
+        tls: tls
+            .map(|node| scalar(node, "environments.tls", origin))
+            .transpose()?,
+        tls_root_ca: tls_root_ca
+            .map(|node| scalar(node, "environments.tls-root-ca", origin))
+            .transpose()?,
         uri: scalar(
             required(uri, "environments.uri", value, origin)?,
             "environments.uri",
@@ -1083,6 +1159,29 @@ fn string_sequence(
         .iter()
         .map(|item| scalar(item, field, origin))
         .collect()
+}
+
+fn capability_sequence(
+    node: &YamlNode,
+    field: &str,
+    origin: &ConfigOrigin,
+) -> Result<Vec<SpannedString>, WorkspaceConfigError> {
+    let values = string_sequence(node, field, origin)?;
+    let mut seen = BTreeSet::new();
+    for value in &values {
+        if !seen.insert(value.value.as_str()) {
+            return Err(sourced(
+                WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::DuplicateCapabilityRequirement,
+                    "set-like workspace capability requirements must not contain duplicates",
+                )
+                .with_detail(format!("{field}:{}", value.value)),
+                origin,
+                &value.span,
+            ));
+        }
+    }
+    Ok(values)
 }
 
 fn unknown_key(

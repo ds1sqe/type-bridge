@@ -17,8 +17,9 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_schema::{ManagedDeltaContext, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
-    MigrationHistoryGraph, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
-    build_verified_manifest, decode_verified_manifest, discover_verified_migration_chain,
+    MigrationDirectory, MigrationHistoryGraph, SchemaMigrationDraft,
+    VerifiedSchemaMigrationManifest, build_verified_manifest, decode_verified_manifest,
+    discover_verified_migration_chain, discover_verified_migration_chain_with_evidence_in,
     discover_verified_migrations, encode_verified_manifest,
 };
 
@@ -454,6 +455,83 @@ fn chain_discovery_is_dependency_ordered_not_filename_ordered() {
         &[migration_id("0002_parent"), migration_id("0001_child")]
     );
     assert_eq!(graph.heads(), &[migration_id("0001_child")]);
+}
+
+#[test]
+fn retained_history_evidence_rejects_canonical_swap_delete_and_add() {
+    let swapped = TempDirectory::new();
+    let original = fixture("0001_root", Vec::new(), &[], &["person"]);
+    let replacement = fixture("0001_root", Vec::new(), &[], &["company"]);
+    write_manifest(swapped.path(), &original, "0001_root");
+    let swapped_authority =
+        MigrationDirectory::open_ambient(swapped.path()).expect("retain swapped authority");
+    let (_, swapped_evidence) = discover_verified_migration_chain_with_evidence_in(
+        &swapped_authority,
+        &declared(&[]),
+        &context(),
+    )
+    .expect("discover swapped fixture");
+    fs::rename(
+        swapped.path().join("0001_root.tbmigration.json"),
+        swapped.path().join("0001_root.tbmigration.json.held"),
+    )
+    .expect("hold original canonical file");
+    write_manifest(swapped.path(), &replacement, "0001_root");
+    assert_eq!(
+        swapped_evidence
+            .require_unchanged(&swapped_authority)
+            .expect_err("same-name replacement must be rejected")
+            .code()
+            .as_str(),
+        "migration_history_authority_digest_changed"
+    );
+
+    let deleted = TempDirectory::new();
+    write_manifest(deleted.path(), &original, "0001_root");
+    let deleted_authority =
+        MigrationDirectory::open_ambient(deleted.path()).expect("retain deleted authority");
+    let (_, deleted_evidence) = discover_verified_migration_chain_with_evidence_in(
+        &deleted_authority,
+        &declared(&[]),
+        &context(),
+    )
+    .expect("discover deleted fixture");
+    fs::remove_file(deleted.path().join("0001_root.tbmigration.json"))
+        .expect("delete canonical file");
+    assert_eq!(
+        deleted_evidence
+            .require_unchanged(&deleted_authority)
+            .expect_err("canonical deletion must be rejected")
+            .code()
+            .as_str(),
+        "migration_history_authority_membership_changed"
+    );
+
+    let added = TempDirectory::new();
+    write_manifest(added.path(), &original, "0001_root");
+    let added_authority =
+        MigrationDirectory::open_ambient(added.path()).expect("retain added authority");
+    let (_, added_evidence) = discover_verified_migration_chain_with_evidence_in(
+        &added_authority,
+        &declared(&[]),
+        &context(),
+    )
+    .expect("discover added fixture");
+    let child = chained_fixture(
+        "0002_child",
+        vec![migration_id("0001_root")],
+        original.verified.target_schema().clone(),
+        &["company", "person"],
+    );
+    write_manifest(added.path(), &child, "0002_child");
+    assert_eq!(
+        added_evidence
+            .require_unchanged(&added_authority)
+            .expect_err("canonical addition must be rejected")
+            .code()
+            .as_str(),
+        "migration_history_authority_membership_changed"
+    );
 }
 
 #[test]

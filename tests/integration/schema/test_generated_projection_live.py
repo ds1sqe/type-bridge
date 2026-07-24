@@ -14,7 +14,6 @@ import pytest
 
 from type_bridge import Database
 
-
 pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[3]

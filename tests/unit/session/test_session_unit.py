@@ -329,6 +329,213 @@ class TestDriverInjection:
         mock_driver.close.assert_called_once()
         assert db._driver is None
 
+    def test_close_preserves_released_falsey_injected_driver_behavior(self):
+        """The released truthiness seam leaves a falsey injected driver attached."""
+
+        class FalseyDriver:
+            def __init__(self) -> None:
+                self.close_calls = 0
+
+            def __bool__(self) -> bool:
+                return False
+
+            def close(self) -> None:
+                self.close_calls += 1
+
+        driver = FalseyDriver()
+        db = Database(driver=driver)  # type: ignore[arg-type]
+        setattr(db, "_rust_backend_database", object())
+
+        db.close()
+
+        assert db._driver is driver
+        assert driver.close_calls == 0
+        assert not hasattr(db, "_rust_backend_database")
+
+    def test_close_preserves_released_truth_probe_error_order(self):
+        """A driver truth-probe error precedes every close-time mutation."""
+
+        class ExplodingDriver:
+            def __bool__(self) -> bool:
+                raise ValueError("driver truth probe failed")
+
+        driver = ExplodingDriver()
+        rust_database = object()
+        db = Database(driver=driver)  # type: ignore[arg-type]
+        setattr(db, "_rust_backend_database", rust_database)
+
+        with pytest.raises(ValueError, match="driver truth probe failed"):
+            db.close()
+
+        assert db._driver is driver
+        assert getattr(db, "_rust_backend_database") is rust_database
+
+    def test_close_closes_cached_rust_database_before_releasing_it(self):
+        """close() should explicitly stop a cached Rust provider connection."""
+        db = Database()
+        rust_database = MagicMock()
+        setattr(db, "_rust_backend_database", rust_database)
+        retained_reference = rust_database
+
+        db.close()
+
+        retained_reference.close.assert_called_once_with()
+        assert not hasattr(db, "_rust_backend_database")
+
+    def test_close_releases_legacy_rust_database_double_without_close(self):
+        """Older Rust-handle stand-ins remain compatible with close()."""
+        db = Database()
+        setattr(db, "_rust_backend_database", object())
+
+        db.close()
+
+        assert not hasattr(db, "_rust_backend_database")
+
+    def test_close_failure_retains_python_transport_for_released_style_retry(self):
+        """A transient Python-driver close failure remains retryable."""
+        db = Database()
+        events: list[str] = []
+        python_error = RuntimeError("python driver close failed")
+        rust_error = ValueError("rust backend close failed")
+        python_driver = MagicMock()
+        rust_database = MagicMock()
+        snapshot = MagicMock()
+
+        python_attempts = 0
+
+        def close_python_driver() -> None:
+            nonlocal python_attempts
+            python_attempts += 1
+            events.append("python")
+            if python_attempts == 1:
+                raise python_error
+
+        def close_rust_database() -> None:
+            events.append("rust")
+            raise rust_error
+
+        python_driver.close.side_effect = close_python_driver
+        rust_database.close.side_effect = close_rust_database
+        snapshot.cleanup.side_effect = lambda: events.append("snapshot")
+        db._driver = python_driver
+        db._owns_driver = True
+        setattr(db, "_rust_backend_database", rust_database)
+        db._tls_root_ca_snapshot = snapshot
+        db._tls_root_ca_snapshot_path = "/retained/root.pem"
+        prepared = MagicMock()
+        db._prepared_connection = prepared
+        db._transport_committed = True
+
+        with pytest.raises(RuntimeError, match="python driver close failed") as raised:
+            db.close()
+
+        assert raised.value is python_error
+        assert events == ["python"]
+        assert db._driver is python_driver
+        assert getattr(db, "_rust_backend_database") is rust_database
+        assert db._tls_root_ca_snapshot is snapshot
+        assert db._tls_root_ca_snapshot_path == "/retained/root.pem"
+        assert db._prepared_connection is prepared
+        assert db._transport_committed is True
+
+        db.close()
+        assert events == ["python", "python", "rust", "snapshot"]
+        assert db._driver is None
+        assert not hasattr(db, "_rust_backend_database")
+        assert db._tls_root_ca_snapshot is None
+        assert db._tls_root_ca_snapshot_path is None
+        assert db._prepared_connection is None
+        assert db._transport_committed is False
+
+    def test_close_masks_rust_failure_after_successful_python_cleanup(self, caplog):
+        """Native cleanup remains explicit without changing released close errors."""
+        db = Database()
+        events: list[str] = []
+        rust_error = RuntimeError("rust backend close failed")
+        python_driver = MagicMock()
+        rust_database = MagicMock()
+        snapshot = MagicMock()
+        python_driver.close.side_effect = lambda: events.append("python")
+
+        def close_rust_database() -> None:
+            events.append("rust")
+            raise rust_error
+
+        rust_database.close.side_effect = close_rust_database
+        snapshot.cleanup.side_effect = lambda: events.append("snapshot")
+        db._driver = python_driver
+        db._owns_driver = True
+        setattr(db, "_rust_backend_database", rust_database)
+        db._tls_root_ca_snapshot = snapshot
+
+        with caplog.at_level("WARNING", logger="type_bridge.session"):
+            db.close()
+
+        assert events == ["python", "rust", "snapshot"]
+        assert db._driver is None
+        assert not hasattr(db, "_rust_backend_database")
+        assert db._tls_root_ca_snapshot is None
+        assert "Embedded Rust backend cleanup failed" in caplog.text
+        assert "rust backend close failed" not in caplog.text
+
+        db.close()
+        assert events == ["python", "rust", "snapshot"]
+
+    def test_close_failure_does_not_overwrite_reentrant_driver_replacement(self):
+        """Retry restoration must not clobber state installed during close()."""
+        db = Database()
+        old_driver = MagicMock()
+        replacement = MagicMock()
+        old_snapshot = MagicMock()
+        replacement_snapshot = MagicMock()
+        close_error = RuntimeError("old driver close failed")
+
+        def replace_then_fail() -> None:
+            db._driver = replacement
+            db._owns_driver = False
+            db._tls_root_ca_snapshot = replacement_snapshot
+            db._tls_root_ca_snapshot_path = "/replacement/root.pem"
+            db._prepared_connection = MagicMock(name="replacement_prepared")
+            db._transport_committed = True
+            raise close_error
+
+        old_driver.close.side_effect = replace_then_fail
+        db._driver = old_driver
+        db._owns_driver = True
+        db._tls_root_ca_snapshot = old_snapshot
+        db._tls_root_ca_snapshot_path = "/old/root.pem"
+        db._prepared_connection = MagicMock(name="old_prepared")
+        db._transport_committed = True
+
+        with pytest.raises(RuntimeError, match="old driver close failed") as raised:
+            db.close()
+
+        assert raised.value is close_error
+        assert db._driver is replacement
+        assert db._owns_driver is False
+        assert db._tls_root_ca_snapshot is replacement_snapshot
+        assert db._tls_root_ca_snapshot_path == "/replacement/root.pem"
+        old_snapshot.cleanup.assert_called_once_with()
+        replacement_snapshot.cleanup.assert_not_called()
+
+    def test_context_manager_close_failure_keeps_released_exception_precedence(self):
+        """An owned-driver close error still supersedes a body error on exit."""
+        close_error = RuntimeError("python driver close failed")
+        body_error = ValueError("context body failed")
+        driver = MagicMock()
+        driver.close.side_effect = close_error
+        db = Database(driver=driver)
+        db._owns_driver = True
+
+        with pytest.raises(RuntimeError, match="python driver close failed") as raised:
+            with db:
+                raise body_error
+
+        assert raised.value is close_error
+        assert db._driver is driver
+        driver.close.side_effect = None
+        db.close()
+
     def test_driver_property_returns_injected_driver(self):
         """Driver property should return injected driver without connecting."""
         mock_driver = MagicMock()

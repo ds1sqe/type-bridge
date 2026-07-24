@@ -1504,6 +1504,27 @@ with Database(database="mydb") as db:
     # ... operations ...
 ```
 
+TLS is opt-in. For compatibility, omitting `tls` preserves the exact
+case-sensitive `address.startswith("https://")` behavior from 1.x; an explicit
+value is clearer for new code. A custom PEM root never enables TLS implicitly:
+
+```python
+db = Database(
+    address="db.example.com:1729",
+    database="mydb",
+    tls=True,
+    tls_root_ca="/run/secrets/type-db-root.pem",
+)
+```
+
+`tls_root_ca` requires `tls=True`. Explicit `tls=False` overrides a lowercase
+`https://` prefix, and the wrapper removes HTTP/HTTPS schemes before handing
+the plain host to the driver transports. With no custom root, TLS uses the
+operating-system trust store; a custom bundle is used exclusively and is
+validated under a 1 MiB pre-I/O ceiling. With omitted `tls`, a mixed-case
+`HTTPS://` spelling is rejected before network I/O instead of being normalized
+into a plaintext host; use lowercase `https://` or pass `tls=True` explicitly.
+
 ### Driver Injection
 
 For direct TypeDB driver and database-administration calls, you can inject an

@@ -15,6 +15,7 @@ use type_bridge_orm::{
 
 use crate::orm_runtime::{
     PyDescriptorRegistry, PyDynamicValue, PyRustDatabase, PyRustTransactionContext,
+    provider_block_on,
 };
 use crate::validated_result_runtime::PyValidatedMatchResultHandle;
 
@@ -401,7 +402,7 @@ impl PyMatchQueryHandle {
             )
             .map_err(py_match_orm_error)?;
         let registry = self.inner.registry_arc();
-        execute_validated_owned(database, validated, registry)
+        execute_validated_owned(py, database, validated, registry)
     }
 
     fn execute_fetch_rows_borrowed(
@@ -423,7 +424,7 @@ impl PyMatchQueryHandle {
             )
             .map_err(py_match_orm_error)?;
         let registry = self.inner.registry_arc();
-        execute_validated_borrowed(transaction, validated, registry)
+        execute_validated_borrowed(py, transaction, validated, registry)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -448,7 +449,7 @@ impl PyMatchQueryHandle {
                 include_total,
             )
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(database, validated, self.inner.registry_arc())
+        execute_validated_owned(py, database, validated, self.inner.registry_arc())
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -473,11 +474,12 @@ impl PyMatchQueryHandle {
                 include_total,
             )
             .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(transaction, validated, self.inner.registry_arc())
+        execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
     }
 
     fn execute_count_by_owned(
         &self,
+        py: Python<'_>,
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
@@ -485,11 +487,12 @@ impl PyMatchQueryHandle {
             .inner
             .validate_count_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(database, validated, self.inner.registry_arc())
+        execute_validated_owned(py, database, validated, self.inner.registry_arc())
     }
 
     fn execute_count_by_borrowed(
         &self,
+        py: Python<'_>,
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
@@ -497,11 +500,12 @@ impl PyMatchQueryHandle {
             .inner
             .validate_count_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(transaction, validated, self.inner.registry_arc())
+        execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
     }
 
     fn execute_exists_by_owned(
         &self,
+        py: Python<'_>,
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
@@ -509,11 +513,12 @@ impl PyMatchQueryHandle {
             .inner
             .validate_exists_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(database, validated, self.inner.registry_arc())
+        execute_validated_owned(py, database, validated, self.inner.registry_arc())
     }
 
     fn execute_exists_by_borrowed(
         &self,
+        py: Python<'_>,
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
@@ -521,33 +526,41 @@ impl PyMatchQueryHandle {
             .inner
             .validate_exists_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(transaction, validated, self.inner.registry_arc())
+        execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
     }
 }
 
 fn execute_validated_owned(
+    py: Python<'_>,
     database: &PyRustDatabase,
     validated: ValidatedMatchRequest,
     registry: std::sync::Arc<type_bridge_orm::DescriptorRegistry>,
 ) -> PyResult<PyValidatedMatchResultHandle> {
     let (database, runtime) = database.handles();
-    let result = runtime
-        .block_on(database.execute_match(&registry, &validated))
-        .map_err(py_match_orm_error)?;
+    let result = provider_block_on(
+        py,
+        runtime.as_ref(),
+        database.execute_match(&registry, &validated),
+    )
+    .map_err(py_match_orm_error)?;
     Ok(PyValidatedMatchResultHandle::new(
         validated, result, registry,
     ))
 }
 
 fn execute_validated_borrowed(
+    py: Python<'_>,
     transaction: &PyRustTransactionContext,
     validated: ValidatedMatchRequest,
     registry: std::sync::Arc<type_bridge_orm::DescriptorRegistry>,
 ) -> PyResult<PyValidatedMatchResultHandle> {
     let (transaction, runtime) = transaction.handles();
-    let result = runtime
-        .block_on(transaction.execute_match(&registry, &validated))
-        .map_err(py_match_orm_error)?;
+    let result = provider_block_on(
+        py,
+        runtime.as_ref(),
+        transaction.execute_match(&registry, &validated),
+    )
+    .map_err(py_match_orm_error)?;
     Ok(PyValidatedMatchResultHandle::new(
         validated, result, registry,
     ))

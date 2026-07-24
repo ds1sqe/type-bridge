@@ -120,6 +120,7 @@ mod tests {
             dependencies: Vec::new(),
             operations: Vec::new(),
             checksum: checksum.map(str::to_string),
+            source_sha256: None,
             reversible: true,
         }
     }

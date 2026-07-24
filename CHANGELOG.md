@@ -4,6 +4,44 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Rust V2 publication boundary** - the nine V2 semantic, migration,
+  projection, workspace, and CLI crates are first-party `2.0.0-rc.0`
+  workspace packages with `publish = false`; they are not crates.io release
+  identities. The 2.0 release contract is Python/npm-only: the release gate
+  blocks Cargo publication and leaves the crates.io graph untouched.
+- **Direct Python driver 3.12.1** - CPython 3.14 dependency markers, native
+  artifact probes, and live compatibility cells now use the current 3.12.1
+  Python driver patch; CPython 3.12–3.13 retains the released multi-line
+  compatibility contract.
+- **Upstream-native TypeDB 3.12 runtime** - the default band-9 path now uses
+  the official upstream Rust driver/protocol packages directly and is
+  exercised against the TypeDB 3.12.1 conformance server. The exact source pin
+  is the newest non-yanked stable 3.12.x release at the first-publish cutoff
+  (currently 3.12.1); retries after that cutoff retain the exact release graph
+  already started. No active, consumed, or release-input TypeBridge band-9
+  fork exists.
+- **Terminal embedded-driver close dispatch (#196)** - Python, Node, and Rust
+  database close boundaries now invoke the selected driver's upstream
+  idempotent `force_close()` API and immediately reject new work. Upstream
+  3.12.1 dispatches shutdown but releases its final callback worker only when
+  the last shared driver lease drops, so TypeBridge does not promise a
+  synchronous worker join from a retained closed handle. This is a temporary
+  downstream lifecycle workaround, not a driver or protocol patch;
+  [#196](https://github.com/ds1sqe/type-bridge/issues/196) is its removal gate.
+- **Legacy multi-band compatibility packaging** - band 7 reuses the already
+  published `type-bridge-typedb-driver-b7` 3.8.1 and protocol 3.7.0 packages;
+  band 8 uses namespaced driver 3.11.5 and protocol 3.11.0 source-unmodified
+  packaging candidates. Any first publication remains separately owner-gated;
+  if distributed, these exact source-unmodified packages are the authorized
+  compatibility artifacts, with protocol preceding driver. Their Rust source
+  behavior is byte-identical to the respective upstream archives, with no
+  downstream transaction-close or other behavioral patch.
+  Namespacing is solely a Cargo package-identity mechanism that permits all
+  protocol bands in one native graph. TypeDB remains the original upstream
+  owner, and its Apache-2.0/MPL-2.0 licenses are preserved.
+
 ## [1.5.11] - 2026-07-19
 
 ### Bug Fixes

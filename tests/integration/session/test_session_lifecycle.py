@@ -41,14 +41,20 @@ class TestDatabaseLifecycle:
         assert getattr(clean_db, "_rust_backend_database", None) is not None
 
     def test_close_destroys_rust_handle(self, test_database):
-        """close() should clear the Rust database handle."""
+        """close() should terminate and clear the Rust database handle."""
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         db = Database(address=TEST_DB_ADDRESS, database=test_database)
         db.connect()
-        assert getattr(db, "_rust_backend_database", None) is not None
+        rust_database = getattr(db, "_rust_backend_database", None)
+        assert rust_database is not None
+        assert rust_database.is_connected() is True
+        db.close()
         db.close()
         assert getattr(db, "_rust_backend_database", None) is None
+        assert rust_database.is_connected() is False
+        with pytest.raises(RuntimeError, match="TypeDB driver connection is closed"):
+            rust_database.database_exists()
 
     def test_context_manager_connect_close(self, test_database):
         """Database as context manager should connect and close."""

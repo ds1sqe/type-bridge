@@ -11,18 +11,18 @@ use crate::id::{AttributeId, FunctionId, Label, RoleId, StructId, TypeId};
 use crate::projection::{
     BindingTarget, CodeResourceDigest, CompleteReadProjection, CreateFieldProjection,
     CreateProjection, CreateRoleProjection, DeclarationProjection, DeclaredRoleProjection,
-    EmissionPlan, FieldTokenProjection, FunctionParameterProjection, FunctionProjection,
-    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection, PlayingProjection,
-    ProjectedAnnotation, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
-    ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig, ProjectionHandler,
-    QueryTokenProjection, ReadFieldProjection, ReadRoleProjection, ReferenceConstructionPolicy,
-    ReferenceReadProjection, RoleTokenProjection, RuntimeProjection, StructFieldProjection,
-    StructProjection, TargetIdentifier,
+    DirectSubProjection, EmissionPlan, FieldTokenProjection, FunctionParameterProjection,
+    FunctionProjection, FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
+    PlayingProjection, ProjectedAnnotation, ProjectedContainer, ProjectedModelForm,
+    ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig,
+    ProjectionHandler, QueryTokenProjection, ReadFieldProjection, ReadRoleProjection,
+    ReferenceConstructionPolicy, ReferenceReadProjection, RoleTokenProjection, RuntimeProjection,
+    StructFieldProjection, StructProjection, TargetIdentifier,
 };
 use crate::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
     CanonicalValueSet, DocText, OwnsFactId, PlaysFactId, RegexPattern, RelatesFactId,
-    SchemaAnnotationValue, SubFactId, ValueFactId,
+    SchemaAnnotationValue, SchemaFactId, SubFactId, ValueFactId,
 };
 use crate::schema_fingerprint::SemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, Cardinality, ValueTypeTag};
@@ -358,10 +358,7 @@ struct AnnotationWire {
 
 impl AnnotationWire {
     fn rebuild(self) -> Result<ProjectedAnnotation, Diagnostic> {
-        Ok(ProjectedAnnotation::new(
-            self.id.rebuild()?,
-            self.value.rebuild()?,
-        ))
+        ProjectedAnnotation::new(self.id.rebuild()?, self.value.rebuild()?)
     }
 }
 
@@ -536,9 +533,42 @@ impl DeclaredRoleWire {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum DirectSubOriginWire {
+    Sub(SubFactIdWire),
+}
+
+impl DirectSubOriginWire {
+    fn rebuild(self) -> Result<SchemaFactId, Diagnostic> {
+        match self {
+            Self::Sub(value) => Ok(SchemaFactId::Sub(value.rebuild()?)),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DirectSubWire {
+    id: SubFactIdWire,
+    origin: DirectSubOriginWire,
+    annotations: Vec<AnnotationWire>,
+}
+
+impl DirectSubWire {
+    fn rebuild(self) -> Result<DirectSubProjection, Diagnostic> {
+        DirectSubProjection::new(
+            self.id.rebuild()?,
+            self.origin.rebuild()?,
+            annotations(self.annotations)?,
+        )
+    }
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DeclarationWire {
     parent: Option<TypeId>,
+    direct_sub: Option<DirectSubWire>,
     value_type: Option<ValueTypeTag>,
     is_abstract: bool,
     is_constructible: bool,
@@ -581,6 +611,7 @@ impl DeclarationWire {
             roles,
             direct_plays,
         )?
+        .with_direct_sub(self.direct_sub.map(DirectSubWire::rebuild).transpose()?)?
         .with_value_annotations(annotations(self.value_annotations)?)
     }
 }

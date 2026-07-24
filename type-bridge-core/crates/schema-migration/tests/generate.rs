@@ -21,13 +21,25 @@ use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta,
 };
 use type_bridge_schema_migration::{
-    MigrationGenerationOutcome, MigrationGenerationRequest, MigrationHistoryGraph,
-    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
-    discover_verified_migration_chain, generate_next_migration, render_migration_preview,
-    typedb_3_12_1_profile, write_generated_migration,
+    MigrationDirectory, MigrationGenerationOutcome, MigrationGenerationRequest,
+    MigrationHistoryGraph, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
+    build_verified_manifest, discover_verified_migration_chain, generate_next_migration,
+    render_migration_preview, try_acquire_migration_authoring_lock, typedb_3_12_1_profile,
+    write_generated_migration_under_lock,
 };
 
 const APP_LABEL: &str = "example";
+
+fn publish_generated_migration(
+    directory: &Path,
+    generated: &type_bridge_schema_migration::GeneratedMigration,
+    preview: &str,
+) -> Result<PathBuf, type_bridge_contract::diagnostic::Diagnostic> {
+    let authority = MigrationDirectory::open_ambient(directory).expect("directory authority");
+    let lock = try_acquire_migration_authoring_lock(&authority)?;
+    let relative = write_generated_migration_under_lock(&lock, generated, preview)?;
+    Ok(directory.join(relative))
+}
 
 fn migration_id(name: &str) -> MigrationId {
     MigrationId::from_components(
@@ -212,7 +224,7 @@ fn genesis_generation_is_deterministic_and_round_trips_through_discovery() {
     assert!(preview.contains("entity person"), "preview: {preview}");
 
     let directory = TempDirectory::new();
-    write_generated_migration(directory.path(), &first, &preview)
+    publish_generated_migration(directory.path(), &first, &preview)
         .expect("write generated migration");
     let discovered = discover_verified_migration_chain(directory.path(), &genesis, &context)
         .expect("discover generated migration");
@@ -387,9 +399,9 @@ fn write_refuses_existing_generated_files() {
     let preview = render_migration_preview(generated.manifest(), &context).expect("preview");
 
     let directory = TempDirectory::new();
-    write_generated_migration(directory.path(), &generated, &preview)
+    publish_generated_migration(directory.path(), &generated, &preview)
         .expect("first write succeeds");
-    let error = write_generated_migration(directory.path(), &generated, &preview)
+    let error = publish_generated_migration(directory.path(), &generated, &preview)
         .expect_err("second write conflicts");
     assert_eq!(error.code().as_str(), "migration_generation_write_conflict");
 }
@@ -442,7 +454,7 @@ fn writes_publish_atomically_and_recover_orphaned_previews() {
         "-- partial",
     )
     .expect("orphan preview");
-    let manifest_path = write_generated_migration(directory.path(), &generated, &preview)
+    let manifest_path = publish_generated_migration(directory.path(), &generated, &preview)
         .expect("orphaned preview is replaced, not a conflict");
     assert_eq!(
         std::fs::read_to_string(directory.path().join(generated.preview_file_name()))
@@ -464,4 +476,57 @@ fn writes_publish_atomically_and_recover_orphaned_previews() {
         .filter(|name| name.ends_with(".tmp"))
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn concurrent_writers_use_one_locked_no_replace_publication() {
+    use std::sync::{Arc, Barrier};
+
+    let genesis = declared_facts(Vec::new());
+    let desired = declared(&["person"]);
+    let context = context();
+    let graph = empty_graph();
+    let request = request("concurrent", &genesis, &desired, &context);
+    let generated = generated(&graph, &request);
+    let preview = render_migration_preview(generated.manifest(), &context).expect("preview");
+    let directory = TempDirectory::new();
+    let root = Arc::new(directory.path().to_path_buf());
+    let barrier = Arc::new(Barrier::new(2));
+
+    let handles = (0..2)
+        .map(|_| {
+            let root = Arc::clone(&root);
+            let barrier = Arc::clone(&barrier);
+            let generated = generated.clone();
+            let preview = preview.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                publish_generated_migration(&root, &generated, &preview)
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("writer does not panic"))
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+    assert_eq!(
+        std::fs::read(root.join(generated.file_name())).expect("manifest published"),
+        generated.canonical_bytes(),
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(generated.preview_file_name()))
+            .expect("preview published"),
+        preview,
+    );
+    assert!(
+        std::fs::read_dir(root.as_ref())
+            .expect("directory reads")
+            .all(|entry| !entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp"))
+    );
 }

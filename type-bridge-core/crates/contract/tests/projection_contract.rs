@@ -1,15 +1,47 @@
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{
-    BindingProjectionFingerprint, BindingTarget, CodeResourceDigest, ProjectionConfig,
-    ProjectionHandler, ProjectionHandlerVersion, RustCreatePolicy,
+    BindingProjectionFingerprint, BindingTarget, CodeResourceDigest, ProjectedAnnotation,
+    ProjectionConfig, ProjectionHandler, ProjectionHandlerVersion, RustCreatePolicy,
     canonical_binding_projection_bytes,
+};
+use type_bridge_contract::schema::{
+    AnnotationFactId, AnnotationKindId, AnnotationSubjectId, SchemaAnnotationValue,
 };
 use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
 
 fn semantic(bytes: &[u8]) -> SemanticSchemaFingerprint {
     SemanticSchemaFingerprint::compute(SemanticProfileId::new("typedb-3.12.1/v1").unwrap(), bytes)
         .unwrap()
+}
+
+#[test]
+fn projected_annotations_reuse_authoritative_subject_and_payload_validation() {
+    use type_bridge_contract::id::{TypeId, TypeKind};
+
+    let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let invalid_subject = ProjectedAnnotation::new(
+        AnnotationFactId::new(
+            AnnotationSubjectId::Type(person.clone()),
+            AnnotationKindId::Key,
+        ),
+        SchemaAnnotationValue::Presence,
+    )
+    .unwrap_err();
+    assert_eq!(
+        invalid_subject.code().as_str(),
+        "invalid_annotation_subject"
+    );
+
+    let mismatched_payload = ProjectedAnnotation::new(
+        AnnotationFactId::new(AnnotationSubjectId::Type(person), AnnotationKindId::Doc),
+        SchemaAnnotationValue::Presence,
+    )
+    .unwrap_err();
+    assert_eq!(
+        mismatched_payload.code().as_str(),
+        "invalid_annotation_payload"
+    );
 }
 
 #[test]
